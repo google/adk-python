@@ -395,3 +395,57 @@ async def test_mid_workflow_compaction_does_not_stale_later_node_append():
   assert (
       len(persisted_agent2_events) == 2
   ), "agent2's response was not persisted to storage"
+
+
+@pytest.mark.asyncio
+async def test_turn_that_regrows_after_mid_turn_compaction_is_compacted_again():
+  """A turn that grows past the threshold again is compacted when it ends."""
+
+  def tool() -> dict[str, str]:
+    return {"result": "ok"}
+
+  agent = Agent(
+      name="agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              Part.from_function_call(name="tool", args={}),
+              "final answer",
+          ],
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=100
+          ),
+      ),
+      tools=[tool],
+  )
+  app = App(
+      name="test_app",
+      root_agent=agent,
+      events_compaction_config=EventsCompactionConfig(
+          token_threshold=50,
+          event_retention_size=1,
+          summarizer=LlmEventSummarizer(
+              llm=testing_utils.MockModel.create(
+                  responses=["summary one", "summary two"]
+              )
+          ),
+      ),
+  )
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name="test_app", user_id="u1", session_id="s1"
+  )
+  runner = Runner(app=app, session_service=session_service)
+
+  async for _ in runner.run_async(
+      user_id="u1", session_id="s1", new_message=types.UserContent("hi")
+  ):
+    pass
+
+  refreshed = await session_service.get_session(
+      app_name="test_app", user_id="u1", session_id="s1"
+  )
+  compaction_events = [
+      event for event in refreshed.events if event.actions.compaction
+  ]
+  assert len(compaction_events) == 2
+  assert refreshed.events[-1].actions.compaction

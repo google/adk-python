@@ -2106,3 +2106,68 @@ async def test_agent_inside_node_tool_keeps_its_own_tool_history(
       p.function_response and p.function_response.response == {'result': 3}
       for p in second_parts
   )
+
+
+@pytest.mark.asyncio
+async def test_node_tool_repeated_calls_do_not_share_resume_input(
+    request: pytest.FixtureRequest,
+):
+  """A second call of the same NodeTool pauses for its own input instead of reusing the first call's resume input."""
+
+  async def ask_and_analyze(ctx: Context, query: str):
+    clarification = ctx.resume_inputs.get('clarify_region')
+    if clarification is None:
+      yield RequestInput(
+          interrupt_id='clarify_region', message=f'Which region for {query}?'
+      )
+      return
+    yield {'query': query, 'region': clarification['text']}
+
+  tool = NodeTool(FunctionNode(func=ask_and_analyze, name='ask_and_analyze'))
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='ask_and_analyze', args={'query': 'sales'}
+              ),
+              types.Part.from_function_call(
+                  name='ask_and_analyze', args={'query': 'marketing'}
+              ),
+              types.Part.from_text(text='Both analyzed.'),
+          ]
+      ),
+      tools=[tool],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('start'))
+  req1 = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(
+              get_request_input_interrupt_ids(req1)[0], {'text': 'APAC'}
+          )
+      ),
+      invocation_id=req1.invocation_id,
+  )
+  req2 = workflow_testing_utils.find_function_call_event(
+      events2, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+
+  assert req2 is not None
+  assert req1.node_info.path != req2.node_info.path
+  responses2 = [
+      p.function_response.response
+      for e in events2
+      for p in (e.content.parts if e.content and e.content.parts else [])
+      if p.function_response and p.function_response.name == 'ask_and_analyze'
+  ]
+  assert responses2 == [{'query': 'sales', 'region': 'APAC'}]

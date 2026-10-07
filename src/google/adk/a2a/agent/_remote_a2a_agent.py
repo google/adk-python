@@ -918,6 +918,11 @@ class RemoteA2aAgent(BaseAgent):
       http_kwargs = await execute_before_card_request_interceptors(
           self._config.card_request_interceptors, ctx
       )
+      if http_kwargs is None:
+        http_kwargs = {}
+      if self._httpx_client_needs_cleanup and "timeout" not in http_kwargs:
+        http_kwargs["timeout"] = self._timeout
+
       return await resolver.get_agent_card(
           relative_card_path=relative_card_path,
           http_kwargs=http_kwargs,
@@ -952,6 +957,13 @@ class RemoteA2aAgent(BaseAgent):
       self, ctx: Optional[InvocationContext] = None
   ) -> AgentCard:
     """Resolve agent card from source."""
+    if ctx is not None:
+      cache_key = f"_remote_a2a_card_{self.name}"
+      metadata = getattr(ctx, "_private_metadata", None)
+      if isinstance(metadata, dict) and cache_key in metadata:
+        cached_card: AgentCard = metadata[cache_key]
+        return cached_card
+
     agent_card_source = self._agent_card_source
     if agent_card_source is None:
       raise AgentCardResolutionError("No agent card source was configured.")
@@ -971,9 +983,24 @@ class RemoteA2aAgent(BaseAgent):
             "Agent card URL must use https, or http on a loopback host:"
             f" {agent_card_source}"
         )
-      return await self._resolve_agent_card_from_url(agent_card_source, ctx)
+      card = await self._resolve_agent_card_from_url(agent_card_source, ctx)
     else:
-      return await self._resolve_agent_card_from_file(agent_card_source)
+      card = await self._resolve_agent_card_from_file(agent_card_source)
+    if ctx is not None:
+      cred_by_key = getattr(ctx, "credential_by_key", None)
+      has_unresolved_auth = bool(
+          self._auth_config
+          and self._auth_config.credential_key
+          and (
+              not isinstance(cred_by_key, dict)
+              or not cred_by_key.get(self._auth_config.credential_key)
+          )
+      )
+      if not has_unresolved_auth:
+        metadata = getattr(ctx, "_private_metadata", None)
+        if isinstance(metadata, dict):
+          metadata[cache_key] = card
+    return card
 
   async def _validate_agent_card(self, agent_card: AgentCard) -> None:
     """Validate resolved agent card."""
@@ -994,6 +1021,62 @@ class RemoteA2aAgent(BaseAgent):
       ) from e
 
     self._validate_card_rpc_targets(agent_card)
+
+  async def _get_transfer_description(self, ctx: InvocationContext) -> str:
+    """Returns local or agent-card metadata for transfer selection."""
+    if self.description:
+      return self.description
+
+    if self._agent_card:
+      return (
+          _adopted_card_description(
+              self._agent_card.description, self._agent_card_source
+          )
+          if self._agent_card.description
+          else ""
+      )
+
+    agent_ctx = ctx.model_copy(update={"agent": self})
+    if self._auth_config:
+      credential_key = self._auth_config.credential_key
+      cred_by_key = getattr(ctx, "credential_by_key", None)
+      if credential_key and (
+          not isinstance(cred_by_key, dict)
+          or not cred_by_key.get(credential_key)
+      ):
+        prev_end_invocation = ctx.end_invocation
+        try:
+          auth_event = await self._resolve_auth_credential(agent_ctx)
+          cred_by_key = getattr(ctx, "credential_by_key", None)
+          if (
+              auth_event is not None
+              or not isinstance(cred_by_key, dict)
+              or not cred_by_key.get(credential_key)
+          ):
+            return self.description or ""
+        finally:
+          ctx.end_invocation = prev_end_invocation
+          agent_ctx.end_invocation = prev_end_invocation
+
+    agent_card = await self._resolve_agent_card(agent_ctx)
+    await self._validate_agent_card(agent_card)
+
+    # Public cards are shared across invocations, matching the existing client
+    # cache. Authenticated cards remain invocation-scoped because their metadata
+    # may vary by session.
+    per_invocation_card = bool(
+        self._config.card_request_interceptors
+        and self._agent_card_source
+        and self._agent_card_source.startswith(("http://", "https://"))
+    )
+    if not per_invocation_card:
+      self._agent_card = agent_card
+
+    if agent_card.description:
+      return _adopted_card_description(
+          agent_card.description, self._agent_card_source
+      )
+    return ""
 
   def _validate_card_rpc_targets(self, agent_card: AgentCard) -> None:
     """Constrains where a card fetched over the network may aim RPC traffic.
@@ -1059,6 +1142,7 @@ class RemoteA2aAgent(BaseAgent):
     per_invocation_card = bool(
         self._config.card_request_interceptors
         and self._agent_card_source
+        and self._agent_card_source.startswith(("http://", "https://"))
         and ctx is not None
     )
 
@@ -1067,6 +1151,13 @@ class RemoteA2aAgent(BaseAgent):
 
     try:
       if per_invocation_card:
+        assert ctx is not None
+        client_key = f"_remote_a2a_client_{self.name}"
+        metadata = getattr(ctx, "_private_metadata", None)
+        if isinstance(metadata, dict) and client_key in metadata:
+          cached_client: A2AClient = metadata[client_key]
+          return cached_client
+
         # Build a per-invocation client; never cached on shared state.
         agent_card = await self._resolve_agent_card(ctx)
         await self._validate_agent_card(agent_card)
@@ -1075,6 +1166,8 @@ class RemoteA2aAgent(BaseAgent):
           raise ValueError("A2A client factory is not available")
         client = self._a2a_client_factory.create(agent_card)
         logger.info("Resolved remote A2A agent per invocation: %s", self.name)
+        if isinstance(metadata, dict):
+          metadata[client_key] = client
         return client
 
       # Shared (cached) resolution path.
@@ -1091,11 +1184,13 @@ class RemoteA2aAgent(BaseAgent):
         # check and talks to the origin that card named.
         self._agent_card = agent_card
 
-        # Update description if empty
-        if not self.description and agent_card.description:
-          self.description = _adopted_card_description(
-              agent_card.description, self._agent_card_source
-          )
+      # A public card may already have been resolved for transfer selection.
+      # Preserve the existing behavior of adopting its description when the
+      # remote agent itself is initialized.
+      if not self.description and self._agent_card.description:
+        self.description = _adopted_card_description(
+            self._agent_card.description, self._agent_card_source
+        )
 
       # Initialize A2A client
       if not self._a2a_client:

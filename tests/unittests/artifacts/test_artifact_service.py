@@ -306,6 +306,121 @@ async def test_save_load_delete(service_type, artifact_service_factory):
   )
 
 
+@pytest.mark.parametrize("filename", ["report.txt", "user:report.txt"])
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(
+    "invalid_artifact, error_message",
+    [
+        (types.Part(), "Not supported artifact type"),
+        (
+            types.Part.from_uri(
+                file_uri="artifact://invalid", mime_type="text/plain"
+            ),
+            "Invalid artifact reference URI",
+        ),
+        (
+            types.Part.from_uri(
+                file_uri=(
+                    "artifact://apps/other/users/user0/artifacts/"
+                    "target/versions/0"
+                ),
+                mime_type="text/plain",
+            ),
+            "same app and user scope",
+        ),
+    ],
+)
+async def test_in_memory_rejected_save_preserves_artifact_catalog(
+    filename: str,
+    existing: bool,
+    invalid_artifact: types.Part,
+    error_message: str,
+) -> None:
+  """Rejected saves leave filenames and versions unchanged, allowing a retry.
+
+  Setup: Start with either no artifact or one valid version in each scope.
+  Act: Reject invalid content or a reference, then retry with valid content.
+  Assert: The rejected save preserves the catalog and existing versions;
+    the retry gets the next version and is loadable.
+  """
+  artifact_service = InMemoryArtifactService()
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  previous = types.Part.from_text(text="previous")
+  if existing:
+    assert (
+        await artifact_service.save_artifact(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=filename,
+            artifact=previous,
+        )
+        == 0
+    )
+
+  with pytest.raises(InputValidationError, match=error_message):
+    await artifact_service.save_artifact(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=filename,
+        artifact=invalid_artifact,
+    )
+
+  assert await artifact_service.list_artifact_keys(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  ) == ([filename] if existing else [])
+  assert await artifact_service.list_versions(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  ) == ([0] if existing else [])
+  assert await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  ) == (previous if existing else None)
+
+  replacement = types.Part.from_text(text="replacement")
+  assert await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      artifact=replacement,
+  ) == (1 if existing else 0)
+  assert (
+      await artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=filename,
+      )
+      == replacement
+  )
+  assert await artifact_service.list_versions(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  ) == ([0, 1] if existing else [0])
+  if existing:
+    assert (
+        await artifact_service.load_artifact(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=filename,
+            version=0,
+        )
+        == previous
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "service_type",

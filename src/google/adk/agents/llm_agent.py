@@ -18,6 +18,7 @@ import abc
 import asyncio
 import inspect
 import logging
+import sys
 from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
@@ -26,6 +27,7 @@ from typing import ClassVar
 from typing import Literal
 from typing import Optional
 from typing import Type
+from typing import TYPE_CHECKING
 from typing import Union
 import warnings
 
@@ -40,10 +42,6 @@ from typing_extensions import TypeAlias
 
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
-from ..flows.llm_flows.auto_flow import AutoFlow
-from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
-from ..flows.llm_flows.single_flow import SingleFlow
-from ..flows.llm_flows.tools._functions import find_matching_function_call
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
@@ -53,6 +51,7 @@ from ..tools.base_tool import BaseTool
 from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
 from ..tools.tool_context import ToolContext
+from ..utils import _lazy
 from ..utils._callback_pipeline import _normalize_callbacks
 from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
@@ -65,6 +64,12 @@ from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .context import Context
 from .invocation_context import InvocationContext
+
+if TYPE_CHECKING:
+  from ..flows.llm_flows.auto_flow import AutoFlow as AutoFlow
+  from ..flows.llm_flows.base_llm_flow import BaseLlmFlow as BaseLlmFlow
+  from ..flows.llm_flows.single_flow import SingleFlow as SingleFlow
+
 
 with warnings.catch_warnings():
   # LlmAgentConfig subclasses the deprecated BaseAgentConfig purely as an
@@ -955,9 +960,9 @@ class LlmAgent(BaseAgent, abc.ABC):
         and self.disallow_transfer_to_peers
         and not self.sub_agents
     ):
-      return SingleFlow()
+      return _flow_class('SingleFlow')()
     else:
-      return AutoFlow()
+      return _flow_class('AutoFlow')()
 
   def _get_subagent_to_resume(
       self, ctx: InvocationContext
@@ -985,6 +990,8 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     # Last event is from user or another agent.
     if last_event.author == 'user':
+      from ..flows.llm_flows.tools._functions import find_matching_function_call
+
       function_call_event = find_matching_function_call(
           ctx._get_events(current_invocation=True), last_event
       )
@@ -1348,3 +1355,19 @@ class LlmAgent(BaseAgent, abc.ABC):
 
 
 Agent: TypeAlias = LlmAgent
+
+if not TYPE_CHECKING:
+  __getattr__, __dir__ = _lazy.accessors(
+      globals(),
+      {
+          'AutoFlow': 'google.adk.flows.llm_flows.auto_flow',
+          'BaseLlmFlow': 'google.adk.flows.llm_flows.base_llm_flow',
+          'SingleFlow': 'google.adk.flows.llm_flows.single_flow',
+      },
+  )
+
+
+def _flow_class(name: str) -> type[BaseLlmFlow]:
+  """Returns this module's `name` attribute, so a patched flow class is used."""
+  flow: type[BaseLlmFlow] = getattr(sys.modules[__name__], name)
+  return flow

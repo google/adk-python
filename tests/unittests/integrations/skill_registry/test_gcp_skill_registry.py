@@ -166,8 +166,8 @@ async def test_search_skills_success():
   }
 
   with mock.patch(
-      "httpx.AsyncClient.get", return_value=mock_response
-  ) as mock_get_called:
+      "httpx.AsyncClient.post", return_value=mock_response
+  ) as mock_post_called:
     results = await registry.search_skills(query="query")
 
   assert len(results) == 2
@@ -176,6 +176,57 @@ async def test_search_skills_success():
   assert results[1].name == "skill2"
   assert results[1].description == "Description 2"
 
+  mock_post_called.assert_called_once_with(
+      "https://agentregistry.googleapis.com/v1alpha/projects/test-project/locations/us-central1/skills:search",
+      headers=merge_tracking_headers({
+          "Authorization": "Bearer fake-token",
+          "Content-Type": "application/json",
+          "x-goog-user-project": "test-project",
+      }),
+      params=None,
+      json={"search_string": "query"},
+  )
+
+
+@pytest.mark.parametrize("status_code", [404, 405])
+@pytest.mark.asyncio
+async def test_search_skills_fallback_to_get_on_status_error(status_code):
+  """Verifies that search_skills falls back to GET if POST returns 404 or 405."""
+  registry = gcp_skill_registry.GCPSkillRegistry()
+
+  mock_post_response = mock.MagicMock(spec=httpx.Response)
+  mock_post_response.status_code = status_code
+  mock_post_response.text = f"HTTP {status_code}"
+  mock_post_error = httpx.HTTPStatusError(
+      message=f"Error {status_code}",
+      request=mock.MagicMock(),
+      response=mock_post_response,
+  )
+  mock_post_response.raise_for_status.side_effect = mock_post_error
+
+  mock_get_response = mock.MagicMock(spec=httpx.Response)
+  mock_get_response.status_code = 200
+  mock_get_response.raise_for_status.return_value = None
+  mock_get_response.json.return_value = {
+      "skills": [{
+          "name": (
+              "projects/test-project/locations/us-central1/skills/skill-fallback"
+          ),
+          "description": "Fallback Description",
+      }]
+  }
+
+  with (
+      mock.patch("httpx.AsyncClient.post", return_value=mock_post_response),
+      mock.patch(
+          "httpx.AsyncClient.get", return_value=mock_get_response
+      ) as mock_get_called,
+  ):
+    results = await registry.search_skills(query="query")
+
+  assert len(results) == 1
+  assert results[0].name == "skill-fallback"
+  assert results[0].description == "Fallback Description"
   mock_get_called.assert_called_once_with(
       "https://agentregistry.googleapis.com/v1alpha/projects/test-project/locations/us-central1/skills:search",
       headers=merge_tracking_headers({
@@ -230,7 +281,7 @@ async def test_search_skills_skips_entry_failing_validation(
       ]
   }
 
-  with mock.patch("httpx.AsyncClient.get", return_value=mock_response):
+  with mock.patch("httpx.AsyncClient.post", return_value=mock_response):
     with caplog.at_level(logging.WARNING, logger="google_adk"):
       results = await registry.search_skills(query="query")
 
@@ -263,7 +314,7 @@ async def test_search_skills_accepts_dotted_registry_id():
       }]
   }
 
-  with mock.patch("httpx.AsyncClient.get", return_value=mock_response):
+  with mock.patch("httpx.AsyncClient.post", return_value=mock_response):
     results = await registry.search_skills(query="query")
 
   assert len(results) == 1
@@ -297,7 +348,7 @@ async def test_search_skills_skips_entry_whose_name_is_not_a_string(
       ]
   }
 
-  with mock.patch("httpx.AsyncClient.get", return_value=mock_response):
+  with mock.patch("httpx.AsyncClient.post", return_value=mock_response):
     with caplog.at_level(logging.WARNING, logger="google_adk"):
       results = await registry.search_skills(query="query")
 
@@ -617,18 +668,19 @@ async def test_use_custom_credentials():
   mock_response.json.return_value = {"skills": []}
 
   with mock.patch(
-      "httpx.AsyncClient.get", return_value=mock_response
-  ) as mock_get_called:
+      "httpx.AsyncClient.post", return_value=mock_response
+  ) as mock_post_called:
     await registry.search_skills(query="query")
 
-  mock_get_called.assert_called_once_with(
+  mock_post_called.assert_called_once_with(
       "https://agentregistry.googleapis.com/v1alpha/projects/test-project/locations/us-central1/skills:search",
       headers=merge_tracking_headers({
           "Authorization": "Bearer custom-token",
           "Content-Type": "application/json",
           "x-goog-user-project": "custom-quota-project",
       }),
-      params={"search_string": "query"},
+      params=None,
+      json={"search_string": "query"},
   )
 
 
@@ -649,7 +701,7 @@ async def test_search_skills_result_passes_frontmatter_validation():
       }]
   }
 
-  with mock.patch("httpx.AsyncClient.get", return_value=mock_response):
+  with mock.patch("httpx.AsyncClient.post", return_value=mock_response):
     results = await registry.search_skills(query="query")
 
   assert len(results) == 1
@@ -753,3 +805,65 @@ async def test_get_skill_drops_goog_headers_on_redirect():
 
   skill = await registry.get_skill(name="my-skill")
   assert skill.frontmatter.name == "my-skill"
+
+
+@pytest.mark.asyncio
+async def test_make_request_method_handling():
+  """Verifies HTTP method handling and that json body is not dropped."""
+  registry = gcp_skill_registry.GCPSkillRegistry()
+  mock_client = mock.AsyncMock(spec=httpx.AsyncClient)
+  mock_response = mock.MagicMock(spec=httpx.Response)
+  mock_response.status_code = 200
+  mock_response.raise_for_status.return_value = None
+  mock_client.get.return_value = mock_response
+  mock_client.post.return_value = mock_response
+  mock_client.request.return_value = mock_response
+
+  with mock.patch.object(registry, "_get_headers", return_value={}):
+    # GET succeeds without json
+    await registry._make_request(
+        mock_client, "https://example.com/get", method="GET"
+    )
+    mock_client.get.assert_called_once_with(
+        "https://example.com/get", headers={}, params=None
+    )
+
+    # GET raises ValueError if json body is provided
+    with pytest.raises(
+        ValueError, match="GET requests do not support a JSON body"
+    ):
+      await registry._make_request(
+          mock_client,
+          "https://example.com/get",
+          method="GET",
+          json={"key": "val"},
+      )
+
+    # POST routes to client.post with json body
+    await registry._make_request(
+        mock_client,
+        "https://example.com/post",
+        method="POST",
+        json={"foo": "bar"},
+    )
+    mock_client.post.assert_called_once_with(
+        "https://example.com/post",
+        headers={},
+        params=None,
+        json={"foo": "bar"},
+    )
+
+    # Generic method (e.g. PUT) routes to client.request with json body
+    await registry._make_request(
+        mock_client,
+        "https://example.com/put",
+        method="PUT",
+        json={"bar": "baz"},
+    )
+    mock_client.request.assert_called_once_with(
+        "PUT",
+        "https://example.com/put",
+        headers={},
+        params=None,
+        json={"bar": "baz"},
+    )

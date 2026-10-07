@@ -135,7 +135,7 @@ class MetricsCollector:
     if not os.path.exists(_constants.LOCK_FILE):
       return False
     try:
-      with open(_constants.LOCK_FILE, "r") as f:
+      with open(_constants.LOCK_FILE, "r", encoding="utf-8") as f:
         lock_time = float(f.read().strip())
         # If current time is less than the lock endpoint, we are rate limited.
         return time.time() < lock_time

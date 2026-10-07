@@ -242,8 +242,13 @@ def _render_dockerfile(
   start_command_args.append('/app/agents')
 
   start_command = _to_exec_form('CMD', start_command_args)
+  extras = ['a2a']
+  if trace_to_cloud_option or otel_to_cloud_option:
+    # gcp has the exporters both flags import, otel-gcp the instrumentation.
+    extras += ['gcp', 'otel-gcp']
   install_adk = _to_exec_form(
-      'RUN', ['pip', 'install', f'google-adk[a2a]=={adk_version}']
+      'RUN',
+      ['pip', 'install', f'google-adk[{",".join(extras)}]=={adk_version}'],
   )
 
   return _DOCKERFILE_TEMPLATE.format(

@@ -14,7 +14,8 @@
 
 """Development server with all ADK endpoints.
 
-This module provides the DevServer class which extends ApiServer with development-only endpoints.
+This module provides the DevServer class which extends ApiServer with
+development-only endpoints.
 All production endpoints are inherited from ApiServer.
 All dev-only endpoints (eval, debug, graph, test management, deploy) are added by DevServer.
 
@@ -26,6 +27,11 @@ dev-only endpoints additionally read and write agent files on disk and run
 evaluation and debugging code. This server is intended solely for local
 development on a trusted machine. Never expose it to an untrusted or public
 network, and never use it for a production or multi-user deployment.
+
+Mutating ``/dev`` endpoints (and the Agent Builder YAML readback) additionally
+reject callers that are not on the loopback interface, so that binding the
+server to a routable address does not by itself hand out write or code-execution
+access over the network. See ``_require_local_agent_builder_client``.
 """
 
 from __future__ import annotations
@@ -47,6 +53,7 @@ from typing import Iterator
 from typing import Optional
 
 import anyio
+from fastapi import Depends
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Request as FastAPIRequest
@@ -83,6 +90,7 @@ from ..evaluation.eval_set import EvalSet
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
 from ._dev_deploy import register_dev_deploy_endpoints
+from .api_server import _is_local_client
 from .api_server import ApiServer
 
 NESTED_APP_SEPARATOR = "."
@@ -102,6 +110,48 @@ _IS_WINDOWS = os.name == "nt"
 
 TAG_DEBUG = "Debug"
 TAG_EVALUATION = "Evaluation"
+
+_ALLOW_REMOTE_AGENT_BUILDER_ENV = "ADK_ALLOW_REMOTE_AGENT_BUILDER"
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes"})
+
+
+def _require_local_agent_builder_client(request: FastAPIRequest) -> None:
+  """Rejects mutating ``/dev`` and Agent Builder requests from remote callers.
+
+  Mutating ``/dev`` endpoints (and the Agent Builder YAML readback) read and
+  write files under ``agents_dir`` or spawn test, evaluation and deployment
+  runs, and like every other endpoint on this server, are unauthenticated. The
+  origin check in ``_OriginCheckMiddleware`` only stops a browser from being
+  used as a confused deputy; it lets a request through when ``Origin`` is
+  absent, so a non-browser client skips it just by omitting the header.
+  Restricting these endpoints to loopback peers is what keeps
+  ``adk web --host 0.0.0.0``, a forwarded container port or a tunnel from
+  handing anyone on the network access to them.
+
+  Args:
+    request: The incoming request.
+
+  Raises:
+    HTTPException: 403, if the caller is not on the loopback interface and
+      ``ADK_ALLOW_REMOTE_AGENT_BUILDER`` is not set.
+  """
+  if _is_local_client(request.scope):
+    return
+  if (
+      os.environ.get(_ALLOW_REMOTE_AGENT_BUILDER_ENV, "").strip().lower()
+      in _TRUTHY_ENV_VALUES
+  ):
+    return
+  raise HTTPException(
+      status_code=403,
+      detail=(
+          "This /dev endpoint only accepts requests from the machine running"
+          " the server. Set"
+          f" {_ALLOW_REMOTE_AGENT_BUILDER_ENV}=1 to allow remote access, and"
+          " only on a network you trust: these endpoints are unauthenticated"
+          " and write agent files to disk."
+      ),
+  )
 
 
 class CreateTestRequest(common.BaseModel):
@@ -750,7 +800,9 @@ class DevServer(ApiServer):
       return True
 
     @app.post(
-        "/dev/apps/{app_name}/builder/save", response_model_exclude_none=True
+        "/dev/apps/{app_name}/builder/save",
+        response_model_exclude_none=True,
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def builder_build(
         app_name: str, files: list[UploadFile], tmp: Optional[bool] = False
@@ -802,7 +854,9 @@ class DevServer(ApiServer):
         return False
 
     @app.post(
-        "/dev/apps/{app_name}/builder/cancel", response_model_exclude_none=True
+        "/dev/apps/{app_name}/builder/cancel",
+        response_model_exclude_none=True,
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def builder_cancel(app_name: str) -> bool:
       return cleanup_tmp(app_name)
@@ -811,6 +865,7 @@ class DevServer(ApiServer):
         "/dev/apps/{app_name}/builder",
         response_model_exclude_none=True,
         response_class=PlainTextResponse,
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def get_agent_builder(
         app_name: str,
@@ -967,7 +1022,10 @@ class DevServer(ApiServer):
       test_files = glob.glob(pattern)
       return sorted([os.path.basename(f) for f in test_files])
 
-    @app.post("/dev/apps/{app_name}/tests/rebuild")
+    @app.post(
+        "/dev/apps/{app_name}/tests/rebuild",
+        dependencies=[Depends(_require_local_agent_builder_client)],
+    )
     async def rebuild_app_tests(
         app_name: str, test_name: Optional[str] = None
     ) -> dict[str, str]:
@@ -982,7 +1040,10 @@ class DevServer(ApiServer):
       await asyncio.to_thread(rebuild_tests, path)
       return {"status": "success"}
 
-    @app.post("/dev/apps/{app_name}/tests/run")
+    @app.post(
+        "/dev/apps/{app_name}/tests/run",
+        dependencies=[Depends(_require_local_agent_builder_client)],
+    )
     async def run_app_tests(
         app_name: str, test_name: Optional[str] = None
     ) -> StreamingResponse:
@@ -993,7 +1054,10 @@ class DevServer(ApiServer):
           media_type="text/plain",
       )
 
-    @app.put("/dev/apps/{app_name}/tests/{test_name}")
+    @app.put(
+        "/dev/apps/{app_name}/tests/{test_name}",
+        dependencies=[Depends(_require_local_agent_builder_client)],
+    )
     async def create_test(
         app_name: str, test_name: str, req: CreateTestRequest
     ) -> dict[str, str]:
@@ -1011,7 +1075,10 @@ class DevServer(ApiServer):
 
       return {"status": "success", "file": os.path.basename(test_file_path)}
 
-    @app.delete("/dev/apps/{app_name}/tests/{test_name}")
+    @app.delete(
+        "/dev/apps/{app_name}/tests/{test_name}",
+        dependencies=[Depends(_require_local_agent_builder_client)],
+    )
     async def delete_test(app_name: str, test_name: str) -> dict[str, str]:
       """Deletes a specific test file."""
       test_file_path = self._get_test_file_path(
@@ -1043,6 +1110,7 @@ class DevServer(ApiServer):
         "/dev/apps/{app_name}/eval-sets",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def create_eval_set(
         app_name: str, create_eval_set_request: CreateEvalSetRequest
@@ -1063,6 +1131,7 @@ class DevServer(ApiServer):
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     @deprecated(
         "Please use create_eval_set instead. This will be removed in future"
@@ -1099,6 +1168,7 @@ class DevServer(ApiServer):
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     @deprecated(
         "Please use run_eval instead. This will be removed in future releases."
@@ -1175,11 +1245,13 @@ class DevServer(ApiServer):
         "/dev/apps/{app_name}/eval-sets/{eval_set_id}/add-session",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     @app.post(
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}/add_session",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def add_session_to_eval_set(
         app_name: str, eval_set_id: str, req: AddSessionToEvalSetRequest
@@ -1275,11 +1347,13 @@ class DevServer(ApiServer):
         "/dev/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     @app.put(
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def update_eval(
         app_name: str,
@@ -1311,10 +1385,12 @@ class DevServer(ApiServer):
     @app.delete(
         "/dev/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     @app.delete(
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def delete_eval(
         app_name: str, eval_set_id: str, eval_case_id: str
@@ -1330,6 +1406,7 @@ class DevServer(ApiServer):
         "/dev/apps/{app_name}/eval-sets/{eval_set_id}/run",
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
+        dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def run_eval(
         app_name: str, eval_set_id: str, req: RunEvalRequest
@@ -1580,7 +1657,11 @@ class DevServer(ApiServer):
       else:
         return {}
 
-    register_dev_deploy_endpoints(app, get_agent_dir=self._get_agent_dir)
+    register_dev_deploy_endpoints(
+        app,
+        get_agent_dir=self._get_agent_dir,
+        dependencies=[Depends(_require_local_agent_builder_client)],
+    )
 
   def _navigate_to_node(self, app_info: dict, node_path: str) -> dict | None:
     """Navigate to a specific node in the agent hierarchy.

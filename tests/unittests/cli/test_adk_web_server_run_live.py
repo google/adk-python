@@ -53,7 +53,6 @@ class _CapturingRunner:
   async def run_live(
       self,
       *,
-      session,
       live_request_queue,
       run_config=None,
       **unused_kwargs,

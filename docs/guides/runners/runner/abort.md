@@ -8,7 +8,7 @@ Long-running agent steps, multi-turn tool loops, and parallel workflow graphs co
 
 Python ADK addresses this by integrating standard `asyncio.Event` primitives into `Runner.run_async`. Callers pass an `abort_signal` into the runner. When the signal trips, the runner terminates iteration cleanly, active nodes and tools observe the cancellation, and the async generator finishes without raising unhandled exceptions into caller code.
 
-ADK's built-in API server (`adk api_server`) and development UI (`adk web`) automatically wire this mechanism into the `/run_sse` endpoint. When an HTTP client disconnects, closes the browser tab, or aborts the Server-Sent Events stream, the server detects the disconnection and triggers the `abort_signal` automatically—halting the active agent execution and sealing any pending tool calls without requiring custom cancellation code.
+ADK's built-in API server (`adk api_server`) and development UI (`adk web`) automatically wire this mechanism into the `/run` and `/run_sse` endpoints. When an HTTP client disconnects, closes the browser tab, or aborts the Server-Sent Events stream, the server detects the disconnection and triggers the `abort_signal` automatically—halting the active agent execution and sealing any pending tool calls without requiring custom cancellation code.
 
 ## Get started
 

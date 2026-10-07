@@ -29,8 +29,7 @@ from google.adk import Agent
 import requests
 
 # LABEL_TO_OWNER (component -> owner GitHub login; the owner becomes the PR's
-# assignee) is imported from component_owners and shared verbatim with
-# adk_triaging_agent, so the two can't drift. Keep it in sync with OWNERS.
+# assignee) is imported from component_owners. Keep it in sync with OWNERS.
 # This agent only reads the map to pick an assignee; the component names are
 # never written to the PR as labels.
 

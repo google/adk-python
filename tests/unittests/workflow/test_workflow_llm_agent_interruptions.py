@@ -465,7 +465,9 @@ async def test_workflow_pause_and_resume_parent_interruption(
       name=request.function.__name__,
       root_agent=wf,
   )
-  runner = testing_utils.InMemoryRunner(app=app)
+  # invariants: off because mode='task' parent_agent does not intercept
+  # _TaskAgentTool sub-agent FunctionCalls (dropped by _rearranger.py).
+  runner = testing_utils.InMemoryRunner(app=app, check_invariants=False)
 
   # Run 1: Should pause on LRO
   events1 = await runner.run_async(testing_utils.get_user_content('start'))

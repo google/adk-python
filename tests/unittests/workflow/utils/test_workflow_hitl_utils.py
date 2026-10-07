@@ -15,7 +15,13 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock
+from urllib.parse import parse_qs
+from urllib.parse import urlparse
 
+from authlib.oauth2.rfc6749 import OAuth2Token
+from authlib.oauth2.rfc7636 import create_s256_code_challenge
+from google.adk.auth.auth_handler import AuthHandler
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.request_input import RequestInput
@@ -230,6 +236,14 @@ class TestCreateAuthRequestEvent:
     assert oauth2["clientId"] == "client-id"
     assert "client-secret" not in json.dumps(fc.args)
 
+  def test_configured_secrets_are_not_handed_to_the_caller(self):
+    """The node's configured API key is not handed to the caller."""
+    event = create_auth_request_event(
+        _api_key_auth_config(), "auth-id-1", _empty_state()
+    )
+    fc = event.content.parts[0].function_call
+    assert "placeholder" not in json.dumps(fc.args)
+
 
 # --- process_auth_resume / has_auth_credential ---
 
@@ -331,6 +345,24 @@ class TestProcessAuthResume:
     assert "temp:node-cred" in state
     assert "temp:unrelated-cred" not in state
     assert has_auth_credential(auth_config, state) is True
+
+  @pytest.mark.asyncio
+  async def test_malformed_response_raises_workflow_data_error(self):
+    """A malformed auth resume payload raises WorkflowDataError."""
+    from google.adk.workflow._errors import WorkflowDataError
+
+    auth_config = _oauth_auth_config()
+    state = _empty_state()
+
+    with pytest.raises(WorkflowDataError):
+      await process_auth_resume(
+          "not-a-valid-oauth-credential",
+          auth_config,
+          state,
+          "auth-id-1",
+      )
+
+    assert has_auth_credential(auth_config, state) is False
 
 
 def _oauth_auth_config(token_url: str = "https://provider.example.com/token"):
@@ -520,4 +552,50 @@ class TestHasAuthCredential:
     assert has_auth_credential(other_config, state) is False
 
 
-#
+@pytest.mark.asyncio
+@pytest.mark.parametrize("serialize_state_to_json", [False, True])
+async def test_public_client_pkce_code_verifier_persisted_across_resume(
+    monkeypatch,
+    serialize_state_to_json: bool,
+):
+  """Public client PKCE code_verifier is preserved across request and resume."""
+  auth_config = _oauth_auth_config()
+  auth_config.raw_auth_credential.oauth2.client_secret = None
+  state = _empty_state()
+  event = create_auth_request_event(auth_config, "auth-id-1", state)
+
+  oauth2_args = event.content.parts[0].function_call.args["authConfig"][
+      "exchangedAuthCredential"
+  ]["oauth2"]
+  assert "codeVerifier" not in oauth2_args
+  auth_uri = oauth2_args["authUri"]
+  code_challenge = parse_qs(urlparse(auth_uri).query)["code_challenge"][0]
+
+  if serialize_state_to_json:
+    state["adk_oauth_credential:auth-id-1"] = state[
+        "adk_oauth_credential:auth-id-1"
+    ].model_dump(mode="json", by_alias=True)
+
+  mock_client = MagicMock()
+  mock_client.fetch_token.return_value = OAuth2Token(
+      {"access_token": "public_access_token"}
+  )
+  monkeypatch.setattr(
+      "google.adk.auth.oauth2_credential_util.OAuth2Session",
+      lambda *args, **kwargs: mock_client,
+  )
+
+  await process_auth_resume(
+      _oauth_resume_response(auth_config, _requested_state(event)),
+      auth_config,
+      state,
+      "auth-id-1",
+  )
+  cred = AuthHandler(auth_config).get_auth_response(state)
+
+  assert cred is not None
+  assert cred.oauth2.access_token == "public_access_token"
+  assert state["adk_oauth_credential:auth-id-1"] is None
+  verifier = mock_client.fetch_token.call_args.kwargs.get("code_verifier")
+  assert verifier is not None
+  assert create_s256_code_challenge(verifier) == code_challenge

@@ -34,7 +34,6 @@ from typing import TYPE_CHECKING
 import warnings
 
 from google.genai import types
-from opentelemetry import context
 from typing_extensions import Self
 
 from .agents.base_agent import BaseAgent
@@ -56,9 +55,6 @@ from .events._internal_metadata import without_internal_metadata
 from .events._rewind_events import _apply_rewinds
 from .events.event import Event
 from .events.event_actions import EventActions
-from .flows.llm_flows.context import _contents as contents
-from .flows.llm_flows.tools._functions import find_matching_function_call as _find_matching_function_call
-from .live import _runner_utils as _live_runner_utils
 from .live.live_request_queue import LiveRequestQueue
 from .memory.base_memory_service import BaseMemoryService
 from .platform.thread import create_thread
@@ -67,9 +63,8 @@ from .plugins.plugin_manager import PluginManager
 from .sessions.base_session_service import BaseSessionService
 from .sessions.base_session_service import GetSessionConfig
 from .sessions.session import Session
-from .telemetry import _instrumentation
-from .telemetry.tracing import tracer
 from .tools.base_toolset import BaseToolset
+from .utils import _lazy
 from .utils._debug_output import print_event
 from .utils._runner_utils import _notify_run_error
 from .utils._runner_utils import _with_caller_context
@@ -78,14 +73,12 @@ from .workflow._base_node import BaseNode
 if TYPE_CHECKING:
   from .apps.app import App
   from .apps.app import ResumabilityConfig
+  from .telemetry.tracing import tracer as tracer
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 _EventQueueItem = tuple[object, asyncio.Event | None]
 
-# Silence unused warning.
-# tracer is imported for backwards compatibility, to avoid breaking change in the API.
-_ = tracer
 
 # App names already told that agent transfer runs without a context cache.
 _UNCACHED_TRANSFER_APPS: set[str] = set()
@@ -181,6 +174,9 @@ def _session_for_routing(
   """
   if not _get_function_responses_from_content(new_message):
     return session
+  filtered_events = _apply_rewinds(session.events)
+  if filtered_events and _is_abort_event(filtered_events[-1]):
+    return session
   return session.model_copy(
       update={
           'events': [
@@ -216,7 +212,9 @@ def _can_transfer_between_agents(root: Any) -> bool:
 
 def _stamp_event_branch_context(ic: InvocationContext, event: Event) -> None:
   """Stamps the event with the branch and isolation scope of its matching function call."""
-  if function_call := _find_matching_function_call(
+  from .flows.llm_flows.tools._functions import find_matching_function_call
+
+  if function_call := find_matching_function_call(
       ic._get_events(current_invocation=True), event
   ):
     event.branch = function_call.branch
@@ -619,6 +617,8 @@ class Runner:
       run_config: Optional[RunConfig] = None,
   ) -> AsyncGenerator[Event, None]:
     """Run a non-agent BaseNode in live mode."""
+    from .live import _runner_utils as _live_runner_utils
+
     async with aclosing(
         _live_runner_utils.run_node_live(
             self,
@@ -934,7 +934,6 @@ class Runner:
       self,
       *,
       session: Session,
-      skip_token_compaction: bool,
   ) -> None:
     """Run best-effort derived compaction after a completed invocation.
 
@@ -955,7 +954,6 @@ class Runner:
               self.app,
               session,
               self.session_service,
-              skip_token_compaction=skip_token_compaction,
           )
       ) as compaction_events:
         async for compaction_event in compaction_events:
@@ -1190,52 +1188,27 @@ class Runner:
     from .agents.llm_agent import LlmAgent
     from .workflow._base_node import BaseNode
 
-    # Optional dependency: RemoteA2aAgent is only available if a2a is installed.
-    remote_a2a_agent_type: Any = None
-    try:
-      from .agents.remote_a2a_agent import RemoteA2aAgent  # pylint: disable=g-import-not-at-top
-
-      remote_a2a_agent_type = RemoteA2aAgent
-    except ImportError:
-      pass
-
     if isinstance(self.agent, LlmAgent):
-      if self.agent.mode is None:
-        # LlmAgent as root agent defaults to chat mode.
-        self.agent.mode = 'chat'
+      # LlmAgent as root agent defaults to chat mode without mutating the
+      # shared agent instance in place.
+      effective_mode = self.agent.mode or 'chat'
 
       # A root LlmAgent runs in chat mode (the default) or task mode. Task mode
       # is fully supported for any caller: the agent runs to completion via the
       # finish_task tool and its result is promoted onto the terminal event's
       # output field (an A2A server turns that into an artifact; a direct caller
       # reads it off the event stream).
-      if self.agent.mode in ('chat', 'task'):
+      if effective_mode in ('chat', 'task'):
         session = await self._get_or_create_session(
             user_id=user_id,
             session_id=session_id,
             get_session_config=run_config.get_session_config,
         )
-        if self.agent.mode == 'chat':
-          # when the chat coordinator has task-mode sub-agents,
-          # the wrapper handles delegation via ctx.run_node. Don't let
-          # the legacy sub-agent picker bypass the coordinator on resume.
-          remote_a2a_agent_class = (
-              (remote_a2a_agent_type,)
-              if remote_a2a_agent_type is not None
-              else ()
+        agent_to_run: BaseAgent
+        if self._uses_legacy_sub_agent_picker():
+          agent_to_run = self._find_agent_to_run(
+              _session_for_routing(session, new_message), self.agent
           )
-          has_task_subagent = any(
-              isinstance(sa, (LlmAgent,) + remote_a2a_agent_class)
-              and getattr(sa, 'mode', None) == 'task'
-              for sa in self.agent.sub_agents or []
-          )
-          agent_to_run: BaseAgent
-          if has_task_subagent:
-            agent_to_run = self.agent
-          else:
-            agent_to_run = self._find_agent_to_run(
-                _session_for_routing(session, new_message), self.agent
-            )
         else:
           agent_to_run = self.agent
 
@@ -1244,7 +1217,7 @@ class Runner:
       else:
         raise ValueError(
             "LlmAgent as root agent must have mode='chat' or 'task', but got"
-            f" mode='{self.agent.mode}'."
+            f" mode='{effective_mode}'."
         )
       async with aclosing(
           self._run_node_async(
@@ -1291,6 +1264,10 @@ class Runner:
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
+      from opentelemetry import context
+
+      from .telemetry import _instrumentation
+
       caller_ctx_trace = context.get_current()
       with _instrumentation.record_invocation(
           entrypoint_node=root_agent,
@@ -1402,9 +1379,6 @@ class Runner:
           # the end of an invocation.)
           await self._run_post_invocation_compaction(
               session=invocation_context.session,
-              skip_token_compaction=(
-                  invocation_context.token_compaction_checked
-              ),
           )
 
     # For BaseAgent root agents running via _run_with_trace, events flow
@@ -1480,13 +1454,14 @@ class Runner:
     # transcription events should not be appended.
     # Function call and function response events should be appended.
     # Other control events should be appended.
-    if is_live_call and contents._is_live_model_media_event_with_inline_data(
-        event
-    ):
-      # We don't append live model media events with inline data to avoid
-      # storing large blobs in the session. However, events with file_data
-      # (references to artifacts) should be appended.
-      return False
+    if is_live_call:
+      from .flows.llm_flows.context import _contents as contents
+
+      if contents._is_live_model_media_event_with_inline_data(event):
+        # We don't append live model media events with inline data to avoid
+        # storing large blobs in the session. However, events with file_data
+        # (references to artifacts) should be appended.
+        return False
     return True
 
   def _get_output_event(
@@ -1645,7 +1620,9 @@ class Runner:
       await _notify_run_error(plugin_manager, invocation_context, e)
       raise
     except asyncio.CancelledError as e:
-      if e.args and e.args[0] == _CALLER_CLOSED_EARLY_MSG:
+      if (
+          e.args and e.args[0] == _CALLER_CLOSED_EARLY_MSG
+      ) or invocation_context.is_aborted:
         closing_early = True
       else:
         run_error = e
@@ -1808,6 +1785,8 @@ class Runner:
         Either `session` or both `user_id` and `session_id` must be provided.
     """
 
+    from .live import _runner_utils as _live_runner_utils
+
     async with aclosing(
         _live_runner_utils.run_live(
             self,
@@ -1820,6 +1799,28 @@ class Runner:
     ) as agen:
       async for event in agen:
         yield event
+
+  def _uses_legacy_sub_agent_picker(self) -> bool:
+    """Returns whether chat-mode root LlmAgent uses the legacy sub-agent picker."""
+    from .agents.llm_agent import LlmAgent  # pylint: disable=g-import-not-at-top
+
+    if (
+        not isinstance(self.agent, LlmAgent)
+        or (self.agent.mode or 'chat') != 'chat'
+    ):
+      return False
+    remote_a2a_agent_class: tuple[Any, ...] = ()
+    try:
+      from .agents.remote_a2a_agent import RemoteA2aAgent  # pylint: disable=g-import-not-at-top
+
+      remote_a2a_agent_class = (RemoteA2aAgent,)
+    except ImportError:
+      pass
+    return not any(
+        isinstance(sa, (LlmAgent,) + remote_a2a_agent_class)
+        and getattr(sa, 'mode', None) == 'task'
+        for sa in self.agent.sub_agents or []
+    )
 
   def _find_agent_to_run(
       self, session: Session, root_agent: BaseAgent
@@ -2411,3 +2412,9 @@ class InMemoryRunner(Runner):
         memory_service=InMemoryMemoryService(),
         plugin_close_timeout=plugin_close_timeout,
     )
+
+
+if not TYPE_CHECKING:
+  __getattr__, __dir__ = _lazy.accessors(
+      globals(), {'tracer': 'google.adk.telemetry.tracing'}
+  )
