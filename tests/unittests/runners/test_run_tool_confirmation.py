@@ -1120,3 +1120,69 @@ class TestHITLConfirmationWithUngatedParallelSibling:
         gated_tool.name: expected_gated_response,
         sibling_tool.name: {"result": "sibling ran"},
     }]
+
+
+class TestHITLConfirmationReplay:
+  """Tests delivering the same confirmation response more than once."""
+
+  @pytest.mark.parametrize("confirmed", [True, False])
+  @pytest.mark.asyncio
+  async def test_repeated_confirmation_does_not_rerun_tool(
+      self, confirmed: bool
+  ):
+    """A confirmation already acted on does not run the tool again.
+
+    The same response delivered again (a client retry, a resubmitted form)
+    becomes the latest user event, so the tool result from the first resume
+    sits before it. The call is not executed or rejected a second time; it
+    asks for a fresh confirmation instead.
+    """
+    tool_calls = []
+
+    def _transfer(tool_context: ToolContext) -> dict[str, str]:
+      tool_calls.append(tool_context.function_call_id)
+      return {"result": "transferred"}
+
+    tool = FunctionTool(func=_transfer, require_confirmation=True)
+    mock_model = testing_utils.MockModel(
+        responses=[
+            _create_llm_response_from_tools([tool]),
+            _create_llm_response_from_text("response after first resume"),
+            _create_llm_response_from_text("response after replay"),
+        ]
+    )
+    agent = LlmAgent(name="root_agent", model=mock_model, tools=[tool])
+    # The repeated confirmation response is itself a second response to the
+    # same function call, which the invariant checker rejects by design.
+    runner = testing_utils.InMemoryRunner(
+        root_agent=agent, check_invariants=False
+    )
+
+    events = await runner.run_async(
+        testing_utils.UserContent("test user query")
+    )
+    user_confirmation = testing_utils.UserContent(
+        Part(
+            function_response=FunctionResponse(
+                id=events[1].content.parts[0].function_call.id,
+                name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                response={"confirmed": confirmed},
+            )
+        )
+    )
+    await runner.run_async(user_confirmation)
+    assert len(tool_calls) == (1 if confirmed else 0)
+
+    events = await runner.run_async(user_confirmation)
+
+    assert len(tool_calls) == (1 if confirmed else 0)
+    tool_results = [
+        fr.response
+        for event in events
+        for fr in event.get_function_responses()
+        if fr.name == tool.name
+    ]
+    assert tool_results == [TOOL_CALL_ERROR_RESPONSE]
+    assert [
+        fc.name for event in events for fc in event.get_function_calls()
+    ] == [REQUEST_CONFIRMATION_FUNCTION_CALL_NAME]

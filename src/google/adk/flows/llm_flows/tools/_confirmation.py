@@ -306,22 +306,42 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     # the session and the toolset have moved on since the approval, so the
     # strict checks in `_resolve_confirmation_targets` can now legitimately fail
     # and abort the invocation.
+    #
+    # The same confirmation response can also arrive again in a later user
+    # event (a client retry, a resubmitted form). The tool result from the
+    # first resume then sits before the last user event, so look for results
+    # after the first user event that answered each confirmation instead.
+    # The "requires confirmation" placeholder result is emitted before that
+    # answer, so it does not count.
     confirmation_to_original_fc_id = _map_confirmation_to_original_fc_ids(
         events, set(confirmations_by_fc_id.keys())
     )
-    responded_fc_ids: set[str] = set()
-    for event in reversed(events):
-      if event.author == "user":
-        break
+    first_answer_index: dict[str, int] = {}
+    last_response_index: dict[str, int] = {}
+    for i, event in enumerate(events):
       for function_response in event.get_function_responses():
-        if function_response.id:
-          responded_fc_ids.add(function_response.id)
+        if not function_response.id:
+          continue
+        if event.author == "user":
+          if function_response.id in confirmations_by_fc_id:
+            first_answer_index.setdefault(function_response.id, i)
+        else:
+          last_response_index[function_response.id] = i
+
+    consumed_confirmation_fc_ids: set[str] = set()
+    for confirmation_fc_id in confirmations_by_fc_id:
+      original_fc_id = confirmation_to_original_fc_id.get(confirmation_fc_id)
+      if (
+          original_fc_id
+          and last_response_index.get(original_fc_id, -1)
+          > first_answer_index[confirmation_fc_id]
+      ):
+        consumed_confirmation_fc_ids.add(confirmation_fc_id)
 
     confirmations_by_fc_id = {
         confirmation_fc_id: confirmation
         for confirmation_fc_id, confirmation in confirmations_by_fc_id.items()
-        if confirmation_to_original_fc_id.get(confirmation_fc_id)
-        not in responded_fc_ids
+        if confirmation_fc_id not in consumed_confirmation_fc_ids
     }
 
     if not confirmations_by_fc_id:
