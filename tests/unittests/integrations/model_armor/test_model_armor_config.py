@@ -29,6 +29,13 @@ def test_defaults_to_blocking_on_failure():
   assert config.output_blocked_message
 
 
+def test_defaults_to_blocking_sensitive_data():
+  """De-identification is opt-in, so an SDP match blocks by default."""
+  config = ModelArmorConfig(prompt_template_name='test-prompt-template')
+
+  assert config.deidentify_sensitive_data is False
+
+
 def test_missing_both_templates_raises():
   """A config with neither template configured is rejected."""
   with pytest.raises(ValueError, match='At least one of'):

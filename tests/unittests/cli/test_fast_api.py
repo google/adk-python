@@ -1160,9 +1160,9 @@ def test_app_with_gemini_enterprise(
 
   with (
       patch("google.auth.default", return_value=(MagicMock(), "test-project")),
-      patch("vertexai.init", new_callable=MagicMock) as mock_vertexai_init,
       patch(
-          "vertexai.agent_engines.AdkApp", return_value=mock_adk_app_instance
+          "agentplatform.frameworks.AdkApp",
+          return_value=mock_adk_app_instance,
       ) as mock_adk_app_cls,
       patch("google.adk.agents.Agent", new_callable=MagicMock),
       patch(
@@ -1183,7 +1183,6 @@ def test_app_with_gemini_enterprise(
         mock_eval_set_results_manager,
         gemini_enterprise_app_name="gemini_app",
     )
-    client.mock_vertexai_init = mock_vertexai_init
     client.mock_adk_app_cls = mock_adk_app_cls
     client.mock_adk_app_instance = mock_adk_app_instance
     yield client
@@ -1220,9 +1219,9 @@ def test_app_with_gemini_enterprise_sync_stream(
 
   with (
       patch("google.auth.default", return_value=(MagicMock(), "test-project")),
-      patch("vertexai.init", new_callable=MagicMock),
       patch(
-          "vertexai.agent_engines.AdkApp", return_value=mock_adk_app_instance
+          "agentplatform.frameworks.AdkApp",
+          return_value=mock_adk_app_instance,
       ),
       patch("google.adk.agents.Agent", new_callable=MagicMock),
       patch(

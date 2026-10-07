@@ -145,7 +145,7 @@ def _metrics_flushing_dispatch(
   Collection has to happen while a request is in flight: see the module
   docstring of ``_agent_engine_metric_exporter`` for why. Traces and logs are
   not flushed here -- on Agent Engine the ``AdkApp`` in
-  ``vertexai.agent_engines`` already force-flushes them per request.
+  ``agentplatform.frameworks`` already force-flushes them per request.
   """
 
   async def dispatch(
