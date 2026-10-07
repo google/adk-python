@@ -3773,3 +3773,47 @@ async def test_append_event_applies_and_trims_temp_state_once(
     assert spy_trim.call_count == 1
   assert session.state.get('temp:scratch') == 'ephemeral'
   assert session.state.get('persisted') == 'val'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('light_copy', [False, True])
+@pytest.mark.parametrize('num_recent_events', [None, 0, 1, 2, 3])
+@pytest.mark.parametrize('after_timestamp', [10.0, 20.0, 40.0, 50.0])
+async def test_in_memory_time_filter_with_out_of_order_appends(
+    light_copy, num_recent_events, after_timestamp
+):
+  """Filter each event without changing append order or recent-event limits."""
+  override_feature_enabled(
+      FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, light_copy
+  )
+  try:
+    service = InMemorySessionService()
+    session = await service.create_session(app_name='app', user_id='user')
+    timestamps = [30.0, 10.0, 40.0]
+    for timestamp in timestamps:
+      await service.append_event(
+          session, Event(author='user', timestamp=timestamp)
+      )
+    selected = timestamps
+    if num_recent_events is not None:
+      selected = timestamps[-num_recent_events:] if num_recent_events else []
+    result = await service.get_session(
+        app_name='app',
+        user_id='user',
+        session_id=session.id,
+        config=GetSessionConfig(
+            after_timestamp=after_timestamp,
+            num_recent_events=num_recent_events,
+        ),
+    )
+    assert [event.timestamp for event in result.events] == [
+        timestamp for timestamp in selected if timestamp >= after_timestamp
+    ]
+    unfiltered = await service.get_session(
+        app_name='app', user_id='user', session_id=session.id
+    )
+    assert [event.timestamp for event in unfiltered.events] == timestamps
+  finally:
+    override_feature_enabled(
+        FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, False
+    )
