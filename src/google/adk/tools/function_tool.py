@@ -481,7 +481,6 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
         tool_name=self.name,
         node_input=args_to_call,
         tool_context=tool_context,
-        key_run_by_function_call=True,
     )
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:

@@ -174,28 +174,19 @@ async def _run_node_in_tool_context(
     tool_name: str,
     node_input: Any,
     tool_context: ToolContext,
-    key_run_by_function_call: bool = False,
 ) -> Any:
   """Executes a BaseNode within a ToolContext on an isolated tool branch.
 
-  Args:
-    node: The node to execute.
-    tool_name: The tool name, used as the branch segment.
-    node_input: The input passed to the node.
-    tool_context: The calling tool's context.
-    key_run_by_function_call: Whether to use the function call id as the
-      child's run_id, so repeated calls of the same tool get distinct node
-      paths and do not share resume state. Otherwise the scheduler assigns the
-      run_id.
+  The child run is keyed by the function call id, so repeated calls of the
+  same tool get distinct node paths and do not share resume state.
   """
   fc_id = tool_context.function_call_id
   base_branch = tool_context.branch
   segment = f'{tool_name}@{fc_id}' if fc_id else tool_name
   tool_branch = f'{base_branch}.{segment}' if base_branch else segment
   run_id = None
-  if key_run_by_function_call and (
-      tool_context._workflow_scheduler is None
-      or (fc_id and not fc_id.isdigit())
+  if tool_context._workflow_scheduler is None or (
+      fc_id and not fc_id.isdigit()
   ):
     # Under a workflow scheduler, numeric ids are reserved for auto-generated
     # run_ids, so a numeric fc_id falls back to auto-generation.

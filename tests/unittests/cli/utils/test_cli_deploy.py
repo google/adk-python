@@ -542,6 +542,127 @@ def test_to_gke_without_region_omits_location(
   assert "GOOGLE_CLOUD_LOCATION" not in yaml_content
 
 
+def test_to_gke_installs_telemetry_extras(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """The container must install the extras the telemetry flags need."""
+  src_dir = agent_dir(False, False)
+
+  def mock_subprocess_run(*args, **kwargs):
+    if args[0][0:2] == ["kubectl", "apply"]:
+      return types.SimpleNamespace(stdout="deployment.apps/gke-svc created")
+    return None
+
+  monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="gke-proj",
+      region="us-east1",
+      cluster_name="my-gke-cluster",
+      service_name="gke-svc",
+      app_name="agent",
+      temp_folder=str(tmp_path),
+      port=9090,
+      trace_to_cloud=False,
+      otel_to_cloud=True,
+      with_ui=False,
+      log_level="debug",
+      adk_version="1.2.0",
+  )
+
+  dockerfile_content = (tmp_path / "Dockerfile").read_text()
+  assert (
+      'RUN ["pip", "install", "google-adk[a2a,gcp,otel-gcp]==1.2.0"]'
+      in dockerfile_content
+  )
+
+
+def test_to_gke_extra_packages_staged_and_copied_into_image(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """An extra package is staged and copied into the image."""
+  src_dir = agent_dir(False, False)
+  build_dir = tmp_path / "build"
+  shared_dir = tmp_path / "common"
+  shared_dir.mkdir()
+  (shared_dir / "helper.py").write_text("VALUE = 1\n")
+
+  def mock_subprocess_run(*args, **kwargs):
+    del kwargs
+    if args[0][0:2] == ["kubectl", "apply"]:
+      return types.SimpleNamespace(stdout="service/gke-svc created")
+    return None
+
+  monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="gke-proj",
+      region="us-east1",
+      cluster_name="my-gke-cluster",
+      service_name="gke-svc",
+      app_name="agent",
+      temp_folder=str(build_dir),
+      port=9090,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="debug",
+      adk_version="1.2.0",
+      extra_packages=[str(shared_dir)],
+  )
+
+  assert (build_dir / "common" / "helper.py").is_file()
+  dockerfile_content = (build_dir / "Dockerfile").read_text()
+  assert (
+      'COPY --chown=myuser:myuser "common/" "/app/common/"'
+      in dockerfile_content
+  )
+  assert 'ENV PYTHONPATH="/app:$PYTHONPATH"' in dockerfile_content
+
+
+def test_to_gke_extra_packages_deployment_yaml_name_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """An extra package named deployment.yaml would clobber the manifest."""
+  src_dir = agent_dir(False, False)
+  clashing_file = tmp_path / "outside" / "deployment.yaml"
+  clashing_file.parent.mkdir(parents=True)
+  clashing_file.write_text("kind: Nothing\n")
+
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_gke(
+        agent_folder=str(src_dir),
+        project="gke-proj",
+        region="us-east1",
+        cluster_name="my-gke-cluster",
+        service_name="gke-svc",
+        app_name="agent",
+        temp_folder=str(tmp_path / "build"),
+        port=9090,
+        trace_to_cloud=False,
+        otel_to_cloud=False,
+        with_ui=False,
+        log_level="debug",
+        adk_version="1.2.0",
+        extra_packages=[str(clashing_file)],
+    )
+
+  assert "conflicting name" in str(exc_info.value)
+
+
 def test_to_gke_uses_gcloud_cmd_on_windows(
     monkeypatch: pytest.MonkeyPatch,
     agent_dir: Callable[[bool, bool], Path],
@@ -1270,6 +1391,35 @@ def test_to_agent_engine_with_extra_packages_adds_to_source_packages(
   assert "my_extra_pkg" in source_packages
 
 
+def test_to_agent_engine_installs_telemetry_extras(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """The container must install the extras the telemetry flags need."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      otel_to_cloud=True,
+  )
+
+  dockerfile_content = (tmp_dir / "Dockerfile").read_text()
+  assert (
+      'RUN ["pip", "install", "google-adk[a2a,gcp,otel-gcp]==1.2.0"]'
+      in dockerfile_content
+  )
+
+
 def test_to_agent_engine_with_extra_packages_copies_into_temp_and_dockerfile(
     monkeypatch: pytest.MonkeyPatch,
     agent_dir: Callable[[bool, bool], Path],
@@ -1414,6 +1564,57 @@ def test_cli_deploy_agent_engine_passes_extra_packages(tmp_path: Path) -> None:
     assert result.exit_code == 0
     mock_to_agent_engine.assert_called_once()
     _, kwargs = mock_to_agent_engine.call_args
+    assert kwargs["extra_packages"] == ["pkg_a", "pkg_b"]
+
+
+def test_cli_deploy_cloud_run_passes_extra_packages(tmp_path: Path) -> None:
+  """Repeatable --extra_packages should reach run as a list."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.run", autospec=True
+  ) as mock_run:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "cloud_run",
+            "--extra_packages=pkg_a",
+            "--extra_packages=pkg_b",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_run.assert_called_once()
+    _, kwargs = mock_run.call_args
+    assert kwargs["provider"] == "cloud_run"
+    assert kwargs["extra_packages"] == ["pkg_a", "pkg_b"]
+
+
+def test_cli_deploy_gke_passes_extra_packages(tmp_path: Path) -> None:
+  """Repeatable --extra_packages should reach to_gke as a list."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_gke", autospec=True
+  ) as mock_to_gke:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "gke",
+            "--extra_packages=pkg_a",
+            "--extra_packages=pkg_b",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_gke.assert_called_once()
+    _, kwargs = mock_to_gke.call_args
     assert kwargs["extra_packages"] == ["pkg_a", "pkg_b"]
 
 

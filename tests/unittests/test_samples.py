@@ -281,8 +281,21 @@ def test_knowledge_agent_requires_datastore_env(monkeypatch):
   for key, value in _DUMMY_ENV.items():
     monkeypatch.setenv(key, value)
   monkeypatch.delenv("VERTEXAI_DATASTORE_ID")
-  with pytest.raises(ValueError, match="VERTEXAI_DATASTORE_ID"):
+  with pytest.raises(RuntimeError, match="VERTEXAI_DATASTORE_ID") as exc_info:
     _load_root_agent(SAMPLES_DIR / "adk_team" / "adk_knowledge_agent")
+  assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+@pytest.mark.parametrize(
+    "sample", ["adk_stale_agent", "adk_issue_monitoring_agent"]
+)
+def test_issue_maintenance_agents_retry_model_errors(sample: str, monkeypatch):
+  """A transient model error must not fail the issue maintenance job."""
+  for key, value in _DUMMY_ENV.items():
+    monkeypatch.setenv(key, value)
+  root_agent = _load_root_agent(SAMPLES_DIR / "adk_team" / sample)
+  retry_options = root_agent.canonical_model.retry_options
+  assert retry_options is not None and retry_options.attempts > 1
 
 
 @contextlib.contextmanager

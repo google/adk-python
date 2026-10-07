@@ -34,6 +34,7 @@ from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeRun
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeState
+from google.adk.workflow._dynamic_node_scheduler import run_node_internal
 from google.adk.workflow._errors import WorkflowInvariantError
 from google.adk.workflow._node_state import NodeState
 from google.adk.workflow._node_state import NodeStatus
@@ -1563,3 +1564,54 @@ async def test_dynamic_node_scheduler_transfer_restores_use_as_output_on_hop_bac
   )
   # Hop 3 (child2 hopped back to parent_ctx): use_as_output restored to True!
   assert mock_standalone.call_args_list[1].kwargs['use_as_output'] is True
+
+
+@pytest.mark.asyncio
+async def test_run_node_internal_root_agent_defaults_to_chat_mode():
+  """run_node_internal defaults a root agent with mode=None to 'chat' mode."""
+  agent = LlmAgent(name='root_agent', rerun_on_resume=True)
+  assert agent.mode is None
+
+  ctx, _ = _make_parent_ctx()
+  ctx.parent_ctx = None
+  ctx.node = None
+  ctx.node_path = ''
+  ctx._node_rerun_on_resume = True
+  ctx._invocation_context.agent = agent
+
+  child_ctx = MagicMock(spec=Context)
+  child_ctx.error = None
+  child_ctx.interrupt_ids = set()
+  child_ctx.actions = EventActions()
+  child_ctx.output = 'ok'
+  ctx._run_node_standalone = AsyncMock(return_value=child_ctx)
+
+  await run_node_internal(ctx, agent, 'input', return_ctx=True)
+
+  built_node = ctx._run_node_standalone.call_args.args[0]
+  assert built_node.mode == 'chat'
+  assert agent.mode is None
+
+
+@pytest.mark.asyncio
+async def test_run_node_internal_child_node_defaults_to_single_turn_mode():
+  """run_node_internal defaults a child node with mode=None to 'single_turn' mode."""
+  agent = LlmAgent(name='child_agent', rerun_on_resume=True)
+  assert agent.mode is None
+
+  ctx, _ = _make_parent_ctx()
+  ctx.node_path = 'parent_node'
+  ctx._node_rerun_on_resume = True
+
+  child_ctx = MagicMock(spec=Context)
+  child_ctx.error = None
+  child_ctx.interrupt_ids = set()
+  child_ctx.actions = EventActions()
+  child_ctx.output = 'ok'
+  ctx._run_node_standalone = AsyncMock(return_value=child_ctx)
+
+  await run_node_internal(ctx, agent, 'input', return_ctx=True)
+
+  built_node = ctx._run_node_standalone.call_args.args[0]
+  assert built_node.mode == 'single_turn'
+  assert agent.mode is None

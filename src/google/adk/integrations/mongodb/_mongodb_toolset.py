@@ -117,7 +117,7 @@ class MongoDbToolset(BaseToolset):
           connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
           database_name="products_db",
       )
-      agent = Agent(model="gemini-2.5-flash", tools=[toolset])
+      agent = Agent(model="gemini-3.5-flash", tools=[toolset])
       ```
   """
 

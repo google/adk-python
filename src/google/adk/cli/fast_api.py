@@ -269,8 +269,8 @@ def get_fast_api_app(
       web and bind_host is not None and _is_loopback_address(bind_host)
   )
 
-  # Load services.py from agents_dir for custom service registration.
-  load_services_module(agents_dir)
+  # services.py lives in the folder the user passed, not the rewritten parent.
+  load_services_module(original_agents_dir)
 
   # Build the Memory service
   try:
@@ -347,6 +347,10 @@ def get_fast_api_app(
       avatar_config=avatar_config,
       max_llm_calls=max_llm_calls,
   )
+  # DevServer allows the built-in agents by default. Follow the loader, so a
+  # refused request gets the server's 403 rather than a 500 from the loader's
+  # PermissionError.
+  adk_web_server._allow_special_agents = agent_loader._allow_special_agents
 
   # In single agent mode, use that agent as the default app.
   if is_single_agent:
