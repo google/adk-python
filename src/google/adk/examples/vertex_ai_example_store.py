@@ -14,11 +14,18 @@
 
 from __future__ import annotations
 
+import os
+
 from google.genai import types
 from typing_extensions import override
 
 from .base_example_provider import BaseExampleProvider
 from .example import Example
+
+_TOP_K = 10
+
+# Below this an example is more likely to mislead the model than help it.
+_SIMILARITY_THRESHOLD = 0.5
 
 
 class VertexAiExampleStore(BaseExampleProvider):
@@ -32,68 +39,67 @@ class VertexAiExampleStore(BaseExampleProvider):
           the format of
           ``projects/{project}/locations/{location}/exampleStores/{example_store}``.
     """
+    try:
+      from ..dependencies._agentplatform import agentplatform  # noqa: F401
+    except ImportError as e:
+      from ..utils._dependency import missing_extra
+
+      raise missing_extra("google-cloud-aiplatform", "gcp") from e
+
     self.examples_store_name = examples_store_name
+
+    store_project = None
+    store_location = None
+    if examples_store_name.startswith("projects/"):
+      parts = examples_store_name.split("/")
+      if len(parts) >= 4 and parts[0] == "projects" and parts[2] == "locations":
+        store_project = parts[1]
+        store_location = parts[3]
+
+    # A fully-qualified name names exactly one endpoint, so it wins; the
+    # environment only fills in what a bare store ID leaves unspecified.
+    self._project = store_project or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    self._location = store_location or os.environ.get("GOOGLE_CLOUD_LOCATION")
 
   @override
   def get_examples(self, query: str) -> list[Example]:
-    from ..dependencies.vertexai import example_stores
+    from ..dependencies._agentplatform import agentplatform
 
-    example_store = example_stores.ExampleStore(self.examples_store_name)
-    # Retrieve relevant examples.
-    request = {
-        "stored_contents_example_parameters": {
+    client = agentplatform.Client(
+        project=self._project, location=self._location
+    )
+    response = client.example_stores.search_examples(
+        name=self.examples_store_name,
+        stored_contents_example_parameters={
             "content_search_key": {
                 "contents": [{"role": "user", "parts": [{"text": query}]}],
                 "search_key_generation_method": {"last_entry": {}},
             }
         },
-        "top_k": 10,
-        "example_store": self.examples_store_name,
-    }
-    response = example_store.api_client.search_examples(request)
+        config={"top_k": _TOP_K},
+    )
 
     returned_examples = []
-    # Convert results to genai formats
-    for result in response.results:
-      if result.similarity_score < 0.5:
+    for result in response.results or []:
+      if (result.similarity_score or 0.0) < _SIMILARITY_THRESHOLD:
         continue
-      expected_contents = [
-          content.content
-          for content in (
-              result.example.stored_contents_example.contents_example.expected_contents
-          )
+      stored_contents_example = (
+          result.example.stored_contents_example if result.example else None
+      )
+      if not stored_contents_example:
+        continue
+      contents_example = stored_contents_example.contents_example
+      expected_contents = (
+          contents_example.expected_contents if contents_example else None
+      )
+
+      # The module hands back google.genai Content already, so the expected
+      # output needs no part-by-part rebuilding.
+      expected_output = [
+          expected.content
+          for expected in expected_contents or []
+          if expected.content
       ]
-      expected_output = []
-      for content in expected_contents:
-        expected_parts = []
-        for part in content.parts:
-          if part.text:
-            expected_parts.append(types.Part.from_text(text=part.text))
-          elif part.function_call:
-            expected_parts.append(
-                types.Part.from_function_call(
-                    name=part.function_call.name,
-                    args={
-                        key: value
-                        for key, value in part.function_call.args.items()
-                    },
-                )
-            )
-          elif part.function_response:
-            expected_parts.append(
-                types.Part.from_function_response(
-                    name=part.function_response.name,
-                    response={
-                        key: value
-                        for key, value in (
-                            part.function_response.response.items()
-                        )
-                    },
-                )
-            )
-        expected_output.append(
-            types.Content(role=content.role, parts=expected_parts)
-        )
 
       returned_examples.append(
           Example(
@@ -101,7 +107,7 @@ class VertexAiExampleStore(BaseExampleProvider):
                   role="user",
                   parts=[
                       types.Part.from_text(
-                          text=result.example.stored_contents_example.search_key
+                          text=stored_contents_example.search_key or ""
                       )
                   ],
               ),

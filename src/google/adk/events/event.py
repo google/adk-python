@@ -27,6 +27,7 @@ from pydantic import field_serializer
 from pydantic import model_validator
 
 from ..models.llm_response import LlmResponse
+from ..utils import _model_copy
 from ._node_path_builder import _NodePathBuilder
 from .event_actions import EventActions
 
@@ -98,6 +99,8 @@ class Event(LlmResponse):
       populate_by_name=True,
   )
   """The pydantic model config."""
+
+  __deepcopy__ = _model_copy.deep_copy_model
 
   invocation_id: str = ''
   """The invocation ID of the event. Should be non-empty before appending to a session."""

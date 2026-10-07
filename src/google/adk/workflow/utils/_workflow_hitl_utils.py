@@ -26,15 +26,13 @@ from pydantic import ValidationError
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_credential import AuthCredentialTypes as _AuthCredentialTypes
 from ...auth.auth_credential import OAuth2Auth
-from ...auth.auth_handler import AuthHandler
-from ...auth.auth_tool import AuthConfig
-from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.request_input import RequestInput
 from ...utils._schema_utils import schema_to_json_schema
 from .._errors import WorkflowDataError
 
 if TYPE_CHECKING:
+  from ...auth.auth_tool import AuthConfig
   from ...sessions.state import State
 
 REQUEST_INPUT_FUNCTION_CALL_NAME = 'adk_request_input'
@@ -185,6 +183,9 @@ def create_auth_request_event(
   Returns:
     An Event containing an ``adk_request_credential`` function call.
   """
+  from ...auth.auth_handler import AuthHandler
+  from ...auth.auth_tool import AuthToolArguments
+
   auth_handler = AuthHandler(auth_config)
   auth_request = auth_handler.generate_auth_request()
   generated_credential = auth_request.exchanged_auth_credential
@@ -284,6 +285,9 @@ async def process_auth_resume(
     WorkflowDataError: If the response does not carry back the OAuth state that
       was generated for this auth request.
   """
+  from ...auth.auth_handler import AuthHandler
+  from ...auth.auth_tool import AuthConfig
+
   try:
     exchanged_credential = AuthConfig.model_validate(
         response_data
@@ -336,4 +340,6 @@ def has_auth_credential(
     state: State,
 ) -> bool:
   """Returns True if a credential for the given auth config exists in state."""
+  from ...auth.auth_handler import AuthHandler
+
   return AuthHandler(auth_config).has_auth_response(state)

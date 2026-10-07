@@ -65,6 +65,19 @@ class ModelArmorConfig(BaseModel):
   block_on_screening_failure: bool = True
   """Whether to block when Model Armor screening fails."""
 
+  deidentify_sensitive_data: bool = False
+  """Whether to continue with de-identified text instead of blocking.
+
+  Applies when the only filter that matched is Sensitive Data Protection and
+  the template's SDP advanced config has a de-identify template, so Model
+  Armor returns the text with the sensitive data transformed. The plugin then
+  sends that text to the model in place of the latest user input on the current
+  request (the stored session event keeps the original text, so history replays
+  the original on subsequent turns), or returns it in place of the model's
+  output. A match from any other filter, or an SDP match without de-identified
+  text, still blocks.
+  """
+
   @model_validator(mode='after')
   def _validate_templates(self) -> ModelArmorConfig:
     """Ensure at least one template is configured."""

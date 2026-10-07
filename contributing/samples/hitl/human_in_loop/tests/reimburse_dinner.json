@@ -83,6 +83,92 @@
       "nodeInfo": {
         "path": "reimbursement_agent@1"
       }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "ask_for_approval",
+              "response": {
+                "status": "approved",
+                "ticketId": "reimbursement-ticket-001"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-5",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "reimbursement_agent",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "amount": 150,
+                "purpose": "client dinner"
+              },
+              "id": "fc-2",
+              "name": "reimburse"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-6",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": "reimbursement_agent@1"
+      }
+    },
+    {
+      "author": "reimbursement_agent",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "reimburse",
+              "response": {
+                "status": "ok"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-7",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": "reimbursement_agent@1"
+      }
+    },
+    {
+      "author": "reimbursement_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Your reimbursement of $150 for the client dinner has been approved and processed."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-8",
+      "invocationId": "i-2",
+      "nodeInfo": {
+        "path": "reimbursement_agent@1"
+      }
     }
   ]
 }
