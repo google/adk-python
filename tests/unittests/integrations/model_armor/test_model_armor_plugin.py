@@ -16,13 +16,18 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
 from typing import Optional
 from unittest import mock
 
 from google.adk.integrations.model_armor import ModelArmorConfig
 from google.adk.integrations.model_armor import ModelArmorPlugin
+from google.adk.integrations.model_armor._config import _DEFAULT_TOOL_OUTPUT_BLOCKED_MESSAGE
+from google.adk.integrations.model_armor._plugin import _MAX_TOOL_OUTPUT_CHARS
 from google.adk.integrations.model_armor._plugin import _regional_endpoint
 from google.adk.integrations.model_armor._plugin import _shared_template_location
+from google.adk.integrations.model_armor._plugin import _TOOL_OUTPUT_CHUNK_OVERLAP_CHARS
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.auth.credentials import AnonymousCredentials
@@ -471,3 +476,343 @@ async def test_close_only_closes_own_client():
   await plugin.close()
 
   built_client.transport.close.assert_awaited_once()
+
+
+# --- Tool output screening --------------------------------------------------
+
+_TOOL_OUTPUT_TEMPLATE_PATH = (
+    'projects/test-project/locations/us-central1/templates/test-tool-output'
+)
+
+
+def _tool_plugin(*, result=None, raises: bool = False, **config_overrides):
+  """Returns a (plugin, client) pair configured for tool output screening."""
+  client = _sdk_client(result=result, raises=raises)
+  config = ModelArmorConfig(
+      tool_output_template_name=_TOOL_OUTPUT_TEMPLATE_PATH,
+      **config_overrides,
+  )
+  plugin = ModelArmorPlugin(config=config, client=client)
+  return plugin, client
+
+
+async def _screen_tool_output(plugin, result: Any):
+  return await plugin.after_tool_callback(
+      tool=mock.Mock(),
+      tool_args={},
+      tool_context=mock.Mock(),
+      result=result,
+  )
+
+
+@pytest.mark.asyncio
+async def test_matched_tool_output_is_blocked():
+  """Tool output matching the template is replaced with the blocked message."""
+  plugin, client = _tool_plugin(result=_sanitization_result(match=True))
+
+  result = await _screen_tool_output(plugin, {'result': 'malicious content'})
+
+  assert result == {'error': _DEFAULT_TOOL_OUTPUT_BLOCKED_MESSAGE}
+  assert _screened(client) == [('input', '{"result": "malicious content"}')]
+
+
+@pytest.mark.asyncio
+async def test_clean_tool_output_passes_through():
+  """Tool output that does not match the template returns None."""
+  plugin, client = _tool_plugin()
+
+  result = await _screen_tool_output(plugin, {'result': 'safe content'})
+
+  assert result is None
+  assert _screened(client) == [('input', '{"result": "safe content"}')]
+
+
+@pytest.mark.asyncio
+async def test_tool_output_not_screened_without_template():
+  """If tool_output_template_name is unset, after_tool_callback is a no-op."""
+  client = _sdk_client(result=_sanitization_result(match=True))
+  plugin = ModelArmorPlugin(
+      config=_config(),  # no tool_output_template_name
+      client=client,
+  )
+
+  result = await _screen_tool_output(plugin, {'result': 'anything'})
+
+  assert result is None
+  assert _screened(client) == []
+
+
+@pytest.mark.asyncio
+async def test_empty_tool_result_is_not_screened():
+  """An empty tool result is skipped without calling Model Armor."""
+  plugin, client = _tool_plugin()
+
+  assert await _screen_tool_output(plugin, {}) is None
+  assert await _screen_tool_output(plugin, []) is None
+  assert await _screen_tool_output(plugin, '') is None
+  assert await _screen_tool_output(plugin, None) is None
+  assert _screened(client) == []
+
+
+@pytest.mark.asyncio
+async def test_tool_output_json_serialization_screens_whole_dict():
+  """All fields in a result dict are serialized and screened, preventing bypass."""
+  plugin, client = _tool_plugin()
+
+  await _screen_tool_output(plugin, {'foo': 'bar', 'baz': 123})
+
+  screened = _screened(client)
+  assert len(screened) == 1
+  assert screened[0][0] == 'input'
+
+  parsed = json.loads(screened[0][1])
+  assert parsed == {'foo': 'bar', 'baz': 123}
+
+
+@pytest.mark.asyncio
+async def test_tool_output_screening_failure_blocks_by_default():
+  """A screening failure blocks tool output when block_on_screening_failure=True."""
+  plugin, _ = _tool_plugin(raises=True, block_on_screening_failure=True)
+
+  result = await _screen_tool_output(plugin, {'result': 'content'})
+
+  assert result == {'error': _DEFAULT_TOOL_OUTPUT_BLOCKED_MESSAGE}
+
+
+@pytest.mark.asyncio
+async def test_tool_output_screening_failure_passes_when_configured():
+  """A screening failure passes through when block_on_screening_failure=False."""
+  plugin, _ = _tool_plugin(raises=True, block_on_screening_failure=False)
+
+  result = await _screen_tool_output(plugin, {'result': 'content'})
+
+  assert result is None
+
+
+@pytest.mark.parametrize('screening', _SCREENING_FAILURE)
+@pytest.mark.asyncio
+async def test_tool_output_non_success_invocation_blocks_by_default(screening):
+  """Non-SUCCESS invocation results block tool output by default."""
+  plugin, _ = _tool_plugin(**screening)
+
+  result = await _screen_tool_output(plugin, {'result': 'content'})
+
+  assert result == {'error': _DEFAULT_TOOL_OUTPUT_BLOCKED_MESSAGE}
+
+
+def test_tool_output_template_location_validated():
+  """tool_output_template_name must share location with other templates."""
+  config = ModelArmorConfig(
+      prompt_template_name=(
+          'projects/test-project/locations/us-central1/templates/prompt'
+      ),
+      tool_output_template_name=(
+          'projects/test-project/locations/europe-west1/templates/tool'
+      ),
+  )
+
+  with pytest.raises(ValueError, match='same location'):
+    ModelArmorPlugin(config=config)
+
+
+@pytest.mark.asyncio
+async def test_tool_output_string_result_is_screened():
+  """Tool output returned as a plain string is screened without crashing."""
+  plugin, client = _tool_plugin(result=_sanitization_result(match=True))
+
+  result = await _screen_tool_output(plugin, 'malicious content')
+
+  assert result == {'error': _DEFAULT_TOOL_OUTPUT_BLOCKED_MESSAGE}
+  assert _screened(client) == [('input', 'malicious content')]
+
+
+@pytest.mark.asyncio
+async def test_tool_output_list_result_is_screened():
+  """Tool output returned as a list is serialized and screened."""
+  plugin, client = _tool_plugin(result=_sanitization_result(match=True))
+
+  result = await _screen_tool_output(plugin, ['item1', 'malicious content'])
+
+  assert result == {'error': _DEFAULT_TOOL_OUTPUT_BLOCKED_MESSAGE}
+  assert _screened(client) == [('input', '["item1", "malicious content"]')]
+
+
+@pytest.mark.asyncio
+async def test_tool_output_multi_field_dict_screens_all_fields():
+  """A tool result dict containing 'result' alongside other fields must screen all fields."""
+  plugin, client = _tool_plugin()
+
+  await _screen_tool_output(
+      plugin,
+      {'result': 'benign output', 'injected_payload': 'malicious instruction'},
+  )
+
+  screened = _screened(client)
+  assert len(screened) == 1
+  assert 'injected_payload' in screened[0][1]
+  assert 'malicious instruction' in screened[0][1]
+
+
+@pytest.mark.asyncio
+async def test_non_ascii_tool_output_is_not_escaped():
+  """Non-ASCII characters in tool output reach Model Armor unescaped."""
+  plugin, client = _tool_plugin()
+
+  await _screen_tool_output(plugin, {'result': 'instructions précédentes'})
+
+  assert _screened(client) == [
+      ('input', '{"result": "instructions précédentes"}')
+  ]
+
+
+@pytest.mark.asyncio
+async def test_oversized_tool_output_is_screened_in_chunks():
+  """Oversized tool output is screened in overlapping 65,536-char chunks so boundary-spanning payloads are caught."""
+  assert _MAX_TOOL_OUTPUT_CHARS == 65_536
+  plugin, client = _tool_plugin()
+  client.sanitize_user_prompt = mock.AsyncMock(
+      side_effect=[
+          modelarmor_v1.SanitizeUserPromptResponse(
+              sanitization_result=_sanitization_result(match=False)
+          ),
+          modelarmor_v1.SanitizeUserPromptResponse(
+              sanitization_result=_sanitization_result(match=True)
+          ),
+      ]
+  )
+  oversized = 'a' * (_MAX_TOOL_OUTPUT_CHARS - 5) + 'malicious tail'
+
+  result = await _screen_tool_output(plugin, oversized)
+
+  assert result == {'error': _DEFAULT_TOOL_OUTPUT_BLOCKED_MESSAGE}
+  assert _screened(client) == [
+      ('input', 'a' * (_MAX_TOOL_OUTPUT_CHARS - 5) + 'malic'),
+      (
+          'input',
+          'a' * (_TOOL_OUTPUT_CHUNK_OVERLAP_CHARS - 5) + 'malicious tail',
+      ),
+  ]
+
+  clean_plugin, clean_client = _tool_plugin()
+  assert (
+      await _screen_tool_output(clean_plugin, 'a' * _MAX_TOOL_OUTPUT_CHARS)
+      is None
+  )
+  assert _screened(clean_client) == [('input', 'a' * _MAX_TOOL_OUTPUT_CHARS)]
+
+
+@pytest.mark.parametrize(
+    'first_chunk_effect',
+    [
+        pytest.param(
+            RuntimeError('model armor is unreachable'),
+            id='call_failed',
+        ),
+        pytest.param(
+            modelarmor_v1.SanitizeUserPromptResponse(
+                sanitization_result=_sanitization_result(
+                    match=False,
+                    invocation_result=modelarmor_v1.InvocationResult.PARTIAL,
+                )
+            ),
+            id='partial_invocation',
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_oversized_tool_output_fail_open_chunk_continues_to_match(
+    first_chunk_effect,
+):
+  """With block_on_screening_failure=False, a failed first chunk continues to screen the next chunk."""
+  plugin, client = _tool_plugin(block_on_screening_failure=False)
+  client.sanitize_user_prompt = mock.AsyncMock(
+      side_effect=[
+          first_chunk_effect,
+          modelarmor_v1.SanitizeUserPromptResponse(
+              sanitization_result=_sanitization_result(match=True)
+          ),
+      ]
+  )
+  oversized = 'a' * (_MAX_TOOL_OUTPUT_CHARS - 5) + 'malicious tail'
+
+  result = await _screen_tool_output(plugin, oversized)
+
+  assert result == {'error': _DEFAULT_TOOL_OUTPUT_BLOCKED_MESSAGE}
+  assert _screened(client) == [
+      ('input', 'a' * (_MAX_TOOL_OUTPUT_CHARS - 5) + 'malic'),
+      (
+          'input',
+          'a' * (_TOOL_OUTPUT_CHUNK_OVERLAP_CHARS - 5) + 'malicious tail',
+      ),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_partial_invocation_with_match_blocks_when_fail_open():
+  """A PARTIAL result that still reports MATCH_FOUND blocks across input, output, and tool output even when block_on_screening_failure=False."""
+  plugin, _ = _plugin(
+      result=_sanitization_result(
+          match=True,
+          invocation_result=modelarmor_v1.InvocationResult.PARTIAL,
+      ),
+      tool_output_template_name=_TOOL_OUTPUT_TEMPLATE_PATH,
+      block_on_screening_failure=False,
+  )
+
+  blocked_in = await _screen_input(plugin, _user_request('bad input'))
+  blocked_out = await _screen_output(plugin, _text_response('harmful output'))
+  blocked_tool = await _screen_tool_output(
+      plugin, {'result': 'malicious content'}
+  )
+
+  assert blocked_in.content.parts[0].text == _config().input_blocked_message
+  assert blocked_out.content.parts[0].text == _config().output_blocked_message
+  assert blocked_tool == {'error': _DEFAULT_TOOL_OUTPUT_BLOCKED_MESSAGE}
+
+
+@pytest.mark.asyncio
+async def test_tool_output_bytes_and_media_parts_are_not_screened():
+  """Raw bytes and non-text media Parts in tool output are skipped without calling Model Armor."""
+  plugin, client = _tool_plugin(result=_sanitization_result(match=True))
+  media_part = types.Part.from_bytes(
+      data=b'\x89PNG\r\n\x1a\n', mime_type='image/png'
+  )
+  file_part = types.Part(
+      file_data=types.FileData(
+          file_uri='gs://bucket/chart.png', mime_type='image/png'
+      )
+  )
+
+  assert await _screen_tool_output(plugin, b'\x89PNG\r\n\x1a\n') is None
+  assert (
+      await _screen_tool_output(plugin, {'image': b'\x89PNG\r\n\x1a\n'}) is None
+  )
+  assert await _screen_tool_output(plugin, media_part) is None
+  assert await _screen_tool_output(plugin, file_part) is None
+  assert await _screen_tool_output(plugin, {'chart': media_part}) is None
+  assert await _screen_tool_output(plugin, [media_part, file_part]) is None
+  assert _screened(client) == []
+
+
+@pytest.mark.asyncio
+async def test_tool_output_media_alongside_text_screens_only_text():
+  """When a tool result mixes media/bytes with text, only the text is screened."""
+  plugin, client = _tool_plugin()
+  media_part = types.Part.from_bytes(
+      data=b'\x89PNG\r\n\x1a\n', mime_type='image/png'
+  )
+
+  await _screen_tool_output(
+      plugin,
+      {
+          'chart': media_part,
+          'raw_bytes': b'\x89PNG\r\n\x1a\n',
+          'summary': 'up 3%',
+      },
+  )
+  await _screen_tool_output(plugin, types.Part(text='part text'))
+
+  assert _screened(client) == [
+      ('input', '{"summary": "up 3%"}'),
+      ('input', 'part text'),
+  ]
