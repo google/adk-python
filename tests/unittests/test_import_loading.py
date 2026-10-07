@@ -167,6 +167,10 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
             'google.adk.integrations.bigquery.bigquery_toolset',
             ('google.cloud.dataplex_v1',),
         ),
+        (
+            'google.adk.evaluation.vertex_ai_eval_facade',
+            ('vertexai.preview.rag',),
+        ),
     ],
     ids=(
         'root',
@@ -176,6 +180,7 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
         'workflow',
         'cli_commands',
         'bigquery_toolset',
+        'vertex_ai_eval_facade',
     ),
 )
 def test_package_import_defers_unrelated_runtime(
