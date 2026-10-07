@@ -14,18 +14,22 @@
 
 """Model Armor guardrail plugin.
 
-Screens user input and model output with Google Cloud Model Armor in both
-unary (``run_async``) and live (``run_live``) modes, through the ordinary
-``before_model_callback`` and ``after_model_callback`` seams.
+Screens user input, model output, and tool output with Google Cloud Model Armor
+in both unary (``run_async``) and live (``run_live``) modes, through the
+ordinary ``before_model_callback``, ``after_model_callback``, and
+``after_tool_callback`` seams.
 
 - input reaches ``before_model_callback`` as request content.
 - output reaches ``after_model_callback`` as content parts in unary mode, and
   as an output transcription in live mode.
+- tool output reaches ``after_tool_callback`` as the tool result.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from typing import Any
 from typing import Optional
 
 from google.api_core.client_options import ClientOptions
@@ -38,6 +42,8 @@ from ...agents.callback_context import CallbackContext
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ...plugins.base_plugin import BasePlugin
+from ...tools.base_tool import BaseTool
+from ...tools.tool_context import ToolContext
 from ._config import ModelArmorConfig
 
 try:
@@ -57,9 +63,13 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 USER_AGENT = f'adk-model-armor-plugin google-adk/{version.__version__}'
 
+# Model Armor skips filters past 65,536 tokens (~1 token/char worst case).
+_MAX_TOOL_OUTPUT_CHARS = 65_536
+_TOOL_OUTPUT_CHUNK_OVERLAP_CHARS = 4_096
+
 
 class ModelArmorPlugin(BasePlugin):
-  """A plugin that screens input and output with Google Cloud Model Armor."""
+  """A plugin that screens input, output, and tool output with Model Armor."""
 
   def __init__(
       self,
@@ -87,7 +97,9 @@ class ModelArmorPlugin(BasePlugin):
     self._credentials = credentials
 
     self._location = _shared_template_location(
-        config.prompt_template_name, config.response_template_name
+        config.prompt_template_name,
+        config.response_template_name,
+        config.tool_output_template_name,
     )
 
   async def before_model_callback(
@@ -186,6 +198,42 @@ class ModelArmorPlugin(BasePlugin):
     )
     return response.sanitization_result
 
+  async def after_tool_callback(
+      self,
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+      result: dict[str, Any],
+  ) -> Optional[dict[str, Any]]:
+    """Screens tool output text against the configured tool output template."""
+    if not self._config.tool_output_template_name:
+      return None
+
+    text = _extract_tool_result_text(result)
+    if not text:
+      return None
+
+    step = _MAX_TOOL_OUTPUT_CHARS - _TOOL_OUTPUT_CHUNK_OVERLAP_CHARS
+    for start in range(0, len(text), step):
+      chunk = text[start : start + _MAX_TOOL_OUTPUT_CHARS]
+      try:
+        sanitization_result = await self._sanitize_user_prompt(
+            chunk, self._config.tool_output_template_name
+        )
+      except Exception:  # pylint: disable=broad-except
+        logger.exception('Model Armor tool output screening call failed.')
+        if self._config.block_on_screening_failure:
+          return {'error': self._config.tool_output_blocked_message}
+      else:
+        if self._should_block(sanitization_result, direction='tool output'):
+          return {'error': self._config.tool_output_blocked_message}
+
+      if start + _MAX_TOOL_OUTPUT_CHARS >= len(text):
+        break
+
+    return None
+
   async def close(self) -> None:
     """Closes the underlying client."""
     if self._client:
@@ -199,19 +247,30 @@ class ModelArmorPlugin(BasePlugin):
       blocked_message: str,
   ) -> Optional[LlmResponse]:
     """Handles a Model Armor sanitization result."""
+    if self._should_block(result, direction=direction):
+      return self._blocked_response(blocked_message)
+    return None
+
+  def _should_block(
+      self,
+      result: modelarmor_v1.SanitizationResult,
+      *,
+      direction: str,
+  ) -> bool:
+    """Returns whether a sanitization result should be blocked."""
+    if result.filter_match_state == modelarmor_v1.FilterMatchState.MATCH_FOUND:
+      logger.warning('Model Armor %s sanitization match found.', direction)
+      return True
+
     if result.invocation_result != modelarmor_v1.InvocationResult.SUCCESS:
       logger.error(
           'Model Armor %s sanitization did not succeed: invocation_result=%r',
           direction,
           result.invocation_result,
       )
-      return self._handle_screening_failure(blocked_message)
+      return self._config.block_on_screening_failure
 
-    if result.filter_match_state == modelarmor_v1.FilterMatchState.MATCH_FOUND:
-      logger.warning('Model Armor %s sanitization match found.', direction)
-      return self._blocked_response(blocked_message)
-
-    return None
+    return False
 
   def _handle_screening_failure(
       self, blocked_message: str
@@ -270,6 +329,54 @@ def _content_text(content: Optional[types.Content]) -> Optional[str]:
   if not texts:
     return None
   return '\n'.join(texts)
+
+
+_SKIP = object()
+
+
+def _filter_screenable_value(value: object) -> object:
+  """Filters bytes and non-text media parts out of a tool result value."""
+  if isinstance(
+      value, (bytes, bytearray, memoryview, types.Blob, types.FileData)
+  ):
+    return _SKIP
+  if isinstance(value, types.Part):
+    if value.text and not value.thought and value.text.strip():
+      return value.text
+    return _SKIP
+  if isinstance(value, dict):
+    cleaned = {
+        k: filtered
+        for k, v in value.items()
+        if not isinstance(k, (bytes, bytearray, memoryview))
+        and (filtered := _filter_screenable_value(v)) is not _SKIP
+    }
+    return cleaned if cleaned or not value else _SKIP
+  if isinstance(value, (list, tuple)):
+    cleaned_list = [
+        filtered
+        for item in value
+        if (filtered := _filter_screenable_value(item)) is not _SKIP
+    ]
+    return cleaned_list if cleaned_list or not value else _SKIP
+  return value
+
+
+def _extract_tool_result_text(result: Any) -> Optional[str]:
+  """Extracts screenable text from a tool result."""
+  if result is None:
+    return None
+  filtered = _filter_screenable_value(result)
+  if filtered is _SKIP:
+    return None
+  if isinstance(filtered, str):
+    return filtered if filtered.strip() else None
+  try:
+    serialized = json.dumps(filtered, default=str, ensure_ascii=False)
+    return serialized if serialized not in ('{}', 'null', '[]', '""') else None
+  except Exception:  # pylint: disable=broad-except
+    text = str(filtered)
+    return text if text.strip() else None
 
 
 def _regional_endpoint(location: str) -> str:

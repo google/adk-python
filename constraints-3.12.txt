@@ -204,6 +204,7 @@ crc32c==2.8
 cryptography==49.0.0
     # via
     #   -c constraints-3.12.txt.stable.tmp
+    #   google-adk (pyproject.toml)
     #   authlib
     #   google-auth
     #   joserfc
@@ -392,6 +393,7 @@ google-api-core==2.32.0
     #   google-cloud-firestore
     #   google-cloud-iam
     #   google-cloud-iamconnectorcredentials
+    #   google-cloud-kms
     #   google-cloud-logging
     #   google-cloud-modelarmor
     #   google-cloud-monitoring
@@ -430,6 +432,7 @@ google-auth==2.56.0
     #   google-cloud-firestore
     #   google-cloud-iam
     #   google-cloud-iamconnectorcredentials
+    #   google-cloud-kms
     #   google-cloud-logging
     #   google-cloud-modelarmor
     #   google-cloud-monitoring
@@ -516,6 +519,10 @@ google-cloud-iam==2.24.0
     #   -c constraints-3.12.txt.stable.tmp
     #   google-cloud-aiplatform
 google-cloud-iamconnectorcredentials==0.1.1
+    # via
+    #   -c constraints-3.12.txt.stable.tmp
+    #   google-adk (pyproject.toml)
+google-cloud-kms==3.16.0
     # via
     #   -c constraints-3.12.txt.stable.tmp
     #   google-adk (pyproject.toml)
@@ -629,6 +636,7 @@ grpc-google-iam-v1==0.14.4
     #   google-cloud-bigtable
     #   google-cloud-dataplex
     #   google-cloud-iam
+    #   google-cloud-kms
     #   google-cloud-logging
     #   google-cloud-parametermanager
     #   google-cloud-pubsub
@@ -652,6 +660,7 @@ grpcio==1.82.1
     #   google-cloud-firestore
     #   google-cloud-iam
     #   google-cloud-iamconnectorcredentials
+    #   google-cloud-kms
     #   google-cloud-logging
     #   google-cloud-modelarmor
     #   google-cloud-monitoring
@@ -1263,6 +1272,7 @@ proto-plus==1.28.1
     #   google-cloud-firestore
     #   google-cloud-iam
     #   google-cloud-iamconnectorcredentials
+    #   google-cloud-kms
     #   google-cloud-logging
     #   google-cloud-modelarmor
     #   google-cloud-monitoring
@@ -1294,6 +1304,7 @@ protobuf==6.33.6
     #   google-cloud-firestore
     #   google-cloud-iam
     #   google-cloud-iamconnectorcredentials
+    #   google-cloud-kms
     #   google-cloud-logging
     #   google-cloud-modelarmor
     #   google-cloud-monitoring

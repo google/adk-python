@@ -35,8 +35,8 @@ reported no usage metadata; it never means zero.
 
 These are reference-free, informational metrics: they compute and report a value
 for the user to track their agent's efficiency, but they do NOT pass or fail an
-eval case. Their status is always `INFORMATIONAL`, and any threshold configured
-for them is ignored.
+eval case. Their status is always `INFORMATIONAL`, and configuring a threshold
+for them raises a `ValueError`.
 
 Aggregation: a metric is computed **per invocation** (i.e. per conversation
 turn) first, and those per-invocation values are all reported. The single

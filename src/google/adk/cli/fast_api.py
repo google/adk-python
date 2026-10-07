@@ -168,7 +168,9 @@ def get_fast_api_app(
       returned app; pass ``bind_host`` to guard it.
     bind_host: The address the caller will bind the returned app to. A loopback
       value turns on DNS-rebinding protection, which rejects requests addressed
-      to any other host. Leave it None to serve the app yourself without that.
+      to any other host. A non-loopback value logs a startup warning that the
+      app has no authentication. Leave it None to serve the app yourself
+      without either.
     port: Port number for the server (defaults to 8000).
     url_prefix: Optional prefix for all URL routes.
     trace_to_cloud: Whether to export traces to Google Cloud Trace.
@@ -205,6 +207,15 @@ def get_fast_api_app(
   Returns:
     The configured FastAPI application instance.
   """
+
+  if bind_host is not None and not _is_loopback_address(bind_host):
+    logger.warning(
+        "ADK server is binding to a non-loopback address (%s) and has no"
+        " authentication: any client that can reach it can read, modify, and"
+        " delete any user's sessions and artifacts. Do not expose it to"
+        " untrusted networks without an authenticating proxy.",
+        bind_host,
+    )
 
   # Enable the YAML key denylist for config loads if the web UI is enabled.
   if web:
@@ -258,8 +269,8 @@ def get_fast_api_app(
       web and bind_host is not None and _is_loopback_address(bind_host)
   )
 
-  # Load services.py from agents_dir for custom service registration.
-  load_services_module(agents_dir)
+  # services.py lives in the folder the user passed, not the rewritten parent.
+  load_services_module(original_agents_dir)
 
   # Build the Memory service
   try:
@@ -336,6 +347,10 @@ def get_fast_api_app(
       avatar_config=avatar_config,
       max_llm_calls=max_llm_calls,
   )
+  # DevServer allows the built-in agents by default. Follow the loader, so a
+  # refused request gets the server's 403 rather than a 500 from the loader's
+  # PermissionError.
+  adk_web_server._allow_special_agents = agent_loader._allow_special_agents
 
   # In single agent mode, use that agent as the default app.
   if is_single_agent:

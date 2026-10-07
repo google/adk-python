@@ -131,7 +131,7 @@ class ModelConsultTool(BaseTool):
   Example:
     ```python
     root_agent = Agent(
-        model='gemini-2.5-flash',
+        model='gemini-3.5-flash',
         name='root_cause_analysis_agent',
         instruction='...',
         tools=[

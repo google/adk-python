@@ -24,6 +24,7 @@ original call -- so it lives here rather than inline in the flow.
 
 from __future__ import annotations
 
+from collections import Counter
 import dataclasses
 import enum
 from typing import Any
@@ -216,11 +217,15 @@ def _unexecuted_calls_event(
 ) -> Event | None:
   """`call_event` cut down to the calls that never ran, or None if all did.
 
-  A call ran when a response in `later_events` carries its id, or its name
-  with no id. None is also returned once the agent has written any event with
-  content after `call_event`: tool responses and auth or confirmation requests
-  are only written after the whole batch ran, so a call still missing its
-  response then ran and lost it, or is pending.
+  A call ran when a response in `later_events` carries its id. Responses with
+  no id each match one remaining same-name call, in call order. Long-running
+  calls (`call_event.long_running_tool_ids`) are also skipped: a long-running
+  tool that returns `None` writes no response event when it starts, so a
+  missing response means the call is still awaiting its external result rather
+  than never having run. None is also returned once the agent has written any
+  event with content after `call_event`: tool responses and auth or
+  confirmation requests are only written after the whole batch ran, so a call
+  still missing its response then ran and lost it, or is pending.
   """
   if any(
       ev.author == call_event.author and ev.content is not None
@@ -229,22 +234,61 @@ def _unexecuted_calls_event(
     return None
   responses = [fr for ev in later_events for fr in ev.get_function_responses()]
   answered_ids = {fr.id for fr in responses if fr.id is not None}
-  answered_names = {fr.name for fr in responses if fr.id is None}
-  unexecuted_ids = {
-      fc.id
-      for fc in call_event.get_function_calls()
-      if fc.id not in answered_ids and fc.name not in answered_names
-  }
-  if not unexecuted_ids or call_event.content is None:
+  answered_names = Counter(fr.name for fr in responses if fr.id is None)
+  lro_ids = call_event.long_running_tool_ids or set()
+  if call_event.content is None:
     return None
-  parts = [
-      part
-      for part in call_event.content.parts or []
-      if part.function_call is None or part.function_call.id in unexecuted_ids
-  ]
+  parts = []
+  has_unexecuted_call = False
+  for part in call_event.content.parts or []:
+    if (call := part.function_call) is None:
+      parts.append(part)
+    elif call.id in answered_ids or call.id in lro_ids:
+      # Explicit IDs take precedence without consuming a name-only response.
+      continue
+    elif answered_names[call.name]:
+      answered_names[call.name] -= 1
+    else:
+      parts.append(part)
+      has_unexecuted_call = True
+  if not has_unexecuted_call:
+    return None
   return call_event.model_copy(
       update={'content': call_event.content.model_copy(update={'parts': parts})}
   )
+
+
+class ResumeRoute(enum.Enum):
+  """How the router or flow should handle a function call and its answer."""
+
+  ROUTE_TO_AUTHOR = 'route_to_author'
+  """Router: run the agent that authored the call."""
+
+  REPLAY_CALLS = 'replay_calls'
+  """Flow: re-dispatch the call event."""
+
+  CONTINUE = 'continue'
+  """Flow: fresh LLM step; router: normal scan."""
+
+
+def decide_resume_action(
+    call_event: Event,
+    answer_event: Event | None,
+    *,
+    is_resumable: bool,
+) -> ResumeRoute:
+  """Decides how the router handles a function call and its answer event.
+
+  This is where `find_agent_to_run` asks what to do given a function call and
+  its answer.
+  """
+  if answer_event is None:
+    return ResumeRoute.CONTINUE
+  if _is_sub_branch_answer(answer_event, call_event):
+    return ResumeRoute.REPLAY_CALLS
+  if answer_event.author == 'user' or is_resumable:
+    return ResumeRoute.ROUTE_TO_AUTHOR
+  return ResumeRoute.CONTINUE
 
 
 def _locate_answer(
@@ -273,23 +317,28 @@ def decide_resume(
     events: list[Event],
     tools_dict: dict[str, Any],
 ) -> ResumeDecision:
-  """Decides how a resumable flow continues from `events`.
+  """Decides how a flow continues from `events`.
 
   Args:
-    invocation_context: Supplies `should_pause_invocation`.
+    invocation_context: Supplies `is_resumable` and `should_pause_invocation`.
     events: The current branch's events for this invocation, oldest first, and
       containing at least two events.
     tools_dict: The tools this flow can run, by name.
 
   Returns:
-    PAUSE when a call is still unanswered, REPLAY_CALLS (naming the event whose
-    calls to run, which may be a copy holding only the unexecuted calls rather
-    than one of `session.events`) when a call was never executed, else
-    CONTINUE.
+    PAUSE when a call is still unanswered in a resumable invocation,
+    REPLAY_CALLS (naming the event whose calls to run, which may be a copy
+    holding only the unexecuted calls rather than one of `session.events`) when
+    a call was never executed, else CONTINUE.
   """
-  paused_by_last = invocation_context.should_pause_invocation(events[-1])
-  if not paused_by_last and _pause_left_calls_unanswered(
-      invocation_context, events
+  paused_by_last = (
+      invocation_context.is_resumable
+      and invocation_context.should_pause_invocation(events[-1])
+  )
+  if (
+      invocation_context.is_resumable
+      and not paused_by_last
+      and _pause_left_calls_unanswered(invocation_context, events)
   ):
     return ResumeDecision(ResumeAction.PAUSE)
 
@@ -322,32 +371,17 @@ def decide_resume(
         and not any(fr.name in call_names for fr in answers)
     )
     if not from_sub_branch and (lro_unanswered or call_unanswered):
-      pause = True
+      pause = invocation_context.is_resumable
     elif _needs_call_replay(call_names, answers, from_sub_branch):
       return ResumeDecision(ResumeAction.REPLAY_CALLS, call_event)
-    elif unexecuted := _unexecuted_calls_event(
-        call_event, events[call_idx + 1 :]
+    elif not (lro_ids - answered_ids) and (
+        unexecuted := _unexecuted_calls_event(
+            call_event, events[call_idx + 1 :]
+        )
     ):
       return ResumeDecision(ResumeAction.REPLAY_CALLS, unexecuted)
 
   return ResumeDecision(ResumeAction.PAUSE if pause else ResumeAction.CONTINUE)
-
-
-def _find_sub_branch_replay_event(
-    invocation_context: InvocationContext,
-    events: list[Event],
-    tools_dict: dict[str, Any],
-) -> Event | None:
-  """Returns the call event to replay if a sub-branch interrupt was answered."""
-  call_event = _find_target_call_event(
-      events, tools_dict, require_agent_name(invocation_context)
-  )
-  if not call_event:
-    return None
-  _, _, _, answer_event = _locate_answer(events, call_event)
-  if _is_sub_branch_answer(answer_event, call_event):
-    return call_event
-  return None
 
 
 def decide_step_resume(
@@ -381,15 +415,6 @@ def decide_step_resume(
   if not events:
     return ResumeDecision(ResumeAction.CONTINUE)
 
-  if not invocation_context.is_resumable:
-    if len(events) > 1 and (
-        call_event := _find_sub_branch_replay_event(
-            invocation_context, events, tools_dict
-        )
-    ):
-      return ResumeDecision(ResumeAction.REPLAY_CALLS, call_event)
-    return ResumeDecision(ResumeAction.CONTINUE)
-
   # For a multi-event branch, decide whether to pause (unanswered tool calls
   # or LROs), replay unexecuted tool calls, or continue to the LLM.
   if len(events) > 1:
@@ -400,8 +425,11 @@ def decide_step_resume(
   # A single event, or a multi-event branch that `decide_resume` cleared:
   # the branch is only still owed something if its last event carries calls
   # nothing has answered yet -- being last is what makes them unanswered.
+  # Crash-recovery replay of a trailing unexecuted call only applies when
+  # `is_resumable=True`.
   if (
-      not events[-1].partial
+      invocation_context.is_resumable
+      and not events[-1].partial
       and events[-1].get_function_calls()
       # SECURITY: only replay a trailing function call the CURRENT AGENT
       # authored. Session init accepts caller-supplied events, so an event

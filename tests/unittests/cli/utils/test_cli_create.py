@@ -297,6 +297,52 @@ def test_run_cmd_with_type_config(
   assert (agent_dir / ".gitignore").read_text() == ".env\n.adk/\n"
 
 
+def test_run_cmd_prints_next_steps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  """A new agent should come with the commands to run it and grow it."""
+  echo = _Recorder()
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+  monkeypatch.setattr(click, "echo", echo)
+
+  cli_create.run_cmd(
+      "my_agent",
+      model="gemini-3.5-flash",
+      google_api_key="test-key",
+      google_cloud_project=None,
+      google_cloud_region=None,
+      type="code",
+  )
+
+  (message,), _ = echo.calls[-1]
+  assert "adk run my_agent\n" in message
+  assert "adk web .\n" in message
+  assert "uvx google-agents-cli setup\n" in message
+
+
+def test_run_cmd_next_steps_point_adk_web_at_parent_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  """A nested agent path should make adk web serve the folder holding it."""
+  echo = _Recorder()
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+  monkeypatch.setattr(click, "echo", echo)
+  agent_path = os.path.join("agents", "my_agent")
+
+  cli_create.run_cmd(
+      agent_path,
+      model="gemini-3.5-flash",
+      google_api_key="test-key",
+      google_cloud_project=None,
+      google_cloud_region=None,
+      type="code",
+  )
+
+  (message,), _ = echo.calls[-1]
+  assert f"adk run {agent_path}\n" in message
+  assert "adk web agents\n" in message
+
+
 # Prompt helpers
 def test_prompt_for_google_cloud(monkeypatch: pytest.MonkeyPatch) -> None:
   """Prompt should return the project input."""

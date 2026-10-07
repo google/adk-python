@@ -40,6 +40,8 @@ from adk_stale_agent.utils import patch_request
 from adk_stale_agent.utils import post_request
 import dateutil.parser
 from google.adk.agents.llm_agent import Agent
+from google.adk.models.google_llm import Gemini
+from google.genai import types
 from requests.exceptions import RequestException
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -584,7 +586,10 @@ def close_as_stale(item_number: int) -> dict[str, Any]:
 
 
 root_agent = Agent(
-    model=LLM_MODEL_NAME,
+    model=Gemini(
+        model=LLM_MODEL_NAME,
+        retry_options=types.HttpRetryOptions(attempts=5, initial_delay=2),
+    ),
     name="adk_repository_auditor_agent",
     description="Audits open issues.",
     instruction=PROMPT_TEMPLATE.format(

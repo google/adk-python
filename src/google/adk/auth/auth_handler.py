@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from fastapi.openapi.models import OAuthFlows
@@ -37,6 +38,8 @@ try:
   AUTHLIB_AVAILABLE = True
 except ImportError:
   AUTHLIB_AVAILABLE = False
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 def _normalize_oauth_scopes(
@@ -108,7 +111,12 @@ class AuthHandler:
     if not self.auth_config.auth_scheme:
       raise ValueError("auth_scheme is empty.")
 
-  def _is_exchangeable(self, credential: AuthCredential | None) -> bool:
+  def _is_exchangeable(
+      self,
+      credential: AuthCredential | None,
+      *,
+      allow_public: bool = False,
+  ) -> bool:
     """Returns whether credential still needs, and can do, a token exchange."""
     if not isinstance(
         self.auth_config.auth_scheme, SecurityBase
@@ -118,12 +126,9 @@ class AuthHandler:
     ):
       return False
     oauth2 = credential.oauth2 if credential else None
-    return bool(
-        oauth2
-        and not oauth2.access_token
-        and oauth2.client_id
-        and oauth2.client_secret
-    )
+    if not oauth2 or oauth2.access_token or not oauth2.client_id:
+      return False
+    return bool(oauth2.client_secret or allow_public)
 
   def _read_stored_credential(
       self, state: State
@@ -170,7 +175,7 @@ class AuthHandler:
         credential=credential,
         raw_credential=self.auth_config.raw_auth_credential,
     )
-    if not self._is_exchangeable(credential):
+    if not self._is_exchangeable(credential, allow_public=True):
       return credential
 
     exchange_result = OAuth2CredentialExchanger()._exchange_sync(
@@ -263,14 +268,11 @@ class AuthHandler:
           credential_key=self.auth_config.credential_key,
       )
 
-    # Check for client_id and client_secret
-    if (
-        not self.auth_config.raw_auth_credential.oauth2.client_id
-        or not self.auth_config.raw_auth_credential.oauth2.client_secret
-    ):
+    # Public clients (Azure AD B2C, PKCE) have a client_id and no secret.
+    if not self.auth_config.raw_auth_credential.oauth2.client_id:
       raise ValueError(
-          f"Auth Scheme {self.auth_config.auth_scheme.type_} requires both"
-          " client_id and client_secret in auth_credential.oauth2."
+          f"Auth Scheme {self.auth_config.auth_scheme.type_} requires"
+          " client_id in auth_credential.oauth2."
       )
 
     # Generate new auth URI
@@ -355,12 +357,21 @@ class AuthHandler:
       else:
         scopes = []
 
+    code_challenge_method = auth_credential.oauth2.code_challenge_method
+    if not auth_credential.oauth2.client_secret and not code_challenge_method:
+      logger.warning(
+          "OAuth2 client_secret is not set for client_id %s; treating client"
+          " as public.",
+          auth_credential.oauth2.client_id,
+      )
+      code_challenge_method = "S256"
+
     client = OAuth2Session(
         auth_credential.oauth2.client_id,
         auth_credential.oauth2.client_secret,
         scope=" ".join(scopes),
         redirect_uri=auth_credential.oauth2.redirect_uri,
-        code_challenge_method=auth_credential.oauth2.code_challenge_method,
+        code_challenge_method=code_challenge_method,
     )
     params = {
         "access_type": "offline",
@@ -375,13 +386,12 @@ class AuthHandler:
     # If not provided in the credential, generate a cryptographically secure
     # random token of 48 characters (OAuth2 recommends 43-128 characters).
     code_verifier = auth_credential.oauth2.code_verifier
-    method = auth_credential.oauth2.code_challenge_method
 
-    if method:
-      if method != "S256":
+    if code_challenge_method:
+      if code_challenge_method != "S256":
         raise ValueError(
-            f"Unsupported code_challenge_method: {method}. Only 'S256' is"
-            " supported."
+            f"Unsupported code_challenge_method: {code_challenge_method}. Only"
+            " 'S256' is supported."
         )
       if not code_verifier:
         code_verifier = generate_token(48)
@@ -396,5 +406,8 @@ class AuthHandler:
       exchanged_auth_credential.oauth2.state = state
       if code_verifier:
         exchanged_auth_credential.oauth2.code_verifier = code_verifier
+        exchanged_auth_credential.oauth2.code_challenge_method = (
+            code_challenge_method
+        )
 
     return exchanged_auth_credential

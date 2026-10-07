@@ -670,8 +670,10 @@ async def _execute_single_prepared_call_async(
   because each call owns its own ToolContext.
 
   With `RunConfig.tool_thread_pool_config` set, a synchronous `FunctionTool`
-  calls its function on the tool thread pool. Every other tool, async function
-  tools included, runs on the event loop as it does without the config.
+  calls its function on the tool thread pool, and a `NodeTool` runs synchronous
+  `FunctionNode` callables (including those inside a `Workflow`) there. Every
+  other tool, async function tools included, runs on the event loop as it does
+  without the config.
   """
   tool = prepared_call.tool
   run_config = invocation_context.run_config
@@ -680,13 +682,15 @@ async def _execute_single_prepared_call_async(
   )
 
   async def call_tool() -> object:
+    from ....tools._node_tool import NodeTool
+
     sync_callables: contextlib.AbstractContextManager[None] = (
         contextlib.nullcontext()
     )
     if (
         thread_pool_config is not None
         and _is_sync_tool(tool)
-        and isinstance(tool, FunctionTool)
+        and isinstance(tool, (FunctionTool, NodeTool))
     ):
       sync_callables = _use_executor_for_sync_callables(
           _get_tool_thread_pool(thread_pool_config.max_workers)

@@ -26,18 +26,14 @@ from typing import Union
 from google.adk.agents import LlmAgent
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.models import BaseLlm
-from google.adk.tools import AgentTool
 from google.adk.tools import FunctionTool
 from google.genai import types
 
-from .sub_agents.google_search_agent import create_google_search_agent
-from .sub_agents.url_context_agent import create_url_context_agent
 from .tools.cleanup_unused_files import cleanup_unused_files
 from .tools.delete_files import delete_files
 from .tools.explore_project import explore_project
 from .tools.read_config_files import read_config_files
 from .tools.read_files import read_files
-from .tools.search_adk_knowledge import search_adk_knowledge
 from .tools.search_adk_source import search_adk_source
 from .tools.write_config_files import write_config_files
 from .tools.write_files import write_files
@@ -83,21 +79,6 @@ class AgentBuilderAssistant:
     # Load full ADK AgentConfig schema directly into instruction context
     instruction = AgentBuilderAssistant._load_instruction_with_schema(model)
 
-    # TOOL ARCHITECTURE: Hybrid approach using both AgentTools and FunctionTools
-    #
-    # Why use sub-agents for built-in tools?
-    # - ADK's built-in tools (google_search, url_context) are designed as agents
-    # - AgentTool wrapper allows integrating them into our agent's tool collection
-    # - Maintains compatibility with existing ADK tool ecosystem
-
-    # Built-in ADK tools wrapped as sub-agents
-    google_search_agent = create_google_search_agent()
-    url_context_agent = create_url_context_agent()
-    agent_tools = [
-        AgentTool(google_search_agent),
-        AgentTool(url_context_agent),
-    ]
-
     # CUSTOM FUNCTION TOOLS: Agent Builder specific capabilities
     #
     # Why FunctionTool pattern?
@@ -119,12 +100,10 @@ class AgentBuilderAssistant:
         FunctionTool(cleanup_unused_files),
         # ADK source code search (regex-based)
         FunctionTool(search_adk_source),  # Search ADK source with regex
-        # ADK knowledge search
-        FunctionTool(search_adk_knowledge),  # Search ADK knowledge base
     ]
 
     # Combine all tools
-    all_tools = agent_tools + custom_tools
+    all_tools = custom_tools
 
     # Create agent directly using LlmAgent constructor
     agent = LlmAgent(

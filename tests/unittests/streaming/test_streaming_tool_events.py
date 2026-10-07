@@ -80,8 +80,8 @@ async def _run_live_until(
 ) -> tuple[list[Event], list[types.Content]]:
   """Runs a live turn calling ``tool`` once; captures both directions.
 
-  The mock connection replays its canned responses forever, so consumption
-  stops as soon as ``stop_when`` has seen what it needs.
+  Consumption stops as soon as ``stop_when`` has seen what it needs, checked on
+  every event and on every content sent to the model.
 
   Args:
     tool: The streaming tool to register on the agent.
@@ -99,6 +99,9 @@ async def _run_live_until(
   async def _record_send_content(self: Any, content: types.Content) -> None:
     del self  # Unused.
     to_model.append(content)
+    # A tool's last result reaches the model with no event after it.
+    if stop_when(events, to_model):
+      consumer.cancel()
 
   monkeypatch.setattr(
       testing_utils.MockLlmConnection, 'send_content', _record_send_content
@@ -146,8 +149,9 @@ async def _run_live_until(
             await asyncio.sleep(0)
           return
 
+  consumer = asyncio.create_task(_consume())
   try:
-    await asyncio.wait_for(_consume(), timeout=10.0)
+    await asyncio.wait_for(consumer, timeout=10.0)
   except (asyncio.TimeoutError, asyncio.CancelledError):
     pass
 

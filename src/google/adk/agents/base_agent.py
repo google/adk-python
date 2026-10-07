@@ -42,6 +42,7 @@ from typing_extensions import deprecated
 from typing_extensions import override
 from typing_extensions import TypeAlias
 
+from ..events._node_path_builder import _NodePathBuilder
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..features import experimental
@@ -92,6 +93,18 @@ class BaseAgentState(BaseModel):
 
 
 AgentState = TypeVar('AgentState', bound=BaseAgentState)
+
+
+def _agent_state_key(ctx: Any, agent_name: str) -> str:
+  """Returns the key used to store agent state for `agent_name`."""
+  node_path = getattr(ctx, 'node_path', None)
+  if (
+      isinstance(node_path, str)
+      and node_path
+      and _NodePathBuilder.from_string(node_path).node_name == agent_name
+  ):
+    return node_path
+  return agent_name
 
 
 # TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
@@ -204,10 +217,20 @@ class BaseAgent(BaseNode, abc.ABC):
     Returns:
         The current state if exists; otherwise, None.
     """
-    if ctx.agent_states is None or self.name not in ctx.agent_states:
+    if ctx.agent_states is None:
       return None
-    else:
-      return state_type.model_validate(ctx.agent_states.get(self.name))
+    key = _agent_state_key(ctx, self.name)
+    raw_state = ctx.agent_states.get(key) if key in ctx.agent_states else None
+    if (
+        raw_state is None
+        and key != self.name
+        and key not in ctx.end_of_agents
+        and self.name in ctx.agent_states
+    ):
+      raw_state = ctx.agent_states.get(self.name)
+    if raw_state is None:
+      return None
+    return state_type.model_validate(raw_state)
 
   def _create_agent_state_event(
       self,
@@ -222,9 +245,20 @@ class BaseAgent(BaseNode, abc.ABC):
       An event with the current agent state set in the invocation context.
     """
     event_actions = EventActions()
-    if (agent_state := ctx.agent_states.get(self.name)) is not None:
+    key = _agent_state_key(ctx, self.name)
+    agent_state = ctx.agent_states.get(key)
+    if (
+        agent_state is None
+        and key != self.name
+        and key not in ctx.end_of_agents
+    ):
+      agent_state = ctx.agent_states.get(self.name)
+    if agent_state is not None:
       event_actions.agent_state = agent_state
-    if ctx.end_of_agents.get(self.name):
+    end_of_agent = ctx.end_of_agents.get(key)
+    if end_of_agent is None and key != self.name:
+      end_of_agent = ctx.end_of_agents.get(self.name)
+    if end_of_agent:
       event_actions.end_of_agent = True
     return Event(
         invocation_id=ctx.invocation_id,

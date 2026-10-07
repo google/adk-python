@@ -27,6 +27,7 @@ the harness can reach one.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import sys
@@ -43,6 +44,7 @@ from google.antigravity import AgentConfig
 from google.antigravity.connections.local.local_connection_config import BaseLocalAgentConfig
 from google.antigravity.types import SessionContinuationMode
 from google.antigravity.types import Step
+from google.genai import types as genai_types
 from pydantic import ConfigDict
 from pydantic import Field
 from typing_extensions import override
@@ -81,7 +83,11 @@ class _SdkConversation(Protocol):
     ...
 
   async def send(self, prompt: str) -> None:
-    ...
+    pass
+
+  @property
+  def last_turn_usage(self) -> Any | None:
+    pass
 
   def receive_steps(self) -> AsyncIterator[Step]:
     ...
@@ -352,10 +358,15 @@ class AntigravityAgent(BaseAgent):
   async def _enter_sdk_agent(
       self, conversation_id: str | None = None
   ) -> _ActiveConversation:
-    # Gated on `sub_agents`: ADK children are the only client tools, and a
-    # post_tool_call hook costs a blocking round trip per successful call. Its
-    # call ids only mean anything within this conversation.
-    tool_results = self._tool_result_capture_cls() if self.sub_agents else None
+    # Enable tool-result capture whenever ADK sub_agents, SDK client tools, or
+    # SDK subagents are configured.
+    config_tools = self.config.tools or ()
+    has_client_tools = bool(
+        self.sub_agents
+        or any(not isinstance(t, str) for t in config_tools)
+        or self.config.subagents
+    )
+    tool_results = self._tool_result_capture_cls() if has_client_tools else None
     config = self._build_sdk_config(tool_results)
     if conversation_id:
       config.conversation_id = conversation_id
@@ -444,40 +455,337 @@ class AntigravityAgent(BaseAgent):
       return False
     return not active.agent.conversation.history
 
+  def _extract_tool_name(self, tool: Any) -> str:
+    """Extracts the tool name safely without dynamic reflection."""
+    if isinstance(tool, str):
+      return tool
+    try:
+      return str(tool.__name__)
+    except AttributeError:
+      return ''
+
+  def _matching_subagent_by_tool(self, step: Step) -> str | None:
+    """Returns the SDK subagent name if a tool call belongs to one subagent."""
+    tool_calls = (
+        step.tool_calls if isinstance(step.tool_calls, (list, tuple)) else ()
+    )
+    sdk_subagents = (
+        self.config.subagents
+        if isinstance(self.config.subagents, (list, tuple))
+        else ()
+    )
+    for call in tool_calls:
+      matching = [
+          subagent.name
+          for subagent in sdk_subagents
+          if isinstance(subagent.name, str)
+          and subagent.name
+          and any(
+              self._extract_tool_name(tool) == call.name
+              for tool in subagent.tools or ()
+          )
+      ]
+      if len(matching) == 1:
+        return matching[0]
+    return None
+
+  def _extract_session_subagent_authors(
+      self, ctx: InvocationContext
+  ) -> dict[str, str]:
+    """Returns prior sub-agent trajectory-to-author mappings from session."""
+    session = ctx.session
+    session_events = (
+        session.events
+        if session is not None and isinstance(session.events, (list, tuple))
+        else ()
+    )
+    authors: dict[str, str] = {}
+    excluded_authors = {self.name, 'user', f'{self.name}_subagent'}
+    for past_event in session_events:
+      custom_metadata = past_event.custom_metadata
+      author = past_event.author
+      if not isinstance(custom_metadata, dict) or not isinstance(author, str):
+        continue
+      trajectory_id = custom_metadata.get('trajectory_id')
+      depth = custom_metadata.get('depth')
+      has_subagent_meta = (
+          isinstance(depth, int) and not isinstance(depth, bool) and depth > 0
+      ) or bool(custom_metadata.get('parent_trajectory_id'))
+      if (
+          isinstance(trajectory_id, str)
+          and trajectory_id
+          and has_subagent_meta
+          and author
+          and author not in excluded_authors
+      ):
+        authors[trajectory_id] = author
+    return authors
+
+  def _resolve_step_context(
+      self,
+      step: Step,
+      *,
+      main_trajectory_id: str,
+      subagent_authors: dict[str, str],
+      pending_invocations: list[str],
+  ) -> tuple[str, str, dict[str, Any] | None]:
+    """Returns ``(author, trajectory_key, custom_metadata)`` for ``step``."""
+    # 1. Record queued sub-agent names from invoke_subagent calls.
+    tool_calls = (
+        step.tool_calls if isinstance(step.tool_calls, (list, tuple)) else ()
+    )
+    for call in tool_calls:
+      if call.name != 'invoke_subagent' or not isinstance(call.args, dict):
+        continue
+      entries = call.args.get('Subagents') or call.args.get('subagents') or ()
+      for item in entries if isinstance(entries, (list, tuple)) else ():
+        if isinstance(item, dict):
+          subagent_name = (
+              item.get('TypeName') or item.get('type_name') or item.get('name')
+          )
+          if isinstance(subagent_name, str) and subagent_name:
+            pending_invocations.append(subagent_name)
+
+    # 2. Classify whether the step belongs to a sub-agent trajectory.
+    trajectory_id = (
+        step.trajectory_id if isinstance(step.trajectory_id, str) else ''
+    )
+    depth = step.depth if isinstance(step.depth, int) and step.depth > 0 else 0
+    parent_trajectory_id = (
+        step.parent_trajectory_id
+        if isinstance(step.parent_trajectory_id, str)
+        else ''
+    )
+    matched_by_tool = self._matching_subagent_by_tool(step)
+    is_subagent = (
+        depth > 0
+        or bool(parent_trajectory_id)
+        or (bool(trajectory_id) and trajectory_id in subagent_authors)
+        or (
+            bool(main_trajectory_id)
+            and bool(trajectory_id)
+            and trajectory_id != main_trajectory_id
+            and bool(pending_invocations)
+        )
+        or (
+            not trajectory_id
+            and matched_by_tool is not None
+            and matched_by_tool in subagent_authors.values()
+        )
+    )
+
+    # 3. Resolve event author and normalized trajectory hierarchy metadata.
+    author = self.name
+    trajectory_key = main_trajectory_id or trajectory_id
+    if is_subagent:
+      sdk_subagents = (
+          self.config.subagents
+          if isinstance(self.config.subagents, (list, tuple))
+          else ()
+      )
+      if trajectory_id and trajectory_id in subagent_authors:
+        author = subagent_authors[trajectory_id]
+      elif matched_by_tool is not None:
+        author = matched_by_tool
+      elif pending_invocations:
+        author = pending_invocations.pop(0)
+      elif (
+          len(sdk_subagents) == 1
+          and isinstance(sdk_subagents[0].name, str)
+          and sdk_subagents[0].name
+      ):
+        author = sdk_subagents[0].name
+      else:
+        author = f'{self.name}_subagent'
+      if trajectory_id:
+        if author != f'{self.name}_subagent':
+          subagent_authors[trajectory_id] = author
+        trajectory_key = trajectory_id
+      else:
+        trajectory_key = next(
+            (
+                sub_traj_id
+                for sub_traj_id, sub_author in reversed(
+                    list(subagent_authors.items())
+                )
+                if sub_author == author
+            ),
+            '',
+        )
+      depth = depth if depth > 0 else 1
+      parent_trajectory_id = parent_trajectory_id or main_trajectory_id
+
+    if not trajectory_key and not parent_trajectory_id and depth <= 0:
+      return author, trajectory_key, None
+    step_index = step.step_index if isinstance(step.step_index, int) else 0
+    metadata: dict[str, Any] = {
+        'trajectory_id': trajectory_key,
+        'step_index': step_index,
+        'depth': depth,
+    }
+    if parent_trajectory_id:
+      metadata['parent_trajectory_id'] = parent_trajectory_id
+    return author, trajectory_key, metadata
+
   async def _run_turn(
       self, active: _ActiveConversation, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
+    # 1. Initialize per-turn tracking buffers and send the user prompt.
     seen_tool_calls: set[str] = set()
     seen_tool_results: set[str] = set()
+    pending_function_calls: dict[str, list[Event]] = {}
+    seen_thought_steps: dict[str, str] = {}
+    latest_thoughts: dict[str, tuple[str, Any]] = {}
+    subagent_authors: dict[str, str] = self._extract_session_subagent_authors(
+        ctx
+    )
+    pending_invocations: list[str] = []
+    main_trajectory_id = ''
     streaming = bool(
         ctx.run_config and ctx.run_config.streaming_mode == StreamingMode.SSE
     )
 
     await active.agent.conversation.send(self._extract_user_prompt(ctx))
 
-    async for step in active.agent.conversation.receive_steps():
-      for event in convert_step_to_events(
-          step,
+    # 2. Stream trajectory steps and convert each into ADK events.
+    async def _stream_raw_events() -> AsyncGenerator[Event, None]:
+      nonlocal main_trajectory_id
+      async for step in active.agent.conversation.receive_steps():
+        if active.tool_results is not None:
+          # Yield to the event loop so backgrounded post_tool_call hook
+          # tasks can record results before convert_step_to_events drains them.
+          await asyncio.sleep(0)
+        trajectory_id = (
+            step.trajectory_id if isinstance(step.trajectory_id, str) else ''
+        )
+        if not main_trajectory_id:
+          step_depth = (
+              step.depth
+              if isinstance(step.depth, int) and step.depth > 0
+              else 0
+          )
+          parent_traj_id = (
+              step.parent_trajectory_id
+              if isinstance(step.parent_trajectory_id, str)
+              else ''
+          )
+          if trajectory_id and step_depth == 0 and not parent_traj_id:
+            main_trajectory_id = trajectory_id
+          elif parent_traj_id and step_depth <= 1:
+            main_trajectory_id = parent_traj_id
+        if main_trajectory_id and '' in pending_function_calls:
+          orphan_calls = pending_function_calls.pop('')
+          pending_function_calls.setdefault(main_trajectory_id, []).extend(
+              orphan_calls
+          )
+        if main_trajectory_id and '' in latest_thoughts:
+          orphan_key, orphan_part = latest_thoughts.pop('')
+          if orphan_key.startswith(':'):
+            orphan_key = f'{main_trajectory_id}{orphan_key}'
+          latest_thoughts.setdefault(
+              main_trajectory_id, (orphan_key, orphan_part)
+          )
+        step_author, trajectory_key, step_metadata = self._resolve_step_context(
+            step,
+            main_trajectory_id=main_trajectory_id,
+            subagent_authors=subagent_authors,
+            pending_invocations=pending_invocations,
+        )
+        if (
+            not trajectory_id
+            and not step.tool_calls
+            and not pending_function_calls.get(trajectory_key)
+        ):
+          active_traj_key = next(
+              (
+                  cand_key
+                  for cand_key, cand_events in reversed(
+                      list(pending_function_calls.items())
+                  )
+                  if cand_events
+              ),
+              None,
+          )
+          if active_traj_key is not None:
+            trajectory_key = active_traj_key
+            pending_meta = pending_function_calls[active_traj_key][
+                0
+            ].custom_metadata
+            if isinstance(pending_meta, dict):
+              step_metadata = {
+                  **pending_meta,
+                  'step_index': (
+                      step.step_index if isinstance(step.step_index, int) else 0
+                  ),
+              }
+        pending_trajectory_events = pending_function_calls.setdefault(
+            trajectory_key, []
+        )
+        for event in convert_step_to_events(
+            step,
+            ctx=ctx,
+            author=step_author,
+            seen_tool_calls=seen_tool_calls,
+            seen_tool_results=seen_tool_results,
+            tool_results=active.tool_results,
+            streaming=streaming,
+            pending_function_calls=pending_trajectory_events,
+            seen_thought_steps=seen_thought_steps,
+            latest_thoughts=latest_thoughts,
+            custom_metadata=step_metadata,
+        ):
+          yield event
+
+      # 3. Flush remaining buffered calls and drain any trailing client results.
+      for traj_key, pending_trajectory_events in pending_function_calls.items():
+        if not pending_trajectory_events:
+          continue
+        cached = latest_thoughts.pop(traj_key, None)
+        if cached is not None and pending_trajectory_events[0].content:
+          parts = pending_trajectory_events[0].content.parts
+          if parts is not None and not any(
+              bool(part.thought) for part in parts
+          ):
+            parts.insert(0, cached[1])
+        for event in pending_trajectory_events:
+          if event.content and event.content.parts:
+            for part in event.content.parts:
+              if part.function_call and part.function_call.id:
+                seen_tool_calls.add(part.function_call.id)
+          yield event
+      pending_function_calls.clear()
+
+      # A client tool's terminal step carries empty `tool_calls`: its result
+      # arrives on the `post_tool_call` hook, not in a step, so pair it up after
+      # the loop. The hook is a blocking round trip the harness completes before
+      # the turn goes idle, so every result owed a response is buffered by now.
+      for event in drain_tool_results(
           ctx=ctx,
-          author=self.name,
           seen_tool_calls=seen_tool_calls,
           seen_tool_results=seen_tool_results,
           tool_results=active.tool_results,
-          streaming=streaming,
       ):
         yield event
 
-    # A client tool's terminal step carries empty `tool_calls`: its result
-    # arrives on the `post_tool_call` hook, not in a step, so pair it up after
-    # the loop. The hook is a blocking round trip the harness completes before
-    # the turn goes idle, so every result owed a response is buffered by now.
-    for event in drain_tool_results(
-        ctx=ctx,
-        seen_tool_calls=seen_tool_calls,
-        seen_tool_results=seen_tool_results,
-        tool_results=active.tool_results,
-    ):
+    has_emitted_events = False
+    async for event in _stream_raw_events():
+      has_emitted_events = True
       yield event
+
+    if has_emitted_events:
+      usage = active.agent.conversation.last_turn_usage
+      if usage is not None:
+        yield Event(
+            invocation_id=ctx.invocation_id,
+            author=self.name,
+            branch=ctx.branch,
+            usage_metadata=genai_types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=usage.prompt_token_count,
+                candidates_token_count=usage.candidates_token_count,
+                total_token_count=usage.total_token_count,
+                thoughts_token_count=usage.thoughts_token_count,
+            ),
+        )
 
     if active.tool_results is not None:
       # Whatever is left was never owed a response.

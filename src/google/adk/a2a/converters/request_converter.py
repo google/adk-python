@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import functools
+import logging
 from typing import Any
 from typing import Optional
 
@@ -28,6 +30,8 @@ from ...agents.run_config import RunConfig
 from ..experimental import a2a_experimental
 from .part_converter import A2APartToGenAIPartConverter
 from .part_converter import convert_a2a_part_to_genai_part
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 A2A_METADATA_KEY = 'a2a_metadata'
 
@@ -67,15 +71,20 @@ Returns:
 
 
 def _get_user_id(request: RequestContext) -> str:
-  # Get user from call context if available (auth is enabled on a2a server)
-  if (
-      request.call_context
-      and request.call_context.user
-      and request.call_context.user.user_name
-  ):
-    return request.call_context.user.user_name
+  """Returns the ADK user id to run this request as.
 
-  # Get user from context id
+  The user id scopes the session, ``user:``-prefixed state, artifacts and
+  memory, so it is taken only from a principal the A2A server authenticated.
+  The name on an unauthenticated principal is a claim the caller made rather
+  than one the server checked, so it is ignored and the conversation is used as
+  an anonymous identity instead.
+  """
+  user = request.call_context.user if request.call_context else None
+  if user and user.user_name:
+    if user.is_authenticated:
+      return user.user_name
+    _warn_unauthenticated_user_name_once()
+
   return f'A2A_USER_{request.context_id}'
 
 
@@ -98,16 +107,24 @@ def build_caller_principal(request: RequestContext) -> CallerPrincipal:
   """
   user = request.call_context.user if request.call_context else None
   user_name = getattr(user, 'user_name', None) if user is not None else None
-  # Authenticated exactly when _get_user_id above takes its first branch, so
-  # the principal and the user id can never disagree about the same request,
-  # plus one extra check: an a2a User that reports is_authenticated False is
-  # not vouched for even if it carries a name. Stricter by one condition,
-  # never looser.
+  # Authenticated exactly when _get_user_id above uses the name: a non-empty
+  # user_name on a principal that reports is_authenticated. The principal and
+  # the user id can therefore never disagree about the same request.
   if not isinstance(user_name, str) or not user_name:
     return CallerPrincipal(authenticated=False, source='a2a')
-  if getattr(user, 'is_authenticated', True) is False:
+  if not getattr(user, 'is_authenticated', False):
     return CallerPrincipal(authenticated=False, source='a2a')
   return CallerPrincipal(authenticated=True, user_name=user_name, source='a2a')
+
+
+@functools.lru_cache(maxsize=1)
+def _warn_unauthenticated_user_name_once() -> None:
+  logger.warning(
+      'Ignoring the user name of an unauthenticated A2A caller. Requests'
+      ' without an authenticated user run as A2A_USER_<context_id>, so'
+      ' sessions, state, artifacts and memory stored under an unverified name'
+      ' are no longer used.'
+  )
 
 
 @a2a_experimental

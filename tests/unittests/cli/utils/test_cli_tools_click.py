@@ -1339,6 +1339,28 @@ def test_cli_deploy_gke_failure(
   assert "Deploy failed: boom" in result.output
 
 
+def test_cli_deploy_cloud_run_click_error_is_surfaced_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A ClickException from the deployer keeps its own message."""
+
+  def _reject(*_a: Any, **_k: Any) -> None:
+    raise click.ClickException("extra_packages path not found: nope")
+
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", _reject)
+
+  agent_dir = tmp_path / "agent_click_error"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main, ["deploy", "cloud_run", str(agent_dir)]
+  )
+
+  assert result.exit_code == 1
+  assert "Error: extra_packages path not found: nope" in result.output
+  assert "Deploy failed" not in result.output
+
+
 def test_cli_deploy_cloud_run_passthrough_args(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1588,6 +1610,38 @@ def test_cli_deploy_agent_engine_otel_to_cloud_success(
   assert called_kwargs.get("project") == "test-proj"
   assert called_kwargs.get("region") == "us-central1"
   assert called_kwargs.get("otel_to_cloud")
+
+
+def test_cli_deploy_agent_engine_usage_error_exits_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A usage error keeps click's exit code 2 and its usage message."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_agent_engine", rec)
+
+  agent_dir = tmp_path / "agent_ae_usage"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "agent_engine",
+          "--project",
+          "test-proj",
+          "--region",
+          "us-central1",
+          "--validate-agent-import",
+          "--skip-agent-import-validation",
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 2
+  assert "Usage:" in result.output
+  assert "Error: Do not pass both --validate-agent-import" in result.output
+  assert "Deploy failed" not in result.output
+  assert not rec.calls
 
 
 # cli deploy gke
@@ -3431,7 +3485,7 @@ def test_cli_migrate_session_defaults_to_safe_unpickling(
 def test_cli_migrate_session_reports_the_underlying_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  """A failed migration is reported to the user rather than raised."""
+  """A failed migration is reported to the user and exits non-zero."""
 
   def explode(*args: Any, **kwargs: Any) -> None:
     raise RuntimeError("destination schema is newer")
@@ -3452,4 +3506,5 @@ def test_cli_migrate_session_reports_the_underlying_failure(
       ],
   )
 
+  assert result.exit_code == 1
   assert "Migration failed: destination schema is newer" in result.output

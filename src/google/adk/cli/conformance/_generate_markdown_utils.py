@@ -66,7 +66,7 @@ def generate_markdown_report(
 
   streaming_modes.sort()
 
-  with open(report_path, "w") as f:
+  with open(report_path, "w", encoding="utf-8") as f:
     f.write("# ADK Python Conformance Test Report\n\n")
     f.write("## Summary\n\n")
     f.write(f"- **ADK Version**: {server_version}\n")

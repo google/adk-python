@@ -182,6 +182,9 @@ def _session_for_routing(
   """
   if not _get_function_responses_from_content(new_message):
     return session
+  filtered_events = _apply_rewinds(session.events)
+  if filtered_events and _is_abort_event(filtered_events[-1]):
+    return session
   return session.model_copy(
       update={
           'events': [
@@ -937,7 +940,6 @@ class Runner:
       self,
       *,
       session: Session,
-      skip_token_compaction: bool,
   ) -> None:
     """Run best-effort derived compaction after a completed invocation.
 
@@ -958,7 +960,6 @@ class Runner:
               self.app,
               session,
               self.session_service,
-              skip_token_compaction=skip_token_compaction,
           )
       ) as compaction_events:
         async for compaction_event in compaction_events:
@@ -1198,52 +1199,27 @@ class Runner:
     from .agents.llm_agent import LlmAgent
     from .workflow._base_node import BaseNode
 
-    # Optional dependency: RemoteA2aAgent is only available if a2a is installed.
-    remote_a2a_agent_type: Any = None
-    try:
-      from .agents.remote_a2a_agent import RemoteA2aAgent  # pylint: disable=g-import-not-at-top
-
-      remote_a2a_agent_type = RemoteA2aAgent
-    except ImportError:
-      pass
-
     if isinstance(self.agent, LlmAgent):
-      if self.agent.mode is None:
-        # LlmAgent as root agent defaults to chat mode.
-        self.agent.mode = 'chat'
+      # LlmAgent as root agent defaults to chat mode without mutating the
+      # shared agent instance in place.
+      effective_mode = self.agent.mode or 'chat'
 
       # A root LlmAgent runs in chat mode (the default) or task mode. Task mode
       # is fully supported for any caller: the agent runs to completion via the
       # finish_task tool and its result is promoted onto the terminal event's
       # output field (an A2A server turns that into an artifact; a direct caller
       # reads it off the event stream).
-      if self.agent.mode in ('chat', 'task'):
+      if effective_mode in ('chat', 'task'):
         session = await self._get_or_create_session(
             user_id=user_id,
             session_id=session_id,
             get_session_config=run_config.get_session_config,
         )
-        if self.agent.mode == 'chat':
-          # when the chat coordinator has task-mode sub-agents,
-          # the wrapper handles delegation via ctx.run_node. Don't let
-          # the legacy sub-agent picker bypass the coordinator on resume.
-          remote_a2a_agent_class = (
-              (remote_a2a_agent_type,)
-              if remote_a2a_agent_type is not None
-              else ()
+        agent_to_run: BaseAgent
+        if self._uses_legacy_sub_agent_picker():
+          agent_to_run = self._find_agent_to_run(
+              _session_for_routing(session, new_message), self.agent
           )
-          has_task_subagent = any(
-              isinstance(sa, (LlmAgent,) + remote_a2a_agent_class)
-              and getattr(sa, 'mode', None) == 'task'
-              for sa in self.agent.sub_agents or []
-          )
-          agent_to_run: BaseAgent
-          if has_task_subagent:
-            agent_to_run = self.agent
-          else:
-            agent_to_run = self._find_agent_to_run(
-                _session_for_routing(session, new_message), self.agent
-            )
         else:
           agent_to_run = self.agent
 
@@ -1252,7 +1228,7 @@ class Runner:
       else:
         raise ValueError(
             "LlmAgent as root agent must have mode='chat' or 'task', but got"
-            f" mode='{self.agent.mode}'."
+            f" mode='{effective_mode}'."
         )
       async with aclosing(
           self._run_node_async(
@@ -1415,9 +1391,6 @@ class Runner:
           # the end of an invocation.)
           await self._run_post_invocation_compaction(
               session=invocation_context.session,
-              skip_token_compaction=(
-                  invocation_context.token_compaction_checked
-              ),
           )
 
     # For BaseAgent root agents running via _run_with_trace, events flow
@@ -1658,7 +1631,9 @@ class Runner:
       await _notify_run_error(plugin_manager, invocation_context, e)
       raise
     except asyncio.CancelledError as e:
-      if e.args and e.args[0] == _CALLER_CLOSED_EARLY_MSG:
+      if (
+          e.args and e.args[0] == _CALLER_CLOSED_EARLY_MSG
+      ) or invocation_context.is_aborted:
         closing_early = True
       else:
         run_error = e
@@ -1833,6 +1808,28 @@ class Runner:
     ) as agen:
       async for event in agen:
         yield event
+
+  def _uses_legacy_sub_agent_picker(self) -> bool:
+    """Returns whether chat-mode root LlmAgent uses the legacy sub-agent picker."""
+    from .agents.llm_agent import LlmAgent  # pylint: disable=g-import-not-at-top
+
+    if (
+        not isinstance(self.agent, LlmAgent)
+        or (self.agent.mode or 'chat') != 'chat'
+    ):
+      return False
+    remote_a2a_agent_class: tuple[Any, ...] = ()
+    try:
+      from .agents.remote_a2a_agent import RemoteA2aAgent  # pylint: disable=g-import-not-at-top
+
+      remote_a2a_agent_class = (RemoteA2aAgent,)
+    except ImportError:
+      pass
+    return not any(
+        isinstance(sa, (LlmAgent,) + remote_a2a_agent_class)
+        and getattr(sa, 'mode', None) == 'task'
+        for sa in self.agent.sub_agents or []
+    )
 
   def _find_agent_to_run(
       self, session: Session, root_agent: BaseAgent
