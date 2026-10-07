@@ -14,6 +14,21 @@
 
 from __future__ import annotations
 
+from typing import Any
+from typing import TYPE_CHECKING
+
 import vertexai as vertexai
 from vertexai.preview import example_stores as example_stores
-from vertexai.preview import rag as rag
+
+if TYPE_CHECKING:
+  from vertexai.preview import rag as rag
+
+
+def __getattr__(name: str) -> Any:
+  if name == 'rag':
+    # Load on demand: vertexai.preview.rag is deprecated and warns on import,
+    # so evaluation and other Vertex AI helpers must not pull it in.
+    from vertexai.preview import rag
+
+    return rag
+  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
