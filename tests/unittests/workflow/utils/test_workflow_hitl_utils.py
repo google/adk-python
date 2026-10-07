@@ -236,6 +236,14 @@ class TestCreateAuthRequestEvent:
     assert oauth2["clientId"] == "client-id"
     assert "client-secret" not in json.dumps(fc.args)
 
+  def test_configured_secrets_are_not_handed_to_the_caller(self):
+    """The node's configured API key is not handed to the caller."""
+    event = create_auth_request_event(
+        _api_key_auth_config(), "auth-id-1", _empty_state()
+    )
+    fc = event.content.parts[0].function_call
+    assert "placeholder" not in json.dumps(fc.args)
+
 
 # --- process_auth_resume / has_auth_credential ---
 

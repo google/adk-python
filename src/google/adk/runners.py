@@ -34,7 +34,6 @@ from typing import TYPE_CHECKING
 import warnings
 
 from google.genai import types
-from opentelemetry import context
 from typing_extensions import Self
 
 from .agents.base_agent import BaseAgent
@@ -56,9 +55,6 @@ from .events._internal_metadata import without_internal_metadata
 from .events._rewind_events import _apply_rewinds
 from .events.event import Event
 from .events.event_actions import EventActions
-from .flows.llm_flows.context import _contents as contents
-from .flows.llm_flows.tools._functions import find_matching_function_call as _find_matching_function_call
-from .live import _runner_utils as _live_runner_utils
 from .live.live_request_queue import LiveRequestQueue
 from .memory.base_memory_service import BaseMemoryService
 from .platform.thread import create_thread
@@ -67,9 +63,8 @@ from .plugins.plugin_manager import PluginManager
 from .sessions.base_session_service import BaseSessionService
 from .sessions.base_session_service import GetSessionConfig
 from .sessions.session import Session
-from .telemetry import _instrumentation
-from .telemetry.tracing import tracer
 from .tools.base_toolset import BaseToolset
+from .utils import _lazy
 from .utils._debug_output import print_event
 from .utils._runner_utils import _notify_run_error
 from .utils._runner_utils import _with_caller_context
@@ -78,14 +73,12 @@ from .workflow._base_node import BaseNode
 if TYPE_CHECKING:
   from .apps.app import App
   from .apps.app import ResumabilityConfig
+  from .telemetry.tracing import tracer as tracer
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 _EventQueueItem = tuple[object, asyncio.Event | None]
 
-# Silence unused warning.
-# tracer is imported for backwards compatibility, to avoid breaking change in the API.
-_ = tracer
 
 # App names already told that agent transfer runs without a context cache.
 _UNCACHED_TRANSFER_APPS: set[str] = set()
@@ -219,7 +212,9 @@ def _can_transfer_between_agents(root: Any) -> bool:
 
 def _stamp_event_branch_context(ic: InvocationContext, event: Event) -> None:
   """Stamps the event with the branch and isolation scope of its matching function call."""
-  if function_call := _find_matching_function_call(
+  from .flows.llm_flows.tools._functions import find_matching_function_call
+
+  if function_call := find_matching_function_call(
       ic._get_events(current_invocation=True), event
   ):
     event.branch = function_call.branch
@@ -622,6 +617,8 @@ class Runner:
       run_config: Optional[RunConfig] = None,
   ) -> AsyncGenerator[Event, None]:
     """Run a non-agent BaseNode in live mode."""
+    from .live import _runner_utils as _live_runner_utils
+
     async with aclosing(
         _live_runner_utils.run_node_live(
             self,
@@ -1267,6 +1264,10 @@ class Runner:
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
+      from opentelemetry import context
+
+      from .telemetry import _instrumentation
+
       caller_ctx_trace = context.get_current()
       with _instrumentation.record_invocation(
           entrypoint_node=root_agent,
@@ -1453,13 +1454,14 @@ class Runner:
     # transcription events should not be appended.
     # Function call and function response events should be appended.
     # Other control events should be appended.
-    if is_live_call and contents._is_live_model_media_event_with_inline_data(
-        event
-    ):
-      # We don't append live model media events with inline data to avoid
-      # storing large blobs in the session. However, events with file_data
-      # (references to artifacts) should be appended.
-      return False
+    if is_live_call:
+      from .flows.llm_flows.context import _contents as contents
+
+      if contents._is_live_model_media_event_with_inline_data(event):
+        # We don't append live model media events with inline data to avoid
+        # storing large blobs in the session. However, events with file_data
+        # (references to artifacts) should be appended.
+        return False
     return True
 
   def _get_output_event(
@@ -1782,6 +1784,8 @@ class Runner:
     .. NOTE::
         Either `session` or both `user_id` and `session_id` must be provided.
     """
+
+    from .live import _runner_utils as _live_runner_utils
 
     async with aclosing(
         _live_runner_utils.run_live(
@@ -2408,3 +2412,9 @@ class InMemoryRunner(Runner):
         memory_service=InMemoryMemoryService(),
         plugin_close_timeout=plugin_close_timeout,
     )
+
+
+if not TYPE_CHECKING:
+  __getattr__, __dir__ = _lazy.accessors(
+      globals(), {'tracer': 'google.adk.telemetry.tracing'}
+  )
