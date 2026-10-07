@@ -1012,6 +1012,14 @@ class FunctionChunk(BaseModel):
   name: Optional[str]
   args: Optional[str]
   index: Optional[int] = 0
+  # Signature-bearing fields: Gemini thinking models attach a thought_signature to
+  # each function call, and on the OpenAI-compatible route it rides in
+  # extra_content.google.thought_signature (Vertex also uses
+  # provider_specific_fields). The streamed delta carries them, so they must be
+  # captured here or the reassembled tool call loses the signature and the
+  # follow-up request is rejected.
+  extra_content: Optional[dict] = None
+  provider_specific_fields: Optional[dict] = None
 
 
 class TextChunk(BaseModel):
@@ -2710,6 +2718,8 @@ def _model_response_to_chunk(
               name=func_name,
               args=func_args,
               index=func_index,
+              extra_content=tool_call.get("extra_content"),
+              provider_specific_fields=tool_call.get("provider_specific_fields"),
           ), finish_reason
 
     if finish_reason and not (message_content or tool_calls or reasoning_parts):
@@ -3817,6 +3827,8 @@ class LiteLlm(BaseLlm):
                         arguments=args,
                     ),
                     index=index,
+                    extra_content=func_data.get("extra_content"),
+                    provider_specific_fields=func_data.get("provider_specific_fields"),
                 )
             )
 
@@ -3927,7 +3939,13 @@ class LiteLlm(BaseLlm):
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index
             if index not in function_calls:
-              function_calls[index] = {"name": "", "args_parts": [], "id": None}
+              function_calls[index] = {
+                  "name": "",
+                  "args_parts": [],
+                  "id": None,
+                  "extra_content": None,
+                  "provider_specific_fields": None,
+              }
 
             if chunk.name:
               function_calls[index]["name"] += chunk.name
@@ -3950,6 +3968,12 @@ class LiteLlm(BaseLlm):
             function_calls[index]["id"] = (
                 chunk.id or function_calls[index]["id"] or str(index)
             )
+            if chunk.extra_content:
+              function_calls[index]["extra_content"] = chunk.extra_content
+            if chunk.provider_specific_fields:
+              function_calls[index]["provider_specific_fields"] = (
+                  chunk.provider_specific_fields
+              )
 
             partial_args = None
             if chunk.args:
