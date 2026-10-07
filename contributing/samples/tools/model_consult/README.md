@@ -132,7 +132,11 @@ You can run the sample interactively from the repository root in one of two ways
     ```
 
 > **Tip: Inspecting the Tool Output**
-> Once the web UI is running, submit a prompt like *"Customer CUST-108 wants a full refund to their original payment method for order ORD-502..."*. In the right-hand **Event Log** panel, look for the `model_consult` tool execution. Click on it to inspect the raw JSON response, which reveals the advisor model's diagnosis, step-by-step plan, and the remaining consultation budget for the session.
+> By default, `adk run` in human-readable mode only prints the final text response. To inspect `model_consult` calls and verify the advisor's guidance, you can:
+>
+> 1.  **Use the ADK Web UI:** Click the `model_consult` event in the chat pane to open the **Events / Trace** inspector. The `functionCall` part shows the question sent, and `functionResponse` shows the returned dictionary, including the advisor's plan and remaining budget.
+> 2.  **Use the ADK CLI:** Pass `--jsonl` or `--save_session` to stream or save the full event log (e.g., `adk run contributing/samples/tools/model_consult --jsonl`).
+> 3.  **Inspect Programmatically:** When running via `Runner.run_async()`, inspect `event.get_function_responses()` for `name == "model_consult"`.
 
 ## Related Guides
 
