@@ -202,6 +202,11 @@ an optional `session_id`, where `None` means the user-scoped namespace. Your
 implementation is responsible for honoring the `user:` prefix, since the routing
 lives in the service and not above it.
 
+`list_artifact_keys` must be complete: anything readable in scope should be
+returned. Callers (such as `LoadArtifactsTool`) rely on this listing to
+determine which artifacts may be loaded, so any omitted or paginated-out
+artifacts will be treated as out of scope and cannot be loaded by the model.
+
 ## Letting the model fetch an artifact
 
 Tools decide for themselves what to load. To let the *model* decide, add the

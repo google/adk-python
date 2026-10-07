@@ -55,6 +55,21 @@ class _BranchPath:
     return list(self._segments)
 
   @property
+  def ordered_run_ids(self) -> tuple[str, ...]:
+    """Extracts all run IDs (the part after '@') in segment order.
+
+    Example:
+      - Path: 'parent@1.child@2.node'
+      - Returns: ('1', '2')
+    """
+    ids: list[str] = []
+    for segment in self._segments:
+      parts = segment.rsplit("@", 1)
+      if len(parts) > 1 and parts[1]:
+        ids.append(parts[1])
+    return tuple(ids)
+
+  @property
   def run_ids(self) -> set[str]:
     """Extracts all run IDs (the part after '@') from all segments in the path.
 
@@ -62,12 +77,7 @@ class _BranchPath:
       - Path: 'parent@1.child@2.node'
       - Returns: {'1', '2'}
     """
-    ids = set()
-    for segment in self._segments:
-      parts = segment.rsplit("@", 1)
-      if len(parts) > 1 and parts[1]:
-        ids.add(parts[1])
-    return ids
+    return set(self.ordered_run_ids)
 
   @property
   def parent(self) -> _BranchPath | None:
@@ -132,6 +142,39 @@ class _BranchPath:
 
     new_segments = [s for s in segment_or_path.split(".") if s]
     return _BranchPath(self._segments + new_segments)
+
+  @classmethod
+  def is_tool_branch(
+      cls, branch: str, node_name: str, tool_call_ids: set[str]
+  ) -> bool:
+    """Whether ``branch`` is the sub-branch a tool message is published on.
+
+    A tool's user-facing message is published on ``<tool>@<function_call_id>``
+    while being authored under the agent's name and carrying the agent's node
+    path, so the branch is the only thing that identifies it; a function call id
+    in the leaf segment distinguishes it from an ordinary node branch, whose
+    leaf carries a run id instead.
+
+    A function call id in the leaf is not sufficient on its own: an agent run as
+    a tool is scoped on ``<parent>.<agent name>@<function call id>``, which is
+    that agent's own branch. A leaf naming the node itself is therefore never
+    treated as a tool branch.
+
+    Args:
+      branch: The branch to classify.
+      node_name: Name of the node the branch is being considered for.
+      tool_call_ids: Ids of the function calls recorded in the session.
+
+    Returns:
+      True if the branch belongs to a tool message rather than to the node.
+    """
+    segments = cls.from_string(branch).segments
+    if not segments:
+      return False
+    leaf_name, separator, trailing_id = segments[-1].rpartition("@")
+    if not separator or trailing_id not in tool_call_ids:
+      return False
+    return leaf_name != node_name
 
   @classmethod
   def create_sub_branch(

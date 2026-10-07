@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import AsyncExitStack
 from datetime import timedelta
+import logging
 import time
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -24,9 +25,13 @@ from unittest.mock import patch
 
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.tools.mcp_tool.session_context import _cancel_and_drain
+from google.adk.tools.mcp_tool.session_context import _connect
 from google.adk.tools.mcp_tool.session_context import _format_exception
 from google.adk.tools.mcp_tool.session_context import _read_timeout
+from google.adk.tools.mcp_tool.session_context import _warn_probe_unavailable
 from google.adk.tools.mcp_tool.session_context import SessionContext
+from google.adk.version import __version__
 import httpx
 from mcp import ClientSession
 import pytest
@@ -422,10 +427,41 @@ class TestSessionContext:
 
       await session_context.start()
 
-      # Verify ClientSession was called with read_timeout_seconds for stdio
+      # _read_timeout, not a literal: TestReadTimeout owns the concrete type.
       call_args = mock_session_class.call_args
       assert 'read_timeout_seconds' in call_args.kwargs
-      assert call_args.kwargs['read_timeout_seconds'] == timedelta(seconds=5.0)
+      assert call_args.kwargs['read_timeout_seconds'] == _read_timeout(5.0)
+
+      await session_context.close()
+
+  @pytest.mark.asyncio
+  async def test_extra_transport_values_are_ignored(self):
+    """Extra transport values are ignored.
+
+    The streamable HTTP client yields a session-id callback after the read
+    and write streams, so the session takes only the first two values.
+    """
+    mock_client = MockClient(
+        transports=('read_stream', 'write_stream', 'get_session_id')
+    )
+    session_context = SessionContext(
+        mock_client, timeout=5.0, sse_read_timeout=None, is_stdio=False
+    )
+
+    mock_session = MockClientSession()
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
+    ) as mock_session_class:
+      mock_session_class.return_value = mock_session
+
+      session = await session_context.start()
+
+      assert session == mock_session
+      assert mock_session_class.call_args.args == (
+          'read_stream',
+          'write_stream',
+      )
 
       await session_context.close()
 
@@ -471,12 +507,10 @@ class TestSessionContext:
 
       await session_context.start()
 
-      # Verify ClientSession was called with sse_read_timeout
+      # _read_timeout again, for the same reason.
       call_args = mock_session_class.call_args
       assert 'read_timeout_seconds' in call_args.kwargs
-      assert call_args.kwargs['read_timeout_seconds'] == timedelta(
-          seconds=300.0
-      )
+      assert call_args.kwargs['read_timeout_seconds'] == _read_timeout(300.0)
 
       await session_context.close()
 
@@ -695,6 +729,101 @@ class TestSessionContext:
       _, kwargs = mock_client_session_class.call_args
       assert kwargs['elicitation_callback'] is elicitation_callback
 
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize('is_stdio', [False, True])
+  async def test_names_adk_in_client_info(self, is_stdio):
+    """ADK identifies itself rather than leaving the SDK's `mcp` default."""
+    context = SessionContext(
+        client=MockClient(),
+        timeout=5.0,
+        sse_read_timeout=None,
+        is_stdio=is_stdio,
+    )
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession',
+        autospec=True,
+    ) as mock_client_session_class:
+      mock_client_session = mock_client_session_class.return_value
+      mock_client_session.initialize = AsyncMock()
+      async with context:
+        pass
+      _, kwargs = mock_client_session_class.call_args
+      assert kwargs['client_info'].name == 'google-adk'
+      assert kwargs['client_info'].version == __version__
+
+
+class TestConnect:
+  """Tests for `_connect`."""
+
+  @pytest.fixture(autouse=True)
+  def _reset_probe_warning(self):
+    _warn_probe_unavailable.cache_clear()
+
+  @pytest.mark.asyncio
+  async def test_uses_handshake_by_default(self):
+    """Uses `initialize` when the flag is off."""
+    session = Mock()
+    session.initialize = AsyncMock()
+    probe = AsyncMock()
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.negotiate_auto', probe
+    ):
+      await _connect(session)
+
+    session.initialize.assert_awaited_once()
+    probe.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  async def test_probes_when_enabled(self):
+    """Uses `negotiate_auto` when the flag is on."""
+    session = Mock()
+    session.initialize = AsyncMock()
+    probe = AsyncMock()
+
+    with (
+        patch(
+            'google.adk.tools.mcp_tool.session_context.negotiate_auto', probe
+        ),
+        temporary_feature_override(FeatureName._MCP_MODERN_PROTOCOL, True),
+    ):
+      await _connect(session)
+
+    probe.assert_awaited_once_with(session)
+    session.initialize.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  async def test_falls_back_when_probe_unavailable(self, caplog):
+    """Falls back to `initialize` and warns once if the SDK lacks the probe."""
+    session = Mock()
+    session.initialize = AsyncMock()
+
+    with (
+        patch('google.adk.tools.mcp_tool.session_context.negotiate_auto', None),
+        temporary_feature_override(FeatureName._MCP_MODERN_PROTOCOL, True),
+        caplog.at_level(logging.WARNING),
+    ):
+      await _connect(session)
+      await _connect(session)
+
+    assert session.initialize.await_count == 2
+    assert caplog.text.count('no era probe') == 1
+
+  @pytest.mark.asyncio
+  async def test_no_probe_warning_when_disabled(self, caplog):
+    """No warning about a missing probe when the flag is off."""
+    session = Mock()
+    session.initialize = AsyncMock()
+
+    with (
+        patch('google.adk.tools.mcp_tool.session_context.negotiate_auto', None),
+        caplog.at_level(logging.WARNING),
+    ):
+      await _connect(session)
+
+    session.initialize.assert_awaited_once()
+    assert 'no era probe' not in caplog.text
+
 
 class TestSessionContextIsTaskAlive:
   """Tests for the SessionContext._is_task_alive property."""
@@ -871,6 +1000,216 @@ class TestSessionContextRunGuarded:
       finally:
         await killer
 
+  @pytest.mark.asyncio
+  async def test_run_guarded_cancels_coro_when_caller_is_cancelled(self):
+    """Cancelling the caller also cancels the in-flight tool call.
+
+    asyncio.wait does not own the futures it waits on, so a cancelled
+    caller would leave the call running against a session that
+    McpTool._run_async_impl has already released back to the pool.
+    """
+    mock_client = MockClient()
+    session_context = SessionContext(
+        mock_client, timeout=5.0, sse_read_timeout=None
+    )
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
+    ) as mock_session_class:
+      mock_session_class.return_value = MockClientSession()
+      await session_context.start()
+
+      coro_started = asyncio.Event()
+      coro_was_cancelled = False
+
+      async def slow_coro():
+        nonlocal coro_was_cancelled
+        coro_started.set()
+        try:
+          await asyncio.sleep(300)
+          return 'should never reach here'
+        except asyncio.CancelledError:
+          coro_was_cancelled = True
+          raise
+
+      caller = asyncio.create_task(session_context._run_guarded(slow_coro()))
+      await coro_started.wait()
+      caller.cancel()
+
+      with pytest.raises(asyncio.CancelledError):
+        await caller
+
+      assert coro_was_cancelled is True
+
+  @pytest.mark.asyncio
+  async def test_cancel_and_drain_bounds_wait_when_task_does_not_unwind(
+      self, caplog: pytest.LogCaptureFixture
+  ):
+    """If a task does not unwind promptly, drain gives up after the timeout bound."""
+    coro_started = asyncio.Event()
+
+    async def stubborn_coro():
+      coro_started.set()
+      try:
+        await asyncio.sleep(300)
+      except asyncio.CancelledError:
+        # Deliberately ignore prompt unwinding
+        await asyncio.sleep(300)
+
+    task = asyncio.create_task(stubborn_coro())
+    await coro_started.wait()
+
+    start = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger='google_adk'):
+      await _cancel_and_drain(task, timeout=0.05)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 1.0
+    assert not task.done()
+    assert (
+        'Timed out after 0.05s waiting for cancelled task to unwind'
+        in caplog.text
+    )
+
+    # Clean up stubborn task
+    task.cancel()
+    try:
+      await task
+    except asyncio.CancelledError:
+      pass
+
+  @pytest.mark.asyncio
+  async def test_cancel_and_drain_attaches_done_callback_on_timeout(self):
+    """When drain times out, a done callback is attached to retrieve later exceptions."""
+    coro_started = asyncio.Event()
+    task_done = asyncio.Event()
+
+    async def stubborn_failing_coro():
+      coro_started.set()
+      try:
+        await asyncio.sleep(300)
+      except asyncio.CancelledError:
+        try:
+          await asyncio.sleep(0.02)
+          raise RuntimeError('belated failure')
+        finally:
+          task_done.set()
+
+    task = asyncio.create_task(stubborn_failing_coro())
+    await coro_started.wait()
+
+    with patch.object(
+        task, 'add_done_callback', wraps=task.add_done_callback
+    ) as mock_add_callback:
+      await _cancel_and_drain(task, timeout=0.005)
+      callbacks = [call.args[0] for call in mock_add_callback.call_args_list]
+      assert any(cb.__name__ == '<lambda>' for cb in callbacks)
+
+    await task_done.wait()
+    assert task.done()
+    assert isinstance(task.exception(), RuntimeError)
+
+  @pytest.mark.asyncio
+  async def test_cancel_and_drain_bounds_wait_when_timeout_is_zero(self):
+    """If timeout is zero, drain polls completion immediately without awaiting unbounded."""
+    coro_started = asyncio.Event()
+
+    async def stubborn_coro():
+      coro_started.set()
+      try:
+        await asyncio.sleep(300)
+      except asyncio.CancelledError:
+        await asyncio.sleep(300)
+
+    task = asyncio.create_task(stubborn_coro())
+    await coro_started.wait()
+
+    drain_task = asyncio.create_task(_cancel_and_drain(task, timeout=0.0))
+    await asyncio.sleep(0.05)
+    try:
+      assert drain_task.done(), (
+          'drain with timeout=0.0 hung on stubborn task instead of returning'
+          ' immediately'
+      )
+    finally:
+      drain_task.cancel()
+      task.cancel()
+      await asyncio.gather(drain_task, task, return_exceptions=True)
+
+  @pytest.mark.asyncio
+  async def test_run_guarded_unwinds_when_caller_cancelled_even_if_coro_hangs(
+      self,
+  ):
+    """Caller cancellation unwinds promptly even if the coro does not unwind."""
+    mock_client = MockClient()
+    session_context = SessionContext(
+        mock_client, timeout=5.0, sse_read_timeout=None
+    )
+
+    with (
+        patch(
+            'google.adk.tools.mcp_tool.session_context.ClientSession'
+        ) as mock_session_class,
+        patch(
+            'google.adk.tools.mcp_tool.session_context._CANCEL_DRAIN_TIMEOUT',
+            0.05,
+        ),
+    ):
+      mock_session_class.return_value = MockClientSession()
+      await session_context.start()
+
+      coro_started = asyncio.Event()
+
+      async def stubborn_coro():
+        coro_started.set()
+        try:
+          await asyncio.sleep(300)
+        except asyncio.CancelledError:
+          await asyncio.sleep(300)
+
+      caller = asyncio.create_task(
+          session_context._run_guarded(stubborn_coro())
+      )
+      await coro_started.wait()
+
+      start = time.monotonic()
+      caller.cancel()
+
+      with pytest.raises(asyncio.CancelledError):
+        await caller
+      elapsed = time.monotonic() - start
+
+      assert elapsed < 1.0
+
+  @pytest.mark.asyncio
+  async def test_cancel_and_drain_propagates_cancellation_to_caller(self):
+    """Cancelling the task executing _cancel_and_drain must raise CancelledError."""
+    coro_started = asyncio.Event()
+
+    async def stubborn_coro():
+      coro_started.set()
+      try:
+        await asyncio.sleep(300)
+      except asyncio.CancelledError:
+        await asyncio.sleep(300)
+
+    task = asyncio.create_task(stubborn_coro())
+    await coro_started.wait()
+
+    drain_caller = asyncio.create_task(_cancel_and_drain(task, timeout=5.0))
+    await asyncio.sleep(0.01)
+    drain_caller.cancel()
+
+    try:
+      with pytest.raises(asyncio.CancelledError):
+        await drain_caller
+    finally:
+      task.cancel()
+      try:
+        await task
+      except asyncio.CancelledError:
+        pass
+
 
 class TestSessionContextFlagOffPreservesPreFixBehavior:
   """Pin down that flag=OFF reproduces pre-fix behavior exactly.
@@ -980,17 +1319,37 @@ class TestFormatException:
     assert 'another error' in formatted
 
 
+_SDK_FLAG = 'google.adk.tools.mcp_tool.session_context.IS_MCP_SDK_V2'
+
+
 class TestReadTimeout:
-  """ADK carries timeouts as float seconds and converts at the SDK boundary."""
+  """ADK carries timeouts as float seconds and converts at the SDK boundary.
+
+  The flag is patched rather than read. Mirroring it in the expectation would
+  make every assertion hold whichever way the production branch went, and the
+  2.x branch would never execute where the lock resolves 1.x.
+  """
 
   def test_none_stays_none(self):
     assert _read_timeout(None) is None
 
-  def test_seconds_become_the_type_the_sdk_wants(self):
-    assert _read_timeout(30) == timedelta(seconds=30)
+  # 0 is here because it is a real timeout, not a missing one, and 0.5 because
+  # sub-second timeouts must not be rounded away.
+  @pytest.mark.parametrize('seconds', [30, 0, 0.5])
+  def test_1x_gets_a_timedelta(self, seconds):
+    with patch(_SDK_FLAG, False):
+      converted = _read_timeout(seconds)
 
-  def test_zero_is_a_real_timeout_not_a_missing_one(self):
-    assert _read_timeout(0) == timedelta(seconds=0)
+    assert converted == timedelta(seconds=seconds)
+    # The two majors accept disjoint types here, so pin the type itself:
+    # handing a 2.x SDK a `timedelta` fails much later, in its own arithmetic.
+    assert isinstance(converted, timedelta)
 
-  def test_fractional_seconds_survive(self):
-    assert _read_timeout(0.5) == timedelta(seconds=0.5)
+  @pytest.mark.parametrize('seconds', [30, 0, 0.5])
+  def test_2x_gets_plain_seconds(self, seconds):
+    with patch(_SDK_FLAG, True):
+      converted = _read_timeout(seconds)
+
+    assert converted == seconds
+    assert isinstance(converted, (int, float))
+    assert not isinstance(converted, timedelta)

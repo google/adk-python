@@ -40,7 +40,6 @@ import urllib.parse
 import google.auth
 import google.auth.credentials
 from google.auth.transport.requests import Request
-import httpx
 
 try:
   from google.auth.aio.credentials import Credentials as AsyncCredentials
@@ -57,18 +56,21 @@ except ImportError:
 
   _AIO_SUPPORTED = False
 
-from mcp import ClientSession
-from mcp import SamplingCapability
-from mcp import StdioServerParameters
-from mcp.client.session import ElicitationFnT
-from mcp.client.session import SamplingFnT
-from mcp.client.sse import sse_client
-from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import create_mcp_http_client as _create_mcp_http_client
-from mcp.client.streamable_http import McpHttpClientFactory
-from mcp.client.streamable_http import streamable_http_client
 from pydantic import BaseModel
 from pydantic import ConfigDict
+
+from ...dependencies import _httpx as httpx
+from ...dependencies._mcp import ClientSession
+from ...dependencies._mcp import create_mcp_http_client as _create_mcp_http_client
+from ...dependencies._mcp import ElicitationFnT
+from ...dependencies._mcp import IS_MCP_SDK_V2
+from ...dependencies._mcp import McpError
+from ...dependencies._mcp import SamplingCapability
+from ...dependencies._mcp import SamplingFnT
+from ...dependencies._mcp import sse_client
+from ...dependencies._mcp import stdio_client
+from ...dependencies._mcp import StdioServerParameters
+from ...dependencies._mcp import streamable_http_client
 
 try:
   from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
@@ -79,6 +81,8 @@ except (ImportError, AttributeError):
 
 from ...features import FeatureName
 from ...features import is_feature_enabled
+from ...telemetry import tracing
+from ...utils._google_client_headers import merge_tracking_headers
 from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -100,6 +104,16 @@ _SESSION_IDLE_TTL_SECONDS = 900.0
 # of silently keeping the session alive forever.
 _SESSION_USE_PIN_WARN_SECONDS = 4 * _SESSION_IDLE_TTL_SECONDS
 
+# A failed mTLS probe is not retried for this long. Not cached for the life of
+# the manager, so credentials granted while the process runs are picked up.
+_MTLS_PROBE_RETRY_INTERVAL_SECONDS = 300.0
+
+# The headers `merge_tracking_headers` writes, spelled the way it spells them.
+# HTTP header names are case-insensitive and a caller may have used any casing,
+# but a dict is not: leaving their spelling alongside ours would put the header
+# on the wire twice, so theirs is folded onto ours before merging.
+_TRACKING_HEADER_NAMES = frozenset(('user-agent', 'x-goog-api-client'))
+
 
 def create_mcp_http_client(
     headers: dict[str, str] | None = None,
@@ -112,8 +126,18 @@ def create_mcp_http_client(
       timeout=timeout,
       auth=auth,
   )
-  if _HAS_HTTPX_INSTRUMENTOR:
+  # The instrumentor is built against httpx 1.x: handed an `httpx2` client it
+  # wraps without complaint, then fails on the first request. Until an httpx2
+  # instrumentor exists, 2.x goes untraced rather than broken.
+  if _HAS_HTTPX_INSTRUMENTOR and not IS_MCP_SDK_V2:
     HTTPXClientInstrumentor.instrument_client(client)
+  elif _HAS_HTTPX_INSTRUMENTOR:
+    # Otherwise the MCP spans just vanish, with nothing pointing back here.
+    logger.debug(
+        'MCP HTTP calls are not traced: the OpenTelemetry httpx instrumentor is'
+        ' built against httpx, and MCP SDK 2.x pairs with httpx2. Tracing'
+        ' returns when an httpx2 instrumentor exists.'
+    )
   return client
 
 
@@ -123,11 +147,33 @@ _http_debug_var: contextvars.ContextVar[list[dict[str, Any]] | None] = (
 
 
 def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
-  sensitive_keys = {'authorization', 'cookie', 'set-cookie', 'x-goog-api-key'}
+  sensitive_keys = {
+      'api-key',
+      'authorization',
+      'cookie',
+      'proxy-authorization',
+      'set-cookie',
+      'x-api-key',
+      'x-goog-api-key',
+  }
   return {
       k: '<redacted>' if k.lower() in sensitive_keys else v
       for k, v in headers.items()
   }
+
+
+def _sanitize_url(url: httpx.URL, *, redact_query: bool = False) -> str:
+  """Renders `url` for recording, with any userinfo credential dropped."""
+  sanitized = url.copy_with(userinfo=b'')
+  # The `url.full` convention wants query values redacted. The session id, the
+  # one value worth keeping, is recorded separately as `mcp.session.id`.
+  if redact_query and url.query:
+    redacted = '&'.join(
+        f'{key}=REDACTED'
+        for key in urllib.parse.parse_qs(url.query.decode(errors='replace'))
+    )
+    sanitized = sanitized.copy_with(query=redacted.encode())
+  return str(sanitized)
 
 
 class _StreamableHttpClientWrapper:
@@ -196,6 +242,52 @@ def _has_cancelled_error_context(exc: BaseException) -> bool:
   return False
 
 
+# The Streamable HTTP spec has a server answer any request carrying a session
+# id it no longer holds with HTTP 404, and the SDK turns that answer into a
+# JSON-RPC error rather than surfacing the status code. It is the one signal
+# that separates "the server forgot this session" from an ordinary tool
+# failure, and it arrives while the transport underneath is still healthy.
+# The 1.x SDK spells the code 32600, the 2.x SDK INVALID_REQUEST (-32600).
+_SESSION_TERMINATED_ERROR_CODE = 32600
+_INVALID_REQUEST_ERROR_CODE = -32600
+# 2.x raises INVALID_REQUEST for ordinary bad requests too, so that spelling
+# counts only alongside the message the SDK pairs with the 404.
+_SESSION_TERMINATED_MESSAGE = 'Session terminated'
+
+
+def _reports_session_terminated(exc: McpError) -> bool:
+  """Whether this MCP error is the server's own session-terminated report."""
+  if exc.error.code == _SESSION_TERMINATED_ERROR_CODE:
+    return True
+  return (
+      exc.error.code == _INVALID_REQUEST_ERROR_CODE
+      and exc.error.message == _SESSION_TERMINATED_MESSAGE
+  )
+
+
+def _is_session_terminated_error(exc: BaseException | None) -> bool:
+  """Whether exc is the server reporting it no longer holds our session.
+
+  Only ``__cause__`` is followed. ``retry_on_errors`` re-runs the call from
+  inside its own ``except``, so on the second attempt every exception carries
+  the first attempt's in ``__context__``, and walking that would read a fresh
+  session as dead because the session before it was.
+
+  Args:
+      exc: The exception raised by a call made on a pooled session.
+
+  Returns:
+      True if the server reported the session terminated, False otherwise.
+  """
+  seen: set[int] = set()
+  while exc is not None and id(exc) not in seen:
+    seen.add(id(exc))
+    if isinstance(exc, McpError) and _reports_session_terminated(exc):
+      return True
+    exc = exc.__cause__
+  return False
+
+
 class StdioConnectionParams(BaseModel):
   """Parameters for the MCP Stdio connection.
 
@@ -236,12 +328,42 @@ class SseConnectionParams(BaseModel):
 
 
 @runtime_checkable
-class CheckableMcpHttpClientFactory(McpHttpClientFactory, Protocol):
-  pass
+class CheckableMcpHttpClientFactory(Protocol):
+  """The call signature the `httpx_client_factory` fields accept.
+
+  `@runtime_checkable` is required, not decorative. Pydantic compiles a
+  Protocol-annotated field into an `is-instance` validator, and that validator
+  cannot be built against a protocol without the decorator.
+
+  This copies the SDK's `McpHttpClientFactory` instead of subclassing it,
+  because that protocol lives in the private `mcp.shared._httpx_utils`.
+  Structural typing means a factory written against either one satisfies both.
+
+  The signature stays identical to the SDK's for two reasons.
+  `_DebugHttpxClientFactory` wraps the given factory and calls it by keyword,
+  and that wrapper is what `sse_client` receives, typed there with the SDK's
+  own protocol.
+  """
+
+  def __call__(
+      self,
+      headers: dict[str, str] | None = None,
+      timeout: httpx.Timeout | None = None,
+      auth: httpx.Auth | None = None,
+  ) -> httpx.AsyncClient:
+    ...
 
 
 class _DebugHttpxClientFactory:
-  """A factory wrapper that hooks into the httpx.AsyncClient responses to capture debug info."""
+  """A factory wrapper that hooks into the httpx.AsyncClient responses to capture debug info.
+
+  Each exchange goes to two independently gated sinks:
+
+    - `custom_metadata['http_debug_info']`, whenever a caller has stashed a list
+      in `_http_debug_var` (which `McpTool` / `McpToolset` do at DEBUG);
+    - an `adk.experimental.mcp.http.client.response.end` OTel log record,
+      whenever `ADK_EXPERIMENTAL_TELEMETRY` opts in to experimental telemetry.
+  """
 
   def __init__(
       self,
@@ -257,7 +379,11 @@ class _DebugHttpxClientFactory:
       timeout: httpx.Timeout | None = None,
       auth: httpx.Auth | None = None,
   ) -> httpx.AsyncClient:
-    client = self._base_factory(headers=headers, timeout=timeout, auth=auth)
+    client = self._base_factory(
+        headers=headers,
+        timeout=None if timeout is None else httpx.PortableTimeout(timeout),
+        auth=auth,
+    )
     if hasattr(client, 'event_hooks') and isinstance(client.event_hooks, dict):
       client.event_hooks.setdefault('response', []).append(self._response_hook)
     return client
@@ -272,25 +398,32 @@ class _DebugHttpxClientFactory:
     )
 
   async def _response_hook(self, response: httpx.Response):
+    session_id = self._extract_session_id(response)
+
     debug_list = None
-    if self._session_manager is not None:
-      session_id = self._extract_session_id(response)
-      if session_id:
-        debug_list = self._session_manager._get_active_debug_list_by_session_id(
-            session_id
-        )
+    if self._session_manager is not None and session_id:
+      debug_list = self._session_manager._get_active_debug_list_by_session_id(
+          session_id
+      )
 
     if debug_list is None:
       debug_list = _http_debug_var.get(None)
 
-    if debug_list is None:
+    report_to_otel = tracing._should_report_mcp_http_exchanges()  # pylint: disable=protected-access
+    if debug_list is None and not report_to_otel:
       return
 
-    content_type = response.headers.get('content-type', '')
+    # The legacy buffer always keeps the payload; the OTel record only does when
+    # body capture is on. A body no sink will keep is not worth decoding.
+    capture_bodies = debug_list is not None or (
+        report_to_otel and tracing._should_capture_mcp_http_bodies()  # pylint: disable=protected-access
+    )
+
+    content_type = response.headers.get('content-type', '').lower()
     is_sse = 'text/event-stream' in content_type
 
     request_body = None
-    if response.request.content:
+    if capture_bodies and response.request.content:
       try:
         request_body = response.request.content.decode(
             'utf-8', errors='replace'
@@ -300,7 +433,11 @@ class _DebugHttpxClientFactory:
       except Exception:  # pylint: disable=broad-exception-caught
         request_body = '<binary>'
 
-    if not is_sse:
+    response_body = None
+    if is_sse:
+      # Reading an SSE body would starve the transport of its events.
+      response_body = '<SSE stream>'
+    elif capture_bodies:
       try:
         await response.aread()
         response_body = response.text
@@ -310,19 +447,50 @@ class _DebugHttpxClientFactory:
           )
       except Exception as e:  # pylint: disable=broad-exception-caught
         response_body = f'<failed to read body: {e}>'
-    else:
-      response_body = '<SSE stream>'
 
-    debug_info = {
-        'url': str(response.url),
-        'status_code': response.status_code,
-        'method': response.request.method,
-        'request_headers': _redact_headers(dict(response.request.headers)),
-        'request_body': request_body,
-        'response_headers': _redact_headers(dict(response.headers)),
-        'response_body': response_body,
-    }
-    debug_list.append(debug_info)
+    request_headers = _redact_headers(dict(response.request.headers))
+    response_headers = _redact_headers(dict(response.headers))
+
+    if debug_list is not None:
+      debug_list.append({
+          'url': _sanitize_url(response.url),
+          'status_code': response.status_code,
+          'method': response.request.method,
+          'request_headers': request_headers,
+          'request_body': request_body,
+          'response_headers': response_headers,
+          'response_body': response_body,
+      })
+
+    if report_to_otel:
+      try:
+        tracing._trace_mcp_http_exchange(  # pylint: disable=protected-access
+            method=response.request.method,
+            url=_sanitize_url(response.url, redact_query=True),
+            server_address=response.url.host,
+            server_port=response.url.port,
+            status_code=response.status_code,
+            # Three transports put the id in three places: the legacy
+            # `?sessionId=` query, the initialize response, and every later
+            # request the client echoes it on.
+            mcp_session_id=(
+                session_id
+                or response.headers.get('mcp-session-id')
+                or response.request.headers.get('mcp-session-id')
+            ),
+            mcp_protocol_version=(
+                response.headers.get('mcp-protocol-version')
+                or response.request.headers.get('mcp-protocol-version')
+            ),
+            request_headers=request_headers,
+            request_body=request_body,
+            response_headers=response_headers,
+            response_body=response_body,
+        )
+      except Exception:  # pylint: disable=broad-exception-caught
+        # httpx re-raises whatever an event hook raises, so a broken log
+        # processor would otherwise fail the MCP call.
+        logger.warning('Failed to report MCP HTTP exchange', exc_info=True)
 
 
 class StreamableHTTPConnectionParams(BaseModel):
@@ -393,6 +561,13 @@ def retry_on_errors(func):
   return wrapper
 
 
+def _is_google_api_host(host: str | None) -> bool:
+  """Returns whether host is a Google API endpoint."""
+  if not host:
+    return False
+  return host == 'googleapis.com' or host.endswith('.googleapis.com')
+
+
 class _RefreshableAsyncCredentials(AsyncCredentials):
   """Adapter to refresh sync credentials asynchronously."""
 
@@ -405,6 +580,7 @@ class _RefreshableAsyncCredentials(AsyncCredentials):
     self._creds = creds
     self._target_host = target_host
     self._lock = asyncio.Lock()
+    self._warned_non_google_host = False
 
   async def before_request(
       self,
@@ -413,13 +589,28 @@ class _RefreshableAsyncCredentials(AsyncCredentials):
       url: str,
       headers: dict[str, str],
   ) -> None:
-    if self._target_host:
-      parsed_url = urllib.parse.urlparse(url)
-      if parsed_url.netloc != self._target_host:
-        logger.debug(
-            'Skipping token injection for redirect to %s', parsed_url.netloc
+    parsed_url = urllib.parse.urlparse(url)
+    if self._target_host and parsed_url.netloc != self._target_host:
+      logger.debug(
+          'Skipping token injection for redirect to %s', parsed_url.netloc
+      )
+      return
+
+    # Application Default Credentials are issued to the caller by Google, so
+    # the bearer token only goes to Google API hosts over https. Other MCP
+    # servers are still reached over the mTLS channel, just without the token.
+    if parsed_url.scheme != 'https' or not _is_google_api_host(
+        parsed_url.hostname
+    ):
+      if not self._warned_non_google_host:
+        self._warned_non_google_host = True
+        logger.warning(
+            'Not attaching Application Default Credentials to non-Google host'
+            ' %s. Configure explicit authentication for this MCP server if it'
+            ' requires credentials.',
+            parsed_url.hostname,
         )
-        return
+      return
 
     if any(k.lower() == 'authorization' for k in headers):
       logger.debug('Authorization header already present, not overwriting')
@@ -642,6 +833,10 @@ class MCPSessionManager:
         asyncio.AbstractEventLoop, _GoogleAuthAsyncTransport
     ] = {}
 
+    # When the mTLS probe last failed, per event loop, so that a server which
+    # offers no mTLS is not probed again for every session it is given.
+    self._mtls_probe_failed_at: dict[asyncio.AbstractEventLoop, float] = {}
+
   def _make_on_session_created(self, session_key: str) -> Callable[[str], None]:
     def on_session_created(session_id: str):
       logger.debug('Session created: %s -> %s', session_id, session_key)
@@ -672,7 +867,7 @@ class MCPSessionManager:
       return self._session_lock_map[current_loop]
 
   async def _get_mtls_transport(self) -> _GoogleAuthAsyncTransport | None:
-    """Attempts to create a _GoogleAuthAsyncTransport for mTLS, caching it per loop."""
+    """Attempts to create a _GoogleAuthAsyncTransport for mTLS, caching the outcome per loop."""
     if isinstance(self._connection_params, StdioConnectionParams):
       return None
 
@@ -690,6 +885,13 @@ class MCPSessionManager:
     current_loop = asyncio.get_running_loop()
     if current_loop in self._mtls_transports:
       return self._mtls_transports[current_loop]
+
+    last_failure = self._mtls_probe_failed_at.get(current_loop)
+    if (
+        last_failure is not None
+        and time.monotonic() - last_failure < _MTLS_PROBE_RETRY_INTERVAL_SECONDS
+    ):
+      return None
 
     try:
       scopes = ['https://www.googleapis.com/auth/cloud-platform']
@@ -719,6 +921,7 @@ class MCPSessionManager:
       logger.warning(
           'Failed to configure mTLS using AsyncAuthorizedSession: %s', e
       )
+    self._mtls_probe_failed_at[current_loop] = time.monotonic()
     return None
 
   def _generate_session_key(
@@ -769,11 +972,15 @@ class MCPSessionManager:
   ) -> Optional[Dict[str, str]]:
     """Merges base connection headers with additional headers.
 
+    The ADK client tokens are added on top, so that an MCP server sees the
+    traffic as coming from ADK rather than from bare httpx.
+
     Args:
         additional_headers: Optional headers to merge with connection headers.
 
     Returns:
-        Merged headers dictionary, or None if no headers are provided.
+        Merged headers dictionary, or None for stdio connections, which do not
+        support headers.
     """
     if isinstance(self._connection_params, StdioConnectionParams) or isinstance(
         self._connection_params, StdioServerParameters
@@ -791,22 +998,33 @@ class MCPSessionManager:
     if additional_headers:
       base_headers.update(additional_headers)
 
-    return base_headers
+    return merge_tracking_headers({
+        key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
+        for key, value in base_headers.items()
+    })
 
   def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
 
-    Reads two attributes ADK does not own: the SDK holds the transport streams
-    on the session privately, and each stream reports its own closed flag. A
-    session that lacks either one reads as connected rather than raising,
-    because a release is free to restructure both away and this probe is not
-    the only thing standing between a dead session and a caller.
+    Reads attributes ADK does not own, and where they hang moved between SDK
+    majors. On 1.x the session holds the transport streams and each stream
+    reports its own closed flag. On 2.x the transport moved behind a
+    dispatcher, which reports one closed flag of its own and need not hold
+    streams at all, so a session holding no streams is read there instead. A
+    session offering neither reads as connected rather than raising, because
+    a release is free to restructure them away and this probe is not the only
+    thing standing between a dead session and a caller.
 
     `create_session` pairs this with `SessionContext._is_task_alive`, which
-    ADK owns and which catches strictly more: a crashed transport can leave
-    the streams open while the task behind them is already dead. That pairing
+    ADK owns. Neither check subsumes the other: a crashed transport can
+    leave the streams open while the task behind them is already dead, and a
+    transport that closes under a live session leaves that task parked on
+    its close event, where only these flags report the death. That pairing
     runs under `_MCP_GRACEFUL_ERROR_HANDLING`, which is on by default. The
     kill switch drops it and leaves this probe on its own.
+
+    Neither probe sees a session the server itself has dropped while the
+    transport stays up; `_discard_session` handles that case.
 
     Args:
         session: The ClientSession to check.
@@ -814,6 +1032,16 @@ class MCPSessionManager:
     Returns:
         True if the session is known to be disconnected, False otherwise.
     """
+    if not hasattr(session, '_read_stream'):
+      dispatcher = getattr(session, '_dispatcher', None)
+      if not hasattr(dispatcher, '_closed'):
+        logger.debug(
+            'MCP session %s offers no closed flag to read, on itself or on a'
+            ' dispatcher; reading it as connected.',
+            type(session).__name__,
+        )
+        return False
+      return bool(getattr(dispatcher, '_closed', False))
     read_stream = getattr(session, '_read_stream', None)
     write_stream = getattr(session, '_write_stream', None)
     return bool(
@@ -874,6 +1102,52 @@ class MCPSessionManager:
     # Start the idle clock now, at the end of the call.
     if session_key in self._sessions:
       self._session_last_used[session_key] = time.monotonic()
+
+  def _discard_session(
+      self,
+      headers: Optional[Dict[str, str]] = None,
+      *,
+      session: Optional[ClientSession] = None,
+  ) -> None:
+    """Drops the pooled session for these headers and closes its transport.
+
+    Called when the server has reported that it no longer holds the session,
+    which the pool cannot otherwise detect: the HTTP connection underneath
+    stays healthy, so every disconnection probe reads the dead session as
+    live and hands it back. Dropping the entry is what makes the next call
+    build a fresh session.
+
+    The transport is torn down even with calls still in flight, unlike the
+    idle sweep, which defers to them. A call in flight on the session that
+    failed is addressed to one the server has already forgotten and cannot be
+    completed by leaving the transport open.
+
+    Args:
+        headers: The headers the caller passed to ``create_session``.
+        session: The session the call actually failed on. The key alone is not
+          enough to identify it: another caller failing on the same session
+          discards it first and the retry pools a replacement under that same
+          key, and the replacement is live and in use by someone else. Omitted
+          means discard whatever is pooled.
+    """
+    session_key = self._generate_session_key(self._merge_headers(headers))
+    entry = self._sessions.get(session_key)
+    if entry is None or (session is not None and entry[0] is not session):
+      return
+    # One atomic pop, so that two callers racing on the same dead session
+    # cannot both take the entry and close the same exit stack twice.
+    if self._sessions.pop(session_key, None) is None:
+      return
+    logger.info(
+        'Discarding MCP session the server no longer holds: %s', session_key
+    )
+    _, exit_stack, stored_loop = entry
+    self._forget_session(session_key)
+    task = asyncio.ensure_future(
+        self._close_exit_stack(session_key, exit_stack, stored_loop)
+    )
+    self._eviction_tasks.add(task)
+    task.add_done_callback(self._eviction_tasks.discard)
 
   async def _cleanup_session(
       self,
@@ -1247,6 +1521,7 @@ class MCPSessionManager:
     state['_eviction_tasks'] = set()
     state['_session_lock_map'] = {}
     state['_mtls_transports'] = {}
+    state['_mtls_probe_failed_at'] = {}
     state['_session_id_to_key'] = {}
     state['_active_debug_lists'] = {}
 
@@ -1268,6 +1543,7 @@ class MCPSessionManager:
     self._eviction_tasks = set()
     self._session_lock_map = {}
     self._mtls_transports = {}
+    self._mtls_probe_failed_at = {}
     self._session_id_to_key = {}
     self._active_debug_lists = {}
     self._lock_map_lock = threading.Lock()
@@ -1300,6 +1576,7 @@ class MCPSessionManager:
       for transport in self._mtls_transports.values():
         await transport.aclose()
       self._mtls_transports.clear()
+      self._mtls_probe_failed_at.clear()
 
     # Awaited outside the lock: a wedged teardown must not park every other
     # caller of this pool, which is the stall detaching them avoided in the

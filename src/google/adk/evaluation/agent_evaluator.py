@@ -28,6 +28,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Protocol
+from typing import TYPE_CHECKING
 from typing import Union
 import uuid
 
@@ -60,10 +61,10 @@ from .eval_sets_manager import EvalSetsManager
 from .evaluator import EvalStatus
 from .in_memory_eval_sets_manager import InMemoryEvalSetsManager
 from .local_eval_sets_manager import convert_eval_set_to_pydantic_schema
-from .metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
-from .metric_evaluator_registry import MetricEvaluatorRegistry
-from .metric_evaluator_registry import register_custom_metrics_from_config
 from .simulation.user_simulator_provider import UserSimulatorProvider
+
+if TYPE_CHECKING:
+  from .metric_evaluator_registry import MetricEvaluatorRegistry  # pylint: disable=g-import-not-at-top
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -167,9 +168,19 @@ class AgentEvaluator:
       eval_set_results_manager: Optional manager used to persist the eval set
         evaluation result as `*.evalset_result.json`.
     """
+    if num_runs < 1:
+      raise ValueError(f"`num_runs` must be at least 1, got {num_runs}.")
+
     if eval_set_results_manager is not None and not app_name:
       raise ValueError(
           "app_name is required when eval_set_results_manager is provided."
+      )
+
+    if not eval_set or not eval_set.eval_cases:
+      raise ValueError(
+          "No eval cases were evaluated, so there is nothing to report a"
+          " pass or a failure for. This happens when `eval_set` has no eval"
+          " cases."
       )
 
     if criteria:
@@ -208,6 +219,12 @@ class AgentEvaluator:
     # on the default registry resolvable, which is the only way to plug in a
     # custom `Evaluator` subclass since an eval config can only name a scoring
     # function.
+    try:
+      from .metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY  # pylint: disable=g-import-not-at-top
+      from .metric_evaluator_registry import register_custom_metrics_from_config  # pylint: disable=g-import-not-at-top
+    except ModuleNotFoundError as e:
+      raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
+
     metric_evaluator_registry = register_custom_metrics_from_config(
         eval_config, DEFAULT_METRIC_EVALUATOR_REGISTRY.fork()
     )
@@ -324,6 +341,9 @@ class AgentEvaluator:
       eval_set_results_manager: Optional manager used to persist the eval set
         evaluation result as `*.evalset_result.json`.
     """
+    if num_runs < 1:
+      raise ValueError(f"`num_runs` must be at least 1, got {num_runs}.")
+
     if eval_set_results_manager is not None and not app_name:
       raise ValueError(
           "app_name is required when eval_set_results_manager is provided."
@@ -339,6 +359,12 @@ class AgentEvaluator:
             test_files.append(path.join(root, file))
     else:
       test_files = [eval_dataset_file_path_or_dir]
+
+    if not test_files:
+      raise ValueError(
+          "No `*.test.json` eval files found in"
+          f" {eval_dataset_file_path_or_dir}, so there is nothing to evaluate."
+      )
 
     initial_session = AgentEvaluator._get_initial_session(initial_session_file)
 
@@ -543,11 +569,11 @@ class AgentEvaluator:
       overall_eval_status: EvalStatus,
       overall_score: Optional[float],
       metric_name: str,
-      threshold: float,
+      threshold: Optional[float],
   ) -> None:
     try:
-      from pandas import pandas as pd
-      from tabulate import tabulate
+      import pandas as pd  # pylint: disable=g-import-not-at-top
+      from tabulate import tabulate  # pylint: disable=g-import-not-at-top
     except ModuleNotFoundError as e:
       raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
     print(
@@ -821,7 +847,12 @@ class AgentEvaluator:
       print_detailed_results: bool,
       agent_module: str,
   ) -> list[str]:
-    """Returns a list of failures based on the score for each invocation."""
+    """Returns a report line for every metric that did not pass.
+
+    A metric that produced no score at all is reported as not evaluated rather
+    than as a score below its threshold, so a judge model that could not run
+    does not read as an agent regression.
+    """
     failures: list[str] = []
     for (
         metric_name,
@@ -829,15 +860,38 @@ class AgentEvaluator:
     ) in eval_metric_results.items():
       if not eval_metric_results_with_invocations:
         continue
-      threshold = _get_metric_threshold(
-          eval_metric_results_with_invocations[0].eval_metric_result
-      )
+
+      metric_result = eval_metric_results_with_invocations[0].eval_metric_result
       scores = [
           m.eval_metric_result.score
           for m in eval_metric_results_with_invocations
           if m.eval_metric_result.score is not None
       ]
       overall_score = statistics.mean(scores) if scores else None
+
+      # Informational metrics (e.g. the efficiency metrics) report a value but
+      # never pass or fail. Detect them by their INFORMATIONAL status, falling
+      # back to the absence of any threshold/criterion. Report their value but
+      # never count them as a failure.
+      is_informational = (
+          metric_result.eval_status == EvalStatus.INFORMATIONAL
+          or (
+              metric_result.criterion is None
+              and metric_result.threshold is None
+          )
+      )
+      if is_informational:
+        if print_detailed_results:
+          AgentEvaluator._print_details(
+              eval_metric_result_with_invocations=eval_metric_results_with_invocations,
+              overall_eval_status=EvalStatus.INFORMATIONAL,
+              overall_score=overall_score,
+              metric_name=metric_name,
+              threshold=None,
+          )
+        continue
+
+      threshold = _get_metric_threshold(metric_result)
 
       # Determine this metric's pass/fail POLARITY (higher-is-better vs.
       # lower-is-better) from one invocation's own (score, eval_status)
@@ -888,17 +942,28 @@ class AgentEvaluator:
 
       # Gather all the failures.
       if overall_eval_status != EvalStatus.PASSED:
-        if print_detailed_results:
-          AgentEvaluator._print_details(
-              eval_metric_result_with_invocations=eval_metric_results_with_invocations,
-              overall_eval_status=overall_eval_status,
-              overall_score=overall_score,
-              metric_name=metric_name,
-              threshold=threshold,
+        if overall_eval_status == EvalStatus.NOT_EVALUATED:
+          failures.append(
+              f"{metric_name} for {agent_module} was not evaluated. No score"
+              f" was produced, so the threshold of {threshold} was never"
+              " checked and this is not a score regression. See the logs for"
+              " why the metric could not run."
           )
-        failures.append(
-            f"{metric_name} for {agent_module} Failed. Expected {threshold},"
-            f" but got {overall_score}."
+        else:
+          failures.append(
+              f"{metric_name} for {agent_module} Failed. Expected {threshold},"
+              f" but got {overall_score}."
+          )
+
+      if print_detailed_results:
+        AgentEvaluator._print_details(
+            eval_metric_result_with_invocations=(
+                eval_metric_results_with_invocations
+            ),
+            overall_eval_status=overall_eval_status,
+            overall_score=overall_score,
+            metric_name=metric_name,
+            threshold=threshold,
         )
 
     return failures

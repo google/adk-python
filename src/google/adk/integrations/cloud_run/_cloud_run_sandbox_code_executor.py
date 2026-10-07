@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import signal
 import subprocess
 import sys
 from typing import Optional
@@ -28,6 +29,12 @@ from ...code_executors.code_execution_utils import CodeExecutionInput
 from ...code_executors.code_execution_utils import CodeExecutionResult
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+# `subprocess.run` kills the sandbox before re-raising `TimeoutExpired`, so the
+# run does have a status even though the exception carries none: SIGKILL on
+# POSIX, reported as a negative signal number the way `UnsafeLocalCodeExecutor`
+# reports its own timeouts, and `TerminateProcess`'s 1 on Windows.
+_TIMEOUT_EXIT_CODE = -signal.SIGKILL if hasattr(signal, 'SIGKILL') else 1
 
 
 def _filter_stderr(stderr: str | None) -> str:
@@ -146,6 +153,7 @@ class CloudRunSandboxCodeExecutor(BaseCodeExecutor):
           stdout=result.stdout,
           stderr=stderr_filtered,
           output_files=[],
+          exit_code=result.returncode,
       )
 
     except subprocess.TimeoutExpired as e:
@@ -169,6 +177,7 @@ class CloudRunSandboxCodeExecutor(BaseCodeExecutor):
           stderr=stderr_filtered
           or f'Code execution timed out after {self.timeout_seconds} seconds.',
           output_files=[],
+          exit_code=_TIMEOUT_EXIT_CODE,
       )
     except FileNotFoundError as e:
       logger.error('Sandbox binary not found: %s', e)

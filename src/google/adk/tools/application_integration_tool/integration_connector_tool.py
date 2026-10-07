@@ -74,9 +74,9 @@ class IntegrationConnectorTool(BaseTool):
       connection_name: str,
       connection_host: str,
       connection_service_name: str,
-      entity: str,
+      entity: Optional[str],
       operation: str,
-      action: str,
+      action: Optional[str],
       rest_api_tool: RestApiTool,
       auth_scheme: Optional[Union[AuthScheme, str]] = None,
       auth_credential: Optional[Union[AuthCredential, str]] = None,
@@ -93,9 +93,11 @@ class IntegrationConnectorTool(BaseTool):
         connection_name: The name of the Integration Connector connection.
         connection_host: The hostname or IP address for the connection.
         connection_service_name: The specific service name within the host.
-        entity: The Integration Connector entity being targeted.
+        entity: The Integration Connector entity being targeted. None when the
+          operation names an action instead.
         operation: The specific operation being performed on the entity.
-        action: The action associated with the operation (e.g., 'execute').
+        action: The action associated with the operation (e.g., 'execute'). None
+          when the operation names an entity instead.
         rest_api_tool: An initialized RestApiTool instance that handles the
           underlying REST API communication based on an OpenAPI specification
           operation. This tool will be called by ApplicationIntegrationTool with
@@ -171,6 +173,10 @@ class IntegrationConnectorTool(BaseTool):
           'message': 'Needs your authorization to access your data.',
       }
 
+    # The access token added below must stay out of the caller's args, which
+    # are also handed to after-tool callbacks and recorded on the tool span.
+    args = args.copy()
+
     # Attach parameters from auth into main parameters list
     if auth_result.auth_credential:
       # Attach parameters from auth into main parameters list
@@ -190,7 +196,11 @@ class IntegrationConnectorTool(BaseTool):
     args['entity'] = self._entity
     args['operation'] = self._operation
     args['action'] = self._action
-    logger.info('Running tool: %s with args: %s', self.name, args)
+    logger.info(
+        'Running tool: %s with args: %s',
+        self.name,
+        {k: v for k, v in args.items() if k != 'dynamic_auth_config'},
+    )
     return await self._rest_api_tool.call(args=args, tool_context=tool_context)
 
   def __str__(self):

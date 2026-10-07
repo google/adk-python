@@ -49,6 +49,7 @@ from .utils import logs
 
 if TYPE_CHECKING:
   from fastapi import FastAPI
+  from google.genai import types
 
   from ..agents.llm_agent import LlmAgent
 
@@ -83,6 +84,37 @@ def _parse_streaming_mode(
   if mode is None:
     raise click.BadParameter(f"unknown streaming mode {value!r}", param=param)
   return mode
+
+
+def _parse_avatar_config(
+    _ctx: click.Context,
+    param: click.Parameter,
+    value: str | None,
+) -> types.AvatarConfig | None:
+  """Parses an inline JSON object or JSON file into an avatar config."""
+  if value is None:
+    return None
+
+  if value.lstrip().startswith("{"):
+    config_json = value
+  else:
+    try:
+      config_json = Path(value).read_text(encoding="utf-8")
+    except OSError as exc:
+      raise click.BadParameter(
+          f"could not read avatar configuration file {value!r}: {exc}",
+          param=param,
+      ) from exc
+
+  from google.genai import types
+
+  try:
+    return types.AvatarConfig.model_validate_json(config_json)
+  except ValueError as exc:
+    raise click.BadParameter(
+        f"avatar configuration must be a valid AvatarConfig JSON object: {exc}",
+        param=param,
+    ) from exc
 
 
 def _logging_options():
@@ -447,6 +479,124 @@ def deploy():
   pass
 
 
+def deploy_options(command):
+  """Add common options to deploy subcommands."""
+  options = [
+      click.option(
+          "--service_name",
+          type=str,
+          default="adk-default-service-name",
+          help=(
+              "Optional. The service name to use in target environment"
+              " (default: 'adk-default-service-name')."
+          ),
+      ),
+      click.option(
+          "--env",
+          multiple=True,
+          help=(
+              "Optional. Environment variables as multiple --env key=value"
+              " pairs."
+              " --env GOOGLE_GENAI_USE_ENTERPRISE=1"
+          ),
+      ),
+      click.option(
+          "--provider-args",
+          multiple=True,
+          help=(
+              "Optional. Additional flags passed through to the provider's"
+              " deployment tool (e.g. gcloud or docker)."
+          ),
+      ),
+      click.option(
+          "--app_name",
+          type=str,
+          default="",
+          help=(
+              "Optional. App name of the ADK API server (default: the folder"
+              " name of the AGENT source code)."
+          ),
+      ),
+      click.option(
+          "--port",
+          type=int,
+          default=8000,
+          help="Optional. The port of the ADK API server (default: 8000).",
+      ),
+      click.option(
+          "--trace_to_cloud",
+          is_flag=True,
+          show_default=True,
+          default=False,
+          help="Optional. Whether to enable cloud tracing for deployment.",
+      ),
+      click.option(
+          "--with_ui",
+          is_flag=True,
+          show_default=True,
+          default=False,
+          help=(
+              "Optional. Deploy ADK Web UI if set. (default: deploy ADK API"
+              " server only)"
+          ),
+      ),
+      click.option(
+          "--temp_folder",
+          type=str,
+          default=os.path.join(
+              tempfile.gettempdir(),
+              "deploy_src",
+              datetime.now().strftime("%Y%m%d_%H%M%S"),
+          ),
+          help=(
+              "Optional. Temp folder for the generated source files"
+              " (default: a timestamped folder in the system temp directory)."
+          ),
+      ),
+      click.option(
+          "--log_level",
+          type=LOG_LEVELS,
+          default="INFO",
+          help="Optional. Set the logging level",
+      ),
+      click.option(
+          "--adk_version",
+          type=str,
+          default=version.__version__,
+          show_default=True,
+          help=(
+              "Optional. The ADK version used in deployment. (default: the"
+              " version in the dev environment)"
+          ),
+      ),
+      click.argument(
+          "agent",
+          type=click.Path(
+              exists=True, dir_okay=True, file_okay=False, resolve_path=True
+          ),
+      ),
+      click.option(
+          "--a2a",
+          is_flag=True,
+          show_default=True,
+          default=False,
+          help="Optional. Whether to enable A2A endpoint.",
+      ),
+      click.option(
+          "--allow_origins",
+          help=(
+              "Optional. Origins to allow for CORS. Can be literal origins"
+              " (e.g., 'https://example.com') or regex patterns prefixed with"
+              " 'regex:' (e.g., 'regex:https://.*\\.example\\.com')."
+          ),
+          multiple=True,
+      ),
+  ]
+  for option in options:
+    command = option(command)
+  return command
+
+
 @main.group()
 def conformance():
   """Conformance testing tools for ADK."""
@@ -472,25 +622,28 @@ def cli_conformance_record(
     paths: tuple[str, ...],
     streaming_mode: StreamingMode,
 ):
-  """Generate ADK conformance test YAML files from TestCaseInput specifications.
+  """Generate ADK conformance test recordings from spec.yaml files.
 
   NOTE: this is work in progress.
 
-  This command reads TestCaseInput specifications from input.yaml files,
-  executes the specified test cases against agents, and generates conformance
-  test files with recorded agent interactions as test.yaml files.
+  This command reads TestSpec specifications from spec.yaml files, executes
+  the specified test cases against agents, and writes the recorded agent
+  interactions next to each spec.yaml.
 
   Expected directory structure:
-  category/name/input.yaml (TestCaseInput) -> category/name/test.yaml (TestCase)
+  category/name/spec.yaml (TestSpec) -> category/name/generated-recordings.yaml
+  and category/name/generated-session.yaml ('-sse' suffix in sse mode)
 
   PATHS: One or more directories containing test case specifications.
   If no paths are provided, defaults to 'tests/' directory.
 
+  STREAMING_MODE: The streaming mode to record in: none or sse.
+
   Examples:
 
-  Use default directory: adk conformance record
+  Use default directory: adk conformance record none
 
-  Custom directories: adk conformance record tests/core tests/tools
+  Custom directories: adk conformance record tests/core tests/tool sse
   """
 
   try:
@@ -606,11 +759,11 @@ def cli_conformance_test(
 
   \b
   # Run tests from specific folders
-  adk conformance test tests/core tests/tools
+  adk conformance test tests/core tests/tool
 
   \b
   # Run a single test case
-  adk conformance test tests/core/description_001
+  adk conformance test tests/core/sys_instruction_001
 
   \b
   # Run in live mode (when available)
@@ -688,7 +841,6 @@ def cli_conformance_test(
     ),
     default="CODE",
     show_default=True,
-    hidden=True,  # Won't show in --help output. Not ready for use.
 )
 @click.argument("app_name", type=str, required=True)
 def cli_create_cmd(
@@ -747,8 +899,9 @@ def adk_services_options(*, default_use_local_storage: bool = True):
             If set, ADK uses this service.
 
             \b
-            If unset, ADK chooses a default session service (see
-            --use_local_storage).
+            If unset, ADK automatically connects to Agent Platform Sessions when
+            an Agent Platform environment is detected. Otherwise, it chooses a
+            default session service (see --use_local_storage).
             - Use 'agentengine://<agent_engine>' to connect to Agent Engine
               sessions. <agent_engine> can either be the full qualified resource
               name 'projects/abc/locations/us-central1/reasoningEngines/123' or
@@ -780,12 +933,12 @@ def adk_services_options(*, default_use_local_storage: bool = True):
         default=default_use_local_storage,
         show_default=True,
         help=(
-            "Optional. Whether to use local .adk storage when "
-            "--session_service_uri and --artifact_service_uri are unset. "
-            "Cannot be combined with explicit service URIs. When the agents "
-            "directory isn't writable (common in Cloud Run/Kubernetes), ADK "
-            "falls back to in-memory unless overridden by "
-            "ADK_FORCE_LOCAL_STORAGE=1 or ADK_DISABLE_LOCAL_STORAGE=1."
+            "Optional. Whether to use local .adk storage when explicit service"
+            " URIs are unset, and an Agent Platform environment is not"
+            " detected. Cannot be combined with explicit service URIs. When the"
+            " agents directory isn't writable (common in Cloud Run/Kubernetes),"
+            " ADK falls back to in-memory unless overridden by"
+            " ADK_FORCE_LOCAL_STORAGE=1 or ADK_DISABLE_LOCAL_STORAGE=1."
         ),
     )
     @click.option(
@@ -796,12 +949,15 @@ def adk_services_options(*, default_use_local_storage: bool = True):
             If set, ADK uses this service.
 
             \b
-            If unset, ADK chooses a default memory service.
+            If unset, ADK automatically connects to Agent Platform Memory Bank
+            when an Agent Platform environment is detected. Otherwise, it uses
+            the default memory service.
             - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service.
             - Use 'agentengine://<agent_engine>' to connect to Agent Engine
               sessions. <agent_engine> can either be the full qualified resource
               name 'projects/abc/locations/us-central1/reasoningEngines/123' or
               the resource id '123'.
+            - Use 'sqlite:///<relative_path>' / 'sqlite:////<absolute_path>' to connect to SQLite memory service.
             - Use 'memory://' to force the in-memory memory service."""),
         default=None,
     )
@@ -1160,8 +1316,8 @@ def cli_eval(
 ):
   """Evaluates an agent given the eval sets.
 
-  AGENT_MODULE_FILE_PATH: The path to the __init__.py file that contains a
-  module by the name "agent". "agent" module contains a root_agent.
+  AGENT_MODULE_FILE_PATH: The path to the agent folder, whose __init__.py
+  imports a module by the name "agent". "agent" module contains a root_agent.
 
   EVAL_SET_FILE_PATH_OR_ID: You can specify one or more eval set file paths or
   eval set id.
@@ -1440,8 +1596,8 @@ def cli_optimize(
 ):
   """Optimizes the root agent instructions using the GEPA optimizer.
 
-  AGENT_MODULE_FILE_PATH: The path to the __init__.py file that contains a
-  module by the name "agent". "agent" module contains a root_agent.
+  AGENT_MODULE_FILE_PATH: The path to the agent folder, whose __init__.py
+  imports a module by the name "agent". "agent" module contains a root_agent.
 
   SAMPLER_CONFIG_FILE_PATH: The path to the config for the LocalEvalSampler,
   which contains the eval config and the eval sets to use for training and
@@ -1616,10 +1772,10 @@ def cli_add_eval_case(
   eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
 
   try:
-    with open(session_input_file, "r") as f:
+    with open(session_input_file, "r", encoding="utf-8") as f:
       session_input = SessionInput.model_validate_json(f.read())
 
-    with open(scenarios_file, "r") as f:
+    with open(scenarios_file, "r", encoding="utf-8") as f:
       conversation_scenarios = ConversationScenarios.model_validate_json(
           f.read()
       )
@@ -1690,7 +1846,7 @@ def cli_generate_eval_cases(
   if it has not been created in advance.
 
   Args:
-    agent_module_file_path: The path to the agent module file.
+    agent_module_file_path: The path to the agent folder.
     eval_set_id: The id of the eval set to generate cases for.
     user_simulation_config_file: The path to the user simulation config file.
     eval_storage_uri: The eval storage uri.
@@ -1730,7 +1886,7 @@ def cli_generate_eval_cases(
     else:
       click.echo(f"Eval set '{eval_set_id}' already exists.")
 
-    with open(user_simulation_config_file, "r") as f:
+    with open(user_simulation_config_file, "r", encoding="utf-8") as f:
       config = ConversationGenerationConfig.model_validate_json(f.read())
 
     generator = ScenarioGenerator()
@@ -1927,6 +2083,28 @@ def fast_api_common_options():
         ),
         default=None,
     )
+    @click.option(
+        "--avatar_config",
+        type=str,
+        callback=_parse_avatar_config,
+        help=(
+            "Optional. AvatarConfig as an inline JSON object or a path to a"
+            " JSON file. Applied only to /run_live sessions whose client"
+            " requests video output (modalities=VIDEO); other live sessions"
+            " ignore it. If unset, video sessions use the pre-built 'Kai'"
+            " avatar."
+        ),
+        default=None,
+    )
+    @click.option(
+        "--max_llm_calls",
+        type=int,
+        help=(
+            "Optional. Maximum number of LLM calls allowed for each agent"
+            " run. Values less than or equal to zero disable the limit."
+        ),
+        default=None,
+    )
     # Parsed into list[str] by the wrapper below (server commands need a list).
     @click.option(
         "--trigger_sources",
@@ -1938,6 +2116,27 @@ def fast_api_common_options():
         ),
         default=None,
     )
+    @click.option(
+        "--trigger_oidc_audience",
+        type=str,
+        help=(
+            "Optional. Expected audience for Google-signed OIDC bearer tokens"
+            " on /apps/{app_name}/trigger/* endpoints. When set, requests"
+            " without a valid token matching this audience are rejected with"
+            " 401."
+        ),
+        default=None,
+    )
+    @click.option(
+        "--trigger_oidc_service_accounts",
+        type=str,
+        help=(
+            "Optional. Comma-separated list of allowed service account emails"
+            " for Google-signed OIDC tokens on /apps/{app_name}/trigger/*"
+            " endpoints. Requires --trigger_oidc_audience."
+        ),
+        default=None,
+    )
     @functools.wraps(func)
     @click.pass_context
     def wrapper(ctx, *args, **kwargs):
@@ -1946,6 +2145,17 @@ def fast_api_common_options():
       if trigger_sources is not None:
         kwargs["trigger_sources"] = [
             s.strip() for s in trigger_sources.split(",") if s.strip()
+        ]
+
+      # Parse comma-separated trigger_oidc_service_accounts into a list.
+      trigger_oidc_service_accounts = kwargs.get(
+          "trigger_oidc_service_accounts"
+      )
+      if trigger_oidc_service_accounts is not None:
+        kwargs["trigger_oidc_service_accounts"] = [
+            s.strip()
+            for s in trigger_oidc_service_accounts.split(",")
+            if s.strip()
         ]
 
       return func(*args, **kwargs)
@@ -2012,6 +2222,10 @@ def cli_web(
     logo_text: str | None = None,
     logo_image_url: str | None = None,
     trigger_sources: list[str] | None = None,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: list[str] | None = None,
+    avatar_config: types.AvatarConfig | None = None,
+    max_llm_calls: int | None = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -2081,7 +2295,11 @@ def cli_web(
       logo_text=logo_text,
       logo_image_url=logo_image_url,
       trigger_sources=trigger_sources,
+      trigger_oidc_audience=trigger_oidc_audience,
+      trigger_oidc_service_accounts=trigger_oidc_service_accounts,
       default_llm_model=default_llm_model,
+      avatar_config=avatar_config,
+      max_llm_calls=max_llm_calls,
   )
   config = uvicorn.Config(
       app,
@@ -2163,6 +2381,10 @@ def cli_api_server(
     with_ui: bool = False,
     gemini_enterprise_app_name: str | None = None,
     express_mode: bool = False,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: list[str] | None = None,
+    avatar_config: types.AvatarConfig | None = None,
+    max_llm_calls: int | None = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -2221,8 +2443,12 @@ def cli_api_server(
           extra_plugins=extra_plugins,
           auto_create_session=auto_create_session,
           trigger_sources=trigger_sources,
+          trigger_oidc_audience=trigger_oidc_audience,
+          trigger_oidc_service_accounts=trigger_oidc_service_accounts,
           gemini_enterprise_app_name=gemini_enterprise_app_name,
           express_mode=express_mode,
+          avatar_config=avatar_config,
+          max_llm_calls=max_llm_calls,
           lifespan=_lifespan,
       ),
       host=host,
@@ -2256,40 +2482,6 @@ def cli_api_server(
     ),
 )
 @click.option(
-    "--service_name",
-    type=str,
-    default="adk-default-service-name",
-    help=(
-        "Optional. The service name to use in Cloud Run (default:"
-        " 'adk-default-service-name')."
-    ),
-)
-@click.option(
-    "--app_name",
-    type=str,
-    default="",
-    help=(
-        "Optional. App name of the ADK API server (default: the folder name"
-        " of the AGENT source code)."
-    ),
-)
-@click.option(
-    "--port",
-    type=int,
-    default=8000,
-    help="Optional. The port of the ADK API server (default: 8000).",
-)
-@click.option(
-    "--trace_to_cloud",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help=(
-        "Optional. Whether to enable Cloud Trace export for Cloud Run"
-        " deployments."
-    ),
-)
-@click.option(
     "--otel_to_cloud",
     is_flag=True,
     show_default=True,
@@ -2297,69 +2489,6 @@ def cli_api_server(
     help=(
         "Optional. Whether to enable OpenTelemetry export to GCP for Cloud Run"
         " deployments."
-    ),
-)
-@click.option(
-    "--with_ui",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help=(
-        "Optional. Deploy ADK Web UI if set. (default: deploy ADK API server"
-        " only). WARNING: The web UI is for development and testing only — do"
-        " not use in production."
-    ),
-)
-@click.option(
-    "--temp_folder",
-    type=str,
-    default=os.path.join(
-        tempfile.gettempdir(),
-        "cloud_run_deploy_src",
-        datetime.now().strftime("%Y%m%d_%H%M%S"),
-    ),
-    help=(
-        "Optional. Temp folder for the generated Cloud Run source files"
-        " (default: a timestamped folder in the system temp directory)."
-    ),
-)
-@click.option(
-    "--log_level",
-    type=LOG_LEVELS,
-    default="INFO",
-    help="Optional. Set the logging level",
-)
-@click.argument(
-    "agent",
-    type=click.Path(
-        exists=True, dir_okay=True, file_okay=False, resolve_path=True
-    ),
-)
-@click.option(
-    "--adk_version",
-    type=str,
-    default=version.__version__,
-    show_default=True,
-    help=(
-        "Optional. The ADK version used in Cloud Run deployment. (default: the"
-        " version in the dev environment)"
-    ),
-)
-@click.option(
-    "--a2a",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Optional. Whether to enable A2A endpoint.",
-)
-@click.option(
-    "--with_cloud_run_sandbox",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help=(
-        "Optional. Whether to enable the Cloud Run sandbox for code"
-        " execution. Requires the 'gcloud beta run deploy' release track."
     ),
 )
 # Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
@@ -2374,15 +2503,49 @@ def cli_api_server(
     default=None,
 )
 @click.option(
-    "--allow_origins",
+    "--trigger_oidc_audience",
+    type=str,
     help=(
-        "Optional. Origins to allow for CORS. Can be literal origins"
-        " (e.g., 'https://example.com') or regex patterns prefixed with"
-        " 'regex:' (e.g., 'regex:https://.*\\.example\\.com')."
+        "Optional. Expected audience for Google-signed OIDC bearer tokens"
+        " on /apps/{app_name}/trigger/* endpoints."
     ),
-    multiple=True,
+    default=None,
 )
-# TODO: Add eval_storage_uri option back when evals are supported in Cloud Run.
+@click.option(
+    "--trigger_oidc_service_accounts",
+    type=str,
+    help=(
+        "Optional. Comma-separated list of allowed service account emails"
+        " for Google-signed OIDC tokens on /apps/{app_name}/trigger/*"
+        " endpoints."
+    ),
+    default=None,
+)
+@click.option(
+    "--with_cloud_run_sandbox",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help=(
+        "Optional. Whether to enable the Cloud Run sandbox for code"
+        " execution. Requires the 'gcloud beta run deploy' release track."
+    ),
+)
+@click.option(
+    "--extra_packages",
+    multiple=True,
+    type=str,
+    default=(),
+    help=(
+        "Optional. Additional local package paths (a file or directory) to"
+        " stage and deploy alongside the agent, and make importable in the"
+        " deployed image. Each entry is placed at `/app/<basename>` and `/app`"
+        " is added to PYTHONPATH, so a top-level name that matches an installed"
+        " dependency will shadow it at runtime; pick distinct names."
+        " Repeatable."
+    ),
+)
+@deploy_options
 @adk_services_options(default_use_local_storage=False)
 @click.pass_context
 def cli_deploy_cloud_run(
@@ -2399,14 +2562,19 @@ def cli_deploy_cloud_run(
     with_ui: bool,
     adk_version: str,
     log_level: str,
-    allow_origins: Optional[list[str]] = None,
-    session_service_uri: Optional[str] = None,
-    artifact_service_uri: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
+    allow_origins: list[str] | None = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
     use_local_storage: bool = False,
     a2a: bool = False,
     trigger_sources: str | None = None,
     with_cloud_run_sandbox: bool = False,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: str | None = None,
+    provider_args: tuple[str, ...] = (),
+    env: tuple[str, ...] = (),
+    extra_packages: tuple[str, ...] = (),
 ):
   """Deploys an agent to Cloud Run.
 
@@ -2429,9 +2597,9 @@ def cli_deploy_cloud_run(
   try:
     from . import cli_deploy
 
-    cli_deploy.to_cloud_run(
+    cli_deploy.run(
         agent_folder=agent,
-        with_cloud_run_sandbox=with_cloud_run_sandbox,
+        provider="cloud_run",
         project=project,
         region=region,
         service_name=service_name,
@@ -2451,10 +2619,78 @@ def cli_deploy_cloud_run(
         use_local_storage=use_local_storage,
         a2a=a2a,
         trigger_sources=trigger_sources,
+        trigger_oidc_audience=trigger_oidc_audience,
+        trigger_oidc_service_accounts=trigger_oidc_service_accounts,
+        provider_args=provider_args,
+        env=env,
         extra_gcloud_args=tuple(gcloud_args),
+        with_cloud_run_sandbox=with_cloud_run_sandbox,
+        extra_packages=list(extra_packages),
     )
+  except (click.ClickException, click.Abort):
+    raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
+    ctx.exit(1)
+
+
+@deploy.command("docker", cls=HelpfulCommand)
+@deploy_options
+@adk_services_options(default_use_local_storage=True)
+@click.pass_context
+def cli_deploy_docker(
+    ctx,
+    agent: str,
+    service_name: str,
+    app_name: str,
+    temp_folder: str,
+    port: int,
+    trace_to_cloud: bool,
+    with_ui: bool,
+    adk_version: str,
+    log_level: str,
+    allow_origins: list[str] | None = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
+    use_local_storage: bool = True,
+    a2a: bool = False,
+    provider_args: tuple[str, ...] = (),
+    env: tuple[str, ...] = (),
+):
+  """Deploys an agent to a local Docker container."""
+  _warn_if_with_ui(with_ui)
+  try:
+    from . import cli_deploy
+
+    cli_deploy.run(
+        agent_folder=agent,
+        provider="docker",
+        service_name=service_name,
+        app_name=app_name,
+        temp_folder=temp_folder,
+        port=port,
+        trace_to_cloud=trace_to_cloud,
+        otel_to_cloud=False,
+        allow_origins=allow_origins,
+        with_ui=with_ui,
+        log_level=log_level,
+        verbosity=log_level,
+        adk_version=adk_version,
+        session_service_uri=session_service_uri,
+        artifact_service_uri=artifact_service_uri,
+        memory_service_uri=memory_service_uri,
+        use_local_storage=use_local_storage,
+        a2a=a2a,
+        trigger_sources=None,
+        provider_args=provider_args,
+        env=env,
+    )
+  except (click.ClickException, click.Abort):
+    raise
+  except Exception as e:
+    click.secho(f"Deploy failed: {e}", fg="red", err=True)
+    ctx.exit(1)
 
 
 @main.group()
@@ -2516,6 +2752,7 @@ def cli_migrate_session(
     click.secho("Migration check and upgrade process finished.", fg="green")
   except Exception as e:
     click.secho(f"Migration failed: {e}", fg="red", err=True)
+    click.get_current_context().exit(1)
 
 
 @deploy.command("agent_engine")
@@ -2685,6 +2922,25 @@ def cli_migrate_session(
     default=None,
 )
 @click.option(
+    "--trigger_oidc_audience",
+    type=str,
+    help=(
+        "Optional. Expected audience for Google-signed OIDC bearer tokens"
+        " on /apps/{app_name}/trigger/* endpoints."
+    ),
+    default=None,
+)
+@click.option(
+    "--trigger_oidc_service_accounts",
+    type=str,
+    help=(
+        "Optional. Comma-separated list of allowed service account emails"
+        " for Google-signed OIDC tokens on /apps/{app_name}/trigger/*"
+        " endpoints."
+    ),
+    default=None,
+)
+@click.option(
     "--adk_version",
     type=str,
     default=version.__version__,
@@ -2756,6 +3012,8 @@ def cli_deploy_agent_engine(
     use_local_storage: bool = False,
     extra_packages: tuple[str, ...] = (),
     worker_pool: str | None = None,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: str | None = None,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -2776,7 +3034,9 @@ def cli_deploy_agent_engine(
       --worker_pool=projects/[project]/locations/[region]/workerPools/[pool]
       my_agent
   """
-  logging.getLogger("vertexai_genai.agentengines").setLevel(logging.INFO)
+  # The deploy path logs progress on both `agentplatform_genai.runtimes` and
+  # `agentplatform_genai.agentengines`; raise the parent so neither is lost.
+  logging.getLogger("agentplatform_genai").setLevel(logging.INFO)
   try:
     if validate_agent_import and skip_agent_import_validation_alias:
       raise click.UsageError(
@@ -2804,6 +3064,8 @@ def cli_deploy_agent_engine(
         agent_engine_config_file=agent_engine_config_file,
         skip_agent_import_validation=not validate_agent_import,
         trigger_sources=trigger_sources,
+        trigger_oidc_audience=trigger_oidc_audience,
+        trigger_oidc_service_accounts=trigger_oidc_service_accounts,
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,
         session_service_uri=session_service_uri,
@@ -2811,8 +3073,11 @@ def cli_deploy_agent_engine(
         extra_packages=list(extra_packages),
         worker_pool=worker_pool,
     )
+  except (click.ClickException, click.Abort):
+    raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
+    click.get_current_context().exit(1)
 
 
 @deploy.command("gke")
@@ -2937,6 +3202,39 @@ def cli_deploy_agent_engine(
     ),
     default=None,
 )
+@click.option(
+    "--trigger_oidc_audience",
+    type=str,
+    help=(
+        "Optional. Expected audience for Google-signed OIDC bearer tokens"
+        " on /apps/{app_name}/trigger/* endpoints."
+    ),
+    default=None,
+)
+@click.option(
+    "--trigger_oidc_service_accounts",
+    type=str,
+    help=(
+        "Optional. Comma-separated list of allowed service account emails"
+        " for Google-signed OIDC tokens on /apps/{app_name}/trigger/*"
+        " endpoints."
+    ),
+    default=None,
+)
+@click.option(
+    "--extra_packages",
+    multiple=True,
+    type=str,
+    default=(),
+    help=(
+        "Optional. Additional local package paths (a file or directory) to"
+        " stage and deploy alongside the agent, and make importable in the"
+        " deployed image. Each entry is placed at `/app/<basename>` and `/app`"
+        " is added to PYTHONPATH, so a top-level name that matches an installed"
+        " dependency will shadow it at runtime; pick distinct names."
+        " Repeatable."
+    ),
+)
 @adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
@@ -2964,6 +3262,9 @@ def cli_deploy_gke(
     memory_service_uri: str | None = None,
     use_local_storage: bool = False,
     trigger_sources: str | None = None,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: str | None = None,
+    extra_packages: tuple[str, ...] = (),
 ):
   """Deploys an agent to GKE.
 
@@ -2998,6 +3299,12 @@ def cli_deploy_gke(
         memory_service_uri=memory_service_uri,
         use_local_storage=use_local_storage,
         trigger_sources=trigger_sources,
+        trigger_oidc_audience=trigger_oidc_audience,
+        trigger_oidc_service_accounts=trigger_oidc_service_accounts,
+        extra_packages=list(extra_packages),
     )
+  except (click.ClickException, click.Abort):
+    raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
+    click.get_current_context().exit(1)

@@ -34,6 +34,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 import pytest
 from typing_extensions import assert_never
 
+from ...conftest import ENV_SETUPS
 from ..functional_test_goldens import load_divergences
 from ..functional_test_goldens import load_golden
 from ._digests import TelemetryDigest
@@ -41,25 +42,34 @@ from ._divergences import DivergenceGroup
 from ._divergences import divergences
 from ._divergences import INFERENCE_INSTRUMENTATIONS
 from ._divergences import InferenceInstrumentation
-from ._scenarios import ADK_EXPERIMENTAL_TELEMETRY
-from ._scenarios import ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN
-from ._scenarios import build_mcp_test_runner
-from ._scenarios import build_skill_test_runner
-from ._scenarios import build_test_runner
-from ._scenarios import CAPTURE_CONTENT
-from ._scenarios import FakeMcpSession
-from ._scenarios import inference_under_test
-from ._scenarios import install_telemetry
-from ._scenarios import OTEL_OPT_IN
-from ._scenarios import run_agent_scenario
-from ._scenarios import run_node_scenario
-from ._scenarios import Scenario
-from ._scenarios import skill_turns
-from ._scenarios import SkillResourceType
-from ._scenarios import SkillType
-from ._scenarios import TelemetryProviders
-from ._scenarios import TOOL_CALLING_TURNS
-from ._scenarios import Turn
+from .scenarios import Scenario
+from .scenarios.agent import build_multi_agent_test_runner
+from .scenarios.agent import build_test_runner
+from .scenarios.agent import run_agent_scenario
+from .scenarios.agent import run_agent_tool_scenario
+from .scenarios.agent import run_nested_agents_scenario
+from .scenarios.agent import run_node_scenario
+from .scenarios.agent import run_streaming_agent_scenario
+from .scenarios.conversation import AGENT_TOOL_TURNS
+from .scenarios.conversation import MULTI_AGENT_TURNS
+from .scenarios.conversation import NESTED_WORKFLOW_TURNS
+from .scenarios.conversation import StreamedTurn
+from .scenarios.conversation import STREAMING_TURNS
+from .scenarios.conversation import TOOL_CALLING_TURNS
+from .scenarios.conversation import Turn
+from .scenarios.inference import inference_under_test
+from .scenarios.mcp import build_mcp_test_runner
+from .scenarios.mcp import FakeMcpSession
+from .scenarios.skill import build_skill_test_runner
+from .scenarios.skill import skill_turns
+from .scenarios.skill import SkillResourceType
+from .scenarios.skill import SkillType
+from .scenarios.telemetry_setup import ADK_EXPERIMENTAL_TELEMETRY
+from .scenarios.telemetry_setup import ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN
+from .scenarios.telemetry_setup import CAPTURE_CONTENT
+from .scenarios.telemetry_setup import install_telemetry
+from .scenarios.telemetry_setup import OTEL_OPT_IN
+from .scenarios.telemetry_setup import TelemetryProviders
 
 if TYPE_CHECKING:
   from google.adk.events.event import Event
@@ -81,9 +91,20 @@ class FunctionalTestCase:
   # When set, the tool raises this instead of returning, and the scenario is
   # expected to propagate it (tool-failure telemetry path).
   tool_exception: Exception | None = None
+  # Opts the turn in to experimental telemetry. Off everywhere else, which is
+  # what pins the gate: a row that does not ask for it records none of the
+  # ``adk.experimental.*`` metrics, whatever the rest of its config.
   experimental_telemetry: bool = False
   loaded_skills: list[SkillType] = field(default_factory=list)
   loaded_resources: list[SkillResourceType] = field(default_factory=list)
+  script_return_exit_codes: list[int] = field(default_factory=list)
+  """0 - by success, 1 - by exception, 10 - by sys.exit, rest is invalid"""
+  # The ``mcp`` scenario only: the tool call is also posted to a canned MCP
+  # server over ADK's instrumented httpx client, so the case records the
+  # transport as well as the tools it resolved.
+  mcp_over_http: bool = False
+  # Anything else the case needs in the environment, applied last.
+  env: dict[str, str] = field(default_factory=dict)
 
   @property
   def propagated_error(self) -> Exception | None:
@@ -118,9 +139,19 @@ class FunctionalTestCase:
         ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN, str(self.schema_version)
     )
     monkeypatch.setenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
+    # Pinned either way, so an ambient value cannot opt a row in behind its
+    # back and hand it metrics its golden does not record.
     monkeypatch.setenv(
         ADK_EXPERIMENTAL_TELEMETRY, str(self.experimental_telemetry).lower()
     )
+
+    # Make sure the goldens and tests have matching env vars to avoid local
+    # env leaking causing false negatives.
+    for key, value in ENV_SETUPS["GOOGLE_AI"].items():
+      monkeypatch.setenv(key, value)
+
+    for name, value in self.env.items():
+      monkeypatch.setenv(name, value)
 
 
 @dataclass(frozen=True)
@@ -210,11 +241,30 @@ async def _record(
     )
 
 
+def _streamed_turns(
+    case: FunctionalTestCase,
+) -> tuple[StreamedTurn, ...] | None:
+  """The chunked conversation, for a scenario whose model streams."""
+  return STREAMING_TURNS if case.scenario == "streaming" else None
+
+
 def _turns(case: FunctionalTestCase) -> tuple[Turn, ...]:
   """The canned conversation the case's scenario is driven with."""
-  if case.scenario == "skill":
-    return skill_turns(case.loaded_skills, case.loaded_resources)
-  return TOOL_CALLING_TURNS
+  match case.scenario:
+    case "skill":
+      return skill_turns(
+          case.loaded_skills,
+          case.loaded_resources,
+          case.script_return_exit_codes,
+      )
+    case "multi_agent":
+      return MULTI_AGENT_TURNS
+    case "agent_tool":
+      return AGENT_TOOL_TURNS
+    case "nested_agents_in_workflow":
+      return NESTED_WORKFLOW_TURNS
+    case _:
+      return TOOL_CALLING_TURNS
 
 
 async def _run_scenario(
@@ -234,25 +284,43 @@ async def _run_scenario(
       monkeypatch,
       providers,
       turns=_turns(case),
+      streamed_turns=_streamed_turns(case),
       model_exception=case.model_exception,
   ) as model:
-    if case.scenario == "agent":
-      await run_agent_scenario(
-          build_test_runner(model, tool_exception=case.tool_exception),
-          event_sink=event_sink,
-      )
-    elif case.scenario == "node":
-      await run_node_scenario(
-          model, tool_exception=case.tool_exception, event_sink=event_sink
-      )
-    elif case.scenario == "mcp":
-      await run_agent_scenario(
-          build_mcp_test_runner(model, monkeypatch, FakeMcpSession()),
-          event_sink=event_sink,
-      )
-    elif case.scenario == "skill":
-      await run_agent_scenario(
-          build_skill_test_runner(model), event_sink=event_sink
-      )
-    else:
-      assert_never(case.scenario)
+    match case.scenario:
+      case "agent":
+        await run_agent_scenario(
+            build_test_runner(model, tool_exception=case.tool_exception),
+            event_sink=event_sink,
+        )
+      case "multi_agent":
+        await run_agent_scenario(
+            build_multi_agent_test_runner(model), event_sink=event_sink
+        )
+      case "mcp":
+        await run_agent_scenario(
+            build_mcp_test_runner(
+                model,
+                monkeypatch,
+                FakeMcpSession(over_http=case.mcp_over_http),
+            ),
+            event_sink=event_sink,
+        )
+      case "skill":
+        await run_agent_scenario(
+            build_skill_test_runner(model), event_sink=event_sink
+        )
+      case "node":
+        await run_node_scenario(
+            model, tool_exception=case.tool_exception, event_sink=event_sink
+        )
+      case "streaming":
+        await run_streaming_agent_scenario(
+            build_test_runner(model), event_sink=event_sink
+        )
+      case "agent_tool":
+        await run_agent_tool_scenario(model, event_sink=event_sink)
+      case "nested_agents_in_workflow":
+        await run_nested_agents_scenario(model, event_sink=event_sink)
+      case _:
+        assert_never(case.scenario)

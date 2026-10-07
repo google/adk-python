@@ -47,6 +47,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnecti
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolsetConfig
+from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_configs import ToolArgsConfig
 from mcp import StdioServerParameters
 from mcp.types import BlobResourceContents
@@ -55,6 +56,8 @@ from mcp.types import ReadResourceResult
 from mcp.types import Resource
 from mcp.types import TextResourceContents
 import pytest
+
+from ._sdk_compat import make_mcp_error
 
 
 class MockMCPTool:
@@ -407,6 +410,7 @@ class TestMcpToolset:
         MockMCPTool("adk_request_credential"),
         MockMCPTool("adk_request_confirmation"),
         MockMCPTool("adk_request_input"),
+        MockMCPTool(SetModelResponseTool.NAME),
     ]
     self.mock_session.list_tools = AsyncMock(
         return_value=MockListToolsResult(mock_tools)
@@ -567,6 +571,58 @@ class TestMcpToolset:
     ):
       await toolset.get_tools()
 
+    self.mock_session_manager._discard_session.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_get_tools_discards_a_session_the_server_dropped(self):
+    """The server reporting the session gone takes it out of the pool."""
+    remote_params = StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    toolset = McpToolset(connection_params=remote_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    self.mock_session.list_tools = AsyncMock(
+        side_effect=make_mcp_error(32600, "Session terminated")
+    )
+
+    with pytest.raises(ConnectionError, match="Failed to get tools"):
+      await toolset.get_tools()
+
+    self.mock_session_manager._discard_session.assert_called_with(
+        None, session=self.mock_session
+    )
+
+  @pytest.mark.asyncio
+  async def test_get_tools_keeps_the_session_on_a_transport_failure(self):
+    """A dropped socket is not the server saying it forgot the session."""
+    remote_params = StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    toolset = McpToolset(connection_params=remote_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    self.mock_session.list_tools = AsyncMock(
+        side_effect=ConnectionError("connection dropped")
+    )
+
+    with pytest.raises(ConnectionError, match="Failed to get tools"):
+      await toolset.get_tools()
+
+    self.mock_session_manager._discard_session.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_get_tools_keeps_the_session_on_a_timeout(self):
+    """A slow server is still holding the session, so it is not discarded."""
+    remote_params = StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    toolset = McpToolset(connection_params=remote_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    self.mock_session.list_tools = AsyncMock(
+        side_effect=TimeoutError("request timed out")
+    )
+
+    with pytest.raises(ConnectionError, match="Failed to get tools"):
+      await toolset.get_tools()
+
+    self.mock_session_manager._discard_session.assert_not_called()
+
   @pytest.mark.asyncio
   async def test_get_tools_retry_decorator(self):
     """Test that get_tools has retry decorator applied."""
@@ -670,6 +726,28 @@ class TestMcpToolset:
     for tool in tools:
       assert tool._progress_callback == my_progress_callback
 
+  @pytest.mark.asyncio
+  async def test_get_tools_passes_propagate_grounding_metadata_to_mcp_tools(
+      self,
+  ):
+    """Test that get_tools passes propagate_grounding_metadata to created MCPTool instances."""
+    mock_tools = [MockMCPTool("tool1"), MockMCPTool("tool2")]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        propagate_grounding_metadata=True,
+    )
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert len(tools) == 2
+    for tool in tools:
+      assert tool.propagate_grounding_metadata is True
+
   def test_init_with_progress_callback_factory(self):
     """Test initialization with a ProgressCallbackFactory."""
 
@@ -727,11 +805,11 @@ class TestMcpToolset:
     """Test listing resources."""
     resources = [
         Resource(
-            name="file1.txt", mime_type="text/plain", uri="file:///file1.txt"
+            name="file1.txt", mimeType="text/plain", uri="file:///file1.txt"
         ),
         Resource(
             name="data.json",
-            mime_type="application/json",
+            mimeType="application/json",
             uri="file:///data.json",
         ),
     ]
@@ -753,11 +831,11 @@ class TestMcpToolset:
     """Test getting resource info for an existing resource."""
     resources = [
         Resource(
-            name="file1.txt", mime_type="text/plain", uri="file:///file1.txt"
+            name="file1.txt", mimeType="text/plain", uri="file:///file1.txt"
         ),
         Resource(
             name="data.json",
-            mime_type="application/json",
+            mimeType="application/json",
             uri="file:///data.json",
         ),
     ]
@@ -773,17 +851,48 @@ class TestMcpToolset:
 
     assert result == {
         "name": "data.json",
-        "mime_type": "application/json",
+        "mimeType": "application/json",
         "uri": "file:///data.json",
     }
     self.mock_session.list_resources.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_get_resource_info_keeps_the_1x_key_names(self):
+    """This dict goes straight to the caller, so its keys are contractual.
+
+    2.x renames `mimeType` the way it renamed `isError`, and nothing else
+    reads it, so a rename here is silent all the way out. `meta` has to
+    survive the alias dump that prevents that.
+    """
+    resources = [
+        Resource(
+            name="data.json",
+            mimeType="application/json",
+            uri="file:///data.json",
+            _meta={"trace": "t"},
+        )
+    ]
+    list_resources_result = ListResourcesResult(resources=resources)
+    self.mock_session.list_resources = AsyncMock(
+        return_value=list_resources_result
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    result = await toolset.get_resource_info("data.json")
+
+    assert result["mimeType"] == "application/json"
+    assert "mime_type" not in result
+    assert result["meta"] == {"trace": "t"}
+    assert "_meta" not in result
 
   @pytest.mark.asyncio
   async def test_get_resource_info_not_found(self):
     """Test getting resource info for a non-existent resource."""
     resources = [
         Resource(
-            name="file1.txt", mime_type="text/plain", uri="file:///file1.txt"
+            name="file1.txt", mimeType="text/plain", uri="file:///file1.txt"
         ),
     ]
     list_resources_result = ListResourcesResult(resources=resources)
@@ -834,7 +943,7 @@ class TestMcpToolset:
     """Test reading various resource types."""
     uri = f"file:///{name}"
     # Mock list_resources for get_resource_info
-    resources = [Resource(name=name, mime_type=mime_type, uri=uri)]
+    resources = [Resource(name=name, mimeType=mime_type, uri=uri)]
     list_resources_result = ListResourcesResult(resources=resources)
     self.mock_session.list_resources = AsyncMock(
         return_value=list_resources_result

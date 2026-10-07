@@ -21,6 +21,9 @@ from unittest import mock
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.errors.tool_execution_error import ToolErrorType
 from google.adk.errors.tool_execution_error import ToolExecutionError
 from google.adk.events.event import Event
@@ -35,10 +38,21 @@ from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_
 from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT
 from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED
 from google.adk.telemetry._experimental_semconv import _safe_json_serialize_no_whitespaces
+from google.adk.telemetry._stable_semconv import USER_CONTENT_ELIDED
+from google.adk.telemetry.context import ADK_EXPERIMENTAL_TELEMETRY
+from google.adk.telemetry.tracing import _ADK_CAPTURE_MCP_HTTP_BODIES
+from google.adk.telemetry.tracing import _HTTP_REQUEST_BODY_CONTENT
+from google.adk.telemetry.tracing import _HTTP_RESPONSE_BODY_CONTENT
+from google.adk.telemetry.tracing import _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST
+from google.adk.telemetry.tracing import _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE
+from google.adk.telemetry.tracing import _should_report_mcp_http_exchanges
+from google.adk.telemetry.tracing import _trace_mcp_http_exchange
 from google.adk.telemetry.tracing import _use_extra_generate_content_attributes
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.telemetry.tracing import GenerateContentSpan
+from google.adk.telemetry.tracing import MCP_PROTOCOL_VERSION
+from google.adk.telemetry.tracing import MCP_SESSION_ID
 from google.adk.telemetry.tracing import resolve_error_type
 from google.adk.telemetry.tracing import safe_json_serialize
 from google.adk.telemetry.tracing import trace_agent_invocation
@@ -54,10 +68,9 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import errors as genai_errors
 from google.genai import types
-from mcp import ClientSession as McpClientSession
-from mcp import ListToolsResult as McpListToolsResult
 from mcp import Tool as McpTool
 from opentelemetry._logs import LogRecord
+from opentelemetry._logs import SeverityNumber
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_AGENT_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_INPUT_MESSAGES
@@ -70,6 +83,12 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
+from opentelemetry.semconv.attributes.http_attributes import HTTP_REQUEST_METHOD
+from opentelemetry.semconv.attributes.http_attributes import HTTP_RESPONSE_STATUS_CODE
+from opentelemetry.semconv.attributes.server_attributes import SERVER_ADDRESS
+from opentelemetry.semconv.attributes.server_attributes import SERVER_PORT
+from opentelemetry.semconv.attributes.url_attributes import URL_FULL
 from opentelemetry.trace import StatusCode
 from pydantic import BaseModel
 import pytest
@@ -830,6 +849,301 @@ def test_trace_tool_call_with_dict_response(
   )
 
 
+@pytest.mark.parametrize(
+    ('response', 'expected_in_response'),
+    [
+        (
+            {
+                'auth_type': 'oauth2',
+                'client_secret': 'super-secret-client-secret',
+                'access_token': 'super-secret-access-token',
+                'client_id': 'legit-client-id',
+            },
+            'legit-client-id',
+        ),
+        (
+            {
+                'result': AuthCredential(
+                    auth_type=AuthCredentialTypes.OAUTH2,
+                    oauth2=OAuth2Auth(
+                        client_id='legit-client-id',
+                        client_secret='super-secret-client-secret',
+                        access_token='super-secret-access-token',
+                    ),
+                )
+            },
+            'legit-client-id',
+        ),
+        (
+            {
+                'auth_type': 'oauth2',
+                'client_secret': 'super-secret-client-secret',
+                'access_token': 'super-secret-access-token',
+                'client_id': 'legit-client-id',
+                'unserializable': object(),
+            },
+            'legit-client-id',
+        ),
+        (
+            {
+                'auth_type': 'oauth2',
+                'client_secret': 'super-secret-client-secret',
+                'access_token': 'super-secret-access-token',
+                'raw_bytes': b'\xff',
+            },
+            '<not serializable>',
+        ),
+        (
+            {
+                'token': 'next-page-token',
+                'apiKey': 'non-credential-key',
+                'credential': {
+                    'auth_type': 'oauth2',
+                    'oauth2': {
+                        'client_id': 'legit-client-id',
+                        'client_secret': 'super-secret-client-secret',
+                        'access_token': 'super-secret-access-token',
+                    },
+                },
+            },
+            'next-page-token',
+        ),
+    ],
+)
+def test_trace_tool_call_strips_credential_secrets_from_response(
+    monkeypatch,
+    mock_span_fixture,
+    mock_tool_fixture,
+    mock_event_fixture,
+    response,
+    expected_in_response,
+):
+  """A credential in a tool's own response is redacted on the per-tool span.
+
+  trace_merged_tool_calls redacts the same shape of leak on the merged
+  span (test_trace_merged_tool_calls_strips_credential_secrets_from_response).
+  This is the analogous case for trace_tool_call's own, separate
+  gcp.vertex.agent.tool_response attribute: a tool whose own response
+  dict happens to carry an exchanged credential -- either as a raw dict
+  or as a live AuthCredential wrapped under ``result`` -- must not
+  have that credential land here either, since this attribute is set
+  unconditionally for every real tool call whenever content capture is
+  enabled (the default).
+  """
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  mock_event_fixture.content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='tool_call_id_007',
+                  name='test_function_1',
+                  response=response,
+              )
+          ),
+      ],
+  )
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args={},
+      function_response_event=mock_event_fixture,
+  )
+
+  recorded_response = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
+  )
+  assert 'super-secret-client-secret' not in recorded_response
+  assert 'super-secret-access-token' not in recorded_response
+  # A field the client legitimately needs to see is not collateral damage.
+  assert expected_in_response in recorded_response
+
+
+def _trace_mcp_exchange(**overrides):
+  """Reports a plausible MCP exchange, with `overrides` applied."""
+  _trace_mcp_http_exchange(**{
+      'method': 'POST',
+      'url': 'https://mcp.example.com/messages',
+      'server_address': 'mcp.example.com',
+      'server_port': None,
+      'status_code': 200,
+      'mcp_session_id': None,
+      'mcp_protocol_version': None,
+      'request_headers': {'x-req': 'val'},
+      'request_body': '{"method": "tools/call"}',
+      'response_headers': {'content-type': 'application/json'},
+      'response_body': '{"result": {}}',
+      **overrides,
+  })
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_emits_debug_log_record(
+    mock_otel_logger, monkeypatch
+):
+  """Test that an exchange lands as one record with semconv attributes."""
+  monkeypatch.setenv(_ADK_CAPTURE_MCP_HTTP_BODIES, 'true')
+
+  _trace_mcp_exchange(
+      url='https://mcp.example.com:8443/messages?sessionId=REDACTED',
+      server_port=8443,
+      mcp_session_id='sess-1',
+      mcp_protocol_version='2025-06-18',
+  )
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  assert (
+      log_record.event_name == 'adk.experimental.mcp.http.client.response.end'
+  )
+  assert log_record.severity_number == SeverityNumber.DEBUG
+  assert log_record.attributes == {
+      HTTP_REQUEST_METHOD: 'POST',
+      URL_FULL: 'https://mcp.example.com:8443/messages?sessionId=REDACTED',
+      SERVER_ADDRESS: 'mcp.example.com',
+      SERVER_PORT: 8443,
+      MCP_SESSION_ID: 'sess-1',
+      MCP_PROTOCOL_VERSION: '2025-06-18',
+      HTTP_RESPONSE_STATUS_CODE: 200,
+  }
+  assert log_record.body == {
+      _HTTP_REQUEST_BODY_CONTENT: '{"method": "tools/call"}',
+      _HTTP_RESPONSE_BODY_CONTENT: '{"result": {}}',
+  }
+
+
+def test_mcp_attribute_names_match_semconv():
+  """The names are spelled out locally, so nothing else would catch drift."""
+  mcp_attributes = pytest.importorskip(
+      'opentelemetry.semconv._incubating.attributes.mcp_attributes'
+  )
+
+  assert MCP_SESSION_ID == mcp_attributes.MCP_SESSION_ID
+  assert MCP_PROTOCOL_VERSION == mcp_attributes.MCP_PROTOCOL_VERSION
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_elides_bodies_by_default(
+    mock_otel_logger, monkeypatch
+):
+  """Bodies carry user content, so recording them has to be asked for."""
+  monkeypatch.delenv(_ADK_CAPTURE_MCP_HTTP_BODIES, raising=False)
+
+  _trace_mcp_exchange()
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  # The attributes still describe the exchange; only the payload is elided.
+  assert log_record.attributes[HTTP_RESPONSE_STATUS_CODE] == 200
+  assert log_record.body == {
+      _HTTP_REQUEST_BODY_CONTENT: USER_CONTENT_ELIDED,
+      _HTTP_RESPONSE_BODY_CONTENT: USER_CONTENT_ELIDED,
+  }
+  assert SERVER_PORT not in log_record.attributes
+  assert MCP_SESSION_ID not in log_record.attributes
+  assert MCP_PROTOCOL_VERSION not in log_record.attributes
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_records_no_header_unasked(
+    mock_otel_logger, monkeypatch
+):
+  """No header is recorded that the OTel env vars do not name."""
+  monkeypatch.delenv(
+      _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST, raising=False
+  )
+  monkeypatch.delenv(
+      _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE, raising=False
+  )
+
+  _trace_mcp_exchange(
+      request_headers={'x-req': 'val', 'content-type': 'application/json'}
+  )
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  assert not [key for key in log_record.attributes if '.header.' in key]
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_captures_allowlisted_headers(
+    mock_otel_logger, monkeypatch
+):
+  """The OTel httpx env vars are the whole allowlist, regexes included."""
+  monkeypatch.setenv(
+      _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST,
+      'x-req,x-trace-.*',
+  )
+  monkeypatch.setenv(
+      _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE, 'x-resp'
+  )
+
+  _trace_mcp_exchange(
+      request_headers={
+          'X-Req': 'val',
+          'x-trace-id': 'abc',
+          'x-other': 'dropped',
+          # Allowlisting a credential header still yields only the marker,
+          # because the caller redacts before we ever see it.
+          'authorization': '<redacted>',
+      },
+      response_headers={'x-resp': 'val'},
+  )
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  assert log_record.attributes['http.request.header.x-req'] == ['val']
+  assert log_record.attributes['http.request.header.x-trace-id'] == ['abc']
+  assert log_record.attributes['http.response.header.x-resp'] == ['val']
+  assert 'http.request.header.x-other' not in log_record.attributes
+  assert 'http.request.header.authorization' not in log_record.attributes
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_ignores_malformed_header_pattern(
+    mock_otel_logger, monkeypatch
+):
+  """A bad regex drops its own entry rather than the whole record."""
+  monkeypatch.setenv(
+      _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST, 'x-re[,x-req'
+  )
+
+  _trace_mcp_exchange(request_headers={'x-req': 'val'})
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  assert log_record.attributes['http.request.header.x-req'] == ['val']
+
+
+@pytest.mark.parametrize(
+    'env_value,reported',
+    [(None, False), ('false', False), ('true', True), ('1', True)],
+)
+def test_should_report_mcp_http_exchanges_follows_the_experimental_opt_in(
+    env_value, reported, monkeypatch
+):
+  """The record is experimental, so nothing is reported without the opt-in."""
+  if env_value is None:
+    monkeypatch.delenv(ADK_EXPERIMENTAL_TELEMETRY, raising=False)
+  else:
+    monkeypatch.setenv(ADK_EXPERIMENTAL_TELEMETRY, env_value)
+
+  assert _should_report_mcp_http_exchanges() is reported
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_sets_error_type_on_failure(mock_otel_logger):
+  """Test that a 4xx or 5xx status is also recorded as `error.type`."""
+  _trace_mcp_exchange(
+      server_address=None, status_code=403, response_body='Forbidden'
+  )
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  assert log_record.attributes[ERROR_TYPE] == '403'
+  # An unknown host is omitted rather than recorded as None.
+  assert SERVER_ADDRESS not in log_record.attributes
+
+
 def test_trace_merged_tool_calls_sets_correct_attributes(
     monkeypatch, mock_span_fixture, mock_event_fixture
 ):
@@ -856,7 +1170,14 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
       function_response_event=mock_event_fixture,
   )
 
-  expected_event_json = mock_event_fixture.model_dump_json(exclude_none=True)
+  expected_responses_json = json.dumps(
+      [{
+          'id': 'tool_call_id_003',
+          'name': 'test_function_1',
+          'response': {'data': 'merged_details'},
+      }],
+      ensure_ascii=False,
+  )
   expected_calls = [
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', '(merged tools)'),
@@ -864,7 +1185,7 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
       mock.call('gen_ai.tool.call.id', test_response_event_id),
       mock.call('gcp.vertex.agent.tool_call_args', 'N/A'),
       mock.call('gcp.vertex.agent.event_id', test_response_event_id),
-      mock.call('gcp.vertex.agent.tool_response', expected_event_json),
+      mock.call('gcp.vertex.agent.tool_response', expected_responses_json),
       mock.call('gcp.vertex.agent.llm_request', '{}'),
       mock.call('gcp.vertex.agent.llm_response', '{}'),
   ]
@@ -873,7 +1194,7 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
-  # The merged response must be the real serialized event, not the
+  # The merged response must be the real serialized responses, not the
   # "<not serializable>" fallback.
   recorded_response = next(
       call_obj.args[1]
@@ -881,8 +1202,114 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
       if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
   )
   parsed = json.loads(recorded_response)
-  assert parsed['id'] == 'test_event_id'
+  assert parsed[0]['id'] == 'tool_call_id_003'
   assert 'merged_details' in recorded_response
+
+
+def test_trace_merged_tool_calls_omits_event_actions(
+    monkeypatch, mock_span_fixture, mock_event_fixture
+):
+  """Only the responses are recorded, not the state a tool wrote."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  mock_event_fixture.content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='tool_call_id_005',
+                  name='test_function_1',
+                  response={'data': 'merged_details'},
+              )
+          ),
+      ],
+  )
+  # Shape the openapi tool auth handler stores an exchanged credential in.
+  mock_event_fixture.actions.state_delta = {
+      'oauth2_existing_exchanged_credential': {
+          'oauth2': {
+              'access_token': 'access-token-value',
+              'refresh_token': 'refresh-token-value',
+          }
+      }
+  }
+
+  trace_merged_tool_calls(
+      response_event_id='merged_evt_id_003',
+      function_response_event=mock_event_fixture,
+  )
+
+  recorded_response = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
+  )
+  assert 'access-token-value' not in recorded_response
+  assert 'refresh-token-value' not in recorded_response
+  assert 'merged_details' in recorded_response
+
+
+def test_trace_merged_tool_calls_strips_credential_secrets_from_response(
+    monkeypatch, mock_span_fixture, mock_event_fixture
+):
+  """A credential exchanged via adk_request_credential is redacted.
+
+  Unlike test_trace_merged_tool_calls_omits_event_actions (which covers a
+  credential riding in event.actions.state_delta), this covers the shape a
+  client's *answer* to an adk_request_credential call takes: the exchanged
+  secret lands directly in a function_response.response dict, which is
+  serialized on every merged-tool-call span regardless of the response's
+  name.
+  """
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  mock_event_fixture.content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='tool_call_id_auth',
+                  name='adk_request_credential',
+                  response={
+                      'client_secret': 'super-secret-client-secret',
+                      'access_token': 'super-secret-access-token',
+                      'client_id': 'legit-client-id',
+                  },
+              )
+          ),
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='tool_call_id_page',
+                  name='list_items',
+                  response={
+                      'token': 'next-page-token',
+                      'apiKey': 'public-id',
+                  },
+              )
+          ),
+      ],
+  )
+
+  trace_merged_tool_calls(
+      response_event_id='merged_evt_id_006',
+      function_response_event=mock_event_fixture,
+  )
+
+  recorded_response = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
+  )
+  assert 'super-secret-client-secret' not in recorded_response
+  assert 'super-secret-access-token' not in recorded_response
+  # A field the client legitimately needs to see is not collateral damage.
+  assert 'legit-client-id' in recorded_response
+  assert 'next-page-token' in recorded_response
+  assert 'public-id' in recorded_response
 
 
 def test_trace_tool_call_skips_non_recording_span(
@@ -2388,6 +2815,77 @@ def test_trace_tool_call_no_error_no_error_type(
       if c == mock.call('error.type', mock.ANY)
   ]
   assert len(error_type_calls) == 0
+
+
+def test_build_llm_request_for_trace_excludes_thought_signatures():
+  """Opaque signature bytes must not be base64-encoded onto a span attribute.
+
+  A thought signature stays in history and is replayed on every later request,
+  so leaving it in would grow the serialized request on each call of a session.
+  """
+  from google.adk.telemetry.tracing import _build_llm_request_for_trace
+
+  llm_request = LlmRequest(
+      model='gemini-2.0-flash',
+      contents=[
+          types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id='call-1', name='search', args={}
+                      ),
+                      thought_signature=b'opaque-signature-bytes' * 40,
+                  )
+              ],
+          )
+      ],
+  )
+
+  serialized = json.dumps(_build_llm_request_for_trace(llm_request))
+
+  assert 'thoughtSignature' not in serialized
+  assert 'thought_signature' not in serialized
+  # The part itself is still described on the span.
+  assert 'search' in serialized
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_excludes_response_thought_signature(
+    monkeypatch, mock_span_fixture
+):
+  """A signature on the model's own response must not reach the span either."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  invocation_context = await _create_invocation_context(
+      LlmAgent(name='test_agent')
+  )
+  llm_request = LlmRequest(
+      model='gemini-pro', config=types.GenerateContentConfig()
+  )
+  llm_response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  text='done',
+                  thought_signature=b'opaque-signature-bytes' * 40,
+              )
+          ],
+      )
+  )
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  llm_response_json = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.llm_response'
+  )
+  assert 'thoughtSignature' not in llm_response_json
+  assert 'thought_signature' not in llm_response_json
+  assert 'done' in llm_response_json
 
 
 def test_build_llm_request_for_trace_excludes_live_http_clients():

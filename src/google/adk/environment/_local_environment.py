@@ -21,6 +21,7 @@ import logging
 import os
 from pathlib import Path
 import shutil
+import signal
 import tempfile
 
 from typing_extensions import override
@@ -30,6 +31,37 @@ from ._base_environment import BaseEnvironment
 from ._base_environment import ExecutionResult
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+# How long to wait for a command to exit after SIGTERM before escalating to
+# SIGKILL, and then for its output pipes to close, so that tearing a command
+# down cannot itself block forever.
+_TERMINATE_GRACE_SECONDS = 5
+
+
+def _signal_group(group: int, sig: int) -> None:
+  """Signals every process left in a group, tolerating an empty one."""
+  if not hasattr(os, 'killpg'):
+    return
+  try:
+    os.killpg(group, sig)
+  except OSError:
+    logger.debug('Could not signal the command process group.')
+
+
+def _terminate(proc: asyncio.subprocess.Process) -> None:
+  """Sends SIGTERM to a command, tolerating one that already exited."""
+  try:
+    proc.terminate()
+  except ProcessLookupError:
+    pass
+
+
+def _kill(proc: asyncio.subprocess.Process) -> None:
+  """Sends SIGKILL to a command, tolerating one that already exited."""
+  try:
+    proc.kill()
+  except ProcessLookupError:
+    pass
 
 
 @experimental
@@ -105,17 +137,27 @@ class LocalEnvironment(BaseEnvironment):
         stderr=asyncio.subprocess.PIPE,
         cwd=self._working_dir,
         env=proc_env,
+        # Its own session, so a timeout can take down everything the command
+        # started and nothing else. Ignored on Windows, as `os.killpg` is.
+        start_new_session=True,
     )
+
+    # One drain task for the whole call. The pipes stay open while any
+    # descendant holds them, so a second `communicate()` after the deadline
+    # would wait on a child the timeout never reached.
+    drain = asyncio.ensure_future(proc.communicate())
 
     timed_out = False
     try:
       stdout_bytes, stderr_bytes = await asyncio.wait_for(
-          proc.communicate(), timeout=timeout
+          asyncio.shield(drain), timeout=timeout
       )
     except asyncio.TimeoutError:
       timed_out = True
-      proc.kill()
-      stdout_bytes, stderr_bytes = await proc.communicate()
+      stdout_bytes, stderr_bytes = await self._kill_command(proc, drain)
+    except asyncio.CancelledError:
+      await self._kill_command(proc, drain)
+      raise
 
     return ExecutionResult(
         exit_code=proc.returncode or 0,
@@ -123,6 +165,39 @@ class LocalEnvironment(BaseEnvironment):
         stderr=stderr_bytes.decode('utf-8', errors='replace'),
         timed_out=timed_out,
     )
+
+  @staticmethod
+  async def _kill_command(
+      proc: asyncio.subprocess.Process,
+      drain: asyncio.Future[tuple[bytes, bytes]],
+  ) -> tuple[bytes, bytes]:
+    """Kills a command and its descendants, returning what it wrote."""
+    # The command leads its own process group, so its pid is the group that
+    # holds whatever it spawned. `terminate` and `kill` below reach the command
+    # itself on the platforms that have no group to signal.
+    group = proc.pid
+
+    # SIGTERM first, so the command and its children get a chance to exit
+    # cleanly before anything is killed outright.
+    _signal_group(group, signal.SIGTERM)
+    _terminate(proc)
+    done, _ = await asyncio.wait([drain], timeout=_TERMINATE_GRACE_SECONDS)
+
+    if not done:
+      # Escalate unconditionally: the command exiting says nothing about a
+      # child of it that is ignoring SIGTERM, and such a child holds the
+      # output pipes open besides.
+      _signal_group(group, signal.SIGKILL)
+      _kill(proc)
+      done, _ = await asyncio.wait([drain], timeout=_TERMINATE_GRACE_SECONDS)
+
+    if not done:
+      # A descendant escaped the group (it made one of its own) and still
+      # holds the pipes. Give up on its output rather than wait for it.
+      drain.cancel()
+      logger.warning('Gave up reading output from a killed command.')
+      return b'', b''
+    return drain.result()
 
   @override
   async def read_file(self, path: str | Path) -> bytes:

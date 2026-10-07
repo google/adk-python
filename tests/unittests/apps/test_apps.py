@@ -21,6 +21,7 @@ from google.adk.apps.app import ResumabilityConfig
 from google.adk.apps.app import validate_app_name
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.workflow._base_node import BaseNode
+from pydantic import ValidationError
 import pytest
 
 
@@ -219,11 +220,23 @@ class TestAppRootNode:
       App(name="test_app")
 
   def test_app_rejects_invalid_root_agent(self):
-    """Test that root_agent must be a BaseAgent or BaseNode instance."""
-    with pytest.raises(
-        TypeError, match="root_agent must be a BaseAgent or BaseNode"
-    ):
+    """Test that root_agent must be a BaseNode instance."""
+    with pytest.raises(ValidationError):
       App(name="test_app", root_agent="not_a_node")
+
+  def test_app_rejects_dict_root_agent(self):
+    """Test that a dict is not coerced into a bare BaseNode."""
+    with pytest.raises(ValidationError):
+      App(name="test_app", root_agent={"name": "test_node"})
+
+  def test_app_dump_keeps_root_agent_subclass_fields(self):
+    """Test that dumping an App keeps the fields of the concrete node type."""
+
+    class _NodeWithExtraField(BaseNode):
+      extra_field: str = "extra_value"
+
+    app = App(name="test_app", root_agent=_NodeWithExtraField(name="test_node"))
+    assert app.model_dump()["root_agent"]["extra_field"] == "extra_value"
 
 
 class TestValidateAppName:

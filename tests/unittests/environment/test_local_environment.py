@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for LocalEnvironment.read_file and write_file."""
+"""Tests for LocalEnvironment file access and command execution."""
 
+import asyncio
+import os
 from pathlib import Path
 
 from google.adk.environment._local_environment import LocalEnvironment
@@ -123,3 +125,74 @@ class TestReadFileWriteFile:
     """Reading a missing file raises FileNotFoundError."""
     with pytest.raises(FileNotFoundError):
       await env.read_file(Path("does_not_exist.txt"))
+
+
+class TestExecuteTimeout:
+  """Timeout and cancellation must reach the whole process tree."""
+
+  # A background command that keeps appending to a file, started by a command
+  # that then blocks. The background one inherits stdout/stderr, so it holds
+  # those pipes open for as long as it runs -- which is what used to make a
+  # timeout wait forever. Shell, not Python: the test runner embeds its
+  # interpreter and leaves `sys.executable` empty.
+  _HEARTBEAT = "while true; do echo x >> beat; sleep 0.05; done\n"
+  _COMMAND = "sh heartbeat.sh & sleep 60"
+
+  @pytest.fixture(name="spawning_command")
+  def _spawning_command(self, env: LocalEnvironment) -> str:
+    """Writes the background script and returns the command that starts it."""
+    (env.working_dir / "heartbeat.sh").write_text(self._HEARTBEAT)
+    return self._COMMAND
+
+  @staticmethod
+  async def _wait_for_beat(env: LocalEnvironment) -> Path:
+    """Waits until the background command is definitely running."""
+    beat = env.working_dir / "beat"
+    for _ in range(200):
+      if beat.exists() and beat.stat().st_size:
+        return beat
+      await asyncio.sleep(0.05)
+    pytest.fail("the background command never started")
+
+  @staticmethod
+  async def _assert_stopped(beat: Path) -> None:
+    """Asserts the background command stopped writing, i.e. it is gone."""
+    before = beat.stat().st_size
+    await asyncio.sleep(0.5)
+    size = beat.stat().st_size
+    assert size == before, f"still running: {before} -> {size} bytes"
+
+  @pytest.mark.skipif(
+      not hasattr(os, "killpg"), reason="needs POSIX process groups"
+  )
+  @pytest.mark.asyncio
+  async def test_timeout_returns_and_reaps_descendants(
+      self, env: LocalEnvironment, spawning_command: str
+  ):
+    """A surviving background command must not hold the timeout open."""
+    try:
+      result = await asyncio.wait_for(
+          env.execute(spawning_command, timeout=0.5), timeout=30
+      )
+    except asyncio.TimeoutError:
+      pytest.fail("execute() hung well past its own 0.5s deadline")
+
+    assert result.timed_out
+    await self._assert_stopped(env.working_dir / "beat")
+
+  @pytest.mark.skipif(
+      not hasattr(os, "killpg"), reason="needs POSIX process groups"
+  )
+  @pytest.mark.asyncio
+  async def test_cancellation_reaps_descendants(
+      self, env: LocalEnvironment, spawning_command: str
+  ):
+    """Cancelling the caller must clean up the process tree too."""
+    task = asyncio.create_task(env.execute(spawning_command))
+    beat = await self._wait_for_beat(env)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await asyncio.wait_for(task, timeout=30)
+
+    await self._assert_stopped(beat)

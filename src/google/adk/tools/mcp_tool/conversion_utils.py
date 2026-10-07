@@ -19,8 +19,8 @@ from typing import Dict
 
 from google.genai.types import Schema
 from google.genai.types import Type
-import mcp.types as mcp_types
 
+from ...dependencies._mcp import types as mcp_types
 from ..base_tool import BaseTool
 
 

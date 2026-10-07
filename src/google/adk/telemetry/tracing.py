@@ -30,6 +30,7 @@ from contextlib import asynccontextmanager
 from contextlib import contextmanager
 from contextlib import ExitStack
 import logging
+import os
 import re
 from typing import Final
 from typing import TYPE_CHECKING
@@ -40,6 +41,7 @@ from opentelemetry import _logs
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry._logs import LogRecord
+from opentelemetry._logs import SeverityNumber
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_AGENT_DESCRIPTION
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_AGENT_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
@@ -52,16 +54,24 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_TYPE
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GenAiSystemValues
+from opentelemetry.semconv._incubating.attributes.process_attributes import PROCESS_EXIT_CODE
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
 from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
+from opentelemetry.semconv.attributes.http_attributes import HTTP_REQUEST_METHOD
+from opentelemetry.semconv.attributes.http_attributes import HTTP_RESPONSE_STATUS_CODE
+from opentelemetry.semconv.attributes.server_attributes import SERVER_ADDRESS
+from opentelemetry.semconv.attributes.server_attributes import SERVER_PORT
+from opentelemetry.semconv.attributes.url_attributes import URL_FULL
 from opentelemetry.semconv.schemas import Schemas
 from opentelemetry.trace import Span
 from opentelemetry.trace import Status
 from opentelemetry.trace import StatusCode
 from opentelemetry.util.types import AttributeValue
+from pydantic_core import to_jsonable_python
 from typing_extensions import deprecated
 
 from .. import version
+from ..auth.auth_credential import _redact_credential_secrets
 from ..utils.env_utils import is_enterprise_mode_enabled
 from ..utils.model_name_utils import extract_model_name
 from ..utils.model_name_utils import is_gemini_model
@@ -69,10 +79,13 @@ from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED
+from ._adk_attributes import ADK_SKILL_ADDITIONAL_TOOLS
+from ._decorators import experimental_telemetry
 from ._experimental_semconv import maybe_log_completion_details
 from ._experimental_semconv import set_operation_details_attributes_from_request
 from ._experimental_semconv import set_operation_details_attributes_from_response
 from ._experimental_semconv import set_operation_details_common_attributes
+from ._finish_reason import is_reported_finish_reason
 from ._serialization import safe_json_serialize
 from ._stable_semconv import choice_body
 from ._stable_semconv import GEN_AI_CHOICE_EVENT
@@ -83,7 +96,14 @@ from ._stable_semconv import system_message_body
 from ._stable_semconv import USER_CONTENT_ELIDED
 from ._stable_semconv import user_message_body
 from ._token_usage import TokenUsage
+from .context import _TRUTHY_ENV_VALUES
 from .context import TelemetryConfig
+
+# Use the import symbols once the minimum OpenTelemetry SDK version is updated to 1.40.0
+# from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_PROTOCOL_VERSION
+# from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_SESSION_ID
+MCP_PROTOCOL_VERSION: Final[str] = "mcp.protocol.version"
+MCP_SESSION_ID: Final[str] = "mcp.session.id"
 
 # By default some ADK spans include attributes with potential PII data.
 # This env, when set to false, allows to disable populating those attributes.
@@ -94,9 +114,54 @@ ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS = "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"
 # span attribute
 GCP_MCP_SERVER_DESTINATION_ID = "gcp.mcp.server.destination.id"
 
+# Event name for the log record of one HTTP exchange with an MCP server. OTel's
+# MCP conventions define attributes but no event for the transport hop, so this
+# one is ADK's own, and lives in the `adk.experimental.*` namespace: emitted
+# only under `ADK_EXPERIMENTAL_TELEMETRY`, and free to be renamed or dropped
+# the moment a standard covers it -- either a generic HTTP client
+# response-end event, or body capture in
+# `opentelemetry-instrumentation-httpx`. The attributes on it are the
+# semconv-defined ones.
+_ADK_EXPERIMENTAL_MCP_HTTP_RESPONSE_END_EVENT: Final[str] = (
+    "adk.experimental.mcp.http.client.response.end"
+)
+
+# Payload attribute names from the HTTP body conventions
+# (open-telemetry/semantic-conventions#3521), merged but not in any released
+# `opentelemetry-semconv`. Named here rather than imported until one has them.
+_HTTP_REQUEST_BODY_CONTENT: Final[str] = "http.request.body.content"
+_HTTP_RESPONSE_BODY_CONTENT: Final[str] = "http.response.body.content"
+_HTTP_REQUEST_HEADER_TEMPLATE: Final[str] = "http.request.header.{}"
+_HTTP_RESPONSE_HEADER_TEMPLATE: Final[str] = "http.response.header.{}"
+
+# Opt-in for the payload on the record above. That semconv PR requires body
+# capture to be off by default and leaves the switch to the instrumentation, so
+# this is ADK's own and defaults off. Deliberately not the GenAI content knob:
+# agreeing to record prompt content is not the same decision as agreeing to
+# export raw HTTP payloads.
+_ADK_CAPTURE_MCP_HTTP_BODIES: Final[str] = "ADK_CAPTURE_MCP_HTTP_BODIES"
+
+# Which headers to record. Nothing is recorded that these do not name: the
+# semconv default is to capture no header, because any of them can carry a
+# credential the redaction list has not heard of yet. They are the same env
+# vars `opentelemetry-instrumentation-httpx` reads, so one setting configures
+# the HTTP client span and this record alike. Comma-separated names or regexes,
+# matched case-insensitively against the whole header name.
+_OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST: Final[str] = (
+    "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST"
+)
+_OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE: Final[str] = (
+    "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE"
+)
+
+# Skill telemetry attributes.
+GEN_AI_SKILL_NAME = "gen_ai.skill.name"
+GEN_AI_SKILL_DESCRIPTION = "gen_ai.skill.description"
+GEN_AI_SKILL_SOURCE_URI = "gen_ai.skill.source.uri"
+GEN_AI_SKILL_RESOURCE_NAME = "gen_ai.skill.resource.name"
+
 # Silence unused warnings, but keep the public interface the same.
 _ = OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT
-_ = USER_CONTENT_ELIDED
 
 # Needed to avoid circular imports
 if TYPE_CHECKING:
@@ -109,6 +174,9 @@ if TYPE_CHECKING:
   from ..models.llm_response import LlmResponse
   from ..tools.base_tool import BaseTool
   from ..workflow._base_node import BaseNode
+  from ._instrumentation import SkillLoadTelemetry
+  from ._instrumentation import SkillResourceLoadTelemetry
+  from ._instrumentation import SkillScriptExecutionTelemetry
 
 tracer = trace.get_tracer(
     instrumenting_module_name="gcp.vertex.agent",
@@ -284,12 +352,175 @@ def trace_tool_call(
   if function_response_event is not None:
     span.set_attribute("gcp.vertex.agent.event_id", function_response_event.id)
   if telemetry_config.should_add_content_to_legacy_spans:
-    span.set_attribute(
-        "gcp.vertex.agent.tool_response",
-        safe_json_serialize(tool_response),
-    )
+    try:
+      tool_response_json = safe_json_serialize(
+          _redact_credential_secrets(
+              to_jsonable_python(
+                  tool_response, fallback=lambda _: "<not serializable>"
+              )
+          )
+      )
+    except Exception:  # pylint: disable=broad-exception-caught
+      tool_response_json = "<not serializable>"
+    span.set_attribute("gcp.vertex.agent.tool_response", tool_response_json)
   else:
     span.set_attribute("gcp.vertex.agent.tool_response", "{}")
+
+
+def _should_report_mcp_http_exchanges() -> bool:
+  """Whether MCP HTTP exchanges are reported to OTel. Off unless asked for.
+
+  The record is experimental (`adk.experimental.*`), so it rides on the
+  experimental telemetry opt-in for the `mcp` feature. Resolved from the env
+  rather than from `RunConfig.telemetry`, because the httpx response hook that
+  reports an exchange has no invocation context to read a per-request override
+  from.
+  """
+  return TelemetryConfig()._experimental_feature_enabled("mcp")
+
+
+def _should_capture_mcp_http_bodies() -> bool:
+  """Whether MCP HTTP payloads may be recorded. Off unless asked for."""
+  return (
+      os.getenv(_ADK_CAPTURE_MCP_HTTP_BODIES, "").strip().lower()
+      in _TRUTHY_ENV_VALUES
+  )
+
+
+def _header_patterns(env_var: str) -> list[re.Pattern[str]]:
+  """Compiles the header allowlist `env_var` holds, one regex per entry."""
+  patterns = []
+  for entry in os.getenv(env_var, "").split(","):
+    entry = entry.strip()
+    if not entry:
+      continue
+    try:
+      patterns.append(re.compile(entry, re.IGNORECASE))
+    except re.error:
+      logger.warning(
+          "Ignoring malformed header pattern %r in %s.", entry, env_var
+      )
+  return patterns
+
+
+def _captured_headers(
+    headers: Mapping[str, str], template: str, env_var: str
+) -> dict[str, AttributeValue]:
+  """Allowlisted headers, in the semconv `http.*.header.<key>` shape.
+
+  Values arrive already redacted, so allowlisting a credential header yields
+  the redaction marker rather than the secret.
+
+  Args:
+    headers: Headers of one side of the exchange, already redacted.
+    template: Attribute name to format the lowercased header name into.
+    env_var: Env var naming the headers to record.
+
+  Returns:
+    One `string[]` attribute per header the env var names.
+  """
+  allowlist = _header_patterns(env_var)
+  captured: dict[str, AttributeValue] = {}
+  for name, value in headers.items():
+    lowered = name.lower()
+    if any(pattern.fullmatch(lowered) for pattern in allowlist):
+      captured[template.format(lowered)] = [value]
+  return captured
+
+
+def _trace_mcp_http_exchange(
+    *,
+    method: str,
+    url: str,
+    server_address: str | None,
+    server_port: int | None,
+    status_code: int,
+    mcp_session_id: str | None,
+    mcp_protocol_version: str | None,
+    request_headers: Mapping[str, str],
+    request_body: str | None,
+    response_headers: Mapping[str, str],
+    response_body: str | None,
+) -> None:
+  """Emits one DEBUG log record for an MCP server HTTP request/response pair.
+
+  The record picks up the trace context active on the calling task: the
+  enclosing `execute_tool` span for an inline tool call, or the session-creating
+  invocation for exchanges the MCP client drives from a background task (notably
+  the SSE message POST).
+
+  Callers own the opt-in check (`_should_report_mcp_http_exchanges`), redaction
+  and truncation. Headers named in the OTel capture env vars become semconv
+  attributes; the bodies go in the record body and appear only when
+  `ADK_CAPTURE_MCP_HTTP_BODIES` asks for them, because MCP payloads routinely
+  carry user data.
+
+  Args:
+    method: HTTP method of the request.
+    url: Request URL, already sanitized.
+    server_address: Host the request was sent to, if known.
+    server_port: Port the request was sent to, if known.
+    status_code: HTTP status code of the response.
+    mcp_session_id: MCP session this exchange belongs to, if known.
+    mcp_protocol_version: MCP protocol version the exchange ran under, if known.
+    request_headers: Request headers, already redacted.
+    request_body: Request body, already truncated, or None if unread.
+    response_headers: Response headers, already redacted.
+    response_body: Response body, already truncated, `<SSE stream>` for a body
+      that must not be read, or None if unread.
+  """
+  attributes: dict[str, AttributeValue] = {
+      HTTP_REQUEST_METHOD: method,
+      URL_FULL: url,
+      HTTP_RESPONSE_STATUS_CODE: status_code,
+  }
+  if server_address:
+    attributes[SERVER_ADDRESS] = server_address
+  if server_port:
+    attributes[SERVER_PORT] = server_port
+  # The two facts a reader of an MCP exchange always wants are recorded as the
+  # semconv attributes for them, so that reading them costs no header capture.
+  if mcp_session_id:
+    attributes[MCP_SESSION_ID] = mcp_session_id
+  if mcp_protocol_version:
+    attributes[MCP_PROTOCOL_VERSION] = mcp_protocol_version
+  # HTTP semconv records `error.type` as the status code string.
+  if status_code >= 400:
+    attributes[ERROR_TYPE] = str(status_code)
+  attributes.update(
+      _captured_headers(
+          request_headers,
+          _HTTP_REQUEST_HEADER_TEMPLATE,
+          _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST,
+      )
+  )
+  attributes.update(
+      _captured_headers(
+          response_headers,
+          _HTTP_RESPONSE_HEADER_TEMPLATE,
+          _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE,
+      )
+  )
+
+  if _should_capture_mcp_http_bodies():
+    body = {
+        _HTTP_REQUEST_BODY_CONTENT: request_body,
+        _HTTP_RESPONSE_BODY_CONTENT: response_body,
+    }
+  else:
+    body = {
+        _HTTP_REQUEST_BODY_CONTENT: USER_CONTENT_ELIDED,
+        _HTTP_RESPONSE_BODY_CONTENT: USER_CONTENT_ELIDED,
+    }
+
+  otel_logger.emit(
+      LogRecord(
+          event_name=_ADK_EXPERIMENTAL_MCP_HTTP_RESPONSE_END_EVENT,
+          severity_number=SeverityNumber.DEBUG,
+          body=body,
+          attributes=attributes,
+      )
+  )
 
 
 def trace_merged_tool_calls(
@@ -326,16 +557,23 @@ def trace_merged_tool_calls(
   span.set_attribute("gcp.vertex.agent.tool_call_args", "N/A")
   span.set_attribute("gcp.vertex.agent.event_id", response_event_id)
   if telemetry_config.should_add_content_to_legacy_spans:
+    # Only the responses: actions carry session state, credentials included.
+    content = function_response_event.content
+    parts = (content.parts or []) if content else []
     try:
-      function_response_event_json = function_response_event.model_dump_json(
-          exclude_none=True
-      )
+      tool_response_json = safe_json_serialize([
+          _redact_credential_secrets(
+              part.function_response.model_dump(exclude_none=True, mode="json")
+          )
+          for part in parts
+          if part.function_response is not None
+      ])
     except Exception:  # pylint: disable=broad-exception-caught
-      function_response_event_json = "<not serializable>"
+      tool_response_json = "<not serializable>"
 
     span.set_attribute(
         "gcp.vertex.agent.tool_response",
-        function_response_event_json,
+        tool_response_json,
     )
   else:
     span.set_attribute("gcp.vertex.agent.tool_response", "{}")
@@ -355,20 +593,18 @@ def _set_usage_metadata_attributes(
   """Records usage metadata attributes on the given span."""
   if usage_metadata is None:
     return
-  span.set_attributes(TokenUsage(usage_metadata).to_attributes())
+  span.set_attributes(
+      TokenUsage.from_usage_metadata(usage_metadata).to_attributes()
+  )
 
 
+@experimental_telemetry(gate="context_cache")
 def _set_context_cache_attributes(
     span: Span,
     cache_metadata: CacheMetadata | None,
-    telemetry_config: TelemetryConfig,
 ) -> None:
   """Records context cache state on the given span."""
   if cache_metadata is None:
-    return
-  # The fingerprint is a content hash, so these attributes stay behind the
-  # experimental opt-in rather than landing on every span by default.
-  if not telemetry_config.should_emit_experimental_telemetry:
     return
   attributes: dict[str, AttributeValue] = {
       ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT: cache_metadata.cache_name is not None,
@@ -473,17 +709,30 @@ def trace_call_llm(
 
   _set_usage_metadata_attributes(span, llm_response.usage_metadata)
   _set_context_cache_attributes(
-      span, getattr(llm_response, "cache_metadata", None), telemetry_config
+      telemetry_config, span, getattr(llm_response, "cache_metadata", None)
   )
-  if llm_response.finish_reason:
-    try:
-      finish_reason_str = llm_response.finish_reason.value.lower()
-    except AttributeError:
-      finish_reason_str = str(llm_response.finish_reason).lower()
-    span.set_attribute(
-        "gen_ai.response.finish_reasons",
-        [finish_reason_str],
-    )
+  if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
+    span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
+
+
+def _without_thought_signature(part: types.Part) -> types.Part:
+  """Returns ``part`` with any thought signature removed.
+
+  A thought signature is opaque bytes that the model round-trips through the
+  conversation, so it stays in history and is replayed on every later request.
+  Serializing a part in JSON mode base64-encodes it onto a span attribute,
+  which grows with the history on each call and carries nothing a reader of
+  the trace can act on.
+
+  Args:
+    part: The part to copy.
+
+  Returns:
+    ``part`` itself when it carries no signature, otherwise a copy without one.
+  """
+  if part.thought_signature is None:
+    return part
+  return part.model_copy(update={"thought_signature": None})
 
 
 def _summarize_inline_data(content: types.Content) -> types.Content:
@@ -504,7 +753,7 @@ def _summarize_inline_data(content: types.Content) -> types.Content:
   for part in content.parts or []:
     blob = part.inline_data
     if blob is None:
-      parts.append(part)
+      parts.append(_without_thought_signature(part))
       continue
     parts.append(
         types.Part(
@@ -649,7 +898,11 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, object]:
   }
   # We do not want to send bytes data to the trace.
   for content in llm_request.contents:
-    parts = [part for part in content.parts if not part.inline_data]
+    parts = [
+        _without_thought_signature(part)
+        for part in content.parts
+        if not part.inline_data
+    ]
     result["contents"].append(
         types.Content(role=content.role, parts=parts).model_dump(
             exclude_none=True, mode="json"
@@ -664,9 +917,16 @@ def _telemetry_config_from_invocation_context(
   """Returns ``invocation_context.run_config.telemetry`` if reachable, else ``None``."""
   if invocation_context is None:
     return TelemetryConfig()
-  if (run_config := invocation_context.run_config) is None:
+  try:
+    if (run_config := invocation_context.run_config) is None:
+      return TelemetryConfig()
+    return run_config.telemetry or TelemetryConfig()
+  except AttributeError:
+    logger.warning(
+        "Failed to access run_config from invocation_context: type is %s",
+        type(invocation_context).__name__,
+    )
     return TelemetryConfig()
-  return run_config.telemetry or TelemetryConfig()
 
 
 @deprecated("Replaced by use_inference_span to support experimental semconv.")
@@ -861,7 +1121,7 @@ def _use_native_generate_content_span_stable_semconv(
   telemetry_config = telemetry_config or TelemetryConfig()
   system_name = _resolve_gen_ai_system_name(llm_request.model)
   with tracer.start_as_current_span(
-      f"generate_content {llm_request.model or ''}"
+      f"generate_content {llm_request.model or ''}".strip()
   ) as span:
     span.set_attribute(GEN_AI_SYSTEM, system_name)
     _set_common_generate_content_attributes(
@@ -915,7 +1175,7 @@ def _use_native_generate_content_span(
     return
 
   with tracer.start_as_current_span(
-      f"generate_content {llm_request.model or ''}"
+      f"generate_content {llm_request.model or ''}".strip()
   ) as span:
     _set_common_generate_content_attributes(
         span, llm_request, common_attributes
@@ -955,10 +1215,12 @@ def trace_generate_content_result(span: Span | None, llm_response: LlmResponse):
   if span is None:
     return
 
+  # This deprecated path has no notion of an inference ending, so it keeps
+  # skipping partials rather than reporting one choice per chunk.
   if llm_response.partial:
     return
 
-  if finish_reason := llm_response.finish_reason:
+  if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
   _set_usage_metadata_attributes(span, llm_response.usage_metadata)
 
@@ -969,6 +1231,7 @@ def trace_generate_content_result(span: Span | None, llm_response: LlmResponse):
           attributes={
               GEN_AI_SYSTEM: _inference_system_name(None, llm_response)
           },
+          context=trace.set_span_in_context(span),
       )
   )
 
@@ -990,16 +1253,17 @@ def trace_inference_result(
   if span is None:
     return
 
-  if llm_response.partial:
-    return
-
-  if finish_reason := llm_response.finish_reason:
+  # No `partial` check: a streamed chunk differs from a whole answer only by
+  # the finish reason it does not carry. The caller stops recording once one
+  # arrives, so the response an aggregator assembles from the chunks it already
+  # reported does not reach here.
+  if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
   _set_usage_metadata_attributes(span, llm_response.usage_metadata)
   # Callers outside adk pass their own response objects here, which are only
   # required to carry the fields this function already read.
   _set_context_cache_attributes(
-      span, getattr(llm_response, "cache_metadata", None), telemetry_config
+      telemetry_config, span, getattr(llm_response, "cache_metadata", None)
   )
 
   if telemetry_config.should_use_experimental_genai_semconv and isinstance(
@@ -1023,6 +1287,7 @@ def trace_inference_result(
                     invocation_context, llm_response
                 )
             },
+            context=trace.set_span_in_context(span),
         )
     )
 
@@ -1108,3 +1373,77 @@ def _inference_system_name(
     if agent is not None:
       model = _agent_model_name(agent)
   return _resolve_gen_ai_system_name(model)
+
+
+def _trace_skill_load(
+    span: trace.Span,
+    skill_telemetry: SkillLoadTelemetry,
+) -> None:
+  """Stamps the skill load attributes onto the ``execute_tool`` span."""
+  attributes: dict[str, AttributeValue] = {}
+  attributes[GEN_AI_SKILL_NAME] = (
+      skill_telemetry.skill_name.maybe_hallucinated_value
+  )
+  skill = skill_telemetry.skill
+
+  if skill is not None:
+    attributes[GEN_AI_SKILL_DESCRIPTION] = skill.description
+
+    if (uri := skill._uri) is not None:
+      attributes[GEN_AI_SKILL_SOURCE_URI] = uri
+
+    if (additional_tools := skill_telemetry.additional_tools) is not None:
+      attributes[ADK_SKILL_ADDITIONAL_TOOLS] = additional_tools
+
+  span.set_attributes(attributes)
+
+
+def _trace_skill_resource_load(
+    span: trace.Span,
+    skill_telemetry: SkillResourceLoadTelemetry,
+) -> None:
+  """Stamps the skill resource loading information in the ``execute_tool load_skill_resource`` span."""
+  attributes: dict[str, AttributeValue] = {}
+  attributes[GEN_AI_SKILL_NAME] = (
+      skill_telemetry.skill_name.maybe_hallucinated_value
+  )
+  if (skill := skill_telemetry.skill) is not None:
+    if (uri := skill._uri) is not None:
+      attributes[GEN_AI_SKILL_SOURCE_URI] = uri
+    attributes[GEN_AI_SKILL_DESCRIPTION] = skill.description
+
+  attributes[GEN_AI_SKILL_RESOURCE_NAME] = (
+      skill_telemetry.resource_path.maybe_hallucinated_value
+  )
+
+  span.set_attributes(attributes)
+
+
+def _trace_skill_script_execution(
+    span: trace.Span,
+    skill_telemetry: SkillScriptExecutionTelemetry,
+) -> None:
+  """Stamps the skill script execution information in the ``execute_tool run_skill_script`` span."""
+  attributes: dict[str, AttributeValue] = {}
+  attributes[GEN_AI_SKILL_NAME] = (
+      skill_telemetry.skill_name.maybe_hallucinated_value
+  )
+  attributes[GEN_AI_SKILL_RESOURCE_NAME] = (
+      skill_telemetry.script_path.maybe_hallucinated_value
+  )
+
+  if (script_exit_code := skill_telemetry.script_exit_code) is not None:
+    attributes[PROCESS_EXIT_CODE] = script_exit_code
+
+    if script_exit_code != 0:
+      span.set_status(
+          trace.Status(trace.StatusCode.ERROR, "SKILL_SCRIPT_EXECUTION_ERROR")
+      )
+      span.set_attribute(ERROR_TYPE, "SKILL_SCRIPT_EXECUTION_ERROR")
+
+  if (skill := skill_telemetry.skill) is not None:
+    if (uri := skill._uri) is not None:
+      attributes[GEN_AI_SKILL_SOURCE_URI] = uri
+    attributes[GEN_AI_SKILL_DESCRIPTION] = skill.description
+
+  span.set_attributes(attributes)

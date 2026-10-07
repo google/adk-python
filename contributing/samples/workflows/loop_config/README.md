@@ -7,12 +7,15 @@ YAML configuration file. It mirrors the
 `contributing/samples/workflows/loop` sample, but uses YAML to define the
 workflow structure instead of Python.
 
-> **Status**: not runnable yet. The YAML agent loader resolves `agent_class`
-> against `google.adk.agents` and requires a `BaseAgent` subclass with a config
-> type, and no config field binds `edges`. `Workflow` satisfies neither, so
-> `root_agent.yaml` below describes the intended syntax rather than syntax the
-> loader accepts today. The individual agent files
-> (`generate_headline.yaml`, `evaluate_headline.yaml`) do load.
+The loader builds this graph as written: `agent_class: Workflow` resolves, and
+`edges` is mapped onto the `Workflow` field of the same name. Loading
+`root_agent.yaml` yields a `Workflow` with five edges, the last of them the
+`unrelated` route back to `generate_headline`.
+
+Code references in this sample (`.agent.process_input`,
+`loop_config.agent.Feedback`) are resolved against `sys.path`, so run it from
+the directory holding the agent folders -- `contributing/samples/workflows` --
+as the CLI does.
 
 ## Sample Inputs
 

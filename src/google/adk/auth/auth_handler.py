@@ -14,8 +14,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
+from fastapi.openapi.models import OAuthFlows
 from fastapi.openapi.models import SecurityBase
 
 from .auth_credential import AuthCredential
@@ -23,6 +25,8 @@ from .auth_schemes import AuthSchemeType
 from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
 from .exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
+from .oauth2_credential_util import _credential_without_client_secret
+from .oauth2_credential_util import _with_configured_client
 
 if TYPE_CHECKING:
   from ..sessions.state import State
@@ -35,6 +39,8 @@ try:
 except ImportError:
   AUTHLIB_AVAILABLE = False
 
+logger = logging.getLogger("google_adk." + __name__)
+
 
 def _normalize_oauth_scopes(
     scopes: dict[str, str] | list[str] | None,
@@ -45,6 +51,24 @@ def _normalize_oauth_scopes(
   if isinstance(scopes, dict):
     return list(scopes.keys())
   return list(scopes)
+
+
+def _without_client_secret(auth_config: AuthConfig) -> AuthConfig:
+  """Returns a copy of auth_config with OAuth2 client secrets removed.
+
+  The auth request travels to, and is echoed back by, the client, and is
+  persisted in the session. The client secret belongs to the agent, never to
+  the end user, so it is stripped here and re-attached from the tool's own
+  configuration when the token exchange happens.
+  """
+  redacted = auth_config.model_copy(deep=True)
+  redacted.raw_auth_credential = _credential_without_client_secret(
+      redacted.raw_auth_credential
+  )
+  redacted.exchanged_auth_credential = _credential_without_client_secret(
+      redacted.exchanged_auth_credential
+  )
+  return redacted
 
 
 class AuthHandler:
@@ -72,48 +96,93 @@ class AuthHandler:
 
     temp_credential_key = "temp:" + credential_key
 
-    state[temp_credential_key] = self.auth_config.exchanged_auth_credential
+    self.auth_config.exchanged_auth_credential = _with_configured_client(
+        credential=self.auth_config.exchanged_auth_credential,
+        raw_credential=self.auth_config.raw_auth_credential,
+    )
+    credential = self.auth_config.exchanged_auth_credential
+    if self._is_exchangeable(credential):
+      credential = await self.exchange_auth_token()
+
+    # Session state is readable by the client, so the secret does not go in it.
+    state[temp_credential_key] = _credential_without_client_secret(credential)
+
+  def _validate(self) -> None:
+    if not self.auth_config.auth_scheme:
+      raise ValueError("auth_scheme is empty.")
+
+  def _is_exchangeable(
+      self,
+      credential: AuthCredential | None,
+      *,
+      allow_public: bool = False,
+  ) -> bool:
+    """Returns whether credential still needs, and can do, a token exchange."""
     if not isinstance(
         self.auth_config.auth_scheme, SecurityBase
     ) or self.auth_config.auth_scheme.type_ not in (
         AuthSchemeType.oauth2,
         AuthSchemeType.openIdConnect,
     ):
-      return
+      return False
+    oauth2 = credential.oauth2 if credential else None
+    if not oauth2 or oauth2.access_token or not oauth2.client_id:
+      return False
+    return bool(oauth2.client_secret or allow_public)
 
-    state[temp_credential_key] = await self.exchange_auth_token()
-
-  def _validate(self) -> None:
-    if not self.auth_config.auth_scheme:
-      raise ValueError("auth_scheme is empty.")
-
-  def get_auth_response(self, state: State) -> AuthCredential | None:
-    # 1. Try reading the temp credential key (standard ADK flow)
+  def _read_stored_credential(
+      self, state: State
+  ) -> tuple[str, AuthCredential] | None:
+    """Returns the state key and credential stored for this auth config."""
     credential_key = self.auth_config.credential_key
     if not credential_key:
       return None
 
-    temp_credential_key = "temp:" + credential_key
-    val = state.get(temp_credential_key, None)
-    if val is not None:
+    # The temp credential key is the standard ADK flow; the key without the
+    # 'temp:' prefix is the fallback.
+    for key in ("temp:" + credential_key, credential_key):
+      val = state.get(key, None)
       if isinstance(val, AuthCredential):
-        return val
+        return key, val
       if isinstance(val, dict):
-        return AuthCredential.model_validate(val)
+        return key, AuthCredential.model_validate(val)
       if isinstance(val, str) and val:
-        return self._build_credential_from_string(val)
-
-    # 2. Try reading the credential key without the 'temp:' prefix
-    val = state.get(credential_key, None)
-    if val is not None:
-      if isinstance(val, AuthCredential):
-        return val
-      if isinstance(val, dict):
-        return AuthCredential.model_validate(val)
-      if isinstance(val, str) and val:
-        return self._build_credential_from_string(val)
+        return key, self._build_credential_from_string(val)
 
     return None
+
+  def has_auth_response(self, state: State) -> bool:
+    """Returns whether an auth response is stored, without exchanging it."""
+    return self._read_stored_credential(state) is not None
+
+  def get_auth_response(self, state: State) -> AuthCredential | None:
+    """Returns the stored auth response, exchanging it for a token if needed.
+
+    The stored response carries no client secret, since the auth request went
+    through the client. The secret configured on this handler's auth config is
+    re-attached here so the exchange can happen without ever trusting the
+    client's copy, and is dropped again from what goes back into the session.
+
+    The token request blocks the calling thread. Callers that can await should
+    let `CredentialManager` do the exchange instead.
+    """
+    stored = self._read_stored_credential(state)
+    if stored is None:
+      return None
+
+    key, credential = stored
+    credential = _with_configured_client(
+        credential=credential,
+        raw_credential=self.auth_config.raw_auth_credential,
+    )
+    if not self._is_exchangeable(credential, allow_public=True):
+      return credential
+
+    exchange_result = OAuth2CredentialExchanger()._exchange_sync(
+        credential, self.auth_config.auth_scheme
+    )
+    state[key] = _credential_without_client_secret(exchange_result.credential)
+    return exchange_result.credential
 
   def _build_credential_from_string(self, val: str) -> AuthCredential:
     from .auth_credential import AuthCredentialTypes
@@ -155,6 +224,9 @@ class AuthHandler:
       )
 
   def generate_auth_request(self) -> AuthConfig:
+    return _without_client_secret(self._generate_auth_request())
+
+  def _generate_auth_request(self) -> AuthConfig:
     if not isinstance(
         self.auth_config.auth_scheme, SecurityBase
     ) or self.auth_config.auth_scheme.type_ not in (
@@ -196,14 +268,11 @@ class AuthHandler:
           credential_key=self.auth_config.credential_key,
       )
 
-    # Check for client_id and client_secret
-    if (
-        not self.auth_config.raw_auth_credential.oauth2.client_id
-        or not self.auth_config.raw_auth_credential.oauth2.client_secret
-    ):
+    # Public clients (Azure AD B2C, PKCE) have a client_id and no secret.
+    if not self.auth_config.raw_auth_credential.oauth2.client_id:
       raise ValueError(
-          f"Auth Scheme {self.auth_config.auth_scheme.type_} requires both"
-          " client_id and client_secret in auth_credential.oauth2."
+          f"Auth Scheme {self.auth_config.auth_scheme.type_} requires"
+          " client_id in auth_credential.oauth2."
       )
 
     # Generate new auth URI
@@ -217,15 +286,18 @@ class AuthHandler:
 
   def generate_auth_uri(
       self,
-  ) -> AuthCredential:
+  ) -> AuthCredential | None:
     """Generates a response containing the auth uri for user to sign in.
 
     Returns:
-        An AuthCredential object containing the auth URI and state.
+        An AuthCredential object containing the auth URI and state, or None if
+        authlib is unavailable and no raw credential was configured.
 
     Raises:
-        ValueError: If the authorization endpoint is not configured in the auth
-            scheme.
+        ValueError: If the raw credential carries no oauth2 section, if the
+            auth scheme is not one that carries an authorization endpoint, or
+            if the credential asks for a code_challenge_method other than
+            S256.
     """
     if not AUTHLIB_AVAILABLE:
       return (
@@ -239,41 +311,67 @@ class AuthHandler:
     if not auth_credential or not auth_credential.oauth2:
       raise ValueError("raw_auth_credential or oauth2 is empty")
 
+    authorization_endpoint: str | None
     if isinstance(auth_scheme, OpenIdConnectWithConfig):
       authorization_endpoint = auth_scheme.authorization_endpoint
       scopes = _normalize_oauth_scopes(auth_scheme.scopes)
     else:
+      # `flows` is declared only on OAuth2, but a CustomAuthScheme subclass may
+      # also carry one to join the OAuth2 consent flow, so read it off the
+      # scheme rather than requiring an OAuth2 instance. Reaching the raise
+      # below used to be an AttributeError inside the expression that follows.
+      flows = getattr(auth_scheme, "flows", None)
+      if not isinstance(flows, OAuthFlows):
+        raise ValueError(
+            "Cannot generate an auth uri for auth scheme"
+            f" {type(auth_scheme).__name__}: it carries no OAuth2 flows."
+        )
       authorization_endpoint = (
-          auth_scheme.flows.implicit
-          and auth_scheme.flows.implicit.authorizationUrl
-          or auth_scheme.flows.authorizationCode
-          and auth_scheme.flows.authorizationCode.authorizationUrl
-          or auth_scheme.flows.clientCredentials
-          and auth_scheme.flows.clientCredentials.tokenUrl
-          or auth_scheme.flows.password
-          and auth_scheme.flows.password.tokenUrl
+          (flows.implicit.authorizationUrl if flows.implicit else None)
+          or (
+              flows.authorizationCode.authorizationUrl
+              if flows.authorizationCode
+              else None
+          )
+          or (
+              flows.clientCredentials.tokenUrl
+              if flows.clientCredentials
+              else None
+          )
+          or (flows.password.tokenUrl if flows.password else None)
       )
-      if auth_scheme.flows.implicit:
-        scopes = _normalize_oauth_scopes(auth_scheme.flows.implicit.scopes)
-      elif auth_scheme.flows.authorizationCode:
-        scopes = _normalize_oauth_scopes(
-            auth_scheme.flows.authorizationCode.scopes
+      if not authorization_endpoint:
+        raise ValueError(
+            "Cannot generate an auth uri for auth scheme"
+            f" {type(auth_scheme).__name__}: no flow declares an"
+            " authorization endpoint."
         )
-      elif auth_scheme.flows.clientCredentials:
-        scopes = _normalize_oauth_scopes(
-            auth_scheme.flows.clientCredentials.scopes
-        )
-      elif auth_scheme.flows.password:
-        scopes = _normalize_oauth_scopes(auth_scheme.flows.password.scopes)
+      if flows.implicit:
+        scopes = _normalize_oauth_scopes(flows.implicit.scopes)
+      elif flows.authorizationCode:
+        scopes = _normalize_oauth_scopes(flows.authorizationCode.scopes)
+      elif flows.clientCredentials:
+        scopes = _normalize_oauth_scopes(flows.clientCredentials.scopes)
+      elif flows.password:
+        scopes = _normalize_oauth_scopes(flows.password.scopes)
       else:
         scopes = []
+
+    code_challenge_method = auth_credential.oauth2.code_challenge_method
+    if not auth_credential.oauth2.client_secret and not code_challenge_method:
+      logger.warning(
+          "OAuth2 client_secret is not set for client_id %s; treating client"
+          " as public.",
+          auth_credential.oauth2.client_id,
+      )
+      code_challenge_method = "S256"
 
     client = OAuth2Session(
         auth_credential.oauth2.client_id,
         auth_credential.oauth2.client_secret,
         scope=" ".join(scopes),
         redirect_uri=auth_credential.oauth2.redirect_uri,
-        code_challenge_method=auth_credential.oauth2.code_challenge_method,
+        code_challenge_method=code_challenge_method,
     )
     params = {
         "access_type": "offline",
@@ -288,13 +386,12 @@ class AuthHandler:
     # If not provided in the credential, generate a cryptographically secure
     # random token of 48 characters (OAuth2 recommends 43-128 characters).
     code_verifier = auth_credential.oauth2.code_verifier
-    method = auth_credential.oauth2.code_challenge_method
 
-    if method:
-      if method != "S256":
+    if code_challenge_method:
+      if code_challenge_method != "S256":
         raise ValueError(
-            f"Unsupported code_challenge_method: {method}. Only 'S256' is"
-            " supported."
+            f"Unsupported code_challenge_method: {code_challenge_method}. Only"
+            " 'S256' is supported."
         )
       if not code_verifier:
         code_verifier = generate_token(48)
@@ -309,5 +406,8 @@ class AuthHandler:
       exchanged_auth_credential.oauth2.state = state
       if code_verifier:
         exchanged_auth_credential.oauth2.code_verifier = code_verifier
+        exchanged_auth_credential.oauth2.code_challenge_method = (
+            code_challenge_method
+        )
 
     return exchanged_auth_credential

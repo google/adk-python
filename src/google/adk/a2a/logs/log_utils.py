@@ -38,7 +38,6 @@ except ImportError as e:
 
 # Constants
 _NEW_LINE = "\n"
-_EXCLUDED_PART_FIELD = {"file": {"bytes"}}
 
 
 def _is_a2a_task(obj: Any) -> TypeGuard[A2ATask]:
@@ -92,7 +91,9 @@ def build_message_part_log(part: A2APart) -> str:
     # File parts / other kinds.
     part_kind = _compat.part_kind_label(part)
     try:
-      part_content = f"{part_kind}: {json.dumps(_compat.a2a_to_dict(part))}"
+      # Raw file bytes never go into a log line.
+      part_dict = _compat.a2a_to_dict(part, exclude_file_bytes=True)
+      part_content = f"{part_kind}: {json.dumps(part_dict)}"
     except Exception:
       part_content = f"{part_kind}: <unserializable>"
 

@@ -77,7 +77,7 @@ The agent will:
 
 - **Model**: Uses Google's `gemini-2.5-computer-use-preview-10-2025` model for computer use capabilities
 - **Browser**: Automated Chromium browser via Playwright
-- **Screen Size**: Configured for 600x800 resolution
+- **Screen Size**: Configured for 1280x936 resolution
 - **Tools**: Uses ComputerUseToolset for screen capture, clicking, typing, and scrolling
 
 ## Troubleshooting

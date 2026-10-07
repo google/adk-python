@@ -43,7 +43,7 @@ class BaseLlm(BaseModel):
   """The pydantic model config."""
 
   model: str
-  """The name of the LLM, e.g. gemini-2.5-flash or gemini-2.5-pro."""
+  """The name of the LLM, e.g. gemini-3.5-flash or gemini-3.1-pro-preview."""
 
   @property
   def capabilities(self) -> LlmCapabilities:
@@ -201,11 +201,11 @@ class BaseLlm(BaseModel):
       4. Text + bytes (image generation with gemini-2.5-flash-image)::
 
            LlmResponse(partial=True,  parts=[Text("Here's an image of a dog.")])
-           LlmResponse(partial=True,  parts=[Text("\n")])
+           LlmResponse(partial=True,  parts=[Text("")])
            LlmResponse(partial=True,  parts=[Blob(image/png, 1.6MB)])
            LlmResponse(partial=True,  parts=[Text("It carries a bone")])
            LlmResponse(partial=True,  parts=[Text(" and running around.")])
-           LlmResponse(partial=False, parts=[Text("Here's an image of a dog.\n"),
+           LlmResponse(partial=False, parts=[Text("Here's an image of a dog."),
                                              Blob(image/png, 1.6MB),
                                              Text("It carries a bone and running around.")])
 

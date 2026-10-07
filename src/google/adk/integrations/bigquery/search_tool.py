@@ -19,7 +19,6 @@ from typing import Any
 
 from google.api_core import exceptions as api_exceptions
 from google.auth.credentials import Credentials
-from google.cloud import dataplex_v1
 
 from . import client
 from .config import BigQueryToolConfig
@@ -101,6 +100,12 @@ def search_catalog(
             ]
           }
   """
+
+  # google-cloud-dataplex is optional, and this is the only tool that needs it.
+  try:
+    from google.cloud import dataplex_v1  # pylint: disable=g-import-not-at-top
+  except ImportError as e:
+    raise ImportError(client._DATAPLEX_REQUIRED) from e  # pylint: disable=protected-access
 
   try:
     if not project_id:

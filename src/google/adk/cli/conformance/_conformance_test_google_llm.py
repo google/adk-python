@@ -21,9 +21,9 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 
-from ...flows.llm_flows._fencing import OTHER_AGENT_CONTEXT_PREAMBLE
-from ...flows.llm_flows._fencing import QUOTED_CONTENT_BEGIN
-from ...flows.llm_flows._fencing import QUOTED_CONTENT_END
+from ...flows.llm_flows.context._fencing import OTHER_AGENT_CONTEXT_PREAMBLE
+from ...flows.llm_flows.context._fencing import QUOTED_CONTENT_BEGIN
+from ...flows.llm_flows.context._fencing import QUOTED_CONTENT_END
 from ...models.google_llm import Gemini
 
 if TYPE_CHECKING:
@@ -61,7 +61,14 @@ def _resolve_refs(data: Any, defs: dict[str, Any]) -> Any:
       if ref_path.startswith('#/$defs/'):
         def_name = ref_path.split('/')[-1]
         if def_name in defs:
-          return _resolve_refs(defs[def_name], defs)
+          resolved = _resolve_refs(defs[def_name], defs)
+          if isinstance(resolved, dict):
+            ref_copy = data.copy()
+            del ref_copy['$ref']
+            resolved_copy = resolved.copy()
+            resolved_copy.update(ref_copy)
+            return resolved_copy
+          return resolved
     return {k: _resolve_refs(v, defs) for k, v in data.items()}
   elif isinstance(data, list):
     return [_resolve_refs(x, defs) for x in data]
@@ -232,6 +239,13 @@ class _ConformanceTestGemini(Gemini):
   ) -> None:
     super().__init__(**kwargs)
     recordings = config.get('_adk_replay_recordings')
+    if recordings is None:
+      raise ReplayVerificationError(
+          'Replay recordings were not loaded. The ADK web server must be'
+          ' started with the replay plugin, e.g. `adk web'
+          ' --extra_plugins=google.adk.cli.plugins.replay_plugin.ReplayPlugin`,'
+          ' for `adk conformance test` to work.'
+      )
     self._user_message_index = config.get('user_message_index')
     self._agent_name = config.get('agent_name')
     self._replay_index = config.get('current_replay_index')

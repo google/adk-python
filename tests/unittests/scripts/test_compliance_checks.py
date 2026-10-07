@@ -55,3 +55,100 @@ def test_mtls_exclusions_are_all_still_needed() -> None:
       'These files pass the mTLS check on their own; drop them from'
       f' _EXCLUDED_FROM_MTLS: {redundant}'
   )
+
+
+# Assembled rather than written out, so that this file does not trip the very
+# check it is testing.
+_INTERNAL_LINK = 'go' + '/some-design-doc'
+
+
+def test_check_internal_links_detects_a_shortlink() -> None:
+  content = f'# lives in the experimental namespace of {_INTERNAL_LINK}\n'
+  assert not compliance_checks.check_internal_links(content)
+
+
+def test_check_internal_links_allows_a_public_url_with_a_go_path() -> None:
+  content = 'url = "https://example.com/go/somewhere"\n'
+  assert compliance_checks.check_internal_links(content)
+
+
+def test_check_internal_links_allows_a_go_file_name() -> None:
+  content = 'path = "internal/registry.go/../main.go"\n'
+  assert compliance_checks.check_internal_links(content)
+
+
+def test_no_shipped_source_file_has_an_internal_link() -> None:
+  offenders = [
+      str(path.relative_to(_REPO_ROOT))
+      for path in sorted((_REPO_ROOT / 'src').rglob('*.py'))
+      if not compliance_checks.check_internal_links(
+          path.read_text(encoding='utf-8')
+      )
+  ]
+  assert not offenders, (
+      'These files ship an internal shortlink that no reader outside Google'
+      f' can resolve: {offenders}'
+  )
+
+
+def test_route_decorator_order_flags_a_guard_above_the_route() -> None:
+  # The shape that left /builder/save unguarded: the route registers the raw
+  # handler, so working_in_progress never binds.
+  content = (
+      '@working_in_progress(block_usage=True)\n'
+      '@app.post("/builder/save")\n'
+      'async def save(): ...\n'
+  )
+  assert compliance_checks.check_route_decorator_order(content) == [
+      (1, 'working_in_progress')
+  ]
+
+
+def test_route_decorator_order_accepts_a_guard_below_the_route() -> None:
+  content = (
+      '@app.post("/builder/save")\n'
+      '@working_in_progress(block_usage=True)\n'
+      'async def save(): ...\n'
+  )
+  assert compliance_checks.check_route_decorator_order(content) == []
+
+
+def test_route_decorator_order_flags_every_decorator_above_the_route() -> None:
+  content = (
+      '@experimental\n'
+      '@deprecated("gone soon")\n'
+      '@router.websocket("/live")\n'
+      'async def live(): ...\n'
+  )
+  assert compliance_checks.check_route_decorator_order(content) == [
+      (1, 'experimental'),
+      (2, 'deprecated'),
+  ]
+
+
+def test_route_decorator_order_allows_a_second_route_below_the_first() -> None:
+  # Registering one handler under two paths is fine; both decorators run.
+  content = (
+      '@app.get("/eval-sets")\n'
+      '@app.get("/eval_sets")\n'
+      'async def list_eval_sets(): ...\n'
+  )
+  assert compliance_checks.check_route_decorator_order(content) == []
+
+
+def test_route_decorator_order_ignores_calls_that_take_no_path() -> None:
+  # @cache.get('key') is not a route, so nothing here is out of order.
+  content = '@retry\n@cache.get("some-key")\ndef load(): ...\n'
+  assert compliance_checks.check_route_decorator_order(content) == []
+
+
+def test_route_decorator_order_ignores_non_routing_methods() -> None:
+  # A path-shaped argument is not enough; the method has to register a route.
+  content = (
+      '@deprecated("gone soon")\n@app.mount("/static")\ndef assets(): ...\n'
+  )
+  assert compliance_checks.check_route_decorator_order(content) == []
+
+
+def test_route_decorator_order_ignores_unparsable_content() -> None:
+  assert compliance_checks.check_route_decorator_order('def (:\n') == []

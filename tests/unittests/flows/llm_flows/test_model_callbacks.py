@@ -14,6 +14,7 @@
 
 from typing import Any
 from typing import Optional
+from unittest import mock
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.llm_agent import Agent
@@ -158,6 +159,22 @@ async def test_after_model_callback_noop():
   ) == [('root_agent', 'model_response')]
 
 
+def test_after_model_callback_lambda_with_arbitrary_param_names():
+  """Test that after_model_callback works with lambda having non-matching param names."""
+  responses = ['model_response']
+  mock_model = testing_utils.MockModel.create(responses=responses)
+  agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      after_model_callback=lambda ctx, resp: None,
+  )
+
+  runner = testing_utils.InMemoryRunner(agent)
+  assert testing_utils.simplify_events(runner.run('test')) == [
+      ('root_agent', 'model_response'),
+  ]
+
+
 @pytest.mark.asyncio
 async def test_on_model_callback_model_error_noop():
   """Test that the on_model_error_callback is a no-op when the model returns an error."""
@@ -193,3 +210,39 @@ async def test_on_model_callback_model_error_modify_model_response():
   assert testing_utils.simplify_events(
       await runner.run_async_with_new_session('test')
   ) == [('root_agent', 'on_model_error_callback_response')]
+
+
+@pytest.mark.asyncio
+async def test_on_model_error_callback_chain_stops_on_recovery_response():
+  """Test that model error recovery stops after a non-None response."""
+  recovery_response = LlmResponse(
+      content=testing_utils.ModelContent(
+          [types.Part.from_text(text='recovered_model_response')]
+      )
+  )
+  noop_error_callback = mock.Mock(return_value=None)
+  recovery_callback = mock.AsyncMock(return_value=recovery_response)
+  unexpected_callback = mock.Mock(
+      side_effect=AssertionError('callback chain should have stopped')
+  )
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[], error=SystemError('error')
+      ),
+      on_model_error_callback=[
+          noop_error_callback,
+          recovery_callback,
+          unexpected_callback,
+      ],
+  )
+
+  runner = testing_utils.TestInMemoryRunner(agent)
+  events = await runner.run_async_with_new_session('test')
+
+  assert testing_utils.simplify_events(events) == [
+      ('root_agent', 'recovered_model_response')
+  ]
+  noop_error_callback.assert_called_once()
+  recovery_callback.assert_awaited_once()
+  unexpected_callback.assert_not_called()

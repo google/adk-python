@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Api server with all production ADK endpoints.
-"""
+"""Api server with all production ADK endpoints."""
 
 from __future__ import annotations
 
@@ -22,7 +20,9 @@ import asyncio
 import base64
 import binascii
 from contextlib import asynccontextmanager
+import contextvars
 import importlib
+import inspect
 import json
 import logging
 import os
@@ -32,19 +32,23 @@ import time
 import traceback
 import typing
 from typing import Any
+from typing import Awaitable
 from typing import Callable
+from typing import cast
 from typing import List
 from typing import Literal
 from typing import Mapping
 from typing import Optional
 import urllib.parse
 
+import anyio
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Query
 from fastapi import Request
 from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -59,6 +63,7 @@ from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider
 from pydantic import Field
 from pydantic import ValidationError
+import pydantic_core
 from starlette.types import Lifespan
 from typing_extensions import deprecated
 from typing_extensions import override
@@ -66,24 +71,29 @@ from watchdog.observers import Observer
 import yaml
 
 from ..agents.base_agent import BaseAgent
-from ..agents.live_request_queue import LiveRequest
-from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import RunConfig
 from ..agents.run_config import StreamingMode
 from ..apps.app import App
 from ..artifacts.base_artifact_service import ArtifactVersion
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..auth.auth_credential import _redact_credential_secrets
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.input_validation_error import InputValidationError
 from ..errors.session_not_found_error import SessionNotFoundError
+from ..events._internal_metadata import mark_restored
+from ..events._internal_metadata import public_event
+from ..events._internal_metadata import public_session
 from ..events.event import Event
 from ..events.event_actions import EventActions
-from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ..flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ..live.live_request_queue import LiveRequest
+from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
+from ..models._service_tier import ServiceTier
 from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
@@ -94,15 +104,21 @@ from ..utils.agent_info import get_agents_dict
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
 from ..version import __version__
+from .cli_eval import _LEGACY_EVAL_SESSION_ID_PREFIX
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
 from .utils import common
+from .utils.base_agent_loader import _AgentLoadError
 from .utils.base_agent_loader import BaseAgentLoader
 from .utils.shared_value import SharedValue
 
 logger = logging.getLogger("google_adk." + __name__)
 
 _REGEX_PREFIX = "regex:"
+
+# Pre-built avatar used for VIDEO live sessions when no avatar config is set.
+# The Live API rejects VIDEO output without an avatar config.
+_DEFAULT_AVATAR_NAME = "Kai"
 
 
 def _parse_cors_origins(
@@ -165,7 +181,7 @@ def _strip_optional_quotes(value: str) -> str:
 
 
 def _get_scope_header(
-    scope: dict[str, Any], header_name: bytes
+    scope: Mapping[str, Any], header_name: bytes
 ) -> Optional[str]:
   """Return the first matching header value from an ASGI scope."""
   for candidate_name, candidate_value in scope.get("headers", []):
@@ -215,6 +231,32 @@ def _get_server_host(scope: dict[str, Any]) -> Optional[str]:
   if server and len(server) == 2:
     return str(server[0])
   return None
+
+
+_FORWARDING_HEADERS = (b"forwarded", b"x-forwarded-for", b"x-forwarded-host")
+
+
+def _is_local_client(scope: Mapping[str, Any]) -> bool:
+  """Return True if the request came straight from a process on this machine.
+
+  Header-based checks only constrain browsers: ``Origin``, ``Sec-Fetch-*`` and
+  custom headers are all trivially forged by a non-browser HTTP client, and
+  ``_OriginCheckMiddleware`` deliberately lets a request through when
+  ``Origin`` is absent so that non-browser API clients keep working. The peer
+  address of the connection is the one signal a remote caller cannot fake, so
+  it is what endpoints that must not be reachable over the network have to
+  use.
+
+  A request that arrived through a proxy or a tunnel is never treated as
+  local: the peer address is then the forwarder's rather than the caller's.
+  """
+  for header_name in _FORWARDING_HEADERS:
+    if _get_scope_header(scope, header_name) is not None:
+      return False
+  client = scope.get("client")
+  if not client or len(client) != 2:
+    return False
+  return _is_loopback_address(str(client[0]))
 
 
 def _get_request_origin(scope: dict[str, Any]) -> Optional[str]:
@@ -370,6 +412,54 @@ async def _send_forbidden(send: Any, reason: str) -> None:
   })
 
 
+def _accepts_kwargs(func: Callable[..., Any], kwargs: dict[str, Any]) -> bool:
+  """Returns True if func accepts all keys in kwargs as keyword arguments."""
+  try:
+    sig = inspect.signature(func)
+  except (ValueError, TypeError):
+    return False
+
+  # Check if there is a **kwargs parameter
+  if any(
+      param.kind == inspect.Parameter.VAR_KEYWORD
+      for param in sig.parameters.values()
+  ):
+    return True
+
+  # Otherwise, check if all keys in kwargs are accepted as explicit parameters
+  for key in kwargs:
+    param = sig.parameters.get(key)
+    if param is None or param.kind in (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.VAR_POSITIONAL,
+    ):
+      return False
+
+  return True
+
+
+def _with_abort_signal_kwarg(
+    runner: Runner,
+    kwargs: dict[str, Any],
+    abort_signal: asyncio.Event,
+) -> dict[str, Any]:
+  """Adds abort_signal to kwargs when runner.run_async accepts it."""
+  try:
+    params = inspect.signature(runner.run_async).parameters
+    if "abort_signal" in params or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    ):
+      kwargs["abort_signal"] = abort_signal
+  except (ValueError, TypeError):
+    kwargs["abort_signal"] = abort_signal
+  return kwargs
+
+
+_current_session_options: contextvars.ContextVar[Optional[dict[str, Any]]] = (
+    contextvars.ContextVar("current_session_options", default=None)
+)
+
+
 class _OriginCheckMiddleware:
   """ASGI middleware that blocks cross-origin requests."""
 
@@ -519,6 +609,8 @@ class InMemoryExporter(export_lib.SpanExporter):
 
 
 class RunAgentRequest(common.BaseModel):
+  """Request body for the /run and /run_sse endpoints."""
+
   app_name: Optional[str] = None
   user_id: str
   session_id: str
@@ -530,6 +622,9 @@ class RunAgentRequest(common.BaseModel):
   # for resume long-running functions
   invocation_id: Optional[str] = None
   custom_metadata: Optional[dict[str, Any]] = None
+  # Serving tier for this run's model calls, e.g. ServiceTier.DEFERRED. Only
+  # models on the interactions API have a serving tier; others ignore it.
+  service_tier: Optional[ServiceTier | str] = None
 
 
 class CreateSessionRequest(common.BaseModel):
@@ -546,6 +641,12 @@ class CreateSessionRequest(common.BaseModel):
   events: Optional[list[Event]] = Field(
       default=None,
       description="A list of events to initialize the session with.",
+  )
+  options: Optional[dict[str, Any]] = Field(
+      default=None,
+      description=(
+          "Optional configuration options forwarded to the session service."
+      ),
   )
 
 
@@ -570,6 +671,30 @@ def _invalid_event_error(event_index: int, disallowed: str) -> HTTPException:
           f"Session initialization event {event_index} cannot include"
           f" {disallowed}."
       ),
+  )
+
+
+def _redacted_session_response(
+    session: Session | list[Session],
+) -> JSONResponse:
+  """Returns a JSONResponse with credential secrets redacted."""
+  if isinstance(session, list):
+    return JSONResponse(
+        content=[
+            _redact_credential_secrets(
+                public_session(s).model_dump(
+                    exclude_none=True, by_alias=True, mode="json"
+                )
+            )
+            for s in session
+        ]
+    )
+  return JSONResponse(
+      content=_redact_credential_secrets(
+          public_session(session).model_dump(
+              exclude_none=True, by_alias=True, mode="json"
+          )
+      )
   )
 
 
@@ -658,11 +783,17 @@ def _setup_telemetry(
     _setup_telemetry_from_env(internal_exporters=internal_exporters)
   else:
     # Old logic - to be removed when above leaves experimental.
-    tracer_provider = TracerProvider()
+    tracer_provider = trace.get_tracer_provider()
+    is_proxy = isinstance(tracer_provider, trace.ProxyTracerProvider)
+    if is_proxy:
+      tracer_provider = TracerProvider()
     if internal_exporters is not None:
-      for exporter in internal_exporters:
-        tracer_provider.add_span_processor(exporter)
-    trace.set_tracer_provider(tracer_provider=tracer_provider)
+      add_proc = getattr(tracer_provider, "add_span_processor", None)
+      if callable(add_proc):
+        for exporter in internal_exporters:
+          add_proc(exporter)
+    if is_proxy:
+      trace.set_tracer_provider(tracer_provider=tracer_provider)
 
 
 def _otel_env_vars_enabled() -> bool:
@@ -693,11 +824,12 @@ def _setup_gcp_telemetry(
 
   import google.auth
 
+  from ..telemetry.google_cloud import _CLOUD_PLATFORM_SCOPE
   from ..telemetry.google_cloud import get_gcp_exporters
   from ..telemetry.google_cloud import get_gcp_resource
   from ..telemetry.setup import maybe_set_otel_providers
 
-  credentials, project_id = google.auth.default()
+  credentials, project_id = google.auth.default(scopes=[_CLOUD_PLATFORM_SCOPE])
 
   otel_hooks_to_add.append(
       get_gcp_exporters(
@@ -821,6 +953,11 @@ class ApiServer:
 
   _allow_special_agents: bool = False
 
+  # Whether this server serves the debug endpoints that read the in-memory
+  # span buffers. Nothing evicts from those buffers, so a server that has no
+  # reader for them must not fill them.
+  _serves_debug_trace_endpoints: bool = False
+
   def __init__(
       self,
       *,
@@ -838,7 +975,14 @@ class ApiServer:
       url_prefix: Optional[str] = None,
       auto_create_session: bool = False,
       trigger_sources: Optional[list[str]] = None,
+      trigger_oidc_audience: Optional[str] = None,
+      trigger_oidc_service_accounts: Optional[list[str]] = None,
+      trigger_auth_verifier: Optional[
+          Callable[[Request], None | Awaitable[None]]
+      ] = None,
       default_llm_model: Optional[str] = None,
+      avatar_config: Optional[types.AvatarConfig] = None,
+      max_llm_calls: Optional[int] = None,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -858,7 +1002,21 @@ class ApiServer:
     self.url_prefix = url_prefix
     self.auto_create_session = auto_create_session
     self.trigger_sources = trigger_sources
+    if (
+        trigger_oidc_service_accounts
+        and not trigger_oidc_audience
+        and not trigger_auth_verifier
+    ):
+      raise ValueError(
+          "trigger_oidc_service_accounts requires trigger_oidc_audience to be"
+          " set."
+      )
+    self.trigger_oidc_audience = trigger_oidc_audience
+    self.trigger_oidc_service_accounts = trigger_oidc_service_accounts
+    self.trigger_auth_verifier = trigger_auth_verifier
     self.default_llm_model = default_llm_model
+    self.avatar_config = avatar_config
+    self.max_llm_calls = max_llm_calls
     self.default_app_name = os.getenv("ADK_DEFAULT_APP_NAME")
 
   async def get_runner_async(self, app_name: str) -> Runner:
@@ -883,10 +1041,7 @@ class ApiServer:
       return self.runner_dict[app_name]
 
     # Create new runner
-    try:
-      agent_or_app = self.agent_loader.load_agent(app_name)
-    except ValueError as ve:
-      raise HTTPException(status_code=404, detail=str(ve)) from ve
+    agent_or_app = self._load_agent_or_raise(app_name)
 
     if self.default_llm_model:
       from .cli import _override_default_llm_model
@@ -969,10 +1124,35 @@ class ApiServer:
     self.runner_dict[app_name] = runner
     return runner
 
+  def _load_agent_or_raise(self, app_name: str) -> BaseAgent | App:
+    """Loads an agent, mapping a load failure onto an HTTP status code.
+
+    Args:
+      app_name: The name of the agent to load.
+
+    Returns:
+      The loaded agent or app.
+
+    Raises:
+      HTTPException: 404 when the loader raises ValueError, which means no agent
+        exists under the name. 500 when the agent's own module or config fails
+        to load, with a generic detail because that exception text can carry
+        paths or config; the traceback goes to the log instead.
+    """
+    try:
+      return self.agent_loader.load_agent(app_name)
+    except ValueError as e:
+      raise HTTPException(status_code=404, detail=str(e)) from e
+    except _AgentLoadError as e:
+      logger.exception("Failed to load agent %s", app_name)
+      raise HTTPException(status_code=500, detail="Failed to load agent") from e
+
   def _get_root_agent(self, agent_or_app: BaseAgent | App) -> BaseAgent:
     """Extract root agent from either a BaseAgent or App object."""
     if isinstance(agent_or_app, App):
-      return agent_or_app.root_agent
+      # App.root_agent is a BaseNode; every caller here needs an agent, and the
+      # App validator already rejects a missing root.
+      return cast(BaseAgent, agent_or_app.root_agent)
     return agent_or_app
 
   def _create_runner(self, agentic_app: App, app_name: str) -> Runner:
@@ -1023,57 +1203,6 @@ class ApiServer:
     module = importlib.import_module(module_name)
     return getattr(module, obj_name)
 
-  def _setup_runtime_config(self, web_assets_dir: str):
-    """Sets up the runtime config for the web server."""
-    # Read existing runtime config file.
-    runtime_config_path = os.path.join(
-        web_assets_dir, "assets", "config", "runtime-config.json"
-    )
-    runtime_config = {}
-    try:
-      with open(runtime_config_path, "r") as f:
-        runtime_config = json.load(f)
-    except FileNotFoundError:
-      logger.info(
-          "File not found: %s. A new runtime config file will be created.",
-          runtime_config_path,
-      )
-    except json.JSONDecodeError:
-      logger.warning(
-          "Failed to decode JSON from %s. The file content will be"
-          " overwritten.",
-          runtime_config_path,
-      )
-    runtime_config["backendUrl"] = self.url_prefix if self.url_prefix else ""
-    # Inject telemetry consent on bootstrapping to avoid an extra API call
-    # when loading the UI.
-    runtime_config["telemetry"] = read_telemetry_consent()
-
-    # Set custom logo config.
-    if self.logo_text or self.logo_image_url:
-      if not self.logo_text or not self.logo_image_url:
-        raise ValueError(
-            "Both --logo-text and --logo-image-url must be defined when using"
-            " logo config."
-        )
-      runtime_config["logo"] = {
-          "text": self.logo_text,
-          "imageUrl": self.logo_image_url,
-      }
-    elif "logo" in runtime_config:
-      del runtime_config["logo"]
-
-    # Write the runtime config file.
-    try:
-      os.makedirs(os.path.dirname(runtime_config_path), exist_ok=True)
-      with open(runtime_config_path, "w") as f:
-        json.dump(runtime_config, f, indent=2)
-        f.write("\n")
-    except IOError as e:
-      logger.error(
-          "Failed to write runtime config file %s: %s", runtime_config_path, e
-      )
-
   async def _create_session(
       self,
       *,
@@ -1082,12 +1211,38 @@ class ApiServer:
       session_id: Optional[str] = None,
       state: Optional[dict[str, Any]] = None,
   ) -> Session:
+    session_options = _current_session_options.get() or {}
+    conflicting_keys = session_options.keys() & {
+        "app_name",
+        "user_id",
+        "state",
+        "session_id",
+    }
+    if conflicting_keys:
+      raise HTTPException(
+          status_code=400,
+          detail=(
+              "Session options cannot contain keys already bound by the"
+              f" endpoint: {', '.join(sorted(conflicting_keys))}"
+          ),
+      )
+    if session_options and not _accepts_kwargs(
+        self.session_service.create_session, session_options
+    ):
+      raise HTTPException(
+          status_code=400,
+          detail=(
+              "Session options are not supported by the configured session"
+              " service."
+          ),
+      )
     try:
       session = await self.session_service.create_session(
           app_name=app_name,
           user_id=user_id,
           state=state,
           session_id=session_id,
+          **session_options,
       )
       logger.info("New session created: %s", session.id)
       return session
@@ -1095,6 +1250,8 @@ class ApiServer:
       raise HTTPException(
           status_code=409, detail=f"Session already exists: {session_id}"
       ) from e
+    except (ValueError, TypeError) as e:
+      raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
       logger.error(
           "Internal server error during session creation: %s", e, exc_info=True
@@ -1170,21 +1327,41 @@ class ApiServer:
     memory_exporter = InMemoryExporter(session_trace_dict)
     self._memory_exporter = memory_exporter
 
+    internal_exporters: list[SpanProcessor] = []
+    if self._serves_debug_trace_endpoints:
+      internal_exporters = [
+          export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
+          export_lib.SimpleSpanProcessor(memory_exporter),
+      ]
+
     _setup_telemetry(
         otel_to_cloud=otel_to_cloud,
-        internal_exporters=[
-            export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
-            export_lib.SimpleSpanProcessor(memory_exporter),
-        ],
+        internal_exporters=internal_exporters,
     )
-    if web_assets_dir:
-      self._setup_runtime_config(web_assets_dir)
-
     tracer_provider = trace.get_tracer_provider()
     register_processors(tracer_provider)
 
     # Run the FastAPI server.
-    app = FastAPI(lifespan=internal_lifespan)
+    #
+    # `url_prefix` may be a bare path (e.g. "adk" or "/adk") or a full
+    # absolute URL (e.g. "https://host/adk", as used for the dev-ui's
+    # `backendUrl`). FastAPI's `root_path` must be a path only and, per the
+    # ASGI spec, either empty or starting with "/", so normalize both forms
+    # here. Only call urlparse() on strings that are actually absolute
+    # http(s) URLs -- otherwise a bare "host:port"-shaped prefix would be
+    # misparsed as `scheme:path`. This is what makes generated URLs --
+    # notably `/openapi.json` referenced from `/docs` -- resolve correctly
+    # when the app sits behind a reverse proxy that strips the prefix
+    # before forwarding.
+    root_path = ""
+    if self.url_prefix:
+      prefix = self.url_prefix
+      if prefix.startswith(("http://", "https://")):
+        prefix = urllib.parse.urlparse(prefix).path
+      if prefix and not prefix.startswith("/"):
+        prefix = "/" + prefix
+      root_path = prefix.rstrip("/")
+    app = FastAPI(lifespan=internal_lifespan, root_path=root_path)
 
     has_configured_allowed_origins = bool(allow_origins)
     if allow_origins:
@@ -1240,6 +1417,33 @@ class ApiServer:
           self.url_prefix + "/dev-ui/" if self.url_prefix else "/dev-ui/"
       )
 
+      # Both logo flags travel together; a half-specified logo is a
+      # configuration error rather than something to silently drop.
+      if bool(self.logo_text) != bool(self.logo_image_url):
+        raise ValueError(
+            "Both --logo-text and --logo-image-url must be defined when using"
+            " logo config."
+        )
+
+      # Serves what used to be written into the installed package at startup.
+      # MUST stay ahead of the app.mount() below: Starlette matches routes in
+      # registration order and the "/dev-ui/" mount would otherwise shadow this
+      # path and return a stale file from disk.
+      @app.get("/dev-ui/assets/config/runtime-config.json")
+      async def get_runtime_config():
+        config: dict[str, Any] = {
+            "backendUrl": self.url_prefix or "",
+            # Read per request so a consent change takes effect on reload,
+            # instead of being frozen at server startup.
+            "telemetry": read_telemetry_consent(),
+        }
+        if self.logo_text:
+          config["logo"] = {
+              "text": self.logo_text,
+              "imageUrl": self.logo_image_url,
+          }
+        return JSONResponse(config, headers={"Cache-Control": "no-store"})
+
       @app.get("/dev-ui/config")
       async def get_ui_config():
         return {
@@ -1263,9 +1467,21 @@ class ApiServer:
 
     # Register /trigger/* endpoints when enabled.
     if self.trigger_sources:
+      from .trigger_routes import GoogleOidcVerifier
       from .trigger_routes import TriggerRouter
 
-      trigger_router = TriggerRouter(self, trigger_sources=self.trigger_sources)
+      verifier = self.trigger_auth_verifier
+      if not verifier and self.trigger_oidc_audience:
+        verifier = GoogleOidcVerifier(
+            self.trigger_oidc_audience,
+            self.trigger_oidc_service_accounts,
+        )
+
+      trigger_router = TriggerRouter(
+          self,
+          trigger_sources=self.trigger_sources,
+          verifier=verifier,
+      )
       trigger_router.register(app)
 
     return app
@@ -1390,8 +1606,8 @@ class ApiServer:
         return ListAppsResponse(apps=[AppInfo(**app) for app in apps_info])
       return self.agent_loader.list_agents()
 
-    @experimental
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
+    @experimental
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
       if app_name.startswith("__") and not self._allow_special_agents:
@@ -1402,10 +1618,7 @@ class ApiServer:
                 " mode."
             ),
         )
-      try:
-        agent_or_app = self.agent_loader.load_agent(app_name)
-      except ValueError as ve:
-        raise HTTPException(status_code=404, detail=str(ve)) from ve
+      agent_or_app = self._load_agent_or_raise(app_name)
       root_agent = self._get_root_agent(agent_or_app)
       if isinstance(root_agent, LlmAgent):
         return AppInfo(
@@ -1422,82 +1635,96 @@ class ApiServer:
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
+        response_model=Session,
         response_model_exclude_none=True,
     )
     async def get_session(
         app_name: str, user_id: str, session_id: str
-    ) -> Session:
+    ) -> Response:
       session = await self.session_service.get_session(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
       if not session:
         raise HTTPException(status_code=404, detail="Session not found")
       self.current_app_name_ref.value = app_name
-      return session
+      return _redacted_session_response(session)
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions",
+        response_model=list[Session],
         response_model_exclude_none=True,
     )
-    async def list_sessions(app_name: str, user_id: str) -> list[Session]:
+    async def list_sessions(app_name: str, user_id: str) -> Response:
       list_sessions_response = await self.session_service.list_sessions(
           app_name=app_name, user_id=user_id
       )
-      return [
+      return _redacted_session_response([
           session
           for session in list_sessions_response.sessions
           # Remove sessions that were generated as a part of Eval.
-          if not session.id.startswith(EVAL_SESSION_ID_PREFIX)
-      ]
+          if not session.id.startswith(
+              (EVAL_SESSION_ID_PREFIX, _LEGACY_EVAL_SESSION_ID_PREFIX)
+          )
+      ])
 
+    @app.post(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
+        response_model=Session,
+        response_model_exclude_none=True,
+    )
     @deprecated(
         "Please use create_session instead. This will be removed in future"
         " releases."
-    )
-    @app.post(
-        "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
-        response_model_exclude_none=True,
     )
     async def create_session_with_id(
         app_name: str,
         user_id: str,
         session_id: str,
         state: Optional[dict[str, Any]] = None,
-    ) -> Session:
-      return await self._create_session(
+    ) -> Response:
+      session = await self._create_session(
           app_name=app_name,
           user_id=user_id,
           state=state,
           session_id=session_id,
       )
+      return _redacted_session_response(session)
 
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions",
+        response_model=Session,
         response_model_exclude_none=True,
     )
     async def create_session(
         app_name: str,
         user_id: str,
         req: Optional[CreateSessionRequest] = None,
-    ) -> Session:
+    ) -> Response:
       if not req:
-        return await self._create_session(app_name=app_name, user_id=user_id)
+        session = await self._create_session(app_name=app_name, user_id=user_id)
+        return _redacted_session_response(session)
 
       if req.events:
         _validate_session_initialization_events(req.events)
 
-      session = await self._create_session(
-          app_name=app_name,
-          user_id=user_id,
-          state=req.state,
-          session_id=req.session_id,
-      )
+      token = _current_session_options.set(req.options)
+      try:
+        session = await self._create_session(
+            app_name=app_name,
+            user_id=user_id,
+            state=req.state,
+            session_id=req.session_id,
+        )
+      finally:
+        _current_session_options.reset(token)
 
       if req.events:
         for event in req.events:
-          await self.session_service.append_event(session=session, event=event)
+          await self.session_service.append_event(
+              session=session, event=mark_restored(event)
+          )
 
-      return session
+      return _redacted_session_response(session)
 
     @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
     async def delete_session(
@@ -1509,6 +1736,7 @@ class ApiServer:
 
     @app.patch(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
+        response_model=Session,
         response_model_exclude_none=True,
     )
     async def update_session(
@@ -1516,7 +1744,7 @@ class ApiServer:
         user_id: str,
         session_id: str,
         req: UpdateSessionRequest,
-    ) -> Session:
+    ) -> Response:
       """Updates session state without running the agent.
 
       Args:
@@ -1555,7 +1783,7 @@ class ApiServer:
           session=session, event=state_update_event
       )
 
-      return session
+      return _redacted_session_response(session)
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}/versions/{version_id}/metadata",
@@ -1795,8 +2023,10 @@ class ApiServer:
       else:
         _is_visual_builder.set(False)
 
-    @app.post("/run", response_model_exclude_none=True)
-    async def run_agent(req: RunAgentRequest, request: Request) -> list[Event]:
+    @app.post(
+        "/run", response_model=list[Event], response_model_exclude_none=True
+    )
+    async def run_agent(req: RunAgentRequest, request: Request) -> Response:
       app_name = req.app_name or self.default_app_name
       if not app_name:
         raise HTTPException(
@@ -1807,25 +2037,40 @@ class ApiServer:
       self.current_app_name_ref.value = req.app_name
       runner = await self.get_runner_async(req.app_name)
       _set_telemetry_context_if_needed(runner)
-      run_config = (
-          RunConfig(custom_metadata=req.custom_metadata)
-          if req.custom_metadata
-          else None
-      )
+      run_config = None
+      if (
+          req.custom_metadata
+          or req.service_tier
+          or self.max_llm_calls is not None
+      ):
+        run_config = RunConfig(
+            custom_metadata=req.custom_metadata,
+            service_tier=req.service_tier,
+            **(
+                {"max_llm_calls": self.max_llm_calls}
+                if self.max_llm_calls is not None
+                else {}
+            ),
+        )
+
+      abort_signal = asyncio.Event()
 
       async def worker():
+        run_async_kwargs = _with_abort_signal_kwarg(
+            runner,
+            {
+                "user_id": req.user_id,
+                "session_id": req.session_id,
+                "new_message": req.new_message,
+                "state_delta": req.state_delta,
+                "invocation_id": req.invocation_id,
+                "run_config": run_config,
+            },
+            abort_signal,
+        )
         try:
-          async with Aclosing(
-              runner.run_async(
-                  user_id=req.user_id,
-                  session_id=req.session_id,
-                  new_message=req.new_message,
-                  state_delta=req.state_delta,
-                  invocation_id=req.invocation_id,
-                  run_config=run_config,
-              )
-          ) as agen:
-            return [event async for event in agen]
+          async with Aclosing(runner.run_async(**run_async_kwargs)) as agen:
+            return [public_event(event) async for event in agen]
         except SessionNotFoundError as e:
           raise HTTPException(status_code=404, detail=str(e)) from e
 
@@ -1840,6 +2085,7 @@ class ApiServer:
                   "Client disconnected. Aborting agent run for session %s.",
                   req.session_id,
               )
+              abort_signal.set()
               worker_task.cancel()
               break
         except asyncio.CancelledError:
@@ -1853,7 +2099,16 @@ class ApiServer:
         events = await worker_task
         logger.info("Generated %s events in agent run", len(events))
         logger.debug("Events generated: %s", events)
-        return events
+        return JSONResponse(
+            content=[
+                _redact_credential_secrets(
+                    event.model_dump(
+                        exclude_none=True, by_alias=True, mode="json"
+                    )
+                )
+                for event in events
+            ]
+        )
       except asyncio.CancelledError:
         if await request.is_disconnected():
           return Response(status_code=499)
@@ -1874,6 +2129,24 @@ class ApiServer:
       stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
       runner = await self.get_runner_async(req.app_name)
       _set_telemetry_context_if_needed(runner)
+
+      # Build the run config before the response starts. Constructing it
+      # inside event_generator() would run its validation after the 200 and
+      # the SSE headers are already on the wire, turning a bad request into a
+      # broken stream instead of a rejected call.
+      try:
+        run_config = RunConfig(
+            streaming_mode=stream_mode,
+            custom_metadata=req.custom_metadata,
+            service_tier=req.service_tier,
+            **(
+                {"max_llm_calls": self.max_llm_calls}
+                if self.max_llm_calls is not None
+                else {}
+            ),
+        )
+      except ValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
       # Validate session existence before starting the stream.
       # We check directly here instead of eagerly advancing the
@@ -1896,56 +2169,101 @@ class ApiServer:
       # Convert the events to properly formatted SSE
       async def event_generator():
         is_closing = False
-        original_exc = None
-        try:
-          async with Aclosing(
-              runner.run_async(
-                  user_id=req.user_id,
-                  session_id=req.session_id,
-                  new_message=req.new_message,
-                  state_delta=req.state_delta,
-                  run_config=RunConfig(
-                      streaming_mode=stream_mode,
-                      custom_metadata=req.custom_metadata,
-                  ),
-                  invocation_id=req.invocation_id,
-              )
-          ) as agen:
-            try:
-              async for event in agen:
-                # ADK Web renders artifacts from `actions.artifactDelta`
-                # during part processing *and* during action processing
-                # 1) the original event with `artifactDelta` cleared (content)
-                # 2) a content-less "action-only" event carrying `artifactDelta`
-                events_to_stream = [event]
-                if (
-                    not req.function_call_event_id
-                    and event.actions.artifact_delta
-                    and event.content
-                    and event.content.parts
-                ):
-                  content_event = event.model_copy(deep=True)
-                  content_event.actions.artifact_delta = {}
-                  artifact_event = event.model_copy(deep=True)
-                  artifact_event.content = None
-                  events_to_stream = [content_event, artifact_event]
+        original_exc: Optional[BaseException] = None
+        abort_signal = asyncio.Event()
+        event_queue: asyncio.Queue[Optional[Event]] = asyncio.Queue()
+        next_step_event = asyncio.Event()
 
-                for event_to_stream in events_to_stream:
-                  sse_event = event_to_stream.model_dump_json(
-                      exclude_none=True,
-                      by_alias=True,
-                  )
-                  logger.debug(
-                      "Generated event in agent run streaming: %s", sse_event
-                  )
-                  yield f"data: {sse_event}\n\n"
-            except (GeneratorExit, asyncio.CancelledError) as e:
-              is_closing = True
-              original_exc = e
-              raise
-            except Exception as e:
-              original_exc = e
-              raise
+        async def _produce_events() -> None:
+          nonlocal is_closing, original_exc
+          run_async_kwargs = _with_abort_signal_kwarg(
+              runner,
+              {
+                  "user_id": req.user_id,
+                  "session_id": req.session_id,
+                  "new_message": req.new_message,
+                  "state_delta": req.state_delta,
+                  "run_config": run_config,
+                  "invocation_id": req.invocation_id,
+              },
+              abort_signal,
+          )
+          try:
+            async with Aclosing(runner.run_async(**run_async_kwargs)) as agen:
+              try:
+                async for event in agen:
+                  await event_queue.put(event)
+                  await next_step_event.wait()
+                  next_step_event.clear()
+              except (GeneratorExit, asyncio.CancelledError) as e:
+                if not is_closing and original_exc is None:
+                  is_closing = True
+                  original_exc = e
+                  abort_signal.set()
+                raise
+              except Exception as e:
+                original_exc = e
+                raise
+          finally:
+            await event_queue.put(None)
+
+        producer_task = asyncio.create_task(_produce_events())
+        try:
+          try:
+            while True:
+              event = await event_queue.get()
+              if event is None:
+                break
+              # ADK Web renders artifacts from `actions.artifactDelta`
+              # during part processing *and* during action processing
+              # 1) the original event with `artifactDelta` cleared (content)
+              # 2) a content-less "action-only" event carrying `artifactDelta`
+              events_to_stream = [event]
+              if (
+                  not req.function_call_event_id
+                  and event.actions.artifact_delta
+                  and event.content
+                  and event.content.parts
+              ):
+                content_event = event.model_copy(deep=True)
+                content_event.actions.artifact_delta = {}
+                artifact_event = event.model_copy(deep=True)
+                artifact_event.content = None
+                events_to_stream = [content_event, artifact_event]
+
+              for event_to_stream in events_to_stream:
+                sse_event = pydantic_core.to_json(
+                    _redact_credential_secrets(
+                        public_event(event_to_stream).model_dump(
+                            exclude_none=True,
+                            by_alias=True,
+                            mode="json",
+                        )
+                    )
+                ).decode("utf-8")
+                logger.debug(
+                    "Generated event in agent run streaming: %s", sse_event
+                )
+                yield f"data: {sse_event}\n\n"
+              next_step_event.set()
+          except (GeneratorExit, asyncio.CancelledError) as e:
+            is_closing = True
+            original_exc = e
+            abort_signal.set()
+            raise
+          except Exception as e:
+            original_exc = e
+            abort_signal.set()
+            raise
+          finally:
+            with anyio.CancelScope(shield=True):
+              if not producer_task.done():
+                producer_task.cancel()
+              try:
+                await producer_task
+              except asyncio.CancelledError:
+                if not is_closing and original_exc is None:
+                  raise
         except Exception as e:
           if original_exc:
             if e is not original_exc:
@@ -2044,6 +2362,13 @@ class ApiServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
+        # Avatars are rendered as video, so only VIDEO sessions get an avatar
+        # config, falling back to a pre-built avatar when none is configured.
+        avatar_config = None
+        if "VIDEO" in modalities:
+          avatar_config = self.avatar_config or types.AvatarConfig(
+              avatar_name=_DEFAULT_AVATAR_NAME
+          )
         run_config = RunConfig(
             response_modalities=modalities,
             proactivity=(
@@ -2061,6 +2386,12 @@ class ApiServer:
             ),
             save_live_blob=save_live_blob,
             explicit_vad_signal=explicit_vad_signal,
+            avatar_config=avatar_config,
+            **(
+                {"max_llm_calls": self.max_llm_calls}
+                if self.max_llm_calls is not None
+                else {}
+            ),
         )
         async with Aclosing(
             runner.run_live(
@@ -2071,7 +2402,13 @@ class ApiServer:
         ) as agen:
           async for event in agen:
             await websocket.send_text(
-                event.model_dump_json(exclude_none=True, by_alias=True)
+                pydantic_core.to_json(
+                    _redact_credential_secrets(
+                        public_event(event).model_dump(
+                            exclude_none=True, by_alias=True, mode="json"
+                        )
+                    )
+                ).decode("utf-8")
             )
 
       async def process_messages():

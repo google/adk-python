@@ -35,6 +35,7 @@ from fastapi import Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.responses import StreamingResponse
+from google.genai import types
 from opentelemetry import context
 from opentelemetry import trace
 from opentelemetry.sdk.trace import export
@@ -49,6 +50,7 @@ from ..runners import Runner
 from ..telemetry._agent_engine import get_propagated_context
 from ..telemetry._agent_engine import maybe_install_request_metrics_middleware
 from ..telemetry._agent_engine import TopSpanProcessor
+from .api_server import _is_loopback_address
 from .api_server import ApiServer
 from .cli_deploy import _AGENT_ENGINE_CLASS_METHODS
 from .service_registry import load_services_module
@@ -119,9 +121,16 @@ def get_fast_api_app(
     logo_image_url: str | None = None,
     auto_create_session: bool = False,
     trigger_sources: list[Literal["pubsub", "eventarc"]] | None = None,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: list[str] | None = None,
+    trigger_auth_verifier: (
+        Callable[[Request], None | Awaitable[None]] | None
+    ) = None,
     default_llm_model: str | None = None,
     gemini_enterprise_app_name: str | None = None,
     express_mode: bool = False,
+    avatar_config: types.AvatarConfig | None = None,
+    max_llm_calls: int | None = None,
 ) -> FastAPI:
   """Constructs and returns a FastAPI application for serving ADK agents.
 
@@ -159,7 +168,9 @@ def get_fast_api_app(
       returned app; pass ``bind_host`` to guard it.
     bind_host: The address the caller will bind the returned app to. A loopback
       value turns on DNS-rebinding protection, which rejects requests addressed
-      to any other host. Leave it None to serve the app yourself without that.
+      to any other host. A non-loopback value logs a startup warning that the
+      app has no authentication. Leave it None to serve the app yourself
+      without either.
     port: Port number for the server (defaults to 8000).
     url_prefix: Optional prefix for all URL routes.
     trace_to_cloud: Whether to export traces to Google Cloud Trace.
@@ -174,14 +185,37 @@ def get_fast_api_app(
     trigger_sources: List of trigger sources to enable (e.g. ["pubsub",
       "eventarc"]). When set, registers /trigger/* endpoints for batch and
       event-driven agent invocations. None disables all trigger endpoints.
+    trigger_oidc_audience: When set, every /trigger/* request must carry a
+      Google-signed OIDC bearer token whose audience matches this value.
+    trigger_oidc_service_accounts: When set alongside ``trigger_oidc_audience``,
+      every /trigger/* request's bearer token must be owned by one of these
+      service account emails. This completes authentication of the caller. When
+      None (the default), token signatures and audience are still verified if
+      ``trigger_oidc_audience`` is set, but caller identity is not enforced.
+    trigger_auth_verifier: A custom callable to verify incoming trigger
+      requests. Takes a FastAPI ``Request`` and should raise ``HTTPException``
+      on failure. When set, overrides ``trigger_oidc_audience``.
     default_llm_model: Default LLM model to use for the agent.
     gemini_enterprise_app_name: The Gemini Enterprise app name to use for the
       agent.
     express_mode: Whether to enable express mode.
+    avatar_config: Avatar configuration to apply to live agent runs that
+      request VIDEO output.
+    max_llm_calls: Maximum number of LLM calls allowed for each agent run.
+      When None, ``RunConfig`` resolves its normal default.
 
   Returns:
     The configured FastAPI application instance.
   """
+
+  if bind_host is not None and not _is_loopback_address(bind_host):
+    logger.warning(
+        "ADK server is binding to a non-loopback address (%s) and has no"
+        " authentication: any client that can reach it can read, modify, and"
+        " delete any user's sessions and artifacts. Do not expose it to"
+        " untrusted networks without an authenticating proxy.",
+        bind_host,
+    )
 
   # Enable the YAML key denylist for config loads if the web UI is enabled.
   if web:
@@ -226,10 +260,17 @@ def get_fast_api_app(
     if is_single_agent and isinstance(agent_loader, this_module.AgentLoader):
       if single_agent_name is not None:
         agent_loader._set_single_agent_mode(single_agent_name, agents_dir)
-  agent_loader._allow_special_agents = web
+  # The built-in agents include the agent builder assistant, which writes
+  # arbitrary files -- Python included -- that the server then imports. The
+  # dev server has no authentication, so they are only safe where nobody else
+  # can reach it: a loopback bind, which the DNS-rebinding and Origin guards
+  # also cover. An unknown bind (None) is treated as exposed.
+  agent_loader._allow_special_agents = (
+      web and bind_host is not None and _is_loopback_address(bind_host)
+  )
 
-  # Load services.py from agents_dir for custom service registration.
-  load_services_module(agents_dir)
+  # services.py lives in the folder the user passed, not the rewritten parent.
+  load_services_module(original_agents_dir)
 
   # Build the Memory service
   try:
@@ -299,8 +340,17 @@ def get_fast_api_app(
       url_prefix=url_prefix,
       auto_create_session=auto_create_session,
       trigger_sources=trigger_sources,
+      trigger_oidc_audience=trigger_oidc_audience,
+      trigger_oidc_service_accounts=trigger_oidc_service_accounts,
+      trigger_auth_verifier=trigger_auth_verifier,
       default_llm_model=default_llm_model,
+      avatar_config=avatar_config,
+      max_llm_calls=max_llm_calls,
   )
+  # DevServer allows the built-in agents by default. Follow the loader, so a
+  # refused request gets the server's 403 rather than a 500 from the loader's
+  # PermissionError.
+  adk_web_server._allow_special_agents = agent_loader._allow_special_agents
 
   # In single agent mode, use that agent as the default app.
   if is_single_agent:
@@ -337,7 +387,7 @@ def get_fast_api_app(
       agent_change_handler = AgentChangeEventHandler(
           agent_loader=agent_loader,
           runners_to_clean=adk_web_server.runners_to_clean,
-          current_app_name_ref=adk_web_server.current_app_name_ref,
+          agents_dir=agents_dir,
       )
       observer.schedule(agent_change_handler, agents_dir, recursive=True)
       observer.start()
@@ -464,19 +514,33 @@ def get_fast_api_app(
     from google.adk.agents import Agent
     import google.auth
     from pydantic import ValidationError as _ValidationError
-    from vertexai import agent_engines
+
+    from ..dependencies._agentplatform_frameworks import frameworks
 
     # The tmp agent will be replaced by the adk server's runner and services.
     # It is specified here because it is a required argument to AdkApp.
-    adk_app = agent_engines.AdkApp(agent=Agent(name="tmp"))
+    adk_app = frameworks.AdkApp(agent=Agent(name="tmp"))
     if express_mode:
       api_key = os.environ.get("GOOGLE_API_KEY", None)
       if not api_key:
         raise ValueError(
             "No GOOGLE_API_KEY found in environment variables for express mode."
         )
-      adk_app._tmpl_attrs["project"] = None
-      adk_app._tmpl_attrs["location"] = None
+      # TODO: b/570766726 - Drop these pops once AdkApp.set_up() lets callers
+      # select express mode without consulting os.environ.
+      # Agent Platform v2 dropped the global initializer: AdkApp.set_up()
+      # reads the project from the environment rather than from _tmpl_attrs,
+      # and selects express mode only when it finds none. Clearing it is
+      # therefore the only way to express what _tmpl_attrs["project"] = None
+      # used to say. Scoping the removal to the AdkApp call is not an option:
+      # set_up() runs lazily inside a request, so a per-request save/restore
+      # would race between concurrent requests on a process-wide mapping.
+      # GOOGLE_CLOUD_LOCATION is left to set_up(), which pops it itself on the
+      # express path. Popping it here too would make no difference to what the
+      # rest of the process sees, and set_up() reads it as a fallback for the
+      # region before it gets there.
+      os.environ.pop("GOOGLE_CLOUD_PROJECT", None)
+      os.environ.pop("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION", None)
       adk_app._tmpl_attrs["express_mode_api_key"] = api_key
     else:
       _, project_id = google.auth.default()
@@ -489,8 +553,17 @@ def get_fast_api_app(
             "No GOOGLE_CLOUD_PROJECT or GOOGLE_CLOUD_LOCATION found in"
             " environment variables."
         )
-      adk_app._tmpl_attrs["project"] = project_id
-      adk_app._tmpl_attrs["location"] = location
+      # The ADC-resolved project has to win over a stale one, the way
+      # _tmpl_attrs["project"] did before v2 removed the global initializer.
+      # `location` may have come from GOOGLE_CLOUD_AGENT_ENGINE_LOCATION, which
+      # set_up() prefers, so it is published under that name only. Writing it
+      # to GOOGLE_CLOUD_LOCATION here would overwrite whatever region the rest
+      # of the process had already agreed on. set_up() still copies it into
+      # GOOGLE_CLOUD_LOCATION when that variable is unset, which is the case
+      # this cannot and should not prevent; what it avoids is clobbering a
+      # value that was already there.
+      os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
+      os.environ["GOOGLE_CLOUD_AGENT_ENGINE_LOCATION"] = location
       adk_app._tmpl_attrs["express_mode_api_key"] = None
     adk_app._tmpl_attrs["runner"] = None
     adk_app._tmpl_attrs["app_name"] = gemini_enterprise_app_name

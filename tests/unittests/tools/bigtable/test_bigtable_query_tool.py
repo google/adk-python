@@ -14,15 +14,71 @@
 
 from __future__ import annotations
 
+import logging
 from unittest import mock
 
 from google.adk.tools.bigtable import client
 from google.adk.tools.bigtable.query_tool import execute_sql
 from google.adk.tools.bigtable.settings import BigtableToolSettings
 from google.adk.tools.tool_context import ToolContext
+from google.auth.credentials import AnonymousCredentials
 from google.auth.credentials import Credentials
+from google.cloud.bigtable import data
 from google.cloud.bigtable.data.execute_query import ExecuteQueryIterator
 import pytest
+
+
+def _mock_iterator(rows):
+  """Builds a query iterator that yields ``rows``, or raises if given an error."""
+  iterator = mock.create_autospec(ExecuteQueryIterator, instance=True)
+  if isinstance(rows, Exception):
+
+    def raise_error():
+      yield mock.MagicMock()
+      raise rows
+
+    iterator.__iter__.side_effect = raise_error
+  else:
+    mock_rows = []
+    for fields in rows:
+      mock_row = mock.MagicMock()
+      mock_row.fields = fields
+      mock_rows.append(mock_row)
+    iterator.__iter__.return_value = mock_rows
+  return iterator
+
+
+def _unreachable_data_client() -> data.BigtableDataClient:
+  """Builds a real SDK client that can only ever dial a dead loopback port.
+
+  The client, its transport and its background channel-refresh worker are all
+  genuine, so ``close()`` is exercised exactly as in production; only the
+  endpoint is redirected, which keeps the test off the network.
+  """
+  return data.BigtableDataClient(
+      project="my_project",
+      credentials=AnonymousCredentials(),
+      client_options={"api_endpoint": "localhost:1"},
+  )
+
+
+def _channel_is_shut_down(bt_client: data.BigtableDataClient) -> bool:
+  """Reports whether the client's gRPC channel refuses new RPCs.
+
+  A shut-down channel rejects the probe locally, before any connection is
+  attempted. A live one dials its endpoint, which ``_unreachable_data_client``
+  has pinned to a closed loopback port, so it is refused rather than served.
+  """
+  try:
+    bt_client.transport.grpc_channel.unary_unary("/probe/Probe")(
+        b"", timeout=0.01
+    )
+  except ValueError:
+    # Raised by gRPC only for a closed channel.
+    return True
+  except Exception:
+    return False
+  return False
 
 
 @pytest.mark.asyncio
@@ -266,6 +322,102 @@ async def test_execute_sql_with_view_parameters():
       parameter_types=None,
       view_parameters=view_parameters,
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rows", "execute_query_error", "expected_status"),
+    [
+        pytest.param([{"col1": "val1"}], None, "SUCCESS", id="success"),
+        pytest.param(
+            [{"col1": i} for i in range(51)], None, "SUCCESS", id="truncated"
+        ),
+        pytest.param(
+            Exception("Iteration failed"), None, "ERROR", id="iteration_error"
+        ),
+        pytest.param(None, Exception("SDK failure"), "ERROR", id="sdk_error"),
+    ],
+)
+async def test_execute_sql_releases_the_client(
+    rows, execute_query_error, expected_status
+):
+  """Every exit path shuts down the per-call client's gRPC channel.
+
+  A real SDK client is used so that the assertion observes the channel
+  actually being released, not merely that ``close`` was called.
+  """
+  created = []
+
+  def _new_client(*, project, credentials):
+    del project, credentials
+    bt_client = _unreachable_data_client()
+    if execute_query_error is not None:
+      bt_client.execute_query = mock.Mock(side_effect=execute_query_error)
+    else:
+      bt_client.execute_query = mock.Mock(return_value=_mock_iterator(rows))
+    created.append(bt_client)
+    return bt_client
+
+  with mock.patch.object(
+      client, "get_bigtable_data_client", side_effect=_new_client
+  ):
+    result = await execute_sql(
+        project_id="my_project",
+        instance_id="my_instance",
+        query="SELECT * FROM my_table",
+        credentials=mock.create_autospec(Credentials, instance=True),
+        settings=BigtableToolSettings(),
+        tool_context=mock.create_autospec(ToolContext, instance=True),
+    )
+
+  try:
+    assert result["status"] == expected_status
+    assert len(created) == 1
+    assert _channel_is_shut_down(created[0])
+  finally:
+    # Should the release regress, the client is still live and its worker
+    # thread would block interpreter exit; drop it so the regression surfaces
+    # as this assertion rather than as a suite-wide hang. Closing twice is a
+    # no-op on the passing path.
+    for bt_client in created:
+      data.BigtableDataClient.close(bt_client)
+
+
+@pytest.mark.asyncio
+async def test_execute_sql_returns_result_when_release_fails(caplog):
+  """A failure while releasing the client is logged, not raised."""
+  bt_client = _unreachable_data_client()
+  bt_client.execute_query = mock.Mock(
+      return_value=_mock_iterator([{"col1": "val1"}])
+  )
+  bt_client.close = mock.Mock(side_effect=RuntimeError("close failed"))
+
+  caplog.set_level(logging.ERROR)
+  try:
+    with mock.patch.object(
+        client, "get_bigtable_data_client", return_value=bt_client
+    ):
+      result = await execute_sql(
+          project_id="my_project",
+          instance_id="my_instance",
+          query="SELECT * FROM my_table",
+          credentials=mock.create_autospec(Credentials, instance=True),
+          settings=BigtableToolSettings(),
+          tool_context=mock.create_autospec(ToolContext, instance=True),
+      )
+  finally:
+    # ``close`` is stubbed above, so release the real client explicitly.
+    data.BigtableDataClient.close(bt_client)
+
+  assert result == {"status": "SUCCESS", "rows": [{"col1": "val1"}]}
+  bt_client.close.assert_called_once()
+  assert [
+      record
+      for record in caplog.records
+      if record.levelno == logging.ERROR
+      and record.exc_info
+      and isinstance(record.exc_info[1], RuntimeError)
+  ]
 
 
 @pytest.mark.asyncio

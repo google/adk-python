@@ -26,6 +26,7 @@ from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
 from pydantic import ValidationError  # noqa: F401
+from typing_extensions import Self
 
 from ...features import experimental
 from ...features import FeatureName
@@ -156,7 +157,9 @@ class EnvironmentSimulationConfig(BaseModel):
 
   @field_validator("tool_simulation_configs")
   @classmethod
-  def check_tool_simulation_configs(cls, v: List[ToolSimulationConfig]):
+  def check_tool_simulation_configs(
+      cls, v: List[ToolSimulationConfig]
+  ) -> List[ToolSimulationConfig]:
     """Checks that tool_simulation_configs is not empty."""
     if not v:
       raise ValueError("tool_simulation_configs must be provided.")

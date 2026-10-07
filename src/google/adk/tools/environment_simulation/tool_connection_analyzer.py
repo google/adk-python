@@ -96,9 +96,9 @@ class ToolConnectionAnalyzer:
     Analyzes a list of tools and returns a map of their connections.
     """
     tool_schemas = [
-        tool._get_declaration().model_dump(exclude_none=True)
+        declaration.model_dump(exclude_none=True)
         for tool in tools
-        if tool._get_declaration()
+        if (declaration := tool._get_declaration()) is not None
     ]
     tool_schemas_json = json.dumps(tool_schemas, indent=2)
     prompt = _TOOL_CONNECTION_ANALYSIS_PROMPT_TEMPLATE.format(
@@ -119,7 +119,9 @@ class ToolConnectionAnalyzer:
     response_text = ""
     async with Aclosing(self._llm.generate_content_async(request)) as agen:
       async for llm_response in agen:
-        generated_content: genai_types.Content = llm_response.content
+        generated_content = llm_response.content
+        if generated_content is None:
+          continue
         if not generated_content.parts:
           continue
         for part in generated_content.parts:
@@ -129,7 +131,7 @@ class ToolConnectionAnalyzer:
     try:
       clean_json_text = re.sub(r"^```[a-zA-Z]*\n", "", response_text)
       clean_json_text = re.sub(r"\n```$", "", clean_json_text)
-      response_json = json.loads(clean_json_text.strip())
+      response_json: object = json.loads(clean_json_text.strip())
     except json.JSONDecodeError as e:
       logging.warning(
           "Failed to parse tool connection analysis from LLM. Proceeding"

@@ -136,7 +136,7 @@ async def test_evaluate_eval_set_threads_artifact_service(mocker):
 
   await AgentEvaluator.evaluate_eval_set(
       agent_module="my.agent.module",
-      eval_set=EvalSet(eval_set_id="es1", eval_cases=[]),
+      eval_set=_make_eval_set(),
       eval_config=EvalConfig(),
       num_runs=1,
       artifact_service=my_service,
@@ -238,6 +238,55 @@ async def test_evaluate_eval_set_keeps_metric_detail_for_failed_metric(mocker):
 
 
 @pytest.mark.asyncio
+async def test_evaluate_eval_set_reports_not_evaluated_metric_separately(
+    mocker,
+):
+  """A metric that never ran is not reported as a score regression.
+
+  This is the shape recorded when a judge model is unreachable: the metric
+  produces no score, so there is nothing to compare against the threshold.
+  """
+  not_evaluated_result = EvalCaseResult(
+      eval_set_id="test_eval_set",
+      eval_id="case1",
+      final_eval_status=EvalStatus.NOT_EVALUATED,
+      overall_eval_metric_results=[],
+      eval_metric_result_per_invocation=[
+          EvalMetricResultPerInvocation(
+              actual_invocation=Invocation(
+                  user_content=_content("What is 2 + 2?"),
+                  final_response=_content("4"),
+              ),
+              expected_invocation=Invocation(
+                  user_content=_content("What is 2 + 2?"),
+                  final_response=_content("4"),
+              ),
+              eval_metric_results=[
+                  EvalMetricResult(
+                      metric_name="final_response_match_v2",
+                      threshold=0.8,
+                      score=None,
+                      eval_status=EvalStatus.NOT_EVALUATED,
+                  )
+              ],
+          )
+      ],
+      session_id="",
+  )
+
+  with pytest.raises(AssertionError) as exc_info:
+    await _mock_evaluate_eval_set(mocker, not_evaluated_result)
+
+  message = str(exc_info.value)
+  assert "final_response_match_v2 for my.agent.module was not evaluated" in (
+      message
+  )
+  # The wording used for a metric that scored below its threshold.
+  assert "Failed. Expected" not in message
+  assert "but got None" not in message
+
+
+@pytest.mark.asyncio
 async def test_evaluate_eval_set_passes_when_metrics_pass(mocker):
   """A passing eval case is not turned into a failure."""
   passing_result = EvalCaseResult(
@@ -269,6 +318,42 @@ async def test_evaluate_eval_set_passes_when_metrics_pass(mocker):
   )
 
   await _mock_evaluate_eval_set(mocker, passing_result)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_raises_when_no_eval_cases_were_evaluated(
+    mocker,
+):
+  """An empty `eval_set` must fail early before evaluating."""
+  mock_get_agent = mocker.patch.object(AgentEvaluator, "_get_agent_for_eval")
+  mock_get_results = mocker.patch.object(
+      AgentEvaluator, "_get_eval_results_by_eval_id"
+  )
+
+  with pytest.raises(ValueError, match="No eval cases were evaluated"):
+    await AgentEvaluator.evaluate_eval_set(
+        agent_module="my.agent.module",
+        eval_set=EvalSet(eval_set_id="es1", eval_cases=[]),
+        eval_config=EvalConfig(),
+        num_runs=1,
+    )
+
+  mock_get_agent.assert_not_called()
+  mock_get_results.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("num_runs", [0, -1])
+async def test_evaluate_eval_set_raises_when_num_runs_less_than_one(num_runs):
+  with pytest.raises(
+      ValueError, match=f"`num_runs` must be at least 1, got {num_runs}."
+  ):
+    await AgentEvaluator.evaluate_eval_set(
+        agent_module="my.agent.module",
+        eval_set=_make_eval_set(),
+        eval_config=EvalConfig(),
+        num_runs=num_runs,
+    )
 
 
 class TestGetAgentForEval:
@@ -820,6 +905,61 @@ class TestProcessMetricsAndGetFailures:
     assert len(failures) == 1
 
 
+def test_process_metrics_informational_metric_is_never_a_failure():
+  """An informational metric (INFORMATIONAL status) never fails or raises.
+
+  The efficiency metrics are auto-appended to every eval, report an
+  INFORMATIONAL status, and carry no threshold, so the failure aggregation must
+  skip them rather than trying to resolve a (non-existent) threshold for them.
+  """
+  result = _EvalMetricResultWithInvocation(
+      actual_invocation=Invocation(
+          user_content=_content("hi"),
+          final_response=_content("hello"),
+      ),
+      expected_invocation=None,
+      eval_metric_result=EvalMetricResult(
+          metric_name="tool_call_count_v1",
+          score=3.0,
+          eval_status=EvalStatus.INFORMATIONAL,
+      ),
+  )
+
+  failures = AgentEvaluator._process_metrics_and_get_failures(
+      eval_metric_results={"tool_call_count_v1": [result]},
+      print_detailed_results=False,
+      agent_module="my_agent",
+  )
+
+  assert failures == []
+
+
+def test_process_metrics_thresholded_metric_below_threshold_still_fails():
+  """A thresholded metric below its threshold is still reported as a failure."""
+  result = _EvalMetricResultWithInvocation(
+      actual_invocation=Invocation(
+          user_content=_content("hi"),
+          final_response=_content("hello"),
+      ),
+      expected_invocation=None,
+      eval_metric_result=EvalMetricResult(
+          metric_name="response_match_score",
+          threshold=0.8,
+          score=0.0,
+          eval_status=EvalStatus.FAILED,
+      ),
+  )
+
+  failures = AgentEvaluator._process_metrics_and_get_failures(
+      eval_metric_results={"response_match_score": [result]},
+      print_detailed_results=False,
+      agent_module="my_agent",
+  )
+
+  assert len(failures) == 1
+  assert "response_match_score" in failures[0]
+
+
 def test_write_results_to_csv_writes_expected_file(tmp_path):
   rows = [
       {
@@ -1265,6 +1405,33 @@ async def test_evaluate_requires_app_name_when_manager_given(mocker):
 
 
 @pytest.mark.asyncio
+async def test_evaluate_raises_when_no_test_files_found(tmp_path):
+  empty_dir = tmp_path / "empty_evals"
+  empty_dir.mkdir()
+  with pytest.raises(
+      ValueError,
+      match=r"No `\*\.test\.json` eval files found in",
+  ):
+    await AgentEvaluator.evaluate(
+        agent_module="pkg.search_agent",
+        eval_dataset_file_path_or_dir=str(empty_dir),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("num_runs", [0, -1])
+async def test_evaluate_raises_when_num_runs_less_than_one(num_runs):
+  with pytest.raises(
+      ValueError, match=f"`num_runs` must be at least 1, got {num_runs}."
+  ):
+    await AgentEvaluator.evaluate(
+        agent_module="pkg.search_agent",
+        eval_dataset_file_path_or_dir="some.test.json",
+        num_runs=num_runs,
+    )
+
+
+@pytest.mark.asyncio
 async def test_evaluate_passes_results_manager_and_app_name(mocker, tmp_path):
   test_dir = tmp_path / "evals"
   nested_dir = test_dir / "nested"
@@ -1402,6 +1569,52 @@ async def test_evaluate_keeps_positional_initial_session_file_and_print_flag(
       evaluate_eval_set_mock.await_args.kwargs["print_detailed_results"]
       is False
   )
+
+
+@pytest.mark.parametrize(
+    "print_detailed_results, score, threshold, expect_print, expected_status",
+    [
+        # Case 1: print_detailed_results is False. No printing should happen.
+        (False, 0.9, 0.8, False, EvalStatus.PASSED),
+        (False, 0.7, 0.8, False, EvalStatus.FAILED),
+        # Case 2: print_detailed_results is True. Printing should happen.
+        (True, 0.9, 0.8, True, EvalStatus.PASSED),
+        (True, 0.7, 0.8, True, EvalStatus.FAILED),
+    ],
+)
+def test_process_metrics_and_get_failures_printing(
+    print_detailed_results,
+    score,
+    threshold,
+    expect_print,
+    expected_status,
+    mocker,
+):
+  mock_metric_result = mocker.MagicMock()
+  mock_metric_result.eval_metric_result.criterion = None
+  mock_metric_result.eval_metric_result.threshold = threshold
+  mock_metric_result.eval_metric_result.score = score
+
+  eval_metric_results = {"dummy_metric": [mock_metric_result]}
+
+  mock_print_details = mocker.patch.object(AgentEvaluator, "_print_details")
+
+  AgentEvaluator._process_metrics_and_get_failures(
+      eval_metric_results=eval_metric_results,
+      print_detailed_results=print_detailed_results,
+      agent_module="dummy_agent",
+  )
+
+  if expect_print:
+    mock_print_details.assert_called_once_with(
+        eval_metric_result_with_invocations=[mock_metric_result],
+        overall_eval_status=expected_status,
+        overall_score=score,
+        metric_name="dummy_metric",
+        threshold=threshold,
+    )
+  else:
+    mock_print_details.assert_not_called()
 
 
 def _non_utf8_default_open(file, mode="r", *args, **kwargs):

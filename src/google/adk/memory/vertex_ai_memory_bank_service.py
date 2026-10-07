@@ -20,6 +20,7 @@ from collections.abc import Sequence
 import datetime
 from functools import lru_cache
 import logging
+from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -27,14 +28,21 @@ from google.auth.credentials import Credentials
 from google.genai import types
 from typing_extensions import override
 
+from ..utils._event_loop_cache import per_loop_value
 from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
 
 if TYPE_CHECKING:
-  import vertexai
-  from vertexai import types as vertex_types
+  import agentplatform
+  # Deliberately keeps the pre-migration alias. From 2.2 `vertexai.types`
+  # resolves each name against `agentplatform.types`, so
+  # `vertexai.types.MemoryProfile is agentplatform.types.MemoryProfile` and the
+  # published return type of retrieve_profiles is unchanged. Renaming the alias
+  # would rewrite that annotation for no gain and read as a breaking change to
+  # anything comparing the rendered signature.
+  from agentplatform import types as vertex_types
 
   from ..events.event import Event
   from ..sessions.session import Session
@@ -111,21 +119,19 @@ _MAX_DIRECT_MEMORIES_PER_GENERATE_CALL = 5
 def _supports_generate_memories_metadata() -> bool:
   """Returns whether installed Vertex SDK supports config.metadata."""
   try:
-    from vertexai import types as vertex_types
+    from ..dependencies._agentplatform import agentplatform
   except ImportError:
     return False
-  return (
-      'metadata' in vertex_types.GenerateAgentEngineMemoriesConfig.model_fields
-  )
+  return 'metadata' in agentplatform.types.GenerateMemoriesConfig.model_fields
 
 
 def _supports_create_memory_metadata() -> bool:
   """Returns whether installed Vertex SDK supports create config.metadata."""
   try:
-    from vertexai import types as vertex_types
+    from ..dependencies._agentplatform import agentplatform
   except ImportError:
     return False
-  return 'metadata' in vertex_types.AgentEngineMemoryConfig.model_fields
+  return 'metadata' in agentplatform.types.MemoryConfig.model_fields
 
 
 @lru_cache(maxsize=1)
@@ -136,12 +142,12 @@ def _get_generate_memories_config_keys() -> frozenset[str]:
   allowlist to preserve compatibility when introspection is unavailable.
   """
   try:
-    from vertexai import types as vertex_types
+    from ..dependencies._agentplatform import agentplatform
   except ImportError:
     return _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS
 
   try:
-    model_fields = vertex_types.GenerateAgentEngineMemoriesConfig.model_fields
+    model_fields = agentplatform.types.GenerateMemoriesConfig.model_fields
   except AttributeError:
     return _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS
 
@@ -158,12 +164,12 @@ def _get_create_memory_config_keys() -> frozenset[str]:
   allowlist to preserve compatibility when introspection is unavailable.
   """
   try:
-    from vertexai import types as vertex_types
+    from ..dependencies._agentplatform import agentplatform
   except ImportError:
     return _CREATE_MEMORY_CONFIG_FALLBACK_KEYS
 
   try:
-    model_fields = vertex_types.AgentEngineMemoryConfig.model_fields
+    model_fields = agentplatform.types.MemoryConfig.model_fields
   except AttributeError:
     return _CREATE_MEMORY_CONFIG_FALLBACK_KEYS
 
@@ -211,7 +217,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
       )
 
     try:
-      import vertexai  # noqa: F401
+      from ..dependencies._agentplatform import agentplatform  # noqa: F401
     except ImportError as e:
       from ..utils._dependency import missing_extra
 
@@ -274,8 +280,9 @@ class VertexAiMemoryBankService(BaseMemoryService):
             ``{"generation_rule": {"idle_duration": "60s"}}``.
 
         **GenerateMemories keys** (used when any of these are present):
-          ttl: Time-to-live for generated memories, e.g. ``"6000s"``.
-          revision_ttl: Time-to-live for memory revisions.
+          ttl: Alias for ``revision_ttl``, the only TTL ``memories.generate``
+            accepts. Ignored when ``revision_ttl`` is also set.
+          revision_ttl: Time-to-live for memory revisions, e.g. ``"6000s"``.
           metadata: A mapping of custom metadata key-value pairs.
           wait_for_completion: Whether to wait for generation to complete.
           disable_consolidation: Disable memory consolidation.
@@ -342,7 +349,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
     # (trigger immediately) and supports additional parameters like
     # generation_trigger_config.
     if _should_use_generate_memories(custom_metadata):
-      import vertexai
+      from ..dependencies._agentplatform import agentplatform
 
       direct_events = []
       for event in events_to_process:
@@ -350,16 +357,16 @@ class VertexAiMemoryBankService(BaseMemoryService):
           continue
         if event.content:
           direct_events.append(
-              vertexai.types.GenerateMemoriesRequestDirectContentsSourceEvent(
+              agentplatform.types.GenerateMemoriesRequestDirectContentsSourceEvent(
                   content=event.content
               )
           )
       if direct_events:
         api_client = self._get_api_client()
         config = _build_generate_memories_config(custom_metadata)
-        operation = await api_client.agent_engines.memories.generate(
+        operation = await _memories_api(api_client).generate(
             name='reasoningEngines/' + self._agent_engine_id,
-            direct_contents_source=vertexai.types.GenerateMemoriesRequestDirectContentsSource(
+            direct_contents_source=agentplatform.types.GenerateMemoriesRequestDirectContentsSource(
                 events=direct_events
             ),
             scope={
@@ -403,7 +410,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
           generation, e.g.
           ``{"generation_rule": {"idle_duration": "60s"}}``.
     """
-    import vertexai
+    from ..dependencies._agentplatform import agentplatform
 
     direct_events = []
     for event in events_to_process:
@@ -416,7 +423,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
               event.timestamp, tz=datetime.timezone.utc
           )
         direct_events.append(
-            vertexai.types.IngestionDirectContentsSourceEvent(
+            agentplatform.types.IngestionDirectContentsSourceEvent(
                 content=event.content,
                 event_id=event.id,
                 event_time=event_time,
@@ -446,7 +453,9 @@ class VertexAiMemoryBankService(BaseMemoryService):
     # won't trigger an events flush.
     if direct_events:
       request_kwargs['direct_contents_source'] = (
-          vertexai.types.IngestionDirectContentsSource(events=direct_events)
+          agentplatform.types.IngestionDirectContentsSource(
+              events=direct_events
+          )
       )
     if stream_id:
       request_kwargs['stream_id'] = stream_id
@@ -462,9 +471,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
 
     # Fire the ingest request without blocking. IngestEvents latency
     # (~800ms to trigger) makes awaiting unnecessary outside debugging.
-    task = asyncio.create_task(
-        api_client.agent_engines.memories.ingest_events(**request_kwargs)
-    )
+    task = asyncio.create_task(_ingest_events_api(api_client)(**request_kwargs))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     task.add_done_callback(_log_ingest_task_error)
@@ -493,7 +500,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
           memory_revision_labels=memory_revision_labels,
           memory_id=memory.id,
       )
-      operation = await api_client.agent_engines.memories.create(
+      operation = await _memories_api(api_client).create(
           name='reasoningEngines/' + self._agent_engine_id,
           fact=memory_fact,
           scope={
@@ -522,7 +529,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
     api_client = self._get_api_client()
     config = _build_generate_memories_config(custom_metadata)
     for memory_batch in _iter_memory_batches(memory_texts):
-      operation = await api_client.agent_engines.memories.generate(
+      operation = await _memories_api(api_client).generate(
           name='reasoningEngines/' + self._agent_engine_id,
           direct_memories_source={
               'direct_memories': [
@@ -543,17 +550,15 @@ class VertexAiMemoryBankService(BaseMemoryService):
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
     api_client = self._get_api_client()
-    retrieved_memories_iterator = (
-        await api_client.agent_engines.memories.retrieve(
-            name='reasoningEngines/' + self._agent_engine_id,
-            scope={
-                'app_name': app_name,
-                'user_id': user_id,
-            },
-            similarity_search_params={
-                'search_query': query,
-            },
-        )
+    retrieved_memories_iterator = await _memories_api(api_client).retrieve(
+        name='reasoningEngines/' + self._agent_engine_id,
+        scope={
+            'app_name': app_name,
+            'user_id': user_id,
+        },
+        similarity_search_params={
+            'search_query': query,
+        },
     )
 
     logger.info('Search memory response received.')
@@ -579,6 +584,9 @@ class VertexAiMemoryBankService(BaseMemoryService):
                       role='user',
                   ),
                   timestamp=update_time.isoformat() if update_time else None,
+                  custom_metadata=_from_vertex_metadata(
+                      getattr(memory, 'metadata', None)
+                  ),
               )
           )
         except AttributeError:
@@ -609,9 +617,12 @@ class VertexAiMemoryBankService(BaseMemoryService):
 
     Returns:
       The structured profiles for the scope, one per registered schema.
+      `vertexai.types.MemoryProfile` and `agentplatform.types.MemoryProfile`
+      name the same class from 2.2 on, so a caller written against either
+      spelling keeps working.
     """
     api_client = self._get_api_client()
-    response = await api_client.agent_engines.memories.retrieve_profiles(
+    response = await _memories_api(api_client).retrieve_profiles(
         name='reasoningEngines/' + self._agent_engine_id,
         scope={
             'app_name': app_name,
@@ -625,24 +636,63 @@ class VertexAiMemoryBankService(BaseMemoryService):
       logger.info('Retrieved no memory profiles.')
     return profiles
 
-  def _get_api_client(self) -> vertexai.AsyncClient:
-    """Instantiates an API client for the given project and location.
+  def _get_api_client(self) -> agentplatform.AsyncClient:
+    """Returns the API client for the running event loop.
 
-    It needs to be instantiated inside each request so that the event loop
-    management can be properly propagated.
+    The client is built once per event loop and reused. An async client belongs
+    to the loop that opened it, so it cannot be shared across loops, and
+    building one per call leaks the resources each new client allocates.
+
     Returns:
       An async API client for the given project and location or express mode api
       key.
     """
-    import vertexai
+    return per_loop_value(self, '_api_client_per_loop', self._build_api_client)
+
+  def _build_api_client(self) -> agentplatform.AsyncClient:
+    """Instantiates an API client for the given project and location.
+
+    Subclasses that need custom credentials or an endpoint should override this
+    method to get per-loop caching; override ``_get_api_client()`` only when the
+    client must vary per call (e.g. per-tenant), in which case callers never
+    close the returned client.
+    """
+    from ..dependencies._agentplatform import agentplatform
 
     if self._express_mode_api_key:
-      return vertexai.Client(api_key=self._express_mode_api_key).aio
-    return vertexai.Client(
+      return agentplatform.Client(api_key=self._express_mode_api_key).aio
+    return agentplatform.Client(
         project=self._project,
         location=self._location,
         credentials=self._credentials,
     ).aio
+
+
+# The service builds an `agentplatform` client, where Memory Bank hangs off the
+# client as `memory_banks`. A subclass may still override `_get_api_client` or
+# `_build_api_client` to return a `vertexai` client, and in 2.x that client only
+# has the legacy `agent_engines.memories` path -- no client has both. The two
+# paths take the same arguments and, from 2.2, the same request and response
+# classes, so falling back keeps those subclasses working instead of raising
+# AttributeError on their first call. Only the location of `ingest_events`
+# differs: it sits on `memory_banks` itself, but under `memories` on the legacy
+# path.
+
+
+def _memories_api(api_client: Any) -> Any:
+  """Returns the memories surface of whichever client a subclass supplies."""
+  memory_banks = getattr(api_client, 'memory_banks', None)
+  if memory_banks is not None:
+    return memory_banks.memories
+  return api_client.agent_engines.memories
+
+
+def _ingest_events_api(api_client: Any) -> Any:
+  """Returns `ingest_events` from whichever client a subclass supplies."""
+  memory_banks = getattr(api_client, 'memory_banks', None)
+  if memory_banks is not None:
+    return memory_banks.ingest_events
+  return api_client.agent_engines.memories.ingest_events
 
 
 def _log_ingest_task_error(task: asyncio.Task[object]) -> None:
@@ -706,7 +756,7 @@ def _build_generate_memories_config(
         )
         continue
       if isinstance(value, Mapping):
-        config['metadata'] = _build_vertex_metadata(value)
+        config['metadata'] = _to_vertex_metadata(value)
       else:
         logger.warning(
             'Ignoring metadata because custom_metadata["metadata"] is not a'
@@ -733,12 +783,12 @@ def _build_generate_memories_config(
 
   existing_metadata = config.get('metadata')
   if existing_metadata is None:
-    config['metadata'] = _build_vertex_metadata(metadata_by_key)
+    config['metadata'] = _to_vertex_metadata(metadata_by_key)
     return config
 
   if isinstance(existing_metadata, Mapping):
     merged_metadata = dict(existing_metadata)
-    merged_metadata.update(_build_vertex_metadata(metadata_by_key))
+    merged_metadata.update(_to_vertex_metadata(metadata_by_key))
     config['metadata'] = merged_metadata
     return config
 
@@ -780,7 +830,7 @@ def _build_create_memory_config(
         )
         continue
       if isinstance(value, Mapping):
-        config['metadata'] = _build_vertex_metadata(value)
+        config['metadata'] = _to_vertex_metadata(value)
       else:
         logger.warning(
             'Ignoring metadata because custom_metadata["metadata"] is not a'
@@ -814,10 +864,10 @@ def _build_create_memory_config(
     else:
       existing_metadata = config.get('metadata')
       if existing_metadata is None:
-        config['metadata'] = _build_vertex_metadata(metadata_by_key)
+        config['metadata'] = _to_vertex_metadata(metadata_by_key)
       elif isinstance(existing_metadata, Mapping):
         merged_metadata = dict(existing_metadata)
-        merged_metadata.update(_build_vertex_metadata(metadata_by_key))
+        merged_metadata.update(_to_vertex_metadata(metadata_by_key))
         config['metadata'] = merged_metadata
       else:
         logger.warning(
@@ -991,17 +1041,25 @@ def _iter_memory_batches(memories: Sequence[str]) -> Sequence[Sequence[str]]:
   return memory_batches
 
 
-def _build_vertex_metadata(
-    metadata_by_key: Mapping[str, object],
+_VERTEX_METADATA_KEYS = (
+    'bool_value',
+    'double_value',
+    'string_value',
+    'timestamp_value',
+)
+
+
+def _to_vertex_metadata(
+    metadata_by_key: Mapping[str, object] | None,
 ) -> dict[str, object]:
   """Converts metadata values to Vertex MemoryMetadataValue objects."""
-  vertex_metadata: dict[str, object] = {}
-  for key, value in metadata_by_key.items():
-    converted_value = _to_vertex_metadata_value(key, value)
-    if converted_value is None:
-      continue
-    vertex_metadata[key] = converted_value
-  return vertex_metadata
+  if not metadata_by_key:
+    return {}
+  return {
+      key: converted_value
+      for key, value in metadata_by_key.items()
+      if (converted_value := _to_vertex_metadata_value(key, value)) is not None
+  }
 
 
 def _to_vertex_metadata_value(
@@ -1018,12 +1076,7 @@ def _to_vertex_metadata_value(
   if isinstance(value, datetime.datetime):
     return {'timestamp_value': value}
   if isinstance(value, Mapping):
-    if value.keys() <= {
-        'bool_value',
-        'double_value',
-        'string_value',
-        'timestamp_value',
-    }:
+    if value.keys() <= set(_VERTEX_METADATA_KEYS):
       return dict(value)
     return {'string_value': str(dict(value))}
   if value is None:
@@ -1033,3 +1086,28 @@ def _to_vertex_metadata_value(
     )
     return None
   return {'string_value': str(value)}
+
+
+def _from_vertex_metadata(
+    vertex_metadata: Mapping[str, object] | None,
+) -> dict[str, object]:
+  """Converts Vertex MemoryMetadataValue objects back to plain Python values."""
+  if not vertex_metadata:
+    return {}
+  return {
+      key: _from_vertex_metadata_value(value)
+      for key, value in vertex_metadata.items()
+  }
+
+
+def _from_vertex_metadata_value(value: object) -> object:
+  """Converts one Vertex MemoryMetadataValue back to a plain Python value."""
+  getter = (
+      value.get
+      if isinstance(value, Mapping)
+      else lambda k: getattr(value, k, None)
+  )
+  for key in _VERTEX_METADATA_KEYS:
+    if (val := getter(key)) is not None:
+      return val
+  return value

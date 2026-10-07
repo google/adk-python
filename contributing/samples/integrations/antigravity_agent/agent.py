@@ -14,20 +14,23 @@
 
 """Game-developer agent that writes browser games as self-contained HTML.
 
-Wraps a Google Antigravity SDK agent as an ADK agent. See the package README
-for setup and details.
+Wraps a Google Antigravity SDK agent as an ADK agent. See the AntigravityAgent
+guide at docs/guides/labs/antigravity/index.md for setup and details.
 """
 
 import os
 
 from google.adk.labs.antigravity import AntigravityAgent
 from google.antigravity import LocalAgentConfig
+from google.antigravity import types as antigravity_types
 from google.antigravity.hooks import policy
 
-# 1. Configure the Google Antigravity SDK game-developer agent. The
-#    workspace-scoped policy lets it create and edit files inside the game_repo
-#    workspace (built-in file tools are allowed there) while keeping writes
-#    contained.
+# 1. Configure the Google Antigravity SDK game-developer agent. A local
+#    Antigravity harness fails closed: any tool that no policy explicitly
+#    approves is denied. workspace_only() only emits scoped deny rules, so the
+#    built-in file tools must be approved explicitly or the agent silently
+#    writes nothing. Approve them, then keep workspace_only() to contain writes
+#    to the game_repo workspace.
 _sample_dir = os.path.dirname(os.path.abspath(__file__))
 _workspace = os.path.join(_sample_dir, "game_repo")
 _trajectories = os.path.join(_sample_dir, "trajectories")
@@ -49,11 +52,17 @@ but do not attempt to write the entire game in one step.
 After the file is complete, briefly explain how to play it (open the .html file \
 in a browser).""",
     workspaces=[_workspace],
-    policies=[*policy.workspace_only([_workspace])],
+    policies=[
+        *[
+            policy.allow(tool.value)
+            for tool in antigravity_types.BuiltinTools.file_tools()
+        ],
+        *policy.workspace_only([_workspace]),
+    ],
     save_dir=_trajectories,
 )
 
-# 2. Wrap the SDK config as a standalone ADK root agent.
+# 2. Wrap the Antigravity SDK config as a standalone ADK root agent.
 root_agent = AntigravityAgent(
     name="antigravity_game_developer",
     description=(

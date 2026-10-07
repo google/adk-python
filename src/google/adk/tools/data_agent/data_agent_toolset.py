@@ -14,9 +14,9 @@
 
 from __future__ import annotations
 
+from typing import Any
+from typing import Callable
 from typing import List
-from typing import Optional
-from typing import Union
 
 from google.adk.agents.readonly_context import ReadonlyContext
 from typing_extensions import override
@@ -36,9 +36,9 @@ class DataAgentToolset(BaseToolset):
   def __init__(
       self,
       *,
-      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
-      credentials_config: Optional[DataAgentCredentialsConfig] = None,
-      data_agent_tool_config: Optional[DataAgentToolConfig] = None,
+      tool_filter: ToolPredicate | list[str] | None = None,
+      credentials_config: DataAgentCredentialsConfig | None = None,
+      data_agent_tool_config: DataAgentToolConfig | None = None,
   ):
     super().__init__(tool_filter=tool_filter)
     self._credentials_config = credentials_config
@@ -49,8 +49,9 @@ class DataAgentToolset(BaseToolset):
     )
 
   def _is_tool_selected(
-      self, tool: BaseTool, readonly_context: ReadonlyContext
+      self, tool: BaseTool, readonly_context: ReadonlyContext | None
   ) -> bool:
+    # Unlike the base implementation, an empty tool_filter selects no tools.
     if self.tool_filter is None:
       return True
 
@@ -64,9 +65,9 @@ class DataAgentToolset(BaseToolset):
 
   @override
   async def get_tools(
-      self, readonly_context: Optional[ReadonlyContext] = None
+      self, readonly_context: ReadonlyContext | None = None
   ) -> List[BaseTool]:
-    funcs = [
+    funcs: list[Callable[..., Any]] = [
         data_agent_tool.list_accessible_data_agents,
         data_agent_tool.get_data_agent_info,
         data_agent_tool.ask_data_agent,
@@ -92,5 +93,5 @@ class DataAgentToolset(BaseToolset):
     ]
 
   @override
-  async def close(self):
+  async def close(self) -> None:
     pass

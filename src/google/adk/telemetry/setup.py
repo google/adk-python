@@ -46,8 +46,7 @@ def maybe_set_otel_providers(
     otel_hooks_to_setup: list[OTelHooks] | None = None,
     otel_resource: Resource | None = None,
 ) -> None:
-  """Sets up OTel providers if hooks for a given telemetry type were
-  passed.
+  """Sets up OTel providers if hooks for a given telemetry type were passed.
 
   Additionally adds generic OTLP exporters based on following env variables:
   OTEL_EXPORTER_OTLP_ENDPOINT
@@ -62,10 +61,10 @@ def maybe_set_otel_providers(
 
   Args:
     otel_hooks_to_setup: per-telemetry-type processors and readers to be added
-    to OTel providers. If no hooks for a specific telemetry type are passed -
-    provider will not be set.
-    otel_resource: OTel resource to use in providers.
-    If empty - default OTel resource detection will be used.
+      to OTel providers. If no hooks for a specific telemetry type are passed -
+      provider will not be set.
+    otel_resource: OTel resource to use in providers. If empty - default OTel
+      resource detection will be used.
   """
   hooks_to_setup = list(otel_hooks_to_setup or ())
   otel_resource = otel_resource or _get_otel_resource()
@@ -107,9 +106,7 @@ def maybe_set_otel_providers(
   # If the LoggerProvider was already set outside of ADK, this would be a no-op
   # and results in a warning. In such case we rely on user setup.
   if log_record_processors:
-    new_logger_provider = LoggerProvider(
-        resource=otel_resource,
-    )
+    new_logger_provider = LoggerProvider(resource=otel_resource)
     for log_record_processor in log_record_processors:
       new_logger_provider.add_log_record_processor(log_record_processor)
     _logs.set_logger_provider(new_logger_provider)

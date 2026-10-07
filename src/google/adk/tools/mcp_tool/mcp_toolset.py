@@ -32,14 +32,6 @@ from typing import TypeVar
 from typing import Union
 import warnings
 
-from mcp import SamplingCapability
-from mcp import StdioServerParameters
-from mcp.client.session import ElicitationFnT
-from mcp.client.session import SamplingFnT
-from mcp.shared.session import ProgressFnT
-from mcp.types import ListResourcesResult
-from mcp.types import ListToolsResult
-from mcp.types import Tool as McpBaseTool
 from pydantic import model_validator
 from typing_extensions import override
 
@@ -48,6 +40,13 @@ from ...auth._auth_headers import build_auth_headers
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...dependencies._mcp import ElicitationFnT
+from ...dependencies._mcp import ListResourcesResult
+from ...dependencies._mcp import ListToolsResult
+from ...dependencies._mcp import SamplingCapability
+from ...dependencies._mcp import SamplingFnT
+from ...dependencies._mcp import StdioServerParameters
+from ...dependencies._mcp import Tool as McpBaseTool
 from ...utils.env_utils import is_env_enabled
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
@@ -56,14 +55,17 @@ from ..load_mcp_resource_tool import LoadMcpResourceTool
 from ..tool_configs import BaseToolConfig
 from ..tool_configs import ToolArgsConfig
 from .mcp_session_manager import _http_debug_var
+from .mcp_session_manager import _is_session_terminated_error
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
+from .mcp_tool import _dump_mcp_model
 from .mcp_tool import _RESERVED_TOOL_NAMES
 from .mcp_tool import MCPTool
 from .mcp_tool import ProgressCallbackFactory
+from .mcp_tool import ProgressFnT
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -170,6 +172,7 @@ class McpToolset(BaseToolset):
       sampling_capabilities: SamplingCapability | None = None,
       elicitation_callback: ElicitationFnT | None = None,
       credential_key: str | None = None,
+      propagate_grounding_metadata: bool = False,
   ):
     """Initializes the McpToolset.
 
@@ -222,6 +225,9 @@ class McpToolset(BaseToolset):
         elicitations used for out-of-band flows such as auth challenges.
       credential_key: A user specified key used to load and save this credential
         in a credential service. Used with auth_scheme.
+      propagate_grounding_metadata: If True, each listed tool copies
+        ``meta.adk_grounding_metadata`` from the MCP result into
+        ``temp:_adk_grounding_metadata``. Default False.
     """
 
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
@@ -263,6 +269,7 @@ class McpToolset(BaseToolset):
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
     self._require_confirmation = require_confirmation
+    self._propagate_grounding_metadata = propagate_grounding_metadata
     # Store auth config as instance variable so ADK can populate
     # exchanged_auth_credential in-place before calling get_tools()
     self._auth_config: Optional[AuthConfig] = (
@@ -416,6 +423,13 @@ class McpToolset(BaseToolset):
         logger.exception(
             f"Exception during MCP session execution: {error_message}: {e}"
         )
+        # Drop the session the server has forgotten, so the retry from
+        # @retry_on_errors builds a fresh one instead of being handed the
+        # same dead session back.
+        if _is_session_terminated_error(e):
+          self._mcp_session_manager._discard_session(  # pylint: disable=protected-access
+              session_headers, session=session
+          )
         raise ConnectionError(f"{error_message}: {e}") from e
       finally:
         self._mcp_session_manager._end_session_use(session_headers)  # pylint: disable=protected-access
@@ -531,6 +545,7 @@ class McpToolset(BaseToolset):
           progress_callback=self._progress_callback
           if hasattr(self, "_progress_callback")
           else None,
+          propagate_grounding_metadata=self._propagate_grounding_metadata,
       )
 
       if self._is_tool_selected(mcp_tool, readonly_context):
@@ -594,7 +609,10 @@ class McpToolset(BaseToolset):
     )
     for resource in result.resources:
       if resource.name == name:
-        return resource.model_dump(mode="json", exclude_none=True)
+        # `Resource` carries `mimeType`, which 2.x renames. A plain dump would
+        # hand the caller a different key on each major, the way the tool
+        # result did.
+        return _dump_mcp_model(resource)
     raise ValueError(f"Resource with name '{name}' not found.")
 
   async def close(self) -> None:

@@ -44,17 +44,19 @@ from typing import runtime_checkable
 from typing import TYPE_CHECKING
 from typing import TypedDict
 
+from google.adk.dependencies._mcp_name import SDK_MODULE_NAME as _MCP_SDK_MODULE_NAME
 from google.adk.telemetry._token_usage import TokenUsage
 from google.genai import types
 from opentelemetry._logs import Logger
 from opentelemetry._logs import LogRecord
+from opentelemetry.trace import set_span_in_context
 from opentelemetry.trace import Span
 from opentelemetry.util.types import AnyValue
 from opentelemetry.util.types import AttributeValue
 
 if TYPE_CHECKING:
-  from mcp import ClientSession as McpClientSession  # noqa: F401
-  from mcp import Tool as McpTool
+  from ..dependencies._mcp import ClientSession as McpClientSession  # noqa: F401
+  from ..dependencies._mcp import Tool as McpTool
 
   from ..models.llm_request import LlmRequest
   from ..models.llm_response import LlmResponse
@@ -65,6 +67,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM_INSTRUCTIONS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
 
+from ._finish_reason import is_reported_finish_reason
 from .context import TelemetryConfig
 
 # Use the import symbol once the minimum OpenTelemetry SDK version is updated to 1.40.0
@@ -251,21 +254,17 @@ def _to_role(role: str | None) -> str:
 
 
 def _to_finish_reason(finish_reason: types.FinishReason | None) -> str:
-  if finish_reason is None:
-    return ''
-  if (
-      # Mapping unspecified and other to error,
-      # as JSON schema for finish_reason does not support them.
-      finish_reason is types.FinishReason.FINISH_REASON_UNSPECIFIED
-      or finish_reason is types.FinishReason.OTHER
-  ):
-    return 'error'
-  if finish_reason is types.FinishReason.STOP:
-    return 'stop'
-  if finish_reason is types.FinishReason.MAX_TOKENS:
-    return 'length'
-
-  return finish_reason.name.lower()
+  if is_reported_finish_reason(finish_reason):
+    if finish_reason is types.FinishReason.OTHER:
+      # Mapped to error, as the JSON schema for finish_reason does not
+      # support it.
+      return 'error'
+    if finish_reason is types.FinishReason.STOP:
+      return 'stop'
+    if finish_reason is types.FinishReason.MAX_TOKENS:
+      return 'length'
+    return finish_reason.name.lower()
+  return ''
 
 
 def _to_part(part: types.Part, idx: int) -> Part | None:
@@ -393,8 +392,14 @@ def _model_dump_to_tool_definition(
       if isinstance(dumped_description, str)
       else _string_attribute(tool, 'description')
   )
+  # MCP SDK 1.x names the schema field `inputSchema` and 2.x names it
+  # `input_schema`, so a dumped MCP tool spells it either way. Missing the
+  # spelling in use costs no error and no log line -- the tool is still
+  # reported, just with no parameters.
   parameters = _clean_parameters(
-      model_dump.get('parameters') or model_dump.get('inputSchema')
+      model_dump.get('parameters')
+      or model_dump.get('inputSchema')
+      or model_dump.get('input_schema')
   )
   return FunctionToolDefinition(
       name=name,
@@ -484,9 +489,11 @@ def _to_tool_definitions(
   if callable(tool):
     return [_tool_definition_from_callable_tool(tool)]
 
-  if 'mcp' in sys.modules:
-    from mcp import ClientSession as McpClientSession
-    from mcp import Tool as McpTool
+  # Ask for the SDK by the name the seam resolves, not by a literal: the
+  # internal build renames it, and a stale literal would drop MCP tools here.
+  if _MCP_SDK_MODULE_NAME in sys.modules:
+    from ..dependencies._mcp import ClientSession as McpClientSession
+    from ..dependencies._mcp import Tool as McpTool
 
     if isinstance(tool, McpTool):
       return [_tool_definition_from_mcp_tool(tool)]
@@ -589,12 +596,16 @@ def _build_response_common_attributes(
 ) -> dict[str, AttributeValue]:
   """Pure builder for common attributes derived from an LLM response."""
   attributes: dict[str, AttributeValue] = {}
-  if finish_reason := llm_response.finish_reason:
-    attributes[GEN_AI_RESPONSE_FINISH_REASONS] = [
-        _to_finish_reason(finish_reason)
-    ]
+  # An unreported finish reason maps to '': omit the attribute rather than
+  # publish that.
+  if finish_reason := _to_finish_reason(llm_response.finish_reason):
+    attributes[GEN_AI_RESPONSE_FINISH_REASONS] = [finish_reason]
   if llm_response.usage_metadata:
-    attributes.update(TokenUsage(llm_response.usage_metadata).to_attributes())
+    attributes.update(
+        TokenUsage.from_usage_metadata(
+            llm_response.usage_metadata
+        ).to_attributes()
+    )
   return attributes
 
 
@@ -666,9 +677,15 @@ def set_operation_details_attributes_from_response(
   operation_details_common_attributes.update(
       _build_response_common_attributes(llm_response)
   )
-  operation_details_attributes.update(
-      _build_response_operation_details(llm_response)
-  )
+  response_attributes = _build_response_operation_details(llm_response)
+  # A turn arriving as several responses is reported as all of them rather than
+  # whichever came last, one message each, as
+  # opentelemetry-instrumentation-google-genai reports a stream too.
+  recorded = operation_details_attributes.get(GEN_AI_OUTPUT_MESSAGES)
+  arrived = response_attributes.get(GEN_AI_OUTPUT_MESSAGES)
+  if isinstance(recorded, list) and isinstance(arrived, list):
+    response_attributes[GEN_AI_OUTPUT_MESSAGES] = recorded + arrived
+  operation_details_attributes.update(response_attributes)
 
 
 def maybe_log_completion_details(
@@ -694,6 +711,9 @@ def maybe_log_completion_details(
       LogRecord(
           event_name=COMPLETION_DETAILS_EVENT_NAME,
           attributes=log_attributes,
+          # Named rather than taken from the ambient context, which callers are
+          # not required to have this span current in.
+          context=set_span_in_context(span),
       )
   )
 

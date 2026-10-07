@@ -14,10 +14,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from unittest import mock
 
+from google.adk.tools.spanner.client import _close_spanner_resources
 from google.adk.tools.spanner.client import get_spanner_client
 from google.auth.exceptions import DefaultCredentialsError
 from google.oauth2.credentials import Credentials
@@ -136,3 +138,48 @@ def test_spanner_client_user_agent():
         r"adk-spanner-tool google-adk/([0-9A-Za-z._\-+/]+)",
         client._client_info.user_agent,
     )
+
+
+def test_close_spanner_resources_closes_initialized_transports():
+  """Every transport that was created is closed, along with the client."""
+  spanner_client = mock.MagicMock()
+  database = mock.MagicMock()
+  instance_admin_api = mock.MagicMock()
+  database_admin_api = mock.MagicMock()
+  spanner_api = mock.MagicMock()
+  spanner_client._instance_admin_api = instance_admin_api
+  spanner_client._database_admin_api = database_admin_api
+  database._spanner_api = spanner_api
+
+  _close_spanner_resources(spanner_client, database)
+
+  database.close.assert_called_once()
+  spanner_api.transport.close.assert_called_once()
+  instance_admin_api.transport.close.assert_called_once()
+  database_admin_api.transport.close.assert_called_once()
+  spanner_client.close.assert_called_once()
+
+
+def test_close_spanner_resources_skips_uninitialized_transports():
+  """Reading a cached transport must not create the transport it looks for."""
+  spanner_client = mock.MagicMock(spec=["close"])
+
+  _close_spanner_resources(spanner_client)
+
+  spanner_client.close.assert_called_once()
+
+
+def test_close_spanner_resources_continues_after_close_error(caplog):
+  """A close that raises is logged and does not stop the remaining closes."""
+  spanner_client = mock.MagicMock()
+  database = mock.MagicMock()
+  spanner_api = mock.MagicMock()
+  database._spanner_api = spanner_api
+  database.close.side_effect = RuntimeError("session cleanup failed")
+
+  with caplog.at_level(logging.WARNING):
+    _close_spanner_resources(spanner_client, database)
+
+  assert "Failed to close the Spanner session manager." in caplog.text
+  spanner_api.transport.close.assert_called_once()
+  spanner_client.close.assert_called_once()

@@ -311,3 +311,24 @@ async def test_resume_path_does_not_end_parent_when_subagent_pauses(
 
   assert any(e.long_running_tool_ids for e in events)
   assert not any(e.actions.end_of_agent for e in events)
+
+
+def test_resume_resolves_declared_target_over_namesake():
+  """Resuming a transfer runs the caller's own target, not a namesake.
+
+  This calls the resolver directly: the tree-wide lookup it replaces is only
+  observable when two agents share a name, which the runner path cannot set
+  up without a second full invocation.
+  """
+  declared = LlmAgent(name="shared_name")
+  caller = LlmAgent(
+      name="caller",
+      sub_agents=[declared],
+      disallow_transfer_to_parent=True,
+      disallow_transfer_to_peers=True,
+  )
+  undeclared = LlmAgent(name="shared_name")
+  other_branch = LlmAgent(name="other_branch", sub_agents=[undeclared])
+  LlmAgent(name="root_agent", sub_agents=[other_branch, caller])
+
+  assert caller._LlmAgent__get_agent_to_run("shared_name") is declared

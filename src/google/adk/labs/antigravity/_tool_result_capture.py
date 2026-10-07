@@ -42,7 +42,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 
 class ToolResult(Protocol):
-  """The fields of an SDK ``ToolResult`` that this package reads.
+  """The Antigravity SDK ``ToolResult`` fields this package reads.
 
   A protocol rather than ``sdk_types.ToolResult`` because a structurally
   identical copy of that class also exists, and results of both types reach
@@ -57,16 +57,18 @@ class ToolResult(Protocol):
 
 @runtime_checkable
 class ToolError(Protocol):
-  """The fields of an SDK ``ToolExecutionError`` that this package reads.
+  """The Antigravity SDK ``ToolExecutionError`` fields this package reads.
 
   A protocol for the same reason ``ToolResult`` is one. Note the different
-  field names: the SDK models a failure as a raised exception rather than as a
+  field names: the Antigravity SDK models a failure as a raised exception
+  rather than as a
   result carrying an error, so nothing is shared with ``ToolResult``.
   """
 
   tool_name: str
   call_id: str | None
-  # An SDK old enough to hand the hook a bare ``RuntimeError`` instead fails
+  # An Antigravity SDK old enough to hand the hook a bare ``RuntimeError``
+  # instead fails
   # this check, and such a failure is dropped: without a call id there is no
   # call to pair it with. That is the pre-existing behaviour, not a regression
   # -- the dangling function_call simply survives, as it did before this hook
@@ -75,7 +77,7 @@ class ToolError(Protocol):
 
 @dataclasses.dataclass
 class _FailedToolResult:
-  """Stands in for the ``ToolResult`` the SDK does not send for a failed call.
+  """Stands in for the ``ToolResult`` the Antigravity SDK omits on failure.
 
   Satisfies ``ToolResult`` so a failure drains through the same path a value
   does.
@@ -88,10 +90,11 @@ class _FailedToolResult:
 
 
 class ToolResultBuffer:
-  """One SDK conversation's tool outcomes, keyed by ``ToolCall.id``.
+  """One Antigravity conversation's tool outcomes, keyed by ``ToolCall.id``.
 
   Carries the hook bodies but is deliberately not a hook itself: a
-  ``HookRunner`` classifies hooks by ``isinstance`` against its own SDK's hook
+  ``HookRunner`` classifies hooks by ``isinstance`` against its own copy of
+  the Antigravity SDK's hook
   classes, and a subclass cannot remove a base class. The capture classes
   below bind this to the Antigravity SDK; another copy of it gets its own.
 
@@ -101,8 +104,9 @@ class ToolResultBuffer:
   """
 
   def __init__(self) -> None:
-    # `ToolResultCapture` mixes this in ahead of an SDK hook base class, which
-    # has no `__init__` of its own today but is the SDK's to change.
+    # `ToolResultCapture` mixes this in ahead of an Antigravity SDK hook base
+    # class, which has no `__init__` of its own today but is the Antigravity
+    # SDK's to change.
     super().__init__()
     self._results: dict[str, ToolResult] = {}
 
@@ -111,41 +115,53 @@ class ToolResultBuffer:
 
   def record(self, result: ToolResult) -> None:
     """Buffers one tool result, dropping one that cannot be correlated."""
-    # ``id`` is the only thing tying a result to an emitted function call, so
-    # keeping one without it risks draining it against an unrelated call.
-    if not result.id:
+    step_id: str | None = getattr(result, 'step_id', None)
+    if not result.id and not step_id:
       logger.debug(
           '[ADK] Dropping an Antigravity tool result for %s: it carries no '
-          'call id to correlate it with.',
+          'call id or step id to correlate it with.',
           result.name,
       )
       return
-    self._results[result.id] = result
+    if result.id:
+      self._results[result.id] = result
+    if step_id and step_id != result.id:
+      self._results[step_id] = result
 
   def record_error(self, error: ToolError) -> None:
     """Buffers one failed tool call, dropping one that cannot be correlated."""
-    if not error.call_id:
+    step_id: str | None = getattr(error, 'step_id', None)
+    if not error.call_id and not step_id:
       logger.debug(
           '[ADK] Dropping an Antigravity tool failure for %s: it carries no '
-          'call id to correlate it with.',
+          'call id or step id to correlate it with.',
           error.tool_name,
       )
       return
-    self._results[error.call_id] = _FailedToolResult(
+    failed = _FailedToolResult(
         name=error.tool_name,
-        id=error.call_id,
+        id=error.call_id or step_id,
         result=None,
         error=str(error) or 'Tool call execution failed.',
     )
+    if error.call_id:
+      self._results[error.call_id] = failed
+    if step_id and step_id != error.call_id:
+      self._results[step_id] = failed
 
   def take(self, call_ids: Collection[str]) -> list[tuple[str, ToolResult]]:
     """Removes and returns any buffered results for ``call_ids``."""
     # Insertion order is arrival order, i.e. the order the tools finished in.
-    return [
-        (call_id, self._results.pop(call_id))
-        for call_id in list(self._results)
-        if call_id in call_ids
-    ]
+    taken: list[tuple[str, ToolResult]] = []
+    for call_id in list(self._results):
+      if call_id not in call_ids or call_id not in self._results:
+        continue
+      result = self._results.pop(call_id)
+      for alias in (result.id, getattr(result, 'step_id', None)):
+        if alias and self._results.get(alias) is result:
+          self._results.pop(alias, None)
+      taken.append((call_id, result))
+    return taken
 
   def clear(self) -> None:
     """Forgets everything buffered."""
@@ -155,16 +171,17 @@ class ToolResultBuffer:
 class ToolResultCapture(ToolResultBuffer, sdk_hooks.PostToolCallHook):  # type: ignore[misc]
   """``ToolResultBuffer`` bound to the Antigravity SDK as its success hook.
 
-  Each SDK copy needs its own such subclass, because a ``HookRunner``
-  classifies hooks by ``isinstance`` against the hook classes of the SDK it
-  came from. The `misc` ignore is that base class: the SDK ships no type
-  information, so mypy sees `PostToolCallHook` as `Any` and `strict` forbids
-  subclassing it.
+  Each Antigravity SDK copy needs its own such subclass, because a
+  ``HookRunner`` classifies hooks by ``isinstance`` against the hook classes of
+  the copy it came from. The `misc` ignore is that base class: the Antigravity
+  SDK ships no type information, so mypy sees `PostToolCallHook` as `Any` and
+  `strict` forbids subclassing it.
   """
 
   async def run(self, context: object, data: ToolResult) -> None:
     """Records one tool result. The post-tool-call hook entry point."""
-    # `context` is dictated by the SDK's `InspectHook.run`, not wanted here:
+    # `context` is dictated by the Antigravity SDK's `InspectHook.run`, not
+    # wanted here:
     # the correlation id is on the result itself, so there is nothing to read
     # off the context. It is accepted only to match the signature the
     # `HookRunner` calls.
@@ -182,8 +199,9 @@ class ToolErrorCapture(sdk_hooks.OnToolErrorHook):  # type: ignore[misc]
   alike.
 
   Holds the buffer rather than subclassing it so the two hooks share one, and
-  needs its own per-SDK subclass for the same reason ``ToolResultCapture``
-  does. The `misc` ignore is likewise the untyped SDK base class.
+  needs its own subclass per Antigravity SDK copy for the same reason
+  ``ToolResultCapture`` does. The `misc` ignore is likewise the untyped
+  Antigravity SDK base class.
   """
 
   def __init__(self, buffer: ToolResultBuffer) -> None:
@@ -197,7 +215,8 @@ class ToolErrorCapture(sdk_hooks.OnToolErrorHook):  # type: ignore[misc]
     # this hook is an observer, and `OnToolErrorHook` only overrides the
     # message the model sees when it returns a non-empty string.
     del context
-    # `data` is declared as broadly as the SDK declares it. Every failure the
+    # `data` is as broadly declared as the Antigravity SDK declares it. Every
+    # failure the
     # harness routes here is a `ToolExecutionError`, but only that shape
     # carries the call id, so anything else is not correlatable.
     if not isinstance(data, ToolError):

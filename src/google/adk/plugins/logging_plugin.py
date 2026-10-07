@@ -174,9 +174,11 @@ class LoggingPlugin(BasePlugin):
     self._log(f"   Agent: {callback_context.agent_name}")
 
     # Log system instruction if present
-    if llm_request.config and llm_request.config.system_instruction:
-      sys_instruction = llm_request.config.system_instruction[:200]
-      if len(llm_request.config.system_instruction) > 200:
+    system_instruction = llm_request.config.system_instruction
+    if system_instruction:
+      rendered_instruction = self._render_system_instruction(system_instruction)
+      sys_instruction = rendered_instruction[:200]
+      if len(rendered_instruction) > 200:
         sys_instruction += "..."
       self._log(f"   System Instruction: '{sys_instruction}'")
 
@@ -289,6 +291,25 @@ class LoggingPlugin(BasePlugin):
     # ANSI color codes: \033[90m for grey, \033[0m to reset
     formatted_message: str = f"\033[90m[{self.name}] {message}\033[0m"
     print(formatted_message)
+
+  def _render_system_instruction(self, system_instruction: Any) -> str:
+    """Renders a system instruction for logging.
+
+    The field accepts a string, a Content, a Part, a File, an image, or a list
+    of those. Only the text-bearing shapes are worth rendering in a log line,
+    so anything else falls back to its string form.
+    """
+    if isinstance(system_instruction, str):
+      return system_instruction
+    if isinstance(system_instruction, types.Content):
+      return self._format_content(system_instruction)
+    if isinstance(system_instruction, types.Part):
+      return self._format_content(types.Content(parts=[system_instruction]))
+    if isinstance(system_instruction, list):
+      return " | ".join(
+          self._render_system_instruction(entry) for entry in system_instruction
+      )
+    return str(system_instruction)
 
   def _format_content(
       self, content: Optional[types.Content], max_length: int = 200

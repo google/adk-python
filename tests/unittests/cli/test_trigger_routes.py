@@ -23,15 +23,20 @@ import asyncio
 import base64
 import json
 import signal
+from typing import Awaitable
+from typing import Callable
 from typing import Optional
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+from fastapi import HTTPException
+from fastapi import Request
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.cli import fast_api as fast_api_module
+from google.adk.cli import trigger_routes as trigger_routes_module
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.cli.trigger_routes import _is_transient_error
 from google.adk.cli.trigger_routes import TransientError
@@ -199,6 +204,12 @@ def _make_test_client(
     mock_memory_service,
     mock_agent_loader,
     trigger_sources: Optional[list[str]] = None,
+    trigger_oidc_audience: Optional[str] = None,
+    trigger_oidc_service_accounts: Optional[list[str]] = None,
+    trigger_auth_verifier: Optional[
+        Callable[[Request], None | Awaitable[None]]
+    ] = None,
+    max_llm_calls: Optional[int] = None,
 ) -> TestClient:
   """Build a TestClient with the given trigger setting."""
   with (
@@ -248,6 +259,10 @@ def _make_test_client(
         memory_service_uri="",
         allow_origins=["*"],
         trigger_sources=trigger_sources,
+        trigger_oidc_audience=trigger_oidc_audience,
+        trigger_oidc_service_accounts=trigger_oidc_service_accounts,
+        trigger_auth_verifier=trigger_auth_verifier,
+        max_llm_calls=max_llm_calls,
     )
     return TestClient(app)
 
@@ -284,6 +299,456 @@ def client_no_triggers(
       mock_agent_loader,
       trigger_sources=None,
   )
+
+
+@pytest.fixture
+def client_oidc(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+):
+  """TestClient with triggers enabled and OIDC audience verification on."""
+  return _make_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      trigger_sources=["pubsub", "eventarc"],
+      trigger_oidc_audience="https://my-service.example.run.app",
+  )
+
+
+@pytest.fixture
+def client_oidc_emails(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+):
+  """TestClient with OIDC and allowed service accounts."""
+  return _make_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      trigger_sources=["pubsub", "eventarc"],
+      trigger_oidc_audience="https://my-service.example.run.app",
+      trigger_oidc_service_accounts=[
+          "allowed@project.iam",
+          "another-allowed@project.iam",
+      ],
+  )
+
+
+_PUBSUB_PAYLOAD = {
+    "message": {
+        "data": base64.b64encode(b"hi").decode("utf-8"),
+        "messageId": "msg-oidc",
+    },
+    "subscription": "projects/p/subscriptions/s",
+}
+_EVENTARC_PAYLOAD = {
+    "data": {"key": "value"},
+}
+
+_TRIGGER_ENDPOINTS_AND_PAYLOADS = [
+    pytest.param(
+        "/apps/test_app/trigger/pubsub",
+        _PUBSUB_PAYLOAD,
+        id="pubsub",
+    ),
+    pytest.param(
+        "/apps/test_app/trigger/eventarc",
+        _EVENTARC_PAYLOAD,
+        id="eventarc",
+    ),
+]
+
+
+class TestTriggerOidcVerification:
+  """Tests for optional OIDC bearer-token verification on trigger routes."""
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  def test_rejects_missing_token(self, client_oidc, endpoint, payload):
+    resp = client_oidc.post(endpoint, json=payload)
+    assert resp.status_code == 401
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  def test_rejects_non_bearer_scheme(self, client_oidc, endpoint, payload):
+    resp = client_oidc.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Basic abc"},
+    )
+    assert resp.status_code == 401
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  def test_rejects_invalid_token(
+      self, client_oidc, monkeypatch, endpoint, payload
+  ):
+    def _fail(*args, **kwargs):
+      raise ValueError("bad token")
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _fail,
+    )
+    resp = client_oidc.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer forged.jwt.value"},
+    )
+    assert resp.status_code == 401
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  def test_accepts_valid_token(
+      self, client_oidc, monkeypatch, endpoint, payload
+  ):
+    captured_audience = []
+
+    def _ok(token, request, audience):
+      captured_audience.append(audience)
+      return {"aud": audience, "email": "svc@project.iam"}
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _ok,
+    )
+
+    async def dummy_run_async(self, user_id, session_id, new_message, **kwargs):
+      yield _model_event("ok")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async)
+
+    resp = client_oidc.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer good.jwt.value"},
+    )
+    assert resp.status_code == 200
+    assert captured_audience == ["https://my-service.example.run.app"]
+
+  @pytest.mark.parametrize(
+      "endpoint",
+      [
+          "/apps/test_app/trigger/pubsub",
+          "/apps/test_app/trigger/eventarc",
+      ],
+  )
+  def test_rejects_unauthenticated_junk_body_with_401(
+      self, client_oidc, endpoint
+  ):
+    """Unauthenticated requests with invalid body return 401, not 422."""
+    resp = client_oidc.post(
+        endpoint,
+        json={"junk": "data", "not_a_valid_schema": True},
+    )
+    assert resp.status_code == 401
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  def test_reuses_http_request(
+      self, client_oidc, monkeypatch, endpoint, payload
+  ):
+    captured_requests = []
+
+    def _ok(token, request, audience):
+      captured_requests.append(request)
+      return {"aud": audience, "email": "svc@project.iam"}
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _ok,
+    )
+
+    async def dummy_run_async(self, user_id, session_id, new_message, **kwargs):
+      yield _model_event("ok")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async)
+
+    client_oidc.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer good.jwt.value"},
+    )
+    client_oidc.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer good.jwt.value"},
+    )
+    assert len(captured_requests) == 2
+    assert captured_requests[0] is captured_requests[1]
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  def test_unauthenticated_by_default(
+      self, client, monkeypatch, endpoint, payload
+  ):
+    """With no audience configured, no token is required (existing behavior)."""
+
+    async def dummy_run_async(self, user_id, session_id, new_message, **kwargs):
+      yield _model_event("ok")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async)
+
+    resp = client.post(endpoint, json=payload)
+    assert resp.status_code == 200
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  def test_rejects_untrusted_email(
+      self, client_oidc_emails, monkeypatch, endpoint, payload
+  ):
+    def _ok(token, request, audience):
+      return {
+          "aud": audience,
+          "email": "attacker@project.iam",
+          "email_verified": True,
+      }
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _ok,
+    )
+    resp = client_oidc_emails.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer some.jwt.value"},
+    )
+    assert resp.status_code == 403
+    assert "Untrusted token principal" in resp.json()["detail"]
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  def test_rejects_unverified_email(
+      self, client_oidc_emails, monkeypatch, endpoint, payload
+  ):
+    def _ok(token, request, audience):
+      return {
+          "aud": audience,
+          "email": "allowed@project.iam",
+          "email_verified": False,
+      }
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _ok,
+    )
+    resp = client_oidc_emails.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer some.jwt.value"},
+    )
+    assert resp.status_code == 403
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  @pytest.mark.parametrize("email_verified", ["false", "true", 1])
+  def test_rejects_non_boolean_email_verified(
+      self, client_oidc_emails, monkeypatch, endpoint, payload, email_verified
+  ):
+    """The email_verified claim must be the boolean True."""
+
+    def _ok(token, request, audience):
+      return {
+          "aud": audience,
+          "email": "allowed@project.iam",
+          "email_verified": email_verified,
+      }
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _ok,
+    )
+    resp = client_oidc_emails.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer some.jwt.value"},
+    )
+    assert resp.status_code == 403
+    assert "Untrusted token principal" in resp.json()["detail"]
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  def test_accepts_allowed_email(
+      self, client_oidc_emails, monkeypatch, endpoint, payload
+  ):
+    def _ok(token, request, audience):
+      return {
+          "aud": audience,
+          "email": "allowed@project.iam",
+          "email_verified": True,
+      }
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _ok,
+    )
+
+    async def dummy_run_async(self, user_id, session_id, new_message, **kwargs):
+      yield _model_event("ok")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async)
+
+    resp = client_oidc_emails.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer good.jwt.value"},
+    )
+    assert resp.status_code == 200
+
+  def test_service_accounts_without_audience_raises_value_error(
+      self,
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+  ):
+    with pytest.raises(
+        ValueError,
+        match="trigger_oidc_service_accounts requires trigger_oidc_audience",
+    ):
+      _make_test_client(
+          mock_session_service,
+          mock_artifact_service,
+          mock_memory_service,
+          mock_agent_loader,
+          trigger_sources=["pubsub"],
+          trigger_oidc_service_accounts=["allowed@project.iam"],
+      )
+
+
+@pytest.fixture
+def client_custom_verifier(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+):
+  """TestClient with triggers enabled and a custom verifier."""
+
+  def custom_verifier(request: Request) -> None:
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header != "Bearer secret-token":
+      raise HTTPException(status_code=403, detail="Forbidden")
+
+  return _make_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      trigger_sources=["pubsub", "eventarc"],
+      trigger_auth_verifier=custom_verifier,
+  )
+
+
+@pytest.fixture
+def client_custom_async_verifier(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+):
+  """TestClient with triggers enabled and a custom async verifier."""
+
+  async def custom_async_verifier(request: Request) -> None:
+    await asyncio.sleep(0)
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header != "Bearer async-secret-token":
+      raise HTTPException(status_code=403, detail="Forbidden")
+
+  return _make_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      trigger_sources=["pubsub", "eventarc"],
+      trigger_auth_verifier=custom_async_verifier,
+  )
+
+
+class TestTriggerCustomVerification:
+  """Tests for optional custom verifier on trigger routes."""
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  def test_custom_verifier_rejects(
+      self, client_custom_verifier, endpoint, payload
+  ):
+    resp = client_custom_verifier.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer bad-token"},
+    )
+    assert resp.status_code == 403
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  def test_custom_verifier_accepts(
+      self, client_custom_verifier, monkeypatch, endpoint, payload
+  ):
+    async def dummy_run_async(self, user_id, session_id, new_message, **kwargs):
+      yield _model_event("ok")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async)
+
+    resp = client_custom_verifier.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    assert resp.status_code == 200
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  def test_custom_async_verifier_rejects(
+      self, client_custom_async_verifier, endpoint, payload
+  ):
+    resp = client_custom_async_verifier.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer bad-token"},
+    )
+    assert resp.status_code == 403
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  def test_custom_async_verifier_accepts(
+      self, client_custom_async_verifier, monkeypatch, endpoint, payload
+  ):
+    async def dummy_run_async(self, user_id, session_id, new_message, **kwargs):
+      yield _model_event("ok")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async)
+
+    resp = client_custom_async_verifier.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer async-secret-token"},
+    )
+    assert resp.status_code == 200
+
+  @pytest.mark.parametrize(
+      "endpoint",
+      [
+          "/apps/test_app/trigger/pubsub",
+          "/apps/test_app/trigger/eventarc",
+      ],
+  )
+  def test_custom_verifier_rejects_junk_body_with_403(
+      self, client_custom_verifier, endpoint
+  ):
+    """Custom verifier failure on junk body returns 403, not 422."""
+    resp = client_custom_verifier.post(
+        endpoint,
+        json={"junk": "data"},
+        headers={"Authorization": "Bearer bad-token"},
+    )
+    assert resp.status_code == 403
 
 
 # ===================================================================
@@ -498,6 +963,47 @@ class TestTriggerPubSub:
 
     assert resp.status_code == 500
     assert "unknown_app" not in mock_session_service.sessions
+
+  def test_pubsub_passes_max_llm_calls(
+      self,
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      monkeypatch,
+  ):
+    """Trigger runs apply max_llm_calls configured on the server."""
+    captured_run_configs = []
+
+    async def dummy_run_async_capture(
+        self, user_id, session_id, new_message, run_config=None, **kwargs
+    ):
+      captured_run_configs.append(run_config)
+      yield _model_event("Success")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_capture)
+
+    client = _make_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        trigger_sources=["pubsub"],
+        max_llm_calls=37,
+    )
+
+    message_data = base64.b64encode(b"test").decode("utf-8")
+    payload = {
+        "message": {"data": message_data},
+    }
+    resp = client.post("/apps/test_app/trigger/pubsub", json=payload)
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "success"
+    assert len(captured_run_configs) == 1
+    assert captured_run_configs[0] is not None
+    assert captured_run_configs[0].max_llm_calls == 37
 
 
 # ===================================================================
@@ -853,6 +1359,58 @@ class TestTriggerEventarc:
     assert received_data["data"]["bucket"] == "my-bucket"
     assert received_data["data"]["name"] == "file.txt"
     assert received_data["attributes"]["ce-id"] == "12345"
+
+  def test_eventarc_passes_max_llm_calls(
+      self,
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      monkeypatch,
+  ):
+    """Trigger runs apply max_llm_calls configured on the server."""
+    captured_run_configs = []
+
+    async def dummy_run_async_capture(
+        self, user_id, session_id, new_message, run_config=None, **kwargs
+    ):
+      captured_run_configs.append(run_config)
+      yield _model_event("Success")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_capture)
+
+    client = _make_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        trigger_sources=["eventarc"],
+        max_llm_calls=42,
+    )
+
+    payload = {
+        "bucket": "my-bucket",
+        "name": "file.txt",
+        "contentType": "application/json",
+    }
+    resp = client.post(
+        "/apps/test_app/trigger/eventarc",
+        json=payload,
+        headers={
+            "ce-source": (
+                "//storage.googleapis.com/projects/_/buckets/my-bucket"
+            ),
+            "ce-type": "google.cloud.storage.object.v1.finalized",
+            "ce-id": "12345",
+            "ce-specversion": "1.0",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "success"
+    assert len(captured_run_configs) == 1
+    assert captured_run_configs[0] is not None
+    assert captured_run_configs[0].max_llm_calls == 42
 
 
 # ===================================================================

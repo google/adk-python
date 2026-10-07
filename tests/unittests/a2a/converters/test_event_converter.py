@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -35,6 +36,9 @@ from google.adk.a2a.converters.event_converter import convert_event_to_a2a_event
 from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import _internal_metadata
+from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
+from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
 from google.adk.events.event import Event
 from google.genai import types as genai_types
 import pytest
@@ -238,6 +242,43 @@ class TestEventConverter:
     # Check if error_code is in the result - it should be there since we set it
     if f"{ADK_METADATA_KEY_PREFIX}error_code" in result:
       assert result[f"{ADK_METADATA_KEY_PREFIX}error_code"] == "ERROR_001"
+
+  def test_get_context_metadata_omits_internal_custom_metadata(self):
+    """ADK-internal custom_metadata keys are not sent to remote agents."""
+    self.mock_event.custom_metadata = {
+        "keep": 1,
+        INTERNAL_METADATA_PREFIX + "stamp": "x",
+    }
+
+    with patch.object(_internal_metadata.logger, "debug") as debug:
+      result = _get_context_metadata(
+          self.mock_event, self.mock_invocation_context
+      )
+
+    debug.assert_not_called()
+
+    assert json.loads(result[f"{ADK_METADATA_KEY_PREFIX}custom_metadata"]) == {
+        "keep": 1
+    }
+
+  def test_get_context_metadata_drops_only_internal_custom_metadata(self):
+    self.mock_event.custom_metadata = {RESTORED_EVENT_KEY: True}
+
+    result = _get_context_metadata(
+        self.mock_event, self.mock_invocation_context
+    )
+
+    assert f"{ADK_METADATA_KEY_PREFIX}custom_metadata" not in result
+
+  def test_get_context_metadata_passes_stubbed_custom_metadata_through(self):
+    """A Mock event whose custom_metadata is not a dict does not break."""
+    self.mock_event.custom_metadata = Mock()
+
+    result = _get_context_metadata(
+        self.mock_event, self.mock_invocation_context
+    )
+
+    assert f"{ADK_METADATA_KEY_PREFIX}custom_metadata" in result
 
   def test_get_context_metadata_none_event(self):
     """Test context metadata creation with None event."""
@@ -872,6 +913,89 @@ class TestA2AToEventConverters:
 
       with pytest.raises(RuntimeError, match="Failed to convert task message"):
         convert_a2a_task_to_event(mock_task, "test-author")
+
+  @pytest.mark.parametrize(
+      "terminal_state",
+      [
+          _compat.TS_COMPLETED,
+          _compat.TS_FAILED,
+          _compat.TS_CANCELED,
+      ],
+  )
+  def test_convert_a2a_task_to_event_terminal_state_sets_skip_summarization(
+      self, terminal_state
+  ):
+    """Test that terminal A2A task states set skip_summarization to True."""
+    a2a_part = _compat.make_text_part("task artifact text")
+    task = Task(
+        id="task-1",
+        status=_compat.make_task_status(
+            terminal_state, timestamp="2024-01-01T00:00:00Z"
+        ),
+        context_id="context-1",
+        artifacts=[
+            _compat.make_artifact(
+                artifact_id="art-1",
+                artifact_type="message",
+                parts=[a2a_part],
+            )
+        ],
+    )
+
+    mock_genai_part = genai_types.Part(text="task artifact text")
+    mock_part_converter = Mock(return_value=[mock_genai_part])
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_invocation_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event is not None
+    assert event.actions.skip_summarization is True
+
+  @pytest.mark.parametrize(
+      "non_terminal_state",
+      [
+          _compat.TS_SUBMITTED,
+          _compat.TS_WORKING,
+          _compat.TS_INPUT_REQUIRED,
+          _compat.TS_AUTH_REQUIRED,
+      ],
+  )
+  def test_convert_a2a_task_to_event_non_terminal_state_does_not_set_skip_summarization(
+      self, non_terminal_state
+  ):
+    """Test that non-terminal A2A task states do not set skip_summarization."""
+    a2a_part = _compat.make_text_part("task artifact text")
+    task = Task(
+        id="task-1",
+        status=_compat.make_task_status(
+            non_terminal_state, timestamp="2024-01-01T00:00:00Z"
+        ),
+        context_id="context-1",
+        artifacts=[
+            _compat.make_artifact(
+                artifact_id="art-1",
+                artifact_type="message",
+                parts=[a2a_part],
+            )
+        ],
+    )
+
+    mock_genai_part = genai_types.Part(text="task artifact text")
+    mock_part_converter = Mock(return_value=[mock_genai_part])
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_invocation_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event is not None
+    assert event.actions.skip_summarization is not True
 
   def test_convert_a2a_message_to_event_success(self):
     """Test successful conversion of A2A message to event."""

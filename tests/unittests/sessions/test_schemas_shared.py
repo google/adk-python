@@ -161,3 +161,14 @@ def test_precise_timestamp_result_processor_delegates_non_numeric_values(
   process = precise_timestamp.result_processor(_dialect("mysql"), None)
 
   assert process("2026-01-02 03:04:05.123456") == expected
+
+
+def test_precise_timestamp_uses_datetime2_on_mssql():
+  """SQL Server's legacy DATETIME rounds to ~3.33ms, which destroys the
+  microsecond update marker used by the optimistic-concurrency check."""
+  from sqlalchemy.dialects import mssql as mssql_dialect
+
+  ts = PreciseTimestamp()
+  impl = ts.load_dialect_impl(mssql_dialect.dialect())
+  assert isinstance(impl, mssql_dialect.DATETIME2)
+  assert impl.precision == 6

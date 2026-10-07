@@ -101,7 +101,10 @@ credentials.
 
 ## Sample prompts
 
+The local file paths below are resolved inside the `local_file_root` that
+`agent.py` configures, and a path pointing outside it is refused.
+
 - List all objects in the my-bucket bucket.
 - Get metadata for the my-object.txt object in my-bucket.
-- Download the GCS object my-object.txt in my-bucket to a local file ~/Downloads/downloaded.txt.
-- Upload my local file /tmp/local_report.pdf to my-bucket as report.pdf.
+- Download the GCS object my-object.txt in my-bucket to a local file downloaded.txt.
+- Upload my local file local_report.pdf to my-bucket as report.pdf.

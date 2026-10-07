@@ -42,12 +42,13 @@ from .functional._recording import record_case
 from .functional_node_test_cases import ALL_NODE_CASES
 from .functional_test_cases import ALL_CASES
 from .functional_test_cases import MCP_CASE
+from .functional_test_cases import MCP_HTTP_CASE
 from .functional_test_goldens import load_divergences
 from .functional_test_goldens import unexplained_locations
 from .functional_test_goldens import write_divergences
 from .functional_test_goldens import write_golden
 
-CASES = [*ALL_CASES, *ALL_NODE_CASES, MCP_CASE]
+CASES = [*ALL_CASES, *ALL_NODE_CASES, MCP_CASE, MCP_HTTP_CASE]
 
 
 def main() -> None:

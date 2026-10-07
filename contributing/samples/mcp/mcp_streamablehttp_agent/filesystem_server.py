@@ -18,10 +18,26 @@ import os
 from pathlib import Path
 import sys
 
-from mcp.server.fastmcp import FastMCP
+# MCP 2.0 renamed this server class and moved the bind address from the
+# constructor to run(). ADK supports both majors, so this sample does too.
+try:
+  from mcp.server.mcpserver import MCPServer as FastMCP
+
+  _BINDS_AT_RUN = True
+except ImportError:
+  from mcp.server.fastmcp import FastMCP
+
+  _BINDS_AT_RUN = False
+
+HOST = "localhost"
+PORT = 3000
+
+_BIND = {"host": HOST, "port": PORT}
+SERVE_AT = {} if _BINDS_AT_RUN else _BIND
+RUN_AT = _BIND if _BINDS_AT_RUN else {}
 
 # Create an MCP server with a name
-mcp = FastMCP("Filesystem Server", host="localhost", port=3000)
+mcp = FastMCP("Filesystem Server", **SERVE_AT)
 
 
 # Add a tool to read file contents
@@ -88,7 +104,7 @@ async def shutdown(signal, loop):
 if __name__ == "__main__":
   try:
     # The MCP run function ultimately uses asyncio.run() internally
-    mcp.run(transport="streamable-http")
+    mcp.run(transport="streamable-http", **RUN_AT)
   except KeyboardInterrupt:
     print("\nServer shutting down gracefully...")
     # The asyncio event loop has already been stopped by the KeyboardInterrupt

@@ -17,8 +17,8 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from typing import cast
 from typing import Dict
-from typing import Optional
 
 from google.adk.features import experimental
 from google.adk.features import FeatureName
@@ -73,12 +73,13 @@ _TOOL_SPEC_MOCK_PROMPT_TEMPLATE = """
   """
 
 
-def _find_value_by_key(data: Any, target_key: str) -> Optional[Any]:
+def _find_value_by_key(data: object, target_key: str) -> object | None:
   """Recursively searches for a value by key in a nested structure."""
   if isinstance(data, dict):
     if target_key in data:
-      return data[target_key]
-    for key, value in data.items():
+      result: object = data[target_key]
+      return result
+    for value in data.values():
       result = _find_value_by_key(value, target_key)
       if result is not None:
         return result
@@ -108,10 +109,10 @@ class ToolSpecMockStrategy(MockStrategy):
       tool: BaseTool,
       args: Dict[str, Any],
       tool_context: Any,
-      tool_connection_map: Optional[ToolConnectionMap],
+      tool_connection_map: ToolConnectionMap | None,
       state_store: Dict[str, Any],
-      environment_data: Optional[str] = None,
-      tracing: Optional[str] = None,
+      environment_data: str | None = None,
+      tracing: str | None = None,
   ) -> Dict[str, Any]:
     declaration = tool._get_declaration()
     if not declaration:
@@ -178,7 +179,9 @@ class ToolSpecMockStrategy(MockStrategy):
     response_text = ""
     async with Aclosing(self._llm.generate_content_async(request)) as agen:
       async for llm_response in agen:
-        generated_content: genai_types.Content = llm_response.content
+        generated_content = llm_response.content
+        if generated_content is None:
+          continue
         if generated_content.parts:
           for part in generated_content.parts:
             if part.text:
@@ -187,7 +190,19 @@ class ToolSpecMockStrategy(MockStrategy):
     try:
       clean_json_text = re.sub(r"^```[a-zA-Z]*\n", "", response_text)
       clean_json_text = re.sub(r"\n```$", "", clean_json_text)
-      mock_response = json.loads(clean_json_text.strip())
+      parsed_response: object = json.loads(clean_json_text.strip())
+      if not isinstance(parsed_response, dict) or not all(
+          isinstance(key, str) for key in parsed_response
+      ):
+        return {
+            "status": "error",
+            "error_message": "Generated mock response was not a JSON object.",
+            "llm_output": response_text,
+        }
+      # Keys checked to be str by the guard above; isinstance only narrows the
+      # value type as far as dict[Any, Any].
+      mock_response = cast(dict[str, Any], parsed_response)
+
       # Determine if the current tool is mutative by checking the connection map.
       is_mutative = False
       if tool_connection_map:
@@ -200,7 +215,7 @@ class ToolSpecMockStrategy(MockStrategy):
           is_mutative = True
 
       # After getting the response, update the state if this was a mutative tool.
-      if is_mutative:
+      if is_mutative and tool_connection_map:
         for param_info in tool_connection_map.stateful_parameters:
           param_name = param_info.parameter_name
           # Only update the state for the specific parameter this tool

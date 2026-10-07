@@ -17,13 +17,61 @@ from __future__ import annotations
 from typing import Any
 
 from google.genai import types
+from pydantic import ValidationError
 from typing_extensions import override
 
 from ..utils._schema_utils import schema_to_json_schema
 from ..workflow._base_node import BaseNode
-from ..workflow._errors import NodeInterruptedError
+from ..workflow._errors import DynamicNodeFailError
+from ..workflow._errors import WorkflowDataError
 from .base_tool import BaseTool
 from .tool_context import ToolContext
+
+
+def _build_node_declaration(
+    node: BaseNode,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+) -> types.FunctionDeclaration:
+  """Builds a FunctionDeclaration exposing a BaseNode as a callable tool."""
+  from ..workflow._function_node import FunctionNode
+
+  if (
+      isinstance(node, FunctionNode)
+      and node.parameter_binding != 'node_input'
+      and node.input_schema is None
+  ):
+    node = node._as_tool_node()
+
+  decl = types.FunctionDeclaration(
+      name=name or node.name,
+      description=description
+      or node.description
+      or f'Executes the node: {node.name}',
+  )
+
+  input_schema = getattr(node, 'input_schema', None)
+  if input_schema is not None:
+    schema = schema_to_json_schema(input_schema)
+    # The GenAI API strictly requires parameters_json_schema to be an 'object'
+    # type schema. If the node has a primitive input schema (e.g., str, int),
+    # wrap it into an object schema with a 'request' property.
+    if isinstance(schema, dict) and schema.get('type') != 'object':
+      schema = {
+          'type': 'object',
+          'properties': {
+              'request': schema,
+          },
+          'required': ['request'],
+      }
+    decl.parameters_json_schema = schema
+
+  output_schema = getattr(node, 'output_schema', None)
+  if output_schema is not None:
+    decl.response_json_schema = schema_to_json_schema(output_schema)
+
+  return decl
 
 
 class NodeTool(BaseTool):
@@ -49,24 +97,13 @@ class NodeTool(BaseTool):
         isinstance(node, FunctionNode)
         and node.parameter_binding != 'node_input'
     ):
-      orig_input_schema = getattr(node, 'input_schema', None)
-      orig_output_schema = getattr(node, 'output_schema', None)
-      node = FunctionNode(
-          func=node._func,
-          name=node.name,
-          rerun_on_resume=node.rerun_on_resume,
-          retry_config=node.retry_config,
-          timeout=node.timeout,
-          auth_config=node.auth_config,
-          parameter_binding='node_input',  # Force binding to node_input
-          state_schema=node.state_schema,
-      )
-      if orig_input_schema is not None:
-        node.input_schema = orig_input_schema
-      if orig_output_schema is not None:
-        node.output_schema = orig_output_schema
+      node = node._as_tool_node()
 
-    if not getattr(node, 'input_schema', None):
+    # A FunctionNode has already inferred its schema by here, and that yields
+    # None only when the function has nothing to bind.
+    if not isinstance(node, FunctionNode) and not getattr(
+        node, 'input_schema', None
+    ):
       raise ValueError(
           f"Node '{node.name}' does not have an input_schema defined."
           ' NodeTool requires an explicit Pydantic input_schema on the wrapped'
@@ -80,35 +117,14 @@ class NodeTool(BaseTool):
         or node.description
         or f'Executes the node: {node.name}',
     )
-    self.is_long_running = True
 
   @override
-  def _get_declaration(self) -> types.FunctionDeclaration:
-    schema = schema_to_json_schema(self.node.input_schema)
-
-    # The GenAI API strictly requires parameters_json_schema to be an 'object'
-    # type schema. If the node has a primitive input schema (e.g., str, int),
-    # we wrap it into an object schema with a 'request' property.
-    if isinstance(schema, dict) and schema.get('type') != 'object':
-      schema = {
-          'type': 'object',
-          'properties': {
-              'request': schema,
-          },
-          'required': ['request'],
-      }
-
-    decl = types.FunctionDeclaration(
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
+    return _build_node_declaration(
+        self.node,
         name=self.name,
         description=self.description,
-        parameters_json_schema=schema,
     )
-
-    output_schema = getattr(self.node, 'output_schema', None)
-    if output_schema:
-      decl.response_json_schema = schema_to_json_schema(output_schema)
-
-    return decl
 
   @override
   async def run_async(
@@ -117,43 +133,75 @@ class NodeTool(BaseTool):
       args: dict[str, Any],
       tool_context: ToolContext,
   ) -> Any:
-    import inspect
-
-    from pydantic import BaseModel
-
-    input_schema = self.node.input_schema
-    node_input: Any
-    if inspect.isclass(input_schema) and issubclass(input_schema, BaseModel):
-      try:
-        # Convert input based on Pydantic schema
-        node_input = input_schema.model_validate(args)
-      except Exception as e:
-        return f'Error validating input for node: {e}'
+    input_schema = getattr(self.node, 'input_schema', None)
+    schema = (
+        schema_to_json_schema(input_schema)
+        if input_schema is not None
+        else None
+    )
+    if isinstance(schema, dict) and schema.get('type') != 'object':
+      node_input = args.get('request')
     else:
-      schema = schema_to_json_schema(input_schema)
-      if isinstance(schema, dict) and schema.get('type') != 'object':
-        node_input = args.get('request')
-      else:
-        node_input = args
-
-    fc_id = tool_context.function_call_id
-    base_branch = tool_context.branch
-    segment = f'{self.name}@{fc_id}'
-    tool_branch = f'{base_branch}.{segment}' if base_branch else segment
+      node_input = args
 
     try:
-      res = await tool_context.run_node(
-          self.node,
-          node_input=node_input,
-          override_branch=tool_branch,
-          use_sub_branch=False,
-          raise_on_wait=True,
-      )
-      if res is None:
-        return {'result': None}
-      return res
-    except NodeInterruptedError as nie:
-      # Propagates the interrupt up so the runner pauses the invocation
-      raise nie
-    except Exception as e:
-      return f'Error running node {self.name}: {e}'
+      node_input = self.node._validate_input_data(node_input)
+    except (ValidationError, WorkflowDataError) as e:
+      # Same shape as FunctionTool's argument validation errors, so the
+      # model can correct its arguments and retry.
+      return {
+          'error': (
+              f'Invoking `{self.name}()` failed due to argument validation'
+              f' errors:\n{e}\nYou could retry calling this tool with'
+              ' corrected argument types.'
+          )
+      }
+
+    res = await _run_node_in_tool_context(
+        self.node,
+        tool_name=self.name,
+        node_input=node_input,
+        tool_context=tool_context,
+    )
+    if res is None:
+      return {'result': None}
+    return res
+
+
+async def _run_node_in_tool_context(
+    node: BaseNode,
+    *,
+    tool_name: str,
+    node_input: Any,
+    tool_context: ToolContext,
+) -> Any:
+  """Executes a BaseNode within a ToolContext on an isolated tool branch.
+
+  The child run is keyed by the function call id, so repeated calls of the
+  same tool get distinct node paths and do not share resume state.
+  """
+  fc_id = tool_context.function_call_id
+  base_branch = tool_context.branch
+  segment = f'{tool_name}@{fc_id}' if fc_id else tool_name
+  tool_branch = f'{base_branch}.{segment}' if base_branch else segment
+  run_id = None
+  if tool_context._workflow_scheduler is None or (
+      fc_id and not fc_id.isdigit()
+  ):
+    # Under a workflow scheduler, numeric ids are reserved for auto-generated
+    # run_ids, so a numeric fc_id falls back to auto-generation.
+    run_id = fc_id
+
+  try:
+    return await tool_context.run_node(
+        node,
+        node_input=node_input,
+        run_id=run_id,
+        override_branch=tool_branch,
+        use_sub_branch=False,
+        raise_on_wait=True,
+    )
+  except DynamicNodeFailError as e:
+    # Surface the node's own error, as a FunctionTool would, so the tool
+    # pipeline runs on_tool_error callbacks with the real cause.
+    raise e.error from e

@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+from typing import Any
+from typing import Callable
+
 from google.adk.agents.readonly_context import ReadonlyContext
 from typing_extensions import override
 
@@ -56,8 +59,9 @@ class PubSubToolset(BaseToolset):
     )
 
   def _is_tool_selected(
-      self, tool: BaseTool, readonly_context: ReadonlyContext
+      self, tool: BaseTool, readonly_context: ReadonlyContext | None
   ) -> bool:
+    # Unlike the base implementation, an empty tool_filter selects no tools.
     if self.tool_filter is None:
       return True
 
@@ -74,17 +78,18 @@ class PubSubToolset(BaseToolset):
       self, readonly_context: ReadonlyContext | None = None
   ) -> list[BaseTool]:
     """Get tools from the toolset."""
+    funcs: list[Callable[..., dict[str, Any]]] = [
+        message_tool.publish_message,
+        message_tool.pull_messages,
+        message_tool.acknowledge_messages,
+    ]
     all_tools = [
         GoogleTool(
             func=func,
             credentials_config=self._credentials_config,
             tool_settings=self._tool_settings,
         )
-        for func in [
-            message_tool.publish_message,
-            message_tool.pull_messages,
-            message_tool.acknowledge_messages,
-        ]
+        for func in funcs
     ]
 
     return [
@@ -94,6 +99,6 @@ class PubSubToolset(BaseToolset):
     ]
 
   @override
-  async def close(self):
+  async def close(self) -> None:
     """Clean up resources used by the toolset."""
     client.cleanup_clients()

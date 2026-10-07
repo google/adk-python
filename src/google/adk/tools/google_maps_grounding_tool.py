@@ -25,7 +25,7 @@ from .base_tool import BaseTool
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:
-  from ..models import LlmRequest
+  from ..models.llm_request import LlmRequest
 
 
 class GoogleMapsGroundingTool(BaseTool):

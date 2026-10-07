@@ -146,11 +146,11 @@ class PlaywrightComputer(BaseComputer):
     return ComputerEnvironment.ENVIRONMENT_BROWSER
 
   @override
-  async def close(self, exc_type, exc_val, exc_tb):
+  async def close(self) -> None:
     if self._context:
-      self._context.close()
+      await self._context.close()
     try:
-      self._browser.close()
+      await self._browser.close()
     except Exception as e:
       # Browser was already shut down because of SIGINT or such.
       if (
@@ -161,7 +161,7 @@ class PlaywrightComputer(BaseComputer):
       else:
         raise
 
-    self._playwright.stop()
+    await self._playwright.stop()
 
   async def open_web_browser(self) -> ComputerState:
     return await self.current_state()
@@ -206,7 +206,7 @@ class PlaywrightComputer(BaseComputer):
       self, direction: Literal["left", "right"]
   ) -> ComputerState:
     # Scroll by 50% of the viewport size.
-    horizontal_scroll_amount = await self.screen_size()[0] // 2
+    horizontal_scroll_amount = (await self.screen_size())[0] // 2
     if direction == "left":
       sign = "-"
     else:

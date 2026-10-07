@@ -28,13 +28,13 @@ import itertools
 from typing import Any
 from typing import AsyncGenerator
 
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows import contents
 from google.adk.flows.llm_flows.functions import _message_content_for_user
+from google.adk.live import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.platform import time as platform_time
@@ -80,8 +80,8 @@ async def _run_live_until(
 ) -> tuple[list[Event], list[types.Content]]:
   """Runs a live turn calling ``tool`` once; captures both directions.
 
-  The mock connection replays its canned responses forever, so consumption
-  stops as soon as ``stop_when`` has seen what it needs.
+  Consumption stops as soon as ``stop_when`` has seen what it needs, checked on
+  every event and on every content sent to the model.
 
   Args:
     tool: The streaming tool to register on the agent.
@@ -99,6 +99,9 @@ async def _run_live_until(
   async def _record_send_content(self: Any, content: types.Content) -> None:
     del self  # Unused.
     to_model.append(content)
+    # A tool's last result reaches the model with no event after it.
+    if stop_when(events, to_model):
+      consumer.cancel()
 
   monkeypatch.setattr(
       testing_utils.MockLlmConnection, 'send_content', _record_send_content
@@ -146,8 +149,9 @@ async def _run_live_until(
             await asyncio.sleep(0)
           return
 
+  consumer = asyncio.create_task(_consume())
   try:
-    await asyncio.wait_for(_consume(), timeout=10.0)
+    await asyncio.wait_for(consumer, timeout=10.0)
   except (asyncio.TimeoutError, asyncio.CancelledError):
     pass
 

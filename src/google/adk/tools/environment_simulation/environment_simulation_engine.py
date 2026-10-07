@@ -33,6 +33,7 @@ from google.adk.tools.environment_simulation.strategies import base as base_mock
 from google.adk.tools.environment_simulation.strategies import tool_spec_mock_strategy
 from google.adk.tools.environment_simulation.tool_connection_analyzer import ToolConnectionAnalyzer
 from google.adk.tools.environment_simulation.tool_connection_map import ToolConnectionMap
+from google.genai import types as genai_types
 
 from ...features import experimental
 from ...features import FeatureName
@@ -66,7 +67,7 @@ class EnvironmentSimulationEngine:
         llm_name=config.simulation_model,
         llm_config=config.simulation_model_configuration,
     )
-    self._state_store = {}
+    self._state_store: Dict[str, Any] = {}
     self._random_generator = random.Random()
     self._environment_data = config.environment_data
     self._tracing = config.tracing

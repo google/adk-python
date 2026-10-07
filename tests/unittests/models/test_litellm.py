@@ -27,9 +27,12 @@ from unittest.mock import Mock
 from unittest.mock import patch
 import warnings
 
+from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.models.lite_llm import _aggregate_streaming_thought_parts
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
+from google.adk.models.lite_llm import _apply_provider_finish_reason
 from google.adk.models.lite_llm import _BraceDepthTracker
+from google.adk.models.lite_llm import _build_function_declaration_log
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _convert_reasoning_value_to_parts
 from google.adk.models.lite_llm import _enforce_strict_openai_schema
@@ -43,11 +46,14 @@ from google.adk.models.lite_llm import _function_declaration_to_tool_param
 from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _get_provider_from_model
+from google.adk.models.lite_llm import _get_upload_params
 from google.adk.models.lite_llm import _is_anthropic_model
 from google.adk.models.lite_llm import _is_anthropic_provider
 from google.adk.models.lite_llm import _is_anthropic_route
+from google.adk.models.lite_llm import _is_file_uri_supported
 from google.adk.models.lite_llm import _is_litellm_gemini_model
 from google.adk.models.lite_llm import _is_litellm_vertex_model
+from google.adk.models.lite_llm import _is_proxied_model
 from google.adk.models.lite_llm import _looks_like_openai_file_id
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
@@ -63,6 +69,7 @@ from google.adk.models.lite_llm import _split_message_content_and_tool_calls
 from google.adk.models.lite_llm import _THOUGHT_SIGNATURE_SEPARATOR
 from google.adk.models.lite_llm import _to_litellm_response_format
 from google.adk.models.lite_llm import _to_litellm_role
+from google.adk.models.lite_llm import _warn_gemini_via_litellm
 from google.adk.models.lite_llm import FunctionChunk
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.models.lite_llm import LiteLLMClient
@@ -70,6 +77,7 @@ from google.adk.models.lite_llm import ReasoningChunk
 from google.adk.models.lite_llm import TextChunk
 from google.adk.models.lite_llm import UsageMetadataChunk
 from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 import litellm
 from litellm import ChatCompletionAssistantMessage
@@ -332,8 +340,28 @@ def test_to_litellm_response_format_handles_genai_schema_instance():
   )
   assert formatted["type"] == "json_object"
   assert formatted["response_schema"] == schema_instance.model_dump(
-      exclude_none=True, mode="json"
+      by_alias=True, exclude_none=True, mode="json"
   )
+
+
+def test_to_litellm_response_format_preserves_any_of_for_genai_schema():
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          "value": types.Schema(
+              any_of=[
+                  types.Schema(type=types.Type.STRING),
+                  types.Schema(type=types.Type.NUMBER),
+              ]
+          )
+      },
+      required=["value"],
+  )
+  formatted = _to_litellm_response_format(schema, model="gpt-4o-mini")
+  assert formatted["type"] == "json_schema"
+  value_schema = formatted["json_schema"]["schema"]["properties"]["value"]
+  assert "any_of" not in value_schema
+  assert value_schema["anyOf"] == [{"type": "string"}, {"type": "number"}]
 
 
 def test_to_litellm_response_format_uses_json_schema_for_openai_model():
@@ -803,6 +831,258 @@ def test_schema_to_dict_filters_none_enum_values():
       "READY",
       "DONE",
   ]
+
+
+def test_schema_to_dict_preserves_any_of_as_camel_case():
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          "value": types.Schema(
+              any_of=[
+                  types.Schema(type=types.Type.STRING),
+                  types.Schema(type=types.Type.NUMBER),
+              ],
+              description="id or index",
+          ),
+      },
+  )
+
+  value = _schema_to_dict(schema)["properties"]["value"]
+
+  assert "any_of" not in value
+  assert value["anyOf"] == [{"type": "string"}, {"type": "number"}]
+  assert value["description"] == "id or index"
+
+
+def test_schema_to_dict_recurses_into_any_of_branches():
+  """A union of object variants keeps its branches, nested types and all."""
+  schema = types.Schema(
+      type=types.Type.ARRAY,
+      items=types.Schema(
+          any_of=[
+              types.Schema(
+                  type=types.Type.OBJECT,
+                  properties={
+                      "type": types.Schema(
+                          type=types.Type.STRING, enum=["table"]
+                      ),
+                      "rows": types.Schema(
+                          type=types.Type.ARRAY,
+                          items=types.Schema(type=types.Type.STRING),
+                      ),
+                  },
+              ),
+              types.Schema(
+                  type=types.Type.OBJECT,
+                  properties={
+                      "type": types.Schema(
+                          type=types.Type.STRING, enum=["divider"]
+                      ),
+                  },
+              ),
+          ],
+      ),
+  )
+
+  branches = _schema_to_dict(schema)["items"]["anyOf"]
+
+  assert [branch["properties"]["type"]["enum"] for branch in branches] == [
+      ["table"],
+      ["divider"],
+  ]
+  assert branches[0]["type"] == "object"
+  assert branches[0]["properties"]["rows"]["items"]["type"] == "string"
+
+
+def test_schema_to_dict_preserves_camel_case_aliases():
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          "name": types.Schema(
+              type=types.Type.STRING,
+              min_length=1,
+              max_length=100,
+          ),
+          "tags": types.Schema(
+              type=types.Type.ARRAY,
+              min_items=1,
+              max_items=10,
+              items=types.Schema(type=types.Type.STRING),
+          ),
+          "metadata": types.Schema(
+              type=types.Type.OBJECT,
+              additional_properties=types.Schema(type=types.Type.STRING),
+              property_ordering=["k1", "k2"],
+          ),
+      },
+  )
+
+  result = _schema_to_dict(schema)
+  props = result["properties"]
+
+  assert "min_length" not in props["name"]
+  assert "max_length" not in props["name"]
+  assert props["name"]["minLength"] == 1
+  assert props["name"]["maxLength"] == 100
+
+  assert "min_items" not in props["tags"]
+  assert "max_items" not in props["tags"]
+  assert props["tags"]["minItems"] == 1
+  assert props["tags"]["maxItems"] == 10
+
+  assert "additional_properties" not in props["metadata"]
+  assert "property_ordering" not in props["metadata"]
+  assert props["metadata"]["additionalProperties"] == {"type": "string"}
+  assert props["metadata"]["propertyOrdering"] == ["k1", "k2"]
+
+
+def test_schema_to_dict_handles_dict_input_with_snake_and_camel_case():
+  dict_input = {
+      "type": "OBJECT",
+      "properties": {
+          "snake": {
+              "type": "OBJECT",
+              "any_of": [{"type": "STRING"}],
+              "additional_properties": {"type": "NUMBER"},
+          },
+          "camel": {
+              "type": "OBJECT",
+              "anyOf": [{"type": "BOOLEAN"}],
+              "additionalProperties": {"type": "STRING"},
+          },
+      },
+  }
+  result = _schema_to_dict(dict_input)
+  assert result["type"] == "object"
+  snake_prop = result["properties"]["snake"]
+  assert "any_of" not in snake_prop
+  assert snake_prop["anyOf"] == [{"type": "string"}]
+  assert "additional_properties" not in snake_prop
+  assert snake_prop["additionalProperties"] == {"type": "number"}
+
+  camel_prop = result["properties"]["camel"]
+  assert camel_prop["anyOf"] == [{"type": "boolean"}]
+  assert camel_prop["additionalProperties"] == {"type": "string"}
+
+
+def test_function_declaration_to_tool_param_preserves_top_level_constraints():
+  func_decl = types.FunctionDeclaration(
+      name="search",
+      description="Search tool",
+      parameters=types.Schema(
+          type=types.Type.OBJECT,
+          properties={
+              "query": types.Schema(type=types.Type.STRING),
+              "limit": types.Schema(type=types.Type.INTEGER),
+          },
+          required=["query"],
+          additional_properties=types.Schema(type=types.Type.STRING),
+          property_ordering=["query", "limit"],
+          min_properties=1,
+          max_properties=5,
+      ),
+  )
+  param_dict = _function_declaration_to_tool_param(func_decl)["function"][
+      "parameters"
+  ]
+  assert param_dict["type"] == "object"
+  assert param_dict["properties"]["query"] == {"type": "string"}
+  assert param_dict["properties"]["limit"] == {"type": "integer"}
+  assert param_dict["required"] == ["query"]
+  assert param_dict["additionalProperties"] == {"type": "string"}
+  assert param_dict["propertyOrdering"] == ["query", "limit"]
+  assert param_dict["minProperties"] == 1
+  assert param_dict["maxProperties"] == 5
+
+
+def test_schema_to_dict_raises_for_invalid_input():
+  with pytest.raises(TypeError):
+    _schema_to_dict(123)
+  with pytest.raises((TypeError, ValueError)):
+    _schema_to_dict("invalid")
+  with pytest.raises((TypeError, ValueError)):
+    _schema_to_dict(["a", "b"])
+
+  class _DuckSchema:
+    properties = {"foo": "bar"}
+
+  with pytest.raises(TypeError):
+    _schema_to_dict(_DuckSchema())
+
+
+def test_function_declaration_to_tool_param_with_parameters_json_schema_preserves_constructs():
+  func_decl = types.FunctionDeclaration(
+      name="custom_tool",
+      description="Tool with complex json schema",
+      parameters_json_schema={
+          "type": "object",
+          "properties": {
+              "nullable_str": {"type": ["string", "null"]},
+              "nullable_enum": {"enum": ["a", "b", None]},
+          },
+          "required": ["nullable_str"],
+      },
+  )
+  tool_param = _function_declaration_to_tool_param(func_decl)
+  params = tool_param["function"]["parameters"]
+  assert params["properties"]["nullable_str"]["type"] == ["string", "null"]
+  assert params["properties"]["nullable_enum"]["enum"] == ["a", "b", None]
+  assert params["required"] == ["nullable_str"]
+
+
+def test_function_declaration_to_tool_param_prefers_parameters_json_schema_over_parameters():
+  func_decl = types.FunctionDeclaration(
+      name="custom_tool",
+      description="Tool with both schemas",
+      parameters=types.Schema(
+          type=types.Type.OBJECT,
+          properties={
+              "legacy_param": types.Schema(type=types.Type.STRING),
+          },
+      ),
+      parameters_json_schema={
+          "type": "object",
+          "properties": {
+              "query": {"type": "string"},
+          },
+          "required": ["query"],
+      },
+  )
+  tool_param = _function_declaration_to_tool_param(func_decl)
+  params = tool_param["function"]["parameters"]
+  assert "query" in params["properties"]
+  assert "legacy_param" not in params["properties"]
+
+
+def test_function_declaration_to_tool_param_parameters_json_schema_ignores_parameters_required():
+  func_decl = types.FunctionDeclaration(
+      name="custom_tool",
+      description="Tool with both schemas",
+      parameters=types.Schema(
+          type=types.Type.OBJECT,
+          required=["legacy_param"],
+      ),
+      parameters_json_schema={
+          "type": "object",
+          "properties": {
+              "query": {"type": "string"},
+          },
+      },
+  )
+  tool_param = _function_declaration_to_tool_param(func_decl)
+  params = tool_param["function"]["parameters"]
+  assert "required" not in params
+
+
+def test_schema_to_dict_preserves_list_type_in_dict_input():
+  schema_dict = {
+      "type": "object",
+      "properties": {
+          "nullable": {"type": ["string", "null"]},
+      },
+  }
+  result = _schema_to_dict(schema_dict)
+  assert result["properties"]["nullable"]["type"] == ["string", "null"]
 
 
 def test_safe_json_serialize_serializable_object():
@@ -1637,40 +1917,6 @@ def test_function_declaration_to_tool_param(
   )
 
 
-def test_function_declaration_to_tool_param_without_required_attribute():
-  """Ensure tools without a required field attribute don't raise errors."""
-
-  class SchemaWithoutRequired:
-    """Mimics a Schema object that lacks the required attribute."""
-
-    def __init__(self):
-      self.properties = {
-          "optional_arg": types.Schema(type=types.Type.STRING),
-      }
-
-  func_decl = types.FunctionDeclaration(
-      name="function_without_required_attr",
-      description="Function missing required attribute",
-  )
-  func_decl.parameters = SchemaWithoutRequired()
-
-  expected = {
-      "type": "function",
-      "function": {
-          "name": "function_without_required_attr",
-          "description": "Function missing required attribute",
-          "parameters": {
-              "type": "object",
-              "properties": {
-                  "optional_arg": {"type": "string"},
-              },
-          },
-      },
-  }
-
-  assert _function_declaration_to_tool_param(func_decl) == expected
-
-
 def test_function_declaration_to_tool_param_with_parameters_json_schema():
   """Ensure function declarations using parameters_json_schema are handled.
 
@@ -1709,6 +1955,488 @@ def test_function_declaration_to_tool_param_with_parameters_json_schema():
   }
 
   assert _function_declaration_to_tool_param(func_decl) == expected
+
+
+def test_function_declaration_to_tool_param_with_response_json_schema():
+  """Ensure a raw response_json_schema is rendered into the description."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_output",
+      description="desc",
+      parameters_json_schema={
+          "type": "object",
+          "properties": {"a": {"type": "string"}},
+      },
+      response_json_schema={
+          "type": "object",
+          "properties": {"result": {"type": "string"}},
+      },
+  )
+
+  tool_param = _function_declaration_to_tool_param(func_decl)
+
+  assert tool_param["function"]["description"] == (
+      "desc\nReturns a JSON object conforming to this schema:"
+      ' {"properties":{"result":{"type":"string"}},"type":"object"}'
+  )
+  assert tool_param["function"]["parameters"] == {
+      "type": "object",
+      "properties": {"a": {"type": "string"}},
+  }
+
+
+def test_function_declaration_to_tool_param_with_response_schema():
+  """Ensure a types.Schema response is rendered into the description."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_output_schema",
+      description="desc",
+      response=types.Schema(
+          type=types.Type.OBJECT,
+          properties={"result": types.Schema(type=types.Type.STRING)},
+      ),
+  )
+
+  tool_param = _function_declaration_to_tool_param(func_decl)
+
+  assert tool_param["function"]["description"] == (
+      "desc\nReturns a JSON object conforming to this schema:"
+      ' {"properties":{"result":{"type":"string"}},"type":"object"}'
+  )
+
+
+def test_function_declaration_to_tool_param_without_response_schema():
+  """Ensure the description is unchanged when no output schema is declared."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_without_output",
+      description="desc",
+      parameters_json_schema={"type": "object", "properties": {}},
+  )
+
+  assert (
+      _function_declaration_to_tool_param(func_decl)["function"]["description"]
+      == "desc"
+  )
+
+
+def test_function_declaration_to_tool_param_response_schema_without_description():
+  """Ensure an empty description yields only the rendered output schema."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_no_description",
+      response_json_schema={
+          "type": "object",
+          "properties": {"result": {"type": "string"}},
+      },
+  )
+
+  assert _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ] == (
+      "Returns a JSON object conforming to this schema:"
+      ' {"properties":{"result":{"type":"string"}},"type":"object"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_bare_response_schema():
+  """Ensure bare response schemas with no structural keys are omitted."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_bare_output",
+      description="desc",
+      response_json_schema={"type": "string"},
+  )
+
+  assert (
+      _function_declaration_to_tool_param(func_decl)["function"]["description"]
+      == "desc"
+  )
+
+
+def test_function_declaration_to_tool_param_with_minimum_response_schema():
+  """Ensure a scalar response schema with constraint keywords is appended."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_minimum_output",
+      description="desc",
+      response_json_schema={
+          "type": "integer",
+          "minimum": 0,
+      },
+  )
+
+  assert _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ] == (
+      "desc\nReturns an integer conforming to this schema:"
+      ' {"minimum":0,"type":"integer"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_string_enum_response_schema():
+  """Ensure a string response schema with structure derives string wording."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_string_output",
+      description="desc",
+      response_json_schema={
+          "type": "string",
+          "enum": ["option_a", "option_b"],
+      },
+  )
+
+  assert (
+      _function_declaration_to_tool_param(func_decl)["function"]["description"]
+      == "desc\nReturns a string conforming to this schema:"
+      ' {"enum":["option_a","option_b"],"type":"string"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_array_response_schema():
+  """Ensure an array response schema derives array wording."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_array_output",
+      description="desc",
+      response_json_schema={
+          "type": "array",
+          "items": {"type": "string"},
+      },
+  )
+
+  assert _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ] == (
+      "desc\nReturns a JSON array conforming to this schema:"
+      ' {"items":{"type":"string"},"type":"array"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_prefix_items_response_schema():
+  """Ensure an array response schema with prefixItems is rendered."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_prefix_items_output",
+      description="desc",
+      response_json_schema={
+          "type": "array",
+          "prefixItems": [
+              {"type": "string"},
+              {"type": "integer"},
+          ],
+      },
+  )
+
+  assert _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ] == (
+      "desc\nReturns a JSON array conforming to this schema:"
+      ' {"prefixItems":[{"type":"string"},{"type":"integer"}],"type":"array"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_schemaless_type_response():
+  """Ensure non-empty schemas without a type field use 'a value' wording."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_untyped_output",
+      description="desc",
+      response_json_schema={
+          "properties": {"result": {"type": "string"}},
+      },
+  )
+
+  assert _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ] == (
+      "desc\nReturns a value conforming to this schema:"
+      ' {"properties":{"result":{"type":"string"}}}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_additional_properties_response_schema():
+  """Ensure an object response schema with additionalProperties is rendered."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_map_output",
+      description="desc",
+      response_json_schema={
+          "type": "object",
+          "additionalProperties": {"type": "string"},
+      },
+  )
+
+  assert _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ] == (
+      "desc\nReturns a JSON object conforming to this schema:"
+      ' {"additionalProperties":{"type":"string"},"type":"object"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_types_schema_additional_properties():
+  """Ensure a types.Schema response with additional_properties is rendered."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_map_output",
+      description="desc",
+      response=types.Schema(
+          type=types.Type.OBJECT,
+          additional_properties=types.Schema(type=types.Type.STRING),
+      ),
+  )
+
+  assert _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ] == (
+      "desc\nReturns a JSON object conforming to this schema:"
+      ' {"additionalProperties":{"type":"string"},"type":"object"}'
+  )
+
+
+def test_function_declaration_to_tool_param_response_schema_at_max_length_budget():
+  """Ensure schemas within 1024 characters are appended to description."""
+  # Candidate length: 125 + 899 = 1024 characters (at maximum budget).
+  func_decl = types.FunctionDeclaration(
+      name="fn_at_budget",
+      description="desc",
+      response_json_schema={
+          "type": "object",
+          "properties": {
+              "k": {"type": "string", "description": "x" * 899},
+          },
+      },
+  )
+
+  result = _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ]
+  assert len(result) == 1024
+  assert result.startswith(
+      "desc\nReturns a JSON object conforming to this schema:"
+  )
+
+
+def test_function_declaration_to_tool_param_response_schema_exceeds_max_length_budget(
+    caplog,
+):
+  """Ensure schemas exceeding 1024 characters are dropped and logged."""
+  # Candidate length: 125 + 900 = 1025 characters (exceeds 1024 budget).
+  func_decl = types.FunctionDeclaration(
+      name="fn_over_budget",
+      description="desc",
+      response_json_schema={
+          "type": "object",
+          "properties": {
+              "k": {"type": "string", "description": "x" * 900},
+          },
+      },
+  )
+
+  # Other tests (e.g. CLI tests via setup_adk_logger) may raise the
+  # "google_adk" logger level, so set it explicitly for this capture.
+  with caplog.at_level(logging.DEBUG, logger="google_adk"):
+    result = _function_declaration_to_tool_param(func_decl)["function"][
+        "description"
+    ]
+
+  assert result == "desc"
+  assert "Omitting output schema for tool fn_over_budget" in caplog.text
+  assert "rendered description length 1025 exceeds limit 1024" in caplog.text
+
+
+def test_build_function_declaration_log_with_response_json_schema():
+  """Ensure _build_function_declaration_log prioritizes response_json_schema."""
+  func_decl = types.FunctionDeclaration(
+      name="my_tool",
+      parameters_json_schema={"type": "object", "properties": {}},
+      response_json_schema={
+          "type": "object",
+          "properties": {"out": {"type": "string"}},
+      },
+  )
+  log = _build_function_declaration_log(func_decl)
+  assert "my_tool" in log
+  assert "{'type': 'object', 'properties': {'out': {'type': 'string'}}}" in log
+
+
+def test_function_declaration_to_tool_param_with_ref_response_schema():
+  """Ensure schemas using $ref are appended to description."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_ref_output",
+      description="desc",
+      response_json_schema={
+          "$ref": "#/$defs/Node",
+          "$defs": {
+              "Node": {
+                  "type": "object",
+                  "properties": {"val": {"type": "integer"}},
+              }
+          },
+      },
+  )
+
+  tool_param = _function_declaration_to_tool_param(func_decl)
+
+  assert tool_param["function"]["description"] == (
+      "desc\nReturns a value conforming to this schema:"
+      ' {"$defs":{"Node":{"properties":{"val":{"type":"integer"}},"type":"object"}},"$ref":"#/$defs/Node"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_types_schema_response_json_schema():
+  """Ensure a types.Schema in response_json_schema is rendered into description."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_union_output",
+      description="desc",
+      response_json_schema=types.Schema(
+          any_of=[
+              types.Schema(type=types.Type.STRING),
+              types.Schema(type=types.Type.INTEGER),
+          ]
+      ),
+  )
+
+  tool_param = _function_declaration_to_tool_param(func_decl)
+
+  assert tool_param["function"]["description"] == (
+      "desc\nReturns a value conforming to this schema:"
+      ' {"anyOf":[{"type":"string"},{"type":"integer"}]}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_types_schema_ref():
+  """Ensure schemas using types.Schema ref and defs are appended to description."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_types_ref_output",
+      description="desc",
+      response=types.Schema(
+          ref="#/defs/Node",
+          defs={
+              "Node": types.Schema(
+                  type=types.Type.OBJECT,
+                  properties={"val": types.Schema(type=types.Type.INTEGER)},
+              )
+          },
+      ),
+  )
+
+  tool_param = _function_declaration_to_tool_param(func_decl)
+
+  assert tool_param["function"]["description"] == (
+      "desc\nReturns a value conforming to this schema:"
+      ' {"$defs":{"Node":{"properties":{"val":{"type":"integer"}},"type":"object"}},"$ref":"#/$defs/Node"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_nullable_enum_response_json_schema():
+  """Ensure hand-written response_json_schema preserves None in enum."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_nullable_enum",
+      description="desc",
+      response_json_schema={
+          "type": ["string", "null"],
+          "enum": ["a", None, "b"],
+      },
+  )
+
+  tool_param = _function_declaration_to_tool_param(func_decl)
+
+  assert tool_param["function"]["description"] == (
+      "desc\nReturns a value conforming to this schema:"
+      ' {"enum":["a",null,"b"],"type":["string","null"]}'
+  )
+
+
+def test_schema_to_dict_defs_merge_does_not_mutate_caller_and_prefers_defs():
+  """Ensure merging defs into $defs does not mutate caller and prefers $defs on collision."""
+  defs_content = {
+      "Conflicting": {"type": "integer"},
+      "FromDefs": {"type": "string"},
+  }
+  standard_defs_content = {
+      "Conflicting": {"type": "string"},
+      "FromStandard": {"type": "boolean"},
+  }
+  schema = {
+      "$defs": standard_defs_content,
+      "defs": defs_content,
+  }
+
+  result = _schema_to_dict(schema)
+
+  assert standard_defs_content == {
+      "Conflicting": {"type": "string"},
+      "FromStandard": {"type": "boolean"},
+  }
+  assert result["$defs"]["Conflicting"] == {"type": "string"}
+  assert result["$defs"]["FromDefs"] == {"type": "string"}
+  assert result["$defs"]["FromStandard"] == {"type": "boolean"}
+
+
+def test_schema_to_dict_rewrites_defs_pointer_in_ref():
+  """Ensure references starting with #/defs/ are rewritten to #/$defs/."""
+  schema = {
+      "$ref": "#/defs/Node",
+      "properties": {
+          "child": {"ref": "#/defs/Child"},
+          "already_standard": {"$ref": "#/$defs/Other"},
+          "definitions_ref": {"$ref": "#/definitions/Legacy"},
+      },
+      "defs": {
+          "Node": {"type": "object"},
+          "Child": {"type": "string"},
+      },
+  }
+  result = _schema_to_dict(schema)
+  assert result["$ref"] == "#/$defs/Node"
+  assert result["properties"]["child"]["$ref"] == "#/$defs/Child"
+  assert result["properties"]["already_standard"]["$ref"] == "#/$defs/Other"
+  assert (
+      result["properties"]["definitions_ref"]["$ref"] == "#/definitions/Legacy"
+  )
+  assert "defs" not in result
+  assert "Node" in result["$defs"]
+  assert "Child" in result["$defs"]
+
+
+def test_schema_to_dict_ref_collision_prefers_standard_ref():
+  """Ensure $ref takes precedence over ref on collision."""
+  schema = {
+      "$ref": "#/$defs/Standard",
+      "ref": "#/defs/Pydantic",
+  }
+  result = _schema_to_dict(schema)
+  assert result["$ref"] == "#/$defs/Standard"
+  assert "ref" not in result
+
+
+def test_schema_to_dict_any_of_collision_prefers_standard_any_of():
+  """Ensure anyOf takes precedence over any_of on collision."""
+  schema = {
+      "anyOf": [{"type": "string"}],
+      "any_of": [{"type": "integer"}],
+  }
+  result = _schema_to_dict(schema)
+  assert result["anyOf"] == [{"type": "string"}]
+  assert "any_of" not in result
+
+
+def test_schema_to_dict_additional_properties_collision_prefers_standard():
+  """Ensure additionalProperties takes precedence over additional_properties on collision."""
+  schema = {
+      "additionalProperties": {"type": "string"},
+      "additional_properties": {"type": "integer"},
+  }
+  result = _schema_to_dict(schema)
+  assert result["additionalProperties"] == {"type": "string"}
+  assert "additional_properties" not in result
+
+  # Also ensure boolean additionalProperties (e.g. False) takes precedence.
+  schema_bool = {
+      "additionalProperties": False,
+      "additional_properties": {"type": "integer"},
+  }
+  result_bool = _schema_to_dict(schema_bool)
+  assert result_bool["additionalProperties"] is False
+  assert "additional_properties" not in result_bool
 
 
 @pytest.mark.asyncio
@@ -2664,6 +3392,181 @@ def test_message_to_generate_content_response_tool_call_accepts_unquoted_json_ke
   }
 
 
+def test_message_to_generate_content_response_reports_malformed_tool_call():
+  """A caller gets MALFORMED_FUNCTION_CALL and keeps the text the model sent."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content="Looking that up.",
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments='{"test_arg": "unterminated',
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert "test_function" in response.error_message
+  assert [part.text for part in response.content.parts] == ["Looking that up."]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    ['["test_arg", "test_value"]', '"test_arg"', "42"],
+)
+def test_message_to_generate_content_response_reports_non_object_tool_call(
+    arguments,
+):
+  """Arguments that decode cleanly but are not an object are unusable too."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content="Looking that up.",
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments=arguments,
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert "test_function" in response.error_message
+  assert [part.text for part in response.content.parts] == ["Looking that up."]
+
+
+@pytest.mark.parametrize("arguments", [42, 3.14, True, ["test_arg"]])
+def test_message_to_generate_content_response_reports_non_string_arguments(
+    arguments,
+):
+  """LiteLLM types promise a string, a provider can still send anything."""
+  tool_call = ChatCompletionMessageToolCall(
+      type="function",
+      id="test_tool_call_id",
+      function=Function(name="test_function", arguments="{}"),
+  )
+  # Assigning past the declared str is the only way to reproduce a payload
+  # that the annotation forbids and a provider sends anyway.
+  tool_call.function.arguments = arguments
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content="Looking that up.",
+      tool_calls=[tool_call],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert "test_function" in response.error_message
+  assert [part.text for part in response.content.parts] == ["Looking that up."]
+
+
+@pytest.mark.parametrize("name", [42, 3.14, True, ["test_function"]])
+def test_message_to_generate_content_response_reports_non_string_name(name):
+  """A truthy non-string name would otherwise break joining the report."""
+  tool_call = ChatCompletionMessageToolCall(
+      type="function",
+      id="test_tool_call_id",
+      function=Function(
+          name="test_function", arguments='{"test_arg": "unterminated'
+      ),
+  )
+  # Assigning past the declared str is the only way to reproduce a name that
+  # the annotation forbids and a provider sends anyway.
+  tool_call.function.name = name
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content="Looking that up.",
+      tool_calls=[tool_call],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert "<unnamed>" in response.error_message
+  assert [part.text for part in response.content.parts] == ["Looking that up."]
+
+
+def test_apply_provider_finish_reason_clears_error_when_provider_says_stop():
+  """A clean provider reason leaves behind no error from the one it replaced."""
+  llm_response = LlmResponse(
+      finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
+      error_code=types.FinishReason.MALFORMED_FUNCTION_CALL,
+      error_message=(
+          "Arguments for the following function calls were not a"
+          " valid JSON object: test_function"
+      ),
+  )
+
+  _apply_provider_finish_reason(llm_response, types.FinishReason.STOP)
+
+  assert llm_response.finish_reason == types.FinishReason.STOP
+  assert llm_response.error_code is None
+  assert llm_response.error_message is None
+
+
+def test_message_to_generate_content_response_keeps_parsable_tool_call():
+  """Only the malformed call is dropped, a sibling that parses still arrives."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="bad_call",
+              function=Function(
+                  name="broken_function",
+                  arguments='{"test_arg": "unterminated',
+              ),
+          ),
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="good_call",
+              function=Function(
+                  name="working_function",
+                  arguments='{"test_arg": "test_value"}',
+              ),
+          ),
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert len(response.content.parts) == 1
+  assert response.content.parts[0].function_call.id == "good_call"
+
+
+def test_message_to_generate_content_response_leaves_partial_unstamped():
+  """A partial keeps no terminal reason, the assembled response carries it."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content='{"name": "test_function", "arguments": "{broken"}',
+  )
+
+  response = _message_to_generate_content_response(message, is_partial=True)
+
+  assert response.partial
+  assert response.finish_reason is None
+  assert response.error_code is None
+  assert response.error_message is None
+
+
 def test_message_to_generate_content_response_inline_tool_call_text():
   message = ChatCompletionAssistantMessage(
       role="assistant",
@@ -2730,6 +3633,115 @@ def test_model_response_to_generate_content_response_reasoning_content():
   assert response.content.parts[0].text == "Step-by-step"
   assert response.content.parts[0].thought is True
   assert response.content.parts[1].text == "Answer"
+
+
+def test_model_response_to_generate_content_response_uses_first_choice(
+    caplog,
+):
+  """Test LiteLLM conversion follows the single-candidate contract."""
+  model_response = ModelResponse(
+      model="test-model",
+      choices=[
+          {
+              "message": {"role": "assistant", "content": "First"},
+              "finish_reason": "stop",
+          },
+          {
+              "message": {"role": "assistant", "content": "Second"},
+              "finish_reason": "stop",
+          },
+      ],
+  )
+
+  with caplog.at_level(logging.ERROR):
+    response = _model_response_to_generate_content_response(model_response)
+
+  assert len(model_response.choices) == 2
+  assert [
+      part.text for part in response.content.parts if part.text is not None
+  ] == ["First"]
+  errors = [
+      record
+      for record in caplog.records
+      if "Multiple choices found in response" in record.getMessage()
+  ]
+  assert len(errors) == 1
+  assert errors[0].name == "google_adk.google.adk.models.lite_llm"
+
+
+def test_model_response_to_chunk_skips_non_zero_choice_index():
+  """Test a chunk holding only a secondary candidate yields no content."""
+  chunk = ModelResponseStream(
+      model="test-model",
+      choices=[{"index": 1, "delta": {"content": "Second"}}],
+  )
+
+  assert list(_model_response_to_chunk(chunk)) == [(None, None)]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_multiple_choices_logs_error_once(
+    mock_completion, lite_llm_instance, caplog
+):
+  """Test a multi-candidate stream logs once and keeps the first candidate."""
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  index=0,
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Hello"),
+              ),
+              StreamingChoices(
+                  index=1,
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Other"),
+              ),
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  index=1,
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content=" candidate"),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(index=0, finish_reason="stop", delta=Delta())
+          ],
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  with caplog.at_level(logging.ERROR):
+    responses = [
+        response
+        async for response in lite_llm_instance.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  assert responses[-1].content.parts[0].text == "Hello"
+  errors = [
+      record
+      for record in caplog.records
+      if "Multiple choices found in streaming response" in record.getMessage()
+  ]
+  assert len(errors) == 1
+  assert errors[0].name == "google_adk.google.adk.models.lite_llm"
 
 
 def test_message_to_generate_content_response_reasoning_field():
@@ -3032,6 +4044,168 @@ def test_message_to_generate_content_response_preserves_thought_signature():
   assert fc_part.function_call.name == "load_skill"
   assert fc_part.function_call.id == "call_ts_1"
   assert fc_part.thought_signature == b"round_trip_sig"
+
+
+def test_message_to_generate_content_response_strips_signature_from_id():
+  """An id carrying an embedded signature is split before it reaches the part."""
+  sig_b64 = base64.b64encode(b"embedded_sig").decode("utf-8")
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=f"call_ts_2{_THOUGHT_SIGNATURE_SEPARATOR}{sig_b64}",
+              function=Function(
+                  name="load_skill",
+                  arguments='{"skill": "my_skill"}',
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  assert fc_part.function_call.id == "call_ts_2"
+  assert fc_part.thought_signature == b"embedded_sig"
+
+
+def test_message_to_generate_content_response_strips_urlsafe_unpadded_signature_from_id():
+  """An id suffix in unpadded urlsafe base64 still moves onto the part."""
+  sig_b64 = base64.urlsafe_b64encode(b"\xfb\xffurlsafe_sig").rstrip(b"=")
+  assert sig_b64 == b"-_91cmxzYWZlX3NpZw"
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=f"call_ts_3{_THOUGHT_SIGNATURE_SEPARATOR}{sig_b64.decode()}",
+              function=Function(name="load_skill", arguments="{}"),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  assert fc_part.function_call.id == "call_ts_3"
+  assert fc_part.thought_signature == b"\xfb\xffurlsafe_sig"
+
+
+def test_message_to_generate_content_response_keeps_a_non_signature_id_whole():
+  """A provider id is opaque, so a separator whose suffix is not a signature stays."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=f"job{_THOUGHT_SIGNATURE_SEPARATOR}not.base64",
+              function=Function(name="load_skill", arguments="{}"),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  assert (
+      fc_part.function_call.id == f"job{_THOUGHT_SIGNATURE_SEPARATOR}not.base64"
+  )
+  assert fc_part.thought_signature is None
+
+
+def test_message_to_generate_content_response_keeps_the_id_when_the_signature_came_from_extra_content():
+  """The id is only LiteLLM's to split when its own suffix decodes as the signature."""
+  sig_b64 = base64.b64encode(b"channel_sig").decode("utf-8")
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=f"job{_THOUGHT_SIGNATURE_SEPARATOR}not.base64",
+              function=Function(name="load_skill", arguments="{}"),
+              extra_content={"google": {"thought_signature": sig_b64}},
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  assert (
+      fc_part.function_call.id == f"job{_THOUGHT_SIGNATURE_SEPARATOR}not.base64"
+  )
+  assert fc_part.thought_signature == b"channel_sig"
+
+
+@pytest.mark.asyncio
+async def test_embedded_signature_round_trips_from_a_clean_id():
+  """The repro end to end: the id is cleaned inbound and the signature still goes back."""
+  sig_b64 = base64.b64encode(b"embedded_sig").decode("utf-8")
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=f"call_abc{_THOUGHT_SIGNATURE_SEPARATOR}{sig_b64}",
+              function=Function(name="load_skill", arguments='{"skill": "s"}'),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  outbound = await _content_to_message_param(response.content)
+
+  tool_call = outbound["tool_calls"][0]
+  assert tool_call["id"] == "call_abc"
+  assert tool_call["provider_specific_fields"]["thought_signature"] == sig_b64
+  assert tool_call["extra_content"]["google"]["thought_signature"] == sig_b64
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_cleans_an_embedded_signature_id():
+  """The reported path end to end: a Gemini tool call arrives with a clean id."""
+  sig_b64 = base64.b64encode(b"embedded_sig").decode("utf-8")
+  model_response = ModelResponse(
+      model="test_model",
+      choices=[
+          Choices(
+              message=ChatCompletionAssistantMessage(
+                  role="assistant",
+                  content=None,
+                  tool_calls=[
+                      ChatCompletionMessageToolCall(
+                          type="function",
+                          id=f"call_abc{_THOUGHT_SIGNATURE_SEPARATOR}{sig_b64}",
+                          function=Function(
+                              name="test_function",
+                              arguments='{"test_arg": "test_value"}',
+                          ),
+                      )
+                  ],
+              )
+          )
+      ],
+  )
+  llm = LiteLlm(
+      model="test_model",
+      llm_client=MockLLMClient(
+          AsyncMock(return_value=model_response),
+          Mock(return_value=model_response),
+      ),
+  )
+
+  responses = [
+      response
+      async for response in llm.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION
+      )
+  ]
+
+  part = responses[0].content.parts[0]
+  assert part.function_call.id == "call_abc"
+  assert part.thought_signature == b"embedded_sig"
 
 
 def test_message_to_generate_content_response_no_thought_signature():
@@ -3814,6 +4988,29 @@ async def test_get_content_file_uri_explicit_octet_stream_raises():
 
 
 @pytest.mark.asyncio
+async def test_get_content_unsupported_mime_type_error_redacts_file_uri():
+  """The unsupported-MIME-type error names the file, not the signed URL."""
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri=(
+                  "https://example.com/bucket/artifact"
+                  "?X-Goog-Signature=0123456789abcdef"
+              )
+          )
+      )
+  ]
+
+  with pytest.raises(ValueError) as exc_info:
+    await _get_content(parts)
+
+  message = str(exc_info.value)
+  assert "https://<redacted>/artifact" in message
+  assert "X-Goog-Signature" not in message
+  assert "0123456789abcdef" not in message
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "uri,expected_mime_type",
     [
@@ -4278,7 +5475,7 @@ async def test_completion_additional_args(mock_completion, mock_client):
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert len(responses) == 6
   mock_completion.assert_called_once()
 
   _, kwargs = mock_completion.call_args
@@ -4306,7 +5503,7 @@ async def test_completion_with_drop_params(mock_completion, mock_client):
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert len(responses) == 6
 
   mock_completion.assert_called_once()
 
@@ -4376,7 +5573,7 @@ async def test_generate_content_async_stream_tool_call_includes_aggregated_text(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert len(responses) == 6
   assert responses[0].content.role == "model"
   assert responses[0].content.parts[0].text == "zero, "
   assert responses[0].model_version == "test_model"
@@ -4386,16 +5583,16 @@ async def test_generate_content_async_stream_tool_call_includes_aggregated_text(
   assert responses[2].content.role == "model"
   assert responses[2].content.parts[0].text == "two:"
   assert responses[2].model_version == "test_model"
-  assert responses[3].content.role == "model"
-  assert len(responses[3].content.parts) == 2
-  assert responses[3].content.parts[0].text == "zero, one, two:"
-  assert responses[3].content.parts[1].function_call.name == "test_function"
-  assert responses[3].content.parts[-1].function_call.args == {
+  assert responses[5].content.role == "model"
+  assert len(responses[5].content.parts) == 2
+  assert responses[5].content.parts[0].text == "zero, one, two:"
+  assert responses[5].content.parts[1].function_call.name == "test_function"
+  assert responses[5].content.parts[-1].function_call.args == {
       "test_arg": "test_value"
   }
-  assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
-  assert responses[3].finish_reason == types.FinishReason.STOP
-  assert responses[3].model_version == "test_model"
+  assert responses[5].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[5].finish_reason == types.FinishReason.STOP
+  assert responses[5].model_version == "test_model"
   mock_completion.assert_called_once()
 
   _, kwargs = mock_completion.call_args
@@ -4465,6 +5662,205 @@ async def test_generate_content_async_stream_sets_finish_reason(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_stream_reports_content_filter(
+    mock_completion, lite_llm_instance
+):
+  """A filtered stream reports SAFETY and an error, not a clean stop."""
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Partial "),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(finish_reason="content_filter", delta=Delta())
+          ],
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert responses[-1].partial is False
+  assert responses[-1].content.parts[0].text == "Partial "
+  assert responses[-1].finish_reason == types.FinishReason.SAFETY
+  assert responses[-1].error_code == types.FinishReason.SAFETY
+  assert responses[-1].error_message == "Finished with SAFETY"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_reason_does_not_carry_over(
+    mock_completion, lite_llm_instance
+):
+  """A finalized segment's reason must not be stamped on the next one."""
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_1",
+                              function=Function(name="f", arguments='{"a":1}'),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ],
+      ),
+      # Truncates the tool-call segment, finalizing it and clearing buffers.
+      ModelResponseStream(
+          model="test_model",
+          choices=[StreamingChoices(finish_reason="length", delta=Delta())],
+      ),
+      # A fresh text segment that the stream simply ends after.
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="and then some text"),
+              )
+          ],
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  text_responses = [
+      r
+      for r in responses
+      if r.content and r.content.parts and r.content.parts[0].text
+  ]
+  assert text_responses[-1].finish_reason != types.FinishReason.MAX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_with_only_finish_reason(
+    mock_completion, lite_llm_instance
+):
+  """A stream with no content still reports its finish reason and usage."""
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(finish_reason="content_filter", delta=Delta())
+          ],
+          usage={
+              "prompt_tokens": 7,
+              "completion_tokens": 0,
+              "total_tokens": 7,
+          },
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  assert responses[0].content.parts == []
+  assert responses[0].finish_reason == types.FinishReason.SAFETY
+  assert responses[0].error_code == types.FinishReason.SAFETY
+  assert responses[0].error_message == "Finished with SAFETY"
+  assert responses[0].usage_metadata.prompt_token_count == 7
+  assert responses[0].usage_metadata.total_token_count == 7
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "finish_reason", ["stop", "tool_calls", "function_call", None]
+)
+async def test_generate_content_async_stream_with_only_stop_finish_reason(
+    mock_completion, lite_llm_instance, finish_reason
+):
+  """A stream with a STOP-mapped finish_reason and no content yields a terminal response."""
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(finish_reason=finish_reason, delta=Delta())
+          ],
+          usage={
+              "prompt_tokens": 5,
+              "completion_tokens": 0,
+              "total_tokens": 5,
+          },
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  assert responses[0].content.parts == []
+  assert responses[0].partial is False
+  assert responses[0].finish_reason == types.FinishReason.STOP
+  assert responses[0].error_code is None
+  assert responses[0].usage_metadata.prompt_token_count == 5
+  assert responses[0].usage_metadata.total_token_count == 5
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_stream_with_reasoning_tokens(
     mock_completion, lite_llm_instance
 ):
@@ -4496,25 +5892,25 @@ async def test_generate_content_async_stream_with_reasoning_tokens(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert len(responses) == 6
   assert responses[0].content.role == "model"
   assert responses[0].content.parts[0].text == "zero, "
   assert responses[1].content.role == "model"
   assert responses[1].content.parts[0].text == "one, "
   assert responses[2].content.role == "model"
   assert responses[2].content.parts[0].text == "two:"
-  assert responses[3].content.role == "model"
-  assert responses[3].content.parts[-1].function_call.name == "test_function"
-  assert responses[3].content.parts[-1].function_call.args == {
+  assert responses[5].content.role == "model"
+  assert responses[5].content.parts[-1].function_call.name == "test_function"
+  assert responses[5].content.parts[-1].function_call.args == {
       "test_arg": "test_value"
   }
-  assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
-  assert responses[3].finish_reason == types.FinishReason.STOP
+  assert responses[5].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[5].finish_reason == types.FinishReason.STOP
 
-  assert responses[3].usage_metadata.prompt_token_count == 10
-  assert responses[3].usage_metadata.candidates_token_count == 5
-  assert responses[3].usage_metadata.total_token_count == 15
-  assert responses[3].usage_metadata.thoughts_token_count == 5
+  assert responses[5].usage_metadata.prompt_token_count == 10
+  assert responses[5].usage_metadata.candidates_token_count == 5
+  assert responses[5].usage_metadata.total_token_count == 15
+  assert responses[5].usage_metadata.thoughts_token_count == 5
 
   mock_completion.assert_called_once()
 
@@ -4568,12 +5964,12 @@ async def test_generate_content_async_stream_with_usage_metadata(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
-  assert responses[3].usage_metadata.prompt_token_count == 10
-  assert responses[3].usage_metadata.candidates_token_count == 5
-  assert responses[3].usage_metadata.total_token_count == 15
-  assert responses[3].usage_metadata.cached_content_token_count == 8
-  assert responses[3].usage_metadata.thoughts_token_count == 5
+  assert len(responses) == 6
+  assert responses[5].usage_metadata.prompt_token_count == 10
+  assert responses[5].usage_metadata.candidates_token_count == 5
+  assert responses[5].usage_metadata.total_token_count == 15
+  assert responses[5].usage_metadata.cached_content_token_count == 8
+  assert responses[5].usage_metadata.thoughts_token_count == 5
 
 
 @pytest.mark.asyncio
@@ -4608,12 +6004,12 @@ async def test_generate_content_async_stream_with_bedrock_cache_tokens(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
-  assert responses[3].usage_metadata.prompt_token_count == 10
-  assert responses[3].usage_metadata.candidates_token_count == 5
-  assert responses[3].usage_metadata.total_token_count == 15
-  assert responses[3].usage_metadata.cached_content_token_count == 8
-  assert responses[3].usage_metadata.cache_creation_input_tokens == 4
+  assert len(responses) == 6
+  assert responses[5].usage_metadata.prompt_token_count == 10
+  assert responses[5].usage_metadata.candidates_token_count == 5
+  assert responses[5].usage_metadata.total_token_count == 15
+  assert responses[5].usage_metadata.cached_content_token_count == 8
+  assert responses[5].usage_metadata.cache_creation_input_tokens == 4
 
 
 @pytest.mark.asyncio
@@ -4777,8 +6173,8 @@ async def test_generate_content_async_stream_with_empty_chunk(
       )
   ]
 
-  assert len(responses) == 1
-  final_response = responses[0]
+  assert len(responses) == 3
+  final_response = responses[2]
   assert final_response.content.role == "model"
 
   # Crucially, assert that only ONE tool call was generated,
@@ -4831,12 +6227,162 @@ async def test_streaming_tool_call_truncated_by_max_tokens(
       )
   ]
 
-  assert len(responses) == 1
-  error_response = responses[0]
+  assert len(responses) == 2
+  error_response = responses[1]
   assert error_response.error_code == types.FinishReason.MAX_TOKENS
   assert error_response.finish_reason == types.FinishReason.MAX_TOKENS
   assert "truncated" in error_response.error_message
   assert "max_output_tokens" in error_response.error_message
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_cut_off_reports_malformed_function_call(
+    mock_completion, lite_llm_instance
+):
+  """A stream that stops mid-tool-call refuses the call instead of running it."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_123",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{"test_arg": ',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      # No terminal chunk follows: the stream simply stops, the way it does
+      # when a proxy times out or the provider drops the connection.
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 2
+  error_response = responses[1]
+  assert error_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert (
+      error_response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  )
+  # The token limit had nothing to do with it, so it must not be blamed.
+  assert "max_output_tokens" not in error_response.error_message
+  # Above all, the half-built call must not reach the caller as a real call.
+  assert error_response.content is None
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_cut_off_after_complete_arguments_is_kept(
+    mock_completion, lite_llm_instance
+):
+  """A stream missing only its terminal chunk still yields the finished call."""
+  stream_chunks = [
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_123",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{"test_arg": "test_value"}',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ],
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  final_response = responses[-1]
+  assert final_response.error_code is None
+  function_call = final_response.content.parts[0].function_call
+  assert function_call.name == "test_function"
+  assert function_call.args == {"test_arg": "test_value"}
+
+
+@pytest.mark.asyncio
+async def test_streaming_inline_tool_call_malformed_arguments(
+    mock_completion, lite_llm_instance
+):
+  """A tool call parsed out of text keeps its malformed verdict over "stop"."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      content='{"name": "test_function", "argum',
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      content='ents": "{broken"}',
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason="stop",
+                  delta=Delta(role="assistant", content=""),
+              )
+          ]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  final_response = responses[-1]
+  assert (
+      final_response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  )
+  assert final_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert "test_function" in final_response.error_message
 
 
 @pytest.mark.asyncio
@@ -4879,8 +6425,8 @@ async def test_streaming_tool_call_complete_with_length_finish_reason(
       )
   ]
 
-  assert len(responses) == 1
-  final_response = responses[0]
+  assert len(responses) == 2
+  final_response = responses[1]
   assert final_response.content.role == "model"
   assert len(final_response.content.parts) == 1
 
@@ -4890,6 +6436,57 @@ async def test_streaming_tool_call_complete_with_length_finish_reason(
   assert function_call.args == {"test_arg": "value"}
   assert final_response.finish_reason == types.FinishReason.MAX_TOKENS
   assert final_response.error_code == types.FinishReason.MAX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_malformed_arguments_is_refused(
+    mock_completion, lite_llm_instance
+):
+  """Streamed args that do not parse are refused even on a clean finish_reason.
+
+  LiteLLM substitutes "stop" when a provider ends a stream without sending a
+  reason, so a clean-looking reason is no evidence the call arrived whole.
+  """
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_789",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{"city":"unterminated',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 2
+  final_response = responses[1]
+  assert final_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  # The tool must not run with arguments the model never finished sending.
+  assert final_response.content is None
 
 
 @pytest.mark.asyncio
@@ -4953,6 +6550,7 @@ async def test_get_completion_inputs_generation_params():
           max_output_tokens=123,
           top_p=0.88,
           top_k=7,
+          seed=42,
           stop_sequences=["foo", "bar"],
           presence_penalty=0.1,
           frequency_penalty=0.2,
@@ -4966,6 +6564,7 @@ async def test_get_completion_inputs_generation_params():
   assert generation_params["max_completion_tokens"] == 123
   assert generation_params["top_p"] == 0.88
   assert generation_params["top_k"] == 7
+  assert generation_params["seed"] == 42
   assert generation_params["stop"] == ["foo", "bar"]
   assert generation_params["presence_penalty"] == 0.1
   assert generation_params["frequency_penalty"] == 0.2
@@ -5303,6 +6902,79 @@ def test_model_response_to_generate_content_response_empty_message_dict():
   assert llm_response.usage_metadata is not None
 
 
+@pytest.mark.parametrize("finish_reason", ["tool_calls", "end_turn"])
+def test_model_response_to_generate_content_response_malformed_tool_call(
+    finish_reason,
+):
+  """A provider reason that explains nothing keeps the malformed verdict."""
+  response = ModelResponse(
+      model="test_model",
+      choices=[{
+          "finish_reason": finish_reason,
+          "message": {
+              "role": "assistant",
+              "content": None,
+              "tool_calls": [{
+                  "type": "function",
+                  "id": "call_1",
+                  "function": {
+                      "name": "test_function",
+                      "arguments": '{"test_arg": "unterminated',
+                  },
+              }],
+          },
+      }],
+  )
+
+  llm_response = _model_response_to_generate_content_response(response)
+
+  assert (
+      llm_response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  )
+  assert llm_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert not llm_response.content.parts
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "expected", "expected_message"),
+    [
+        ("length", types.FinishReason.MAX_TOKENS, "Maximum tokens reached"),
+        ("content_filter", types.FinishReason.SAFETY, "Finished with SAFETY"),
+    ],
+)
+def test_model_response_to_generate_content_response_provider_end_reason(
+    finish_reason, expected, expected_message
+):
+  """A provider that ended the response early explains the bad arguments."""
+  response = ModelResponse(
+      model="test_model",
+      choices=[{
+          "finish_reason": finish_reason,
+          "message": {
+              "role": "assistant",
+              "content": None,
+              "tool_calls": [{
+                  "type": "function",
+                  "id": "call_1",
+                  "function": {
+                      "name": "test_function",
+                      "arguments": '{"test_arg": "unterminated',
+                  },
+              }],
+          },
+      }],
+  )
+
+  llm_response = _model_response_to_generate_content_response(response)
+
+  assert llm_response.finish_reason == expected
+  assert llm_response.error_code == expected
+  assert llm_response.error_message == (
+      f"{expected_message}. Arguments for the following function calls were"
+      " not a valid JSON object: test_function"
+  )
+
+
 def test_model_response_to_generate_content_response_safety_finish_reason():
   """Test that SAFETY finish reason sets error_code and error_message."""
   response = ModelResponse(
@@ -5456,6 +7128,7 @@ def test_model_family_detection_through_litellm_proxy(
     [
         ("openai", True),
         ("azure", True),
+        ("litellm_proxy", False),
         ("anthropic", False),
         ("vertex_ai", False),
     ],
@@ -5508,17 +7181,712 @@ async def test_get_content_pdf_proxied_azure_uses_file_id(mocker):
       types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
   ]
   content = await _get_content(
-      parts, provider=_get_provider_from_model(model), model=model
+      parts,
+      provider=_get_provider_from_model(model),
+      model=model,
+      upload_params={"api_base": "http://proxy:4000", "api_key": "proxy-key"},
   )
 
   assert content[0]["type"] == "file"
   assert content[0]["file"]["file_id"] == "file-abc123"
   assert "file_data" not in content[0]["file"]
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+      api_base="http://proxy:4000",
+      api_key="proxy-key",
+  )
+
+
+@pytest.fixture
+def isolated_proxy_env(monkeypatch):
+  """Clears ambient LiteLLM Proxy and OpenAI env vars and module state."""
+  for var in (
+      "LITELLM_PROXY_API_BASE",
+      "LITELLM_PROXY_API_KEY",
+      "OPENAI_BASE_URL",
+      "OPENAI_API_BASE",
+      "OPENAI_API_KEY",
+      "USE_LITELLM_PROXY",
+  ):
+    monkeypatch.delenv(var, raising=False)
+  monkeypatch.setattr(litellm, "api_base", None)
+  monkeypatch.setattr(litellm, "api_key", None)
+  monkeypatch.setattr(litellm, "api_version", None)
+  monkeypatch.setattr(litellm, "use_litellm_proxy", False)
+  return monkeypatch
+
+
+@pytest.mark.usefixtures("isolated_proxy_env")
+@pytest.mark.parametrize(
+    "model, completion_args, expected",
+    [
+        # Proxied models forward the proxy endpoint so the upload does not fall
+        # back to the underlying provider's environment variables.
+        (
+            "litellm_proxy/azure/my-deployment",
+            {"api_base": "http://proxy:4000", "api_key": "proxy-key"},
+            {
+                "api_base": "http://proxy:4000",
+                "api_key": "proxy-key",
+            },
+        ),
+        (
+            "litellm_proxy/azure/my-deployment",
+            {"api_base": "http://proxy:4000", "api_version": "2024-07-01"},
+            {
+                "api_base": "http://proxy:4000",
+                "api_version": "2024-07-01",
+            },
+        ),
+        # Unrelated completion args are not forwarded to the upload.
+        (
+            "litellm_proxy/azure/my-deployment",
+            {"api_base": "http://proxy:4000", "temperature": 0.5},
+            {"api_base": "http://proxy:4000"},
+        ),
+        # Empty values are dropped rather than forwarded as None.
+        (
+            "litellm_proxy/azure/my-deployment",
+            {"api_base": "http://proxy:4000", "api_key": None},
+            {"api_base": "http://proxy:4000"},
+        ),
+        (
+            "litellm_proxy/azure/my-deployment",
+            {"api_base": "  http://proxy:4000/  ", "api_key": "  "},
+            {"api_base": "http://proxy:4000"},
+        ),
+        (
+            "litellm_proxy/azure/my-deployment",
+            {"api_base": "http://proxy:4000///", "api_key": "proxy-key"},
+            {
+                "api_base": "http://proxy:4000",
+                "api_key": "proxy-key",
+            },
+        ),
+        (
+            "litellm_proxy/azure/my-deployment",
+            {"api_base": "   /   ", "api_key": "proxy-key"},
+            {"api_key": "proxy-key"},
+        ),
+        # A proxied model with no endpoint overrides has nothing to forward.
+        ("litellm_proxy/azure/my-deployment", {}, None),
+        # Unprefixed model with use_litellm_proxy=True or
+        # custom_llm_provider="litellm_proxy" in completion args forwards
+        # overrides.
+        (
+            "openai/gpt-4o",
+            {
+                "use_litellm_proxy": True,
+                "api_base": "http://proxy:4000",
+                "api_key": "proxy-key",
+            },
+            {
+                "api_base": "http://proxy:4000",
+                "api_key": "proxy-key",
+            },
+        ),
+        (
+            "azure/gpt-4",
+            {
+                "use_litellm_proxy": "true",
+                "api_base": "http://proxy:4000/",
+                "api_key": "proxy-key",
+            },
+            {
+                "api_base": "http://proxy:4000",
+                "api_key": "proxy-key",
+            },
+        ),
+        (
+            "gpt-4o",
+            {
+                "custom_llm_provider": "litellm_proxy",
+                "api_base": "http://proxy:4000/",
+                "api_key": "proxy-key",
+            },
+            {
+                "api_base": "http://proxy:4000",
+                "api_key": "proxy-key",
+            },
+        ),
+        # Direct models forward explicit endpoint overrides.
+        (
+            "openai/gpt-4o",
+            {"use_litellm_proxy": False, "api_base": "http://proxy:4000"},
+            {"api_base": "http://proxy:4000"},
+        ),
+        (
+            "azure/gpt-4",
+            {"api_base": "https://x.openai.azure.com", "api_key": "azure-key"},
+            {"api_base": "https://x.openai.azure.com", "api_key": "azure-key"},
+        ),
+        (
+            "openai/gpt-4o",
+            {"api_base": "http://somewhere"},
+            {"api_base": "http://somewhere"},
+        ),
+        ("azure/gpt-4", {}, None),
+        ("openai/gpt-4o", {}, None),
+    ],
+)
+def test_get_upload_params(model, completion_args, expected):
+  """Proxied and direct models forward endpoint overrides to file uploads."""
+  assert _get_upload_params(model, completion_args) == expected
+
+
+def test_get_upload_params_falls_back_to_proxy_env(isolated_proxy_env):
+  """A proxy configured only through the environment still routes the upload.
+
+  LiteLLM resolves the proxy endpoint from `LITELLM_PROXY_API_BASE` and
+  `LITELLM_PROXY_API_KEY` when the completion call carries none, so the upload
+  has to follow the same fallback or it lands on the provider's own endpoint.
+  """
+  isolated_proxy_env.setenv("LITELLM_PROXY_API_BASE", "  http://proxy:4000/  ")
+  isolated_proxy_env.setenv("LITELLM_PROXY_API_KEY", "proxy-key")
+  assert _get_upload_params("litellm_proxy/openai/gpt-4o", {}) == {
+      "api_base": "http://proxy:4000",
+      "api_key": "proxy-key",
+  }
+  assert _get_upload_params(
+      "gpt-4o", {"custom_llm_provider": "litellm_proxy"}
+  ) == {
+      "api_base": "http://proxy:4000",
+      "api_key": "proxy-key",
+  }
+  # Explicit completion arguments win over the environment.
+  assert _get_upload_params(
+      "litellm_proxy/openai/gpt-4o", {"api_base": "http://explicit:9000/"}
+  ) == {
+      "api_base": "http://explicit:9000",
+      "api_key": "proxy-key",
+  }
+  # Direct models are unaffected by the proxy environment.
+  assert _get_upload_params("openai/gpt-4o", {}) is None
+
+  # Whitespace-only and slash-only environment variables are treated as unset.
+  isolated_proxy_env.setenv("LITELLM_PROXY_API_BASE", "   ")
+  isolated_proxy_env.setenv("LITELLM_PROXY_API_KEY", "   ")
+  assert _get_upload_params("litellm_proxy/openai/gpt-4o", {}) is None
+
+  isolated_proxy_env.setenv("LITELLM_PROXY_API_BASE", "   ///   ")
+  assert _get_upload_params("litellm_proxy/openai/gpt-4o", {}) is None
+
+
+def test_get_upload_params_falls_back_to_litellm_module_attributes(
+    isolated_proxy_env,
+):
+  """A proxy configured via module attributes still routes the upload."""
+  isolated_proxy_env.setattr(litellm, "api_base", "  http://proxy:4000/  ")
+  isolated_proxy_env.setattr(litellm, "api_key", "proxy-key")
+  assert _get_upload_params("litellm_proxy/openai/gpt-4o", {}) == {
+      "api_base": "http://proxy:4000",
+      "api_key": "proxy-key",
+  }
+  # Explicit completion arguments win over the module attributes.
+  assert _get_upload_params(
+      "litellm_proxy/openai/gpt-4o", {"api_base": "http://explicit:9000"}
+  ) == {
+      "api_base": "http://explicit:9000",
+      "api_key": "proxy-key",
+  }
+  # Direct models are unaffected by the proxy module attributes.
+  assert _get_upload_params("openai/gpt-4o", {}) is None
+
+
+def test_get_upload_params_falls_back_to_openai_env(isolated_proxy_env):
+  """Proxy configured via OPENAI_BASE_URL or OPENAI_API_BASE routes uploads."""
+  isolated_proxy_env.setenv("OPENAI_BASE_URL", "  http://proxy:4000/  ")
+  isolated_proxy_env.setenv("OPENAI_API_KEY", "openai-key")
+  assert _get_upload_params("litellm_proxy/openai/gpt-4o", {}) == {
+      "api_base": "http://proxy:4000",
+      "api_key": "openai-key",
+  }
+  # Direct models are unaffected by proxy fallback.
+  assert _get_upload_params("openai/gpt-4o", {}) is None
+
+  # OPENAI_API_BASE is also supported.
+  isolated_proxy_env.delenv("OPENAI_BASE_URL")
+  isolated_proxy_env.setenv("OPENAI_API_BASE", "  http://proxy:5000/  ")
+  assert _get_upload_params("litellm_proxy/openai/gpt-4o", {}) == {
+      "api_base": "http://proxy:5000",
+      "api_key": "openai-key",
+  }
+
+  # LITELLM_PROXY_API_BASE wins over OPENAI_BASE_URL.
+  isolated_proxy_env.delenv("OPENAI_API_BASE")
+  isolated_proxy_env.delenv("OPENAI_API_KEY")
+  isolated_proxy_env.setenv(
+      "LITELLM_PROXY_API_BASE", "http://proxy-specific:4000"
+  )
+  isolated_proxy_env.setenv("OPENAI_BASE_URL", "http://openai-general:4000")
+  assert _get_upload_params("litellm_proxy/openai/gpt-4o", {}) == {
+      "api_base": "http://proxy-specific:4000",
+  }
+
+  # litellm.api_base wins over OPENAI_BASE_URL.
+  isolated_proxy_env.delenv("LITELLM_PROXY_API_BASE")
+  isolated_proxy_env.setattr(litellm, "api_base", "http://litellm-module:4000")
+  assert _get_upload_params("litellm_proxy/openai/gpt-4o", {}) == {
+      "api_base": "http://litellm-module:4000",
+  }
+
+
+def test_is_proxied_model_honors_use_litellm_proxy_flag(isolated_proxy_env):
+  """`USE_LITELLM_PROXY` routes unprefixed models through the proxy too."""
+  isolated_proxy_env.setenv("USE_LITELLM_PROXY", "true")
+  assert _is_proxied_model("openai/gpt-4o") is True
+
+  isolated_proxy_env.setenv("USE_LITELLM_PROXY", "false")
+  assert _is_proxied_model("openai/gpt-4o") is False
+  # The explicit prefix still wins regardless of the flag.
+  assert _is_proxied_model("litellm_proxy/openai/gpt-4o") is True
+
+  isolated_proxy_env.setenv("USE_LITELLM_PROXY", "1")
+  assert _is_proxied_model("openai/gpt-4o") is False
+
+
+def test_get_provider_from_model_with_use_litellm_proxy_preserves_unprefixed(
+    isolated_proxy_env,
+):
+  """Unprefixed models keep their provider prefix with USE_LITELLM_PROXY."""
+  isolated_proxy_env.setenv("USE_LITELLM_PROXY", "true")
+  assert (
+      _get_provider_from_model("openrouter/anthropic/claude-3.5-sonnet")
+      == "openrouter"
+  )
+  assert _get_provider_from_model("openai/gpt-4o") == "openai"
+
+
+def test_is_file_uri_supported_honors_proxy_settings(isolated_proxy_env):
+  """Proxied non-Gemini/Vertex models accept file URIs across proxy settings."""
+  isolated_proxy_env.setenv("USE_LITELLM_PROXY", "true")
+  assert (
+      _is_file_uri_supported(
+          "anthropic", "anthropic/claude-3.5-sonnet", "file-123"
+      )
+      is True
+  )
+
+  isolated_proxy_env.setenv("USE_LITELLM_PROXY", "false")
+  assert (
+      _is_file_uri_supported(
+          "anthropic", "anthropic/claude-3.5-sonnet", "file-123"
+      )
+      is False
+  )
+  assert (
+      _is_file_uri_supported(
+          "anthropic",
+          "anthropic/claude-3.5-sonnet",
+          "file-123",
+          is_proxied=True,
+      )
+      is True
+  )
+
+  isolated_proxy_env.delenv("USE_LITELLM_PROXY")
+  isolated_proxy_env.setattr(litellm, "use_litellm_proxy", True)
+  assert (
+      _is_file_uri_supported(
+          "anthropic", "anthropic/claude-3.5-sonnet", "file-123"
+      )
+      is True
+  )
+
+
+def test_is_proxied_model_honors_litellm_module_use_litellm_proxy(
+    isolated_proxy_env,
+):
+  """`litellm.use_litellm_proxy = True` routes unprefixed models via proxy."""
+  isolated_proxy_env.setattr(litellm, "use_litellm_proxy", True)
+  assert _is_proxied_model("openai/gpt-4o") is True
+
+
+@pytest.mark.usefixtures("isolated_proxy_env")
+def test_is_proxied_model_honors_completion_args_use_litellm_proxy():
+  """Proxy completion args route unprefixed models through the proxy."""
+  assert _is_proxied_model("openai/gpt-4o", {"use_litellm_proxy": True}) is True
+  assert (
+      _is_proxied_model("openai/gpt-4o", {"use_litellm_proxy": "true"}) is True
+  )
+  assert _is_proxied_model("openai/gpt-4o", {"use_litellm_proxy": "1"}) is False
+  assert (
+      _is_proxied_model("openai/gpt-4o", {"use_litellm_proxy": False}) is False
+  )
+  assert (
+      _is_proxied_model("openai/gpt-4o", {"use_litellm_proxy": "false"})
+      is False
+  )
+  assert (
+      _is_proxied_model("gpt-4o", {"custom_llm_provider": "litellm_proxy"})
+      is True
+  )
+  assert _is_proxied_model("gpt-4o", {"custom_llm_provider": "openai"}) is False
+  assert _is_proxied_model("openai/gpt-4o", {}) is False
+
+
+def test_warn_gemini_via_litellm_suppressed_for_proxied_models(
+    isolated_proxy_env,
+):
+  """Gemini warnings are suppressed for all proxied models."""
+  with pytest.warns(UserWarning, match="GEMINI_VIA_LITELLM"):
+    _warn_gemini_via_litellm("gemini/gemini-2.5-flash")
+  with warnings.catch_warnings():
+    warnings.simplefilter("error")
+    with patch.dict(os.environ, {"USE_LITELLM_PROXY": "true"}):
+      _warn_gemini_via_litellm("gemini/gemini-2.5-flash")
+    with patch.object(litellm, "use_litellm_proxy", True):
+      _warn_gemini_via_litellm("gemini/gemini-2.5-flash")
+    _warn_gemini_via_litellm("litellm_proxy/gemini/gemini-2.5-flash")
+    _warn_gemini_via_litellm(
+        "gemini/gemini-2.5-flash", {"use_litellm_proxy": True}
+    )
+    _warn_gemini_via_litellm(
+        "gemini/gemini-2.5-flash", {"custom_llm_provider": "litellm_proxy"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_content_proxied_upload_without_endpoint_raises(
+    mocker, isolated_proxy_env
+):
+  """An unroutable proxied upload must fail instead of leaving the proxy.
+
+  `custom_llm_provider="openai"` resolves to https://api.openai.com/v1 by
+  default, so uploading without a known proxy endpoint would send proxied file
+  content to the public OpenAI API whenever `OPENAI_API_KEY` happens to be set.
+  """
+  mock_acreate_file = AsyncMock()
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  model = "litellm_proxy/openai/gpt-4o"
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+
+  with pytest.raises(ValueError, match="LiteLLM Proxy endpoint is unknown"):
+    await _get_content(
+        parts,
+        provider=_get_provider_from_model(model),
+        model=model,
+        upload_params=_get_upload_params(model, {}),
+    )
+
+  # Whitespace-only and slash-only proxy environment variables must not satisfy
+  # the endpoint requirement.
+  for invalid_base in ("   ", "   ///   "):
+    isolated_proxy_env.setenv("LITELLM_PROXY_API_BASE", invalid_base)
+    isolated_proxy_env.setenv("LITELLM_PROXY_API_KEY", "   ")
+    isolated_proxy_env.setenv("OPENAI_BASE_URL", invalid_base)
+    isolated_proxy_env.setenv("OPENAI_API_BASE", invalid_base)
+    with pytest.raises(ValueError, match="LiteLLM Proxy endpoint is unknown"):
+      await _get_content(
+          parts,
+          provider=_get_provider_from_model(model),
+          model=model,
+          upload_params=_get_upload_params(model, {}),
+      )
+
+  # Nothing may be sent when the destination cannot be determined.
+  mock_acreate_file.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_content_pdf_upload_uses_proxy_endpoint(mocker):
+  """A proxied upload must go to the proxy, not the provider's own endpoint.
+
+  Regression test: `litellm.acreate_file` resolves its endpoint independently
+  of the completion call, so without these overrides it falls back to the
+  provider's environment variables. That sends the upload straight to Azure
+  while the completion goes to the proxy, which fails outright when the caller
+  only holds proxy credentials.
+  """
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  model = "litellm_proxy/azure/my-deployment"
+  upload_params = {"api_base": "http://proxy:4000", "api_key": "proxy-key"}
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  content = await _get_content(
+      parts,
+      provider=_get_provider_from_model(model),
+      model=model,
+      upload_params=upload_params,
+  )
+
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "file-abc123"
+  assert "file_data" not in content[0]["file"]
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+      api_base="http://proxy:4000",
+      api_key="proxy-key",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_content_pdf_upload_uses_openai_base_url(
+    mocker, isolated_proxy_env
+):
+  """A proxied upload with OPENAI_BASE_URL reaches the proxy endpoint."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  model = "litellm_proxy/openai/gpt-4o"
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  isolated_proxy_env.setenv("OPENAI_BASE_URL", "http://proxy:4000")
+  isolated_proxy_env.setenv("OPENAI_API_KEY", "proxy-key")
+  upload_params = _get_upload_params(model, {})
+  content = await _get_content(
+      parts,
+      provider=_get_provider_from_model(model),
+      model=model,
+      upload_params=upload_params,
+  )
+
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "file-abc123"
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+      api_base="http://proxy:4000",
+      api_key="proxy-key",
+  )
+
+
+@pytest.mark.usefixtures("isolated_proxy_env")
+@pytest.mark.asyncio
+async def test_get_content_pdf_direct_upload_explicit_endpoint_overrides(
+    mocker,
+):
+  """A direct provider upload forwards explicit endpoint arguments."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  model = "azure/gpt-4"
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  await _get_content(
+      parts,
+      provider=_get_provider_from_model(model),
+      model=model,
+      upload_params=_get_upload_params(
+          model,
+          {
+              "api_base": "https://x.openai.azure.com",
+              "api_key": "azure-key",
+              "api_version": "2024-02-15",
+          },
+      ),
+  )
+
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="azure",
+      api_base="https://x.openai.azure.com",
+      api_key="azure-key",
+      api_version="2024-02-15",
+  )
+
+
+@pytest.mark.usefixtures("isolated_proxy_env")
+@pytest.mark.asyncio
+async def test_get_content_pdf_direct_openai_explicit_endpoint_overrides(
+    mocker,
+):
+  """Direct OpenAI model with explicit api_base uploads to custom endpoint."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  model = "openai/gpt-4o"
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  await _get_content(
+      parts,
+      provider=_get_provider_from_model(model),
+      model=model,
+      upload_params=_get_upload_params(
+          model,
+          {
+              "api_base": "http://localhost:8000/v1",
+              "api_key": "custom-key",
+          },
+      ),
+  )
 
   mock_acreate_file.assert_called_once_with(
       file=("document.pdf", b"test_pdf_data", "application/pdf"),
       purpose="assistants",
       custom_llm_provider="openai",
+      api_base="http://localhost:8000/v1",
+      api_key="custom-key",
+  )
+
+
+@pytest.mark.usefixtures("isolated_proxy_env")
+@pytest.mark.asyncio
+async def test_get_content_pdf_direct_upload_no_overrides_omits_kwargs(
+    mocker,
+):
+  """A direct provider upload without overrides relies on provider env vars."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  model = "azure/gpt-4"
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  await _get_content(
+      parts,
+      provider=_get_provider_from_model(model),
+      model=model,
+      upload_params=_get_upload_params(model, {}),
+  )
+
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="azure",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_content_pdf_upload_module_use_litellm_proxy_uses_proxy(
+    mocker, isolated_proxy_env
+):
+  """Unprefixed model with litellm.use_litellm_proxy uses proxy endpoint."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  model = "openai/gpt-4o"
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  isolated_proxy_env.setattr(litellm, "use_litellm_proxy", True)
+  isolated_proxy_env.setattr(litellm, "api_base", "http://proxy:4000")
+  isolated_proxy_env.setattr(litellm, "api_key", "proxy-key")
+  content = await _get_content(
+      parts,
+      provider=_get_provider_from_model(model),
+      model=model,
+      upload_params=_get_upload_params(model, {}),
+  )
+
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "file-abc123"
+  assert "file_data" not in content[0]["file"]
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+      api_base="http://proxy:4000",
+      api_key="proxy-key",
+  )
+
+
+@pytest.mark.usefixtures("isolated_proxy_env")
+@pytest.mark.asyncio
+async def test_get_content_pdf_upload_completion_args_proxy_uses_endpoint(
+    mocker,
+):
+  """Unprefixed model with use_litellm_proxy uses proxy endpoint."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  model = "openai/gpt-4o"
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  completion_args = {
+      "use_litellm_proxy": True,
+      "api_base": "http://proxy:4000",
+      "api_key": "proxy-key",
+  }
+  upload_params = _get_upload_params(model, completion_args)
+  content = await _get_content(
+      parts,
+      provider=_get_provider_from_model(model),
+      model=model,
+      upload_params=upload_params,
+      is_proxied=_is_proxied_model(model, completion_args),
+  )
+
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "file-abc123"
+  assert "file_data" not in content[0]["file"]
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+      api_base="http://proxy:4000",
+      api_key="proxy-key",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_content_pdf_upload_azure_use_litellm_proxy_openai_provider(
+    mocker, isolated_proxy_env
+):
+  """Unprefixed azure model with proxy flag uses openai provider."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  model = "azure/gpt-4"
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  isolated_proxy_env.setenv("USE_LITELLM_PROXY", "true")
+  upload_params = _get_upload_params(
+      model,
+      {
+          "api_base": "http://proxy:4000",
+          "api_key": "proxy-key",
+      },
+  )
+  content = await _get_content(
+      parts,
+      provider=_get_provider_from_model(model),
+      model=model,
+      upload_params=upload_params,
+  )
+
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "file-abc123"
+  assert "file_data" not in content[0]["file"]
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+      api_base="http://proxy:4000",
+      api_key="proxy-key",
   )
 
 
@@ -5536,6 +7904,87 @@ async def test_get_content_pdf_non_openai_uses_file_data():
       "data:application/pdf;base64,"
   )
   assert "file_id" not in content[0]["file"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model, provider",
+    [
+        ("litellm_proxy/anthropic/claude-3-5-sonnet", "anthropic"),
+        ("litellm_proxy/gemini/gemini-2.5-flash", "gemini"),
+        ("litellm_proxy/my-deployment", "litellm_proxy"),
+    ],
+)
+async def test_get_content_pdf_proxied_non_openai_uses_file_data(
+    mocker, model, provider
+):
+  """Proxied Anthropic, Gemini, and bare proxy aliases keep inline file_data."""
+  mock_acreate_file = AsyncMock()
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  upload_params = _get_upload_params(
+      model, {"api_base": "http://proxy:4000", "api_key": "proxy-key"}
+  )
+  content = await _get_content(
+      parts,
+      provider=provider,
+      model=model,
+      upload_params=upload_params,
+  )
+
+  assert content[0]["type"] == "file"
+  assert "file_data" in content[0]["file"]
+  assert content[0]["file"]["file_data"].startswith(
+      "data:application/pdf;base64,"
+  )
+  assert "file_id" not in content[0]["file"]
+  mock_acreate_file.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model, provider",
+    [
+        ("anthropic/claude-3-5-sonnet", "anthropic"),
+        ("gemini/gemini-2.5-flash", "gemini"),
+    ],
+)
+async def test_get_content_pdf_unprefixed_use_litellm_proxy_uses_file_data(
+    mocker, model, provider
+):
+  """Unprefixed Anthropic and Gemini with proxy flag use file_data."""
+  mock_acreate_file = AsyncMock()
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  upload_params = _get_upload_params(
+      model,
+      {
+          "use_litellm_proxy": True,
+          "api_base": "http://proxy:4000",
+          "api_key": "proxy-key",
+      },
+  )
+  content = await _get_content(
+      parts,
+      provider=provider,
+      model=model,
+      upload_params=upload_params,
+      is_proxied=True,
+  )
+
+  assert content[0]["type"] == "file"
+  assert "file_data" in content[0]["file"]
+  assert content[0]["file"]["file_data"].startswith(
+      "data:application/pdf;base64,"
+  )
+  assert "file_id" not in content[0]["file"]
+  mock_acreate_file.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -6092,6 +8541,10 @@ async def test_content_to_message_param_anthropic_no_signature_falls_back():
         ("bedrock", "bedrock/meta.llama3-70b-instruct-v1:0", False),
         ("vertex_ai", "vertex_ai/claude-3-5-sonnet@20241022", True),
         ("vertex_ai", "vertex_ai/gemini-2.5-flash", False),
+        ("vertex_ai", "claude-3-7-sonnet@20250219", True),
+        ("bedrock", "us.anthropic.claude-3-5-sonnet-20241022-v2:0", True),
+        ("vertex_ai", "gemini-2.5-flash", False),
+        ("bedrock", "meta.llama3-70b-instruct-v1:0", False),
         ("openai", "openai/gpt-4o", False),
         ("", "", False),
     ],
@@ -6719,8 +9172,28 @@ async def test_streaming_tool_call_args_assembled_from_many_fragments(
       )
   ]
 
-  assert len(responses) == 1
-  function_call = responses[0].content.parts[0].function_call
+  assert len(responses) == 13
+  assert all(r.partial is True for r in responses[:12])
+  assert responses[12].partial is False
+  assert all(
+      r.content.parts[0].function_call.will_continue is True
+      for r in responses[:12]
+  )
+
+  all_partial_args = [
+      p
+      for r in responses[:12]
+      if r.content.parts[0].function_call.partial_args
+      for p in r.content.parts[0].function_call.partial_args
+  ]
+  assert all_partial_args
+  paths = {p.json_path for p in all_partial_args}
+  assert "$.city" in paths
+  assert "$.details.radius" in paths
+  assert "$.details.tags[0]" in paths
+  assert "$.details.tags[1]" in paths
+
+  function_call = responses[12].content.parts[0].function_call
   assert function_call.name == "my_func"
   assert function_call.id == "call_xyz"
   assert function_call.args == json.loads(full_args)
@@ -6805,25 +9278,42 @@ async def test_streaming_tool_call_brace_in_string_does_not_falsely_complete(
       )
   ]
 
-  assert len(responses) == 1
-  parts = responses[0].content.parts
+  assert len(responses) == 26
+  assert all(r.partial is True for r in responses[:25])
+  assert responses[25].partial is False
+  assert all(
+      r.content.parts[0].function_call.will_continue is True
+      for r in responses[:25]
+  )
+
+  all_partial_args_2 = [
+      p
+      for r in responses[:25]
+      if r.content.parts[0].function_call.partial_args
+      for p in r.content.parts[0].function_call.partial_args
+  ]
+  assert all_partial_args_2
+  paths_2 = {p.json_path for p in all_partial_args_2}
+  assert "$.text" in paths_2
+  assert "$.x" in paths_2
+
+  parts = responses[25].content.parts
   assert len(parts) == 2
   args_by_name = {p.function_call.name: p.function_call.args for p in parts}
   assert args_by_name["my_func"] == json.loads(full_args_a)
   assert args_by_name["other_func"] == json.loads(full_args_b)
 
 
-def _text_stream_chunks(text_fragments, finish_reason="stop"):
+def _reasoning_stream_chunks(deltas, finish_reason="stop"):
   stream = [
       ModelResponseStream(
           choices=[
               StreamingChoices(
-                  finish_reason=None,
-                  delta=Delta(role="assistant", content=fragment),
+                  finish_reason=None, delta=Delta(role="assistant", **kwargs)
               )
           ]
       )
-      for fragment in text_fragments
+      for kwargs in deltas
   ]
   stream.append(
       ModelResponseStream(
@@ -6831,6 +9321,13 @@ def _text_stream_chunks(text_fragments, finish_reason="stop"):
       )
   )
   return stream
+
+
+def _text_stream_chunks(text_fragments, finish_reason="stop"):
+  return _reasoning_stream_chunks(
+      [{"content": fragment} for fragment in text_fragments],
+      finish_reason=finish_reason,
+  )
 
 
 @pytest.mark.asyncio
@@ -6856,6 +9353,135 @@ async def test_streaming_text_assembled_from_many_fragments(
 
 
 @pytest.mark.asyncio
+async def test_streaming_reasoning_assembled_from_many_fragments(
+    mock_completion, lite_llm_instance
+):
+  # Providers that carry no thought signature (xAI, OpenAI, Ollama) stream
+  # reasoning one delta per token. The aggregated response has to join them the
+  # way the text buffer does, or the stored event holds one part per token.
+  full_reasoning = "".join(f"token-{i} " for i in range(50))
+  fragments = _split_into_chunks(
+      full_reasoning, [7] * (len(full_reasoning) // 7)
+  )
+  mock_completion.return_value = iter(
+      _reasoning_stream_chunks(
+          [{"reasoning_content": fragment} for fragment in fragments]
+      )
+  )
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  partials = [r for r in responses if r.partial]
+  aggregated = [r for r in responses if not r.partial]
+  assert [p.content.parts[0].text for p in partials] == fragments
+  assert len(aggregated) == 1
+  parts = aggregated[0].content.parts
+  assert len(parts) == 1
+  assert parts[0].thought is True
+  assert parts[0].text == full_reasoning
+
+
+@pytest.mark.asyncio
+async def test_streaming_reasoning_keeps_thinking_block_boundaries(
+    mock_completion, lite_llm_instance
+):
+  # Anthropic closes each thinking block with a signature-only delta, and the
+  # signature only matches the text of its own block, so blocks must aggregate
+  # one part each rather than collapsing into one.
+  mock_completion.return_value = iter(
+      _reasoning_stream_chunks([
+          {
+              "thinking_blocks": [
+                  {"type": "thinking", "thinking": "First half "}
+              ]
+          },
+          {
+              "thinking_blocks": [
+                  {"type": "thinking", "thinking": "of block one."}
+              ]
+          },
+          {
+              "thinking_blocks": [{
+                  "type": "thinking",
+                  "thinking": "",
+                  "signature": "c2lnLW9uZQ==",
+              }]
+          },
+          {"thinking_blocks": [{"type": "thinking", "thinking": "Block two."}]},
+          {
+              "thinking_blocks": [{
+                  "type": "thinking",
+                  "thinking": "",
+                  "signature": "c2lnLXR3bw==",
+              }]
+          },
+      ])
+  )
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  aggregated = [r for r in responses if not r.partial]
+  assert len(aggregated) == 1
+  parts = aggregated[0].content.parts
+  assert len(parts) == 2
+  assert parts[0].text == "First half of block one."
+  assert parts[0].thought_signature == b"sig-one"
+  assert parts[1].text == "Block two."
+  assert parts[1].thought_signature == b"sig-two"
+
+
+@pytest.mark.asyncio
+async def test_streaming_reasoning_with_tool_call(
+    mock_completion, lite_llm_instance
+):
+  # Streamed reasoning preceding a tool call (e.g. Anthropic thinking with
+  # tool use) must aggregate into thought parts on the finalized tool call
+  # response.
+  thinking_deltas = [
+      {"thinking_blocks": [{"type": "thinking", "thinking": "Let's call "}]},
+      {"thinking_blocks": [{"type": "thinking", "thinking": "the tool."}]},
+      {
+          "thinking_blocks": [{
+              "type": "thinking",
+              "thinking": "",
+              "signature": "c2lnLXRvb2w=",
+          }]
+      },
+  ]
+  tool_chunks = _function_chunks_for_args(['{"city": "Paris"}'])
+  stream = _reasoning_stream_chunks(thinking_deltas)[:-1]
+  stream.extend(_stream_chunks_from_function_chunks(tool_chunks))
+  mock_completion.return_value = iter(stream)
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  aggregated = [r for r in responses if not r.partial]
+  assert len(aggregated) == 1
+  parts = aggregated[0].content.parts
+  assert len(parts) == 2
+  assert parts[0].thought is True
+  assert parts[0].text == "Let's call the tool."
+  assert parts[0].thought_signature == b"sig-tool"
+  assert parts[1].function_call.name == "my_func"
+  assert parts[1].function_call.args == {"city": "Paris"}
+
+
+@pytest.mark.asyncio
 async def test_streaming_buffers_hold_fragments_instead_of_growing_copies(
     mock_completion, lite_llm_instance
 ):
@@ -6875,6 +9501,10 @@ async def test_streaming_buffers_hold_fragments_instead_of_growing_copies(
       LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
   )
   try:
+    # Skip the 3 partial function call responses
+    await responses.__anext__()
+    await responses.__anext__()
+    await responses.__anext__()
     # Suspends on the first partial text response, with both buffers filled.
     await responses.__anext__()
     buffers = responses.ag_frame.f_locals
@@ -7212,3 +9842,653 @@ async def test_generate_content_async_omits_tool_choice_when_functions_override(
   _, kwargs = mock_acompletion.call_args
   assert kwargs.get("tools") is None
   assert "tool_choice" not in kwargs
+
+
+def _cache_llm_request(cache_config=None):
+  return LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Cache this")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          system_instruction="You are a helpful assistant",
+      ),
+      cache_config=cache_config,
+  )
+
+
+def _injection_points(mock_acompletion):
+  _, kwargs = mock_acompletion.call_args
+  return kwargs.get("cache_control_injection_points")
+
+
+@pytest.mark.asyncio
+async def test_no_cache_config_sends_no_injection_points(
+    lite_llm_instance, mock_acompletion
+):
+  """Caching stays off unless the app configured it."""
+  async for _ in lite_llm_instance.generate_content_async(_cache_llm_request()):
+    pass
+
+  assert _injection_points(mock_acompletion) is None
+
+
+@pytest.mark.asyncio
+async def test_cache_config_marks_system_and_last_message(
+    lite_llm_instance, mock_acompletion
+):
+  """The stable head of the prompt and the conversation each get a point."""
+  async for _ in lite_llm_instance.generate_content_async(
+      _cache_llm_request(ContextCacheConfig())
+  ):
+    pass
+
+  assert _injection_points(mock_acompletion) == [
+      {
+          "location": "message",
+          "role": "system",
+          "control": {"type": "ephemeral"},
+      },
+      {
+          "location": "message",
+          "index": -1,
+          "control": {"type": "ephemeral"},
+      },
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ttl_seconds,expected_control",
+    [
+        (300, {"type": "ephemeral"}),
+        (1800, {"type": "ephemeral"}),
+        (3599, {"type": "ephemeral"}),
+        (3600, {"type": "ephemeral", "ttl": "1h"}),
+        (86400, {"type": "ephemeral", "ttl": "1h"}),
+    ],
+)
+async def test_cache_ttl_maps_onto_an_offered_lifetime(
+    lite_llm_instance, mock_acompletion, ttl_seconds, expected_control
+):
+  """Five minutes or an hour; a shorter ask gets five minutes."""
+  async for _ in lite_llm_instance.generate_content_async(
+      _cache_llm_request(ContextCacheConfig(ttl_seconds=ttl_seconds))
+  ):
+    pass
+
+  points = _injection_points(mock_acompletion)
+  assert [point["control"] for point in points] == [expected_control] * 2
+
+
+@pytest.mark.asyncio
+async def test_cache_config_below_min_tokens_sends_no_injection_points(
+    lite_llm_instance, mock_acompletion
+):
+  """A prompt the app called too small to cache is sent unmarked."""
+  llm_request = _cache_llm_request(ContextCacheConfig(min_tokens=5000))
+  llm_request.cacheable_contents_token_count = 4999
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  assert _injection_points(mock_acompletion) is None
+
+
+@pytest.mark.asyncio
+async def test_cache_config_at_min_tokens_sends_injection_points(
+    lite_llm_instance, mock_acompletion
+):
+  """Reaching the configured minimum is enough to start caching."""
+  llm_request = _cache_llm_request(ContextCacheConfig(min_tokens=5000))
+  llm_request.cacheable_contents_token_count = 5000
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  assert len(_injection_points(mock_acompletion)) == 2
+
+
+@pytest.mark.asyncio
+async def test_injection_points_given_at_construction_are_kept(
+    mock_client, mock_acompletion
+):
+  """A caller who named their own points knows their provider better."""
+  chosen = [{"location": "tool_config"}]
+  lite_llm_instance = LiteLlm(
+      model="test_model",
+      llm_client=mock_client,
+      cache_control_injection_points=chosen,
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(
+      _cache_llm_request(ContextCacheConfig())
+  ):
+    pass
+
+  assert _injection_points(mock_acompletion) == chosen
+
+
+def test_to_litellm_response_format_strict_openai_schema_for_genai_schema():
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          "choice": types.Schema(
+              any_of=[
+                  types.Schema(type=types.Type.STRING),
+                  types.Schema(type=types.Type.INTEGER),
+              ]
+          )
+      },
+      required=["choice"],
+  )
+  formatted = _to_litellm_response_format(schema, model="gpt-4o-mini")
+  assert formatted["type"] == "json_schema"
+  json_schema = formatted["json_schema"]["schema"]
+  assert json_schema["type"] == "object"
+  assert json_schema["additionalProperties"] is False
+  assert json_schema["properties"]["choice"]["anyOf"] == [
+      {"type": "string"},
+      {"type": "integer"},
+  ]
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_aborted_by_length(
+    mock_completion, lite_llm_instance
+):
+  """If finish_reason=length on a chunk with args, partial will_continue remains True."""
+  fragments = ['{"city": "San ', 'Francisco"}']
+  stream = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_xyz",
+                              function=Function(
+                                  name="my_func", arguments=fragments[0]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason="length",
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id=None,
+                              function=Function(
+                                  name=None, arguments=fragments[1]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+  ]
+  mock_completion.return_value = iter(stream)
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 3
+
+  fc1 = responses[0].content.parts[0].function_call
+  assert fc1.will_continue is True
+  assert [pa.string_value for pa in fc1.partial_args] == ["San "]
+  assert [pa.json_path for pa in fc1.partial_args] == ["$.city"]
+
+  fc2 = responses[1].content.parts[0].function_call
+  assert fc2.will_continue is True
+  assert [pa.string_value for pa in fc2.partial_args] == ["Francisco"]
+  assert [pa.json_path for pa in fc2.partial_args] == ["$.city"]
+
+  final_fc = responses[2].content.parts[0].function_call
+  assert final_fc.will_continue is None
+  assert final_fc.args == {"city": "San Francisco"}
+  assert responses[2].finish_reason == types.FinishReason.MAX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_stop_with_args_does_not_flip_will_continue(
+    mock_completion, lite_llm_instance
+):
+  """If finish_reason=stop on a chunk with args, will_continue should remain True.
+
+  This is because we don't finalize on stop with args, but wait for a stop-only
+  chunk.
+  """
+  fragments = ['{"city": "San ', 'Francisco"}']
+  stream = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_xyz",
+                              function=Function(
+                                  name="my_func", arguments=fragments[0]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason="stop",
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id=None,
+                              function=Function(
+                                  name=None, arguments=fragments[1]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason="stop",
+                  delta=Delta(),
+              )
+          ]
+      ),
+  ]
+  mock_completion.return_value = iter(stream)
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 3
+
+  fc1 = responses[0].content.parts[0].function_call
+  assert fc1.will_continue is True
+  assert [pa.string_value for pa in fc1.partial_args] == ["San "]
+  assert [pa.json_path for pa in fc1.partial_args] == ["$.city"]
+
+  fc2 = responses[1].content.parts[0].function_call
+  assert fc2.will_continue is True  # Crucial: remains True
+  assert [pa.string_value for pa in fc2.partial_args] == ["Francisco"]
+  assert [pa.json_path for pa in fc2.partial_args] == ["$.city"]
+
+  final_fc = responses[2].content.parts[0].function_call
+  assert final_fc.will_continue is None
+  assert final_fc.args == {"city": "San Francisco"}
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_partial_response_will_continue_true_on_tool_calls_chunk(
+    mock_completion, lite_llm_instance
+):
+  fragments = ['{"city": "San ', 'Francisco"}']
+  stream = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_xyz",
+                              function=Function(
+                                  name="my_func", arguments=fragments[0]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason="tool_calls",
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id=None,
+                              function=Function(
+                                  name=None, arguments=fragments[1]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+  ]
+  mock_completion.return_value = iter(stream)
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 3
+  partial_responses = [r for r in responses if r.partial]
+  assert len(partial_responses) == 2
+  for r in partial_responses:
+    assert r.content.parts[0].function_call.will_continue is True
+
+  final_fc = responses[2].content.parts[0].function_call
+  assert final_fc.will_continue is None
+  assert final_fc.args == {"city": "San Francisco"}
+
+
+@pytest.mark.usefixtures("isolated_proxy_env")
+@pytest.mark.asyncio
+async def test_content_to_message_param_multipart_tool_response_upload_params(
+    mocker,
+):
+  """Multipart tool response forwards upload_params and is_proxied."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  model = "azure/my-deployment"
+  fn_part = types.Part.from_function_response(
+      name="test_tool",
+      response={"output": "done"},
+  )
+  fn_part.function_response.id = "call-123"
+  content = types.Content(
+      role="user",
+      parts=[
+          fn_part,
+          types.Part.from_bytes(
+              data=b"test_pdf_data", mime_type="application/pdf"
+          ),
+      ],
+  )
+  await _content_to_message_param(
+      content,
+      provider="azure",
+      model=model,
+      upload_params={"api_base": "http://proxy:4000", "api_key": "proxy-key"},
+      is_proxied=True,
+  )
+
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+      api_base="http://proxy:4000",
+      api_key="proxy-key",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_content_proxied_azure_upload_uses_openai_provider(mocker):
+  """Proxied uploads use custom_llm_provider='openai' for proxy endpoint."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  model = "litellm_proxy/azure/my-deployment"
+  upload_params = {"api_base": "http://proxy:4000", "api_key": "proxy-key"}
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  content = await _get_content(
+      parts,
+      provider=_get_provider_from_model(model),
+      model=model,
+      upload_params=upload_params,
+  )
+
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "file-abc123"
+  assert "file_data" not in content[0]["file"]
+
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+      api_base="http://proxy:4000",
+      api_key="proxy-key",
+  )
+
+
+@pytest.mark.usefixtures("isolated_proxy_env")
+@pytest.mark.asyncio
+async def test_get_content_unprefixed_use_litellm_proxy_no_endpoint_raises(
+    mocker,
+):
+  """Unprefixed model via use_litellm_proxy without endpoint must raise."""
+  mock_acreate_file = AsyncMock()
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  model = "openai/gpt-4o"
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  completion_args = {"use_litellm_proxy": True}
+  upload_params = _get_upload_params(model, completion_args)
+  with pytest.raises(ValueError, match="LiteLLM Proxy endpoint is unknown"):
+    await _get_content(
+        parts,
+        provider=_get_provider_from_model(model),
+        model=model,
+        upload_params=upload_params,
+        is_proxied=_is_proxied_model(model, completion_args),
+    )
+
+  mock_acreate_file.assert_not_called()
+
+
+def test_litellm_init_does_not_trigger_lazy_import(isolated_proxy_env):
+  """Constructing LiteLlm must not import litellm or trigger side effects."""
+  import google.adk.models.lite_llm as lite_llm_module
+
+  mock_ensure = MagicMock()
+  isolated_proxy_env.setattr(
+      lite_llm_module, "_ensure_litellm_imported", mock_ensure
+  )
+  with pytest.warns(UserWarning, match="GEMINI_VIA_LITELLM"):
+    LiteLlm(model="gemini/gemini-2.5-flash")
+  mock_ensure.assert_not_called()
+
+
+@pytest.mark.usefixtures("isolated_proxy_env")
+@pytest.mark.asyncio
+async def test_get_content_unprefixed_use_litellm_proxy_accepts_file_uri():
+  """Unprefixed model with is_proxied=True accepts file URIs."""
+  parts = [
+      types.Part.from_uri(
+          file_uri="gs://my-bucket/doc.pdf", mime_type="application/pdf"
+      )
+  ]
+  completion_args = {
+      "use_litellm_proxy": True,
+      "api_base": "http://proxy:4000",
+      "api_key": "proxy-key",
+  }
+  upload_params = _get_upload_params(
+      "anthropic/claude-3.5-sonnet",
+      completion_args,
+  )
+  content = await _get_content(
+      parts,
+      provider="anthropic",
+      model="anthropic/claude-3.5-sonnet",
+      upload_params=upload_params,
+      is_proxied=_is_proxied_model(
+          "anthropic/claude-3.5-sonnet", completion_args
+      ),
+  )
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "gs://my-bucket/doc.pdf"
+  assert content[0]["file"]["format"] == "application/pdf"
+
+
+@pytest.mark.usefixtures("isolated_proxy_env")
+@pytest.mark.asyncio
+async def test_generate_content_async_proxied_file_upload_uses_proxy_endpoint(
+    mocker, mock_client
+):
+  """generate_content_async forwards upload_params to acreate_file."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  client = LiteLlm(
+      model="litellm_proxy/azure/my-deployment",
+      llm_client=mock_client,
+      api_base="http://proxy:4000",
+      api_key="proxy-key",
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_bytes(
+                      data=b"test_pdf_data", mime_type="application/pdf"
+                  )
+              ],
+          )
+      ]
+  )
+  async for response in client.generate_content_async(llm_request):
+    assert response.content.role == "model"
+
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+      api_base="http://proxy:4000",
+      api_key="proxy-key",
+  )
+
+
+@pytest.mark.usefixtures("isolated_proxy_env")
+@pytest.mark.asyncio
+async def test_generate_content_async_direct_openai_upload_explicit_api_base(
+    mocker, mock_client
+):
+  """Direct OpenAI model with explicit api_base uploads to that endpoint."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  client = LiteLlm(
+      model="openai/gpt-4o",
+      llm_client=mock_client,
+      api_base="http://localhost:8000/v1",
+      api_key="my-key",
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_bytes(
+                      data=b"test_pdf_data", mime_type="application/pdf"
+                  )
+              ],
+          )
+      ]
+  )
+  async for response in client.generate_content_async(llm_request):
+    assert response.content.role == "model"
+
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+      api_base="http://localhost:8000/v1",
+      api_key="my-key",
+  )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_custom_llm_provider_litellm_proxy_upload(
+    mocker, mock_client, isolated_proxy_env
+):
+  """`custom_llm_provider='litellm_proxy'` uploads via proxy env endpoint."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  isolated_proxy_env.setenv("LITELLM_PROXY_API_BASE", "http://proxy:4000")
+  isolated_proxy_env.setenv("LITELLM_PROXY_API_KEY", "proxy-key")
+
+  client = LiteLlm(
+      model="gpt-4o",
+      llm_client=mock_client,
+      custom_llm_provider="litellm_proxy",
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_bytes(
+                      data=b"test_pdf_data", mime_type="application/pdf"
+                  )
+              ],
+          )
+      ]
+  )
+  async for response in client.generate_content_async(llm_request):
+    assert response.content.role == "model"
+
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+      api_base="http://proxy:4000",
+      api_key="proxy-key",
+  )

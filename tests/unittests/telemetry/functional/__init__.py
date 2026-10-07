@@ -17,7 +17,8 @@
 The tests themselves stay in ``tests/unittests/telemetry``; this package is
 what they are built out of:
 
-* ``_scenarios``: the end-to-end runs to record, and the telemetry setup.
+* ``scenarios``: the end-to-end runs to record, one module per scenario plus
+  the setup, conversation and inference they are built from.
 * ``_digests``: the recorded telemetry, as comparable values.
 * ``_recording``: one case, and replaying it.
 * ``_aclosing``: the async-generator assertions.

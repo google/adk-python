@@ -31,45 +31,29 @@ from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.auth_credential import AuthCredential
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..events._branch_path import _BranchPath
+from ..events._internal_metadata import without_internal_metadata
 from ..events.event import Event
+from ..live._active_streaming_tool import ActiveStreamingTool
+from ..live._audio_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
+from ..live._transcription_entry import TranscriptionEntry
+from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.plugin_manager import PluginManager
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..tools.base_tool import BaseTool
 from ..workflow._base_node import BaseNode
-from .active_streaming_tool import ActiveStreamingTool
+from .base_agent import _agent_state_key
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .context_cache_config import ContextCacheConfig
-from .live_request_queue import LiveRequestQueue
 from .run_config import RunConfig
-from .transcription_entry import TranscriptionEntry
 
 _EventQueueItem = tuple[object, asyncio.Event | None]
 
 
 class LlmCallsLimitExceededError(Exception):
   """Error thrown when the number of LLM calls exceed the limit."""
-
-
-class RealtimeCacheEntry(BaseModel):
-  """Store audio data chunks for caching before flushing."""
-
-  model_config = ConfigDict(
-      arbitrary_types_allowed=True,
-      extra="forbid",
-  )
-  """The pydantic model config."""
-
-  role: str
-  """The role that created this audio data, typically "user" or "model"."""
-
-  data: types.Blob
-  """The audio data chunk."""
-
-  timestamp: float
-  """Timestamp when the audio chunk was received."""
 
 
 class _InvocationCostManager(BaseModel):
@@ -100,6 +84,36 @@ class _InvocationCostManager(BaseModel):
           "Max number of llm calls limit of"
           f" `{run_config.max_llm_calls}` exceeded"
       )
+
+
+class _AbortState:
+  """Shared mutable state container for invocation abort signals.
+
+  Because Pydantic model_copy() shallow-copies __pydantic_private__, all
+  derived contexts within the same Runner share the exact same _AbortState
+  instance reference. Updates to loop, signal, or aborted propagate across all
+  model_copy() clones in the tree. Cross-Runner sub-runs (such as AgentTool or
+  nested Workflow node runners) propagate cancellation by passing
+  ``_abort_signal`` to the child Runner's ``run_async``. ``signal`` is an
+  ``asyncio.Event`` and can only be awaited on ``loop``, so AgentTool does not
+  pass it when the tool runs on another event loop (e.g. RunConfig's tool
+  thread pool); such a sub-run is not cancelled by a caller abort.
+  """
+
+  def __init__(
+      self,
+      signal: asyncio.Event | None = None,
+      loop: asyncio.AbstractEventLoop | None = None,
+  ) -> None:
+    self.signal = signal if signal is not None else asyncio.Event()
+    self.loop = loop
+    self.aborted = False
+    self.event_synthesized = False
+
+  def __deepcopy__(self, memo: dict[int, Any] | None) -> _AbortState:
+    # Preserve single-instance sharing across deepcopies and avoid traversing
+    # active asyncio event loops or coroutines.
+    return self
 
 
 class InvocationContext(BaseModel):
@@ -237,7 +251,10 @@ class InvocationContext(BaseModel):
   """The compaction config for this invocation."""
 
   token_compaction_checked: bool = False
-  """Whether token-threshold compaction ran during this invocation."""
+  """Whether the compaction request processor compacted before a model call.
+
+  Set on the context that call used, so parent contexts do not see it.
+  """
 
   plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""
@@ -269,6 +286,9 @@ class InvocationContext(BaseModel):
   _custom_metadata: dict[str, Any] = PrivateAttr(default_factory=dict)
   """Custom metadata for attaching low-level execution telemetry."""
 
+  _private_metadata: dict[str, Any] = PrivateAttr(default_factory=dict)
+  """Private metadata for internal caching, not exposed to user code."""
+
   _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
       default_factory=_InvocationCostManager
   )
@@ -276,11 +296,58 @@ class InvocationContext(BaseModel):
   of this invocation.
   """
 
+  _abort_state: _AbortState = PrivateAttr(default_factory=_AbortState)
+  """Captured abort state (signal, loop, and aborted flag) shared across copies."""
+
   @override
   def model_post_init(self, __context: Any) -> None:
     super().model_post_init(__context)
     if self.run_config and self.run_config.custom_metadata:
-      self._custom_metadata.update(self.run_config.custom_metadata)
+      self._custom_metadata.update(
+          without_internal_metadata(self.run_config.custom_metadata) or {}
+      )
+    try:
+      self._abort_state.loop = asyncio.get_running_loop()
+    except RuntimeError:
+      pass
+
+  @property
+  def _abort_signal(self) -> asyncio.Event:
+    """The internal abort signal event for this invocation.
+
+    Private on purpose so callers use ``is_aborted``, while internal runners use
+    ``_abort_signal`` to await cancellation. Sub-contexts are shallow
+    ``model_copy`` clones that share this exact Event instance via
+    ``_abort_state``.
+    """
+    if self._abort_state.loop is None:
+      try:
+        self._abort_state.loop = asyncio.get_running_loop()
+      except RuntimeError:
+        pass
+    return self._abort_state.signal
+
+  def _attach_abort_signal(self, abort_signal: asyncio.Event) -> None:
+    """Replaces this context's abort signal with a caller-owned event.
+
+    Only for the runner to call on a freshly built root context, before any
+    sub-context is derived from it. The runner cannot pass the signal to the
+    constructor because the context is produced by ``_new_invocation_context``,
+    an overridable factory whose subclass overrides do not accept the argument.
+
+    Because sub-contexts share ``_abort_state``, replacing the signal here
+    propagates to all derived contexts. Rebinding after execution begins is
+    unsafe as active tasks may already be awaiting the previous event.
+
+    Args:
+      abort_signal: The caller-owned event to abort this invocation with.
+    """
+    self._abort_state.signal = abort_signal
+    if self._abort_state.loop is None:
+      try:
+        self._abort_state.loop = asyncio.get_running_loop()
+      except RuntimeError:
+        pass
 
   @property
   def is_resumable(self) -> bool:
@@ -289,6 +356,44 @@ class InvocationContext(BaseModel):
         self.resumability_config is not None
         and self.resumability_config.is_resumable
     )
+
+  @property
+  def is_aborted(self) -> bool:
+    """Returns whether the current invocation has been requested to abort."""
+    return self._abort_state.aborted or self._abort_state.signal.is_set()
+
+  def abort(self) -> None:
+    """Trip the abort signal in a thread-safe manner.
+
+    Can be safely called from either the event loop thread or an external
+    worker thread. When called from within the running event loop, trips the
+    signal immediately on the same tick. When called from a foreign thread,
+    schedules the trip thread-safely onto the captured event loop.
+    """
+    self._abort_state.aborted = True
+    signal = self._abort_state.signal
+    if signal.is_set():
+      return
+
+    try:
+      running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+      running_loop = None
+
+    target_loop = self._abort_state.loop
+    if target_loop is not None and running_loop is not target_loop:
+      try:
+        target_loop.call_soon_threadsafe(signal.set)
+      except RuntimeError:
+        try:
+          signal.set()
+        except RuntimeError:
+          pass
+    else:
+      try:
+        signal.set()
+      except RuntimeError:
+        pass
 
   async def _enqueue_event(self, event: Event) -> None:
     """Enqueue an event for the Runner main loop to process.
@@ -336,15 +441,16 @@ class InvocationContext(BaseModel):
         True.
       end_of_agent: Whether the agent has finished running.
     """
+    key = _agent_state_key(self, agent_name)
     if end_of_agent:
-      self.end_of_agents[agent_name] = True
-      self.agent_states.pop(agent_name, None)
+      self.end_of_agents[key] = True
+      self.agent_states.pop(key, None)
     elif agent_state is not None:
-      self.agent_states[agent_name] = agent_state.model_dump(mode="json")
-      self.end_of_agents[agent_name] = False
+      self.agent_states[key] = agent_state.model_dump(mode="json")
+      self.end_of_agents[key] = False
     else:
-      self.end_of_agents.pop(agent_name, None)
-      self.agent_states.pop(agent_name, None)
+      self.end_of_agents.pop(key, None)
+      self.agent_states.pop(key, None)
 
   def reset_sub_agent_states(
       self,
@@ -447,46 +553,91 @@ class InvocationContext(BaseModel):
           if event.invocation_id == self.invocation_id
       ]
     if current_branch:
+      branch_fc_ids: set[str] | None = None
+
+      def _branch_function_call_ids() -> set[str]:
+        """Function call ids issued on this branch or a descendant sub-branch.
+
+        The ids depend only on the session and this branch, not on the event
+        being tested, so they are gathered at most once per call. Gathering
+        them inside the predicate instead rescans every session event once per
+        user response event, which is quadratic in the session size.
+        """
+        nonlocal branch_fc_ids
+        if branch_fc_ids is None:
+          descendant_prefix = f"{self.branch}."
+          branch_fc_ids = {
+              fc.id
+              for branch_event in self.session.events
+              if branch_event.branch
+              and (
+                  branch_event.branch == self.branch
+                  or branch_event.branch.startswith(descendant_prefix)
+              )
+              for fc in branch_event.get_function_calls()
+              if fc.id is not None
+          }
+        return branch_fc_ids
 
       def _is_branch_match(event: Event) -> bool:
-        """Determines if an event belongs to the current branch or any descendant sub-branch."""
+        """Determines whether an event is part of this invocation's subtree.
+
+        The rule differs by author, deliberately but asymmetrically.
+
+        A user event matches when it sits on this branch, on a descendant
+        sub-branch (e.g. a child NodeTool/WorkflowTool execution tree), or on
+        no branch at all; and when ``self.branch`` is ``None``, every user
+        event matches whatever branch it is on. An empty-string branch is the
+        opposite rather than a synonym for that: it is a real branch value in
+        the workflow code and matches no branched event. A user event carrying
+        function responses must additionally answer a function call issued on
+        this branch or below it -- one answering a call from anywhere else is
+        dropped even when it sits on exactly this branch, which is what keeps
+        a reply from leaking across parallel trees.
+
+        Any other event must sit on exactly this branch; a descendant's own
+        events are not returned.
+
+        So a confirmation answered by the user on a sub-branch is visible here
+        while the agent event that requested it is not. Widening the non-user
+        rule to descendants would not expose sibling trees --
+        ``_BranchPath.is_descendant_of`` excludes those -- but it would hand
+        every caller a descendant's internal events, so it needs a per-caller
+        review rather than a blanket change.
+
+        Note this is the opposite direction from
+        ``contents._is_event_belongs_to_branch``, which asks a different
+        question -- "what history may this agent see?" -- and so matches
+        *ancestor* branches instead. Both are intended.
+        """
         if getattr(event, "author", None) == "user":
           frs = event.get_function_responses()
           if frs and self.branch and self.session:
             fr_ids = {fr.id for fr in frs if fr.id is not None}
-            if fr_ids:
-              # Gather function calls issued on this branch or descendant sub-branches
-              # to verify the user response targets a call originated within this branch tree.
-              branch_events = [
-                  e
-                  for e in self.session.events
-                  if e.branch
-                  and (
-                      e.branch == self.branch
-                      or e.branch.startswith(f"{self.branch}.")
-                  )
-              ]
-              branch_fc_ids = {
-                  fc.id
-                  for e in branch_events
-                  for fc in e.get_function_calls()
-                  if fc.id is not None
-              }
-              # If user's response IDs do not match any function call on this branch tree,
-              # prevent event leakage across parallel or unrelated branches.
-              if not (fr_ids & branch_fc_ids):
-                return False
+            # If user's response IDs do not match any function call on this
+            # branch tree, prevent event leakage across parallel or unrelated
+            # branches.
+            if fr_ids and not (fr_ids & _branch_function_call_ids()):
+              return False
 
-          # Match events yielded directly on this branch or on descendant sub-branches
-          # (e.g. child NodeTool/WorkflowTool execution trees).
+          # Match events yielded directly on this branch or on descendant
+          # sub-branches (e.g. child NodeTool/WorkflowTool execution trees).
+          # The `self.branch` guard keeps an empty branch from matching every
+          # branched event, which a bare descendant test would do.
           if (
               event.branch is None
               or self.branch is None
               or event.branch == self.branch
-              or (self.branch and event.branch.startswith(f"{self.branch}."))
+              or (
+                  self.branch
+                  and _BranchPath.from_string(event.branch).is_descendant_of(
+                      _BranchPath.from_string(self.branch)
+                  )
+              )
           ):
             return True
           return False
+        # Non-user events: exactly this branch, per the docstring above.
         return event.branch == self.branch
 
       results = [e for e in results if _is_branch_match(e)]
@@ -542,38 +693,6 @@ class InvocationContext(BaseModel):
           return True
 
     return False
-
-  # TODO: Move this method from invocation_context to a dedicated module.
-  def _find_matching_function_call(
-      self, function_response_event: Event
-  ) -> Event | None:
-    """Finds the function call event in the current invocation that matches the function response id."""
-    from ..flows.llm_flows.functions import find_event_by_function_call_id
-
-    function_responses = function_response_event.get_function_responses()
-    if not function_responses:
-      return None
-
-    events = self._get_events(current_invocation=True)
-    if events and events[-1].id == function_response_event.id:
-      search_space = events[:-1]
-    else:
-      search_space = events
-
-    function_response_id = function_responses[0].id
-    if not function_response_id:
-      return None
-    return find_event_by_function_call_id(search_space, function_response_id)
-
-  def stamp_event_branch_context(self, event: Event) -> None:
-    """Stamps the event with the branch and isolation scope of its matching function call."""
-    if function_call := self._find_matching_function_call(event):
-      event.branch = function_call.branch
-      if (
-          event.isolation_scope is None
-          and function_call.isolation_scope is not None
-      ):
-        event.isolation_scope = function_call.isolation_scope
 
 
 def new_invocation_context_id() -> str:

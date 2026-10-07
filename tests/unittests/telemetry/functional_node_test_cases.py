@@ -21,6 +21,11 @@ Workflow + nested workflow + node + agent + tool scenario.
 from __future__ import annotations
 
 from .functional._recording import FunctionalTestCase
+from .functional_test_cases import experimental_adk_matrix
 from .functional_test_cases import semconv_matrix
 
-ALL_NODE_CASES: list[FunctionalTestCase] = semconv_matrix("node")
+ALL_NODE_CASES: list[FunctionalTestCase] = (
+    semconv_matrix("node")
+    + experimental_adk_matrix("agent_tool")
+    + experimental_adk_matrix("nested_agents_in_workflow", schema_versions=(2,))
+)

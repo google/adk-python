@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import enum
 import logging
 from typing import Any
 
@@ -231,7 +230,7 @@ def get_table_info(
 
 
 def _enum_name_from_value(
-    enum_class: type[enum.Enum], value: int, prefix: str = "UNKNOWN"
+    enum_class: type[object], value: int, prefix: str = "UNKNOWN"
 ) -> str:
   for attr_name in dir(enum_class):
     if not attr_name.startswith("_"):

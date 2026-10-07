@@ -89,34 +89,34 @@
                     }
                   }
                 ]
-              },
-              {
-                "name": "execute_tool load_skill",
-                "attributes": {
-                  "gen_ai.operation.name": "execute_tool",
-                  "gen_ai.tool.description": "Loads the SKILL.md instructions for a given skill.",
-                  "gen_ai.tool.name": "load_skill",
-                  "gen_ai.tool.type": "LoadSkillTool",
-                  "gen_ai.agent.name": "some_root_agent",
-                  "gcp.vertex.agent.llm_request": "{}",
-                  "gcp.vertex.agent.llm_response": "{}",
-                  "gcp.vertex.agent.tool_call_args": "{}",
-                  "gen_ai.tool.call.id": "PRESENT",
-                  "gcp.vertex.agent.event_id": "PRESENT",
-                  "gcp.vertex.agent.tool_response": "{}",
-                  "adk.experimental.skill.name": "local-skill",
-                  "adk.experimental.skill.description": "A sample skill.",
-                  "adk.experimental.skill.source.uri": "file://local-skill",
-                  "adk.experimental.skill.additional_tools": [
-                    "foo",
-                    "bar"
-                  ]
-                },
-                "status": "UNSET",
-                "children": [],
-                "logs": []
               }
             ],
+            "logs": []
+          },
+          {
+            "name": "execute_tool load_skill",
+            "attributes": {
+              "gen_ai.operation.name": "execute_tool",
+              "gen_ai.tool.description": "Loads the SKILL.md instructions for a given skill.",
+              "gen_ai.tool.name": "load_skill",
+              "gen_ai.tool.type": "LoadSkillTool",
+              "gen_ai.agent.name": "some_root_agent",
+              "gcp.vertex.agent.llm_request": "{}",
+              "gcp.vertex.agent.llm_response": "{}",
+              "gcp.vertex.agent.tool_call_args": "{}",
+              "gen_ai.tool.call.id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.tool_response": "{}",
+              "gen_ai.skill.name": "local-skill",
+              "gen_ai.skill.description": "A sample skill.",
+              "gen_ai.skill.source.uri": "file://local-skill",
+              "adk.skill.additional_tools": [
+                "foo",
+                "bar"
+              ]
+            },
+            "status": "UNSET",
+            "children": [],
             "logs": []
           },
           {
@@ -219,6 +219,152 @@
     "logs": []
   },
   "metric_points": {
+    "adk.experimental.invoke_agent.cache_read.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 100
+      }
+    ],
+    "adk.experimental.invoke_agent.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 250
+      }
+    ],
+    "adk.experimental.invoke_agent.output_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 75
+      }
+    ],
+    "adk.experimental.invoke_agent.reasoning.output_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 20
+      }
+    ],
+    "adk.experimental.invoke_agent.skill.loads": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 1
+      }
+    ],
+    "adk.experimental.invoke_agent.tool.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 0
+      }
+    ],
+    "adk.experimental.invoke_agent.total_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 325
+      }
+    ],
+    "adk.experimental.invoke_workflow.cache_read.input_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 100
+      }
+    ],
+    "adk.experimental.invoke_workflow.inference_calls": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 2
+      }
+    ],
+    "adk.experimental.invoke_workflow.input_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 250
+      }
+    ],
+    "adk.experimental.invoke_workflow.output_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 75
+      }
+    ],
+    "adk.experimental.invoke_workflow.reasoning.output_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 20
+      }
+    ],
+    "adk.experimental.invoke_workflow.skill.loads": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 1
+      }
+    ],
+    "adk.experimental.invoke_workflow.tool.input_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 0
+      }
+    ],
+    "adk.experimental.invoke_workflow.tool_calls": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 1
+      }
+    ],
+    "adk.experimental.invoke_workflow.total_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 325
+      }
+    ],
+    "adk.experimental.skill.loads": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.skill.name": "local-skill"
+        },
+        "value": 1
+      }
+    ],
     "gen_ai.client.operation.duration": [
       {
         "attributes": {

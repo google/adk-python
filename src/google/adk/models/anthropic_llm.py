@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import dataclasses
@@ -46,15 +47,20 @@ from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic import model_validator
+from pydantic import PrivateAttr
 from typing_extensions import override
 
+from . import _prompt_cache
 from ..utils import _json_utils
+from ..utils import streaming_utils
 from ..utils._google_client_headers import get_tracking_headers
+from ..utils._schema_utils import lowercase_schema_types
 from .base_llm import BaseLlm
 from .interactions_utils import extract_system_instruction
 from .llm_response import LlmResponse
 
 if TYPE_CHECKING:
+  from ..agents.context_cache_config import ContextCacheConfig
   from .llm_request import LlmRequest
 
 __all__ = ["AnthropicLlm", "Claude", "AnthropicGenerateContentConfig"]
@@ -100,6 +106,9 @@ _RATE_LIMIT_POSSIBLE_FIX_MESSAGE = (
     "https://docs.anthropic.com/en/api/errors#http-errors"
 )
 
+# Claude rejects a cache breakpoint on a reasoning block.
+_UNCACHEABLE_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
+
 
 # anthropic is an optional dependency, so mypy resolves the base class to Any.
 class _AnthropicRateLimitError(RateLimitError):  # type: ignore[misc]
@@ -124,6 +133,7 @@ class _ToolUseAccumulator:
   id: str
   name: str
   args_json: str
+  tracker: streaming_utils._JsonPathTracker | None = None
 
 
 @dataclasses.dataclass
@@ -151,11 +161,12 @@ def _build_anthropic_thinking_param(
       explicit (mirroring the Anthropic API).
     * ``0``: thinking is DISABLED (``thinking.type: "disabled"``).
     * negative (e.g. ``-1`` AUTOMATIC): maps to Anthropic's adaptive thinking
-      (``thinking.type: "adaptive"``). The model picks the depth itself
-      (controlled by the separate ``output_config.effort`` parameter when
-      set). REQUIRED for Claude Opus 4.7 and later models that reject
-      ``"enabled"`` with a 400 error; also recommended for Opus 4.6 and
-      Sonnet 4.6 where ``"enabled"`` is deprecated.
+      (``thinking.type: "adaptive"``, ``thinking.display: "summarized"``). The
+      model picks the depth itself (controlled by the separate
+      ``output_config.effort`` parameter when set) and returns its reasoning
+      as summarized thoughts. REQUIRED for Claude Opus 4.7 and later models
+      that reject ``"enabled"`` with a 400 error; also recommended for Opus
+      4.6 and Sonnet 4.6 where ``"enabled"`` is deprecated.
     * positive int: budget in tokens for legacy manual mode
       (``thinking.type: "enabled"``; Anthropic requires ``>= 1024`` and
       ``< max_tokens``; validation is delegated to the Anthropic API so the
@@ -192,7 +203,11 @@ def _build_anthropic_thinking_param(
     # where ``"enabled"`` is deprecated. Adaptive does not accept a budget;
     # depth is controlled by the model itself (or by the separate
     # ``output_config.effort`` parameter when set).
-    return anthropic_types.ThinkingConfigAdaptiveParam(type="adaptive")
+    # Without ``display``, Claude redacts the reasoning it just billed for.
+    return anthropic_types.ThinkingConfigAdaptiveParam(
+        type="adaptive",
+        display="summarized",
+    )
 
   return anthropic_types.ThinkingConfigEnabledParam(
       type="enabled",
@@ -331,6 +346,45 @@ def _is_pdf_part(part: types.Part) -> bool:
   )
 
 
+# The fields that mean a part carries something to send. The rest of a Part is
+# annotation -- `part_metadata`, `video_metadata`, `media_resolution` and the
+# like -- and ADK's own A2A converter sets some of them, so asking "is anything
+# else set?" would leave the part in place and the session wedged.
+_PART_CONTENT_FIELDS = (
+    "audio_transcription",
+    "code_execution_result",
+    "executable_code",
+    "file_data",
+    "function_call",
+    "function_response",
+    "inline_data",
+    "tool_call",
+    "tool_response",
+)
+
+
+def _is_empty_text_part(part: types.Part) -> bool:
+  """Returns True for parts that carry nothing but an empty text string.
+
+  ADK itself can produce such parts (e.g. code execution with no output writes
+  `Part(text='')` into the content), and Anthropic rejects empty text blocks.
+  """
+  if part.text != "" or part.thought_signature:
+    return False
+  return not any(getattr(part, f, None) for f in _PART_CONTENT_FIELDS)
+
+
+def _is_content_free_signature(part: types.Part) -> bool:
+  """Whether a part is a thought signature with nothing to send beside it.
+
+  A part that still has its `thought` flag is redacted thinking Claude issued
+  itself, and the branches in `_part_to_message_block` handle it.
+  """
+  if not part.thought_signature or part.thought or part.text:
+    return False
+  return not any(getattr(part, f, None) for f in _PART_CONTENT_FIELDS)
+
+
 def _normalize_image_media_type(mime_type: str) -> _ImageMediaType:
   normalized = mime_type.split(";", 1)[0].strip().lower()
   if normalized not in _ANTHROPIC_IMAGE_MEDIA_TYPES:
@@ -388,24 +442,59 @@ def _function_response_media_blocks(
 
 
 class _ToolUseIdSanitizer:
-  """Maps invalid tool_use IDs to deterministic fallbacks.
+  """Maps invalid or empty tool_use IDs to deterministic unique fallbacks.
 
   Reuse one instance per conversation so a tool_use and its paired
-  tool_result with the same invalid source ID get matching outputs.
+  tool_result get matching unique outputs without collision across turns.
   """
 
   def __init__(self) -> None:
     self._mapping: dict[str, str] = {}
+    self._unpaired_calls_by_name: dict[str, list[str]] = {}
+    self._unpaired_calls_list: list[str] = []
     self._next_fallback: int = 0
 
-  def sanitize(self, tool_id: str | None) -> str:
+  def sanitize(
+      self,
+      tool_id: str | None,
+      tool_name: str | None = None,
+      is_call: bool = False,
+  ) -> str:
     if tool_id and re.fullmatch(r"[a-zA-Z0-9_-]+", tool_id):
       return tool_id
-    key = tool_id or ""
-    if key not in self._mapping:
-      self._mapping[key] = f"toolu_fallback_{self._next_fallback}"
+    if tool_id and tool_id in self._mapping:
+      return self._mapping[tool_id]
+
+    if is_call or (tool_id and tool_id not in self._mapping):
+      assigned_id = f"toolu_fallback_{self._next_fallback}"
       self._next_fallback += 1
-    return self._mapping[key]
+      if tool_id:
+        self._mapping[tool_id] = assigned_id
+      else:
+        if tool_name:
+          self._unpaired_calls_by_name.setdefault(tool_name, []).append(
+              assigned_id
+          )
+        self._unpaired_calls_list.append(assigned_id)
+      return assigned_id
+    else:
+      # Response with empty/None tool_id: pair with oldest pending call
+      if tool_name and self._unpaired_calls_by_name.get(tool_name):
+        assigned_id = self._unpaired_calls_by_name[tool_name].pop(0)
+        if assigned_id in self._unpaired_calls_list:
+          self._unpaired_calls_list.remove(assigned_id)
+        return assigned_id
+      elif self._unpaired_calls_list:
+        assigned_id = self._unpaired_calls_list.pop(0)
+        for ids in self._unpaired_calls_by_name.values():
+          if assigned_id in ids:
+            ids.remove(assigned_id)
+            break
+        return assigned_id
+      else:
+        assigned_id = f"toolu_fallback_{self._next_fallback}"
+        self._next_fallback += 1
+        return assigned_id
 
 
 def _part_to_message_block(
@@ -436,7 +525,9 @@ def _part_to_message_block(
     tool_input: dict[str, object] = dict(function_call.args or {})
 
     return anthropic_types.ToolUseBlockParam(
-        id=sanitizer.sanitize(function_call.id),
+        id=sanitizer.sanitize(
+            function_call.id, tool_name=function_call.name, is_call=True
+        ),
         name=function_call.name,
         input=tool_input,
         type="tool_use",
@@ -470,7 +561,11 @@ def _part_to_message_block(
     # We serialize to str here
     # SDK ref: anthropic.types.tool_result_block_param
     # https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/tool_result_block_param.py
-    elif "result" in response_data and response_data["result"] is not None:
+    # Exactly {"result": value} is ADK's wrapper for a non-dict tool return.
+    elif (
+        response_data.keys() == {"result"}
+        and response_data["result"] is not None
+    ):
       result = response_data["result"]
       if isinstance(result, (dict, list)):
         content = json.dumps(result)
@@ -499,7 +594,11 @@ def _part_to_message_block(
       tool_result_content = content
 
     return anthropic_types.ToolResultBlockParam(
-        tool_use_id=sanitizer.sanitize(function_response.id),
+        tool_use_id=sanitizer.sanitize(
+            function_response.id,
+            tool_name=function_response.name,
+            is_call=False,
+        ),
         type="tool_result",
         content=tool_result_content,
         is_error=False,
@@ -557,6 +656,7 @@ def _content_to_message_param(
     sanitizer: _ToolUseIdSanitizer,
 ) -> anthropic_types.MessageParam:
   message_block = []
+  had_empty_text = False
   for part in content.parts or []:
     # Image data is not supported in Claude for assistant turns.
     if content.role != "user" and _is_image_part(part):
@@ -570,10 +670,34 @@ def _content_to_message_param(
       logger.warning("PDF data is not supported in Claude for assistant turns.")
       continue
 
+    # A signature with nothing to send beside it: there is no block to build
+    # from it, and it used to raise and wedge the session for good.
+    if _is_content_free_signature(part):
+      logger.warning("Dropping a thought signature from another model.")
+      continue
+
+    # Anthropic rejects empty text blocks; skip them rather than failing the
+    # whole request with NotImplementedError.
+    if _is_empty_text_part(part):
+      logger.debug("Skipping empty text part for Claude request.")
+      had_empty_text = True
+      continue
+
     message_block.append(_part_to_message_block(part, sanitizer))
 
+  # Anthropic rejects empty text blocks, but dropping a turn whose only part
+  # was empty text causes problems: e.g. code execution with no output produces
+  # a user turn holding `Part(text='')` as the final message, and dropping it
+  # would end the conversation on an assistant turn, which Anthropic treats
+  # as assistant prefill. A non-whitespace placeholder keeps the turn valid,
+  # but only for user turns: a trailing assistant message is treated as
+  # assistant prefill.
+  role = to_claude_role(content.role)
+  if not message_block and had_empty_text and role == "user":
+    message_block.append(anthropic_types.TextBlockParam(type="text", text="."))
+
   return {
-      "role": to_claude_role(content.role),
+      "role": role,
       "content": message_block,
   }
 
@@ -711,63 +835,8 @@ def message_to_generate_content_response(
       ),
       usage_metadata=usage_metadata,
       finish_reason=to_google_genai_finish_reason(message.stop_reason),
+      model_version=message.model,
   )
-
-
-def _update_type_string(value: object) -> None:
-  """Lowercases nested JSON schema type strings for Anthropic compatibility."""
-  if isinstance(value, list):
-    for item in value:
-      _update_type_string(item)
-    return
-
-  if not isinstance(value, dict):
-    return
-
-  schema_type = value.get("type")
-  if isinstance(schema_type, str):
-    value["type"] = schema_type.lower()
-
-  for dict_key in (
-      "$defs",
-      "defs",
-      "dependentSchemas",
-      "patternProperties",
-      "properties",
-  ):
-    child_dict = value.get(dict_key)
-    if isinstance(child_dict, dict):
-      for child_value in child_dict.values():
-        _update_type_string(child_value)
-
-  for single_key in (
-      "additionalProperties",
-      "additional_properties",
-      "contains",
-      "else",
-      "if",
-      "items",
-      "not",
-      "propertyNames",
-      "then",
-      "unevaluatedProperties",
-  ):
-    child_value = value.get(single_key)
-    if isinstance(child_value, (dict, list)):
-      _update_type_string(child_value)
-
-  for list_key in (
-      "allOf",
-      "all_of",
-      "anyOf",
-      "any_of",
-      "oneOf",
-      "one_of",
-      "prefixItems",
-  ):
-    child_list = value.get(list_key)
-    if isinstance(child_list, list):
-      _update_type_string(child_list)
 
 
 def function_declaration_to_tool_param(
@@ -779,7 +848,7 @@ def function_declaration_to_tool_param(
   # Use parameters_json_schema if available, otherwise convert from parameters
   if function_declaration.parameters_json_schema:
     input_schema = copy.deepcopy(function_declaration.parameters_json_schema)
-    _update_type_string(input_schema)
+    lowercase_schema_types(input_schema)
   else:
     properties = {}
     required_params = []
@@ -796,13 +865,115 @@ def function_declaration_to_tool_param(
     }
     if required_params:
       input_schema["required"] = required_params
-    _update_type_string(input_schema)
+    lowercase_schema_types(input_schema)
 
   return anthropic_types.ToolParam(
       name=function_declaration.name,
       description=function_declaration.description or "",
       input_schema=input_schema,
   )
+
+
+def _to_cache_control(
+    cache_config: ContextCacheConfig,
+) -> anthropic_types.CacheControlEphemeralParam:
+  """Maps the configured cache lifetime onto one Claude actually offers."""
+  if _prompt_cache.use_one_hour_ttl(cache_config):
+    return anthropic_types.CacheControlEphemeralParam(
+        type="ephemeral", ttl="1h"
+    )
+  return anthropic_types.CacheControlEphemeralParam(type="ephemeral")
+
+
+def _set_cache_control(
+    block: anthropic_types.ToolUnionParam | _MessageBlockParam,
+    cache_control: anthropic_types.CacheControlEphemeralParam,
+) -> None:
+  """Attaches a cache breakpoint to a tool definition or a content block.
+
+  Every param the Anthropic SDK accepts is a plain dict at runtime; the unions
+  of TypedDicts only describe their shape.
+  """
+  cast(dict[str, Any], block)["cache_control"] = cache_control
+
+
+def _mark_last_cacheable_message_block(
+    messages: list[anthropic_types.MessageParam],
+    cache_control: anthropic_types.CacheControlEphemeralParam,
+) -> None:
+  """Puts a cache breakpoint at the end of the conversation so far.
+
+  The search runs backwards because a turn can end in a reasoning block, which
+  Claude refuses to cache, or carry no blocks at all once parts Claude cannot
+  receive have been dropped.
+
+  Args:
+    messages: Conversation to mark, modified in place.
+    cache_control: Breakpoint to attach.
+  """
+  for message in reversed(messages):
+    content = message.get("content")
+    if not isinstance(content, list):
+      continue
+    for block in reversed(content):
+      block_type = cast(dict[str, Any], block).get("type")
+      if block_type in _UNCACHEABLE_BLOCK_TYPES:
+        continue
+      _set_cache_control(block, cache_control)
+      return
+
+
+def _apply_cache_breakpoints(
+    *,
+    cache_config: ContextCacheConfig,
+    system: str | NotGiven,
+    messages: list[anthropic_types.MessageParam],
+    tools: Iterable[anthropic_types.ToolUnionParam] | NotGiven,
+) -> str | list[anthropic_types.TextBlockParam] | NotGiven:
+  """Marks the reusable prefix of a request so Claude bills it as a cache hit.
+
+  Claude charges the full input rate for the whole prompt on every turn unless
+  a block carries a breakpoint. A breakpoint tells it to store the prefix
+  ending at that block and to serve that prefix at the much lower cache-read
+  rate on later turns.
+
+  Claude reads the prompt as tools, then system, then messages, so a breakpoint
+  on each of the three keeps the levels above a change still cached: editing
+  the conversation leaves the tools and the system instruction cached, and
+  editing the system instruction leaves the tools cached. Claude allows four
+  breakpoints per request and these are three of them.
+
+  The conversation breakpoint moves to the end of each request, and Claude
+  finds the previous one by looking back at most twenty blocks. A turn that
+  adds more blocks than that, such as one calling nine or more tools at once,
+  therefore rewrites the conversation cache instead of reading it. The tools
+  and system breakpoints are unaffected, so the stable head of the prompt is
+  still served from the cache.
+
+  Args:
+    cache_config: Cache configuration for the request.
+    system: System instruction to mark.
+    messages: Conversation to mark, modified in place.
+    tools: Tool definitions to mark, modified in place.
+
+  Returns:
+    The system instruction to send. Carrying a breakpoint turns it into a
+    block list, so it is returned rather than modified in place.
+  """
+  cache_control = _to_cache_control(cache_config)
+
+  if isinstance(tools, list) and tools:
+    _set_cache_control(tools[-1], cache_control)
+
+  _mark_last_cacheable_message_block(messages, cache_control)
+
+  if isinstance(system, str):
+    return [
+        anthropic_types.TextBlockParam(
+            type="text", text=system, cache_control=cache_control
+        )
+    ]
+  return system
 
 
 class AnthropicLlm(BaseLlm):
@@ -829,10 +1000,13 @@ class AnthropicLlm(BaseLlm):
   )
   """An optional pre-configured Anthropic client."""
 
+  # Coordinates concurrent coroutines initializing the client.
+  _client_init_task: asyncio.Task | None = PrivateAttr(default=None)
+
   @classmethod
   @override
   def supported_models(cls) -> list[str]:
-    return [r"claude-3-.*", r"claude-.*-4.*", r"claude-.*-5.*"]
+    return [r"claude-.*"]
 
   def _resolve_model_name(self, model: Optional[str]) -> str:
     if not model:
@@ -865,10 +1039,20 @@ class AnthropicLlm(BaseLlm):
       if system_str:
         system = system_str
 
+    system_param: str | list[anthropic_types.TextBlockParam] | NotGiven = system
+    cache_config = _prompt_cache.resolve_cache_config(llm_request)
+    if cache_config is not None:
+      system_param = _apply_cache_breakpoints(
+          cache_config=cache_config,
+          system=system,
+          messages=messages,
+          tools=tools,
+      )
+
     model_to_use = self._resolve_model_name(llm_request.model)
     kwargs: dict[str, Any] = {
         "model": model_to_use,
-        "system": system,
+        "system": system_param,
         "messages": messages,
         "tools": tools,
         "tool_choice": tool_choice,
@@ -927,9 +1111,17 @@ class AnthropicLlm(BaseLlm):
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
     sanitizer = _ToolUseIdSanitizer()
+    # A turn whose parts are all dropped above leaves no blocks behind, and
+    # Anthropic rejects a message with empty content. Sending one re-wedges the
+    # session exactly as the NotImplementedError did: the offending part stays
+    # in history, so every later turn fails the same way.
     messages = [
-        _content_to_message_param(content, sanitizer)
-        for content in llm_request.contents or []
+        message
+        for message in (
+            _content_to_message_param(content, sanitizer)
+            for content in llm_request.contents or []
+        )
+        if message["content"]
     ]
     tools: Iterable[anthropic_types.ToolUnionParam] | NotGiven = NOT_GIVEN
     function_declarations: list[types.FunctionDeclaration] = []
@@ -952,11 +1144,12 @@ class AnthropicLlm(BaseLlm):
     thinking = _build_anthropic_thinking_param(llm_request.config)
 
     try:
+      client = await self._get_anthropic_client()
       if not stream:
         kwargs = self._build_anthropic_kwargs(
             llm_request, messages, tools, tool_choice, thinking
         )
-        message = await self._anthropic_client.messages.create(**kwargs)
+        message = await client.messages.create(**kwargs)
         yield message_to_generate_content_response(message)
       else:
         async for response in self._generate_content_streaming(
@@ -995,7 +1188,8 @@ class AnthropicLlm(BaseLlm):
     kwargs = self._build_anthropic_kwargs(
         llm_request, messages, tools, tool_choice, thinking
     )
-    raw_stream = await self._anthropic_client.messages.create(
+    client = await self._get_anthropic_client()
+    raw_stream = await client.messages.create(
         stream=True,
         **kwargs,
     )
@@ -1012,6 +1206,7 @@ class AnthropicLlm(BaseLlm):
     cached_input_tokens: int | None = None
     cache_creation_tokens: int | None = None
     stop_reason: Optional[anthropic_types.StopReason] = None
+    model_version: Optional[str] = None
 
     async for event in raw_stream:
       if event.type == "message_start":
@@ -1022,6 +1217,7 @@ class AnthropicLlm(BaseLlm):
         cache_creation_tokens = _extract_cache_creation_token_count(
             event.message.usage
         )
+        model_version = event.message.model
 
       elif event.type == "content_block_start":
         block = event.content_block
@@ -1041,6 +1237,22 @@ class AnthropicLlm(BaseLlm):
               name=block.name,
               args_json="",
           )
+          yield LlmResponse(
+              partial=True,
+              content=types.Content(
+                  role="model",
+                  parts=[
+                      types.Part(
+                          function_call=types.FunctionCall(
+                              id=block.id,
+                              name=block.name,
+                              will_continue=True,
+                          )
+                      )
+                  ],
+              ),
+              model_version=llm_request.model or self.model,
+          )
 
       elif event.type == "content_block_delta":
         delta = event.delta
@@ -1055,6 +1267,7 @@ class AnthropicLlm(BaseLlm):
                   role="model",
                   parts=[types.Part(text=delta.thinking, thought=True)],
               ),
+              model_version=model_version,
               partial=True,
           )
         elif isinstance(delta, anthropic_types.SignatureDelta):
@@ -1079,11 +1292,37 @@ class AnthropicLlm(BaseLlm):
                   role="model",
                   parts=[types.Part.from_text(text=delta.text)],
               ),
+              model_version=model_version,
               partial=True,
           )
         elif isinstance(delta, anthropic_types.InputJSONDelta):
           if event.index in tool_use_blocks:
             tool_use_blocks[event.index].args_json += delta.partial_json
+            accumulator = tool_use_blocks[event.index]
+            partial_args = None
+            if delta.partial_json:
+              if accumulator.tracker is None:
+                accumulator.tracker = streaming_utils._JsonPathTracker()
+              partial_args = accumulator.tracker.handle_chunk(
+                  delta.partial_json
+              )
+            yield LlmResponse(
+                partial=True,
+                content=types.Content(
+                    role="model",
+                    parts=[
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                id=accumulator.id,
+                                name=accumulator.name,
+                                partial_args=partial_args or None,
+                                will_continue=True,
+                            )
+                        )
+                    ],
+                ),
+                model_version=llm_request.model or self.model,
+            )
 
       elif event.type == "message_delta":
         # ``message_delta`` carries the authoritative cumulative counts, so the
@@ -1151,8 +1390,34 @@ class AnthropicLlm(BaseLlm):
         content=types.Content(role="model", parts=all_parts),
         usage_metadata=usage_metadata,
         finish_reason=to_google_genai_finish_reason(stop_reason),
+        model_version=model_version,
         partial=False,
     )
+
+  async def _get_anthropic_client(
+      self,
+  ) -> AsyncAnthropic | AsyncAnthropicVertex:
+    """Returns the client without blocking the caller's event loop."""
+    cached_client = self.__dict__.get("_anthropic_client")
+    if cached_client is not None:
+      return cast(AsyncAnthropic | AsyncAnthropicVertex, cached_client)
+
+    task = self._client_init_task
+    if task is None:
+      task = asyncio.create_task(
+          asyncio.to_thread(lambda: self._anthropic_client)
+      )
+
+      def _on_done(t: asyncio.Task) -> None:
+        if self._client_init_task is t:
+          self._client_init_task = None
+        if not t.cancelled():
+          t.exception()
+
+      task.add_done_callback(_on_done)
+      self._client_init_task = task
+
+    return await asyncio.shield(task)
 
   @cached_property
   def _anthropic_client(self) -> AsyncAnthropic | AsyncAnthropicVertex:

@@ -40,14 +40,17 @@ from pydantic import ConfigDict
 from pydantic import Field
 from typing_extensions import override
 
+from .._invariants import InvariantPlugin
 from .testing_utils import END_OF_AGENT
 from .testing_utils import simplify_content
 
 
-async def run_workflow(wf, message='start'):
+async def run_workflow(wf, message='start', *, check_invariants: bool = True):
   """Run a Workflow through Runner, return collected events."""
   ss = InMemorySessionService()
   runner = Runner(app_name=wf.name, node=wf, session_service=ss)
+  if check_invariants:
+    runner.plugin_manager.plugins.insert(0, InvariantPlugin())
   session = await ss.create_session(app_name=wf.name, user_id='u')
   msg = types.Content(parts=[types.Part(text=message)], role='user')
   events = []
@@ -258,14 +261,11 @@ def simplify_events_with_node_and_agent_state(
     *,
     include_state_delta: bool = False,
     include_inputs_and_triggers: bool = False,
-    include_resume_inputs: bool = False,
     include_workflow_output: bool = False,
 ):
   fields_to_exclude = {'run_id'}
   if not include_inputs_and_triggers:
     fields_to_exclude.add('input')
-  if not include_resume_inputs:
-    fields_to_exclude.add('resume_inputs')
 
   results = []
 
@@ -300,7 +300,6 @@ def simplify_events_with_node_and_agent_state(
             for k, v in node_state.items()
             if k not in fields_to_exclude
             and (k != 'interrupts' or v)  # Exclude empty interrupts
-            and (k != 'resume_inputs' or v)  # Exclude empty resume_inputs
         }
       results.append((author, {'nodes': simplified_nodes}))
   return results

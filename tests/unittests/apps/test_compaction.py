@@ -39,20 +39,26 @@ from google.genai.types import Part
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 from pydantic import ValidationError
 import pytest
 
 
 class _StubSummarizer(BaseEventsSummarizer):
 
-  def __init__(self, compacted_event: Event | None):
+  def __init__(
+      self, compacted_event: Event | None, error: Exception | None = None
+  ):
     self._compacted_event = compacted_event
+    self._error = error
     self.called_with_events = None
 
   async def maybe_summarize_events(
       self, *, events: list[Event]
   ) -> Event | None:
     self.called_with_events = events
+    if self._error is not None:
+      raise self._error
     return self._compacted_event
 
 
@@ -144,6 +150,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
       timestamp: float,
       invocation_id: str,
       function_call_id: str,
+      long_running_tool_ids: set[str] | None = None,
   ) -> Event:
     return Event(
         timestamp=timestamp,
@@ -159,6 +166,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
                 )
             ],
         ),
+        long_running_tool_ids=long_running_tool_ids,
     )
 
   def _create_function_response_event(
@@ -520,6 +528,29 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     # Visible text after compaction is: 'S' + ('c' * 20) = 21 chars.
     self.assertEqual(estimated_token_count, 21 // 4)
 
+  def test_latest_prompt_token_count_stops_at_compaction_event(self):
+    events = [
+        self._create_event(1.0, 'inv1', 'a' * 40, prompt_token_count=1000),
+        self._create_compacted_event(1.0, 1.0, 'S'),
+        self._create_event(2.0, 'inv2', 'b' * 20),
+    ]
+
+    estimated_token_count = compaction_module._latest_prompt_token_count(events)
+
+    # Prompt token count recorded before compaction describes the replaced prompt
+    # and must not be picked up; falls back to estimated count ('S' + 20 chars).
+    self.assertEqual(estimated_token_count, 21 // 4)
+
+    events_with_post_count = [
+        self._create_event(1.0, 'inv1', 'a' * 40, prompt_token_count=1000),
+        self._create_compacted_event(1.0, 1.0, 'S'),
+        self._create_event(2.0, 'inv2', 'b' * 20, prompt_token_count=50),
+    ]
+    self.assertEqual(
+        compaction_module._latest_prompt_token_count(events_with_post_count),
+        50,
+    )
+
   def test_latest_prompt_token_count_fallback_uses_effective_contents(self):
     events = [
         self._create_event(1.0, 'inv1', 'visible'),
@@ -538,6 +569,71 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
 
     # Thought-only events are filtered by contents processing.
     self.assertEqual(estimated_token_count, len('visible') // 4)
+
+  def _create_agent_event(
+      self,
+      timestamp: float,
+      author: str,
+      prompt_token_count: int,
+  ) -> Event:
+    return Event(
+        timestamp=timestamp,
+        invocation_id='inv1',
+        author=author,
+        content=Content(role='model', parts=[Part(text='response')]),
+        usage_metadata=types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=prompt_token_count
+        ),
+    )
+
+  def test_latest_prompt_token_count_ignores_other_agents(self):
+    events = [
+        self._create_agent_event(1.0, 'worker', 5000),
+        self._create_agent_event(2.0, 'formatter', 100),
+    ]
+
+    token_count = compaction_module._latest_prompt_token_count(
+        events, agent_name='worker'
+    )
+
+    self.assertEqual(token_count, 5000)
+
+  def test_latest_prompt_token_count_without_agent_name_uses_latest(self):
+    events = [
+        self._create_agent_event(1.0, 'worker', 5000),
+        self._create_agent_event(2.0, 'formatter', 100),
+    ]
+
+    token_count = compaction_module._latest_prompt_token_count(events)
+
+    self.assertEqual(token_count, 100)
+
+  async def test_summarizer_failure_does_not_end_the_invocation(self):
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=1,
+            overlap_size=0,
+        ),
+    )
+    session = Session(
+        app_name='test',
+        user_id='u1',
+        id='s1',
+        events=[
+            self._create_event(1.0, 'inv1', 'e1'),
+            self._create_event(2.0, 'inv2', 'e2'),
+        ],
+    )
+    self.mock_compactor.maybe_summarize_events.side_effect = RuntimeError(
+        'summarizer model is unavailable'
+    )
+
+    await self._run_sliding_window(app, session, self.mock_session_service)
+
+    self.mock_session_service.append_event.assert_not_called()
 
   async def test_run_compaction_for_token_threshold_keeps_retention_events(
       self,
@@ -679,38 +775,6 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     self.mock_session_service.append_event.assert_called_once_with(
         session=session, event=mock_compacted_event
     )
-
-  async def test_run_compaction_skip_token_compaction(self):
-    app = App(
-        name='test',
-        root_agent=Mock(spec=BaseAgent),
-        events_compaction_config=EventsCompactionConfig(
-            summarizer=self.mock_compactor,
-            compaction_interval=999,
-            overlap_size=0,
-            token_threshold=50,
-            event_retention_size=1,
-        ),
-    )
-    session = Session(
-        app_name='test',
-        user_id='u1',
-        id='s1',
-        events=[
-            self._create_event(1.0, 'inv1', 'e1'),
-            self._create_event(2.0, 'inv2', 'e2', prompt_token_count=100),
-        ],
-    )
-
-    await self._run_sliding_window(
-        app,
-        session,
-        self.mock_session_service,
-        skip_token_compaction=True,
-    )
-
-    self.mock_compactor.maybe_summarize_events.assert_not_called()
-    self.mock_session_service.append_event.assert_not_called()
 
   async def test_run_compaction_for_token_threshold_seeds_previous_compaction(
       self,
@@ -1108,7 +1172,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
   async def test_sliding_window_pending_function_call_remains_in_contents(
       self,
   ):
-    """Sliding-window compaction keeps pending tool calls visible in history."""
+    """Sliding-window compaction keeps pending long-running tool calls in history."""
     app = App(
         name='test',
         root_agent=Mock(spec=BaseAgent),
@@ -1120,7 +1184,12 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     )
     events = [
         self._create_event(1.0, 'inv1', 'e1'),
-        self._create_function_call_event(2.0, 'inv2', 'pending-call-1'),
+        self._create_function_call_event(
+            2.0,
+            'inv2',
+            'pending-call-1',
+            long_running_tool_ids={'pending-call-1'},
+        ),
         self._create_event(3.0, 'inv3', 'e3'),
     ]
     session = Session(app_name='test', user_id='u1', id='s1', events=events)
@@ -1147,6 +1216,238 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         'tool',
     )
     self.assertEqual(result_contents[2].parts[0].text, 'e3')
+
+  async def test_sliding_window_plain_orphaned_function_call_dropped_from_contents(
+      self,
+  ):
+    """Compaction spares plain pending call, but get_contents prunes it as orphan."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=2,
+            overlap_size=0,
+        ),
+    )
+    events = [
+        self._create_event(1.0, 'inv1', 'e1'),
+        self._create_function_call_event(
+            2.0,
+            'inv2',
+            'unanswered-call-1',
+        ),
+        self._create_event(3.0, 'inv3', 'e3'),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+    self.mock_compactor.maybe_summarize_events.side_effect = (
+        lambda *, events: self._create_compacted_event(
+            events[0].timestamp,
+            events[-1].timestamp,
+            'Summary safe prefix',
+        )
+    )
+
+    await self._run_sliding_window(app, session, self.mock_session_service)
+
+    appended_event = self.mock_session_service.append_event.call_args[1][
+        'event'
+    ]
+    self.assertEqual(appended_event.actions.compaction.start_timestamp, 1.0)
+    self.assertEqual(appended_event.actions.compaction.end_timestamp, 1.0)
+
+    result_contents = _contents._get_contents(None, events + [appended_event])
+    # The plain unanswered call is pruned as an orphan; e3 survives.
+    self.assertEqual(result_contents[0].parts[0].text, 'Summary safe prefix')
+    self.assertEqual(result_contents[1].parts[0].text, 'e3')
+
+  async def test_contents_handles_parallel_timestamp_ordering_after_compaction(
+      self,
+  ):
+    """Compaction preserves pairs across out-of-order parallel timestamps."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=999,
+            overlap_size=0,
+            token_threshold=50,
+            event_retention_size=2,
+        ),
+    )
+    analyzer_branch = 'root.parallel.analyzer'
+    reproducer_branch = 'root.parallel.reproducer'
+
+    def _branch_event(event, branch, author):
+      event.branch = branch
+      event.author = author
+      return event
+
+    events = [
+        self._create_event(1.0, 'inv-user', 'task'),
+        # The reproducer starts later but completes and appends first.
+        _branch_event(
+            self._create_function_call_event(3.0, 'inv-reproducer', 'b1'),
+            reproducer_branch,
+            'reproducer',
+        ),
+        _branch_event(
+            self._create_function_response_event(4.0, 'inv-reproducer', 'b1'),
+            reproducer_branch,
+            'reproducer',
+        ),
+        # The analyzer started earlier, so its call has an earlier timestamp,
+        # but its event is appended after the reproducer's completed pair.
+        _branch_event(
+            self._create_function_call_event(2.0, 'inv-analyzer', 'a1'),
+            analyzer_branch,
+            'analyzer',
+        ),
+        _branch_event(
+            self._create_function_response_event(
+                5.0, 'inv-analyzer', 'a1', prompt_token_count=100
+            ),
+            analyzer_branch,
+            'analyzer',
+        ),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+    self.mock_compactor.maybe_summarize_events.side_effect = (
+        lambda *, events: self._create_compacted_event(
+            events[0].timestamp,
+            events[-1].timestamp,
+            'summary',
+            appended_ts=6.0,
+        )
+    )
+
+    await self._run_sliding_window(app, session, self.mock_session_service)
+
+    appended_event = self.mock_session_service.append_event.call_args[1][
+        'event'
+    ]
+    self.assertEqual(appended_event.actions.compaction.start_timestamp, 1.0)
+    self.assertEqual(appended_event.actions.compaction.end_timestamp, 4.0)
+
+    contents = _contents._get_contents(
+        analyzer_branch,
+        events + [appended_event],
+        'analyzer',
+        preserve_function_call_ids=True,
+    )
+    parts = [part for content in contents for part in content.parts]
+
+    call_indices = [
+        index
+        for index, part in enumerate(parts)
+        if part.function_call and part.function_call.id == 'a1'
+    ]
+    response_indices = [
+        index
+        for index, part in enumerate(parts)
+        if part.function_response and part.function_response.id == 'a1'
+    ]
+    self.assertEqual(len(call_indices), 1)
+    self.assertEqual(len(response_indices), 1)
+    self.assertLess(call_indices[0], response_indices[0])
+
+  async def test_sliding_window_orphaned_call_after_prior_compaction_does_not_block_forever(
+      self,
+  ):
+    """An orphaned call in an older invocation does not block compaction."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=2,
+            overlap_size=0,
+        ),
+    )
+    events = [
+        self._create_compacted_event(1.0, 2.0, 'Summary 1-2'),
+        self._create_event(2.5, 'inv3', 'user-msg-3'),
+        self._create_function_call_event(3.0, 'inv3', 'orphan-call-1'),
+        self._create_event(4.0, 'inv4', 'e4'),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+    self.mock_compactor.maybe_summarize_events.side_effect = (
+        lambda *, events: self._create_compacted_event(
+            events[0].timestamp,
+            events[-1].timestamp,
+            'Summary inv3-inv4',
+        )
+    )
+
+    await self._run_sliding_window(app, session, self.mock_session_service)
+
+    self.mock_session_service.append_event.assert_called_once()
+    appended_event = self.mock_session_service.append_event.call_args[1][
+        'event'
+    ]
+    self.assertEqual(appended_event.actions.compaction.start_timestamp, 2.5)
+    self.assertEqual(appended_event.actions.compaction.end_timestamp, 4.0)
+
+  async def test_abandoned_hitl_confirmation_does_not_block_compaction(
+      self,
+  ):
+    """An abandoned HITL confirmation turn does not block compaction."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=2,
+            overlap_size=0,
+        ),
+    )
+    events = [
+        self._create_compacted_event(1.0, 2.0, 'Summary 1-2'),
+        self._create_function_call_event(3.0, 'inv3', 'call-1'),
+        self._create_request_confirmation_call_event(
+            3.2, 'inv3', 'confirm-1', 'call-1'
+        ),
+        self._create_hitl_confirmation_event(3.5, 'inv3', 'call-1'),
+        self._create_event(4.0, 'inv4', 'e4'),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+    self.mock_compactor.maybe_summarize_events.side_effect = (
+        lambda *, events: self._create_compacted_event(
+            events[0].timestamp,
+            events[-1].timestamp,
+            'Summary inv3-inv4',
+        )
+    )
+
+    await self._run_sliding_window(app, session, self.mock_session_service)
+
+    self.mock_session_service.append_event.assert_called_once()
+    appended_event = self.mock_session_service.append_event.call_args[1][
+        'event'
+    ]
+    self.assertEqual(appended_event.actions.compaction.start_timestamp, 3.0)
+    self.assertEqual(appended_event.actions.compaction.end_timestamp, 4.0)
+
+  def test_longest_self_contained_prefix_prunes_dead_calls_only_with_session(
+      self,
+  ):
+    """Without the whole session, an unanswered call still ends the prefix."""
+    events = [
+        self._create_event(1.0, 'inv1', 'e1'),
+        self._create_function_call_event(2.0, 'inv1', 'orphan-call'),
+        self._create_event(3.0, 'inv2', 'e3'),
+    ]
+
+    self.assertEqual(
+        compaction_module._longest_self_contained_prefix(events), events[:1]
+    )
+    self.assertEqual(
+        compaction_module._longest_self_contained_prefix(
+            events, all_events=events
+        ),
+        events,
+    )
 
   async def test_token_threshold_excludes_pending_function_call_events(self):
     """Token-threshold compaction stays contiguous before pending calls."""
@@ -1187,7 +1488,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
   async def test_token_threshold_pending_function_call_remains_in_contents(
       self,
   ):
-    """Token-threshold compaction keeps pending tool calls visible."""
+    """Token-threshold compaction keeps pending long-running tool calls visible."""
     app = App(
         name='test',
         root_agent=Mock(spec=BaseAgent),
@@ -1201,7 +1502,12 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     )
     events = [
         self._create_event(1.0, 'inv1', 'e1'),
-        self._create_function_call_event(2.0, 'inv2', 'pending-call-1'),
+        self._create_function_call_event(
+            2.0,
+            'inv2',
+            'pending-call-1',
+            long_running_tool_ids={'pending-call-1'},
+        ),
         self._create_event(3.0, 'inv3', 'e3', prompt_token_count=100),
     ]
     session = Session(app_name='test', user_id='u1', id='s1', events=events)
@@ -2056,6 +2362,51 @@ async def test_run_compaction_for_sliding_window_adds_summary_trace(
       summary_span.attributes['gen_ai.compaction.result_event_id']
       == 'compacted-event-id'
   )
+
+
+@pytest.mark.asyncio
+async def test_summarizer_failure_marks_the_compaction_span_as_error(
+    span_exporter: InMemorySpanExporter,
+):
+  summarizer = _StubSummarizer(
+      None, error=RuntimeError('summarizer model is unavailable')
+  )
+  app = App(
+      name='test',
+      root_agent=Mock(spec=BaseAgent),
+      events_compaction_config=EventsCompactionConfig(
+          summarizer=summarizer,
+          compaction_interval=2,
+          overlap_size=1,
+      ),
+  )
+  session = Session(
+      app_name='test',
+      user_id='u1',
+      id='session-id',
+      events=[
+          _create_trace_test_event(
+              timestamp=1.0, invocation_id='inv1', text='e1'
+          ),
+          _create_trace_test_event(
+              timestamp=2.0, invocation_id='inv2', text='e2'
+          ),
+      ],
+  )
+  session_service = AsyncMock(spec=BaseSessionService)
+
+  async for _ in _run_compaction_for_sliding_window(
+      app, session, session_service
+  ):
+    pass
+
+  summary_span = next(
+      span
+      for span in span_exporter.get_finished_spans()
+      if span.name == 'compact_events sliding_window'
+  )
+  assert summary_span.status.status_code == StatusCode.ERROR
+  assert summary_span.status.description == 'RuntimeError'
 
 
 def test_count_chars_in_content():

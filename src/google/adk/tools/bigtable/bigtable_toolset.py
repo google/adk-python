@@ -18,8 +18,6 @@ import inspect
 from typing import Any
 from typing import Callable
 from typing import List
-from typing import Optional
-from typing import Union
 
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.auth.credentials import Credentials
@@ -62,9 +60,9 @@ class BigtableParameterizedViewTool(GoogleTool):
       self,
       func: Callable[..., Any],
       *,
-      credentials_config: Optional[BigtableCredentialsConfig] = None,
-      tool_settings: Optional[BigtableToolSettings] = None,
-      view_parameter_names: Optional[List[str]] = None,
+      credentials_config: BigtableCredentialsConfig | None = None,
+      tool_settings: BigtableToolSettings | None = None,
+      view_parameter_names: list[str] | None = None,
   ):
     """Initializes the BigtableParameterizedViewTool.
 
@@ -93,8 +91,8 @@ class BigtableParameterizedViewTool(GoogleTool):
   @override
   async def _run_async_with_credential(
       self,
-      credentials: Credentials,
-      tool_settings: BaseModel,
+      credentials: Credentials | None,
+      tool_settings: BaseModel | None,
       args: dict[str, Any],
       tool_context: ToolContext,
   ) -> Any:
@@ -136,10 +134,10 @@ class BigtableToolset(BaseToolset):
   def __init__(
       self,
       *,
-      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
-      credentials_config: Optional[BigtableCredentialsConfig] = None,
-      bigtable_tool_settings: Optional[BigtableToolSettings] = None,
-      view_parameter_names: Optional[List[str]] = None,
+      tool_filter: ToolPredicate | list[str] | None = None,
+      credentials_config: BigtableCredentialsConfig | None = None,
+      bigtable_tool_settings: BigtableToolSettings | None = None,
+      view_parameter_names: list[str] | None = None,
   ):
     super().__init__(
         tool_filter=tool_filter,
@@ -154,7 +152,7 @@ class BigtableToolset(BaseToolset):
     self.view_parameter_names = view_parameter_names
 
   def _is_tool_selected(
-      self, tool: BaseTool, readonly_context: ReadonlyContext
+      self, tool: BaseTool, readonly_context: ReadonlyContext | None
   ) -> bool:
     if self.tool_filter is None:
       return True
@@ -169,24 +167,25 @@ class BigtableToolset(BaseToolset):
 
   @override
   async def get_tools(
-      self, readonly_context: Optional[ReadonlyContext] = None
+      self, readonly_context: ReadonlyContext | None = None
   ) -> List[BaseTool]:
     """Get tools from the toolset."""
+    tool_functions: tuple[Callable[..., Any], ...] = (
+        metadata_tool.list_instances,
+        metadata_tool.get_instance_info,
+        metadata_tool.list_tables,
+        metadata_tool.get_table_info,
+        metadata_tool.list_clusters,
+        metadata_tool.get_cluster_info,
+        query_tool.execute_sql,
+    )
     all_tools = [
         GoogleTool(
             func=func,
             credentials_config=self._credentials_config,
             tool_settings=self._tool_settings,
         )
-        for func in [
-            metadata_tool.list_instances,
-            metadata_tool.get_instance_info,
-            metadata_tool.list_tables,
-            metadata_tool.get_table_info,
-            metadata_tool.list_clusters,
-            metadata_tool.get_cluster_info,
-            query_tool.execute_sql,
-        ]
+        for func in tool_functions
     ]
     if self.view_parameter_names:
       all_tools.append(

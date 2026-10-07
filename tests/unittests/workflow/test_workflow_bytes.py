@@ -67,10 +67,15 @@ class _InputCapturingNode(BaseNode):
     yield {"received": node_input}
 
 
-async def _run_workflow(wf, message="start"):
+from .._invariants import InvariantPlugin
+
+
+async def _run_workflow(wf, message="start", *, check_invariants: bool = True):
   """Run a Workflow through Runner, return collected events."""
   ss = InMemorySessionService()
   runner = Runner(app_name="test", node=wf, session_service=ss)
+  if check_invariants:
+    runner.plugin_manager.plugins.insert(0, InvariantPlugin())
   session = await ss.create_session(app_name="test", user_id="u")
   msg = types.Content(parts=[types.Part(text=message)], role="user")
   events = []
@@ -107,31 +112,3 @@ async def test_raw_bytes_output():
 
   assert len(b.received_inputs) == 1
   assert isinstance(b.received_inputs[0], bytes)
-
-
-@pytest.mark.xfail(reason="Checkpoint/resume not yet in new Workflow.")
-@pytest.mark.asyncio
-async def test_bytes_in_node_input_serialization():
-  """Bytes in node input survive checkpoint/resume."""
-  assert False, "TODO"
-
-
-@pytest.mark.xfail(reason="Checkpoint/resume not yet in new Workflow.")
-@pytest.mark.asyncio
-async def test_bytes_in_typed_model_input():
-  """Bytes in Pydantic model input survive round-trip."""
-  assert False, "TODO"
-
-
-@pytest.mark.xfail(reason="Checkpoint/resume not yet in new Workflow.")
-@pytest.mark.asyncio
-async def test_bytes_in_trigger_buffer():
-  """Bytes in trigger buffer survive serialization."""
-  assert False, "TODO"
-
-
-@pytest.mark.xfail(reason="Checkpoint/resume not yet in new Workflow.")
-@pytest.mark.asyncio
-async def test_bytes_full_workflow_resume():
-  """Full resume with bytes data end-to-end."""
-  assert False, "TODO"
