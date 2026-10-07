@@ -21,13 +21,13 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 from google.genai import types
-from pydantic import ValidationError
 
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_credential import AuthCredentialTypes as _AuthCredentialTypes
 from ...auth.auth_credential import OAuth2Auth
 from ...events.event import Event
 from ...events.request_input import RequestInput
+from ...flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ...utils._schema_utils import schema_to_json_schema
 from .._errors import WorkflowDataError
 
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
   from ...sessions.state import State
 
 REQUEST_INPUT_FUNCTION_CALL_NAME = 'adk_request_input'
-REQUEST_CREDENTIAL_FUNCTION_CALL_NAME = 'adk_request_credential'
+REQUEST_CREDENTIAL_FUNCTION_CALL_NAME = REQUEST_EUC_FUNCTION_CALL_NAME
 
 
 def create_request_input_event(request_input: RequestInput) -> Event:
@@ -130,22 +130,6 @@ def get_request_input_interrupt_ids(event: Event) -> list[str]:
 # Auth credential utilities
 # ---------------------------------------------------------------------------
 
-_OAUTH_STATE_KEY_PREFIX = 'adk_oauth_state:'
-"""Session state prefix under which a generated OAuth state is kept."""
-
-_OAUTH_CREDENTIAL_KEY_PREFIX = 'adk_oauth_credential:'
-"""Session state prefix for a generated OAuth request credential."""
-
-
-def _oauth_state_key(interrupt_id: str) -> str:
-  """Returns the session state key holding the generated OAuth state."""
-  return f'{_OAUTH_STATE_KEY_PREFIX}{interrupt_id}'
-
-
-def _oauth_credential_key(interrupt_id: str) -> str:
-  """Returns the session state key holding the generated OAuth credential."""
-  return f'{_OAUTH_CREDENTIAL_KEY_PREFIX}{interrupt_id}'
-
 
 def _build_auth_message(auth_config: AuthConfig) -> str:
   """Builds a human-readable message describing what credential is needed."""
@@ -183,6 +167,8 @@ def create_auth_request_event(
   Returns:
     An Event containing an ``adk_request_credential`` function call.
   """
+  from ...auth._auth_resume import _oauth_credential_key
+  from ...auth._auth_resume import _oauth_state_key
   from ...auth.auth_handler import AuthHandler
   from ...auth.auth_tool import AuthToolArguments
 
@@ -228,28 +214,6 @@ def create_auth_request_event(
   )
 
 
-def _build_credential_from_value(
-    auth_config: AuthConfig,
-    value: Any,
-) -> 'AuthCredential':
-  """Builds an AuthCredential from a raw user-provided value.
-
-  For API_KEY, the value is used as the key string directly.
-  For all other types, the value is parsed as an AuthCredential dict.
-  """
-  raw_cred = auth_config.raw_auth_credential
-  if raw_cred is None:
-    return AuthCredential.model_validate(value)
-
-  if raw_cred.auth_type == _AuthCredentialTypes.API_KEY:
-    return AuthCredential(
-        auth_type=_AuthCredentialTypes.API_KEY,
-        api_key=str(value),
-    )
-
-  return AuthCredential.model_validate(value)
-
-
 async def process_auth_resume(
     response_data: Any,
     auth_config: AuthConfig,
@@ -282,57 +246,23 @@ async def process_auth_resume(
     interrupt_id: The interrupt ID of the auth request being resumed.
 
   Raises:
-    WorkflowDataError: If the response does not carry back the OAuth state that
-      was generated for this auth request.
+    WorkflowDataError: If the response is malformed or does not carry back the
+      OAuth state that was generated for this auth request.
   """
-  from ...auth.auth_handler import AuthHandler
-  from ...auth.auth_tool import AuthConfig
+  from ...auth._auth_resume import store_auth_response
 
-  try:
-    exchanged_credential = AuthConfig.model_validate(
-        response_data
-    ).exchanged_auth_credential
-  except (ValidationError, TypeError):
-    exchanged_credential = _build_credential_from_value(
-        auth_config, response_data
-    )
-
-  generated_state = state.get(_oauth_state_key(interrupt_id))
-  if generated_state is not None:
-    oauth2 = exchanged_credential.oauth2 if exchanged_credential else None
-    if not oauth2 or oauth2.state != generated_state:
-      raise WorkflowDataError(
-          'The auth response does not carry back the state generated for this'
-          ' auth request. Return the auth config from the credential request'
-          ' with the authorization result filled in.'
-      )
-
-  credential_key = _oauth_credential_key(interrupt_id)
-  stored_credential = state.get(credential_key)
-  if isinstance(stored_credential, Mapping):
-    stored_credential = AuthCredential.model_validate(stored_credential)
-  if (
-      isinstance(stored_credential, AuthCredential)
-      and stored_credential.oauth2
-      and exchanged_credential
-      and exchanged_credential.oauth2
-  ):
-    if exchanged_credential.oauth2.code_verifier is None:
-      exchanged_credential.oauth2.code_verifier = (
-          stored_credential.oauth2.code_verifier
-      )
-    if exchanged_credential.oauth2.code_challenge_method is None:
-      exchanged_credential.oauth2.code_challenge_method = (
-          stored_credential.oauth2.code_challenge_method
-      )
-    state[credential_key] = None
-
-  resumed_config = auth_config.model_copy(deep=True)
-  resumed_config.exchanged_auth_credential = exchanged_credential
-
-  await AuthHandler(auth_config=resumed_config).parse_and_store_auth_response(
-      state=state
+  stored = await store_auth_response(
+      requested=auth_config,
+      response=response_data,
+      state=state,
+      interrupt_id=interrupt_id,
   )
+  if stored is None:
+    raise WorkflowDataError(
+        'The auth response is malformed or does not carry back the state'
+        ' generated for this auth request. Return the auth config from the'
+        ' credential request with the authorization result filled in.'
+    )
 
 
 def has_auth_credential(
