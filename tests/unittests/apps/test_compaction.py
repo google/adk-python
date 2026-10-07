@@ -2709,6 +2709,66 @@ def test_serialized_size_reads_a_real_summarizer_shaped_event():
 
 
 @pytest.mark.asyncio
+async def test_sliding_window_compacts_a_tool_response_json_cannot_encode():
+  """A tool response holding a value with no JSON form still compacts."""
+
+  class NotJson:
+    pass
+
+  summarizer = _StubSummarizer(
+      _create_trace_compacted_event(
+          start_ts=1.0, end_ts=2.0, summary_text='a summary'
+      )
+  )
+  app = App(
+      name='test',
+      root_agent=Mock(spec=BaseAgent),
+      events_compaction_config=EventsCompactionConfig(
+          summarizer=summarizer, compaction_interval=2, overlap_size=0
+      ),
+  )
+  tool_event = Event(
+      timestamp=1.5,
+      invocation_id='inv1',
+      author='agent',
+      content=Content(
+          role='user',
+          parts=[
+              Part(
+                  function_response=types.FunctionResponse(
+                      name='my_tool', response={'result': NotJson()}
+                  )
+              )
+          ],
+      ),
+  )
+  session = Session(
+      app_name='test',
+      user_id='u1',
+      id='session-id',
+      events=[
+          _create_trace_test_event(
+              timestamp=1.0, invocation_id='inv1', text=_LONG_TURN
+          ),
+          tool_event,
+          _create_trace_test_event(
+              timestamp=2.0, invocation_id='inv2', text=_LONG_TURN
+          ),
+      ],
+  )
+
+  yielded = [
+      event
+      async for event in _run_compaction_for_sliding_window(
+          app, session, AsyncMock(spec=BaseSessionService)
+      )
+  ]
+
+  assert summarizer.called_with_events is not None
+  assert len(yielded) == 1
+
+
+@pytest.mark.asyncio
 async def test_a_summary_that_grew_the_request_is_reported(
     span_exporter: InMemorySpanExporter,
 ):
