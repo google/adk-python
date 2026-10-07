@@ -172,7 +172,7 @@ class VertexAiSessionService(BaseSessionService):
     except ImportError as e:
       from ..utils._dependency import missing_extra
 
-      raise missing_extra('google-cloud-aiplatform', 'gcp') from e
+      raise missing_extra('google-cloud-agentplatform', 'gcp') from e
 
     self._project = project
     self._location = location
