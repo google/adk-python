@@ -51,6 +51,13 @@ def mock_k8s_clients():
       "google.adk.code_executors.gke_code_executor.client"
   ) as mock_client_class:
     mock_batch_v1 = MagicMock(spec=client.BatchV1Api)
+    # The created Job becomes the ConfigMap's owner, so it needs the string
+    # fields a real API response has. kubernetes>=37 validates them.
+    mock_batch_v1.create_namespaced_job.return_value = client.V1Job(
+        api_version="batch/v1",
+        kind="Job",
+        metadata=client.V1ObjectMeta(name="test-job", uid="test-uid"),
+    )
     mock_core_v1 = MagicMock(spec=client.CoreV1Api)
     mock_client_class.BatchV1Api.return_value = mock_batch_v1
     mock_client_class.CoreV1Api.return_value = mock_core_v1
