@@ -168,6 +168,15 @@ async def run_node_async(
               )
           )
           if should_process_message:
+            from ..runners import _drop_replayed_confirmation_responses
+
+            new_message, duplicate_only = _drop_replayed_confirmation_responses(
+                session, new_message
+            )
+            if duplicate_only:
+              ic.end_invocation = True
+              should_process_message = False
+          if should_process_message:
             modified_user_message = (
                 await ic.plugin_manager.run_on_user_message_callback(
                     invocation_context=ic, user_message=new_message

@@ -58,6 +58,7 @@ from .events.event import Event
 from .events.event_actions import EventActions
 from .flows.llm_flows.context import _contents as contents
 from .flows.llm_flows.tools._functions import find_matching_function_call as _find_matching_function_call
+from .flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from .live import _runner_utils as _live_runner_utils
 from .live.live_request_queue import LiveRequestQueue
 from .memory.base_memory_service import BaseMemoryService
@@ -158,6 +159,50 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
     ):
       return scope, event.invocation_id
   return None
+
+
+def _drop_replayed_confirmation_responses(
+    session: Session, message: types.Content
+) -> tuple[types.Content, bool]:
+  """Remove confirmation responses already persisted in this session.
+
+  Returns the filtered message and whether it contained only replayed
+  confirmation responses. Other function responses are left untouched.
+  """
+  confirmation_call_ids = {
+      call.id
+      for event in session.events
+      for call in event.get_function_calls()
+      if call.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME and call.id
+  }
+  prior_confirmation_ids = {
+      response.id
+      for event in session.events
+      if event.author == 'user'
+      for response in event.get_function_responses()
+      if response.id in confirmation_call_ids
+  }
+  if not prior_confirmation_ids:
+    return message, False
+
+  parts = message.parts or []
+  filtered_parts = [
+      part
+      for part in parts
+      if not (
+          part.function_response
+          and part.function_response.name
+          == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+          and part.function_response.id in prior_confirmation_ids
+      )
+  ]
+  if len(filtered_parts) == len(parts):
+    return message, False
+
+  if not filtered_parts:
+    return message, True
+
+  return types.Content(role=message.role, parts=filtered_parts), False
 
 
 def _get_function_responses_from_content(
@@ -861,6 +906,7 @@ class Runner:
           await self.session_service.append_event(
               session=ic.session, event=output_event
           )
+          ic._release_tool_confirmation_claims(output_event)
         yield output_event
 
         if isinstance(processed_signal, asyncio.Event):
@@ -1538,11 +1584,13 @@ class Runner:
         await self.session_service.append_event(
             session=invocation_context.session, event=output_event
         )
+        invocation_context._release_tool_confirmation_claims(output_event)
     else:
       if output_event.partial is not True:
         await self.session_service.append_event(
             session=invocation_context.session, event=output_event
         )
+        invocation_context._release_tool_confirmation_claims(output_event)
     return output_event
 
   async def _exec_with_plugin(
@@ -2196,6 +2244,16 @@ class Runner:
       run_config: The run config of the agent.
       state_delta: Optional state changes to apply to the session.
     """
+    new_message, duplicate_only = _drop_replayed_confirmation_responses(
+        invocation_context.session, new_message
+    )
+    if duplicate_only:
+      invocation_context.end_invocation = True
+      if state_delta:
+        await self._append_state_delta_event(invocation_context, state_delta)
+      return
+    invocation_context.user_content = new_message
+
     is_function_response = bool(
         new_message.parts
         and any(p.function_response for p in new_message.parts)
