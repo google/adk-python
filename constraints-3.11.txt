@@ -32,7 +32,6 @@ aiohttp==3.14.1
     #   daytona-analytics-api-client-async
     #   daytona-api-client-async
     #   daytona-toolbox-api-client-async
-    #   google-cloud-aiplatform
     #   instructor
     #   kubernetes
     #   langchain-community
@@ -226,7 +225,7 @@ click==8.4.2
 cloudpickle==3.1.2
     # via
     #   -c constraints-3.11.txt.stable.tmp
-    #   google-cloud-aiplatform
+    #   google-cloud-agentplatform
 codespell==2.4.2
     # via
     #   -c constraints-3.11.txt.stable.tmp
@@ -452,6 +451,7 @@ google-api-core==2.32.0
     #   a2a-sdk
     #   google-api-python-client
     #   google-cloud-agentidentitycredentials
+    #   google-cloud-agentplatform
     #   google-cloud-aiplatform
     #   google-cloud-appengine-logging
     #   google-cloud-bigquery
@@ -490,6 +490,7 @@ google-auth==2.56.0
     #   google-auth-httplib2
     #   google-auth-oauthlib
     #   google-cloud-agentidentitycredentials
+    #   google-cloud-agentplatform
     #   google-cloud-aiplatform
     #   google-cloud-appengine-logging
     #   google-cloud-bigquery
@@ -530,6 +531,10 @@ google-benchmark==1.9.5
     #   -c constraints-3.11.txt.stable.tmp
     #   google-adk (pyproject.toml)
 google-cloud-agentidentitycredentials==0.1.0
+    # via
+    #   -c constraints-3.11.txt.stable.tmp
+    #   google-adk (pyproject.toml)
+google-cloud-agentplatform==2.3.0
     # via
     #   -c constraints-3.11.txt.stable.tmp
     #   google-adk (pyproject.toml)
@@ -594,7 +599,6 @@ google-cloud-kms==3.16.0
 google-cloud-logging==3.16.1
     # via
     #   -c constraints-3.11.txt.stable.tmp
-    #   google-cloud-aiplatform
     #   opentelemetry-exporter-gcp-logging
 google-cloud-modelarmor==0.7.1
     # via
@@ -635,6 +639,7 @@ google-cloud-storage==3.13.0
     # via
     #   -c constraints-3.11.txt.stable.tmp
     #   google-adk (pyproject.toml)
+    #   google-cloud-agentplatform
     #   google-cloud-aiplatform
 google-cloud-texttospeech==2.37.0
     # via
@@ -656,6 +661,7 @@ google-genai==2.19.0
     #   google-adk (pyproject.toml)
     #   google-adk
     #   google-antigravity
+    #   google-cloud-agentplatform
     #   google-cloud-aiplatform
     #   llama-index-embeddings-google-genai
 google-re2==1.1.20251105
@@ -1225,7 +1231,7 @@ opentelemetry-exporter-gcp-logging==1.12.0a0
     # via
     #   -c constraints-3.11.txt.stable.tmp
     #   google-adk (pyproject.toml)
-    #   google-cloud-aiplatform
+    #   google-cloud-agentplatform
 opentelemetry-exporter-gcp-monitoring==1.12.0a0
     # via
     #   -c constraints-3.11.txt.stable.tmp
@@ -1250,7 +1256,7 @@ opentelemetry-exporter-otlp-proto-http==1.42.1
     #   crewai
     #   crewai-core
     #   daytona
-    #   google-cloud-aiplatform
+    #   google-cloud-agentplatform
 opentelemetry-instrumentation==0.63b1
     # via
     #   -c constraints-3.11.txt.stable.tmp
@@ -1267,6 +1273,7 @@ opentelemetry-instrumentation-google-genai==0.7b1
     # via
     #   -c constraints-3.11.txt.stable.tmp
     #   google-adk (pyproject.toml)
+    #   google-cloud-agentplatform
 opentelemetry-instrumentation-grpc==0.63b1
     # via
     #   -c constraints-3.11.txt.stable.tmp
@@ -1298,7 +1305,7 @@ opentelemetry-sdk==1.42.1
     #   crewai-core
     #   daytona
     #   google-adk
-    #   google-cloud-aiplatform
+    #   google-cloud-agentplatform
     #   google-cloud-pubsub
     #   google-cloud-spanner
     #   opentelemetry-exporter-gcp-logging
@@ -1355,6 +1362,7 @@ packaging==26.2
     #   deprecation
     #   e2b
     #   google-adk
+    #   google-cloud-agentplatform
     #   google-cloud-aiplatform
     #   google-cloud-bigquery
     #   huggingface-hub
@@ -1452,6 +1460,7 @@ proto-plus==1.28.1
     #   -c constraints-3.11.txt.stable.tmp
     #   google-api-core
     #   google-cloud-agentidentitycredentials
+    #   google-cloud-agentplatform
     #   google-cloud-aiplatform
     #   google-cloud-appengine-logging
     #   google-cloud-bigquery-storage
@@ -1482,6 +1491,7 @@ protobuf==6.33.6
     #   google-antigravity
     #   google-api-core
     #   google-cloud-agentidentitycredentials
+    #   google-cloud-agentplatform
     #   google-cloud-aiplatform
     #   google-cloud-appengine-logging
     #   google-cloud-audit-log
@@ -1556,6 +1566,7 @@ pydantic==2.12.5
     #   fastapi
     #   google-adk
     #   google-antigravity
+    #   google-cloud-agentplatform
     #   google-cloud-aiplatform
     #   google-genai
     #   instructor
@@ -2120,6 +2131,7 @@ typing-extensions==4.16.0
     #   e2b
     #   fastapi
     #   google-adk
+    #   google-cloud-agentplatform
     #   google-cloud-aiplatform
     #   google-genai
     #   grpcio

@@ -41,7 +41,7 @@ class TestSingleTurnVertexAiEvalFacade:
 
   def test_evaluate_invocations_metric_passed(self, mocker):
     """Test evaluate_invocations function for a metric."""
-    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mocker.patch("google.adk.dependencies._agentplatform.agentplatform.Client")
     mock_perform_eval = mocker.patch(
         "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
     )
@@ -91,7 +91,7 @@ class TestSingleTurnVertexAiEvalFacade:
 
   def test_evaluate_invocations_metric_failed(self, mocker):
     """Test evaluate_invocations function for a metric."""
-    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mocker.patch("google.adk.dependencies._agentplatform.agentplatform.Client")
     mock_perform_eval = mocker.patch(
         "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
     )
@@ -152,7 +152,7 @@ class TestSingleTurnVertexAiEvalFacade:
       self, mocker, summary_metric_with_no_score
   ):
     """Test evaluate_invocations function for a metric."""
-    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mocker.patch("google.adk.dependencies._agentplatform.agentplatform.Client")
     mock_perform_eval = mocker.patch(
         "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
     )
@@ -202,7 +202,7 @@ class TestSingleTurnVertexAiEvalFacade:
 
   def test_evaluate_invocations_metric_multiple_invocations(self, mocker):
     """Test evaluate_invocations function for a metric with multiple invocations."""
-    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mocker.patch("google.adk.dependencies._agentplatform.agentplatform.Client")
     mock_perform_eval = mocker.patch(
         "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
     )
@@ -268,7 +268,7 @@ class TestVertexAiEvalFacade:
         os.environ, {"GOOGLE_API_KEY": "test_api_key"}, clear=True
     )
     mock_client_cls = mocker.patch(
-        "google.adk.dependencies.vertexai.vertexai.Client"
+        "google.adk.dependencies._agentplatform.agentplatform.Client"
     )
     _SingleTurnVertexAiEvalFacade(
         threshold=0.8, metric_name=vertexai_types.PrebuiltMetric.COHERENCE
@@ -287,7 +287,7 @@ class TestVertexAiEvalFacade:
         clear=True,
     )
     mock_client_cls = mocker.patch(
-        "google.adk.dependencies.vertexai.vertexai.Client"
+        "google.adk.dependencies._agentplatform.agentplatform.Client"
     )
     _SingleTurnVertexAiEvalFacade(
         threshold=0.8, metric_name=vertexai_types.PrebuiltMetric.COHERENCE
@@ -301,7 +301,7 @@ class TestVertexAiEvalFacade:
     mocker.patch.dict(
         os.environ, {"GOOGLE_CLOUD_PROJECT": "test_project"}, clear=True
     )
-    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mocker.patch("google.adk.dependencies._agentplatform.agentplatform.Client")
 
     with pytest.raises(ValueError, match="Missing location."):
       _SingleTurnVertexAiEvalFacade(
@@ -312,7 +312,7 @@ class TestVertexAiEvalFacade:
     mocker.patch.dict(
         os.environ, {"GOOGLE_CLOUD_LOCATION": "test_location"}, clear=True
     )
-    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mocker.patch("google.adk.dependencies._agentplatform.agentplatform.Client")
 
     with pytest.raises(ValueError, match="Missing project id."):
       _SingleTurnVertexAiEvalFacade(
@@ -321,7 +321,7 @@ class TestVertexAiEvalFacade:
 
   def test_constructor_with_no_env_vars_raises_error(self, mocker):
     mocker.patch.dict(os.environ, {}, clear=True)
-    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mocker.patch("google.adk.dependencies._agentplatform.agentplatform.Client")
 
     with pytest.raises(
         ValueError,
