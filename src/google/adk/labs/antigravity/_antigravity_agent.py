@@ -60,6 +60,7 @@ from ._event_converter import convert_step_to_events
 from ._event_converter import drain_tool_results
 from ._event_converter import final_model_text
 from ._sub_agent_tools import make_sub_agent_tool
+from ._tool_result_capture import SubagentCallCapture
 from ._tool_result_capture import ToolErrorCapture
 from ._tool_result_capture import ToolResultBuffer
 from ._tool_result_capture import ToolResultCapture
@@ -295,6 +296,12 @@ class AntigravityAgent(BaseAgent):
     # stays the concrete class.
     return ToolErrorCapture
 
+  @property
+  def _subagent_call_capture_cls(self) -> type[SubagentCallCapture]:
+    # Pre-tool capture seam for recording `start_subagent` `TypeName` / `Role`
+    # arguments before the harness sends the empty `ActionInvokeSubagent` step.
+    return SubagentCallCapture
+
   def _build_sdk_config(
       self,
       tool_results: ToolResultBuffer | None = None,
@@ -314,10 +321,13 @@ class AntigravityAgent(BaseAgent):
       # Runtime-safe: both values are real hooks. `tool_results` is typed as
       # the widened non-hook seam base `ToolResultBuffer` (see
       # `_tool_result_capture_cls`), so pyrefly cannot see it is a `Hook`.
-      config.hooks = list(config.hooks) + [  # pyrefly: ignore[bad-assignment]
+      hooks: list[Any] = [
           tool_results,
           self._tool_error_capture_cls(tool_results),
       ]
+      if self.config.subagents:
+        hooks.append(self._subagent_call_capture_cls(tool_results))
+      config.hooks = list(config.hooks) + hooks
     return config
 
   def _conversation_id_state_key(self) -> str:
@@ -530,23 +540,7 @@ class AntigravityAgent(BaseAgent):
       pending_invocations: list[str],
   ) -> tuple[str, str, dict[str, Any] | None]:
     """Returns ``(author, trajectory_key, custom_metadata)`` for ``step``."""
-    # 1. Record queued sub-agent names from invoke_subagent calls.
-    tool_calls = (
-        step.tool_calls if isinstance(step.tool_calls, (list, tuple)) else ()
-    )
-    for call in tool_calls:
-      if call.name != 'invoke_subagent' or not isinstance(call.args, dict):
-        continue
-      entries = call.args.get('Subagents') or call.args.get('subagents') or ()
-      for item in entries if isinstance(entries, (list, tuple)) else ():
-        if isinstance(item, dict):
-          subagent_name = (
-              item.get('TypeName') or item.get('type_name') or item.get('name')
-          )
-          if isinstance(subagent_name, str) and subagent_name:
-            pending_invocations.append(subagent_name)
-
-    # 2. Classify whether the step belongs to a sub-agent trajectory.
+    # 1. Classify whether the step belongs to a sub-agent trajectory.
     trajectory_id = (
         step.trajectory_id if isinstance(step.trajectory_id, str) else ''
     )
@@ -562,19 +556,13 @@ class AntigravityAgent(BaseAgent):
         or bool(parent_trajectory_id)
         or (bool(trajectory_id) and trajectory_id in subagent_authors)
         or (
-            bool(main_trajectory_id)
-            and bool(trajectory_id)
-            and trajectory_id != main_trajectory_id
-            and bool(pending_invocations)
-        )
-        or (
             not trajectory_id
             and matched_by_tool is not None
             and matched_by_tool in subagent_authors.values()
         )
     )
 
-    # 3. Resolve event author and normalized trajectory hierarchy metadata.
+    # 2. Resolve event author and normalized trajectory hierarchy metadata.
     author = self.name
     trajectory_key = main_trajectory_id or trajectory_id
     if is_subagent:
@@ -639,7 +627,11 @@ class AntigravityAgent(BaseAgent):
     subagent_authors: dict[str, str] = self._extract_session_subagent_authors(
         ctx
     )
-    pending_invocations: list[str] = []
+    pending_invocations: list[str] = (
+        active.tool_results.pending_subagents
+        if active.tool_results is not None
+        else []
+    )
     main_trajectory_id = ''
     streaming = bool(
         ctx.run_config and ctx.run_config.streaming_mode == StreamingMode.SSE

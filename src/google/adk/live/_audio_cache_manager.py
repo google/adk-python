@@ -209,7 +209,10 @@ class AudioCacheManager:
 
       # Generate filename with timestamp from first audio chunk (when recording started)
       timestamp = int(audio_cache[0].timestamp * 1000)  # milliseconds
-      filename = f"adk_live_audio_storage_{cache_type}_{timestamp}.{mime_type.split('/')[-1]}"
+      # Drop MIME parameters such as `;rate=24000` so they don't end up in the
+      # file extension. The full MIME type is kept on the saved artifact.
+      extension = mime_type.split(';', 1)[0].strip().split('/')[-1]
+      filename = f'adk_live_audio_storage_{cache_type}_{timestamp}.{extension}'
 
       # Save to artifact service
       combined_audio_part = types.Part(

@@ -18,7 +18,6 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 import vertexai as vertexai
-from vertexai.preview import example_stores as example_stores
 
 if TYPE_CHECKING:
   from vertexai.preview import rag as rag

@@ -1313,6 +1313,29 @@ async def test_both_capture_hooks_are_registered_when_there_are_sub_agents():
 
 
 @pytest.mark.asyncio
+async def test_both_capture_hooks_are_registered_when_config_has_client_tools():
+  """Client tools on the root agent require tool result capture hooks."""
+  configs: list[AgentConfig] = []
+
+  def _build(config: AgentConfig) -> MagicMock:
+    configs.append(config)
+    return _fake_active_agent(_steps_once)
+
+  agent = AntigravityAgent(
+      name='coder', config=_make_config(tools=[_user_tool])
+  )
+
+  with patch.object(_antigravity_agent, 'Agent', _build):
+    async for _ in agent._run_async_impl(_mock_run_ctx()):
+      pass
+
+  assert [type(hook) for hook in configs[0].hooks] == [
+      _tool_result_capture.ToolResultCapture,
+      _tool_result_capture.ToolErrorCapture,
+  ]
+
+
+@pytest.mark.asyncio
 async def test_the_capture_keeps_its_identity_through_the_config_deep_copy():
   # `AgentConfig.model_copy` re-shallow-copies `hooks` after the base deep
   # copy, which is why the capture needs no `__deepcopy__`.
@@ -1456,45 +1479,79 @@ async def test_node_input_none_is_a_no_op():
 @pytest.mark.asyncio
 async def test_sdk_subagent_steps_preserve_author_and_hierarchy():
   """SDK subagent steps preserve author and hierarchy even when depth=0."""
+  sub_1 = sdk_types.SubagentConfig(
+      name='reverse_engineering_agent',
+      description='RE',
+  )
+  sub_2 = sdk_types.SubagentConfig(
+      name='other_agent',
+      description='Other',
+  )
 
-  async def _receive_steps() -> AsyncIterator[sdk_types.Step]:
-    yield sdk_types.Step(
-        trajectory_id='traj-root',
-        depth=0,
-        step_index=1,
-        type=sdk_types.StepType.TOOL_CALL,
-        source=sdk_types.StepSource.MODEL,
-        status=sdk_types.StepStatus.DONE,
-        thinking='Delegating to reverse_engineering_agent.',
-        tool_calls=[
-            sdk_types.ToolCall(
-                name='invoke_subagent',
-                args={'Subagents': [{'TypeName': 'reverse_engineering_agent'}]},
-                id='call_sub_1',
-            )
-        ],
-    )
-    yield sdk_types.Step(
-        trajectory_id='traj-sub-1',
-        parent_trajectory_id='',
-        depth=0,
-        step_index=1,
-        type=sdk_types.StepType.TEXT_RESPONSE,
-        source=sdk_types.StepSource.MODEL,
-        status=sdk_types.StepStatus.DONE,
-        thinking='Analyzing binary strings.',
-        content='Found C2 beacon in binary.',
-        is_complete_response=True,
-    )
+  def _build(config: AgentConfig) -> MagicMock:
+    hooks = list(config.hooks)
 
-  active_agent = _fake_active_agent(_receive_steps)
+    async def _receive_steps() -> AsyncIterator[sdk_types.Step]:
+      for hook in hooks:
+        if isinstance(hook, sdk_hooks.PreToolCallDecideHook):
+          await hook.run(
+              None,
+              sdk_types.ToolCall(
+                  name=sdk_types.BuiltinTools.START_SUBAGENT,
+                  args={'TypeName': 'reverse_engineering_agent'},
+                  id='call_sub_1',
+              ),
+          )
+      yield sdk_types.Step(
+          trajectory_id='traj-root',
+          depth=0,
+          step_index=1,
+          type=sdk_types.StepType.TOOL_CALL,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          thinking='Delegating to reverse_engineering_agent.',
+          tool_calls=[
+              sdk_types.ToolCall(
+                  name=sdk_types.BuiltinTools.START_SUBAGENT,
+                  args={},
+                  id='call_sub_1',
+              )
+          ],
+      )
+      yield sdk_types.Step(
+          trajectory_id='traj-root-client-tool',
+          parent_trajectory_id='',
+          depth=0,
+          step_index=2,
+          type=sdk_types.StepType.TOOL_CALL,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          tool_calls=[
+              sdk_types.ToolCall(name='fs_list_dir', args={}, id='call_root_2')
+          ],
+      )
+      yield sdk_types.Step(
+          trajectory_id='traj-sub-1',
+          parent_trajectory_id='traj-root',
+          depth=0,
+          step_index=1,
+          type=sdk_types.StepType.TEXT_RESPONSE,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          thinking='Analyzing binary strings.',
+          content='Found C2 beacon in binary.',
+          is_complete_response=True,
+      )
+
+    return _fake_active_agent(_receive_steps)
+
   agent = AntigravityAgent(
       name='threat_intelligence_orchestrator',
-      config=_make_config(),
+      config=_make_config(subagents=[sub_1, sub_2]),
       mode='single_turn',
   )
 
-  with patch.object(_antigravity_agent, 'Agent', return_value=active_agent):
+  with patch.object(_antigravity_agent, 'Agent', _build):
     events = [event async for event in agent._run_async_impl(_mock_run_ctx())]
 
   subagent_events = [
@@ -1630,6 +1687,16 @@ async def test_subagent_client_tool_preserves_and_appends_thinking():
           status=sdk_types.StepStatus.ACTIVE,
           thinking='Root initial thought.',
       )
+      for hook in hooks:
+        if isinstance(hook, sdk_hooks.PreToolCallDecideHook):
+          await hook.run(
+              None,
+              sdk_types.ToolCall(
+                  name=sdk_types.BuiltinTools.START_SUBAGENT,
+                  args={'TypeName': 're_sub'},
+                  id='call_sub_1',
+              ),
+          )
       yield sdk_types.Step(
           trajectory_id='traj-root',
           step_index=0,
@@ -1638,8 +1705,8 @@ async def test_subagent_client_tool_preserves_and_appends_thinking():
           status=sdk_types.StepStatus.DONE,
           tool_calls=[
               sdk_types.ToolCall(
-                  name='invoke_subagent',
-                  args={'Subagents': [{'TypeName': 're_sub'}]},
+                  name=sdk_types.BuiltinTools.START_SUBAGENT,
+                  args={},
                   id='call_sub_1',
               )
           ],

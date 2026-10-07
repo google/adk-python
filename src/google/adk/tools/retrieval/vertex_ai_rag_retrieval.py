@@ -17,10 +17,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import logging
+import os
 from typing import Any
-from typing import cast
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 from google.genai import types
 from typing_extensions import override
@@ -31,10 +32,47 @@ from ...utils.model_name_utils import is_gemini_model_id_check_disabled
 from ..tool_context import ToolContext
 from .base_retrieval_tool import BaseRetrievalTool
 
-if TYPE_CHECKING:
-  from ...dependencies.vertexai import rag
+logger = logging.getLogger("google_adk." + __name__)
 
-logger = logging.getLogger('google_adk.' + __name__)
+
+class RagResourceLike(Protocol):
+  """Anything shaped like a RAG resource.
+
+  Structural rather than nominal so a `vertexai.rag.RagResource` from
+  google-cloud-aiplatform keeps working without ADK depending on that package.
+  """
+
+  rag_corpus: str | None
+  rag_file_ids: list[str] | None
+
+
+RagResourceOrDict = (
+    types.VertexRagStoreRagResource
+    | types.VertexRagStoreRagResourceDict
+    | RagResourceLike
+)
+
+
+def _to_rag_resource(
+    resource: RagResourceOrDict,
+) -> types.VertexRagStoreRagResource:
+  """Coerces a RAG-resource-shaped value into the google-genai type."""
+  if isinstance(resource, types.VertexRagStoreRagResource):
+    return resource
+  if isinstance(resource, Mapping):
+    return types.VertexRagStoreRagResource(**resource)
+  if not hasattr(resource, "rag_corpus") and not hasattr(
+      resource, "rag_file_ids"
+  ):
+    raise TypeError(
+        "rag_resources entries must be a types.VertexRagStoreRagResource, a"
+        " mapping, or an object carrying rag_corpus / rag_file_ids (such as"
+        f" vertexai.rag.RagResource); got {type(resource).__name__}."
+    )
+  return types.VertexRagStoreRagResource(
+      rag_corpus=getattr(resource, "rag_corpus", None),
+      rag_file_ids=getattr(resource, "rag_file_ids", None),
+  )
 
 
 class VertexAiRagRetrieval(BaseRetrievalTool):
@@ -46,22 +84,61 @@ class VertexAiRagRetrieval(BaseRetrievalTool):
       name: str,
       description: str,
       rag_corpora: list[str] | None = None,
-      rag_resources: list[rag.RagResource] | None = None,
+      rag_resources: list[RagResourceOrDict] | None = None,
       similarity_top_k: int | None = None,
       vector_distance_threshold: float | None = None,
   ):
     super().__init__(name=name, description=description)
-    # VertexRagStore validates from attributes, so it rebuilds each resource as
-    # its own type and the originals are unrecoverable from it. retrieval_query
-    # needs the vertexai ones, so keep them.
-    self._rag_resources = rag_resources
     self.vertex_rag_store = types.VertexRagStore(
         rag_corpora=rag_corpora,
-        rag_resources=cast(
-            'list[types.VertexRagStoreRagResource] | None', rag_resources
+        rag_resources=(
+            [_to_rag_resource(resource) for resource in rag_resources]
+            if rag_resources
+            else None
         ),
         similarity_top_k=similarity_top_k,
         vector_distance_threshold=vector_distance_threshold,
+    )
+
+  def _retrieval_store(self) -> types.VertexRagStore:
+    """Returns the store trimmed to what RetrieveContexts accepts.
+
+    RetrieveContextsRequest.VertexRagStore carries only rag_corpora,
+    rag_resources and vector_distance_threshold. similarity_top_k moved to
+    RagQuery and its field number is reserved, so leaving it on the store makes
+    the backend reject the request.
+    """
+    return types.VertexRagStore(
+        rag_corpora=self.vertex_rag_store.rag_corpora,
+        rag_resources=self.vertex_rag_store.rag_resources,
+        vector_distance_threshold=(
+            self.vertex_rag_store.vector_distance_threshold
+        ),
+    )
+
+  def _project_and_location(self) -> tuple[str | None, str | None]:
+    """Resolves the project and location, preferring the corpus name.
+
+    A fully-qualified corpus name names exactly one endpoint, so it wins; the
+    environment only fills in what a bare corpus ID leaves unspecified.
+    """
+    store_project = None
+    store_location = None
+    corpus_name = None
+    if self.vertex_rag_store.rag_corpora:
+      corpus_name = self.vertex_rag_store.rag_corpora[0]
+    elif self.vertex_rag_store.rag_resources:
+      corpus_name = self.vertex_rag_store.rag_resources[0].rag_corpus
+
+    if corpus_name and corpus_name.startswith("projects/"):
+      parts = corpus_name.split("/")
+      if len(parts) >= 4 and parts[0] == "projects" and parts[2] == "locations":
+        store_project = parts[1]
+        store_location = parts[3]
+
+    return (
+        store_project or os.environ.get("GOOGLE_CLOUD_PROJECT"),
+        store_location or os.environ.get("GOOGLE_CLOUD_LOCATION"),
     )
 
   @override
@@ -100,25 +177,40 @@ class VertexAiRagRetrieval(BaseRetrievalTool):
       args: dict[str, Any],
       tool_context: ToolContext,
   ) -> Any:
-    from ...dependencies.vertexai import rag
+    try:
+      from ...dependencies._agentplatform import agentplatform
+    except ImportError as e:
+      from ...utils._dependency import missing_extra
 
-    query = args.get('query')
+      raise missing_extra("google-cloud-aiplatform", "gcp") from e
+
+    agentplatform_types = agentplatform.types
+
+    query = args.get("query")
     if not isinstance(query, str):
       raise ValueError("Vertex AI RAG retrieval requires a string 'query'.")
 
-    response = await asyncio.to_thread(
-        rag.retrieval_query,
-        text=query,
-        rag_resources=self._rag_resources,
-        rag_corpora=self.vertex_rag_store.rag_corpora,
-        similarity_top_k=self.vertex_rag_store.similarity_top_k,
-        vector_distance_threshold=self.vertex_rag_store.vector_distance_threshold,
-    )
+    project, location = self._project_and_location()
 
-    logging.debug('RAG raw response: %s', response)
+    client = agentplatform.Client(project=project, location=location).aio
+    try:
+      response = await client.rag.retrieve_contexts(
+          vertex_rag_store=self._retrieval_store(),
+          query=agentplatform_types.RagQuery(
+              text=query,
+              similarity_top_k=self.vertex_rag_store.similarity_top_k,
+          ),
+      )
+    finally:
+      # Shielded so a cancellation racing the close cannot leak the underlying
+      # HTTP session.
+      await asyncio.shield(client.aclose())
 
+    logger.debug("RAG raw response: %s", response)
+
+    contexts = response.contexts.contexts if response.contexts else None
     return (
-        f'No matching result found with the config: {self.vertex_rag_store}'
-        if not response.contexts.contexts
-        else [context.text for context in response.contexts.contexts]
+        f"No matching result found with the config: {self.vertex_rag_store}"
+        if not contexts
+        else [context.text for context in contexts if context.text is not None]
     )

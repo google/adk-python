@@ -3183,6 +3183,169 @@ async def test_returned_session_scoped_state_uses_configured_copy_depth(
     )
 
 
+class _CountsDeepCopies:
+  """A value that records how often it is deep-copied."""
+
+  def __init__(self):
+    self.copies = 0
+
+  def __deepcopy__(self, memo):
+    self.copies += 1
+    return _CountsDeepCopies()
+
+
+def _mutable_object_ids(value: Any, seen: set[int] | None = None) -> set[int]:
+  """Returns the ids of every container and model reachable from value."""
+  seen = set() if seen is None else seen
+  if isinstance(value, (str, int, float, bytes, enum.Enum, type(None))):
+    return seen
+  if id(value) in seen:
+    return seen
+  seen.add(id(value))
+  if isinstance(value, dict):
+    children = list(value.values())
+  elif isinstance(value, (list, tuple, set, frozenset)):
+    children = list(value)
+  else:
+    children = list(vars(value).values())
+    children.append(getattr(value, '__pydantic_private__', None))
+  for child in children:
+    _mutable_object_ids(child, seen)
+  return seen
+
+
+@pytest.mark.asyncio
+async def test_in_memory_get_session_copies_only_selected_events():
+  """A filtered read pays to copy the events it returns and no others."""
+  service = InMemorySessionService()
+  session = await service.create_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+  old_value = _CountsDeepCopies()
+  await service.append_event(
+      session, Event(author='user', custom_metadata={'v': old_value})
+  )
+  await service.append_event(session, Event(author='user', invocation_id='i2'))
+
+  fetched = await service.get_session(
+      app_name='my_app',
+      user_id='u1',
+      session_id='s1',
+      config=GetSessionConfig(num_recent_events=1),
+  )
+
+  assert [e.invocation_id for e in fetched.events] == ['i2']
+  assert old_value.copies == 0
+
+
+@pytest.mark.asyncio
+async def test_in_memory_get_session_events_share_nothing_with_storage():
+  """A returned event equals the stored one but shares no object with it."""
+  service = InMemorySessionService()
+  session = await service.create_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+  event = Event(
+      author='agent',
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(text='hi', part_metadata={'k': ['v']}),
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name='tool',
+                      args={'a': {'b': 1}},
+                      partial_args=[types.PartialArg(json_path='$.a')],
+                  )
+              ),
+          ],
+      ),
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_tokens_details=[
+              types.ModalityTokenCount(
+                  modality=types.MediaModality.TEXT, token_count=3
+              )
+          ],
+      ),
+      output_transcription=types.Transcription(text='hi'),
+      actions=EventActions(state_delta={'k': {'n': [1]}}),
+      long_running_tool_ids={'f1'},
+  )
+  await service.append_event(session, event)
+
+  fetched = await service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  stored_event = service.sessions['my_app']['u1']['s1'].events[0]
+  assert fetched.events[0] == stored_event
+  assert _mutable_object_ids(fetched.events[0]).isdisjoint(
+      _mutable_object_ids(stored_event)
+  )
+
+
+@pytest.mark.asyncio
+async def test_in_memory_get_session_keeps_shared_state_values_shared():
+  """Two state keys holding one value still hold one value after a read."""
+  service = InMemorySessionService()
+  await service.create_session(app_name='my_app', user_id='u1', session_id='s1')
+  stored = service.sessions['my_app']['u1']['s1']
+  stored.state['x'] = stored.state['y'] = {'n': [1]}
+
+  fetched = await service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  assert fetched.state['x'] is fetched.state['y']
+  assert fetched.state['x'] is not stored.state['x']
+
+
+@pytest.mark.asyncio
+async def test_in_memory_get_session_copies_mock_events():
+  """A test that stores a mock event gets a copy of it back, not the mock."""
+  service = InMemorySessionService()
+  await service.create_session(app_name='my_app', user_id='u1', session_id='s1')
+  stored_event = mock.Mock(spec=Event)
+  service.sessions['my_app']['u1']['s1'].events.append(stored_event)
+
+  fetched = await service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  assert isinstance(fetched.events[0], mock.Mock)
+  assert fetched.events[0] is not stored_event
+
+
+@pytest.mark.asyncio
+async def test_in_memory_list_sessions_omits_events_without_copying_them():
+  """An event holding a value that cannot be copied is still listable."""
+  service = InMemorySessionService()
+  session = await service.create_session(app_name='my_app', user_id='user')
+  await service.append_event(
+      session,
+      Event(author='user', custom_metadata={'lock': threading.Lock()}),
+  )
+
+  response = await service.list_sessions(app_name='my_app', user_id='user')
+
+  assert [listed.events for listed in response.sessions] == [[]]
+  assert len(service.sessions['my_app']['user'][session.id].events) == 1
+
+
+@pytest.mark.asyncio
+async def test_in_memory_get_session_copies_private_attributes():
+  """A returned session carries the private attributes the stored one has."""
+  service = InMemorySessionService()
+  await service.create_session(app_name='my_app', user_id='u1', session_id='s1')
+  service.sessions['my_app']['u1']['s1']._storage_update_marker = 'm1'
+
+  fetched = await service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  assert fetched._storage_update_marker == 'm1'
+
+
 @pytest.mark.asyncio
 async def test_vertex_ai_session_service_raises_not_implemented_for_get_user_state():
   """Verifies VertexAiSessionService raises NotImplementedError."""

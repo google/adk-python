@@ -95,6 +95,8 @@ Credentials come from Application Default Credentials.
 
 `filter_match_state` is checked first, so a partial result that still reports `MATCH_FOUND` is always blocked.
 
+With `deidentify_sensitive_data=True`, one kind of match is handled differently: when Sensitive Data Protection (SDP) is the only filter that matched and the template's SDP advanced config has a de-identify template, Model Armor returns the text with the sensitive data transformed, and the plugin continues with that text instead of blocking. See [`deidentify_sensitive_data`](#deidentify_sensitive_data).
+
 A screening failure is routed through `block_on_screening_failure` and blocked by default.
 
 ### The blocked response
@@ -141,6 +143,7 @@ Options introduced by `ModelArmorPlugin` (those inherited from `BasePlugin` are 
 | `output_blocked_message` | `str` | `"I'm sorry, but I can't help with that request."` | Replacement text shown when model output is blocked. |
 | `tool_output_blocked_message` | `str` | `"Tool output was blocked by Model Armor."` | Replacement error message returned to the model when tool output is blocked. |
 | `block_on_screening_failure` | `bool` | `True` | Whether to block content that could not be screened. |
+| `deidentify_sensitive_data` | `bool` | `False` | Whether to continue with de-identified text instead of blocking when SDP is the only filter that matched. |
 
 At least one of `prompt_template_name`, `response_template_name`, or `tool_output_template_name` must be set.
 
@@ -168,6 +171,17 @@ Controls how the plugin behaves when Model Armor cannot return a definitive `SUC
 - **`True` (default)**: Blocks the content. Unscreened content is treated as unsafe.
 - **`False`**: Delivers the content.
 
+#### `deidentify_sensitive_data`
+
+Controls what happens when the only filter that matched is Sensitive Data Protection.
+
+- **`False` (default)**: The content is blocked, like any other match.
+- **`True`**: If Model Armor returned de-identified text, the plugin uses it. For input, it replaces the text of the most recent `user` content in the request, so the model receives the de-identified text on that turn (the stored session event keeps the original text, so history replays the original on subsequent turns); non-text parts and thought parts are kept. For output, it returns the response with its text, or its live transcription, replaced, and marks it with `custom_metadata={"model_armor_deidentified": True}`.
+
+Model Armor returns de-identified text only when the template's SDP settings use an advanced config with a de-identify template (a Sensitive Data Protection `deidentifyTemplate`, for example one that replaces each finding with its info type). With a basic SDP config, or without a de-identify template, an SDP match carries no transformed text and is still blocked.
+
+A match from any other filter (responsible AI, prompt injection and jailbreak, malicious URIs, CSAM) still blocks, even when SDP also matched and de-identified text is available.
+
 ## Advanced applications
 
 ### Screening one direction only
@@ -184,6 +198,18 @@ config = ModelArmorConfig(
 config = ModelArmorConfig(
     prompt_template_name="projects/my-project/locations/us-central1/templates/my-prompt-template",
     block_on_screening_failure=False,
+)
+```
+
+### Continuing with de-identified text
+
+With a template whose SDP advanced config has a de-identify template, an email address or phone number in the user's message reaches the model as `[EMAIL_ADDRESS]` or `[PHONE_NUMBER]` instead of blocking the turn:
+
+```python
+config = ModelArmorConfig(
+    prompt_template_name="projects/my-project/locations/us-central1/templates/my-deidentify-template",
+    response_template_name="projects/my-project/locations/us-central1/templates/my-deidentify-template",
+    deidentify_sensitive_data=True,
 )
 ```
 
@@ -205,6 +231,8 @@ async for event in runner.run_async(...):
 
 - **Plugin registration order matters.** `PluginManager` stops at the first plugin that returns a non-`None` value from a callback. Register `ModelArmorPlugin` ahead of plugins that return a value from `after_tool_callback` (such as `MultimodalToolResultsPlugin`) so tool output screening is not bypassed.
 
-- **Enforcement mode is limited.** The Model Armor plugin is currently limited to logging detection results and blocking content. Future extensions could include replacing or redacting text.
+- **Enforcement is block or de-identify.** The plugin blocks matched content, or, with `deidentify_sensitive_data`, continues with Model Armor's de-identified text when SDP is the only match. It does not apply other transformations.
+
+- **De-identified input is not written back to the session.** With `deidentify_sensitive_data`, the plugin replaces the latest user content in the current request, but the user's event stored in the session keeps the original text, so subsequent turns rebuild the request from history and replay the original text to the model.
 
 - **Live audio screening uses transcriptions.** The Model Armor plugin currently screens audio via input and output transcriptions, which relies on their accuracy.

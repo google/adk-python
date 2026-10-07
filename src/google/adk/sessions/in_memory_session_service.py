@@ -128,8 +128,8 @@ class InMemorySessionService(BaseSessionService):
       session_id: Optional[str] = None,
   ) -> Session:
     session_id = session_id.strip() if session_id else None
-    if session_id and self._get_session_impl(
-        app_name=app_name, user_id=user_id, session_id=session_id
+    if session_id and session_id in self.sessions.get(app_name, {}).get(
+        user_id, {}
     ):
       raise AlreadyExistsError(f'Session with id {session_id} already exists.')
     state_deltas = _session_util.extract_state_delta(state or {})
@@ -210,24 +210,25 @@ class InMemorySessionService(BaseSessionService):
       return None
 
     session = self.sessions[app_name][user_id][session_id]
-    copied_session = _copy_session(session)
-
+    events = session.events
     if config:
       if config.num_recent_events is not None:
         if config.num_recent_events == 0:
-          copied_session.events = []
+          events = []
         else:
-          copied_session.events = copied_session.events[
-              -config.num_recent_events :
-          ]
-      if config.after_timestamp:
-        i = len(copied_session.events) - 1
+          events = events[-config.num_recent_events :]
+      if config.after_timestamp is not None:
+        i = len(events) - 1
         while i >= 0:
-          if copied_session.events[i].timestamp < config.after_timestamp:
+          if events[i].timestamp < config.after_timestamp:
             break
           i -= 1
         if i >= 0:
-          copied_session.events = copied_session.events[i + 1 :]
+          events = events[i + 1 :]
+    if events is not session.events:
+      # Copy only the events being returned.
+      session = session.model_copy(update={'events': events})
+    copied_session = _copy_session(session)
 
     # Return a copy of the session object with merged state.
     return self._merge_state(app_name, user_id, copied_session)
@@ -278,14 +279,16 @@ class InMemorySessionService(BaseSessionService):
     if user_id is None:
       for uid in list(self.sessions[app_name].keys()):
         for session in list(self.sessions[app_name][uid].values()):
-          copied_session = _copy_session(session)
-          copied_session.events = []
+          copied_session = _copy_session(
+              session.model_copy(update={'events': []})
+          )
           copied_session = self._merge_state(app_name, uid, copied_session)
           sessions_without_events.append(copied_session)
     else:
       for session in list(self.sessions[app_name][user_id].values()):
-        copied_session = _copy_session(session)
-        copied_session.events = []
+        copied_session = _copy_session(
+            session.model_copy(update={'events': []})
+        )
         copied_session = self._merge_state(app_name, user_id, copied_session)
         sessions_without_events.append(copied_session)
 
@@ -314,12 +317,7 @@ class InMemorySessionService(BaseSessionService):
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     session_id = session_id.strip() if session_id else session_id
-    if (
-        self._get_session_impl(
-            app_name=app_name, user_id=user_id, session_id=session_id
-        )
-        is None
-    ):
+    if session_id not in self.sessions.get(app_name, {}).get(user_id, {}):
       return
 
     self.sessions[app_name][user_id].pop(session_id)

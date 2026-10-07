@@ -439,6 +439,27 @@ class TestAudioCacheManager:
     assert not invocation_context.input_realtime_cache
 
   @pytest.mark.asyncio
+  async def test_filename_drops_mime_type_parameters(self):
+    """MIME parameters like `;rate=24000` stay out of the file extension."""
+    invocation_context = await testing_utils.create_invocation_context(
+        testing_utils.create_test_agent()
+    )
+    mock_artifact_service = AsyncMock()
+    mock_artifact_service.save_artifact.return_value = 0
+    invocation_context.artifact_service = mock_artifact_service
+    audio_blob = types.Blob(data=b'audio', mime_type='audio/pcm;rate=24000')
+    self.manager.cache_audio(invocation_context, audio_blob, 'output')
+
+    await self.manager.flush_caches(invocation_context)
+
+    call_args = mock_artifact_service.save_artifact.call_args
+    assert call_args.kwargs['filename'].endswith('.pcm')
+    assert (
+        call_args.kwargs['artifact'].inline_data.mime_type
+        == 'audio/pcm;rate=24000'
+    )
+
+  @pytest.mark.asyncio
   async def test_filename_uses_first_chunk_timestamp(self):
     """Test that the filename timestamp comes from the first audio chunk, not flush time."""
     invocation_context = await testing_utils.create_invocation_context(
