@@ -66,7 +66,6 @@ class FeatureName(str, Enum):
   _MCP_MODERN_PROTOCOL = "MCP_MODERN_PROTOCOL"
   MONGODB_TOOLSET = "MONGODB_TOOLSET"
   MONGODB_TOOL_SETTINGS = "MONGODB_TOOL_SETTINGS"
-  MONGODB_TOOLSET = "MONGODB_TOOLSET"
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
   PUBSUB_TOOL_CONFIG = "PUBSUB_TOOL_CONFIG"
   PUBSUB_TOOLSET = "PUBSUB_TOOLSET"
@@ -201,6 +200,8 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.MONGODB_SESSION_SERVICE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName._MCP_MODERN_PROTOCOL: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=False
     ),
@@ -208,9 +209,6 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.MONGODB_TOOL_SETTINGS: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
-    ),
-    FeatureName.MONGODB_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.PROGRESSIVE_SSE_STREAMING: FeatureConfig(
