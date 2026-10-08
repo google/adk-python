@@ -54,6 +54,7 @@ from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.enterprise_search_tool import EnterpriseWebSearchTool
 from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.adk.tools.tool_context import ToolContext
+from google.adk.tools.vertex_ai_search_tool import VertexAiSearchTool
 from google.adk.utils.context_utils import Aclosing
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
@@ -3361,6 +3362,97 @@ async def test_search_agent_with_sub_agents_and_enterprise_search_raises_value_e
       match=(
           'has sub-agent transfer targets but is configured with'
           ' EnterpriseWebSearchTool'
+      ),
+  ):
+    async for _ in flow._preprocess_async(ctx, llm_request):
+      pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'builtin_tool, builtin_field',
+    [
+        (GoogleSearchTool(), 'google_search'),
+        (EnterpriseWebSearchTool(), 'enterprise_web_search'),
+        (VertexAiSearchTool(data_store_id='ds'), 'retrieval'),
+    ],
+    ids=['google_search', 'enterprise_web_search', 'vertex_ai_search'],
+)
+async def test_gemini_3_agent_with_sub_agents_keeps_builtin_search_and_transfer(
+    builtin_tool, builtin_field
+):
+  """Gemini 3+ accepts built-in search alongside transfer_to_agent."""
+  sub_agent = Agent(name='sub_agent', model='gemini-3.5-flash')
+  root_agent = Agent(
+      name='root_agent',
+      model='gemini-3.5-flash',
+      tools=[builtin_tool],
+      sub_agents=[sub_agent],
+  )
+  ctx = await testing_utils.create_invocation_context(
+      agent=root_agent, user_content='search and delegate'
+  )
+  llm_request = LlmRequest(model='gemini-3.5-flash')
+  flow = root_agent._llm_flow
+
+  async for _ in flow._preprocess_async(ctx, llm_request):
+    pass
+
+  assert 'transfer_to_agent' in llm_request.tools_dict
+  assert any(
+      getattr(tool, builtin_field, None) is not None
+      for tool in llm_request.config.tools
+  )
+
+
+@pytest.mark.asyncio
+async def test_gemini_3_agent_with_search_tool_model_override_still_raises():
+  """A GoogleSearchTool model override to Gemini 2.x wins over the agent model."""
+  sub_agent = Agent(name='sub_agent', model='gemini-3.5-flash')
+  root_agent = Agent(
+      name='root_agent',
+      model='gemini-3.5-flash',
+      tools=[GoogleSearchTool(model='gemini-2.5-flash')],
+      sub_agents=[sub_agent],
+  )
+  ctx = await testing_utils.create_invocation_context(
+      agent=root_agent, user_content='search and delegate'
+  )
+  llm_request = LlmRequest(model='gemini-3.5-flash')
+  flow = root_agent._llm_flow
+
+  with pytest.raises(
+      ValueError,
+      match=(
+          'has sub-agent transfer targets but is configured with'
+          ' GoogleSearchTool'
+      ),
+  ):
+    async for _ in flow._preprocess_async(ctx, llm_request):
+      pass
+
+
+@pytest.mark.asyncio
+async def test_modelless_agent_in_live_mode_with_sub_agents_and_search_raises():
+  """A model-less agent in live mode resolves to DEFAULT_LIVE_MODEL (2.5) and raises."""
+  sub_agent = Agent(name='sub_agent')
+  root_agent = Agent(
+      name='root_agent',
+      tools=[GoogleSearchTool()],
+      sub_agents=[sub_agent],
+  )
+  ctx = await testing_utils.create_invocation_context(
+      agent=root_agent, user_content='search and delegate'
+  )
+  ctx.live_request_queue = LiveRequestQueue()
+  llm_request = LlmRequest()
+  flow = root_agent._llm_flow
+
+  with pytest.raises(
+      ValueError,
+      match=(
+          'has sub-agent transfer targets but is configured with'
+          ' GoogleSearchTool'
       ),
   ):
     async for _ in flow._preprocess_async(ctx, llm_request):

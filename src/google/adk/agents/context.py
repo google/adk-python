@@ -21,7 +21,6 @@ from collections.abc import Sequence
 from typing import Any
 from typing import TYPE_CHECKING
 
-from opentelemetry import context as context_api
 from typing_extensions import override
 
 from .readonly_context import ReadonlyContext
@@ -184,6 +183,8 @@ class Context(ReadonlyContext):
     )
 
     self._event_author = parent_ctx.event_author if parent_ctx else ''
+
+    from opentelemetry import context as context_api
 
     self._telemetry_context = TelemetryContext(
         otel_context=context_api.get_current()

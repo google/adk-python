@@ -126,7 +126,8 @@ def test_vertex_ai_memory_bank_service_fails_on_creation():
 
     with pytest.raises(ImportError) as exc_info:
       VertexAiMemoryBankService(agent_engine_id="123")
-    assert "google-cloud-aiplatform" in str(exc_info.value)
+    # Names the distribution the `gcp` extra actually installs.
+    assert "google-cloud-agentplatform" in str(exc_info.value)
 
 
 def test_database_session_service_fails_on_creation():
@@ -193,7 +194,8 @@ def test_vertex_ai_session_service_fails_on_creation():
 
     with pytest.raises(ImportError) as exc_info:
       VertexAiSessionService(agent_engine_id="123")
-    assert "google-cloud-aiplatform" in str(exc_info.value)
+    # Names the distribution the `gcp` extra actually installs.
+    assert "google-cloud-agentplatform" in str(exc_info.value)
 
 
 def test_bigquery_agent_analytics_plugin_fails_on_import_naming_its_extra():
@@ -369,7 +371,8 @@ except ImportError as e:
   )
   output = result.stdout.strip()
   assert "CAUGHT_IMPORT_ERROR" in output
-  assert "google-cloud-aiplatform" in output
+  # Names the distribution the `gcp` extra actually installs.
+  assert "google-cloud-agentplatform" in output
 
 
 @pytest.mark.skipif(not RUN_INTEGRATION, reason="Requires ADK_TEST_NETWORK=1")
@@ -417,4 +420,5 @@ except ImportError as e:
   )
   output = result.stdout.strip()
   assert "CAUGHT_IMPORT_ERROR" in output
-  assert "google-cloud-aiplatform" in output
+  # Names the distribution the `gcp` extra actually installs.
+  assert "google-cloud-agentplatform" in output

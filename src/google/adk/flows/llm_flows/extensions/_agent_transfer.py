@@ -29,6 +29,7 @@ from ....events.event import Event
 from ....models.llm_request import LlmRequest
 from ....tools.tool_context import ToolContext
 from ....tools.transfer_to_agent_tool import TransferToAgentTool
+from ....utils._agent_mode import DELEGATED_TASK_MODES
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..core._utils import as_llm_agent
 
@@ -54,7 +55,13 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
     if not transfer_targets:
       return
 
-    if err_msg := _get_incompatible_builtin_tool_error(agent):
+    model = (
+        getattr(getattr(agent, 'canonical_live_model', None), 'model', None)
+        or llm_request.model
+        if invocation_context.live_request_queue is not None
+        else llm_request.model
+    )
+    if err_msg := _get_incompatible_builtin_tool_error(agent, model):
       sub_agents = getattr(agent, 'sub_agents', None) or []
       sub_agent_targets = [t for t in transfer_targets if t in sub_agents]
       if sub_agent_targets:
@@ -63,7 +70,7 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
 
     transfer_to_agent_tool = _build_transfer_tool(transfer_targets)
 
-    if agent.mode not in ('task', 'single_turn'):
+    if agent.mode not in DELEGATED_TASK_MODES:
       transfer_target_infos = await asyncio.gather(*[
           _build_transfer_target_info(target, invocation_context)
           for target in transfer_targets
@@ -211,7 +218,7 @@ def _build_transfer_instructions(
   Returns:
     Instruction text for the LLM about agent transfers.
   """
-  if agent.mode in ('task', 'single_turn'):
+  if agent.mode in DELEGATED_TASK_MODES:
     return ''
 
   si = _build_transfer_instruction_body(tool_name, target_agents)
@@ -248,7 +255,7 @@ def _get_transfer_targets(agent: BaseAgent) -> list[BaseAgent]:
         sub_agent
         for sub_agent in agent.sub_agents
         if not hasattr(sub_agent, 'mode')
-        or sub_agent.mode not in ('single_turn', 'task')
+        or sub_agent.mode not in DELEGATED_TASK_MODES
     ])
 
   parent = getattr(agent, 'parent_agent', None)
@@ -265,7 +272,7 @@ def _get_transfer_targets(agent: BaseAgent) -> list[BaseAgent]:
         if getattr(peer_agent, 'name', None) != getattr(agent, 'name', None)
         and (
             not hasattr(peer_agent, 'mode')
-            or peer_agent.mode not in ('single_turn', 'task')
+            or peer_agent.mode not in DELEGATED_TASK_MODES
         )
     ])
 
@@ -288,8 +295,20 @@ def _build_transfer_tool(
   )
 
 
-def _get_incompatible_builtin_tool_error(agent: BaseAgent) -> str | None:
-  """Returns an error message if the agent uses built-in tools incompatible with function calling."""
+def _get_incompatible_builtin_tool_error(
+    agent: BaseAgent, model: str | None = None
+) -> str | None:
+  """Returns an error message if the agent uses built-in tools incompatible with function calling.
+
+  Args:
+    agent: The agent whose ``tools`` are inspected.
+    model: The resolved model name for the request. Gemini 3 and later accept
+      built-in tools alongside function declarations, so no error is returned
+      for them. A ``model`` override on the tool itself takes precedence.
+
+  Returns:
+    An error message, or None if the configuration is compatible.
+  """
   tools = getattr(agent, 'tools', None)
   if not tools:
     return None
@@ -297,9 +316,18 @@ def _get_incompatible_builtin_tool_error(agent: BaseAgent) -> str | None:
   from ....tools.enterprise_search_tool import EnterpriseWebSearchTool
   from ....tools.google_search_tool import GoogleSearchTool
   from ....tools.vertex_ai_search_tool import VertexAiSearchTool
+  from ....utils.model_name_utils import _supports_builtin_tools_with_function_calling
 
   agent_name = getattr(agent, 'name', '')
   for tool in tools:
+    if not isinstance(
+        tool, (GoogleSearchTool, VertexAiSearchTool, EnterpriseWebSearchTool)
+    ):
+      continue
+    if _supports_builtin_tools_with_function_calling(
+        getattr(tool, 'model', None) or model
+    ):
+      continue
     if (
         isinstance(tool, (GoogleSearchTool, VertexAiSearchTool))
         and not tool.bypass_multi_tools_limit
@@ -307,18 +335,21 @@ def _get_incompatible_builtin_tool_error(agent: BaseAgent) -> str | None:
       return (
           f"Agent '{agent_name}' has sub-agent transfer targets but is"
           f' configured with {tool.__class__.__name__} without'
-          ' bypass_multi_tools_limit=True. Gemini API does not allow built-in'
-          ' search tools to be combined with function calling (agent'
-          ' delegation). To enable both search and sub-agent delegation, set'
+          ' bypass_multi_tools_limit=True. Gemini models before 3.0 do not'
+          ' allow built-in search tools to be combined with function calling'
+          ' (agent delegation). To enable both search and sub-agent'
+          ' delegation, use a Gemini 3+ model or set'
           ' bypass_multi_tools_limit=True on GoogleSearchTool or'
           ' VertexAiSearchTool.'
       )
     if isinstance(tool, EnterpriseWebSearchTool):
       return (
           f"Agent '{agent_name}' has sub-agent transfer targets but is"
-          ' configured with EnterpriseWebSearchTool. Gemini API does not allow'
-          ' EnterpriseWebSearchTool to be combined with function calling'
-          ' (agent delegation).'
+          ' configured with EnterpriseWebSearchTool. Gemini models before 3.0'
+          ' do not allow EnterpriseWebSearchTool to be combined with function'
+          ' calling (agent delegation). To enable both, use a Gemini 3+ model'
+          ' or move EnterpriseWebSearchTool into a mode="single_turn"'
+          ' sub-agent.'
       )
   return None
 

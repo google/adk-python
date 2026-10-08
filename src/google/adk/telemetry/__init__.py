@@ -12,14 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .context import ContentCapturingMode
-from .context import TelemetryConfig
-from .tracing import trace_call_llm
-from .tracing import trace_merged_tool_calls
-from .tracing import trace_send_data
-from .tracing import trace_tool_call
-from .tracing import tracer
+from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from ..utils import _lazy
+
+if TYPE_CHECKING:
+  from .context import ContentCapturingMode
+  from .context import TelemetryConfig
+  from .tracing import trace_call_llm
+  from .tracing import trace_merged_tool_calls
+  from .tracing import trace_send_data
+  from .tracing import trace_tool_call
+  from .tracing import tracer
+
+_LAZY_MEMBERS: dict[str, str] = {
+    'ContentCapturingMode': '.context',
+    'TelemetryConfig': '.context',
+    'trace_call_llm': '.tracing',
+    'trace_merged_tool_calls': '.tracing',
+    'trace_send_data': '.tracing',
+    'trace_tool_call': '.tracing',
+    'tracer': '.tracing',
+}
 __all__ = [
     'ContentCapturingMode',
     'TelemetryConfig',
@@ -29,3 +45,5 @@ __all__ = [
     'trace_tool_call',
     'tracer',
 ]
+
+__getattr__, __dir__ = _lazy.accessors(globals(), _LAZY_MEMBERS)

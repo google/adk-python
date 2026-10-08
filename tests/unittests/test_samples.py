@@ -155,9 +155,6 @@ XFAIL_LOAD = {
     "models/hello_world_litellm_add_function_to_prompt": (
         "langchain_core requires an explicit import of langchain_core.tools"
     ),
-    "adk_team/adk_triaging_agent": (
-        "agent.py imports adk_triaging_agent.settings, which is not present"
-    ),
 }
 
 _DUMMY_ENV = {

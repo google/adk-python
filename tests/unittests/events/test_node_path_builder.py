@@ -165,3 +165,15 @@ def test_static_path_strips_run_ids_from_every_segment():
   assert _NodePathBuilder.from_string('wf').static_path == 'wf'
   assert _NodePathBuilder.from_string('wf/node').static_path == 'wf/node'
   assert _NodePathBuilder.from_string('wf@1/node@2').static_path == 'wf/node'
+
+
+def test_includes_node_path_matches_empty_self_and_descendants():
+  """includes_node_path matches empty paths, self, and descendants only."""
+  path = _NodePathBuilder.from_string('wf@1/node_a@1')
+  assert path.includes_node_path(None)
+  assert path.includes_node_path('')
+  assert path.includes_node_path('wf@1/node_a@1')
+  assert path.includes_node_path('wf@1/node_a@1/sub@1')
+  assert not path.includes_node_path('wf@1')
+  assert not path.includes_node_path('wf@1/node_b@1')
+  assert not path.includes_node_path('wf@1/node_a@2')
