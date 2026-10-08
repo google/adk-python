@@ -1080,8 +1080,8 @@ class EvaluationGenerator:
           # Live usage can arrive before or after content. Merge into an event
           # already counted as a model call, without changing the input events
           # or overwriting usage reported by another call.
-          # ponytail: scan within one invocation; index by model if long live
-          # turns make this quadratic search expensive.
+          # TODO: Index by author, model and Live session if long invocations
+          # make this quadratic search expensive.
           model_event = next(
               (
                   candidate
