@@ -24,12 +24,18 @@ from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.agents.sequential_agent import SequentialAgentState
 from google.adk.apps.app import App
+from google.adk.apps.app import EventsCompactionConfig
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.apps.base_events_summarizer import BaseEventsSummarizer
+from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.events.event_actions import EventCompaction
 from google.adk.events.ui_widget import UiWidget
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils.context_utils import Aclosing
+from google.genai.types import Content
 from google.genai.types import FunctionCall
 from google.genai.types import FunctionResponse
 from google.genai.types import GenerateContentResponse
@@ -1183,6 +1189,82 @@ class TestHITLConfirmationReplay:
         if fr.name == tool.name
     ]
     assert tool_results == [TOOL_CALL_ERROR_RESPONSE]
+    assert [
+        fc.name for event in events for fc in event.get_function_calls()
+    ] == [REQUEST_CONFIRMATION_FUNCTION_CALL_NAME]
+
+  @pytest.mark.asyncio
+  async def test_repeated_confirmation_after_compaction_does_not_rerun_tool(
+      self,
+  ):
+    """A confirmation replayed after compaction does not run the tool again.
+
+    Compaction only appends summary events; the original events stay in the
+    session, so the result of the first resume is still found.
+    """
+
+    class _SummarizeAll(BaseEventsSummarizer):
+
+      async def maybe_summarize_events(self, *, events: list[Event]) -> Event:
+        return Event(
+            author="user",
+            actions=EventActions(
+                compaction=EventCompaction(
+                    start_timestamp=events[0].timestamp,
+                    end_timestamp=events[-1].timestamp,
+                    compacted_content=Content(
+                        role="model", parts=[Part(text="summary")]
+                    ),
+                )
+            ),
+        )
+
+    tool_calls = []
+
+    def _transfer(tool_context: ToolContext) -> dict[str, str]:
+      tool_calls.append(tool_context.function_call_id)
+      return {"result": "transferred"}
+
+    tool = FunctionTool(func=_transfer, require_confirmation=True)
+    mock_model = testing_utils.MockModel(
+        responses=[
+            _create_llm_response_from_tools([tool]),
+            _create_llm_response_from_text("response after first resume"),
+            _create_llm_response_from_text("response to follow-up"),
+            _create_llm_response_from_text("response after replay"),
+        ]
+    )
+    app = App(
+        name="test_app",
+        root_agent=LlmAgent(name="root_agent", model=mock_model, tools=[tool]),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=_SummarizeAll(),
+            compaction_interval=1,
+            overlap_size=0,
+        ),
+    )
+    runner = testing_utils.InMemoryRunner(app=app, check_invariants=False)
+
+    events = await runner.run_async(
+        testing_utils.UserContent("test user query")
+    )
+    user_confirmation = testing_utils.UserContent(
+        Part(
+            function_response=FunctionResponse(
+                id=events[1].content.parts[0].function_call.id,
+                name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                response={"confirmed": True},
+            )
+        )
+    )
+    await runner.run_async(user_confirmation)
+    await runner.run_async(testing_utils.UserContent("follow-up"))
+    assert any(event.actions.compaction for event in runner.session.events)
+    assert len(tool_calls) == 1
+
+    events = await runner.run_async(user_confirmation)
+
+    assert len(tool_calls) == 1
     assert [
         fc.name for event in events for fc in event.get_function_calls()
     ] == [REQUEST_CONFIRMATION_FUNCTION_CALL_NAME]
