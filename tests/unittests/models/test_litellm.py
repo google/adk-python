@@ -4209,6 +4209,142 @@ async def test_generate_content_async_cleans_an_embedded_signature_id():
   assert part.thought_signature == b"embedded_sig"
 
 
+def _streamed_tool_call_chunk(
+    *,
+    index,
+    call_id=None,
+    name=None,
+    arguments=None,
+    signature=None,
+    finish_reason=None,
+):
+  """One streamed delta with a tool call, signed the way Vertex signs it."""
+  extra = {}
+  if signature is not None:
+    extra["extra_content"] = {
+        "google": {"thought_signature": base64.b64encode(signature).decode()}
+    }
+  return ModelResponseStream(
+      model="test_model",
+      choices=[
+          StreamingChoices(
+              finish_reason=finish_reason,
+              delta=Delta(
+                  role="assistant",
+                  tool_calls=[
+                      ChatCompletionDeltaToolCall(
+                          type="function",
+                          id=call_id,
+                          function=Function(name=name, arguments=arguments),
+                          index=index,
+                          **extra,
+                      )
+                  ],
+              ),
+          )
+      ],
+  )
+
+
+def _streamed_finish_chunk(finish_reason="tool_calls"):
+  return ModelResponseStream(
+      model="test_model",
+      choices=[StreamingChoices(finish_reason=finish_reason, delta=Delta())],
+  )
+
+
+def test_model_response_to_chunk_keeps_thought_signature():
+  """A streamed tool call's signature is carried on its FunctionChunk."""
+  chunks = list(
+      _model_response_to_chunk(
+          _streamed_tool_call_chunk(
+              index=0,
+              call_id="call_1",
+              name="get_weather",
+              arguments='{"city": "Oslo"}',
+              signature=b"streamed_sig",
+          )
+      )
+  )
+
+  function_chunk = chunks[0][0]
+  assert isinstance(function_chunk, FunctionChunk)
+  assert function_chunk.thought_signature == b"streamed_sig"
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_keeps_thought_signature(
+    mock_completion, lite_llm_instance
+):
+  """The signature on the first fragment survives assembly and goes back out."""
+  mock_completion.return_value = iter([
+      _streamed_tool_call_chunk(
+          index=0,
+          call_id="call_1",
+          name="get_weather",
+          arguments='{"city": ',
+          signature=b"streamed_sig",
+      ),
+      _streamed_tool_call_chunk(index=0, arguments='"Oslo"}'),
+      _streamed_finish_chunk(),
+  ])
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  final_response = responses[-1]
+  assert not final_response.partial
+  part = final_response.content.parts[0]
+  assert part.function_call.id == "call_1"
+  assert part.function_call.args == {"city": "Oslo"}
+  assert part.thought_signature == b"streamed_sig"
+  # The follow-up request is the one Gemini 3 rejects without a signature.
+  outbound = await _content_to_message_param(final_response.content)
+  sig_b64 = base64.b64encode(b"streamed_sig").decode()
+  assert outbound["tool_calls"][0]["extra_content"] == {
+      "google": {"thought_signature": sig_b64}
+  }
+
+
+@pytest.mark.asyncio
+async def test_streaming_parallel_tool_calls_keep_signature_per_call(
+    mock_completion, lite_llm_instance
+):
+  """Gemini signs only the first parallel call; the second stays unsigned."""
+  mock_completion.return_value = iter([
+      _streamed_tool_call_chunk(
+          index=0,
+          call_id="call_1",
+          name="get_weather",
+          arguments='{"city": "Oslo"}',
+          signature=b"first_sig",
+      ),
+      _streamed_tool_call_chunk(
+          index=1,
+          call_id="call_2",
+          name="get_weather",
+          arguments='{"city": "Bergen"}',
+      ),
+      _streamed_finish_chunk(),
+  ])
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  parts = responses[-1].content.parts
+  assert [p.function_call.id for p in parts] == ["call_1", "call_2"]
+  assert parts[0].thought_signature == b"first_sig"
+  assert parts[1].thought_signature is None
+
+
 def test_message_to_generate_content_response_no_thought_signature():
   """Parts without thought_signature have thought_signature=None."""
   message = ChatCompletionAssistantMessage(
