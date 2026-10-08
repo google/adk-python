@@ -14,6 +14,11 @@
 
 """Optional HMAC integrity check for function calls stored in the session.
 
+ADK runs some stored function calls again when it resumes: a tool that was
+confirmed, a tool waiting on credentials or input, or an unexecuted call in a
+resumable app. Anyone who can write to the session store can change a stored
+call's arguments before that happens.
+
 ``ToolCallIntegrityPlugin`` stamps each function call with an HMAC when the
 event is emitted, checks every stamp before each run, and lets a tool run only
 when its call has a valid stamp. Without the secret key, a modified call cannot

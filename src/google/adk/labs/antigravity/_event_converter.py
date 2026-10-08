@@ -46,9 +46,16 @@ if TYPE_CHECKING:
   from ...agents.invocation_context import InvocationContext
 
 
-def _build_tool_call_id(step: sdk_types.Step, call: sdk_types.ToolCall) -> str:
+def _build_tool_call_id(
+    step: sdk_types.Step, call: sdk_types.ToolCall, index: int = 0
+) -> str:
   """A stable tool-call id, synthesized when the Antigravity SDK omits one."""
-  return call.id or f'{step.step_index}-{call.name}'
+  if isinstance(call.id, str) and call.id:
+    return str(call.id)
+  if call.args:
+    args_key = json.dumps(call.args, sort_keys=True, default=str)
+    return f'{step.step_index}-{call.name}-{args_key}'
+  return f'{step.step_index}-{index}-{call.name}'
 
 
 def _partial_event(
@@ -126,24 +133,13 @@ def _step_custom_metadata(
 def _unemitted_thinking(
     thinking: str,
     thought_key: str,
-    seen_thought_steps: dict[str, str] | set[str] | None,
+    seen_thought_steps: dict[str, str] | None,
 ) -> str:
   """Returns the portion of ``thinking`` not yet emitted for ``thought_key``."""
   if seen_thought_steps is None:
     return thinking
-  if isinstance(seen_thought_steps, dict):
-    emitted = seen_thought_steps.get(thought_key, '')
-  else:
-    prefix = f'{thought_key}='
-    emitted = next(
-        (
-            item[len(prefix) :]
-            for item in seen_thought_steps
-            if item.startswith(prefix)
-        ),
-        '__ALL__' if thought_key in seen_thought_steps else '',
-    )
-  if emitted == '__ALL__' or thinking == emitted:
+  emitted = seen_thought_steps.get(thought_key, '')
+  if thinking == emitted:
     return ''
   if emitted and thinking.startswith(emitted):
     return thinking[len(emitted) :]
@@ -153,27 +149,17 @@ def _unemitted_thinking(
 def _record_emitted_thinking(
     thinking: str,
     thought_key: str,
-    seen_thought_steps: dict[str, str] | set[str] | None,
+    seen_thought_steps: dict[str, str] | None,
 ) -> None:
   """Records cumulative ``thinking`` as emitted for ``thought_key``."""
   if seen_thought_steps is None:
     return
-  if isinstance(seen_thought_steps, dict):
-    seen_thought_steps[thought_key] = thinking
-    return
-  prefix = f'{thought_key}='
-  stale = {
-      item
-      for item in seen_thought_steps
-      if item == thought_key or item.startswith(prefix)
-  }
-  seen_thought_steps.difference_update(stale)
-  seen_thought_steps.add(f'{thought_key}={thinking}')
+  seen_thought_steps[thought_key] = thinking
 
 
 def _consume_step_thought_part(
     step: sdk_types.Step,
-    seen_thought_steps: dict[str, str] | set[str] | None,
+    seen_thought_steps: dict[str, str] | None,
     *,
     trajectory_key: str = '',
     latest_thoughts: dict[str, tuple[str, genai_types.Part]] | None = None,
@@ -197,7 +183,7 @@ def _consume_step_thought_part(
 
 def _consume_cached_thought_part(
     trajectory_key: str,
-    seen_thought_steps: dict[str, str] | set[str] | None,
+    seen_thought_steps: dict[str, str] | None,
     latest_thoughts: dict[str, tuple[str, genai_types.Part]] | None,
 ) -> genai_types.Part | None:
   """Pops and returns the cached thought Part for ``trajectory_key``."""
@@ -206,8 +192,14 @@ def _consume_cached_thought_part(
   cached = latest_thoughts.pop(trajectory_key, None)
   if cached is None:
     return None
-  cached_key, _, cached_cumulative = cached[0].partition('\x00')
-  full_thinking = cached_cumulative or (cached[1].text or '')
+  cached_key, cached_part = cached
+  cached_text = cached_part.text or ''
+  prior = (
+      seen_thought_steps.get(cached_key, '')
+      if seen_thought_steps is not None
+      else ''
+  )
+  full_thinking = f'{prior}{cached_text}'
   unemitted = _unemitted_thinking(full_thinking, cached_key, seen_thought_steps)
   if not unemitted:
     return None
@@ -256,7 +248,7 @@ def _flush_pending_function_calls(
     trajectory_key: str,
     pending_function_calls: list[Event],
     seen_tool_calls: set[str] | None = None,
-    seen_thought_steps: dict[str, str] | set[str] | None = None,
+    seen_thought_steps: dict[str, str] | None = None,
     latest_thoughts: dict[str, tuple[str, genai_types.Part]] | None = None,
     step_meta: dict[str, JsonValue] | None = None,
 ) -> list[Event]:
@@ -294,7 +286,7 @@ def _convert_model_thought_or_flush_pending(
     author: str,
     seen_tool_calls: set[str] | None = None,
     pending_function_calls: list[Event] | None = None,
-    seen_thought_steps: dict[str, str] | set[str] | None = None,
+    seen_thought_steps: dict[str, str] | None = None,
     latest_thoughts: dict[str, tuple[str, genai_types.Part]] | None = None,
     custom_metadata: dict[str, JsonValue] | None = None,
 ) -> list[Event]:
@@ -321,8 +313,8 @@ def _convert_model_thought_or_flush_pending(
       and (
           seen_tool_calls is None
           or any(
-              _build_tool_call_id(step, call) not in seen_tool_calls
-              for call in step.tool_calls
+              _build_tool_call_id(step, call, idx) not in seen_tool_calls
+              for idx, call in enumerate(step.tool_calls)
           )
       )
   )
@@ -354,7 +346,7 @@ def _convert_model_thought_or_flush_pending(
     )
     if unemitted:
       latest_thoughts[trajectory_key] = (
-          f'{thought_key}\x00{step.thinking}',
+          thought_key,
           genai_types.Part(text=unemitted, thought=True),
       )
 
@@ -418,7 +410,7 @@ def _convert_model_text(
     *,
     ctx: InvocationContext,
     author: str,
-    seen_thought_steps: dict[str, str] | set[str] | None = None,
+    seen_thought_steps: dict[str, str] | None = None,
     latest_thoughts: dict[str, tuple[str, genai_types.Part]] | None = None,
     custom_metadata: dict[str, JsonValue] | None = None,
 ) -> list[Event]:
@@ -492,7 +484,7 @@ def _convert_function_calls(
     author: str,
     seen_tool_calls: set[str],
     pending_function_calls: list[Event] | None = None,
-    seen_thought_steps: dict[str, str] | set[str] | None = None,
+    seen_thought_steps: dict[str, str] | None = None,
     latest_thoughts: dict[str, tuple[str, genai_types.Part]] | None = None,
     custom_metadata: dict[str, JsonValue] | None = None,
 ) -> list[Event]:
@@ -502,10 +494,10 @@ def _convert_function_calls(
 
   pending_ids = _pending_call_ids(pending_function_calls)
   unseen_calls = [
-      (call, _build_tool_call_id(step, call))
-      for call in step.tool_calls
-      if _build_tool_call_id(step, call) not in seen_tool_calls
-      and _build_tool_call_id(step, call) not in pending_ids
+      (call, _build_tool_call_id(step, call, idx))
+      for idx, call in enumerate(step.tool_calls)
+      if _build_tool_call_id(step, call, idx) not in seen_tool_calls
+      and _build_tool_call_id(step, call, idx) not in pending_ids
   ]
   if not unseen_calls:
     return []
@@ -712,8 +704,8 @@ def _convert_function_responses(
     )
 
   events: list[Event] = []
-  for call in step.tool_calls:
-    call_id = _build_tool_call_id(step, call)
+  for idx, call in enumerate(step.tool_calls):
+    call_id = _build_tool_call_id(step, call, idx)
     if call_id in seen_tool_results:
       continue
     if pending_function_calls and call_id not in seen_tool_calls:
@@ -809,7 +801,7 @@ def convert_step_to_events(
     tool_results: _tool_result_capture.ToolResultBuffer | None = None,
     streaming: bool = False,
     pending_function_calls: list[Event] | None = None,
-    seen_thought_steps: dict[str, str] | set[str] | None = None,
+    seen_thought_steps: dict[str, str] | None = None,
     latest_thoughts: dict[str, tuple[str, genai_types.Part]] | None = None,
     custom_metadata: dict[str, JsonValue] | None = None,
 ) -> list[Event]:
@@ -831,8 +823,8 @@ def convert_step_to_events(
     pending_function_calls: Optional buffer of ACTIVE function-call events
       awaiting their companion ``StepStatus.DONE`` planner step carrying
       ``thinking``.
-    seen_thought_steps: Optional mapping or set of step-thinking keys already
-      emitted in this turn.
+    seen_thought_steps: Optional mapping of step-thinking keys to cumulative
+      thinking text already emitted in this turn.
     latest_thoughts: Optional per-trajectory cache of the most recent unseen
       thinking ``Part`` from ``StepStatus.ACTIVE`` steps.
     custom_metadata: Optional resolved trajectory hierarchy metadata for the

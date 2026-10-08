@@ -24,6 +24,8 @@ from opentelemetry.trace import StatusCode
 
 from ..events._rewind_events import _apply_rewinds
 from ..events.event import Event
+from ..events.event_actions import EventActions
+from ..events.event_actions import EventCompaction
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..telemetry.tracing import _build_compaction_attributes
@@ -37,10 +39,78 @@ from .llm_event_summarizer import LlmEventSummarizer
 logger = logging.getLogger('google_adk.' + __name__)
 
 
+def _request_content(event: Event) -> types.Content | None:
+  """The content this event contributes to a request, if any.
+
+  A compaction event carries its summary in
+  `actions.compaction.compacted_content`, not in `content`: the shipped
+  summarizer leaves `content` unset, and prompt assembly materializes a fresh
+  event from the compacted content instead. Sizing `content` alone therefore
+  measures every real summary as zero characters.
+
+  Args:
+    event: The event to read.
+
+  Returns:
+    The compacted content for a compaction event, otherwise `event.content`.
+  """
+  compaction = event.actions.compaction if event.actions else None
+  if compaction is not None and compaction.compacted_content is not None:
+    return compaction.compacted_content
+  return event.content
+
+
+def _serialized_size(events: list[Event]) -> int:
+  """Size of the events as they would appear in a request, in characters.
+
+  Measures whole content parts rather than text alone. A tool response is
+  content the request carries in full, so a size comparison that counts only
+  text parts reads a tool-heavy turn as nearly empty.
+
+  Args:
+    events: The events to measure.
+
+  Returns:
+    The summed JSON length of the content each event contributes.
+  """
+  total = 0
+  for event in events:
+    content = _request_content(event)
+    if content is not None:
+      total += len(content.model_dump_json(exclude_none=True, fallback=str))
+  return total
+
+
+def _prompt_chars_saved(*, events: list[Event], compaction_event: Event) -> int:
+  """Characters this compaction removes from the assembled request.
+
+  Negative when the compaction grows the request instead. The size is read
+  from the assembler rather than from the range, because the two disagree: raw
+  events inside an earlier compaction's range are already absent from the
+  request, so a range that re-includes them saves less than its own size,
+  while a summary that supersedes an earlier one saves more.
+
+  Args:
+    events: The session events the compaction would be appended to.
+    compaction_event: The compaction to price.
+
+  Returns:
+    The request size before the compaction minus the size after it.
+  """
+  # Deferred import: contents depends on agents.invocation_context which
+  # imports from apps, so a top-level import would create a circular dependency.
+  from ..flows.llm_flows.context._compaction import _process_compaction_events
+
+  before = _process_compaction_events(events)
+  after = _process_compaction_events(events + [compaction_event])
+  return _serialized_size(before) - _serialized_size(after)
+
+
 async def _summarize_events_with_trace(
     *,
     session: Session,
     config: EventsCompactionConfig,
+    events: list[Event],
     events_to_compact: list[Event],
     trigger: str,
 ) -> Event | None:
@@ -77,6 +147,18 @@ async def _summarize_events_with_trace(
       )
       return None
     span.set_attributes(_build_compaction_result_attributes(compaction_event))
+    if compaction_event is not None:
+      chars_saved = _prompt_chars_saved(
+          events=events, compaction_event=compaction_event
+      )
+      span.set_attribute('gen_ai.compaction.prompt_chars_saved', chars_saved)
+      if chars_saved < 0:
+        logger.info(
+            'Compaction grew the request by %d characters: the summary of %d'
+            ' events is larger than what it replaced.',
+            -chars_saved,
+            len(events_to_compact),
+        )
     return compaction_event
 
 
@@ -251,6 +333,72 @@ def _latest_compaction_end_timestamp(events: list[Event]) -> float:
   if latest_event.actions.compaction.end_timestamp is None:
     return 0.0
   return latest_event.actions.compaction.end_timestamp
+
+
+def _removable_prompt_chars(
+    *, events: list[Event], events_to_compact: list[Event]
+) -> int:
+  """The most a compaction over this range could remove from the request.
+
+  Prices the range against a summary of no length, so the answer is the whole
+  saving on the table before the summarizer has written anything.
+
+  Args:
+    events: The session events the compaction would be appended to.
+    events_to_compact: The range the summary would replace.
+
+  Returns:
+    The characters an empty summary of the range would remove.
+  """
+  timestamps = [event.timestamp for event in events_to_compact]
+  weightless_summary = Event(
+      author='model',
+      invocation_id=Event.new_id(),
+      actions=EventActions(
+          compaction=EventCompaction(
+              start_timestamp=min(timestamps),
+              end_timestamp=max(timestamps),
+              compacted_content=types.Content(role='model', parts=[]),
+          )
+      ),
+  )
+  return _prompt_chars_saved(events=events, compaction_event=weightless_summary)
+
+
+def _previous_summary_chars(events: list[Event]) -> int:
+  """Characters of the most recent summary, or zero if there is none."""
+  latest_compaction_event = _latest_compaction_event(events)
+  if latest_compaction_event is None:
+    return 0
+  return _serialized_size([latest_compaction_event])
+
+
+def _is_range_worth_compacting(
+    *, events: list[Event], events_to_compact: list[Event]
+) -> bool:
+  """Whether replacing this range can plausibly shrink the request.
+
+  A summary is worth writing only when the range it replaces is larger than the
+  summary will be, and the summary's size is not known until it has been paid
+  for. The last summary written for this session stands in for it: output
+  length is a property of the summarizer, so the one it just wrote is the only
+  evidence available in advance. Before there is any such evidence the range is
+  compacted on the assumption that it helps.
+
+  This has to stay ahead of the summarizer call: refusing a summary after it
+  has been written leaves the trigger where it was, so the next invocation
+  pays for the same call again.
+
+  Args:
+    events: The session events the compaction would be appended to.
+    events_to_compact: The range the summary would replace.
+
+  Returns:
+    True when the range can remove more than the last summary's size.
+  """
+  return _removable_prompt_chars(
+      events=events, events_to_compact=events_to_compact
+  ) > _previous_summary_chars(events)
 
 
 def _has_token_threshold_config(config: EventsCompactionConfig | None) -> bool:
@@ -566,6 +714,11 @@ async def _run_compaction_for_token_threshold_config(
   if not events_to_compact:
     return False
 
+  if not _is_range_worth_compacting(
+      events=events, events_to_compact=events_to_compact
+  ):
+    return False
+
   _ensure_compaction_summarizer(config=config, agent=agent)
   if config.summarizer is None:
     return False
@@ -573,6 +726,7 @@ async def _run_compaction_for_token_threshold_config(
   compaction_event = await _summarize_events_with_trace(
       session=session,
       config=config,
+      events=events,
       events_to_compact=events_to_compact,
       trigger='token_threshold',
   )
@@ -735,6 +889,11 @@ async def _run_compaction_for_sliding_window(
   if not events_to_compact:
     return
 
+  if not _is_range_worth_compacting(
+      events=events, events_to_compact=events_to_compact
+  ):
+    return
+
   if app.root_agent is None:
     return
   _ensure_compaction_summarizer(config=config, agent=app.root_agent)
@@ -744,6 +903,7 @@ async def _run_compaction_for_sliding_window(
   compaction_event = await _summarize_events_with_trace(
       session=session,
       config=config,
+      events=events,
       events_to_compact=events_to_compact,
       trigger='sliding_window',
   )

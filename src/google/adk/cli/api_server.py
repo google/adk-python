@@ -2351,13 +2351,6 @@ class ApiServer:
       runner_for_context = await self.get_runner_async(app_name)
       _set_telemetry_context_if_needed(runner_for_context)
 
-      session = await self.session_service.get_session(
-          app_name=app_name, user_id=user_id, session_id=session_id
-      )
-      if not session:
-        await websocket.close(code=1002, reason="Session not found")
-        return
-
       live_request_queue = LiveRequestQueue()
 
       async def forward_events():
@@ -2395,7 +2388,8 @@ class ApiServer:
         )
         async with Aclosing(
             runner.run_live(
-                session=session,
+                user_id=user_id,
+                session_id=session_id,
                 live_request_queue=live_request_queue,
                 run_config=run_config,
             )
@@ -2432,6 +2426,8 @@ class ApiServer:
         # This will re-raise any exception from the completed tasks.
         for task in done:
           task.result()
+      except SessionNotFoundError:
+        await websocket.close(code=1002, reason="Session not found")
       except WebSocketDisconnect:
         # Disconnection could happen when receive or send text via websocket
         logger.info("Client disconnected during live session.")

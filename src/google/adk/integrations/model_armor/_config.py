@@ -45,12 +45,6 @@ class ModelArmorConfig(BaseModel):
   If unset, output screening is skipped.
   """
 
-  input_blocked_message: str = _DEFAULT_BLOCKED_MESSAGE
-  """The safe replacement text returned to the user when user content is blocked."""
-
-  output_blocked_message: str = _DEFAULT_BLOCKED_MESSAGE
-  """The safe replacement text returned to the user when model output is blocked."""
-
   tool_output_template_name: Optional[str] = None
   """The Model Armor template used to screen tool output.
 
@@ -58,6 +52,12 @@ class ModelArmorConfig(BaseModel):
   ``projects/{project}/locations/{location}/templates/{template}``.
   If unset, tool output screening is skipped.
   """
+
+  input_blocked_message: str = _DEFAULT_BLOCKED_MESSAGE
+  """The safe replacement text returned to the user when user content is blocked."""
+
+  output_blocked_message: str = _DEFAULT_BLOCKED_MESSAGE
+  """The safe replacement text returned to the user when model output is blocked."""
 
   tool_output_blocked_message: str = _DEFAULT_TOOL_OUTPUT_BLOCKED_MESSAGE
   """The safe replacement text returned when tool output is blocked."""

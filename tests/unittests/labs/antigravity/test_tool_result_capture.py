@@ -256,3 +256,47 @@ def test_a_result_with_step_id_is_takeable_by_step_id_and_clears_alias():
   assert buffer.take({'traj_1:2'}) == [('traj_1:2', result)]
   assert not buffer.take({'toolu_01'})
   assert not buffer
+
+
+@pytest.mark.asyncio
+async def test_subagent_call_capture_queues_subagent_name_and_allows():
+  """Pre-tool hook queues TypeName/Role from start_subagent and allows call."""
+  buffer = _tool_result_capture.ToolResultBuffer()
+  capture = _tool_result_capture.SubagentCallCapture(buffer)
+  runner = sdk_hook_runner.HookRunner()
+
+  runner.register_hook(capture)
+
+  assert isinstance(capture, sdk_hooks.PreToolCallDecideHook)
+  assert runner.pre_tool_call_decide_hooks == (capture,)
+
+  res = await capture.run(
+      None,
+      sdk_types.ToolCall(
+          name=sdk_types.BuiltinTools.START_SUBAGENT,
+          args={'TypeName': 'word_counter'},
+          id='call_sub_1',
+      ),
+  )
+  assert res.allow
+  res_batch = await capture.run(
+      None,
+      sdk_types.ToolCall(
+          name=sdk_types.BuiltinTools.START_SUBAGENT,
+          args={
+              'Subagents': [{
+                  'TypeName': 'reverse_engineering_agent',
+                  'Role': 'Reverse Engineering Specialist',
+              }]
+          },
+          id='call_sub_2',
+      ),
+  )
+  assert res_batch.allow
+  assert buffer.pending_subagents == [
+      'word_counter',
+      'reverse_engineering_agent',
+  ]
+
+  buffer.clear()
+  assert not buffer.pending_subagents

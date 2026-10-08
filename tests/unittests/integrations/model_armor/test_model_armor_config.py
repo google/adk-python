@@ -27,6 +27,10 @@ def test_defaults_to_blocking_on_failure():
   assert config.block_on_screening_failure is True
   assert config.input_blocked_message
   assert config.output_blocked_message
+  assert (
+      config.tool_output_blocked_message
+      == 'Tool output was blocked by Model Armor.'
+  )
 
 
 def test_defaults_to_blocking_sensitive_data():
@@ -36,8 +40,8 @@ def test_defaults_to_blocking_sensitive_data():
   assert config.deidentify_sensitive_data is False
 
 
-def test_missing_both_templates_raises():
-  """A config with neither template configured is rejected."""
+def test_missing_all_templates_raises():
+  """A config with no template configured is rejected."""
   with pytest.raises(ValueError, match='At least one of'):
     ModelArmorConfig()
 
@@ -48,6 +52,7 @@ def test_only_response_template_is_allowed():
 
   assert config.response_template_name == 'test-response-template'
   assert config.prompt_template_name is None
+  assert config.tool_output_template_name is None
 
 
 def test_only_prompt_template_is_allowed():
@@ -55,4 +60,16 @@ def test_only_prompt_template_is_allowed():
   config = ModelArmorConfig(prompt_template_name='test-prompt-template')
 
   assert config.prompt_template_name == 'test-prompt-template'
+  assert config.response_template_name is None
+  assert config.tool_output_template_name is None
+
+
+def test_only_tool_output_template_is_allowed():
+  """Configuring only the tool output template is allowed."""
+  config = ModelArmorConfig(
+      tool_output_template_name='test-tool-output-template'
+  )
+
+  assert config.tool_output_template_name == 'test-tool-output-template'
+  assert config.prompt_template_name is None
   assert config.response_template_name is None

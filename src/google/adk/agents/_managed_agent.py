@@ -19,7 +19,6 @@ import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
-from typing import Literal
 from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
@@ -46,6 +45,7 @@ from ..telemetry import tracer
 from ..tools._remote_mcp_server import RemoteMcpServer
 from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
+from ..utils._agent_mode import SingleTurnAgentMode
 from ..utils._google_client_headers import get_tracking_http_options
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.content_utils import to_user_content
@@ -162,7 +162,7 @@ class ManagedAgent(BaseAgent):
   """Server-side tools: ADK built-in tools, raw types.Tool configs, or
   RemoteMcpServer specs for server-side remote MCP."""
 
-  mode: Literal['single_turn'] | None = None
+  mode: SingleTurnAgentMode | None = None
   """Composition mode.
 
   Only ``single_turn`` is supported: the agent runs as an inline single-turn
