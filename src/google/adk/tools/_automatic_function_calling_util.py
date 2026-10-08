@@ -272,7 +272,16 @@ def build_function_declaration(
   )
   setattr(new_func, '__signature__', new_sig)
   new_func.__doc__ = original.__doc__
-  new_func.__annotations__ = original.__annotations__
+  # Only carry over annotations for parameters that survive into new_sig. Copying the
+  # original mapping wholesale leaves annotations for the ignored parameters in place,
+  # and typing.get_type_hints() then tries to resolve them - so a context parameter
+  # annotated with a TYPE_CHECKING-only import raises NameError even though the
+  # parameter is not part of the declaration.
+  new_func.__annotations__ = {
+      name: annotation
+      for name, annotation in original.__annotations__.items()
+      if name not in ignore_params
+  }
   return from_function_with_options(new_func, variant)
 
 
