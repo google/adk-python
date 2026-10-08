@@ -7209,6 +7209,89 @@ def test_dev_endpoint_rejects_app_name_that_is_not_an_identifier(
     assert "must be valid" in rejected.json()["detail"]
 
 
+def _create_builder_session(client, payload=None):
+  response = client.post(
+      "/apps/test_app/users/test_user/sessions", json=payload or {}
+  )
+  assert response.status_code == 200, response.text
+  return response.json()
+
+
+def test_dev_create_session_seeds_state_from_initial_state_file(
+    builder_test_client, tmp_path
+):
+  (tmp_path / "test_app").mkdir()
+  (tmp_path / "test_app" / "initial_state.json").write_text(
+      json.dumps({"city": "New York", "time": "10:30"}), encoding="utf-8"
+  )
+
+  session = _create_builder_session(builder_test_client)
+
+  assert session["state"] == {"city": "New York", "time": "10:30"}
+
+
+def test_dev_create_session_client_state_overrides_initial_state_file(
+    builder_test_client, tmp_path
+):
+  (tmp_path / "test_app").mkdir()
+  (tmp_path / "test_app" / "initial_state.json").write_text(
+      json.dumps({"city": "New York", "time": "10:30"}), encoding="utf-8"
+  )
+
+  session = _create_builder_session(
+      builder_test_client, {"state": {"city": "Paris", "mood": "calm"}}
+  )
+
+  assert session["state"] == {
+      "city": "Paris",
+      "time": "10:30",
+      "mood": "calm",
+  }
+
+
+def test_dev_create_session_without_initial_state_file_is_unchanged(
+    builder_test_client, tmp_path
+):
+  (tmp_path / "test_app").mkdir()
+
+  session = _create_builder_session(builder_test_client, {"state": {"a": 1}})
+
+  assert session["state"] == {"a": 1}
+
+
+@pytest.mark.parametrize("content", ["{not json", "[1, 2]", '"text"'])
+def test_dev_create_session_ignores_invalid_initial_state_file(
+    builder_test_client, tmp_path, content
+):
+  (tmp_path / "test_app").mkdir()
+  (tmp_path / "test_app" / "initial_state.json").write_text(
+      content, encoding="utf-8"
+  )
+
+  session = _create_builder_session(builder_test_client, {"state": {"a": 1}})
+
+  assert session["state"] == {"a": 1}
+
+
+def test_api_server_create_session_ignores_initial_state_file(
+    test_app, test_session_info, tmp_path
+):
+  """Only the dev server reads initial_state.json."""
+  (tmp_path / test_session_info["app_name"]).mkdir()
+  (tmp_path / test_session_info["app_name"] / "initial_state.json").write_text(
+      json.dumps({"city": "New York"}), encoding="utf-8"
+  )
+
+  response = test_app.post(
+      f"/apps/{test_session_info['app_name']}/users/"
+      f"{test_session_info['user_id']}/sessions",
+      json={},
+  )
+
+  assert response.status_code == 200
+  assert "city" not in response.json().get("state", {})
+
+
 #################################################
 # Eval endpoint plumbing
 #################################################
