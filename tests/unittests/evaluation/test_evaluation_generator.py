@@ -2592,6 +2592,97 @@ async def test_live_count_keeps_turns_and_interleaved_authors_separate():
   )
 
 
+async def test_typed_user_message_separates_live_generations_mid_turn():
+  """A new client message closes the generation that has not completed."""
+  events = await _live_count_events([_live_text("First")])
+  events.append(
+      Event(
+          author="user",
+          invocation_id="inv1",
+          content=types.Content(
+              role="user", parts=[types.Part(text="New question")]
+          ),
+      )
+  )
+  events.extend(
+      await _live_count_events([_live_text("Second"), _live_complete()])
+  )
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+  assert (
+      _InferenceCallCountV1Evaluator()
+      .evaluate_invocations(invocations)
+      .overall_score
+      == 2
+  )
+  assert invocations[0].user_content.parts[0].text == "New question"
+  assert invocations[0].final_response.parts[0].text == "Second"
+
+
+@pytest.mark.parametrize(
+    "chunks", [[b"abcdef"], [b"ab", b"cdef"], [b"ab", b"cd", b"ef"]]
+)
+@pytest.mark.parametrize("with_usage", [False, True])
+async def test_live_audio_chunks_count_as_one_inference(chunks, with_usage):
+  """Audio chunk boundaries do not change the count for one generation."""
+  messages = [
+      types.LiveServerMessage(
+          server_content=types.LiveServerContent(
+              model_turn=types.Content(
+                  role="model",
+                  parts=[
+                      types.Part(
+                          inline_data=types.Blob(
+                              mime_type="audio/pcm;rate=24000", data=chunk
+                          )
+                      )
+                  ],
+              )
+          )
+      )
+      for chunk in chunks
+  ]
+  if with_usage:
+    messages.append(
+        types.LiveServerMessage(
+            usage_metadata=types.UsageMetadata(
+                prompt_token_count=10,
+                response_token_count=5,
+                total_token_count=15,
+            )
+        )
+    )
+  messages.append(_live_complete())
+  events = await _live_count_events(messages)
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+  assert (
+      _InferenceCallCountV1Evaluator()
+      .evaluate_invocations(invocations)
+      .overall_score
+      == 1
+  )
+  assert _TokenUsageV1Evaluator().evaluate_invocations(
+      invocations
+  ).overall_score == (15 if with_usage else None)
+  contents = [
+      event.content
+      for event in invocations[0].intermediate_data.invocation_events
+      if event.content is not None
+  ] + [invocations[0].final_response]
+  assert (
+      b"".join(
+          part.inline_data.data
+          for content in contents
+          for part in content.parts
+          if part.inline_data is not None
+      )
+      == b"abcdef"
+  )
+
+
 def test_live_tool_response_closes_call_without_turn_complete():
   """Gemini 3.x tools separate two requests before a turn_complete arrives."""
   events = [
