@@ -165,6 +165,39 @@ class TestConvertEvalSetToPydanticSchema:
     assert eval_set.eval_set_id == eval_set_id
     assert eval_set.eval_cases[0].session_input is None
 
+  def test_convert_eval_set_to_pydantic_schema_with_initial_session_events(self):
+    eval_set_id = "test_eval_set"
+    eval_set_in_json_format = [{
+        "name": "session_with_events",
+        "data": [{"query": "Test", "reference": "Test Ref"}],
+        "initial_session": {
+            "app_name": "my_app",
+            "user_id": "u1",
+            "session_id": "s1",
+            "state": {"k": "v"},
+            "events": [{
+                "author": "user",
+                "content": {"parts": [{"text": "Hello context"}]},
+                "invocation_id": "inv0",
+            }],
+        },
+    }]
+
+    eval_set = convert_eval_set_to_pydantic_schema(
+        eval_set_id, eval_set_in_json_format
+    )
+
+    assert eval_set.eval_set_id == eval_set_id
+    session_input = eval_set.eval_cases[0].session_input
+    assert session_input is not None
+    assert session_input.app_name == "my_app"
+    assert session_input.user_id == "u1"
+    assert session_input.session_id == "s1"
+    assert session_input.state == {"k": "v"}
+    assert session_input.events is not None
+    assert len(session_input.events) == 1
+    assert session_input.events[0].content.parts[0].text == "Hello context"
+
   def test_convert_eval_set_to_pydantic_schema_invalid_data(self):
     # This test implicitly checks for potential validation errors during Pydantic
     # object creation
