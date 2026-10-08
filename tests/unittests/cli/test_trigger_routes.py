@@ -282,6 +282,7 @@ def client(
       mock_memory_service,
       mock_agent_loader,
       trigger_sources=["pubsub", "eventarc"],
+      trigger_auth_verifier=lambda req: None,
   )
 
 
@@ -613,7 +614,7 @@ class TestTriggerOidcVerification:
   ):
     with pytest.raises(
         ValueError,
-        match="trigger_oidc_service_accounts requires trigger_oidc_audience",
+        match="trigger_sources requires trigger_oidc_audience",
     ):
       _make_test_client(
           mock_session_service,
@@ -991,6 +992,7 @@ class TestTriggerPubSub:
         mock_memory_service,
         mock_agent_loader,
         trigger_sources=["pubsub"],
+        trigger_auth_verifier=lambda req: None,
         max_llm_calls=37,
     )
 
@@ -1387,6 +1389,7 @@ class TestTriggerEventarc:
         mock_memory_service,
         mock_agent_loader,
         trigger_sources=["eventarc"],
+        trigger_auth_verifier=lambda req: None,
         max_llm_calls=42,
     )
 
@@ -1781,6 +1784,7 @@ class TestSelectiveRegistration:
         mock_memory_service,
         mock_agent_loader,
         trigger_sources=["pubsub"],
+        trigger_auth_verifier=lambda req: None,
     )
     # Pub/Sub should work
     ps_resp = client.post(
@@ -1807,6 +1811,7 @@ class TestSelectiveRegistration:
         mock_memory_service,
         mock_agent_loader,
         trigger_sources=["eventarc"],
+        trigger_auth_verifier=lambda req: None,
     )
     # Eventarc should work
     ea_resp = client.post(
@@ -1839,6 +1844,7 @@ class TestUnknownTriggerSources:
         mock_memory_service,
         mock_agent_loader,
         trigger_sources=["unknown_source", "pubsub"],
+        trigger_auth_verifier=lambda req: None,
     )
     # "pubsub" should still be registered
     ps_resp = client.post(
@@ -1867,6 +1873,7 @@ class TestUnknownTriggerSources:
         mock_memory_service,
         mock_agent_loader,
         trigger_sources=["foo", "bar"],
+        trigger_auth_verifier=lambda req: None,
     )
     unknown_resp = client.post(
         "/apps/test_app/trigger/unknown_source", json={"calls": [["test"]]}
