@@ -6286,7 +6286,9 @@ def _gated_tools(gate_on=("fast_tool",), before_raise=None):
   return fast_tool, failing_tool, after_tool
 
 
-def _parallel_calls_agent(tools, after_tool, name="tool_agent", **kwargs):
+def _parallel_calls_agent(
+    tools, after_tool, name="tool_agent", answers=("Recovered",), **kwargs
+):
   """An agent whose model calls every tool in parallel, then answers."""
   return LlmAgent(
       name=name,
@@ -6296,7 +6298,7 @@ def _parallel_calls_agent(tools, after_tool, name="tool_agent", **kwargs):
                   types.Part.from_function_call(name=tool.__name__, args={})
                   for tool in tools
               ],
-              "Recovered",
+              *answers,
           ]
       ),
       tools=tools,
@@ -6407,23 +6409,40 @@ async def test_run_async_tool_error_as_abort_lands_leaves_calls_to_abort_sealing
 
 
 @pytest.mark.asyncio
-async def test_run_async_tool_error_retried_agent_sees_kept_result():
-  """A node retried after the error sees the finished call's result."""
+@pytest.mark.parametrize("resumable", [False, True])
+async def test_run_async_tool_error_retried_agent_sees_kept_result(
+    resumable: bool,
+):
+  """A node retried after the error sees the finished call's result.
+
+  The result is saved once, also when the invocation is resumed afterwards.
+  """
   fast_tool, failing_tool, after_tool = _gated_tools()
   agent = _parallel_calls_agent(
       [fast_tool, failing_tool],
       after_tool,
+      answers=("Recovered", "Resumed"),
       retry_config=RetryConfig(max_attempts=2, initial_delay=0, jitter=0),
   )
   # No InvariantPlugin: the failing call stays unanswered in a completed turn,
   # as both calls do on main.
-  runner = _abort_runner(agent)
+  runner = _abort_runner(agent, resumable=resumable)
 
   await _run_turn(runner, "s", "Run")
+  if resumable:
+    invocation_id = (await _persisted_events(runner))[0].invocation_id
+    async with aclosing(
+        runner.run_async(
+            user_id=TEST_USER_ID, session_id="s", invocation_id=invocation_id
+        )
+    ) as agen:
+      async for _ in agen:
+        pass
 
   assert _function_responses(agent.model.requests[1].contents) == [
       {"record_id": "r1"}
   ]
+  assert await _persisted_responses(runner) == [{"record_id": "r1"}]
 
 
 @pytest.mark.asyncio
