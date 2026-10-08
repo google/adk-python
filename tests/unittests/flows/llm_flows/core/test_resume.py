@@ -26,9 +26,12 @@ from google.adk.flows.llm_flows.core._resume import _is_sub_branch_answer
 from google.adk.flows.llm_flows.core._resume import _needs_call_replay
 from google.adk.flows.llm_flows.core._resume import _pause_left_calls_unanswered
 from google.adk.flows.llm_flows.core._resume import decide_resume
+from google.adk.flows.llm_flows.core._resume import decide_resume_action
 from google.adk.flows.llm_flows.core._resume import decide_step_resume
 from google.adk.flows.llm_flows.core._resume import ResumeAction
 from google.adk.flows.llm_flows.core._resume import ResumeDecision
+from google.adk.flows.llm_flows.core._resume import ResumeRoute
+from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.genai import types
 import pytest
@@ -74,6 +77,28 @@ def _response_event(
           ],
       ),
   )
+
+
+def _parallel_call_event(calls: list[tuple[str, str | None]]) -> Event:
+  return Event(
+      author='agent',
+      invocation_id='inv-1',
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id=call_id, name=name, args={}
+                  )
+              )
+              for name, call_id in calls
+          ],
+      ),
+  )
+
+
+def _replayed_ids(decision: ResumeDecision) -> list[str | None]:
+  return [fc.id for fc in decision.replay_event().get_function_calls()]
 
 
 def _text_event(text: str) -> Event:
@@ -141,6 +166,12 @@ class TestPauseLeftCallsUnanswered:
     lro = _call_event('ask', 'c1', lro=True)
     events = [lro, _response_event('ask', 'c1'), _text_event('done')]
     assert not _pause_left_calls_unanswered(self._ctx({lro.id}), events)
+
+  def test_partially_answered_pause_still_holds(self):
+    pause_ev = _parallel_call_event([('ask', 'c1'), ('fetch', 'c2')])
+    pause_ev.long_running_tool_ids = {'c1', 'c2'}
+    events = [pause_ev, _response_event('ask', 'c1'), _text_event('tail')]
+    assert _pause_left_calls_unanswered(self._ctx({pause_ev.id}), events)
 
   def test_no_pause_events_is_false(self):
     events = [_text_event('a'), _text_event('b')]
@@ -254,9 +285,16 @@ class TestIsSubBranchResponse:
 class TestDecideResume:
   """The three outcomes the flow acts on."""
 
-  def _ctx(self, pausing: set[str] | None = None, *, agent_name: str = 'agent'):
+  def _ctx(
+      self,
+      pausing: set[str] | None = None,
+      *,
+      resumable: bool = True,
+      agent_name: str = 'agent',
+  ):
     pausing = pausing or set()
     ctx = mock.Mock()
+    ctx.is_resumable = resumable
     ctx.agent.name = agent_name
     ctx.should_pause_invocation.side_effect = lambda ev: ev.id in pausing
     return ctx
@@ -321,6 +359,139 @@ class TestDecideResume:
     )
     assert decision.action is ResumeAction.CONTINUE
 
+  @pytest.mark.parametrize(
+      'sibling_name', ['fetch', 'ask'], ids=['other_name', 'same_name']
+  )
+  def test_parallel_call_that_never_ran_is_replayed_alone(self, sibling_name):
+    call = _parallel_call_event([('ask', 'c1'), (sibling_name, 'c2')])
+    events = [call, _response_event('ask', 'c1')]
+    decision = decide_resume(
+        self._ctx(), events, {'ask': object(), 'fetch': object()}
+    )
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert _replayed_ids(decision) == ['c2']
+
+  def test_response_without_an_id_answers_its_call_by_name(self):
+    call = _parallel_call_event([('ask', 'c1'), ('fetch', 'c2')])
+    events = [call, _response_event('ask', None)]
+    decision = decide_resume(
+        self._ctx(), events, {'ask': object(), 'fetch': object()}
+    )
+    assert _replayed_ids(decision) == ['c2']
+
+  @pytest.mark.parametrize(
+      ('call_ids', 'response_ids', 'replayed_ids'),
+      [
+          (['c1', 'c2'], [None], ['c2']),
+          (['c1', 'c2'], [None, None], []),
+          (['c1', 'c2'], [None, None, None], []),
+          (['c1', 'c2', 'c3'], [None, 'c1'], ['c3']),
+          (['c1', 'c2', 'c3'], ['c1', None], ['c3']),
+          (['c1', 'c2'], ['c1', 'c1'], ['c2']),
+          (['c1', 'c2'], [None, 'other'], ['c2']),
+          ([None, None], [None], [None]),
+          ([None, 'c2', None], [None, 'c2'], [None]),
+      ],
+      ids=[
+          'one_idless_response',
+          'all_idless_responses',
+          'extra_idless_response',
+          'idless_before_explicit_id',
+          'explicit_id_before_idless',
+          'duplicate_explicit_id',
+          'unmatched_explicit_id',
+          'idless_calls',
+          'mixed_call_ids',
+      ],
+  )
+  def test_same_name_responses_answer_only_matching_calls(
+      self,
+      call_ids: list[str | None],
+      response_ids: list[str | None],
+      replayed_ids: list[str | None],
+  ) -> None:
+    """Each ID-less response covers one call after explicit IDs are matched."""
+    call = _parallel_call_event([('ask', call_id) for call_id in call_ids])
+    # Distinct arguments identify ID-less siblings even when their IDs match.
+    for index, part in enumerate(call.content.parts):
+      part.function_call.args = {'index': index}
+    responses = [_response_event('ask', call_id) for call_id in response_ids]
+    events = [call, *responses]
+    original_events = [event.model_copy(deep=True) for event in events]
+
+    decision = decide_resume(self._ctx(), events, {'ask': object()})
+
+    if replayed_ids:
+      assert decision.action is ResumeAction.REPLAY_CALLS
+      assert _replayed_ids(decision) == replayed_ids
+      assert decision.replay_event().get_function_calls()[-1].args == {
+          'index': len(call_ids) - 1
+      }
+    else:
+      assert decision.action is ResumeAction.CONTINUE
+    assert events == original_events
+
+  def test_idless_response_replay_preserves_other_content_parts(self) -> None:
+    """Filtering calls retains non-call parts in their original order."""
+    call = _parallel_call_event([('ask', 'c1'), ('ask', 'c2')])
+    call.content.parts.insert(0, types.Part(text='Before calls'))
+    call.content.parts.insert(2, types.Part(text='Between calls'))
+    call.content.parts.append(types.Part(text='After calls'))
+    original_call = call.model_copy(deep=True)
+
+    decision = decide_resume(
+        self._ctx(), [call, _response_event('ask', None)], {'ask': object()}
+    )
+
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert decision.replay_event().content.parts == [
+        call.content.parts[0],
+        call.content.parts[2],
+        call.content.parts[3],
+        call.content.parts[4],
+    ]
+    assert call == original_call
+
+  def test_idless_response_after_agent_batch_completion_does_not_replay(
+      self,
+  ) -> None:
+    """An agent-authored batch result prevents replay of a pending sibling."""
+    call = _parallel_call_event([('ask', 'c1'), ('ask', 'c2')])
+    events = [call, _response_event('ask', None, author='agent')]
+
+    decision = decide_resume(self._ctx(), events, {'ask': object()})
+
+    assert decision.action is ResumeAction.CONTINUE
+
+  def test_sibling_missing_a_response_after_an_auth_resume_is_not_replayed(
+      self,
+  ):
+    auth_request = Event(
+        author='agent',
+        invocation_id='inv-1',
+        long_running_tool_ids={'a1'},
+        content=types.Content(
+            role='user',
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        id='a1', name=REQUEST_EUC_FUNCTION_CALL_NAME, args={}
+                    )
+                )
+            ],
+        ),
+    )
+    events = [
+        _parallel_call_event([('ask', 'c1'), ('fetch', 'c2')]),
+        auth_request,
+        _response_event(REQUEST_EUC_FUNCTION_CALL_NAME, 'a1'),
+        _response_event('ask', 'c1', author='agent'),
+    ]
+    decision = decide_resume(
+        self._ctx(), events, {'ask': object(), 'fetch': object()}
+    )
+    assert decision.action is ResumeAction.CONTINUE
+
   def test_sub_branch_answer_replays_instead_of_pausing(self):
     # A HITL answer returned against the branch the call opened resolves it,
     # even though it carries none of the call's ids.
@@ -346,6 +517,19 @@ class TestDecideResume:
     decision = decide_resume(self._ctx(), events, {'ask': object()})
     assert decision.action is ResumeAction.CONTINUE
 
+  def test_partially_answered_parallel_lro_does_not_replay_pending_sibling(
+      self,
+  ):
+    call = _parallel_call_event([('ask', 'c1'), ('fetch', 'c2')])
+    call.long_running_tool_ids = {'c1', 'c2'}
+    events = [call, _response_event('ask', 'c1')]
+    decision = decide_resume(
+        self._ctx(resumable=False),
+        events,
+        {'ask': object(), 'fetch': object()},
+    )
+    assert decision.action is ResumeAction.CONTINUE
+
 
 class TestNeedsCallReplay:
 
@@ -369,16 +553,62 @@ class TestDecideStepResume:
     pausing = pausing or set()
     ctx = mock.Mock()
     ctx.is_resumable = resumable
+    ctx.branch = None
+    ctx.session.events = list(events)
     ctx.agent.name = agent_name
     ctx._get_events.return_value = events
     ctx.should_pause_invocation.side_effect = lambda ev: ev.id in pausing
     return ctx
 
-  def test_a_non_resumable_invocation_never_walks_the_session(self):
+  def test_a_non_resumable_invocation_ignores_top_level_unexecuted_call(self):
     ctx = self._ctx([_call_event('ask', 'c1')], resumable=False)
     decision = decide_step_resume(ctx, {'ask': object()})
     assert decision.action is ResumeAction.CONTINUE
-    ctx._get_events.assert_not_called()
+    ctx._get_events.assert_called_once_with(
+        current_invocation=True, current_branch=True
+    )
+
+  def test_a_non_resumable_invocation_replays_sub_branch_answer(self):
+    call = _call_event('workflow_tool', 'c1')
+    sub_answer = _response_event(
+        REQUEST_INPUT_FUNCTION_CALL_NAME,
+        'int-1',
+        branch='sub_workflow@c1.input_node@1',
+    )
+    ctx = self._ctx([call, sub_answer], resumable=False)
+    decision = decide_step_resume(ctx, {'workflow_tool': object()})
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert decision.replay_event() is call
+
+  def test_a_non_resumable_invocation_does_not_pause_on_unanswered_lro_in_multi_event_branch(
+      self,
+  ):
+    call = _call_event('ask', 'c1', lro=True)
+    ctx = self._ctx([call, _text_event('tail')], resumable=False)
+    decision = decide_step_resume(ctx, {'ask': object()})
+    assert decision.action is ResumeAction.CONTINUE
+
+  def test_a_non_resumable_invocation_does_not_replay_pending_parallel_lro(
+      self,
+  ):
+    call = _parallel_call_event([('ask', 'c1'), ('fetch', 'c2')])
+    call.long_running_tool_ids = {'c1', 'c2'}
+    events = [call, _response_event('ask', 'c1')]
+    ctx = self._ctx(events, resumable=False)
+    decision = decide_step_resume(ctx, {'ask': object(), 'fetch': object()})
+    assert decision.action is ResumeAction.CONTINUE
+
+  def test_a_non_resumable_invocation_replays_unexecuted_sibling_calls(self):
+    events = [
+        _parallel_call_event([('ask', 'c1'), ('fetch', 'c2')]),
+        _response_event('ask', 'c1'),
+    ]
+    ctx = self._ctx(events, resumable=False)
+    decision = decide_step_resume(ctx, {'ask': object(), 'fetch': object()})
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert [fc.name for fc in decision.replay_event().get_function_calls()] == [
+        'fetch'
+    ]
 
   def test_no_events_continues(self):
     decision = decide_step_resume(self._ctx([]), {'ask': object()})
@@ -419,6 +649,19 @@ class TestDecideStepResume:
     assert decision.action is ResumeAction.REPLAY_CALLS
     assert decision.replay_event() is tail
 
+  def test_a_later_model_turn_leaves_an_earlier_unexecuted_call_alone(self):
+    tail = _call_event('ask', 'c3')
+    events = [
+        _parallel_call_event([('ask', 'c1'), ('fetch', 'c2')]),
+        _response_event('ask', 'c1'),
+        tail,
+    ]
+    decision = decide_step_resume(
+        self._ctx(events), {'ask': object(), 'fetch': object()}
+    )
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert decision.replay_event() is tail
+
   def test_a_forged_user_authored_trailing_call_is_not_replayed(self):
     # Regression for the resumable tool-dispatch bypass: a caller-supplied
     # 'user' event carrying a function_call must not be resume-dispatched.
@@ -434,3 +677,64 @@ class TestDecideStepResume:
     )
     assert decision.action is ResumeAction.REPLAY_CALLS
     assert decision.replay_event() is call
+
+
+class TestDecideResumeAction:
+  """Contract tests for `decide_resume_action`."""
+
+  @pytest.mark.parametrize('is_resumable', [True, False])
+  def test_user_authored_answer_routes_to_author(self, is_resumable: bool):
+    call = _call_event('ask', 'c1')
+    answer = _response_event('ask', 'c1', author='user')
+    route = decide_resume_action(
+        call,
+        answer,
+        is_resumable=is_resumable,
+    )
+    assert route is ResumeRoute.ROUTE_TO_AUTHOR
+
+  def test_agent_authored_answer_continues_when_not_resumable(self):
+    call = _call_event('ask', 'c1')
+    answer = _response_event('ask', 'c1', author='agent')
+    route = decide_resume_action(
+        call,
+        answer,
+        is_resumable=False,
+    )
+    assert route is ResumeRoute.CONTINUE
+
+  def test_agent_authored_answer_routes_when_resumable(self):
+    call = _call_event('ask', 'c1')
+    answer = _response_event('ask', 'c1', author='agent')
+    route = decide_resume_action(
+        call,
+        answer,
+        is_resumable=True,
+    )
+    assert route is ResumeRoute.ROUTE_TO_AUTHOR
+
+  @pytest.mark.parametrize('is_resumable', [True, False])
+  def test_sub_branch_answer_replays_calls(self, is_resumable: bool):
+    call = _call_event('wf_tool', 'c1')
+    answer = _response_event(
+        REQUEST_INPUT_FUNCTION_CALL_NAME,
+        'int-1',
+        author='user',
+        branch='wf_tool@c1.input_node@1',
+    )
+    route = decide_resume_action(
+        call,
+        answer,
+        is_resumable=is_resumable,
+    )
+    assert route is ResumeRoute.REPLAY_CALLS
+
+  @pytest.mark.parametrize('is_resumable', [True, False])
+  def test_no_answer_continues(self, is_resumable: bool):
+    call = _call_event('ask', 'c1')
+    route = decide_resume_action(
+        call,
+        None,
+        is_resumable=is_resumable,
+    )
+    assert route is ResumeRoute.CONTINUE

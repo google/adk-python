@@ -20,7 +20,7 @@ every dependency extra, pre-commit hooks, and a green unit-test run.
 
 ## Prerequisites
 
-1. **Python.** ADK supports 3.10 through 3.14 (`requires-python = ">=3.10"` in
+1. **Python.** ADK supports 3.11 through 3.14 (`requires-python = ">=3.11"` in
    `pyproject.toml`). These steps use 3.11, the version the repo's own tooling
    defaults to.
 
@@ -28,8 +28,9 @@ every dependency extra, pre-commit hooks, and a green unit-test run.
    python3 --version
    ```
 
-2. **uv.** Dependencies are pinned in `uv.lock`; a hand-rolled `pip`/`venv`
-   environment will not reproduce the locked versions.
+2. **uv.** Dependencies are declared in `pyproject.toml`. The `uv sync` step
+   below creates a local `uv.lock`, which this repository ignores. Run that step
+   before `tox`, whose lock runner requires the file.
 
    ```bash
    uv --version

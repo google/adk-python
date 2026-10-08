@@ -26,6 +26,7 @@ from google.genai import types as genai_types
 import pandas as pd
 from typing_extensions import override
 
+from ..dependencies._agentplatform import agentplatform
 from ..dependencies.vertexai import vertexai
 from .app_details import AgentDetails
 from .eval_case import ConversationScenario
@@ -78,14 +79,17 @@ class _VertexAiEvalFacade(Evaluator):
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", None)
     api_key = os.environ.get("GOOGLE_API_KEY", None)
 
+    # The client comes from agentplatform: 2.x deprecates vertexai.Client
+    # with a FutureWarning, and agentplatform's evals methods take every
+    # argument the vertexai ones do and return the same types.
     if api_key:
-      self._client = vertexai.Client(api_key=api_key)
+      self._client = agentplatform.Client(api_key=api_key)
     elif project_id or location:
       if not project_id:
         raise ValueError("Missing project id." + _ERROR_MESSAGE_SUFFIX)
       if not location:
         raise ValueError("Missing location." + _ERROR_MESSAGE_SUFFIX)
-      self._client = vertexai.Client(project=project_id, location=location)
+      self._client = agentplatform.Client(project=project_id, location=location)
     else:
       raise ValueError(
           "Either API Key or Google cloud Project id and location should be"
@@ -169,7 +173,7 @@ class _SingleTurnVertexAiEvalFacade(_VertexAiEvalFacade):
 
     # If expected_invocation are not required by the metric and if they are not
     # supplied, we provide a list of None.
-    expected_invocations = (
+    resolved_expected: Sequence[Optional[Invocation]] = (
         [None] * len(actual_invocations)
         if expected_invocations is None
         else expected_invocations
@@ -179,7 +183,7 @@ class _SingleTurnVertexAiEvalFacade(_VertexAiEvalFacade):
     num_invocations = 0
     per_invocation_results = []
     for actual, expected in zip(
-        actual_invocations, expected_invocations, strict=True
+        actual_invocations, resolved_expected, strict=True
     ):
       prompt = self._get_text(actual.user_content)
       reference = self._get_text(expected.final_response) if expected else None
@@ -241,7 +245,7 @@ class _MultiTurnVertexiAiEvalFacade(_VertexAiEvalFacade):
     per_invocation_results = []
     # If expected_invocation are not required by the metric and if they are not
     # supplied, we provide a list of None.
-    expected_invocations = (
+    resolved_expected: Sequence[Optional[Invocation]] = (
         [None] * len(actual_invocations)
         if expected_invocations is None
         else expected_invocations
@@ -249,7 +253,7 @@ class _MultiTurnVertexiAiEvalFacade(_VertexAiEvalFacade):
 
     # We mark all the n-1 turns as NOT-EVALUATED for these metrics.
     for actual, expected in zip(
-        actual_invocations[:-1], expected_invocations[:-1], strict=True
+        actual_invocations[:-1], resolved_expected[:-1], strict=True
     ):
       per_invocation_results.append(
           PerInvocationResult(
@@ -276,7 +280,7 @@ class _MultiTurnVertexiAiEvalFacade(_VertexAiEvalFacade):
     per_invocation_results.append(
         PerInvocationResult(
             actual_invocation=actual_invocations[-1],
-            expected_invocation=expected_invocations[-1],
+            expected_invocation=resolved_expected[-1],
             score=score,
             eval_status=self._get_eval_status(score),
         )
@@ -325,6 +329,8 @@ class _MultiTurnVertexiAiEvalFacade(_VertexAiEvalFacade):
 
     if isinstance(invocation.intermediate_data, InvocationEvents):
       for invocation_event in invocation.intermediate_data.invocation_events:
+        if invocation_event.content is None:
+          continue
         agent_events.append(
             _MultiTurnVertexiAiEvalFacade._map_inovcation_event_to_agent_event(
                 invocation_event

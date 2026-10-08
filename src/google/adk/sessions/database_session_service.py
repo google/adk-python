@@ -31,6 +31,7 @@ from typing import TypeVar
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
 
+_sqlalchemy_import_error: ImportError | None = None
 try:
   from sqlalchemy import delete
   from sqlalchemy import event
@@ -49,8 +50,9 @@ try:
   from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
   from sqlalchemy.ext.asyncio import create_async_engine
   from sqlalchemy.pool import StaticPool
-except ImportError:
-  pass
+except ImportError as e:
+  # Re-raised by __init__, so the module still imports without the db extra.
+  _sqlalchemy_import_error = e
 from typing_extensions import override
 
 from . import _session_util
@@ -352,12 +354,15 @@ class DatabaseSessionService(BaseSessionService):
       ValueError: If neither or both db_url and db_engine are provided, or if
         engine creation fails.
     """
-    try:
-      import sqlalchemy  # noqa: F401
-    except ImportError as e:
+    # Re-importing cannot tell whether the imports above failed: without
+    # greenlet, SQLAlchemy 2.1 raises on the first import of its asyncio
+    # extension and lets later ones succeed.
+    if _sqlalchemy_import_error is not None:
       from ..utils._dependency import missing_extra
 
-      raise missing_extra("sqlalchemy", "db") from e
+      raise missing_extra(
+          "sqlalchemy[asyncio]", "db"
+      ) from _sqlalchemy_import_error
 
     if (db_url is None) == (db_engine is None):
       raise ValueError(

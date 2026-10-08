@@ -788,6 +788,8 @@ class TestContextGetInvocationContext:
     mock_copy.branch = None
     mock_copy.invocation_id = "inv-1"
     mock_copy.session = mock_invocation_context.session
+    mock_copy._enqueue_event = AsyncMock()
+    mock_copy.model_copy.return_value = mock_copy
     mock_invocation_context.model_copy.return_value = mock_copy
 
     node_ic = caller_ctx.get_invocation_context()
@@ -828,8 +830,10 @@ class TestContextGetInvocationContext:
         tool_context=tool_ctx,
     )
 
+    # NodeTool keys its child run by function_call_id so repeated calls of the
+    # same tool get distinct node paths.
     assert captured_paths == [
-        "wf@1/caller@1/tool_node@1",
+        "wf@1/caller@1/tool_node@fc-tool-1",
         "wf@1/caller@1/sub_agent@1",
     ]
 

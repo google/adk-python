@@ -53,6 +53,7 @@ This directory contains specific developer guides for the ADK Python implementat
 ### Events
 * [Event and NodeInfo](events/event/index.md) - Understanding Event and NodeInfo in workflows.
 * [RequestInput](events/request_input/index.md) - How to use RequestInput for human-in-the-loop interactions.
+* [Reserved custom_metadata keys](events/internal_metadata/index.md) - The `Event.custom_metadata` keys that only ADK can set, and how restored events are marked.
 
 ### Examples
 * [Example and ExampleTool](examples/example/index.md) - Showing the model worked input and output pairs so that it gets the shape of its own answers right.
@@ -99,10 +100,15 @@ This directory contains specific developer guides for the ADK Python implementat
 ### Plugins
 * [ReflectAndRetryModelPlugin](plugins/reflect_retry_model_plugin/index.md) - Self-healing, concurrent-safe error recovery for model failures.
 * [ReflectAndRetryToolPlugin](plugins/reflect_retry_tool_plugin/index.md) - Self-healing, concurrent-safe error recovery for tool failures.
+* [ToolCallIntegrityPlugin](plugins/tool_call_integrity_plugin/index.md) - Optional HMAC integrity check for stored function call arguments.
 
 ### Runners
 * [Runner and InMemoryRunner](runners/runner/index.md) - Managing session lifecycles, state resolution, and streaming agent execution events.
+* [Runner Execution Cancellation](runners/runner/abort.md) - Halting agent and workflow execution cleanly using abort signals.
 * [Runner Live Streaming](runners/runner/live.md) - Real-time bidirectional audio/text streaming and non-blocking background tool execution with Gemini Multimodal Live API.
+
+### Security
+* [Credentials Encryption](auth/kms_encryptor/index.md) - Securely encrypting sensitive session credentials using Google Cloud KMS.
 
 ### Sessions
 * [Session and BaseSessionService](sessions/session/index.md) - The session lifecycle, state scoping, and choosing a session service.
@@ -116,6 +122,8 @@ This directory contains specific developer guides for the ADK Python implementat
 * [TelemetryConfig](telemetry/telemetry_config/index.md) - What ADK puts in its OpenTelemetry traces, and whether the text of prompts and replies is copied onto exported spans.
 
 ### Tools
+* [FunctionTool](tools/function_tool/index.md) - Wrapping Python functions and generators as agent tools with argument validation, progress streaming, and confirmation.
+* [ModelConsultTool and ModelConsultContextConfig](tools/model_consult/model_consult_tool/index.md) - Escalating hard decisions mid-generation to a stronger advisor model, with per-turn and session budgets.
 * [Node as tool](tools/node_tool/index.md) - Exposing workflows and deterministic nodes as agent tools with isolated runtime branching and resume support.
 * [to_mcp_server](tools/mcp_tool/agent_to_mcp/index.md) - Expose an ADK agent as an MCP server so any MCP host can drive it as a single tool (the MCP counterpart of to_a2a).
 
@@ -124,6 +132,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Workflows
 * [BaseNode](workflow/base_node/index.md) - The foundational base class and configuration settings for all workflow nodes.
+* [Node and @node](workflow/node/index.md) - Wrapping functions, agents, and tools as workflow steps, overriding node settings per graph, and subclassing Node.
 * [Workflow](workflow/workflow/index.md) - Graph-based orchestration of complex, multi-step agent interactions.
 * [Workflow Graphs](workflow/graph/index.md) - Understanding nodes, edges, and graph structures in workflows.
 * [Function Nodes](workflow/function_node/index.md) - Wrapping Python functions and generators as workflow nodes.

@@ -49,6 +49,7 @@ from .utils import logs
 
 if TYPE_CHECKING:
   from fastapi import FastAPI
+  from google.genai import types
 
   from ..agents.llm_agent import LlmAgent
 
@@ -83,6 +84,37 @@ def _parse_streaming_mode(
   if mode is None:
     raise click.BadParameter(f"unknown streaming mode {value!r}", param=param)
   return mode
+
+
+def _parse_avatar_config(
+    _ctx: click.Context,
+    param: click.Parameter,
+    value: str | None,
+) -> types.AvatarConfig | None:
+  """Parses an inline JSON object or JSON file into an avatar config."""
+  if value is None:
+    return None
+
+  if value.lstrip().startswith("{"):
+    config_json = value
+  else:
+    try:
+      config_json = Path(value).read_text(encoding="utf-8")
+    except OSError as exc:
+      raise click.BadParameter(
+          f"could not read avatar configuration file {value!r}: {exc}",
+          param=param,
+      ) from exc
+
+  from google.genai import types
+
+  try:
+    return types.AvatarConfig.model_validate_json(config_json)
+  except ValueError as exc:
+    raise click.BadParameter(
+        f"avatar configuration must be a valid AvatarConfig JSON object: {exc}",
+        param=param,
+    ) from exc
 
 
 def _logging_options():
@@ -590,25 +622,28 @@ def cli_conformance_record(
     paths: tuple[str, ...],
     streaming_mode: StreamingMode,
 ):
-  """Generate ADK conformance test YAML files from TestCaseInput specifications.
+  """Generate ADK conformance test recordings from spec.yaml files.
 
   NOTE: this is work in progress.
 
-  This command reads TestCaseInput specifications from input.yaml files,
-  executes the specified test cases against agents, and generates conformance
-  test files with recorded agent interactions as test.yaml files.
+  This command reads TestSpec specifications from spec.yaml files, executes
+  the specified test cases against agents, and writes the recorded agent
+  interactions next to each spec.yaml.
 
   Expected directory structure:
-  category/name/input.yaml (TestCaseInput) -> category/name/test.yaml (TestCase)
+  category/name/spec.yaml (TestSpec) -> category/name/generated-recordings.yaml
+  and category/name/generated-session.yaml ('-sse' suffix in sse mode)
 
   PATHS: One or more directories containing test case specifications.
   If no paths are provided, defaults to 'tests/' directory.
 
+  STREAMING_MODE: The streaming mode to record in: none or sse.
+
   Examples:
 
-  Use default directory: adk conformance record
+  Use default directory: adk conformance record none
 
-  Custom directories: adk conformance record tests/core tests/tools
+  Custom directories: adk conformance record tests/core tests/tool sse
   """
 
   try:
@@ -724,11 +759,11 @@ def cli_conformance_test(
 
   \b
   # Run tests from specific folders
-  adk conformance test tests/core tests/tools
+  adk conformance test tests/core tests/tool
 
   \b
   # Run a single test case
-  adk conformance test tests/core/description_001
+  adk conformance test tests/core/sys_instruction_001
 
   \b
   # Run in live mode (when available)
@@ -1281,8 +1316,8 @@ def cli_eval(
 ):
   """Evaluates an agent given the eval sets.
 
-  AGENT_MODULE_FILE_PATH: The path to the __init__.py file that contains a
-  module by the name "agent". "agent" module contains a root_agent.
+  AGENT_MODULE_FILE_PATH: The path to the agent folder, whose __init__.py
+  imports a module by the name "agent". "agent" module contains a root_agent.
 
   EVAL_SET_FILE_PATH_OR_ID: You can specify one or more eval set file paths or
   eval set id.
@@ -1561,8 +1596,8 @@ def cli_optimize(
 ):
   """Optimizes the root agent instructions using the GEPA optimizer.
 
-  AGENT_MODULE_FILE_PATH: The path to the __init__.py file that contains a
-  module by the name "agent". "agent" module contains a root_agent.
+  AGENT_MODULE_FILE_PATH: The path to the agent folder, whose __init__.py
+  imports a module by the name "agent". "agent" module contains a root_agent.
 
   SAMPLER_CONFIG_FILE_PATH: The path to the config for the LocalEvalSampler,
   which contains the eval config and the eval sets to use for training and
@@ -1737,10 +1772,10 @@ def cli_add_eval_case(
   eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
 
   try:
-    with open(session_input_file, "r") as f:
+    with open(session_input_file, "r", encoding="utf-8") as f:
       session_input = SessionInput.model_validate_json(f.read())
 
-    with open(scenarios_file, "r") as f:
+    with open(scenarios_file, "r", encoding="utf-8") as f:
       conversation_scenarios = ConversationScenarios.model_validate_json(
           f.read()
       )
@@ -1811,7 +1846,7 @@ def cli_generate_eval_cases(
   if it has not been created in advance.
 
   Args:
-    agent_module_file_path: The path to the agent module file.
+    agent_module_file_path: The path to the agent folder.
     eval_set_id: The id of the eval set to generate cases for.
     user_simulation_config_file: The path to the user simulation config file.
     eval_storage_uri: The eval storage uri.
@@ -1851,7 +1886,7 @@ def cli_generate_eval_cases(
     else:
       click.echo(f"Eval set '{eval_set_id}' already exists.")
 
-    with open(user_simulation_config_file, "r") as f:
+    with open(user_simulation_config_file, "r", encoding="utf-8") as f:
       config = ConversationGenerationConfig.model_validate_json(f.read())
 
     generator = ScenarioGenerator()
@@ -2048,6 +2083,28 @@ def fast_api_common_options():
         ),
         default=None,
     )
+    @click.option(
+        "--avatar_config",
+        type=str,
+        callback=_parse_avatar_config,
+        help=(
+            "Optional. AvatarConfig as an inline JSON object or a path to a"
+            " JSON file. Applied only to /run_live sessions whose client"
+            " requests video output (modalities=VIDEO); other live sessions"
+            " ignore it. If unset, video sessions use the pre-built 'Kai'"
+            " avatar."
+        ),
+        default=None,
+    )
+    @click.option(
+        "--max_llm_calls",
+        type=int,
+        help=(
+            "Optional. Maximum number of LLM calls allowed for each agent"
+            " run. Values less than or equal to zero disable the limit."
+        ),
+        default=None,
+    )
     # Parsed into list[str] by the wrapper below (server commands need a list).
     @click.option(
         "--trigger_sources",
@@ -2167,6 +2224,8 @@ def cli_web(
     trigger_sources: list[str] | None = None,
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: list[str] | None = None,
+    avatar_config: types.AvatarConfig | None = None,
+    max_llm_calls: int | None = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -2239,6 +2298,8 @@ def cli_web(
       trigger_oidc_audience=trigger_oidc_audience,
       trigger_oidc_service_accounts=trigger_oidc_service_accounts,
       default_llm_model=default_llm_model,
+      avatar_config=avatar_config,
+      max_llm_calls=max_llm_calls,
   )
   config = uvicorn.Config(
       app,
@@ -2322,6 +2383,8 @@ def cli_api_server(
     express_mode: bool = False,
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: list[str] | None = None,
+    avatar_config: types.AvatarConfig | None = None,
+    max_llm_calls: int | None = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -2384,6 +2447,8 @@ def cli_api_server(
           trigger_oidc_service_accounts=trigger_oidc_service_accounts,
           gemini_enterprise_app_name=gemini_enterprise_app_name,
           express_mode=express_mode,
+          avatar_config=avatar_config,
+          max_llm_calls=max_llm_calls,
           lifespan=_lifespan,
       ),
       host=host,
@@ -2466,6 +2531,20 @@ def cli_api_server(
         " execution. Requires the 'gcloud beta run deploy' release track."
     ),
 )
+@click.option(
+    "--extra_packages",
+    multiple=True,
+    type=str,
+    default=(),
+    help=(
+        "Optional. Additional local package paths (a file or directory) to"
+        " stage and deploy alongside the agent, and make importable in the"
+        " deployed image. Each entry is placed at `/app/<basename>` and `/app`"
+        " is added to PYTHONPATH, so a top-level name that matches an installed"
+        " dependency will shadow it at runtime; pick distinct names."
+        " Repeatable."
+    ),
+)
 @deploy_options
 @adk_services_options(default_use_local_storage=False)
 @click.pass_context
@@ -2495,6 +2574,7 @@ def cli_deploy_cloud_run(
     trigger_oidc_service_accounts: str | None = None,
     provider_args: tuple[str, ...] = (),
     env: tuple[str, ...] = (),
+    extra_packages: tuple[str, ...] = (),
 ):
   """Deploys an agent to Cloud Run.
 
@@ -2545,7 +2625,10 @@ def cli_deploy_cloud_run(
         env=env,
         extra_gcloud_args=tuple(gcloud_args),
         with_cloud_run_sandbox=with_cloud_run_sandbox,
+        extra_packages=list(extra_packages),
     )
+  except (click.ClickException, click.Abort):
+    raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
     ctx.exit(1)
@@ -2603,6 +2686,8 @@ def cli_deploy_docker(
         provider_args=provider_args,
         env=env,
     )
+  except (click.ClickException, click.Abort):
+    raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
     ctx.exit(1)
@@ -2667,6 +2752,7 @@ def cli_migrate_session(
     click.secho("Migration check and upgrade process finished.", fg="green")
   except Exception as e:
     click.secho(f"Migration failed: {e}", fg="red", err=True)
+    click.get_current_context().exit(1)
 
 
 @deploy.command("agent_engine")
@@ -2948,7 +3034,9 @@ def cli_deploy_agent_engine(
       --worker_pool=projects/[project]/locations/[region]/workerPools/[pool]
       my_agent
   """
-  logging.getLogger("vertexai_genai.agentengines").setLevel(logging.INFO)
+  # The deploy path logs progress on both `agentplatform_genai.runtimes` and
+  # `agentplatform_genai.agentengines`; raise the parent so neither is lost.
+  logging.getLogger("agentplatform_genai").setLevel(logging.INFO)
   try:
     if validate_agent_import and skip_agent_import_validation_alias:
       raise click.UsageError(
@@ -2985,6 +3073,8 @@ def cli_deploy_agent_engine(
         extra_packages=list(extra_packages),
         worker_pool=worker_pool,
     )
+  except (click.ClickException, click.Abort):
+    raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
     click.get_current_context().exit(1)
@@ -3131,6 +3221,20 @@ def cli_deploy_agent_engine(
     ),
     default=None,
 )
+@click.option(
+    "--extra_packages",
+    multiple=True,
+    type=str,
+    default=(),
+    help=(
+        "Optional. Additional local package paths (a file or directory) to"
+        " stage and deploy alongside the agent, and make importable in the"
+        " deployed image. Each entry is placed at `/app/<basename>` and `/app`"
+        " is added to PYTHONPATH, so a top-level name that matches an installed"
+        " dependency will shadow it at runtime; pick distinct names."
+        " Repeatable."
+    ),
+)
 @adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
@@ -3160,6 +3264,7 @@ def cli_deploy_gke(
     trigger_sources: str | None = None,
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: str | None = None,
+    extra_packages: tuple[str, ...] = (),
 ):
   """Deploys an agent to GKE.
 
@@ -3196,7 +3301,10 @@ def cli_deploy_gke(
         trigger_sources=trigger_sources,
         trigger_oidc_audience=trigger_oidc_audience,
         trigger_oidc_service_accounts=trigger_oidc_service_accounts,
+        extra_packages=list(extra_packages),
     )
+  except (click.ClickException, click.Abort):
+    raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
     click.get_current_context().exit(1)

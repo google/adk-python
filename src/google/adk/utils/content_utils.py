@@ -50,6 +50,40 @@ def filter_audio_parts(content: types.Content) -> types.Content | None:
   return types.Content(role=content.role, parts=filtered_parts)
 
 
+def _is_adk_live_artifact_part(part: types.Part) -> bool:
+  """Returns whether `part` references an internal `_adk_live` artifact."""
+  if part.file_data is None:
+    return False
+  file_uri = part.file_data.file_uri or ''
+  return file_uri.startswith('artifact://') and '/_adk_live/' in file_uri
+
+
+def _filter_media_parts(content: types.Content) -> types.Content | None:
+  """Filters media parts out of history replayed to a live connection.
+
+  Removes internal `_adk_live` artifact references (audio and other media
+  persisted when `save_live_blob` is enabled) and any remaining audio parts.
+  Inline image and video parts (e.g. sent via `send_content`) are kept.
+
+  Args:
+    content: The content to filter. It is not modified.
+
+  Returns:
+    A new content with the same role and the remaining parts, or None if no
+    parts remain.
+  """
+  if not content.parts:
+    return None
+  filtered_parts = [
+      part
+      for part in content.parts
+      if not is_audio_part(part) and not _is_adk_live_artifact_part(part)
+  ]
+  if not filtered_parts:
+    return None
+  return types.Content(role=content.role, parts=filtered_parts)
+
+
 def extract_text_from_content(content: types.Content | None) -> str:
   """Extracts text from a Content object, filtering out thoughts."""
   if not content or not content.parts:
