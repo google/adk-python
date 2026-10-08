@@ -306,6 +306,29 @@ def test_extras_that_reach_aiohttp_indirectly_declare_it(
   assert 'aiohttp' in names, f'The {extra!r} extra needs aiohttp: {reason}.'
 
 
+@pytest.mark.parametrize('extra', ['db', 'all', 'test'])
+def test_sqlalchemy_extras_request_the_asyncio_extra(
+    pyproject: dict, extra: str
+) -> None:
+  """DatabaseSessionService needs greenlet, which SQLAlchemy 2.1 made optional.
+
+  SQLAlchemy 2.0 installed greenlet on common platforms by default. From 2.1 it
+  comes only with ``sqlalchemy[asyncio]``, and without it
+  ``sqlalchemy.ext.asyncio`` fails to import.
+  """
+  wanted = canonicalize_name('sqlalchemy')
+  requirements = [
+      Requirement(entry)
+      for entry in pyproject['project']['optional-dependencies'][extra]
+  ]
+  sqlalchemy = [r for r in requirements if canonicalize_name(r.name) == wanted]
+  assert sqlalchemy, f'The {extra!r} extra must declare sqlalchemy.'
+  assert all('asyncio' in r.extras for r in sqlalchemy), (
+      f'The {extra!r} extra must require sqlalchemy[asyncio]; plain sqlalchemy'
+      ' 2.1+ installs without greenlet, so DatabaseSessionService cannot start.'
+  )
+
+
 def test_main_deps_require_lazy_mcp_google_genai_release(
     pyproject: dict,
 ) -> None:
@@ -333,10 +356,16 @@ def test_main_deps_require_lazy_mcp_google_genai_release(
   )
 
 
-def test_eval_extra_caps_google_cloud_aiplatform_at_v2(
+def test_eval_extra_caps_google_cloud_aiplatform_at_v3(
     pyproject: dict,
 ) -> None:
-  """The eval extra must not resolve google-cloud-aiplatform 2.x."""
+  """The eval extra resolves google-cloud-aiplatform 2.x, and not 3.x.
+
+  The Evaluation SDK still lives on the legacy `vertexai` surface, which 2.x
+  continues to ship, so the eval extra moved onto the 2.x line with the rest of
+  the migration rather than holding the whole project back on 1.x: every other
+  extra needs 2.x for `agentplatform`, and one project cannot resolve both.
+  """
   specifier = _requirement_specifier(
       pyproject['project']['optional-dependencies']['eval'],
       'google-cloud-aiplatform',
@@ -347,14 +376,15 @@ def test_eval_extra_caps_google_cloud_aiplatform_at_v2(
       'dependency remains explicitly constrained.'
   )
   assert any(
-      clause.operator == '<' and Version(clause.version) == Version('2')
+      clause.operator == '<' and Version(clause.version) == Version('3')
       for clause in specifier
   ), (
-      'The eval extra must keep google-cloud-aiplatform below the 2.x major'
+      'The eval extra must keep google-cloud-aiplatform below the 3.x major'
       ' line.'
   )
-  assert Version('1.148') in specifier
-  assert Version('2.0.0') not in specifier
+  assert Version('2.2') in specifier
+  assert Version('1.148') not in specifier
+  assert Version('3.0.0') not in specifier
 
 
 def test_inclusive_upper_bounds_ignores_other_operators() -> None:

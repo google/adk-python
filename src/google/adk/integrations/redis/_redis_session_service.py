@@ -348,10 +348,12 @@ class RedisSessionService(BaseSessionService):
     session.last_update_time = event.timestamp
 
     # Sync app and user state deltas to their respective keys
+    session_delta: dict[str, Any] = {}
     if event.actions and event.actions.state_delta:
       deltas = _session_util.extract_state_delta(event.actions.state_delta)
       app_delta = deltas.get("app", {})
       user_delta = deltas.get("user", {})
+      session_delta = deltas.get("session", {})
 
       if app_delta:
         app_key = self._app_state_key(session.app_name)
@@ -387,9 +389,28 @@ class RedisSessionService(BaseSessionService):
     )
 
     key = self._session_key(session.app_name, session.user_id, session.id)
-    await client.set(
-        key,
-        storage_session.model_dump_json(),
-        ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
-    )
+
+    async def append_to_storage(pipe: Any) -> None:
+      raw = await pipe.get(key)
+      if raw:
+        # The caller may hold a filtered view. Reload on every transaction
+        # attempt so concurrent appends are preserved as well.
+        stored_session = Session.model_validate_json(raw)
+        storage_session.events = stored_session.events
+        storage_session.state = stored_session.state
+        if not event.partial:
+          storage_session.events.append(event)
+          if session_delta:
+            storage_session.state.update(session_delta)
+      else:
+        storage_session.events = list(session.events)
+        storage_session.state = dict(session_only_state)
+      pipe.multi()
+      pipe.set(
+          key,
+          storage_session.model_dump_json(),
+          ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
+      )
+
+    await client.transaction(append_to_storage, key)
     return event

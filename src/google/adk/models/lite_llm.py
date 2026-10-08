@@ -193,7 +193,38 @@ def _quote_unquoted_json_object_keys(value: str) -> str:
   return "".join(result)
 
 
-def _parse_tool_call_arguments(arguments: Any) -> Any:
+def _log_repaired_arguments(
+    description: str,
+    arguments: Any,
+    *,
+    function_name: str | None = None,
+    level: int = logging.WARNING,
+) -> None:
+  """Logs an argument repair, keeping the raw payload at debug level."""
+  if not logger.isEnabledFor(level):
+    return
+  if logger.isEnabledFor(logging.DEBUG):
+    if function_name:
+      logger.log(
+          level,
+          "%s for function '%s': %s",
+          description,
+          function_name,
+          arguments,
+      )
+    else:
+      logger.log(level, "%s: %s", description, arguments)
+  elif function_name:
+    logger.log(level, "%s for function '%s'", description, function_name)
+  else:
+    logger.log(level, "%s", description)
+
+
+def _parse_tool_call_arguments(
+    arguments: Any,
+    *,
+    function_name: str | None = None,
+) -> Any:
   """Parses LiteLLM tool call arguments.
 
   LiteLLM normally returns OpenAI-compatible tool call arguments as JSON
@@ -201,6 +232,16 @@ def _parse_tool_call_arguments(arguments: Any) -> Any:
   argument payload is a Python dict literal or has unquoted object keys. Keep
   strict JSON as the primary path, then repair only those complete
   object-literal shapes so ADK can still surface the intended function call.
+
+  Args:
+    arguments: The tool call arguments to parse.
+    function_name: Optional name of the function being called, for logging.
+
+  Returns:
+    The parsed arguments (typically a dict).
+
+  Raises:
+    json.JSONDecodeError: When the arguments cannot be parsed.
   """
   if not arguments:
     return {}
@@ -212,20 +253,79 @@ def _parse_tool_call_arguments(arguments: Any) -> Any:
   except json.JSONDecodeError as exc:
     json_error = exc
 
+  # Retry with Python literal eval (handles single-quoted keys, etc.).
   try:
-    return ast.literal_eval(arguments)
+    result = ast.literal_eval(arguments)
+    _log_repaired_arguments(
+        "Repaired non-strict JSON tool call arguments using literal_eval",
+        arguments,
+        function_name=function_name,
+        level=logging.DEBUG,
+    )
+    return result
   except (SyntaxError, ValueError):
     pass
 
+  # Retry after quoting unquoted JSON object keys.
   repaired_arguments = _quote_unquoted_json_object_keys(arguments)
   if repaired_arguments != arguments:
     try:
-      return json.loads(repaired_arguments)
+      result = json.loads(repaired_arguments)
+      _log_repaired_arguments(
+          "Repaired unquoted JSON object keys in tool call arguments",
+          arguments,
+          function_name=function_name,
+      )
+      return result
     except json.JSONDecodeError:
       try:
-        return ast.literal_eval(repaired_arguments)
+        result = ast.literal_eval(repaired_arguments)
+        _log_repaired_arguments(
+            "Repaired unquoted JSON object keys in tool call arguments using"
+            " literal_eval",
+            arguments,
+            function_name=function_name,
+        )
+        return result
       except (SyntaxError, ValueError):
         pass
+
+  # Retry after stripping Markdown code fences (```json ... ```).
+  stripped = arguments.strip()
+  if (
+      stripped.startswith("```")
+      and stripped.endswith("```")
+      and len(stripped) >= 6
+  ):
+    candidate = stripped[3:-3].strip()
+    if candidate.lower().startswith("json"):
+      candidate = candidate[4:].strip()
+    if candidate and candidate != arguments:
+      candidates = [candidate]
+      repaired_candidate = _quote_unquoted_json_object_keys(candidate)
+      if repaired_candidate != candidate:
+        candidates.append(repaired_candidate)
+      for text in candidates:
+        try:
+          result = json.loads(text)
+          _log_repaired_arguments(
+              "Repaired Markdown-fenced tool call arguments",
+              arguments,
+              function_name=function_name,
+          )
+          return result
+        except json.JSONDecodeError:
+          pass
+        try:
+          result = ast.literal_eval(text)
+          _log_repaired_arguments(
+              "Repaired Markdown-fenced tool call arguments using literal_eval",
+              arguments,
+              function_name=function_name,
+          )
+          return result
+        except (SyntaxError, ValueError):
+          pass
 
   raise json_error
 
@@ -382,6 +482,134 @@ def _strip_proxy_prefix(model: str) -> str:
   return model
 
 
+_UPLOAD_ENDPOINT_KEYS = ("api_base", "api_key", "api_version")
+
+# LiteLLM reads these when the completion call carries no explicit endpoint,
+# so a proxy configured only through the environment still has to be honored
+# by the upload.
+_PROXY_ENV_FALLBACKS = {
+    "api_base": "LITELLM_PROXY_API_BASE",
+    "api_key": "LITELLM_PROXY_API_KEY",
+}
+
+
+def _normalize_endpoint_value(key: str, value: Any) -> Any:
+  """Strips whitespace and trailing api_base slashes from endpoint values."""
+  if isinstance(value, str):
+    value = value.strip()
+    if key == "api_base":
+      value = value.rstrip("/")
+  return value
+
+
+def _get_upload_params(
+    model: str, completion_args: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+  """Endpoint overrides to forward to `litellm.acreate_file`.
+
+  File uploads resolve their endpoint independently of the completion call, so
+  without these they fall back to the underlying provider's own credentials.
+  For a proxied model that splits the request in two: the completion goes to
+  the proxy while the upload goes straight to the provider. That fails when the
+  caller holds only proxy credentials, and when the provider resolves to
+  ``openai`` it is worse than a failure -- `get_openai_credentials` defaults to
+  ``https://api.openai.com/v1``, so a stray ``OPENAI_API_KEY`` in the
+  environment sends proxied file content to the public OpenAI API instead.
+  Direct models with an explicit endpoint (e.g. `api_base` pointing to a
+  custom or local OpenAI gateway) suffer the same leak without these overrides
+  forwarded.
+
+  Explicit completion arguments win, falling back for proxied models to the
+  proxy's own environment variables and module attributes so that proxies
+  configured purely through the environment are still routed correctly.
+
+  Args:
+    model: The LiteLLM model string.
+    completion_args: The arguments the caller passes to the completion call.
+
+  Returns:
+    The subset of endpoint overrides to forward, or None when no overrides
+    exist.
+  """
+  upload_params: Dict[str, Any] = {}
+  for key in _UPLOAD_ENDPOINT_KEYS:
+    if key in completion_args and completion_args[key] is not None:
+      val = _normalize_endpoint_value(key, completion_args[key])
+      if val:
+        upload_params[key] = val
+  if _is_proxied_model(model, completion_args):
+    # LiteLLM resolves the proxy endpoint from these when the completion call
+    # does not carry one, so the upload has to follow the same fallback. Strip
+    # whitespace and trailing slashes so empty, whitespace-only, or slash-only
+    # environment variables do not pass the endpoint guard and reach
+    # acreate_file as malformed endpoints.
+    for key, env_var in _PROXY_ENV_FALLBACKS.items():
+      if not upload_params.get(key):
+        value = _normalize_endpoint_value(key, os.environ.get(env_var, ""))
+        if value:
+          upload_params[key] = value
+    litellm_mod = sys.modules.get("litellm") or litellm
+    if litellm_mod is not None:
+      for key in _UPLOAD_ENDPOINT_KEYS:
+        if not upload_params.get(key):
+          litellm_val = _normalize_endpoint_value(
+              key, getattr(litellm_mod, key, None)
+          )
+          if litellm_val:
+            upload_params[key] = litellm_val
+    if not upload_params.get("api_base"):
+      openai_base = _normalize_endpoint_value(
+          "api_base", os.environ.get("OPENAI_BASE_URL", "")
+      ) or _normalize_endpoint_value(
+          "api_base", os.environ.get("OPENAI_API_BASE", "")
+      )
+      if openai_base:
+        upload_params["api_base"] = openai_base
+    if not upload_params.get("api_key"):
+      openai_key = _normalize_endpoint_value(
+          "api_key", os.environ.get("OPENAI_API_KEY", "")
+      )
+      if openai_key:
+        upload_params["api_key"] = openai_key
+  return upload_params or None
+
+
+def _is_proxied_model(
+    model: str, completion_args: Optional[Dict[str, Any]] = None
+) -> bool:
+  """Returns True if the model is served through a LiteLLM Proxy.
+
+  Covers the explicit ``litellm_proxy/`` prefix, ``custom_llm_provider`` set to
+  ``litellm_proxy``, the ``use_litellm_proxy`` argument in completion args or
+  the ``litellm.use_litellm_proxy`` module flag, and LiteLLM's
+  ``USE_LITELLM_PROXY`` environment variable, which route unprefixed models
+  through the proxy as well.
+  """
+  if not model:
+    return False
+  if model.lower().startswith(_PROXY_PROVIDER + "/"):
+    return True
+  if completion_args:
+    custom_provider = completion_args.get("custom_llm_provider")
+    if (
+        isinstance(custom_provider, str)
+        and custom_provider.strip().lower() == _PROXY_PROVIDER
+    ):
+      return True
+    val = completion_args.get("use_litellm_proxy")
+    if isinstance(val, str):
+      if val.strip().lower() == "true":
+        return True
+    elif bool(val):
+      return True
+  litellm_mod = sys.modules.get("litellm") or litellm
+  if litellm_mod is not None and getattr(
+      litellm_mod, "use_litellm_proxy", False
+  ):
+    return True
+  return os.environ.get("USE_LITELLM_PROXY", "").strip().lower() == "true"
+
+
 def _get_provider_from_model(model: str) -> str:
   """Extracts the provider name from a LiteLLM model string.
 
@@ -525,10 +753,16 @@ def _redact_file_uri_for_log(
   return f"{parsed.scheme}://<redacted>"
 
 
-def _is_file_uri_supported(provider: str, model: str, file_uri: str) -> bool:
+def _is_file_uri_supported(
+    provider: str,
+    model: str,
+    file_uri: str,
+    *,
+    is_proxied: bool = False,
+) -> bool:
   """Returns True when `file_uri` can be sent as a file content block."""
   # If the model is proxied, the proxy might accept arbitrary URIs.
-  if model.lower().startswith(_PROXY_PROVIDER + "/"):
+  if is_proxied or _is_proxied_model(model):
     return True
   if provider in _FILE_ID_REQUIRED_PROVIDERS:
     return _looks_like_openai_file_id(file_uri)
@@ -724,9 +958,15 @@ def _extract_reasoning_value(message: Message | Delta | None) -> Any:
 
 
 _GEMMA4_MODEL_PATTERN = re.compile(r"gemma-?4")
+_STANDARD_TOOL_ROLE_PROVIDERS = frozenset({"openai", "azure", "lm_studio"})
 
 
-def _is_gemma4_model(model: str) -> bool:
+def _is_gemma4_model(
+    model: str,
+    *,
+    provider: str = "",
+    custom_llm_provider: Optional[str] = None,
+) -> bool:
   """Detects Gemma 4 models across naming conventions.
 
   Ollama uses "gemma4" (e.g. "ollama/gemma4:e2b"), while Hugging Face,
@@ -734,12 +974,34 @@ def _is_gemma4_model(model: str) -> bool:
   "google/gemma-4-26B-A4B"). Both need role='tool_responses' for tool
   results.
 
+  OpenAI-compatible endpoints (e.g. "openai/google/gemma-4-e4b",
+  "lm_studio/google/gemma-4-e4b") require the standard role='tool' and are
+  excluded.
+
   Args:
     model: The model name to check.
+    provider: The provider name if known.
+    custom_llm_provider: The custom LLM provider if specified.
 
   Returns:
-    True if the model is a Gemma 4 model, False otherwise.
+    True if the model is a Gemma 4 model requiring tool_responses, False
+    otherwise.
   """
+  effective_provider = next(
+      (
+          candidate
+          for raw in (
+              custom_llm_provider,
+              provider,
+              _get_provider_from_model(model),
+          )
+          # Skip 'litellm_proxy' because it only names the transport.
+          if raw and (candidate := raw.strip().lower()) != _PROXY_PROVIDER
+      ),
+      "",
+  )
+  if effective_provider in _STANDARD_TOOL_ROLE_PROVIDERS:
+    return False
   return bool(_GEMMA4_MODEL_PATTERN.search(model.lower()))
 
 
@@ -1166,6 +1428,12 @@ def _decode_thought_signature(value: Any) -> Optional[bytes]:
     return None
 
 
+def _decode_tool_call_id_signature(suffix: str) -> Optional[bytes]:
+  """Decodes a signature embedded in a tool call id, urlsafe or unpadded."""
+  standard = suffix.replace("-", "+").replace("_", "/")
+  return _decode_thought_signature(standard + "=" * (-len(standard) % 4))
+
+
 def _extract_reasoning_tokens(usage: Any) -> int:
   """Extracts reasoning tokens from LiteLLM usage.
 
@@ -1277,7 +1545,7 @@ def _extract_thought_signature_from_tool_call(
   if _THOUGHT_SIGNATURE_SEPARATOR in tool_call_id:
     parts = tool_call_id.split(_THOUGHT_SIGNATURE_SEPARATOR, 1)
     if len(parts) == 2:
-      return _decode_thought_signature(parts[1])
+      return _decode_tool_call_id_signature(parts[1])
 
   return None
 
@@ -1304,6 +1572,9 @@ async def _content_to_message_param(
     *,
     provider: str = "",
     model: str = "",
+    upload_params: Optional[Dict[str, Any]] = None,
+    is_proxied: bool = False,
+    custom_llm_provider: Optional[str] = None,
 ) -> Union[Message, list[Message]] | None:
   """Converts a types.Content to a litellm Message or list of Messages.
 
@@ -1314,6 +1585,9 @@ async def _content_to_message_param(
     content: The content to convert.
     provider: The LLM provider name (e.g., "openai", "azure").
     model: The LiteLLM model string, used for provider-specific behavior.
+    upload_params: Endpoint overrides forwarded to file uploads.
+    is_proxied: Whether the request is routed through a LiteLLM Proxy.
+    custom_llm_provider: The custom LLM provider if specified.
 
   Returns:
     A litellm Message, a list of litellm Messages, or None if skipped.
@@ -1336,12 +1610,16 @@ async def _content_to_message_param(
           if isinstance(response, str)
           else _safe_json_serialize(response)
       )
-      # gemma4 requires role='tool_responses' for recognizing function_response parts as responses
-      # from the tool call, instead of OpenAI-compatible 'tool' role used by other models.
-      # Earlier Gemma versions before version 4 do not support tool use,
-      # so this check is intentionally scoped to only look for "gemma4" in the model name.
+      # gemma4 requires role='tool_responses' for recognizing function_response
+      # parts as responses from the tool call, except on OpenAI-compatible
+      # endpoints (openai, azure, lm_studio) which require the standard 'tool'
+      # role. Earlier Gemma versions before version 4 do not support tool use.
       tool_role: Literal["tool", "tool_responses"] = (
-          "tool_responses" if _is_gemma4_model(model) else "tool"
+          "tool_responses"
+          if _is_gemma4_model(
+              model, provider=provider, custom_llm_provider=custom_llm_provider
+          )
+          else "tool"
       )
       tool_messages.append(
           _tool_message(
@@ -1365,6 +1643,9 @@ async def _content_to_message_param(
         types.Content(role=content.role, parts=non_tool_parts),
         provider=provider,
         model=model,
+        upload_params=upload_params,
+        is_proxied=is_proxied,
+        custom_llm_provider=custom_llm_provider,
     )
     follow_up_messages = (
         follow_up if isinstance(follow_up, list) else [follow_up]
@@ -1377,7 +1658,14 @@ async def _content_to_message_param(
   if role == "user":
     user_parts = [part for part in parts if not part.thought]
     message_content = (
-        await _get_content(user_parts, provider=provider, model=model) or None
+        await _get_content(
+            user_parts,
+            provider=provider,
+            model=model,
+            upload_params=upload_params,
+            is_proxied=is_proxied,
+        )
+        or None
     )
     return ChatCompletionUserMessage(
         role="user",
@@ -1423,7 +1711,13 @@ async def _content_to_message_param(
         content_parts.append(part)
 
     final_content = (
-        await _get_content(content_parts, provider=provider, model=model)
+        await _get_content(
+            content_parts,
+            provider=provider,
+            model=model,
+            upload_params=upload_params,
+            is_proxied=is_proxied,
+        )
         if content_parts
         else None
     )
@@ -1498,7 +1792,12 @@ async def _content_to_message_param(
     )
 
 
-def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
+def _ensure_tool_results(
+    messages: List[Message],
+    model: str,
+    *,
+    custom_llm_provider: Optional[str] = None,
+) -> List[Message]:
   """Insert placeholder tool messages for missing tool results.
 
   LiteLLM-backed providers like OpenAI and Anthropic reject histories where an
@@ -1517,7 +1816,9 @@ def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
   healed_messages: List[Message] = []
   pending_tool_call_ids: List[str] = []
   expected_tool_role: Literal["tool", "tool_responses"] = (
-      "tool_responses" if _is_gemma4_model(model) else "tool"
+      "tool_responses"
+      if _is_gemma4_model(model, custom_llm_provider=custom_llm_provider)
+      else "tool"
   )
 
   for message in messages:
@@ -1573,6 +1874,8 @@ async def _get_content(
     *,
     provider: str = "",
     model: str = "",
+    upload_params: Optional[Dict[str, Any]] = None,
+    is_proxied: bool = False,
 ) -> _MessageContent:
   """Converts a list of parts to litellm content.
 
@@ -1584,6 +1887,11 @@ async def _get_content(
     provider: The LLM provider name (e.g., "openai", "azure").
     model: The LiteLLM model string (e.g., "openai/gpt-4o",
       "vertex_ai/gemini-2.5-flash").
+    upload_params: Endpoint overrides (``api_base``, ``api_key``,
+      ``api_version``) forwarded to the file upload. Needed when the model is
+      served through a LiteLLM Proxy, since the upload would otherwise fall
+      back to provider environment variables and bypass the proxy.
+    is_proxied: Whether the request is routed through a LiteLLM Proxy.
 
   Returns:
     The litellm content.
@@ -1647,11 +1955,20 @@ async def _get_content(
       elif mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
         # OpenAI/Azure require file_id from uploaded file, not inline data
         if provider in _FILE_ID_REQUIRED_PROVIDERS:
-          upload_provider = (
-              "openai"
-              if model.lower().startswith(_PROXY_PROVIDER + "/")
-              else provider
-          )
+          proxied = is_proxied or _is_proxied_model(model)
+          if proxied and not (upload_params or {}).get("api_base"):
+            # Without an endpoint the upload would fall back to the provider's
+            # own credentials. For `openai` that default is the public
+            # https://api.openai.com/v1, so proxied file content would leave
+            # the proxy entirely. Fail instead of silently sending it there.
+            raise ValueError(
+                f"Cannot upload file for proxied model {model!r}: the LiteLLM"
+                " Proxy endpoint is unknown. Pass `api_base` (and `api_key`) to"
+                " LiteLlm(...), or set LITELLM_PROXY_API_BASE and"
+                " LITELLM_PROXY_API_KEY, so the upload reaches the proxy"
+                " instead of the provider's default endpoint."
+            )
+          upload_provider = "openai" if proxied else provider
           ext = (
               mimetypes.guess_extension(mime_type)
               or _MIME_TYPE_TO_EXTENSION.get(mime_type)
@@ -1662,6 +1979,7 @@ async def _get_content(
               file=(filename, part.inline_data.data, mime_type),
               purpose="assistants",
               custom_llm_provider=upload_provider,
+              **(upload_params or {}),
           )
           content_objects.append(
               _FileContentObject(
@@ -1728,7 +2046,12 @@ async def _get_content(
             )
             continue
 
-      if not _is_file_uri_supported(provider, model, part.file_data.file_uri):
+      if not _is_file_uri_supported(
+          provider,
+          model,
+          part.file_data.file_uri,
+          is_proxied=is_proxied or _is_proxied_model(model),
+      ):
         redacted_file_uri = _redact_file_uri_for_log(
             part.file_data.file_uri,
             display_name=part.file_data.display_name,
@@ -2697,7 +3020,10 @@ def _message_to_generate_content_response(
       if tool_call.type == "function":
         thought_signature = _extract_thought_signature_from_tool_call(tool_call)
         try:
-          args = _parse_tool_call_arguments(tool_call.function.arguments)
+          args = _parse_tool_call_arguments(
+              tool_call.function.arguments,
+              function_name=tool_call.function.name,
+          )
         except json.JSONDecodeError:
           args = None
         # Report the condition the way Gemini reports it natively instead of
@@ -2727,7 +3053,20 @@ def _message_to_generate_content_response(
           raise ValueError(
               "Function-call part factory returned no function call"
           )
-        function_call.id = tool_call.id
+        # The signature is carried on the part, so strip it back out of the id.
+        # Leaving it there appends a few hundred characters of base64 to every
+        # consumer of `function_call_id`, and `_content_to_message_param`
+        # re-attaches it to the outgoing tool call from `thought_signature`
+        # anyway. Only an id whose suffix decodes as a signature is LiteLLM's
+        # own; every other id is the provider's and stays opaque.
+        call_id, separator, suffix = (tool_call.id or "").partition(
+            _THOUGHT_SIGNATURE_SEPARATOR
+        )
+        function_call.id = (
+            call_id
+            if separator and _decode_tool_call_id_signature(suffix)
+            else tool_call.id
+        )
         if thought_signature:
           part.thought_signature = thought_signature
         parts.append(part)
@@ -2941,6 +3280,10 @@ def _to_litellm_response_format(
 async def _get_completion_inputs(
     llm_request: LlmRequest,
     model: str,
+    upload_params: Optional[Dict[str, Any]] = None,
+    *,
+    is_proxied: bool = False,
+    custom_llm_provider: Optional[str] = None,
 ) -> Tuple[
     List[Message],
     Optional[List[Dict[str, Any]]],
@@ -2953,6 +3296,9 @@ async def _get_completion_inputs(
   Args:
     llm_request: The LlmRequest to convert.
     model: The model string to use for determining provider-specific behavior.
+    upload_params: Endpoint overrides forwarded to file uploads.
+    is_proxied: Whether the request is routed through a LiteLLM Proxy.
+    custom_llm_provider: The custom LLM provider if specified.
 
   Returns:
     The litellm inputs (message list, tool dictionary, response format,
@@ -2967,7 +3313,12 @@ async def _get_completion_inputs(
   messages: List[Message] = []
   for content in llm_request.contents or []:
     message_param_or_list = await _content_to_message_param(
-        content, provider=provider, model=model
+        content,
+        provider=provider,
+        model=model,
+        upload_params=upload_params,
+        is_proxied=is_proxied,
+        custom_llm_provider=custom_llm_provider,
     )
     if isinstance(message_param_or_list, list):
       messages.extend(message_param_or_list)
@@ -2983,7 +3334,11 @@ async def _get_completion_inputs(
             content=system_instruction,
         ),
     )
-  messages = _ensure_tool_results(messages, model)
+  messages = _ensure_tool_results(
+      messages,
+      model,
+      custom_llm_provider=custom_llm_provider,
+  )
 
   # 2. Convert tool declarations
   tools: Optional[List[Dict[str, Any]]] = None
@@ -3212,7 +3567,9 @@ def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
   return litellm_model
 
 
-def _warn_gemini_via_litellm(model_string: str) -> None:
+def _warn_gemini_via_litellm(
+    model_string: str, completion_args: Optional[Dict[str, Any]] = None
+) -> None:
   """Warn if Gemini is being used via LiteLLM.
 
   This function logs a warning suggesting users use Gemini directly rather than
@@ -3220,12 +3577,13 @@ def _warn_gemini_via_litellm(model_string: str) -> None:
 
   Args:
     model_string: The LiteLLM model string to check
+    completion_args: Optional completion arguments to check for proxy settings.
   """
   if not _is_litellm_gemini_model(model_string):
     return
 
   # Do not warn if using a proxy, as native Gemini client might not support it.
-  if model_string.lower().startswith(_PROXY_PROVIDER + "/"):
+  if _is_proxied_model(model_string, completion_args):
     return
 
   # Check if warning should be suppressed via environment variable
@@ -3354,7 +3712,7 @@ class LiteLlm(BaseLlm):
     drop_params = kwargs.pop("drop_params", None)
     super().__init__(model=model, **kwargs)
     # Warn if using Gemini via LiteLLM
-    _warn_gemini_via_litellm(model)
+    _warn_gemini_via_litellm(model, kwargs)
     self._additional_args = dict(kwargs)
     # preventing generation call with llm_client
     # and overriding messages, tools and stream which are managed internally
@@ -3482,7 +3840,19 @@ class LiteLlm(BaseLlm):
 
     effective_model = llm_request.model or self.model
     messages, tools, response_format, generation_params, tool_choice = (
-        await _get_completion_inputs(llm_request, effective_model)
+        await _get_completion_inputs(
+            llm_request,
+            effective_model,
+            upload_params=_get_upload_params(
+                effective_model, self._additional_args
+            ),
+            is_proxied=_is_proxied_model(
+                effective_model, self._additional_args
+            ),
+            custom_llm_provider=self._additional_args.get(
+                "custom_llm_provider"
+            ),
+        )
     )
     normalized_messages = _normalize_ollama_chat_messages(
         messages,
@@ -3588,8 +3958,12 @@ class LiteLlm(BaseLlm):
         for index, func_data in function_calls.items():
           if func_data["id"]:
             args = "".join(func_data["args_parts"])
+            tool_call_arguments: Any = args
             try:
-              _parse_tool_call_arguments(args)
+              tool_call_arguments = _parse_tool_call_arguments(
+                  args,
+                  function_name=func_data["name"],
+              )
             except json.JSONDecodeError:
               has_incomplete_tool_call_args = True
               continue
@@ -3599,7 +3973,14 @@ class LiteLlm(BaseLlm):
                     id=func_data["id"],
                     function=ChatCompletionToolCallFunctionChunk(
                         name=func_data["name"],
-                        arguments=args,
+                        # Serialise a repaired dict to strict JSON so the
+                        # downstream parse finds valid JSON and logs no second
+                        # repair. A non-dict must stay the original string.
+                        arguments=(
+                            json.dumps(tool_call_arguments)
+                            if isinstance(tool_call_arguments, dict)
+                            else args
+                        ),
                     ),
                     index=index,
                 )

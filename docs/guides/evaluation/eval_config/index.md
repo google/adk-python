@@ -269,9 +269,8 @@ Two parts of that shape catch people out. `min_value` and `max_value`
 sit inside `metric_value_info.interval`, not at the top of `metric_info`, and
 because `MetricInfo` rejects keys it does not recognize, unlike a criterion,
 getting that wrong fails loudly. The other is that the key really is
-`metric_info`, or `metricInfo`. The example in `EvalConfig`'s own field
-description spells it `metric`, which is not a field, so it is dropped and the
-metric silently gets default info instead.
+`metric_info`, or `metricInfo`. A `metric` key is not a field, so it is dropped
+and the metric silently gets default info instead.
 
 ## The other two top-level keys
 

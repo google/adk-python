@@ -53,6 +53,8 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.enterprise_search_tool import EnterpriseWebSearchTool
 from google.adk.tools.google_search_tool import GoogleSearchTool
+from google.adk.tools.tool_context import ToolContext
+from google.adk.tools.vertex_ai_search_tool import VertexAiSearchTool
 from google.adk.utils.context_utils import Aclosing
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
@@ -2989,6 +2991,81 @@ async def test_resume_short_circuit_skips_partial_function_call():
   assert not any(e.actions and e.actions.transfer_to_agent for e in events)
 
 
+@pytest.mark.parametrize(
+    ('response_ids', 'expected_executions'),
+    [([None], [1, 2]), ([None, 'c1'], [2]), (['c1', None], [2])],
+    ids=['idless', 'idless_before_explicit_id', 'explicit_id_before_idless'],
+)
+async def test_resume_executes_only_unanswered_same_name_calls(
+    response_ids: list[str | None], expected_executions: list[int]
+) -> None:
+  """Restored ID-less responses do not hide unexecuted same-name siblings."""
+  executions = []
+
+  def ask(index: int, tool_context: ToolContext) -> dict[str, int]:
+    executions.append(index)
+    tool_context.actions.skip_summarization = True
+    return {'index': index}
+
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=['No replay occurred']),
+      tools=[ask],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='Resume the saved calls'
+  )
+  invocation_context.resumability_config = ResumabilityConfig(is_resumable=True)
+  call_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id=f'c{index + 1}', name='ask', args={'index': index}
+                  )
+              )
+              for index in range(3)
+          ],
+      ),
+  )
+  response_events = [
+      Event(
+          invocation_id=invocation_context.invocation_id,
+          author='user',
+          content=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=response_id,
+                          name='ask',
+                          response={'result': 'saved'},
+                      )
+                  )
+              ],
+          ),
+      )
+      for response_id in response_ids
+  ]
+  invocation_context.session.events.extend([call_event, *response_events])
+  original_call = call_event.model_copy(deep=True)
+
+  events = [
+      event async for event in agent._llm_flow.run_async(invocation_context)
+  ]
+
+  assert sorted(executions) == expected_executions
+  assert [
+      response.id
+      for event in events
+      for response in event.get_function_responses()
+  ] == [f'c{index + 1}' for index in expected_executions]
+  assert call_event == original_call
+
+
 @pytest.mark.asyncio
 async def test_preprocess_final_response_skips_llm_call():
   """A final response from preprocessing must finish the current step."""
@@ -3285,6 +3362,97 @@ async def test_search_agent_with_sub_agents_and_enterprise_search_raises_value_e
       match=(
           'has sub-agent transfer targets but is configured with'
           ' EnterpriseWebSearchTool'
+      ),
+  ):
+    async for _ in flow._preprocess_async(ctx, llm_request):
+      pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'builtin_tool, builtin_field',
+    [
+        (GoogleSearchTool(), 'google_search'),
+        (EnterpriseWebSearchTool(), 'enterprise_web_search'),
+        (VertexAiSearchTool(data_store_id='ds'), 'retrieval'),
+    ],
+    ids=['google_search', 'enterprise_web_search', 'vertex_ai_search'],
+)
+async def test_gemini_3_agent_with_sub_agents_keeps_builtin_search_and_transfer(
+    builtin_tool, builtin_field
+):
+  """Gemini 3+ accepts built-in search alongside transfer_to_agent."""
+  sub_agent = Agent(name='sub_agent', model='gemini-3.5-flash')
+  root_agent = Agent(
+      name='root_agent',
+      model='gemini-3.5-flash',
+      tools=[builtin_tool],
+      sub_agents=[sub_agent],
+  )
+  ctx = await testing_utils.create_invocation_context(
+      agent=root_agent, user_content='search and delegate'
+  )
+  llm_request = LlmRequest(model='gemini-3.5-flash')
+  flow = root_agent._llm_flow
+
+  async for _ in flow._preprocess_async(ctx, llm_request):
+    pass
+
+  assert 'transfer_to_agent' in llm_request.tools_dict
+  assert any(
+      getattr(tool, builtin_field, None) is not None
+      for tool in llm_request.config.tools
+  )
+
+
+@pytest.mark.asyncio
+async def test_gemini_3_agent_with_search_tool_model_override_still_raises():
+  """A GoogleSearchTool model override to Gemini 2.x wins over the agent model."""
+  sub_agent = Agent(name='sub_agent', model='gemini-3.5-flash')
+  root_agent = Agent(
+      name='root_agent',
+      model='gemini-3.5-flash',
+      tools=[GoogleSearchTool(model='gemini-2.5-flash')],
+      sub_agents=[sub_agent],
+  )
+  ctx = await testing_utils.create_invocation_context(
+      agent=root_agent, user_content='search and delegate'
+  )
+  llm_request = LlmRequest(model='gemini-3.5-flash')
+  flow = root_agent._llm_flow
+
+  with pytest.raises(
+      ValueError,
+      match=(
+          'has sub-agent transfer targets but is configured with'
+          ' GoogleSearchTool'
+      ),
+  ):
+    async for _ in flow._preprocess_async(ctx, llm_request):
+      pass
+
+
+@pytest.mark.asyncio
+async def test_modelless_agent_in_live_mode_with_sub_agents_and_search_raises():
+  """A model-less agent in live mode resolves to DEFAULT_LIVE_MODEL (2.5) and raises."""
+  sub_agent = Agent(name='sub_agent')
+  root_agent = Agent(
+      name='root_agent',
+      tools=[GoogleSearchTool()],
+      sub_agents=[sub_agent],
+  )
+  ctx = await testing_utils.create_invocation_context(
+      agent=root_agent, user_content='search and delegate'
+  )
+  ctx.live_request_queue = LiveRequestQueue()
+  llm_request = LlmRequest()
+  flow = root_agent._llm_flow
+
+  with pytest.raises(
+      ValueError,
+      match=(
+          'has sub-agent transfer targets but is configured with'
+          ' GoogleSearchTool'
       ),
   ):
     async for _ in flow._preprocess_async(ctx, llm_request):

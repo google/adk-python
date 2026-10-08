@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
-from typing import Literal
 from typing import Optional
 from typing import Union
 from urllib.parse import urlparse
@@ -68,6 +67,8 @@ from ...flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CA
 from ...flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ...flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...sessions.session import Session
+from ...utils._agent_mode import AgentMode
+from ...utils._agent_mode import TaskAgentMode
 from ...utils.context_utils import Aclosing
 from ..converters.event_converter import convert_a2a_message_to_event
 from ..converters.event_converter import convert_a2a_task_to_event
@@ -77,6 +78,7 @@ from ..converters.part_converter import convert_a2a_part_to_genai_part
 from ..converters.part_converter import convert_genai_part_to_a2a_part
 from ..converters.part_converter import GenAIPartToA2APartConverter
 from ..converters.to_adk_event import _create_mock_function_call_for_required_user_input
+from ..converters.to_adk_event import _TASK_RESPONSE_BOUNDARY_STATES
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from ..experimental import a2a_experimental
@@ -641,7 +643,7 @@ class RemoteA2aAgent(BaseAgent):
   - Session state management across requests
   """
 
-  mode: Literal["task"] | None = None
+  mode: TaskAgentMode | None = None
   """Delegation mode.
 
   Only ``task`` is supported: the agent runs as a task sub-agent of a parent
@@ -816,7 +818,9 @@ class RemoteA2aAgent(BaseAgent):
 
   @property
   def _full_history_when_stateless(self) -> bool:
-    return self._full_history_when_stateless_param or self.mode == "task"
+    return (
+        self._full_history_when_stateless_param or self.mode == AgentMode.TASK
+    )
 
   @_full_history_when_stateless.setter
   def _full_history_when_stateless(self, value: bool) -> None:
@@ -917,6 +921,11 @@ class RemoteA2aAgent(BaseAgent):
       http_kwargs = await execute_before_card_request_interceptors(
           self._config.card_request_interceptors, ctx
       )
+      if http_kwargs is None:
+        http_kwargs = {}
+      if self._httpx_client_needs_cleanup and "timeout" not in http_kwargs:
+        http_kwargs["timeout"] = self._timeout
+
       return await resolver.get_agent_card(
           relative_card_path=relative_card_path,
           http_kwargs=http_kwargs,
@@ -951,6 +960,13 @@ class RemoteA2aAgent(BaseAgent):
       self, ctx: Optional[InvocationContext] = None
   ) -> AgentCard:
     """Resolve agent card from source."""
+    if ctx is not None:
+      cache_key = f"_remote_a2a_card_{self.name}"
+      metadata = getattr(ctx, "_private_metadata", None)
+      if isinstance(metadata, dict) and cache_key in metadata:
+        cached_card: AgentCard = metadata[cache_key]
+        return cached_card
+
     agent_card_source = self._agent_card_source
     if agent_card_source is None:
       raise AgentCardResolutionError("No agent card source was configured.")
@@ -970,9 +986,24 @@ class RemoteA2aAgent(BaseAgent):
             "Agent card URL must use https, or http on a loopback host:"
             f" {agent_card_source}"
         )
-      return await self._resolve_agent_card_from_url(agent_card_source, ctx)
+      card = await self._resolve_agent_card_from_url(agent_card_source, ctx)
     else:
-      return await self._resolve_agent_card_from_file(agent_card_source)
+      card = await self._resolve_agent_card_from_file(agent_card_source)
+    if ctx is not None:
+      cred_by_key = getattr(ctx, "credential_by_key", None)
+      has_unresolved_auth = bool(
+          self._auth_config
+          and self._auth_config.credential_key
+          and (
+              not isinstance(cred_by_key, dict)
+              or not cred_by_key.get(self._auth_config.credential_key)
+          )
+      )
+      if not has_unresolved_auth:
+        metadata = getattr(ctx, "_private_metadata", None)
+        if isinstance(metadata, dict):
+          metadata[cache_key] = card
+    return card
 
   async def _validate_agent_card(self, agent_card: AgentCard) -> None:
     """Validate resolved agent card."""
@@ -993,6 +1024,62 @@ class RemoteA2aAgent(BaseAgent):
       ) from e
 
     self._validate_card_rpc_targets(agent_card)
+
+  async def _get_transfer_description(self, ctx: InvocationContext) -> str:
+    """Returns local or agent-card metadata for transfer selection."""
+    if self.description:
+      return self.description
+
+    if self._agent_card:
+      return (
+          _adopted_card_description(
+              self._agent_card.description, self._agent_card_source
+          )
+          if self._agent_card.description
+          else ""
+      )
+
+    agent_ctx = ctx.model_copy(update={"agent": self})
+    if self._auth_config:
+      credential_key = self._auth_config.credential_key
+      cred_by_key = getattr(ctx, "credential_by_key", None)
+      if credential_key and (
+          not isinstance(cred_by_key, dict)
+          or not cred_by_key.get(credential_key)
+      ):
+        prev_end_invocation = ctx.end_invocation
+        try:
+          auth_event = await self._resolve_auth_credential(agent_ctx)
+          cred_by_key = getattr(ctx, "credential_by_key", None)
+          if (
+              auth_event is not None
+              or not isinstance(cred_by_key, dict)
+              or not cred_by_key.get(credential_key)
+          ):
+            return self.description or ""
+        finally:
+          ctx.end_invocation = prev_end_invocation
+          agent_ctx.end_invocation = prev_end_invocation
+
+    agent_card = await self._resolve_agent_card(agent_ctx)
+    await self._validate_agent_card(agent_card)
+
+    # Public cards are shared across invocations, matching the existing client
+    # cache. Authenticated cards remain invocation-scoped because their metadata
+    # may vary by session.
+    per_invocation_card = bool(
+        self._config.card_request_interceptors
+        and self._agent_card_source
+        and self._agent_card_source.startswith(("http://", "https://"))
+    )
+    if not per_invocation_card:
+      self._agent_card = agent_card
+
+    if agent_card.description:
+      return _adopted_card_description(
+          agent_card.description, self._agent_card_source
+      )
+    return ""
 
   def _validate_card_rpc_targets(self, agent_card: AgentCard) -> None:
     """Constrains where a card fetched over the network may aim RPC traffic.
@@ -1058,6 +1145,7 @@ class RemoteA2aAgent(BaseAgent):
     per_invocation_card = bool(
         self._config.card_request_interceptors
         and self._agent_card_source
+        and self._agent_card_source.startswith(("http://", "https://"))
         and ctx is not None
     )
 
@@ -1066,6 +1154,13 @@ class RemoteA2aAgent(BaseAgent):
 
     try:
       if per_invocation_card:
+        assert ctx is not None
+        client_key = f"_remote_a2a_client_{self.name}"
+        metadata = getattr(ctx, "_private_metadata", None)
+        if isinstance(metadata, dict) and client_key in metadata:
+          cached_client: A2AClient = metadata[client_key]
+          return cached_client
+
         # Build a per-invocation client; never cached on shared state.
         agent_card = await self._resolve_agent_card(ctx)
         await self._validate_agent_card(agent_card)
@@ -1074,6 +1169,8 @@ class RemoteA2aAgent(BaseAgent):
           raise ValueError("A2A client factory is not available")
         client = self._a2a_client_factory.create(agent_card)
         logger.info("Resolved remote A2A agent per invocation: %s", self.name)
+        if isinstance(metadata, dict):
+          metadata[client_key] = client
         return client
 
       # Shared (cached) resolution path.
@@ -1090,11 +1187,13 @@ class RemoteA2aAgent(BaseAgent):
         # check and talks to the origin that card named.
         self._agent_card = agent_card
 
-        # Update description if empty
-        if not self.description and agent_card.description:
-          self.description = _adopted_card_description(
-              agent_card.description, self._agent_card_source
-          )
+      # A public card may already have been resolved for transfer selection.
+      # Preserve the existing behavior of adopting its description when the
+      # remote agent itself is initialized.
+      if not self.description and self._agent_card.description:
+        self.description = _adopted_card_description(
+            self._agent_card.description, self._agent_card_source
+        )
 
       # Initialize A2A client
       if not self._a2a_client:
@@ -1197,7 +1296,7 @@ class RemoteA2aAgent(BaseAgent):
 
     # Also stop on synthesized FR events for this agent (meaning the previous
     # delegation to this agent has completed).
-    if self.mode == "task":
+    if self.mode == AgentMode.TASK:
       for fr in event.get_function_responses():
         if fr.name == self.name:
           return True
@@ -1220,7 +1319,7 @@ class RemoteA2aAgent(BaseAgent):
     context_id = None
 
     events_to_process = []
-    task_scope = ctx.isolation_scope if self.mode == "task" else None
+    task_scope = ctx.isolation_scope if self.mode == AgentMode.TASK else None
     broke_loop = False
 
     for event in reversed(ctx.session.events):
@@ -1282,7 +1381,7 @@ class RemoteA2aAgent(BaseAgent):
     # root without finding the matching FC (and did not stop at a prior
     # stateful turn), the isolation scope is invalid (e.g. a workflow graph
     # node).
-    if self.mode == "task" and task_scope and not broke_loop:
+    if self.mode == AgentMode.TASK and task_scope and not broke_loop:
       raise ValueError(
           f"RemoteA2aAgent '{self.name}' in task mode could not find the"
           f" triggering FunctionCall for isolation scope '{task_scope}' in"
@@ -1322,7 +1421,7 @@ class RemoteA2aAgent(BaseAgent):
 
       for part in processed_event.content.parts:
         if (
-            self.mode == "task"
+            self.mode == AgentMode.TASK
             and task_scope
             and part.function_call
             and isinstance(part.function_call, genai_types.FunctionCall)
@@ -1381,6 +1480,73 @@ class RemoteA2aAgent(BaseAgent):
       return self._context_builder(ctx, self.name, self._genai_part_converter)
     return self._construct_message_parts_from_session(ctx)
 
+  def _get_resumable_task_id(
+      self, ctx: InvocationContext, context_id: Optional[str]
+  ) -> Optional[str]:
+    """Returns the latest paused task in the outgoing message's context."""
+    if not context_id or not self._has_default_response_persistence():
+      return None
+    task_scope = ctx.isolation_scope if self.mode == AgentMode.TASK else None
+    for event in reversed(ctx.session.events):
+      if task_scope and event.isolation_scope != task_scope:
+        # Do not resume a task from an earlier delegation to the same agent.
+        if any(fc.id == task_scope for fc in event.get_function_calls()):
+          return None
+        continue
+      metadata = event.custom_metadata or {}
+      if (
+          event.author == self.name
+          and event.error_message
+          and metadata.get(A2A_METADATA_PREFIX + "request")
+      ):
+        # A failed request may already have consumed the recorded pause.
+        # Its old task state is no longer sufficient to infer a continuation.
+        return None
+      if not self._is_remote_response(event):
+        continue
+      if metadata.get(A2A_METADATA_PREFIX + "context_id") != context_id:
+        return None
+      response = metadata.get(A2A_METADATA_PREFIX + "response")
+      status = response.get("status") if isinstance(response, dict) else None
+      # Session metadata contains the serialized wire state. A2A 0.3 uses
+      # hyphenated names, while A2A 1.x uses protobuf enum names.
+      if not isinstance(status, dict) or status.get("state") not in (
+          "input-required",
+          "auth-required",
+          "TASK_STATE_INPUT_REQUIRED",
+          "TASK_STATE_AUTH_REQUIRED",
+      ):
+        return None
+      task_id = metadata.get(A2A_METADATA_PREFIX + "task_id")
+      return task_id if isinstance(task_id, str) else None
+    return None
+
+  def _has_default_response_persistence(self) -> bool:
+    """Whether recorded responses can safely determine task continuation.
+
+    Inbound converters and after-request hooks may suppress a terminal response,
+    leaving an older pause in history. With these overrides, callers retain
+    control of task routing through function responses or request interceptors.
+    """
+    if self._a2a_part_converter is not convert_a2a_part_to_genai_part:
+      return False
+    for name in (
+        "a2a_task_converter",
+        "a2a_status_update_converter",
+        "a2a_message_converter",
+        "a2a_artifact_update_converter",
+        "a2a_part_converter",
+    ):
+      if (
+          getattr(self._config, name)
+          is not A2aRemoteAgentConfig.model_fields[name].default
+      ):
+        return False
+    return not any(
+        interceptor.after_request is not None
+        for interceptor in self._config.request_interceptors or []
+    )
+
   async def _handle_a2a_response(
       self,
       a2a_response: _compat.A2AClientEvent | A2AMessage,
@@ -1424,12 +1590,16 @@ class RemoteA2aAgent(BaseAgent):
             for part in event.content.parts or []:
               part.thought = True
           _add_mock_function_call(event, task.status.state)
-        elif isinstance(update, A2ATaskStatusUpdateEvent) and (
-            _status_message := (
-                _compat.normalize_message(update.status.message)
-                if update.status
-                else None
+        elif (
+            isinstance(update, A2ATaskStatusUpdateEvent)
+            and (
+                _status_message := (
+                    _compat.normalize_message(update.status.message)
+                    if update.status
+                    else None
+                )
             )
+            and getattr(_status_message, "parts", True)
         ):
           # This is a streaming task status update with a message.
           # ``normalize_message`` collapses the always-present empty proto
@@ -1447,6 +1617,17 @@ class RemoteA2aAgent(BaseAgent):
             for part in event.content.parts or []:
               part.thought = True
           _add_mock_function_call(event, update.status.state)
+        elif (
+            isinstance(update, A2ATaskStatusUpdateEvent)
+            and update.status.state in _TASK_RESPONSE_BOUNDARY_STATES
+        ):
+          # A bare pause or terminal status is still the end of an interaction.
+          # Persist it so the next user turn sees the current task state.
+          event = Event(
+              author=self.name,
+              invocation_id=ctx.invocation_id,
+              branch=ctx.branch,
+          )
         elif isinstance(update, A2ATaskArtifactUpdateEvent):
           # This is a streaming task artifact update.
           # Convert only the parts carried by this update. Converting the
@@ -1667,6 +1848,7 @@ class RemoteA2aAgent(BaseAgent):
             parts=message_parts,
             role=_compat.ROLE_USER,
             context_id=context_id or session_id,
+            task_id=self._get_resumable_task_id(ctx, context_id),
         )
 
       logger.debug(build_a2a_request_log(a2a_request))
@@ -1752,7 +1934,9 @@ class RemoteA2aAgent(BaseAgent):
                   _compat.a2a_to_dict(a2a_response)
               )
 
-            if self.mode == "task" and is_finish_task_terminal_fr(event):
+            if self.mode == AgentMode.TASK and is_finish_task_terminal_fr(
+                event
+            ):
               args = _find_finish_task_args_from_history(
                   ctx.session, ctx.isolation_scope, completed_fr_event=event
               )
@@ -1785,7 +1969,7 @@ class RemoteA2aAgent(BaseAgent):
 
             yield event
 
-            if self.mode == "task" and task:
+            if self.mode == AgentMode.TASK and task:
               if task.status and task.status.state in (
                   _compat.TS_FAILED,
                   _compat.TS_CANCELED,
@@ -1832,6 +2016,14 @@ class RemoteA2aAgent(BaseAgent):
               error_message=task_error_message,
               invocation_id=ctx.invocation_id,
               branch=ctx.branch,
+              custom_metadata=(
+                  {
+                      A2A_METADATA_PREFIX
+                      + "request": _compat.a2a_to_dict(a2a_request),
+                  }
+                  if a2a_request
+                  else None
+              ),
           )
 
       except _compat.A2A_HTTP_ERRORS as e:
@@ -1877,7 +2069,7 @@ class RemoteA2aAgent(BaseAgent):
         )
 
     finally:
-      if self.mode == "task" and should_release_task_control:
+      if self.mode == AgentMode.TASK and should_release_task_control:
         if task_error_message is not None:
           yield _create_finish_task_event(
               ctx=ctx,
@@ -1929,7 +2121,7 @@ class RemoteA2aAgent(BaseAgent):
     promoted = False
     async for event in super()._run_impl(ctx=ctx, node_input=node_input):
       if (
-          self.mode != "task"
+          self.mode != AgentMode.TASK
           and not promoted
           and self._promote_response_to_output(event, ctx.node_path)
       ):

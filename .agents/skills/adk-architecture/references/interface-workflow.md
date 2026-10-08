@@ -156,15 +156,15 @@ Within a single step (`_execute_step`), when replay is enabled:
   `_run_node_internal(..., is_fresh=True)` (`NodeRunner`).
 - If `node_path` is in `_state.runs`, `_check_existing_run` awaits any in-flight
   concurrent `run.task`, or calls `check_interception(node=curr_node,
-  recovered=run.recovered_state, current_run=None if run.is_static else run)`:
+  recovered=run.recovered_state, current_run=run)`:
 
-1. **Same-turn dedup / waiting (`current_run` present, dynamic nodes only)** —
+1. **Same-turn dedup / waiting (`current_run` present and `not current_run.is_static`)** —
    if `current_run.state.status == COMPLETED`, returns `should_run=False` with
    `current_run.output` and `current_run.transfer_to_agent`. If `WAITING` with
    `interrupts`, returns `should_run=False` with those `interrupts`. (Every
    static dispatch gets a fresh `run_id`, so loop edges never reuse a
-   `node_path`; static nodes pass `current_run=None` so no-outcome static nodes
-   fast-forward in step 7 via `should_run = (current_run is not None)`.)
+   `node_path`; static runs have `is_static=True` so no-outcome static nodes
+   fast-forward in step 7 via `should_run = (current_run is not None and not current_run.is_static)`.)
 
 2. **Nested `Workflow` (`isinstance(node, Workflow)`)** — before checking
    completion or interrupts, `check_interception` immediately returns
@@ -203,10 +203,10 @@ Within a single step (`_execute_step`), when replay is enabled:
 7. **No output, route, or interrupts in recovered events** —
    - If `node.wait_for_output` or `node.rerun_on_resume`: returns
      `should_run=True` with `resume_inputs=recovered.resolved_responses`.
-   - Otherwise: returns `should_run = (current_run is not None)` (static nodes
-     that completed with `None` output fast-forward with `should_run=False`,
-     while dynamic nodes with no recorded outcome re-execute with
-     `should_run=True`).
+   - Otherwise: returns `should_run = (current_run is not None and not current_run.is_static)`
+     (static nodes that completed with `None` output fast-forward with
+     `should_run=False`, while dynamic nodes with no recorded outcome
+     re-execute with `should_run=True`).
 
 ### Interrupt propagation
 
@@ -369,7 +369,7 @@ stages:
      `DynamicNodeRun(state=NodeState(run_id=run_id), recovered_state=recovered, is_static=True)`.
    - `_start_node_task` then dispatches `ctx._run_node_internal` to
      `DynamicNodeScheduler._check_existing_run`, which runs
-     `check_interception(node=curr_node, recovered=run.recovered_state, current_run=None)`:
+     `check_interception(node=curr_node, recovered=run.recovered_state, current_run=run)`:
      - **Nested `Workflow`**: `check_interception` always returns
        `should_run=True` (with `resume_inputs=recovered.resolved_responses`),
        so a child `Workflow` never fast-forwards at the parent level and instead

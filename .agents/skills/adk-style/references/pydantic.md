@@ -4,8 +4,13 @@ ADK models use Pydantic v2.
 
 ## Basic Model Structure
 
+- Config and argument models are Pydantic models with `extra='forbid'`, as
+  `RunConfig` is, so a misspelled field raises instead of being dropped. A
+  model that crosses a storage or network boundary keeps the default, so an
+  older reader tolerates a field a newer writer added.
 - Use `Field()` for validation, defaults, and descriptions.
 - Use `PrivateAttr()` for internal state that must not be serialized.
+- Mark a field that holds a client `exclude=True`, as `Gemini.client` is.
 - Use `model_post_init()` for setup logic, not `__init__` — overriding
   `__init__` on a Pydantic model bypasses validation ordering.
 - Use `model_dump()` / `model_dump_json()`, not the v1 `dict()` / `json()`.

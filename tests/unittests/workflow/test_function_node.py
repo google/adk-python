@@ -14,7 +14,11 @@
 
 """Testings for the FunctionNode."""
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import copy
+import threading
+import time
 from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
@@ -31,8 +35,10 @@ from google.adk.events.event import Event as AdkEvent
 from google.adk.events.request_input import RequestInput
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
+from google.adk.utils._sync_runner import _use_sync_callable_runner
 from google.adk.workflow import FunctionNode
 from google.adk.workflow import START
+from google.adk.workflow._function_node import _sync_to_async_gen
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
@@ -919,6 +925,45 @@ async def test_function_node_ctx_state_delta_sync(
 
 
 @pytest.mark.asyncio
+async def test_function_node_injects_ctx_by_name_with_non_context_annotation(
+    request: pytest.FixtureRequest,
+):
+  """Tests that a param named `ctx` gets the Context even if typed `Any`."""
+
+  def set_state_via_ctx(ctx: Any = None) -> str:
+    ctx.state['user_request'] = 'build a tracker app'
+    return 'done'
+
+  def read_state(user_request: str) -> str:
+    return f'request={user_request}'
+
+  agent = Workflow(
+      name='test_ctx_any_annotation',
+      edges=[
+          (START, set_state_via_ctx),
+          (set_state_via_ctx, read_state),
+      ],
+  )
+  events, _, _ = await run_workflow(agent)
+  simplified = simplify_events_with_node(events, include_state_delta=True)
+  assert simplified == [
+      (
+          'test_ctx_any_annotation@1/set_state_via_ctx@1',
+          {
+              'output': 'done',
+              'state_delta': {'user_request': 'build a tracker app'},
+          },
+      ),
+      (
+          'test_ctx_any_annotation@1/read_state@1',
+          {
+              'output': 'request=build a tracker app',
+          },
+      ),
+  ]
+
+
+@pytest.mark.asyncio
 async def test_function_node_ctx_state_delta_async(
     request: pytest.FixtureRequest,
 ):
@@ -1525,6 +1570,100 @@ class TestAuthConfig:
     )
     assert node.rerun_on_resume is True
 
+  @pytest.mark.parametrize('resumable', [False, True])
+  @pytest.mark.asyncio
+  async def test_auth_function_node_returning_none_not_rerun_on_downstream_resume(
+      self,
+      request: pytest.FixtureRequest,
+      resumable: bool,
+  ):
+    """A FunctionNode with auth_config that returns None does not rerun when a downstream node resumes."""
+    from fastapi.openapi.models import APIKey
+    from fastapi.openapi.models import APIKeyIn
+    from google.adk.auth.auth_credential import AuthCredential
+    from google.adk.auth.auth_credential import AuthCredentialTypes
+    from google.adk.auth.auth_tool import AuthConfig
+    from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+
+    from .workflow_testing_utils import find_function_call_event
+    from .workflow_testing_utils import get_auth_request_events
+
+    auth_config = AuthConfig(
+        auth_scheme=APIKey(**{'in': APIKeyIn.header, 'name': 'X-Api-Key'}),
+        raw_auth_credential=AuthCredential(
+            auth_type=AuthCredentialTypes.API_KEY,
+            api_key='placeholder',
+        ),
+        credential_key='fn_auth_key',
+    )
+    call_count = 0
+
+    def side_effect_fn(ctx: Context) -> None:
+      del ctx
+      nonlocal call_count
+      call_count += 1
+      return None
+
+    def review_node(node_input: Any):
+      del node_input
+      return RequestInput(interrupt_id='review', message='Please review')
+
+    auth_fn_node = FunctionNode(
+        func=side_effect_fn,
+        name='side_effect_fn',
+        auth_config=auth_config,
+        rerun_on_resume=True,
+    )
+    wf = Workflow(
+        name='auth_fn_no_output_wf',
+        edges=[
+            (START, auth_fn_node),
+            (auth_fn_node, review_node),
+        ],
+    )
+    app = App(
+        name=f'{request.function.__name__}_{resumable}',
+        root_agent=wf,
+        resumability_config=(
+            ResumabilityConfig(is_resumable=True) if resumable else None
+        ),
+    )
+    runner = testing_utils.InMemoryRunner(app=app)
+
+    # Turn 1: pauses for auth on auth_fn_node.
+    events1 = await runner.run_async(testing_utils.get_user_content('start'))
+    auth_events = get_auth_request_events(events1)
+    assert len(auth_events) == 1
+    fc = auth_events[0].content.parts[0].function_call
+    assert call_count == 0
+
+    # Turn 2: supply credential -> auth_fn_node runs once and returns None,
+    # then review_node pauses.
+    resume_auth_part = types.Part(
+        function_response=types.FunctionResponse(
+            id=fc.id,
+            name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+            response={'result': 'my-secret-api-key'},
+        )
+    )
+    events2 = await runner.run_async(
+        new_message=testing_utils.UserContent(resume_auth_part),
+        invocation_id=auth_events[0].invocation_id,
+    )
+    assert call_count == 1
+    review_req = find_function_call_event(events2, 'adk_request_input')
+    assert review_req is not None
+
+    # Turn 3: answer review_node -> auth_fn_node must NOT run a second time.
+    review_id = get_request_input_interrupt_ids(review_req)[0]
+    await runner.run_async(
+        new_message=testing_utils.UserContent(
+            create_request_input_response(review_id, {'approved': True})
+        ),
+        invocation_id=review_req.invocation_id,
+    )
+    assert call_count == 1
+
 
 # ---------------------------------------------------------------------------
 # parameter_binding='node_input' tests
@@ -1815,3 +1954,398 @@ async def test_function_node_directly_after_start_coerces_json_content(
       and e.output is not None
   ]
   assert outputs == [[10, 20]]
+
+
+@pytest.mark.asyncio
+async def test_function_node_var_keyword_binds_from_node_input(
+    request: pytest.FixtureRequest,
+) -> None:
+  """FunctionNode in node_input mode validates and binds extra dict keys into **kwargs."""
+
+  def produce_input() -> dict[str, Any]:
+    return {'required_key': 'base', 'alpha': 1, 'beta': 'two'}
+
+  def collect_extras(
+      required_key: str, *args: Any, **kwargs: Any
+  ) -> dict[str, Any]:
+    return {'required': required_key, 'args': list(args), 'extra': kwargs}
+
+  fn_node = FunctionNode(
+      func=collect_extras,
+      name='collect_extras',
+      parameter_binding='node_input',
+  )
+  validated = fn_node._validate_input_data(
+      {'required_key': 'base', 'alpha': 1, 'beta': 'two'}
+  )
+  assert validated == {'required_key': 'base', 'alpha': 1, 'beta': 'two'}
+
+  wf = Workflow(
+      name='var_kw_wf',
+      edges=[(START, produce_input), (produce_input, fn_node)],
+  )
+  events, _, _ = await run_workflow(wf)
+  outputs = [
+      e.output
+      for e in events
+      if e.node_info
+      and e.node_info.path == 'var_kw_wf@1/collect_extras@1'
+      and e.output is not None
+  ]
+  assert outputs == [
+      {'required': 'base', 'args': [], 'extra': {'alpha': 1, 'beta': 'two'}}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_function_node_wraps_decorator_dispatches_on_wrapper(
+    request: pytest.FixtureRequest,
+) -> None:
+  """A non-generator wrapper decorated with @functools.wraps(generator) dispatches as a regular function."""
+  import functools
+
+  def produce_input() -> dict[str, int]:
+    return {'x': 10}
+
+  def inner_gen(x: int) -> Generator[int, None, None]:
+    yield x
+    yield x + 1
+
+  @functools.wraps(inner_gen)
+  def collect_as_list(x: int) -> list[int]:
+    return list(inner_gen(x))
+
+  fn_node = FunctionNode(
+      func=collect_as_list,
+      name='collect_as_list',
+      parameter_binding='node_input',
+  )
+  wf = Workflow(
+      name='wraps_wf',
+      edges=[(START, produce_input), (produce_input, fn_node)],
+  )
+  events, _, _ = await run_workflow(wf)
+  outputs = [
+      e.output
+      for e in events
+      if e.node_info
+      and e.node_info.path == 'wraps_wf@1/collect_as_list@1'
+      and e.output is not None
+  ]
+  assert outputs == [[10, 11]]
+
+
+@pytest.mark.asyncio
+async def test_sync_generator_cancelled_mid_next_raises_cancelled_error() -> (
+    None
+):
+  """Cancelling while a worker thread is inside next() surfaces CancelledError and runs the generator's finally block once next() returns."""
+  started = threading.Event()
+  release = threading.Event()
+  closed = threading.Event()
+
+  def slow_gen() -> Generator[int, None, None]:
+    try:
+      started.set()
+      release.wait(timeout=5)
+      yield 1
+      yield 2
+    finally:
+      closed.set()
+
+  executor = ThreadPoolExecutor(max_workers=2)
+
+  async def run_on_executor(target, call_args):
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, lambda: target(**call_args)
+    )
+
+  try:
+    with _use_sync_callable_runner(run_on_executor):
+      agen = _sync_to_async_gen(slow_gen())
+      next_task = asyncio.create_task(agen.__anext__())
+      await asyncio.to_thread(started.wait, 5)
+
+      next_task.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await next_task
+      await agen.aclose()
+  finally:
+    release.set()
+    executor.shutdown(wait=True)
+
+  assert await asyncio.to_thread(closed.wait, 5)
+
+
+@pytest.mark.asyncio
+async def test_sync_generator_preserves_thread_local_state_across_yields() -> (
+    None
+):
+  """A thread-pooled sync generator runs all next() steps and its finally block on the same worker thread."""
+  tls = threading.local()
+  seen_values: list[tuple[str, int | None]] = []
+  seen_threads: list[int | None] = []
+
+  def stateful_gen() -> Generator[int, None, None]:
+    tls.token = 42
+    seen_threads.append(threading.get_ident())
+    try:
+      for step in range(3):
+        seen_threads.append(threading.get_ident())
+        seen_values.append((f'step_{step}', getattr(tls, 'token', None)))
+        yield step
+    finally:
+      seen_threads.append(threading.get_ident())
+      seen_values.append(('finally', getattr(tls, 'token', None)))
+
+  executor = ThreadPoolExecutor(max_workers=4)
+
+  async def run_on_executor(target, call_args):
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, lambda: target(**call_args)
+    )
+
+  try:
+    with _use_sync_callable_runner(run_on_executor):
+      items = [item async for item in _sync_to_async_gen(stateful_gen())]
+  finally:
+    executor.shutdown(wait=True)
+
+  assert items == [0, 1, 2]
+  assert seen_values == [
+      ('step_0', 42),
+      ('step_1', 42),
+      ('step_2', 42),
+      ('finally', 42),
+  ]
+  assert len(set(seen_threads)) == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_generator_driving_nested_generator_does_not_deadlock() -> (
+    None
+):
+  """A thread-pooled sync generator that drains another sync generator runs it inline instead of waiting for the pool worker its own step holds."""
+
+  def inner_gen() -> Generator[int, None, None]:
+    yield 1
+    yield 2
+
+  async def drain_inner() -> list[int]:
+    return [item async for item in _sync_to_async_gen(inner_gen())]
+
+  def outer_gen() -> Generator[list[int], None, None]:
+    yield asyncio.run(drain_inner())
+
+  executor = ThreadPoolExecutor(max_workers=1)
+
+  async def run_on_executor(target, call_args):
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, lambda: target(**call_args)
+    )
+
+  async def drain_outer() -> list[list[int]]:
+    return [item async for item in _sync_to_async_gen(outer_gen())]
+
+  try:
+    with _use_sync_callable_runner(run_on_executor):
+      items = await asyncio.wait_for(drain_outer(), timeout=5)
+  finally:
+    executor.shutdown(wait=True, cancel_futures=True)
+
+  assert items == [[1, 2]]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_sync_generators_do_not_hold_pool_workers_between_yields() -> (
+    None
+):
+  """More than max_workers sync generators can be suspended between yields without starving the pool."""
+
+  def two_step_gen(idx: int) -> Generator[tuple[int, int], None, None]:
+    yield (idx, 1)
+    yield (idx, 2)
+
+  executor = ThreadPoolExecutor(max_workers=1)
+
+  async def run_on_executor(target, call_args):
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, lambda: target(**call_args)
+    )
+
+  try:
+    with _use_sync_callable_runner(run_on_executor):
+      gens = [_sync_to_async_gen(two_step_gen(i)) for i in range(3)]
+      try:
+        first_items = [
+            await asyncio.wait_for(g.__anext__(), timeout=2) for g in gens
+        ]
+        second_items = [
+            await asyncio.wait_for(g.__anext__(), timeout=2) for g in gens
+        ]
+      finally:
+        for g in gens:
+          await g.aclose()
+  finally:
+    executor.shutdown(wait=True)
+
+  assert first_items == [(0, 1), (1, 1), (2, 1)]
+  assert second_items == [(0, 2), (1, 2), (2, 2)]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_sync_generator_steps_are_bounded_by_max_workers() -> (
+    None
+):
+  """Concurrent sync generators never execute more steps at once than max_workers."""
+  lock = threading.Lock()
+  active = 0
+  peak = 0
+
+  def slow_gen(idx: int) -> Generator[int, None, None]:
+    nonlocal active, peak
+    for step in range(2):
+      with lock:
+        active += 1
+        peak = max(peak, active)
+      time.sleep(0.05)
+      with lock:
+        active -= 1
+      yield idx * 10 + step
+
+  executor = ThreadPoolExecutor(max_workers=1)
+
+  async def run_on_executor(target, call_args):
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, lambda: target(**call_args)
+    )
+
+  async def consume(idx: int) -> list[int]:
+    return [item async for item in _sync_to_async_gen(slow_gen(idx))]
+
+  try:
+    with _use_sync_callable_runner(run_on_executor):
+      results = await asyncio.wait_for(
+          asyncio.gather(*(consume(i) for i in range(3))), timeout=10
+      )
+  finally:
+    executor.shutdown(wait=True)
+
+  assert results == [[0, 1], [10, 11], [20, 21]]
+  assert peak == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_generator_finally_raising_does_not_hang_pool_worker() -> (
+    None
+):
+  """A sync generator whose finally block raises still signals step_done and frees the pool worker."""
+
+  def raising_finally_gen() -> Generator[int, None, None]:
+    try:
+      yield 1
+    finally:
+      raise RuntimeError('cleanup failure')
+
+  executor = ThreadPoolExecutor(max_workers=1)
+
+  async def run_on_executor(target, call_args):
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, lambda: target(**call_args)
+    )
+
+  try:
+    with _use_sync_callable_runner(run_on_executor):
+      # Exhaustion path: finally raises inside next().
+      agen = _sync_to_async_gen(raising_finally_gen())
+      assert await asyncio.wait_for(agen.__anext__(), timeout=2) == 1
+      with pytest.raises(RuntimeError, match='cleanup failure'):
+        await asyncio.wait_for(agen.__anext__(), timeout=2)
+
+      # Early-close path: finally raises inside sync_gen.close() on the
+      # dedicated generator thread, and the single pool worker remains free.
+      agen2 = _sync_to_async_gen(raising_finally_gen())
+      assert await asyncio.wait_for(agen2.__anext__(), timeout=2) == 1
+      with pytest.raises(RuntimeError, match='cleanup failure'):
+        await asyncio.wait_for(agen2.aclose(), timeout=2)
+
+      # Verify the single worker in the pool was not left blocked.
+      healthy_items = [
+          item async for item in _sync_to_async_gen((x for x in [10, 20]))
+      ]
+  finally:
+    executor.shutdown(wait=True)
+
+  assert healthy_items == [10, 20]
+
+
+@pytest.mark.asyncio
+async def test_sync_generator_closed_as_step_enters_pool_does_not_hang() -> (
+    None
+):
+  """Closing a sync generator while a step is queued or starting in the pool does not hang step_done.wait()."""
+  gate = threading.Event()
+
+  def simple_gen() -> Generator[int, None, None]:
+    yield 1
+    yield 2
+
+  executor = ThreadPoolExecutor(max_workers=1)
+
+  async def gated_runner(target, call_args):
+    def delayed_call():
+      gate.wait(timeout=5)
+      return target(**call_args)
+
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, delayed_call
+    )
+
+  try:
+    with _use_sync_callable_runner(gated_runner):
+      agen = _sync_to_async_gen(simple_gen())
+      gate.set()
+      assert await asyncio.wait_for(agen.__anext__(), timeout=2) == 1
+
+      # Block the next pool step right before _step_in_pool acquires the lock,
+      # cancel the consumer so closed and want_next are set first, then release
+      # the pool worker and ensure it returns promptly instead of hanging.
+      gate.clear()
+      next_task = asyncio.create_task(agen.__anext__())
+      await asyncio.sleep(0.02)
+      next_task.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await next_task
+      await agen.aclose()
+      gate.set()
+
+      # A subsequent task on the 1-worker executor must complete promptly.
+      follow_up = await asyncio.wait_for(
+          asyncio.get_running_loop().run_in_executor(executor, lambda: 'ok'),
+          timeout=2,
+      )
+  finally:
+    gate.set()
+    executor.shutdown(wait=True)
+
+  assert follow_up == 'ok'
+
+
+@pytest.mark.asyncio
+async def test_sync_generator_closes_on_no_runner_path() -> None:
+  """Closing a partially consumed sync generator with no runner bound runs its finally block."""
+  closed = False
+
+  def gen() -> Generator[int, None, None]:
+    nonlocal closed
+    try:
+      yield 1
+      yield 2
+    finally:
+      closed = True
+
+  agen = _sync_to_async_gen(gen())
+  assert await agen.__anext__() == 1
+  assert not closed
+  await agen.aclose()
+  assert closed

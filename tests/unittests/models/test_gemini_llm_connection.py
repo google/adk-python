@@ -140,6 +140,36 @@ async def test_send_history(gemini_connection, mock_gemini_session):
 
 
 @pytest.mark.asyncio
+async def test_send_history_filters_out_adk_live_artifact_parts(
+    gemini_connection, mock_gemini_session
+):
+  """Internal `_adk_live` artifact references are not replayed."""
+  history = [
+      types.Content(role='user', parts=[types.Part.from_text(text='Hello')]),
+      types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  file_data=types.FileData(
+                      file_uri='artifact://app/u/s/_adk_live/media_1.zip#0',
+                      mime_type='application/zip',
+                  )
+              )
+          ],
+      ),
+      types.Content(
+          role='model', parts=[types.Part.from_text(text='I saw that.')]
+      ),
+  ]
+
+  await gemini_connection.send_history(history)
+
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=[history[0], history[2]], turn_complete=False
+  )
+
+
+@pytest.mark.asyncio
 async def test_send_content_text(gemini_connection, mock_gemini_session):
   """Test send_content with text content."""
   content = types.Content(

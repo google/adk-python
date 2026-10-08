@@ -491,15 +491,11 @@ class RestApiTool(BaseTool):
             if param.param_location == "body" and param.py_name in kwargs:
               body_data[param.original_name] = kwargs[param.py_name]
 
-        elif schema.type == "array":
+        else:
+          # Exactly one body parameter reaches this branch, and its name
+          # is not stable: _dedupe_param_names can rewrite py_name.
           for param in parameters:
-            if param.param_location == "body" and param.py_name == "array":
-              body_data = kwargs.get("array")
-              break
-        else:  # like string
-          for param in parameters:
-            # original_name = '' indicating this param applies to the full body.
-            if param.param_location == "body" and not param.original_name:
+            if param.param_location == "body":
               body_data = (
                   kwargs.get(param.py_name) if param.py_name in kwargs else None
               )
@@ -584,8 +580,11 @@ class RestApiTool(BaseTool):
           "message": "Needs your authorization to access your data.",
       }
 
-    # Attach parameters from auth into main parameters list
-    api_params, api_args = self._operation_parser.get_parameters().copy(), args
+    # Work on a copy of args: the caller's dict is also handed to after-tool
+    # callbacks and recorded on the tool span, so the defaults and auth
+    # parameters added below must not land in it.
+    api_params = self._operation_parser.get_parameters().copy()
+    api_args = args.copy()
 
     # Add any required arguments that are missing and have defaults:
     for api_param in api_params:
@@ -674,7 +673,7 @@ class RestApiTool(BaseTool):
       response.raise_for_status()  # Raise HTTPStatusError for bad responses
       return response.json()  # Try to decode JSON
     except httpx.HTTPStatusError:
-      error_details = response.content.decode("utf-8")
+      error_details = response.text
       self._logger.warning(
           "API call failed for tool %s: Status %d - %s",
           self.name,

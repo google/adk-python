@@ -369,6 +369,42 @@ class TestRestApiTool:
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
   @pytest.mark.asyncio
+  async def test_call_does_not_add_auth_params_to_caller_args(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+  ):
+    """The caller's args also feed after-tool callbacks and the tool span."""
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"result": "success"}
+    mock_request.return_value = mock_response
+    auth_scheme, auth_credential = token_to_scheme_credential(
+        "apikey", "header", "X-API-Key", "secret-api-key"
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
+    )
+    args = {"testBodyParam": "value"}
+
+    await tool.call(args=args, tool_context=mock_tool_context)
+
+    assert args == {"testBodyParam": "value"}
+    assert (
+        mock_request.call_args.kwargs["headers"]["X-API-Key"]
+        == "secret-api-key"
+    )
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
   async def test_call_http_failure(
       self,
       mock_request,
@@ -380,7 +416,7 @@ class TestRestApiTool:
   ):
     mock_response = MagicMock()
     mock_response.status_code = 500
-    mock_response.content = b"Internal Server Error"
+    mock_response.text = "Internal Server Error"
 
     # Create a proper HTTPStatusError with request and response
     mock_http_request = MagicMock(spec=httpx.Request)
@@ -414,6 +450,37 @@ class TestRestApiTool:
             " Status Code: 500, Internal Server Error"
         )
     }
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
+  async def test_call_http_failure_decodes_body_with_declared_charset(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+  ):
+    """A non-UTF-8 error body must reach the model, not abort the run."""
+    mock_request.return_value = httpx.Response(
+        status_code=404,
+        request=httpx.Request("GET", "https://example.com/test"),
+        content="Commande introuvable : échec".encode("latin-1"),
+        headers={"content-type": "text/plain; charset=iso-8859-1"},
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+    )
+
+    result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert result["error"].endswith(
+        "Status Code: 404, Commande introuvable : échec"
+    )
 
   @patch(
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
@@ -478,7 +545,7 @@ class TestRestApiTool:
     # First response: 401 Unauthorized
     mock_401_response = MagicMock()
     mock_401_response.status_code = 401
-    mock_401_response.content = b"Unauthorized"
+    mock_401_response.text = "Unauthorized"
     mock_401_response.headers = httpx.Headers(
         {"www-authenticate": 'Bearer error="invalid_token"'}
     )
@@ -548,7 +615,7 @@ class TestRestApiTool:
     """
     mock_401_response = MagicMock()
     mock_401_response.status_code = 401
-    mock_401_response.content = b"Unauthorized"
+    mock_401_response.text = "Unauthorized"
     mock_401_response.headers = httpx.Headers(
         {"www-authenticate": 'Bearer error="invalid_token"'}
     )
@@ -615,7 +682,7 @@ class TestRestApiTool:
     """
     mock_401_response = MagicMock()
     mock_401_response.status_code = 401
-    mock_401_response.content = b"Unauthorized"
+    mock_401_response.text = "Unauthorized"
     mock_401_response.headers = httpx.Headers(
         {"www-authenticate": 'Bearer error="invalid_token"'}
     )
@@ -682,7 +749,7 @@ class TestRestApiTool:
     """
     mock_401_response = MagicMock()
     mock_401_response.status_code = 401
-    mock_401_response.content = b"Unauthorized"
+    mock_401_response.text = "Unauthorized"
     mock_401_response.headers = httpx.Headers(
         {"www-authenticate": 'Bearer error="invalid_token"'}
     )
@@ -759,7 +826,7 @@ class TestRestApiTool:
     """
     mock_401_response = MagicMock()
     mock_401_response.status_code = 401
-    mock_401_response.content = b"Unauthorized"
+    mock_401_response.text = "Unauthorized"
     mock_401_response.headers = httpx.Headers(
         {"www-authenticate": 'Bearer error="invalid_token"'}
     )
@@ -874,7 +941,7 @@ class TestRestApiTool:
     """
     mock_400_response = MagicMock()
     mock_400_response.status_code = 400
-    mock_400_response.content = b"Bad Request"
+    mock_400_response.text = "Bad Request"
     mock_400_response.headers = httpx.Headers({})
     mock_400_response.raise_for_status = MagicMock(
         side_effect=httpx.HTTPStatusError(
@@ -943,7 +1010,7 @@ class TestRestApiTool:
     """
     mock_401_response = MagicMock()
     mock_401_response.status_code = 401
-    mock_401_response.content = b"Unauthorized"
+    mock_401_response.text = "Unauthorized"
     mock_401_response.headers = httpx.Headers(
         {"www-authenticate": www_authenticate}
     )
@@ -1006,7 +1073,7 @@ class TestRestApiTool:
     """
     mock_401_response = MagicMock()
     mock_401_response.status_code = 401
-    mock_401_response.content = b"Unauthorized"
+    mock_401_response.text = "Unauthorized"
     mock_401_response.headers = httpx.Headers(
         {"www-authenticate": 'Bearer error="invalid_token"'}
     )
@@ -1067,7 +1134,7 @@ class TestRestApiTool:
     """A 401 whose challenge blames the scope must not touch the credential."""
     mock_401_response = MagicMock()
     mock_401_response.status_code = 401
-    mock_401_response.content = b"Insufficient scope"
+    mock_401_response.text = "Insufficient scope"
     mock_401_response.headers = httpx.Headers(
         {"www-authenticate": 'Bearer error="insufficient_scope"'}
     )
@@ -1130,7 +1197,7 @@ class TestRestApiTool:
     """A 401 with no challenge at all gets the benefit of the doubt."""
     mock_401_response = MagicMock()
     mock_401_response.status_code = 401
-    mock_401_response.content = b"Unauthorized"
+    mock_401_response.text = "Unauthorized"
     mock_401_response.headers = httpx.Headers({})
     mock_http_request = MagicMock(spec=httpx.Request)
     mock_401_response.raise_for_status = MagicMock(
@@ -1190,7 +1257,7 @@ class TestRestApiTool:
     """Challenge parameters are matched without regard to case."""
     mock_401_response = MagicMock()
     mock_401_response.status_code = 401
-    mock_401_response.content = b"Unauthorized"
+    mock_401_response.text = "Unauthorized"
     mock_401_response.headers = httpx.Headers(
         {"WWW-Authenticate": 'Bearer Error="Invalid_Token"'}
     )
@@ -1575,7 +1642,7 @@ class TestRestApiTool:
     )
     params = [
         ApiParameter(
-            original_name="array",  # Match the parameter name
+            original_name="array",
             py_name="array",
             param_location="body",
             param_schema=OpenAPISchema(
@@ -1584,6 +1651,44 @@ class TestRestApiTool:
         )
     ]
     kwargs = {"array": ["item1", "item2"]}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert request_params["json"] == ["item1", "item2"]
+
+  def test_prepare_request_params_array_with_param_conflict(
+      self, sample_endpoint, sample_auth_scheme, sample_auth_credential
+  ):
+    """Sends array body as JSON payload when parameter names conflict."""
+    mock_operation = Operation(
+        operationId="test_op",
+        parameters=[
+            OpenAPIParameter(
+                name="array",
+                **{"in": "query"},
+                schema=OpenAPISchema(type="string"),
+            )
+        ],
+        requestBody=RequestBody(
+            content={
+                "application/json": MediaType(
+                    schema=OpenAPISchema(
+                        type="array", items=OpenAPISchema(type="string")
+                    )
+                )
+            }
+        ),
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=sample_endpoint,
+        operation=mock_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = OperationParser(mock_operation).get_parameters()
+    kwargs = {"array": "query_val", "array_0": ["item1", "item2"]}
 
     request_params = tool._prepare_request_params(params, kwargs)
 
@@ -1622,6 +1727,45 @@ class TestRestApiTool:
 
     assert request_params["data"] == "test_value"
     assert request_params["headers"]["Content-Type"] == "text/plain"
+
+  def test_prepare_request_params_oneof_body(
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
+  ):
+    """Sends the JSON payload for a oneOf/anyOf/allOf request body.
+
+    A oneOf/anyOf/allOf body is named 'body' by the parser and must
+    still be sent as the JSON payload, not silently dropped.
+    """
+    oneof_schema = OpenAPISchema(
+        oneOf=[
+            OpenAPISchema(
+                type="object", properties={"card": OpenAPISchema(type="string")}
+            ),
+            OpenAPISchema(
+                type="object", properties={"iban": OpenAPISchema(type="string")}
+            ),
+        ]
+    )
+    mock_operation = Operation(
+        operationId="test_op",
+        requestBody=RequestBody(
+            content={"application/json": MediaType(schema=oneof_schema)}
+        ),
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=mock_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = OperationParser(mock_operation).get_parameters()
+    kwargs = {"body": {"card": "4111-1111"}}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert request_params["json"] == {"card": "4111-1111"}
 
   def test_prepare_request_params_form_data(
       self, sample_endpoint, sample_auth_scheme, sample_auth_credential
