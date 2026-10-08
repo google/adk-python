@@ -193,7 +193,38 @@ def _quote_unquoted_json_object_keys(value: str) -> str:
   return "".join(result)
 
 
-def _parse_tool_call_arguments(arguments: Any) -> Any:
+def _log_repaired_arguments(
+    description: str,
+    arguments: Any,
+    *,
+    function_name: str | None = None,
+    level: int = logging.WARNING,
+) -> None:
+  """Logs an argument repair, keeping the raw payload at debug level."""
+  if not logger.isEnabledFor(level):
+    return
+  if logger.isEnabledFor(logging.DEBUG):
+    if function_name:
+      logger.log(
+          level,
+          "%s for function '%s': %s",
+          description,
+          function_name,
+          arguments,
+      )
+    else:
+      logger.log(level, "%s: %s", description, arguments)
+  elif function_name:
+    logger.log(level, "%s for function '%s'", description, function_name)
+  else:
+    logger.log(level, "%s", description)
+
+
+def _parse_tool_call_arguments(
+    arguments: Any,
+    *,
+    function_name: str | None = None,
+) -> Any:
   """Parses LiteLLM tool call arguments.
 
   LiteLLM normally returns OpenAI-compatible tool call arguments as JSON
@@ -201,6 +232,16 @@ def _parse_tool_call_arguments(arguments: Any) -> Any:
   argument payload is a Python dict literal or has unquoted object keys. Keep
   strict JSON as the primary path, then repair only those complete
   object-literal shapes so ADK can still surface the intended function call.
+
+  Args:
+    arguments: The tool call arguments to parse.
+    function_name: Optional name of the function being called, for logging.
+
+  Returns:
+    The parsed arguments (typically a dict).
+
+  Raises:
+    json.JSONDecodeError: When the arguments cannot be parsed.
   """
   if not arguments:
     return {}
@@ -212,20 +253,79 @@ def _parse_tool_call_arguments(arguments: Any) -> Any:
   except json.JSONDecodeError as exc:
     json_error = exc
 
+  # Retry with Python literal eval (handles single-quoted keys, etc.).
   try:
-    return ast.literal_eval(arguments)
+    result = ast.literal_eval(arguments)
+    _log_repaired_arguments(
+        "Repaired non-strict JSON tool call arguments using literal_eval",
+        arguments,
+        function_name=function_name,
+        level=logging.DEBUG,
+    )
+    return result
   except (SyntaxError, ValueError):
     pass
 
+  # Retry after quoting unquoted JSON object keys.
   repaired_arguments = _quote_unquoted_json_object_keys(arguments)
   if repaired_arguments != arguments:
     try:
-      return json.loads(repaired_arguments)
+      result = json.loads(repaired_arguments)
+      _log_repaired_arguments(
+          "Repaired unquoted JSON object keys in tool call arguments",
+          arguments,
+          function_name=function_name,
+      )
+      return result
     except json.JSONDecodeError:
       try:
-        return ast.literal_eval(repaired_arguments)
+        result = ast.literal_eval(repaired_arguments)
+        _log_repaired_arguments(
+            "Repaired unquoted JSON object keys in tool call arguments using"
+            " literal_eval",
+            arguments,
+            function_name=function_name,
+        )
+        return result
       except (SyntaxError, ValueError):
         pass
+
+  # Retry after stripping Markdown code fences (```json ... ```).
+  stripped = arguments.strip()
+  if (
+      stripped.startswith("```")
+      and stripped.endswith("```")
+      and len(stripped) >= 6
+  ):
+    candidate = stripped[3:-3].strip()
+    if candidate.lower().startswith("json"):
+      candidate = candidate[4:].strip()
+    if candidate and candidate != arguments:
+      candidates = [candidate]
+      repaired_candidate = _quote_unquoted_json_object_keys(candidate)
+      if repaired_candidate != candidate:
+        candidates.append(repaired_candidate)
+      for text in candidates:
+        try:
+          result = json.loads(text)
+          _log_repaired_arguments(
+              "Repaired Markdown-fenced tool call arguments",
+              arguments,
+              function_name=function_name,
+          )
+          return result
+        except json.JSONDecodeError:
+          pass
+        try:
+          result = ast.literal_eval(text)
+          _log_repaired_arguments(
+              "Repaired Markdown-fenced tool call arguments using literal_eval",
+              arguments,
+              function_name=function_name,
+          )
+          return result
+        except (SyntaxError, ValueError):
+          pass
 
   raise json_error
 
@@ -2920,7 +3020,10 @@ def _message_to_generate_content_response(
       if tool_call.type == "function":
         thought_signature = _extract_thought_signature_from_tool_call(tool_call)
         try:
-          args = _parse_tool_call_arguments(tool_call.function.arguments)
+          args = _parse_tool_call_arguments(
+              tool_call.function.arguments,
+              function_name=tool_call.function.name,
+          )
         except json.JSONDecodeError:
           args = None
         # Report the condition the way Gemini reports it natively instead of
@@ -3855,8 +3958,12 @@ class LiteLlm(BaseLlm):
         for index, func_data in function_calls.items():
           if func_data["id"]:
             args = "".join(func_data["args_parts"])
+            tool_call_arguments: Any = args
             try:
-              _parse_tool_call_arguments(args)
+              tool_call_arguments = _parse_tool_call_arguments(
+                  args,
+                  function_name=func_data["name"],
+              )
             except json.JSONDecodeError:
               has_incomplete_tool_call_args = True
               continue
@@ -3866,7 +3973,14 @@ class LiteLlm(BaseLlm):
                     id=func_data["id"],
                     function=ChatCompletionToolCallFunctionChunk(
                         name=func_data["name"],
-                        arguments=args,
+                        # Serialise a repaired dict to strict JSON so the
+                        # downstream parse finds valid JSON and logs no second
+                        # repair. A non-dict must stay the original string.
+                        arguments=(
+                            json.dumps(tool_call_arguments)
+                            if isinstance(tool_call_arguments, dict)
+                            else args
+                        ),
                     ),
                     index=index,
                 )
