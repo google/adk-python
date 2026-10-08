@@ -1003,6 +1003,15 @@ class ApiServer:
     self.auto_create_session = auto_create_session
     self.trigger_sources = trigger_sources
     if (
+        trigger_sources
+        and not trigger_oidc_audience
+        and not trigger_auth_verifier
+    ):
+      raise ValueError(
+          "trigger_sources requires trigger_oidc_audience or"
+          " trigger_auth_verifier to be set."
+      )
+    if (
         trigger_oidc_service_accounts
         and not trigger_oidc_audience
         and not trigger_auth_verifier
@@ -1010,6 +1019,18 @@ class ApiServer:
       raise ValueError(
           "trigger_oidc_service_accounts requires trigger_oidc_audience to be"
           " set."
+      )
+    if (
+        trigger_sources
+        and trigger_oidc_audience
+        and not trigger_oidc_service_accounts
+        and not trigger_auth_verifier
+    ):
+      logger.warning(
+          "trigger_oidc_audience is set without"
+          " trigger_oidc_service_accounts; any Google account can obtain a"
+          " token for this audience. Set trigger_oidc_service_accounts to"
+          " restrict caller identity."
       )
     self.trigger_oidc_audience = trigger_oidc_audience
     self.trigger_oidc_service_accounts = trigger_oidc_service_accounts
