@@ -17,11 +17,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 from pydantic import Field
 
-from ...features import experimental
-from ...features import FeatureName
 
-
-@experimental(FeatureName.MONGODB_TOOL_SETTINGS)
 class MongoDbToolSettings(BaseModel):
   """Settings for MongoDB tools."""
 
@@ -41,6 +37,31 @@ class MongoDbToolSettings(BaseModel):
 
   Leave it unset to get the model's native length. Set it to the length of the
   stored vectors when those were generated with a truncated embedding.
+  """
+
+  use_mongodb_auto_embedding: bool = False
+  """Let Atlas generate query embeddings instead of calling a Google model.
+
+  When False (default), every search embeds its query text through the genai
+  client (`vertex_ai_embedding_model_name`, a Google embedding model) and
+  sends the resulting vector to `$vectorSearch` as `queryVector`. The stored
+  documents must carry embeddings produced by that same model.
+
+  When True, the raw query text is sent to `$vectorSearch` as `query.text`
+  and Atlas generates the embedding itself with the Voyage AI model
+  configured on the index (Atlas "Automated Embedding", a Preview feature).
+  The searched field must be indexed as the `autoEmbed` type, and the genai
+  client is never called, so no Google credentials are needed. See
+  https://www.mongodb.com/docs/vector-search/query/aggregation-stages/vector-search-stage/
+  """
+
+  mongodb_auto_embedding_model: str | None = None
+  """Voyage AI model Atlas should embed queries with, e.g. "voyage-4".
+
+  Only used with `use_mongodb_auto_embedding`. The model must be compatible
+  with the one the index embeds documents with; leave unset to use the
+  index's own model. Must be omitted when querying with `queryVector`, which
+  is why it is never sent in the default (Google embedding) mode.
   """
 
   default_vector_index_name: str = "vector_index"

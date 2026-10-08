@@ -16,6 +16,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import pickle
+from unittest import mock
+
 from google.adk.errors import StaleSessionError
 from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
@@ -25,6 +29,7 @@ from google.adk.integrations.mongodb import MongoDbSessionService
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.genai import types
 import mongomock
+from pymongo.errors import OperationFailure
 import pytest
 
 APP = "test_app"
@@ -279,3 +284,166 @@ async def test_state_keys_with_dots_round_trip(service):
       app_name=APP, user_id=USER, session_id="s1"
   )
   assert fetched.state["nested.key"] == 1
+
+
+@pytest.mark.asyncio
+async def test_ensure_indexes_creates_recommended_indexes(client):
+  """ensure_indexes=True creates the events and sessions secondary indexes."""
+  service = MongoDbSessionService(
+      mongo_client=client, database_name="test_db", ensure_indexes=True
+  )
+  session = await service.create_session(
+      app_name=APP, user_id=USER, session_id="s1"
+  )
+  await service.append_event(session, _text_event("hi", timestamp=1.0))
+
+  events_indexes = client["test_db"]["events"].index_information()
+  assert "app_user_session_ts" in events_indexes
+  sessions_indexes = client["test_db"]["sessions"].index_information()
+  assert "app_user" in sessions_indexes
+
+
+@pytest.mark.asyncio
+async def test_indexes_not_created_by_default(service, client):
+  """Without ensure_indexes the implicit _id index is the only one present."""
+  await service.create_session(app_name=APP, user_id=USER, session_id="s1")
+
+  assert "app_user_session_ts" not in (
+      client["test_db"]["events"].index_information()
+  )
+  assert "app_user" not in (client["test_db"]["sessions"].index_information())
+
+
+@pytest.mark.asyncio
+async def test_mongomock_falls_back_and_disables_transactions(service):
+  """mongomock has no sessions: writes run directly and the verdict caches."""
+  session = await service.create_session(
+      app_name=APP, user_id=USER, session_id="s1"
+  )
+  await service.append_event(session, _text_event("hi", timestamp=1.0))
+
+  assert service._transactions_supported is False
+  fetched = await service.get_session(
+      app_name=APP, user_id=USER, session_id="s1"
+  )
+  assert fetched.events[0].content.parts[0].text == "hi"
+
+
+@pytest.mark.asyncio
+async def test_writes_run_inside_transaction_when_supported():
+  """A transaction-capable client wraps every write sequence in a session."""
+  client = mock.MagicMock()
+  mongo_session = client.start_session.return_value
+  mongo_session.with_transaction.side_effect = lambda callback: callback(
+      mongo_session
+  )
+  db = client["test_db"]
+  db["app_states"].find_one.return_value = None
+  db["user_states"].find_one.return_value = None
+  db["sessions"].find_one.return_value = {"revision": 0}
+  db["sessions"].find_one_and_update.return_value = {"revision": 1}
+
+  service = MongoDbSessionService(mongo_client=client, database_name="test_db")
+  session = await service.create_session(
+      app_name=APP, user_id=USER, session_id="s1"
+  )
+  await service.append_event(session, _text_event("hi", timestamp=1.0))
+
+  assert service._transactions_supported is True
+  # create_session and append_event each ran their writes in a transaction.
+  assert mongo_session.with_transaction.call_count == 2
+  assert db["sessions"].insert_one.call_args.kwargs["session"] is mongo_session
+  assert (
+      db["sessions"].find_one_and_update.call_args.kwargs["session"]
+      is mongo_session
+  )
+  assert db["events"].replace_one.call_args.kwargs["session"] is mongo_session
+
+
+class _UnsupportedTransactionSession:
+  """Fake client session whose transaction fails like a standalone mongod."""
+
+  def __enter__(self):
+    return self
+
+  def __exit__(self, *args):
+    return False
+
+  def with_transaction(self, callback):
+    raise OperationFailure(
+        "Transaction numbers are only allowed on a replica set member or"
+        " mongos",
+        code=20,
+    )
+
+
+@pytest.mark.asyncio
+async def test_falls_back_when_transactions_not_supported(
+    service, client, monkeypatch
+):
+  """Standalone mongod: first write falls back, later writes skip the attempt."""
+  start_session_calls = []
+  monkeypatch.setattr(
+      client,
+      "start_session",
+      lambda: (
+          start_session_calls.append(1),
+          _UnsupportedTransactionSession(),
+      )[1],
+  )
+
+  session = await service.create_session(
+      app_name=APP, user_id=USER, session_id="s1"
+  )
+  await service.append_event(session, _text_event("hi", timestamp=1.0))
+
+  # create_session attempted a transaction, failed, and fell back;
+  # append_event then skipped the attempt because the verdict was cached.
+  assert len(start_session_calls) == 1
+  assert service._transactions_supported is False
+  fetched = await service.get_session(
+      app_name=APP, user_id=USER, session_id="s1"
+  )
+  assert fetched.events[0].content.parts[0].text == "hi"
+
+
+@pytest.mark.asyncio
+async def test_service_pickles_when_client_comes_from_connection_string(
+    monkeypatch,
+):
+  """A connection-string service drops and rebuilds its client on pickle."""
+  get_mongo_client = mock.MagicMock(
+      side_effect=lambda *args, **kwargs: mongomock.MongoClient()
+  )
+  monkeypatch.setattr(
+      "google.adk.integrations.mongodb._client.get_mongo_client",
+      get_mongo_client,
+  )
+  service = MongoDbSessionService(
+      database_name="test_db", connection_string="mongodb://localhost:27017"
+  )
+
+  restored = pickle.loads(pickle.dumps(service))
+
+  assert get_mongo_client.call_count == 2  # constructor + restore
+  assert get_mongo_client.call_args.args == ("mongodb://localhost:27017",)
+  assert restored._database_name == "test_db"
+  assert restored._owns_client is True
+  # The per-session asyncio locks cannot cross the pickle boundary; the
+  # restored service starts with an empty table and a fresh guard.
+  assert restored._session_locks == {}
+  assert restored._session_lock_ref_count == {}
+  assert isinstance(restored._session_locks_guard, asyncio.Lock)
+  # The restored service is functional against its rebuilt client.
+  session = await restored.create_session(app_name=APP, user_id=USER)
+  assert (
+      await restored.get_session(
+          app_name=APP, user_id=USER, session_id=session.id
+      )
+  ) is not None
+
+
+def test_service_with_caller_owned_client_cannot_be_pickled(service):
+  """A caller-owned client cannot be rebuilt on the destination."""
+  with pytest.raises(TypeError, match="connection_string"):
+    pickle.dumps(service)

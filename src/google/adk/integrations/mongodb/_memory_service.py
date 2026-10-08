@@ -23,8 +23,6 @@ from typing import TYPE_CHECKING
 from typing_extensions import override
 
 from . import _client
-from ...features import experimental
-from ...features import FeatureName
 from ...memory import _utils
 from ...memory.base_memory_service import BaseMemoryService
 from ...memory.base_memory_service import SearchMemoryResponse
@@ -38,6 +36,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger("google_adk." + __name__)
 
 DEFAULT_MEMORIES_COLLECTION = "memories"
+
+# Recommended secondary index, created only when `ensure_indexes=True`. It
+# covers the `search_memory` lookup (app/user equality plus a multikey `$in`
+# on keywords); writes are keyed by `_id`, which MongoDB indexes implicitly.
+_MEMORIES_RECALL_INDEX_NAME = "app_user_keywords"
+_MEMORIES_RECALL_INDEX_KEYS = [("app_name", 1), ("user_id", 1), ("keywords", 1)]
 
 # Compact English stop-word list ignored when extracting keywords. Kept
 # intentionally short; callers can pass their own set via `stop_words`.
@@ -89,7 +93,6 @@ DEFAULT_STOP_WORDS = {
 }
 
 
-@experimental(FeatureName.MONGODB_MEMORY_SERVICE)
 class MongoDbMemoryService(BaseMemoryService):
   """Memory service that uses MongoDB as the backend.
 
@@ -118,6 +121,7 @@ class MongoDbMemoryService(BaseMemoryService):
       mongo_client: MongoClient | None = None,
       memories_collection: str = DEFAULT_MEMORIES_COLLECTION,
       stop_words: set[str] | None = None,
+      ensure_indexes: bool = False,
   ):
     """Initializes the MongoDB memory service.
 
@@ -131,6 +135,11 @@ class MongoDbMemoryService(BaseMemoryService):
       memories_collection: Collection name for memory documents.
       stop_words: Words to ignore when extracting keywords. Defaults to a
         standard English stop-word list.
+      ensure_indexes: When True, create the recommended secondary index on
+        first use: `app_user_keywords` on the memories collection (the
+        app/user/keywords lookup behind `search_memory`). Index creation is
+        idempotent, so this is safe to leave on, but it requires the
+        `createIndex` privilege.
     """
     if mongo_client is not None and connection_string is not None:
       raise ValueError(
@@ -146,14 +155,47 @@ class MongoDbMemoryService(BaseMemoryService):
       raise ValueError(
           "Either `connection_string` or `mongo_client` must be provided."
       )
+    self._connection_string = connection_string
     self._database_name = database_name
     self.memories_collection = memories_collection
     self.stop_words = (
         stop_words if stop_words is not None else DEFAULT_STOP_WORDS
     )
+    self._ensure_indexes = ensure_indexes
+    self._indexes_ensured = False
+
+  def __getstate__(self) -> dict[str, Any]:
+    """Drops the unpicklable client so the service can be pickled.
+
+    Agent Engine packages apps with cloudpickle; the MongoClient (sockets,
+    locks, background threads) cannot cross that boundary, so it is rebuilt
+    from the connection string on restore.
+    """
+    return _client.drop_client_for_pickle(
+        self.__dict__,
+        owns_client=self._owns_client,
+        owner="MongoDbMemoryService",
+    )
+
+  def __setstate__(self, state: dict[str, Any]) -> None:
+    self.__dict__.update(state)
+    self._client = _client.get_mongo_client(self._connection_string)
 
   def _memories(self):
     return self._client[self._database_name][self.memories_collection]
+
+  def _ensure_indexes_once(self) -> None:
+    """Creates the recommended secondary index on first use, if enabled.
+
+    Index creation is idempotent on the server, and the guard flag only
+    skips work in this process.
+    """
+    if not self._ensure_indexes or self._indexes_ensured:
+      return
+    self._memories().create_index(
+        _MEMORIES_RECALL_INDEX_KEYS, name=_MEMORIES_RECALL_INDEX_NAME
+    )
+    self._indexes_ensured = True
 
   def _extract_keywords(self, text: str) -> set[str]:
     """Extracts lowercase keywords from text, ignoring stop words."""
@@ -168,6 +210,7 @@ class MongoDbMemoryService(BaseMemoryService):
     `<app_name>/<user_id>/<session_id>/<event_id>`, so re-adding a session
     overwrites its memories rather than duplicating them.
     """
+    await asyncio.to_thread(self._ensure_indexes_once)
 
     def _add() -> None:
       for event in session.events:
@@ -207,6 +250,8 @@ class MongoDbMemoryService(BaseMemoryService):
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
     """Searches memory for events matching the query's keywords."""
+    await asyncio.to_thread(self._ensure_indexes_once)
+
     keywords = self._extract_keywords(query)
     if not keywords:
       return SearchMemoryResponse()

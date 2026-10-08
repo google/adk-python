@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""MongoDB Integration (Experimental).
+"""MongoDB Integration.
 
 MongoDB tools for vector search and hybrid search against collections on
 MongoDB Atlas or MongoDB 8.0+ deployments, plus MongoDB-backed session and

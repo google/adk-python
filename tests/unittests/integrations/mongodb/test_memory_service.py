@@ -16,6 +16,9 @@
 
 from __future__ import annotations
 
+import pickle
+from unittest import mock
+
 from google.adk.events.event import Event
 from google.adk.integrations.mongodb import MongoDbMemoryService
 from google.adk.sessions.session import Session
@@ -32,6 +35,28 @@ def service():
   return MongoDbMemoryService(
       mongo_client=mongomock.MongoClient(), database_name="test_db"
   )
+
+
+@pytest.mark.asyncio
+async def test_ensure_indexes_creates_recall_index():
+  """ensure_indexes=True creates the app/user/keywords index on memories."""
+  client = mongomock.MongoClient()
+  service = MongoDbMemoryService(
+      mongo_client=client, database_name="test_db", ensure_indexes=True
+  )
+  await service.add_session_to_memory(_session_with_texts("hello world"))
+
+  indexes = client["test_db"]["memories"].index_information()
+  assert "app_user_keywords" in indexes
+
+
+@pytest.mark.asyncio
+async def test_index_not_created_by_default(service):
+  """Without ensure_indexes the implicit _id index is the only one present."""
+  await service.add_session_to_memory(_session_with_texts("hello world"))
+
+  indexes = service._memories().index_information()
+  assert "app_user_keywords" not in indexes
 
 
 def _session_with_texts(*texts: str, session_id: str = "s1") -> Session:
@@ -146,3 +171,43 @@ def test_constructor_validates_client_args():
         mongo_client=mongomock.MongoClient(),
         connection_string="mongodb://localhost:27017",
     )
+
+
+@pytest.mark.asyncio
+async def test_service_pickles_when_client_comes_from_connection_string(
+    monkeypatch,
+):
+  """A connection-string service drops and rebuilds its client on pickle."""
+  get_mongo_client = mock.MagicMock(
+      side_effect=lambda *args, **kwargs: mongomock.MongoClient()
+  )
+  monkeypatch.setattr(
+      "google.adk.integrations.mongodb._client.get_mongo_client",
+      get_mongo_client,
+  )
+  service = MongoDbMemoryService(
+      database_name="test_db",
+      connection_string="mongodb://localhost:27017",
+      stop_words={"the"},
+  )
+
+  restored = pickle.loads(pickle.dumps(service))
+
+  assert get_mongo_client.call_count == 2  # constructor + restore
+  assert get_mongo_client.call_args.args == ("mongodb://localhost:27017",)
+  assert restored._database_name == "test_db"
+  assert restored._owns_client is True
+  assert restored.memories_collection == "memories"
+  assert restored.stop_words == {"the"}
+  # The restored service is functional against its rebuilt client.
+  await restored.add_session_to_memory(_session_with_texts("hello world"))
+  response = await restored.search_memory(
+      app_name=APP, user_id=USER, query="hello"
+  )
+  assert response.memories
+
+
+def test_service_with_caller_owned_client_cannot_be_pickled(service):
+  """A caller-owned client cannot be rebuilt on the destination."""
+  with pytest.raises(TypeError, match="connection_string"):
+    pickle.dumps(service)

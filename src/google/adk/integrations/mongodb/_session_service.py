@@ -31,8 +31,6 @@ from ...errors._stale_session_error import StaleSessionError
 from ...errors.already_exists_error import AlreadyExistsError
 from ...errors.session_not_found_error import SessionNotFoundError
 from ...events.event import Event
-from ...features import experimental
-from ...features import FeatureName
 from ...platform import uuid as platform_uuid
 from ...sessions import _session_util
 from ...sessions.base_session_service import BaseSessionService
@@ -56,7 +54,38 @@ DEFAULT_EVENTS_COLLECTION = "events"
 DEFAULT_APP_STATE_COLLECTION = "app_states"
 DEFAULT_USER_STATE_COLLECTION = "user_states"
 
+# Recommended secondary indexes, created only when `ensure_indexes=True`.
+# Reads and writes are otherwise keyed by `_id`, which MongoDB indexes
+# implicitly; these cover the two query patterns that are not `_id` lookups.
+_EVENTS_HISTORY_INDEX_NAME = "app_user_session_ts"
+_EVENTS_HISTORY_INDEX_KEYS = [
+    ("app_name", 1),
+    ("user_id", 1),
+    ("session_id", 1),
+    ("timestamp", -1),
+]
+_SESSIONS_LIST_INDEX_NAME = "app_user"
+_SESSIONS_LIST_INDEX_KEYS = [("app_name", 1), ("user_id", 1)]
+
 _SessionLockKey = tuple[str, str, str]
+
+
+def _is_transaction_unsupported_error(exc: Exception) -> bool:
+  """Returns True when the deployment cannot run multi-document transactions.
+
+  mongomock raises NotImplementedError for start_session, and a standalone
+  mongod fails the first transactional operation with IllegalOperation
+  (error code 20). Both conditions are permanent for the life of the client,
+  so callers may cache the verdict and stop attempting transactions.
+  """
+  if isinstance(exc, NotImplementedError):
+    return True
+  if getattr(exc, "code", None) == 20:
+    return True
+  message = str(exc).lower()
+  return "transaction" in message and (
+      "replica set" in message or "not supported" in message
+  )
 
 
 def _dumps_state(state: dict[str, Any]) -> str:
@@ -71,7 +100,6 @@ def _loads_state(raw: Any) -> dict[str, Any]:
   return dict(raw or {})
 
 
-@experimental(FeatureName.MONGODB_SESSION_SERVICE)
 class MongoDbSessionService(BaseSessionService):
   """Session service that uses MongoDB as the backend.
 
@@ -89,6 +117,14 @@ class MongoDbSessionService(BaseSessionService):
 
   State buckets are stored JSON-encoded so state keys containing characters
   that MongoDB forbids in document fields (e.g. `.`, `$`) round-trip safely.
+
+  Writes that span multiple documents (state buckets, the session revision
+  bump, and the event insert) run inside a multi-document transaction so
+  they commit or abort together, and so concurrent writers to shared app or
+  user state lose to a retry instead of silently overwriting each other.
+  Transactions require a replica set, sharded cluster, or Atlas deployment;
+  on deployments without them (standalone mongod) the service falls back to
+  sequential writes and logs a warning.
 
   Example:
       ```python
@@ -112,6 +148,7 @@ class MongoDbSessionService(BaseSessionService):
       events_collection: str = DEFAULT_EVENTS_COLLECTION,
       app_state_collection: str = DEFAULT_APP_STATE_COLLECTION,
       user_state_collection: str = DEFAULT_USER_STATE_COLLECTION,
+      ensure_indexes: bool = False,
   ):
     """Initializes the MongoDB session service.
 
@@ -127,6 +164,14 @@ class MongoDbSessionService(BaseSessionService):
       events_collection: Collection name for event documents.
       app_state_collection: Collection name for app state documents.
       user_state_collection: Collection name for user state documents.
+      ensure_indexes: When True, create the recommended secondary indexes on
+        first use: `app_user_session_ts` on the events collection (the
+        app/user/session/timestamp lookup behind `get_session`), and
+        `app_user` on the sessions collection (the app/user filter behind
+        `list_sessions`). Index creation is idempotent, so this is safe to
+        leave on, but it requires the `createIndex` privilege. All other
+        reads and writes are keyed by `_id`, which MongoDB indexes
+        implicitly.
     """
     if mongo_client is not None and connection_string is not None:
       raise ValueError(
@@ -142,15 +187,46 @@ class MongoDbSessionService(BaseSessionService):
       raise ValueError(
           "Either `connection_string` or `mongo_client` must be provided."
       )
+    self._connection_string = connection_string
     self._database_name = database_name
     self.sessions_collection = sessions_collection
     self.events_collection = events_collection
     self.app_state_collection = app_state_collection
     self.user_state_collection = user_state_collection
+    self._ensure_indexes = ensure_indexes
+    self._indexes_ensured = False
 
     # Per-session locks used to serialize append_event calls in this process.
     self._session_locks: dict[_SessionLockKey, asyncio.Lock] = {}
     self._session_lock_ref_count: dict[_SessionLockKey, int] = {}
+    self._session_locks_guard = asyncio.Lock()
+
+    # Set to False after the deployment proves it cannot run multi-document
+    # transactions (standalone mongod, mongomock), so later writes skip the
+    # transaction attempt instead of paying for a failure each time.
+    self._transactions_supported = True
+
+  def __getstate__(self) -> dict[str, Any]:
+    """Drops the unpicklable client and locks so the service can be pickled.
+
+    Agent Engine packages apps with cloudpickle; the MongoClient (sockets,
+    locks, background threads) and the asyncio locks cannot cross that
+    boundary. The client is rebuilt from the connection string on restore and
+    the per-session lock table starts empty.
+    """
+    state = _client.drop_client_for_pickle(
+        self.__dict__,
+        owns_client=self._owns_client,
+        owner="MongoDbSessionService",
+    )
+    state["_session_locks"] = {}
+    state["_session_lock_ref_count"] = {}
+    state["_session_locks_guard"] = None
+    return state
+
+  def __setstate__(self, state: dict[str, Any]) -> None:
+    self.__dict__.update(state)
+    self._client = _client.get_mongo_client(self._connection_string)
     self._session_locks_guard = asyncio.Lock()
 
   def _sessions(self):
@@ -164,6 +240,23 @@ class MongoDbSessionService(BaseSessionService):
 
   def _user_states(self):
     return self._client[self._database_name][self.user_state_collection]
+
+  def _ensure_indexes_once(self) -> None:
+    """Creates the recommended secondary indexes on first use, if enabled.
+
+    Index creation is idempotent on the server, and the guard flag only
+    skips work in this process. It must run outside the write transactions:
+    `createIndexes` is not allowed inside a multi-document transaction.
+    """
+    if not self._ensure_indexes or self._indexes_ensured:
+      return
+    self._events().create_index(
+        _EVENTS_HISTORY_INDEX_KEYS, name=_EVENTS_HISTORY_INDEX_NAME
+    )
+    self._sessions().create_index(
+        _SESSIONS_LIST_INDEX_KEYS, name=_SESSIONS_LIST_INDEX_NAME
+    )
+    self._indexes_ensured = True
 
   @staticmethod
   def _session_key(app_name: str, user_id: str, session_id: str) -> str:
@@ -200,6 +293,52 @@ class MongoDbSessionService(BaseSessionService):
         else:
           self._session_lock_ref_count[lock_key] = remaining
 
+  def _run_in_transaction(self, work):
+    """Runs `work(mongo_session)` as one atomic unit when possible.
+
+    Multi-document transactions make the state-bucket merges, the session
+    revision bump, and the event write commit or abort together, and a
+    concurrent conflicting writer loses to a write-conflict retry instead of
+    silently overwriting. Transactions require a replica set, sharded
+    cluster, or Atlas deployment. Where they are unavailable (a standalone
+    mongod, or mongomock in tests) the work runs directly without a session,
+    preserving the pre-transaction behavior.
+
+    Args:
+      work: Callable taking the pymongo client session (or None when
+        transactions are unsupported) and returning the work's result.
+    """
+    if not self._transactions_supported:
+      return work(None)
+    try:
+      mongo_session = self._client.start_session()
+    except Exception as exc:
+      if not _is_transaction_unsupported_error(exc):
+        raise
+      self._transactions_supported = False
+      logger.warning(
+          "MongoDB deployment does not support sessions/transactions (%s); "
+          "writes will not be atomic across documents.",
+          exc,
+      )
+      return work(None)
+    with mongo_session:
+      try:
+        # with_transaction retries the callback on TransientTransactionError
+        # and re-commits on UnknownTransactionCommitResult; other errors
+        # (StaleSessionError, SessionNotFoundError, ...) abort and propagate.
+        return mongo_session.with_transaction(work)
+      except Exception as exc:
+        if not _is_transaction_unsupported_error(exc):
+          raise
+        self._transactions_supported = False
+        logger.warning(
+            "MongoDB deployment does not support transactions (%s); "
+            "writes will not be atomic across documents.",
+            exc,
+        )
+        return work(None)
+
   @staticmethod
   def _merge_state(
       app_state: dict[str, Any] | None,
@@ -214,25 +353,41 @@ class MongoDbSessionService(BaseSessionService):
       merged_state[State.USER_PREFIX + key] = value
     return merged_state
 
-  def _read_app_state(self, app_name: str) -> dict[str, Any]:
-    doc = self._app_states().find_one({"_id": app_name})
+  def _read_app_state(
+      self, app_name: str, mongo_session: Any = None
+  ) -> dict[str, Any]:
+    doc = self._app_states().find_one({"_id": app_name}, session=mongo_session)
     return _loads_state(doc.get("state")) if doc else {}
 
-  def _read_user_state(self, app_name: str, user_id: str) -> dict[str, Any]:
+  def _read_user_state(
+      self, app_name: str, user_id: str, mongo_session: Any = None
+  ) -> dict[str, Any]:
     doc = self._user_states().find_one(
-        {"_id": self._user_key(app_name, user_id)}
+        {"_id": self._user_key(app_name, user_id)}, session=mongo_session
     )
     return _loads_state(doc.get("state")) if doc else {}
 
   def _merge_state_bucket(
-      self, collection: Any, doc_id: str, delta: dict[str, Any]
+      self,
+      collection: Any,
+      doc_id: str,
+      delta: dict[str, Any],
+      mongo_session: Any = None,
   ) -> dict[str, Any]:
-    """Merges delta into a stored state bucket and returns the merged state."""
-    existing = collection.find_one({"_id": doc_id})
+    """Merges delta into a stored state bucket and returns the merged state.
+
+    The read-modify-write is only safe against lost updates when it runs
+    inside a transaction (`mongo_session` set); concurrent writers otherwise
+    race on the read and the last write wins.
+    """
+    existing = collection.find_one({"_id": doc_id}, session=mongo_session)
     merged = _loads_state(existing.get("state")) if existing else {}
     merged.update(delta)
     collection.update_one(
-        {"_id": doc_id}, {"$set": {"state": _dumps_state(merged)}}, upsert=True
+        {"_id": doc_id},
+        {"$set": {"state": _dumps_state(merged)}},
+        upsert=True,
+        session=mongo_session,
     )
     return merged
 
@@ -263,26 +418,31 @@ class MongoDbSessionService(BaseSessionService):
       session_id: str | None = None,
   ) -> Session:
     """Creates a new session in MongoDB."""
+    await asyncio.to_thread(self._ensure_indexes_once)
 
-    def _create() -> tuple[str, dict[str, Any]]:
+    def _create(mongo_session) -> tuple[str, dict[str, Any]]:
       sid = session_id or platform_uuid.new_uuid()
       state_deltas = _session_util.extract_state_delta(state or {})
 
       app_state = (
           self._merge_state_bucket(
-              self._app_states(), app_name, state_deltas["app"]
+              self._app_states(),
+              app_name,
+              state_deltas["app"],
+              mongo_session,
           )
           if state_deltas["app"]
-          else self._read_app_state(app_name)
+          else self._read_app_state(app_name, mongo_session)
       )
       user_state = (
           self._merge_state_bucket(
               self._user_states(),
               self._user_key(app_name, user_id),
               state_deltas["user"],
+              mongo_session,
           )
           if state_deltas["user"]
-          else self._read_user_state(app_name, user_id)
+          else self._read_user_state(app_name, user_id, mongo_session)
       )
 
       now = time.time()
@@ -297,7 +457,7 @@ class MongoDbSessionService(BaseSessionService):
           "revision": 0,
       }
       try:
-        self._sessions().insert_one(doc)
+        self._sessions().insert_one(doc, session=mongo_session)
       except Exception as exc:
         if exc.__class__.__name__ == "DuplicateKeyError":
           raise AlreadyExistsError(f"Session {sid} already exists.") from exc
@@ -305,7 +465,9 @@ class MongoDbSessionService(BaseSessionService):
       merged = self._merge_state(app_state, user_state, state_deltas["session"])
       return sid, merged
 
-    sid, merged_state = await asyncio.to_thread(_create)
+    sid, merged_state = await asyncio.to_thread(
+        self._run_in_transaction, _create
+    )
     session = Session(
         id=sid,
         app_name=app_name,
@@ -327,6 +489,7 @@ class MongoDbSessionService(BaseSessionService):
       config: GetSessionConfig | None = None,
   ) -> Session | None:
     """Gets a session from MongoDB."""
+    await asyncio.to_thread(self._ensure_indexes_once)
 
     def _get() -> Session | None:
       doc = self._sessions().find_one(
@@ -371,6 +534,7 @@ class MongoDbSessionService(BaseSessionService):
       self, *, app_name: str, user_id: str | None = None
   ) -> ListSessionsResponse:
     """Lists sessions from MongoDB, oldest update first."""
+    await asyncio.to_thread(self._ensure_indexes_once)
 
     def _list() -> list[Session]:
       query: dict[str, Any] = {"app_name": app_name}
@@ -406,16 +570,19 @@ class MongoDbSessionService(BaseSessionService):
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     """Deletes a session and its events from MongoDB."""
+    await asyncio.to_thread(self._ensure_indexes_once)
 
-    def _delete() -> None:
+    def _delete(mongo_session) -> None:
       self._events().delete_many(
-          {"app_name": app_name, "user_id": user_id, "session_id": session_id}
+          {"app_name": app_name, "user_id": user_id, "session_id": session_id},
+          session=mongo_session,
       )
       self._sessions().delete_one(
-          {"_id": self._session_key(app_name, user_id, session_id)}
+          {"_id": self._session_key(app_name, user_id, session_id)},
+          session=mongo_session,
       )
 
-    await asyncio.to_thread(_delete)
+    await asyncio.to_thread(self._run_in_transaction, _delete)
 
   @override
   async def get_user_state(
@@ -440,22 +607,27 @@ class MongoDbSessionService(BaseSessionService):
     )
     state_deltas = _session_util.extract_state_delta(state_delta)
 
+    await asyncio.to_thread(self._ensure_indexes_once)
     async with self._with_session_lock(
         app_name=session.app_name,
         user_id=session.user_id,
         session_id=session.id,
     ):
 
-      def _append() -> int:
+      def _append(mongo_session) -> int:
         if state_deltas["app"]:
           self._merge_state_bucket(
-              self._app_states(), session.app_name, state_deltas["app"]
+              self._app_states(),
+              session.app_name,
+              state_deltas["app"],
+              mongo_session,
           )
         if state_deltas["user"]:
           self._merge_state_bucket(
               self._user_states(),
               self._user_key(session.app_name, session.user_id),
               state_deltas["user"],
+              mongo_session,
           )
 
         session_only_state = {
@@ -470,7 +642,9 @@ class MongoDbSessionService(BaseSessionService):
         session_doc_id = self._session_key(
             session.app_name, session.user_id, session.id
         )
-        current = self._sessions().find_one({"_id": session_doc_id})
+        current = self._sessions().find_one(
+            {"_id": session_doc_id}, session=mongo_session
+        )
         if not current:
           raise SessionNotFoundError(f"Session {session.id} not found.")
         current_revision = current.get("revision", 0)
@@ -480,7 +654,10 @@ class MongoDbSessionService(BaseSessionService):
           raise StaleSessionError(_STALE_SESSION_ERROR_MESSAGE)
 
         # The revision filter makes the update a no-op when a concurrent
-        # writer bumped the revision between our read and write.
+        # writer bumped the revision between our read and write. Inside a
+        # transaction the conflict instead aborts with
+        # TransientTransactionError, and the driver's retry re-reads the
+        # bumped revision and lands here.
         updated = self._sessions().find_one_and_update(
             {"_id": session_doc_id, "revision": current_revision},
             {
@@ -491,6 +668,7 @@ class MongoDbSessionService(BaseSessionService):
                 "$inc": {"revision": 1},
             },
             return_document=True,
+            session=mongo_session,
         )
         if updated is None:
           raise StaleSessionError(_STALE_SESSION_ERROR_MESSAGE)
@@ -506,10 +684,11 @@ class MongoDbSessionService(BaseSessionService):
                 "event_data": event.model_dump(exclude_none=True, mode="json"),
             },
             upsert=True,
+            session=mongo_session,
         )
         return int(updated.get("revision", current_revision + 1))
 
-      new_revision = await asyncio.to_thread(_append)
+      new_revision = await asyncio.to_thread(self._run_in_transaction, _append)
       session._storage_update_marker = str(new_revision)
       session.last_update_time = event.timestamp
 
