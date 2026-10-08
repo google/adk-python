@@ -3896,6 +3896,99 @@ async def test_append_different_events_not_deduplicated(session_service):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('light_copy', [False, True])
+@pytest.mark.parametrize('copy_event', [False, True])
+async def test_duplicate_event_refreshes_another_session_reference(
+    light_copy, copy_event
+):
+  """A broadcast updates each caller without duplicating the stored event."""
+  override_feature_enabled(
+      FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, light_copy
+  )
+  try:
+    service = InMemorySessionService()
+    session_args = dict(app_name='app', user_id='user', session_id='session')
+    first = await service.create_session(**session_args, state={'counter': 0})
+    second = await service.get_session(**session_args)
+    second.state['temp:local'] = 'keep'
+    state_reference = second.state
+    events_reference = second.events
+    event = Event(
+        author='agent',
+        timestamp=1.0,
+        actions=EventActions(
+            state_delta={
+                'counter': 1,
+                'app:settings': {'enabled': True},
+                'user:profile': {'name': 'Alice'},
+            }
+        ),
+    )
+
+    await service.append_event(session=first, event=event)
+    delivered = event.model_copy(deep=True) if copy_event else event
+    await service.append_event(session=second, event=delivered)
+    await service.append_event(session=second, event=delivered)
+
+    stored = await service.get_session(**session_args)
+    assert second.state is state_reference
+    assert second.events is events_reference
+    assert second.state == {**stored.state, 'temp:local': 'keep'}
+    assert second.events == stored.events == [event]
+    assert second.last_update_time == stored.last_update_time == 1.0
+    assert 'temp:local' not in stored.state
+
+    # The refresh must honor the same copy depth as get_session.
+    second.state['app:settings']['enabled'] = False
+    second.state['user:profile']['name'] = 'Bob'
+    stored = await service.get_session(**session_args)
+    assert stored.state['app:settings']['enabled'] is (not light_copy)
+    assert stored.state['user:profile']['name'] == (
+        'Bob' if light_copy else 'Alice'
+    )
+  finally:
+    override_feature_enabled(
+        FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, False
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('light_copy', [False, True])
+async def test_duplicate_event_refresh_preserves_newer_updates(light_copy):
+  """Delivering a missed older event must not roll back a newer update."""
+  override_feature_enabled(
+      FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, light_copy
+  )
+  try:
+    service = InMemorySessionService()
+    session_args = dict(app_name='app', user_id='user', session_id='session')
+    first = await service.create_session(**session_args, state={'counter': 0})
+    second = await service.get_session(**session_args)
+    older = Event(
+        author='agent',
+        timestamp=1.0,
+        actions=EventActions(state_delta={'counter': 1, 'result': 'ready'}),
+    )
+    newer = Event(
+        author='agent',
+        timestamp=2.0,
+        actions=EventActions(state_delta={'counter': 2}),
+    )
+    await service.append_event(session=first, event=older)
+    await service.append_event(session=second, event=newer)
+    await service.append_event(session=second, event=older)
+
+    stored = await service.get_session(**session_args)
+    assert second.state == stored.state == {'counter': 2, 'result': 'ready'}
+    assert second.events == stored.events == [older, newer]
+    assert second.last_update_time == stored.last_update_time == 2.0
+  finally:
+    override_feature_enabled(
+        FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, False
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     'service_type',
     [

@@ -70,6 +70,54 @@ TEST_USER_ID = "test_user"
 TEST_SESSION_ID = "test_session"
 
 
+async def test_concurrent_invocations_receive_a_shared_state_event():
+  """Both invocation contexts see a broadcast that is stored only once."""
+  barrier = asyncio.Barrier(2)
+  observed_counters = []
+  broadcast = Event(
+      author="broadcast_agent",
+      actions=EventActions(state_delta={"counter": 1}),
+  )
+
+  class BroadcastAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      # Both callers must load their session before either receives the event.
+      await barrier.wait()
+      yield broadcast.model_copy(deep=True)
+      observed_counters.append(ctx.session.state["counter"])
+
+  session_service = InMemorySessionService()
+  session_args = dict(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  await session_service.create_session(**session_args, state={"counter": 0})
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=BroadcastAgent(name="broadcast_agent"),
+      session_service=session_service,
+  )
+
+  async def invoke():
+    async for _ in runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(role="user", parts=[types.Part(text="read")]),
+    ):
+      pass
+
+  try:
+    await asyncio.wait_for(asyncio.gather(invoke(), invoke()), timeout=5)
+    stored = await session_service.get_session(**session_args)
+    assert observed_counters == [1, 1]
+    assert stored.state["counter"] == 1
+    assert sum(e.id == broadcast.id for e in stored.events) == 1
+  finally:
+    await runner.close()
+
+
 class MockAgent(BaseAgent):
   """Mock agent for unit testing."""
 

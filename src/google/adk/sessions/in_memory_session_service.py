@@ -342,7 +342,7 @@ class InMemorySessionService(BaseSessionService):
       raise SessionNotFoundError(f'Session {session_id} not found.')
 
     # Fetch the canonical storage session early so we can drop a re-delivered
-    # event before modifying any state. The same event can be delivered more
+    # event before modifying stored state. The same event can be delivered more
     # than once when the orchestrator broadcasts a shared-state delta to
     # several concurrent session references; deduplicating here prevents
     # double-application of state updates and duplicate entries in event lists.
@@ -352,6 +352,15 @@ class InMemorySessionService(BaseSessionService):
     # stamp a fixed uuid) are not equal and are kept.
     storage_session = self.sessions[app_name][user_id][session_id]
     if any(e == event for e in storage_session.events if e.id == event.id):
+      if not any(e == event for e in session.events if e.id == event.id):
+        # The broadcast may still be new to this caller. Refresh its snapshot
+        # instead of replaying an old delta that could undo newer state updates.
+        refreshed = self._merge_state(
+            app_name, user_id, _copy_session(storage_session)
+        )
+        session.state.update(refreshed.state)
+        session.events[:] = refreshed.events
+        session.last_update_time = refreshed.last_update_time
       return event
 
     # Update the in-memory session.
