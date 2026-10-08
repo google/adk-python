@@ -52,6 +52,11 @@ def mock_k8s_clients():
   ) as mock_client_class:
     mock_batch_v1 = MagicMock(spec=client.BatchV1Api)
     mock_core_v1 = MagicMock(spec=client.CoreV1Api)
+    mock_batch_v1.create_namespaced_job.return_value = client.V1Job(
+        api_version="batch/v1",
+        kind="Job",
+        metadata=client.V1ObjectMeta(name="test-job", uid="test-job-uid"),
+    )
     mock_client_class.BatchV1Api.return_value = mock_batch_v1
     mock_client_class.CoreV1Api.return_value = mock_core_v1
     yield {
