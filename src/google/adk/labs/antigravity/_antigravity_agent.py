@@ -36,7 +36,6 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import AsyncIterator
 from typing import Callable
-from typing import Literal
 from typing import Protocol
 
 from google.antigravity import Agent
@@ -55,6 +54,8 @@ from ...agents.invocation_context import InvocationContext
 from ...agents.run_config import StreamingMode
 from ...events.event import Event
 from ...events.event_actions import EventActions
+from ...utils._agent_mode import AgentMode
+from ...utils._agent_mode import SingleTurnAgentMode
 from ...utils.content_utils import to_user_content
 from ._event_converter import convert_step_to_events
 from ._event_converter import drain_tool_results
@@ -172,7 +173,7 @@ class AntigravityAgent(BaseAgent):
   runtime wiring (e.g. callable tools) that is not JSON-serializable.
   """
 
-  mode: Literal['single_turn'] | None = Field(default=None, frozen=True)
+  mode: SingleTurnAgentMode | None = Field(default=None, frozen=True)
   """Composition mode when used as a sub-agent.
 
   ``'single_turn'`` is what allows this agent to have a parent at all: the
@@ -191,7 +192,7 @@ class AntigravityAgent(BaseAgent):
     self._warn_if_local_without_save_dir()
 
   def _warn_if_local_without_save_dir(self) -> None:
-    if self.mode == 'single_turn':
+    if self.mode == AgentMode.SINGLE_TURN:
       return
     # A local config with no `save_dir` mints a fresh temporary directory per
     # connection, so every turn writes somewhere the next turn will not look.
@@ -249,7 +250,7 @@ class AntigravityAgent(BaseAgent):
     if (
         name == 'parent_agent'
         and value is not None
-        and self.__dict__.get('mode') != 'single_turn'
+        and self.__dict__.get('mode') != AgentMode.SINGLE_TURN
     ):
       raise ValueError(_PARENT_REQUIRES_SINGLE_TURN_MESSAGE)
     super().__setattr__(name, value)
@@ -400,7 +401,7 @@ class AntigravityAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
-    if self.mode == 'single_turn':
+    if self.mode == AgentMode.SINGLE_TURN:
       active = await self._enter_sdk_agent()
       async with active:
         async for event in self._run_turn(active, ctx):

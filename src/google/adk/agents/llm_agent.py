@@ -52,6 +52,8 @@ from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
 from ..tools.tool_context import ToolContext
 from ..utils import _lazy
+from ..utils._agent_mode import AgentMode as _AgentMode
+from ..utils._agent_mode import LlmAgentMode as _LlmAgentMode
 from ..utils._callback_pipeline import _normalize_callbacks
 from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
@@ -414,7 +416,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   settings, etc.
   """
 
-  mode: Literal['chat', 'task', 'single_turn'] | None = None
+  mode: _LlmAgentMode | None = None
   """The delegation mode for this agent.
 
   Options:
@@ -1097,7 +1099,7 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     # Task mode agents deliver their final output via finish_task, not intermediate
     # conversational text turns. Skip output_key processing on text responses for task mode.
-    if getattr(self, 'mode', None) == 'task':
+    if getattr(self, 'mode', None) == _AgentMode.TASK:
       return
 
     # Handle text responses
@@ -1149,7 +1151,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     """
     if (
         not self.output_key
-        or getattr(self, 'mode', None) == 'task'
+        or getattr(self, 'mode', None) == _AgentMode.TASK
         or self.output_schema
         or event.author != self.name
         or event.partial
@@ -1328,7 +1330,7 @@ class LlmAgent(BaseAgent, abc.ABC):
           stacklevel=3,
       )
 
-    if self.mode == 'task':
+    if self.mode == _AgentMode.TASK:
       from .llm.task._finish_task_tool import FinishTaskTool
 
       self.tools.append(FinishTaskTool(self))
@@ -1346,11 +1348,11 @@ class LlmAgent(BaseAgent, abc.ABC):
         mode = getattr(sub_agent, 'mode', None)
         # LlmAgent sub-agents default to chat mode (unchanged behavior).
         if isinstance(sub_agent, LlmAgent) and mode is None:
-          sub_agent.mode = 'chat'
-          mode = 'chat'
-        if mode == 'single_turn':
+          sub_agent.mode = _AgentMode.CHAT.value
+          mode = _AgentMode.CHAT.value
+        if mode == _AgentMode.SINGLE_TURN:
           self.tools.append(_SingleTurnAgentTool(sub_agent))
-        elif mode == 'task':
+        elif mode == _AgentMode.TASK:
           self.tools.append(_TaskAgentTool(sub_agent))
 
 

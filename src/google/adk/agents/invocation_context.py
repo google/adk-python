@@ -32,6 +32,7 @@ from ..auth.auth_credential import AuthCredential
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..events._branch_path import _BranchPath
 from ..events._internal_metadata import without_internal_metadata
+from ..events._node_path_builder import _NodePathBuilder
 from ..events.event import Event
 from ..live._active_streaming_tool import ActiveStreamingTool
 from ..live._audio_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
@@ -42,6 +43,7 @@ from ..plugins.plugin_manager import PluginManager
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..tools.base_tool import BaseTool
+from ..utils._agent_mode import AgentMode
 from ..workflow._base_node import BaseNode
 from .base_agent import _agent_state_key
 from .base_agent import BaseAgent
@@ -579,6 +581,14 @@ class InvocationContext(BaseModel):
           }
         return branch_fc_ids
 
+      self_node_path: _NodePathBuilder | None = None
+      if (
+          self.branch is None
+          and getattr(self.agent, "mode", None) == AgentMode.SINGLE_TURN
+          and self.node_path
+      ):
+        self_node_path = _NodePathBuilder.from_string(self.node_path)
+
       def _is_branch_match(event: Event) -> bool:
         """Determines whether an event is part of this invocation's subtree.
 
@@ -610,6 +620,12 @@ class InvocationContext(BaseModel):
         question -- "what history may this agent see?" -- and so matches
         *ancestor* branches instead. Both are intended.
         """
+        if (
+            self_node_path is not None
+            and not self_node_path.includes_node_path(event.node_info.path)
+        ):
+          return False
+
         if getattr(event, "author", None) == "user":
           frs = event.get_function_responses()
           if frs and self.branch and self.session:

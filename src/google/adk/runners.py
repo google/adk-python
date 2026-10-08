@@ -65,6 +65,7 @@ from .sessions.base_session_service import GetSessionConfig
 from .sessions.session import Session
 from .tools.base_toolset import BaseToolset
 from .utils import _lazy
+from .utils._agent_mode import AgentMode as _AgentMode
 from .utils._debug_output import print_event
 from .utils._runner_utils import _notify_run_error
 from .utils._runner_utils import _with_caller_context
@@ -1191,14 +1192,14 @@ class Runner:
     if isinstance(self.agent, LlmAgent):
       # LlmAgent as root agent defaults to chat mode without mutating the
       # shared agent instance in place.
-      effective_mode = self.agent.mode or 'chat'
+      effective_mode = self.agent.mode or _AgentMode.CHAT
 
       # A root LlmAgent runs in chat mode (the default) or task mode. Task mode
       # is fully supported for any caller: the agent runs to completion via the
       # finish_task tool and its result is promoted onto the terminal event's
       # output field (an A2A server turns that into an artifact; a direct caller
       # reads it off the event stream).
-      if effective_mode in ('chat', 'task'):
+      if effective_mode in (_AgentMode.CHAT, _AgentMode.TASK):
         session = await self._get_or_create_session(
             user_id=user_id,
             session_id=session_id,
@@ -1806,7 +1807,7 @@ class Runner:
 
     if (
         not isinstance(self.agent, LlmAgent)
-        or (self.agent.mode or 'chat') != 'chat'
+        or (self.agent.mode or _AgentMode.CHAT) != _AgentMode.CHAT
     ):
       return False
     remote_a2a_agent_class: tuple[Any, ...] = ()
@@ -1818,7 +1819,7 @@ class Runner:
       pass
     return not any(
         isinstance(sa, (LlmAgent,) + remote_a2a_agent_class)
-        and getattr(sa, 'mode', None) == 'task'
+        and getattr(sa, 'mode', None) == _AgentMode.TASK
         for sa in self.agent.sub_agents or []
     )
 

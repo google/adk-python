@@ -30,6 +30,7 @@ from ..agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME as _FINISH
 from ..agents.llm.task._finish_task_tool import is_finish_task_terminal_fr
 from ..events.event import Event
 from ..flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..utils._agent_mode import AgentMode
 from ..utils._schema_utils import validate_schema
 from ..utils.content_utils import to_user_content
 from ._errors import WorkflowConfigurationError
@@ -294,13 +295,13 @@ def _effective_llm_agent_mode(agent: LlmAgent) -> str:
   if agent.mode is not None:
     return agent.mode
   if agent.parent_agent is not None or bool(agent.sub_agents):
-    return 'chat'
-  return 'single_turn'
+    return AgentMode.CHAT.value
+  return AgentMode.SINGLE_TURN.value
 
 
 def prepare_llm_agent_context(agent: LlmAgent, ctx: Context) -> Context:
   """Prepares the context for running LlmAgent as a node."""
-  if _effective_llm_agent_mode(agent) != 'single_turn':
+  if _effective_llm_agent_mode(agent) != AgentMode.SINGLE_TURN:
     return ctx
 
   ic = ctx.get_invocation_context()
@@ -347,7 +348,7 @@ def prepare_llm_agent_input(
   #    user's FunctionResponse on the branch tail and cause infinite loops.
   if (
       node_input is None
-      or _effective_llm_agent_mode(agent) != 'single_turn'
+      or _effective_llm_agent_mode(agent) != AgentMode.SINGLE_TURN
       or bool(ctx.resume_inputs)
   ):
     return None
@@ -413,7 +414,7 @@ async def run_llm_agent_as_node(
   # effective mode without mutating the shared `agent` instance in place.
   mode = _effective_llm_agent_mode(agent)
 
-  if mode not in ('task', 'single_turn', 'chat'):
+  if mode not in (AgentMode.TASK, AgentMode.SINGLE_TURN, AgentMode.CHAT):
     raise WorkflowConfigurationError(
         f'LlmAgent as node only supports task, single_turn, and chat mode,'
         f" but agent '{agent.name}' has mode='{mode}'."
@@ -435,7 +436,7 @@ async def run_llm_agent_as_node(
   # there is no originating delegation FC (the workflow-node task
   # case).  For delegated tasks, the FC takes precedence and this
   # override is unused.
-  if mode == 'task' and node_input is not None:
+  if mode == AgentMode.TASK and node_input is not None:
     update['user_content'] = to_user_content(node_input)
   ic = ic.model_copy(update=update)
 
@@ -445,10 +446,10 @@ async def run_llm_agent_as_node(
   # and only consumes the node_input (ignoring the live request queue).
   is_live = (
       isinstance(getattr(ic, 'live_request_queue', None), LiveRequestQueue)
-      and mode != 'single_turn'
+      and mode != AgentMode.SINGLE_TURN
   )
 
-  if mode == 'single_turn':
+  if mode == AgentMode.SINGLE_TURN:
     # is_live is always False here (single_turn forces non-live).
     try:
       async with aclosing(effective_agent.run_async(ic)) as run_iter:
@@ -463,7 +464,7 @@ async def run_llm_agent_as_node(
         agent_ctx.session.events.remove(injected_input_event)
     return
 
-  if mode == 'chat':
+  if mode == AgentMode.CHAT:
     # outer dispatch loop.
     #
     # One coordinator invocation may contain multiple LLM rounds chained

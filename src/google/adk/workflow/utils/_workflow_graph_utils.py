@@ -21,6 +21,8 @@ from typing import cast
 from typing import Literal
 
 from ...tools.base_tool import BaseTool
+from ...utils._agent_mode import AgentMode
+from ...utils._agent_mode import DefaultLlmNodeMode
 from .._base_node import BaseNode
 from .._base_node import START
 from .._errors import WorkflowConfigurationError
@@ -48,7 +50,7 @@ def build_node(
     timeout: float | None = None,
     auth_config: Any = None,
     parameter_binding: Literal['state', 'node_input'] = 'state',
-    default_llm_mode: Literal['chat', 'single_turn'] = 'single_turn',
+    default_llm_mode: DefaultLlmNodeMode = AgentMode.SINGLE_TURN,
 ) -> BaseNode:
   """Converts a NodeLike to a BaseNode, wrapping async funcs in FunctionNode.
 
@@ -108,7 +110,7 @@ def build_node(
     if _remote_a2a_agent_type is not None:
       is_remote_a2a_task = (
           isinstance(node_like, _remote_a2a_agent_type)
-          and node_like.mode == 'task'
+          and node_like.mode == AgentMode.TASK
       )
     if is_remote_a2a_task and getattr(node_like, 'parent_agent', None) is None:
       raise WorkflowConfigurationError(
@@ -129,18 +131,18 @@ def build_node(
         # mode to enable agent transfer.
         # Standalone agents in a workflow graph default to `default_llm_mode`.
         if agent.parent_agent is not None:
-          agent.mode = 'chat'
+          agent.mode = AgentMode.CHAT.value
         else:
-          agent.mode = default_llm_mode
+          agent.mode = str(default_llm_mode)
 
       if (
           isinstance(agent, LlmAgent)
-          and agent.mode == 'single_turn'
+          and agent.mode == AgentMode.SINGLE_TURN
           and 'include_contents' not in node_like.model_fields_set
       ):
         agent.include_contents = 'none'
 
-      if agent.mode in ('task', 'chat'):
+      if agent.mode in (AgentMode.TASK, AgentMode.CHAT):
         agent.wait_for_output = True
 
       if isinstance(agent, LlmAgent) and agent.parallel_worker:
