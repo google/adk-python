@@ -1418,6 +1418,43 @@ async def test_input_schema_validates_dict(request: pytest.FixtureRequest):
   assert received == [_OutputModel(name='test', value=42)]
 
 
+@pytest.mark.parametrize('structured', [False, True])
+async def test_typed_function_receives_answer_without_thoughts(structured):
+  """A workflow passes the answer, rather than thoughts, into typed functions."""
+  received = []
+
+  def process_text(node_input: str) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  def process_model(node_input: _OutputModel) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  answer = '{"name": "test", "value": 42}' if structured else 'hello'
+
+  def produce() -> Event:
+    return Event(
+        output=types.Content(
+            role='model',
+            parts=[
+                types.Part(text='Let me think first.', thought=True),
+                types.Part(text=answer),
+            ],
+        )
+    )
+
+  process = process_model if structured else process_text
+  agent = Workflow(
+      name='typed_answer', edges=[(START, produce), (produce, process)]
+  )
+  await run_workflow(agent)
+
+  assert received == (
+      [_OutputModel(name='test', value=42)] if structured else ['hello']
+  )
+
+
 @pytest.mark.asyncio
 async def test_input_schema_rejects_invalid_dict(
     request: pytest.FixtureRequest,
