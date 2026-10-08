@@ -28,6 +28,7 @@ from ....events._rewind_events import _apply_rewinds
 from ....events.event import Event
 from ....models.base_llm import BaseLlm
 from ....models.llm_request import LlmRequest
+from ....utils._agent_mode import AgentMode
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..core._utils import as_llm_agent
 from ..tools._functions import _collect_function_call_ids
@@ -115,7 +116,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
         else False
     )
 
-    is_single_turn = getattr(agent, 'mode', None) == 'single_turn'
+    is_single_turn = getattr(agent, 'mode', None) == AgentMode.SINGLE_TURN
     if (
         agent.include_contents == 'default'
         and not llm_request.previous_interaction_id

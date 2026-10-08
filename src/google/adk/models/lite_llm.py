@@ -858,9 +858,15 @@ def _extract_reasoning_value(message: Message | Delta | None) -> Any:
 
 
 _GEMMA4_MODEL_PATTERN = re.compile(r"gemma-?4")
+_STANDARD_TOOL_ROLE_PROVIDERS = frozenset({"openai", "azure", "lm_studio"})
 
 
-def _is_gemma4_model(model: str) -> bool:
+def _is_gemma4_model(
+    model: str,
+    *,
+    provider: str = "",
+    custom_llm_provider: Optional[str] = None,
+) -> bool:
   """Detects Gemma 4 models across naming conventions.
 
   Ollama uses "gemma4" (e.g. "ollama/gemma4:e2b"), while Hugging Face,
@@ -868,12 +874,34 @@ def _is_gemma4_model(model: str) -> bool:
   "google/gemma-4-26B-A4B"). Both need role='tool_responses' for tool
   results.
 
+  OpenAI-compatible endpoints (e.g. "openai/google/gemma-4-e4b",
+  "lm_studio/google/gemma-4-e4b") require the standard role='tool' and are
+  excluded.
+
   Args:
     model: The model name to check.
+    provider: The provider name if known.
+    custom_llm_provider: The custom LLM provider if specified.
 
   Returns:
-    True if the model is a Gemma 4 model, False otherwise.
+    True if the model is a Gemma 4 model requiring tool_responses, False
+    otherwise.
   """
+  effective_provider = next(
+      (
+          candidate
+          for raw in (
+              custom_llm_provider,
+              provider,
+              _get_provider_from_model(model),
+          )
+          # Skip 'litellm_proxy' because it only names the transport.
+          if raw and (candidate := raw.strip().lower()) != _PROXY_PROVIDER
+      ),
+      "",
+  )
+  if effective_provider in _STANDARD_TOOL_ROLE_PROVIDERS:
+    return False
   return bool(_GEMMA4_MODEL_PATTERN.search(model.lower()))
 
 
@@ -1446,6 +1474,7 @@ async def _content_to_message_param(
     model: str = "",
     upload_params: Optional[Dict[str, Any]] = None,
     is_proxied: bool = False,
+    custom_llm_provider: Optional[str] = None,
 ) -> Union[Message, list[Message]] | None:
   """Converts a types.Content to a litellm Message or list of Messages.
 
@@ -1458,6 +1487,7 @@ async def _content_to_message_param(
     model: The LiteLLM model string, used for provider-specific behavior.
     upload_params: Endpoint overrides forwarded to file uploads.
     is_proxied: Whether the request is routed through a LiteLLM Proxy.
+    custom_llm_provider: The custom LLM provider if specified.
 
   Returns:
     A litellm Message, a list of litellm Messages, or None if skipped.
@@ -1480,12 +1510,16 @@ async def _content_to_message_param(
           if isinstance(response, str)
           else _safe_json_serialize(response)
       )
-      # gemma4 requires role='tool_responses' for recognizing function_response parts as responses
-      # from the tool call, instead of OpenAI-compatible 'tool' role used by other models.
-      # Earlier Gemma versions before version 4 do not support tool use,
-      # so this check is intentionally scoped to only look for "gemma4" in the model name.
+      # gemma4 requires role='tool_responses' for recognizing function_response
+      # parts as responses from the tool call, except on OpenAI-compatible
+      # endpoints (openai, azure, lm_studio) which require the standard 'tool'
+      # role. Earlier Gemma versions before version 4 do not support tool use.
       tool_role: Literal["tool", "tool_responses"] = (
-          "tool_responses" if _is_gemma4_model(model) else "tool"
+          "tool_responses"
+          if _is_gemma4_model(
+              model, provider=provider, custom_llm_provider=custom_llm_provider
+          )
+          else "tool"
       )
       tool_messages.append(
           _tool_message(
@@ -1511,6 +1545,7 @@ async def _content_to_message_param(
         model=model,
         upload_params=upload_params,
         is_proxied=is_proxied,
+        custom_llm_provider=custom_llm_provider,
     )
     follow_up_messages = (
         follow_up if isinstance(follow_up, list) else [follow_up]
@@ -1657,7 +1692,12 @@ async def _content_to_message_param(
     )
 
 
-def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
+def _ensure_tool_results(
+    messages: List[Message],
+    model: str,
+    *,
+    custom_llm_provider: Optional[str] = None,
+) -> List[Message]:
   """Insert placeholder tool messages for missing tool results.
 
   LiteLLM-backed providers like OpenAI and Anthropic reject histories where an
@@ -1676,7 +1716,9 @@ def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
   healed_messages: List[Message] = []
   pending_tool_call_ids: List[str] = []
   expected_tool_role: Literal["tool", "tool_responses"] = (
-      "tool_responses" if _is_gemma4_model(model) else "tool"
+      "tool_responses"
+      if _is_gemma4_model(model, custom_llm_provider=custom_llm_provider)
+      else "tool"
   )
 
   for message in messages:
@@ -3138,6 +3180,7 @@ async def _get_completion_inputs(
     upload_params: Optional[Dict[str, Any]] = None,
     *,
     is_proxied: bool = False,
+    custom_llm_provider: Optional[str] = None,
 ) -> Tuple[
     List[Message],
     Optional[List[Dict[str, Any]]],
@@ -3152,6 +3195,7 @@ async def _get_completion_inputs(
     model: The model string to use for determining provider-specific behavior.
     upload_params: Endpoint overrides forwarded to file uploads.
     is_proxied: Whether the request is routed through a LiteLLM Proxy.
+    custom_llm_provider: The custom LLM provider if specified.
 
   Returns:
     The litellm inputs (message list, tool dictionary, response format,
@@ -3171,6 +3215,7 @@ async def _get_completion_inputs(
         model=model,
         upload_params=upload_params,
         is_proxied=is_proxied,
+        custom_llm_provider=custom_llm_provider,
     )
     if isinstance(message_param_or_list, list):
       messages.extend(message_param_or_list)
@@ -3186,7 +3231,11 @@ async def _get_completion_inputs(
             content=system_instruction,
         ),
     )
-  messages = _ensure_tool_results(messages, model)
+  messages = _ensure_tool_results(
+      messages,
+      model,
+      custom_llm_provider=custom_llm_provider,
+  )
 
   # 2. Convert tool declarations
   tools: Optional[List[Dict[str, Any]]] = None
@@ -3696,6 +3745,9 @@ class LiteLlm(BaseLlm):
             ),
             is_proxied=_is_proxied_model(
                 effective_model, self._additional_args
+            ),
+            custom_llm_provider=self._additional_args.get(
+                "custom_llm_provider"
             ),
         )
     )
