@@ -21,4 +21,4 @@ ENV HOST=0.0.0.0
 
 EXPOSE 8080
 
-CMD ["adk", "api_server", "--host=0.0.0.0", "--port=8080", "--trigger_sources=pubsub,eventarc", "/app/agents"]
+CMD exec adk api_server --host=0.0.0.0 --port=8080 --trigger_sources=pubsub,eventarc --trigger_oidc_audience="${TRIGGER_OIDC_AUDIENCE:-${SERVICE_URL:-http://localhost}}" /app/agents

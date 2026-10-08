@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from datetime import datetime
 import importlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -45,6 +46,8 @@ from .deployers._dockerfile_template import _render_install_agent_deps
 from .deployers._dockerfile_template import _validate_app_name
 from .utils import _onboarding
 
+logger = logging.getLogger('google_adk.' + __name__)
+
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
@@ -70,6 +73,33 @@ _AGENT_PLATFORM_DISTRIBUTIONS: Final[frozenset[str]] = frozenset({
 _WORKER_POOL_RESOURCE_RE: Final[re.Pattern[str]] = re.compile(
     r'^projects/[^/]+/locations/[^/]+/workerPools/[^/]+$'
 )
+
+
+def _validate_trigger_options(
+    trigger_sources: str | None,
+    trigger_oidc_audience: str | None,
+    trigger_oidc_service_accounts: str | None,
+) -> None:
+  if trigger_sources and not trigger_oidc_audience:
+    raise click.UsageError(
+        '--trigger_oidc_audience is required when --trigger_sources is set'
+    )
+  if trigger_oidc_service_accounts and not trigger_oidc_audience:
+    raise click.UsageError(
+        '--trigger_oidc_service_accounts requires --trigger_oidc_audience to'
+        ' be set'
+    )
+  if (
+      trigger_sources
+      and trigger_oidc_audience
+      and not trigger_oidc_service_accounts
+  ):
+    logger.warning(
+        '--trigger_oidc_audience is set without'
+        ' --trigger_oidc_service_accounts; any Google account can obtain a'
+        ' token for this audience. Set --trigger_oidc_service_accounts to'
+        ' restrict caller identity.'
+    )
 
 
 def _validate_worker_pool(worker_pool: str) -> str:
@@ -1083,6 +1113,9 @@ def run(
       the agent and make importable in the image. A relative path is resolved
       against the current working directory.
   """
+  _validate_trigger_options(
+      trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
+  )
   app_name = _validate_app_name(
       app_name or os.path.basename(os.path.normpath(agent_folder))
   )
@@ -1388,6 +1421,9 @@ def to_agent_engine(
       Overrides `worker_pool` / `build_config.worker_pool` from
       `.agent_engine_config.json` when both are present.
   """
+  _validate_trigger_options(
+      trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
+  )
   app_name = os.path.basename(os.path.normpath(agent_folder))
   _validate_app_name(app_name)
   display_name = display_name or app_name
@@ -1844,6 +1880,9 @@ def to_gke(
       the agent and make importable in the image. A relative path is resolved
       against the current working directory.
   """
+  _validate_trigger_options(
+      trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
+  )
   click.secho(
       '\n🚀 Starting ADK Agent Deployment to GKE...', fg='cyan', bold=True
   )
