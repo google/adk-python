@@ -18,6 +18,7 @@ import importlib.util
 import logging
 import os
 import sys
+import textwrap
 from types import ModuleType
 from typing import Any
 from typing import cast
@@ -37,9 +38,14 @@ from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import get_all_tool_calls
 from ..evaluation.eval_case import IntermediateDataType
 from ..evaluation.eval_metrics import EvalMetric
+from ..evaluation.eval_metrics import EvalMetricResult
+from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
+from ..evaluation.eval_metrics import PrebuiltMetrics
 from ..evaluation.eval_metrics import RubricsBasedCriterion
+from ..evaluation.eval_metrics import TokenUsageDetails
 from ..evaluation.eval_result import EvalCaseResult
 from ..evaluation.eval_sets_manager import EvalSetsManager
+from ..evaluation.evaluator import EvalStatus
 from ..utils.context_utils import Aclosing
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -53,7 +59,15 @@ FINAL_RESPONSE_MATCH_V2 = "final_response_match_v2"
 # This is always optional unless explicitly specified.
 RESPONSE_EVALUATION_SCORE_KEY = "response_evaluation_score"
 
-EVAL_SESSION_ID_PREFIX = "___eval___session___"
+# Must stay in sync with google.adk.evaluation.local_eval_service. The prefix
+# is only allowed to contain lowercase letters, digits and hyphens so the
+# generated eval session IDs satisfy the custom-session-ID constraints of
+# remote backends such as Vertex AI Agent Engine.
+EVAL_SESSION_ID_PREFIX = "adk-eval-session-"
+# Prefix used through ADK v2.10. Agent Engine rejects it (underscores), but
+# sessions created with it may still exist in local/database session stores.
+# Safe to remove once those are no longer expected.
+_LEGACY_EVAL_SESSION_ID_PREFIX = "___eval___session___"
 DEFAULT_CRITERIA = {
     TOOL_TRAJECTORY_SCORE_KEY: 1.0,  # 1-point scale; 1.0 is perfect.
     RESPONSE_MATCH_SCORE_KEY: 0.8,
@@ -213,21 +227,95 @@ def _convert_content_to_text(
   return ""
 
 
+def _format_tool_call(tool_call: genai_types.FunctionCall) -> str:
+  """Formats a tool call as `name(` then one `arg=value` per line.
+
+  Only the name and arguments matter when reading a trajectory; the call id and
+  streaming fields (`partial_args`, `will_continue`) are noise in a table. One
+  argument per line keeps a narrow table column from splitting a value in half.
+  """
+  args = [f"{k}={v!r}" for k, v in (tool_call.args or {}).items()]
+  if not args:
+    return f"{tool_call.name}()"
+  return f"{tool_call.name}(\n  " + ",\n  ".join(args) + ")"
+
+
 def _convert_tool_calls_to_text(
     intermediate_data: Optional[IntermediateDataType],
 ) -> str:
   tool_calls = get_all_tool_calls(intermediate_data)
-  return "\n".join([str(t) for t in tool_calls])
+  return "\n".join([_format_tool_call(t) for t in tool_calls])
+
+
+def _format_token_count(value: Optional[float]) -> str:
+  """Formats a token count, showing unavailable counts as n/a rather than 0."""
+  return "n/a" if value is None else f"{value:g}"
+
+
+# The token counts to print, and how deep to indent each one. Indentation is
+# containment: every row is a part of the nearest row above it that is indented
+# less, so `cached` reads as a portion of `prompt` rather than an addition to
+# it. See `TokenUsageDetails` for the counts themselves.
+_TOKEN_BREAKDOWN_ROWS = (
+    ("total_tokens", 1),
+    ("input_tokens", 2),
+    ("prompt_tokens", 3),
+    ("cached_tokens", 4),
+    ("tool_use_tokens", 3),
+    ("output_tokens", 2),
+    ("candidates_tokens", 3),
+    ("reasoning_tokens", 3),
+)
+
+# Wide enough for the longest indented label, so the counts line up in a column.
+_TOKEN_BREAKDOWN_LABEL_WIDTH = 20
+
+
+def _echo_token_usage_details(details: TokenUsageDetails) -> None:
+  """Prints the per-type token counts, indented to show what contains what."""
+  click.echo("Token breakdown:")
+  for field_name, depth in _TOKEN_BREAKDOWN_ROWS:
+    # The heading already says these are tokens, so the shared suffix is
+    # dropped from the label rather than repeated on all eight rows.
+    name = field_name.removesuffix("_tokens").replace("_", " ")
+    label = f"{'  ' * depth}{name}:"
+    count = _format_token_count(getattr(details, field_name))
+    click.echo(f"{label:<{_TOKEN_BREAKDOWN_LABEL_WIDTH}}{count}")
+
+
+def _format_metric_cell(metric_result: EvalMetricResult) -> str:
+  """Formats one metric's result for a cell of the invocation details table.
+
+  Informational metrics never pass or fail, so their cell is just the value
+  (with its unit where one applies) instead of repeating
+  `Status: INFORMATIONAL` on every row. Metrics that do pass or fail read
+  `PASSED (1.0)`.
+  """
+  score = metric_result.score
+  if metric_result.eval_status != EvalStatus.INFORMATIONAL:
+    return f"{metric_result.eval_status.name} ({score})"
+  if score is None:
+    return "n/a"
+  if metric_result.metric_name == PrebuiltMetrics.INVOCATION_DURATION_V1.value:
+    return f"{score:.2f}s"
+  token_details = (
+      metric_result.details.token_usage_details
+      if metric_result.details
+      else None
+  )
+  if token_details:
+    # The full breakdown is printed with the overall metrics; per invocation,
+    # the input/output split is enough to see where the tokens went.
+    return (
+        f"{score:g}"
+        f" (in {_format_token_count(token_details.input_tokens)},"
+        f" out {_format_token_count(token_details.output_tokens)})"
+    )
+  return f"{score:g}"
 
 
 def pretty_print_eval_result(eval_result: EvalCaseResult) -> None:
   """Pretty prints eval result."""
-  try:
-    import pandas as pd
-    from tabulate import tabulate
-  except ModuleNotFoundError as e:
-    raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
-
   click.echo(f"Eval Set Id: {eval_result.eval_set_id}")
   click.echo(f"Eval Id: {eval_result.eval_id}")
   click.echo(f"Overall Eval Status: {eval_result.final_eval_status.name}")
@@ -242,6 +330,8 @@ def pretty_print_eval_result(eval_result: EvalCaseResult) -> None:
         f"Score: {metric_result.score}, "
         f"Threshold: {metric_result.threshold}"
     )
+    if metric_result.details and metric_result.details.token_usage_details:
+      _echo_token_usage_details(metric_result.details.token_usage_details)
     if metric_result.details and metric_result.details.rubric_scores:
       click.echo("Rubric Scores:")
       rubrics = (
@@ -262,77 +352,99 @@ def pretty_print_eval_result(eval_result: EvalCaseResult) -> None:
             f"Reasoning: {rubric_score.rationale}"
         )
 
-  data = []
-  for per_invocation_result in eval_result.eval_metric_result_per_invocation:
-    actual_invocation = per_invocation_result.actual_invocation
-    expected_invocation = per_invocation_result.expected_invocation
-    row_data = {
-        "prompt": _convert_content_to_text(actual_invocation.user_content),
-        "expected_response": (
-            _convert_content_to_text(expected_invocation.final_response)
-            if expected_invocation
-            else None
-        ),
-        "actual_response": _convert_content_to_text(
-            actual_invocation.final_response
-        ),
-        "expected_tool_calls": (
-            _convert_tool_calls_to_text(expected_invocation.intermediate_data)
-            if expected_invocation
-            else None
-        ),
-        "actual_tool_calls": _convert_tool_calls_to_text(
-            actual_invocation.intermediate_data
-        ),
-    }
-    for metric_result in per_invocation_result.eval_metric_results:
-      row_data[metric_result.metric_name] = (
-          f"Status: {metric_result.eval_status.name}, "
-          f"Score: {metric_result.score}"
-      )
-      if metric_result.details and metric_result.details.rubric_scores:
-        rubrics = (
-            metric_result.criterion.rubrics
-            if isinstance(metric_result.criterion, RubricsBasedCriterion)
-            else None
-        ) or []
-        rubrics_by_id = {
-            r.rubric_id: r.rubric_content.text_property for r in rubrics
-        }
-        for rubric_score in metric_result.details.rubric_scores:
-          rubric = rubrics_by_id.get(rubric_score.rubric_id)
-          if not rubric:
-            rubric = rubric_score.rubric_id
-          row_data[f"Rubric: {rubric}"] = (
-              f"Reasoning: {rubric_score.rationale}, "
-              f"Score: {rubric_score.score}"
-          )
-    data.append(row_data)
-  if data:
-    click.echo(
-        "---------------------------------------------------------------------"
+  invocation_results = eval_result.eval_metric_result_per_invocation
+  if not invocation_results:
+    return
+  click.echo(
+      "---------------------------------------------------------------------"
+  )
+  click.echo("Invocation Details:")
+  for index, per_invocation_result in enumerate(invocation_results, start=1):
+    click.echo(f"\nInvocation {index} of {len(invocation_results)}")
+    for label, value in _invocation_fields(per_invocation_result):
+      _echo_field(label, value)
+  click.echo("\n")  # A blank line before the next eval case.
+
+
+def _invocation_fields(
+    per_invocation_result: EvalMetricResultPerInvocation,
+) -> list[tuple[str, str]]:
+  """Returns the (label, value) pairs printed for one invocation.
+
+  Fields with no value (e.g. no expected invocation) are left out.
+  """
+  actual = per_invocation_result.actual_invocation
+  expected = per_invocation_result.expected_invocation
+  fields = [
+      ("prompt", _convert_content_to_text(actual.user_content)),
+      (
+          "expected_response",
+          _convert_content_to_text(expected.final_response)
+          if expected
+          else None,
+      ),
+      ("actual_response", _convert_content_to_text(actual.final_response)),
+      (
+          "expected_tool_calls",
+          _convert_tool_calls_to_text(expected.intermediate_data)
+          if expected
+          else None,
+      ),
+      (
+          "actual_tool_calls",
+          _convert_tool_calls_to_text(actual.intermediate_data),
+      ),
+  ]
+  for metric_result in per_invocation_result.eval_metric_results:
+    fields.append(
+        (metric_result.metric_name, _format_metric_cell(metric_result))
     )
-    click.echo("Invocation Details:")
-    df = pd.DataFrame(data)
+    if metric_result.details and metric_result.details.rubric_scores:
+      rubrics = (
+          metric_result.criterion.rubrics
+          if isinstance(metric_result.criterion, RubricsBasedCriterion)
+          else None
+      ) or []
+      rubrics_by_id = {
+          r.rubric_id: r.rubric_content.text_property for r in rubrics
+      }
+      for rubric_score in metric_result.details.rubric_scores:
+        rubric = rubrics_by_id.get(rubric_score.rubric_id)
+        if not rubric:
+          rubric = rubric_score.rubric_id
+        fields.append((
+            "rubric",
+            (
+                f"{rubric}\nScore: {rubric_score.score}, "
+                f"Reasoning: {rubric_score.rationale}"
+            ),
+        ))
+  return [(label, value) for label, value in fields if value is not None]
 
-    # Identify columns where ALL values are exactly None
-    columns_to_keep = []
-    for col in df.columns:
-      # Check if all elements in the column are NOT None
-      if not df[col].apply(lambda x: x is None).all():
-        columns_to_keep.append(col)
 
-    # Select only the columns to keep
-    df_result = df[columns_to_keep]
+# Column where values start in the invocation details: just past the longest
+# built-in label (`  tool_trajectory_avg_score: `). A longer label, e.g. a custom
+# metric name, pushes its own value further right instead of being truncated.
+_FIELD_VALUE_COLUMN = 30
+# Width at which long values (e.g. responses) wrap.
+_FIELD_VALUE_WIDTH = 80
 
-    for col in df_result.columns:
-      if df_result[col].dtype == "object":
-        df_result[col] = df_result[col].str.wrap(40)
 
-    click.echo(
-        tabulate(df_result, headers="keys", tablefmt="grid", maxcolwidths=25)
-    )
-    click.echo("\n\n")  # Few empty lines for visual clarity
+def _echo_field(label: str, value: str) -> None:
+  """Prints one `label: value` line, indenting continuation lines under it.
+
+  Each line already in the value (e.g. one tool-call argument per line) is
+  wrapped on its own, so an existing layout survives.
+  """
+  lines = [
+      wrapped
+      for line in value.splitlines() or ["(none)"]
+      for wrapped in textwrap.wrap(line, _FIELD_VALUE_WIDTH) or [""]
+  ]
+  prefix = f"  {label}: ".ljust(_FIELD_VALUE_COLUMN)
+  click.echo(f"{prefix}{lines[0]}")
+  for line in lines[1:]:
+    click.echo(f"{' ' * len(prefix)}{line}")
 
 
 def get_eval_sets_manager(

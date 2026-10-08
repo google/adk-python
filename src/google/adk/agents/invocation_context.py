@@ -31,6 +31,7 @@ from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.auth_credential import AuthCredential
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..events._branch_path import _BranchPath
+from ..events._internal_metadata import without_internal_metadata
 from ..events.event import Event
 from ..live._active_streaming_tool import ActiveStreamingTool
 from ..live._audio_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
@@ -42,6 +43,7 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..tools.base_tool import BaseTool
 from ..workflow._base_node import BaseNode
+from .base_agent import _agent_state_key
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .context_cache_config import ContextCacheConfig
@@ -82,6 +84,36 @@ class _InvocationCostManager(BaseModel):
           "Max number of llm calls limit of"
           f" `{run_config.max_llm_calls}` exceeded"
       )
+
+
+class _AbortState:
+  """Shared mutable state container for invocation abort signals.
+
+  Because Pydantic model_copy() shallow-copies __pydantic_private__, all
+  derived contexts within the same Runner share the exact same _AbortState
+  instance reference. Updates to loop, signal, or aborted propagate across all
+  model_copy() clones in the tree. Cross-Runner sub-runs (such as AgentTool or
+  nested Workflow node runners) propagate cancellation by passing
+  ``_abort_signal`` to the child Runner's ``run_async``. ``signal`` is an
+  ``asyncio.Event`` and can only be awaited on ``loop``, so AgentTool does not
+  pass it when the tool runs on another event loop (e.g. RunConfig's tool
+  thread pool); such a sub-run is not cancelled by a caller abort.
+  """
+
+  def __init__(
+      self,
+      signal: asyncio.Event | None = None,
+      loop: asyncio.AbstractEventLoop | None = None,
+  ) -> None:
+    self.signal = signal if signal is not None else asyncio.Event()
+    self.loop = loop
+    self.aborted = False
+    self.event_synthesized = False
+
+  def __deepcopy__(self, memo: dict[int, Any] | None) -> _AbortState:
+    # Preserve single-instance sharing across deepcopies and avoid traversing
+    # active asyncio event loops or coroutines.
+    return self
 
 
 class InvocationContext(BaseModel):
@@ -219,7 +251,10 @@ class InvocationContext(BaseModel):
   """The compaction config for this invocation."""
 
   token_compaction_checked: bool = False
-  """Whether token-threshold compaction ran during this invocation."""
+  """Whether the compaction request processor compacted before a model call.
+
+  Set on the context that call used, so parent contexts do not see it.
+  """
 
   plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""
@@ -251,6 +286,9 @@ class InvocationContext(BaseModel):
   _custom_metadata: dict[str, Any] = PrivateAttr(default_factory=dict)
   """Custom metadata for attaching low-level execution telemetry."""
 
+  _private_metadata: dict[str, Any] = PrivateAttr(default_factory=dict)
+  """Private metadata for internal caching, not exposed to user code."""
+
   _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
       default_factory=_InvocationCostManager
   )
@@ -258,11 +296,58 @@ class InvocationContext(BaseModel):
   of this invocation.
   """
 
+  _abort_state: _AbortState = PrivateAttr(default_factory=_AbortState)
+  """Captured abort state (signal, loop, and aborted flag) shared across copies."""
+
   @override
   def model_post_init(self, __context: Any) -> None:
     super().model_post_init(__context)
     if self.run_config and self.run_config.custom_metadata:
-      self._custom_metadata.update(self.run_config.custom_metadata)
+      self._custom_metadata.update(
+          without_internal_metadata(self.run_config.custom_metadata) or {}
+      )
+    try:
+      self._abort_state.loop = asyncio.get_running_loop()
+    except RuntimeError:
+      pass
+
+  @property
+  def _abort_signal(self) -> asyncio.Event:
+    """The internal abort signal event for this invocation.
+
+    Private on purpose so callers use ``is_aborted``, while internal runners use
+    ``_abort_signal`` to await cancellation. Sub-contexts are shallow
+    ``model_copy`` clones that share this exact Event instance via
+    ``_abort_state``.
+    """
+    if self._abort_state.loop is None:
+      try:
+        self._abort_state.loop = asyncio.get_running_loop()
+      except RuntimeError:
+        pass
+    return self._abort_state.signal
+
+  def _attach_abort_signal(self, abort_signal: asyncio.Event) -> None:
+    """Replaces this context's abort signal with a caller-owned event.
+
+    Only for the runner to call on a freshly built root context, before any
+    sub-context is derived from it. The runner cannot pass the signal to the
+    constructor because the context is produced by ``_new_invocation_context``,
+    an overridable factory whose subclass overrides do not accept the argument.
+
+    Because sub-contexts share ``_abort_state``, replacing the signal here
+    propagates to all derived contexts. Rebinding after execution begins is
+    unsafe as active tasks may already be awaiting the previous event.
+
+    Args:
+      abort_signal: The caller-owned event to abort this invocation with.
+    """
+    self._abort_state.signal = abort_signal
+    if self._abort_state.loop is None:
+      try:
+        self._abort_state.loop = asyncio.get_running_loop()
+      except RuntimeError:
+        pass
 
   @property
   def is_resumable(self) -> bool:
@@ -271,6 +356,44 @@ class InvocationContext(BaseModel):
         self.resumability_config is not None
         and self.resumability_config.is_resumable
     )
+
+  @property
+  def is_aborted(self) -> bool:
+    """Returns whether the current invocation has been requested to abort."""
+    return self._abort_state.aborted or self._abort_state.signal.is_set()
+
+  def abort(self) -> None:
+    """Trip the abort signal in a thread-safe manner.
+
+    Can be safely called from either the event loop thread or an external
+    worker thread. When called from within the running event loop, trips the
+    signal immediately on the same tick. When called from a foreign thread,
+    schedules the trip thread-safely onto the captured event loop.
+    """
+    self._abort_state.aborted = True
+    signal = self._abort_state.signal
+    if signal.is_set():
+      return
+
+    try:
+      running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+      running_loop = None
+
+    target_loop = self._abort_state.loop
+    if target_loop is not None and running_loop is not target_loop:
+      try:
+        target_loop.call_soon_threadsafe(signal.set)
+      except RuntimeError:
+        try:
+          signal.set()
+        except RuntimeError:
+          pass
+    else:
+      try:
+        signal.set()
+      except RuntimeError:
+        pass
 
   async def _enqueue_event(self, event: Event) -> None:
     """Enqueue an event for the Runner main loop to process.
@@ -318,15 +441,16 @@ class InvocationContext(BaseModel):
         True.
       end_of_agent: Whether the agent has finished running.
     """
+    key = _agent_state_key(self, agent_name)
     if end_of_agent:
-      self.end_of_agents[agent_name] = True
-      self.agent_states.pop(agent_name, None)
+      self.end_of_agents[key] = True
+      self.agent_states.pop(key, None)
     elif agent_state is not None:
-      self.agent_states[agent_name] = agent_state.model_dump(mode="json")
-      self.end_of_agents[agent_name] = False
+      self.agent_states[key] = agent_state.model_dump(mode="json")
+      self.end_of_agents[key] = False
     else:
-      self.end_of_agents.pop(agent_name, None)
-      self.agent_states.pop(agent_name, None)
+      self.end_of_agents.pop(key, None)
+      self.agent_states.pop(key, None)
 
   def reset_sub_agent_states(
       self,

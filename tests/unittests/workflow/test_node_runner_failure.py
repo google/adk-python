@@ -45,6 +45,7 @@ from pydantic import Field
 import pytest
 from typing_extensions import override
 
+from .._invariants import InvariantPlugin
 from .workflow_testing_utils import _FlakyNode
 from .workflow_testing_utils import CustomNonRetryableError
 from .workflow_testing_utils import CustomRetryableError
@@ -52,10 +53,12 @@ from .workflow_testing_utils import simplify_events_with_node
 from .workflow_testing_utils import TestingNode
 
 
-async def _run_workflow(wf, message='start'):
+async def _run_workflow(wf, message='start', *, check_invariants: bool = True):
   """Run a Workflow through Runner, return collected events."""
   ss = InMemorySessionService()
   runner = Runner(app_name=wf.name, node=wf, session_service=ss)
+  if check_invariants:
+    runner.plugin_manager.plugins.insert(0, InvariantPlugin())
   session = await ss.create_session(app_name=wf.name, user_id='u')
   msg = types.Content(parts=[types.Part(text=message)], role='user')
   events = []

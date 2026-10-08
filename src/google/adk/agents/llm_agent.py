@@ -18,6 +18,7 @@ import abc
 import asyncio
 import inspect
 import logging
+import sys
 from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
@@ -26,6 +27,7 @@ from typing import ClassVar
 from typing import Literal
 from typing import Optional
 from typing import Type
+from typing import TYPE_CHECKING
 from typing import Union
 import warnings
 
@@ -40,10 +42,6 @@ from typing_extensions import TypeAlias
 
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
-from ..flows.llm_flows.auto_flow import AutoFlow
-from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
-from ..flows.llm_flows.functions import find_matching_function_call
-from ..flows.llm_flows.single_flow import SingleFlow
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
@@ -53,17 +51,27 @@ from ..tools.base_tool import BaseTool
 from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
 from ..tools.tool_context import ToolContext
+from ..utils import _lazy
+from ..utils._agent_mode import AgentMode as _AgentMode
+from ..utils._agent_mode import LlmAgentMode as _LlmAgentMode
 from ..utils._callback_pipeline import _normalize_callbacks
 from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from ..utils.instructions_utils import InstructionProvider as InstructionProvider
+from ..workflow._base_node import BaseNode
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .context import Context
 from .invocation_context import InvocationContext
+
+if TYPE_CHECKING:
+  from ..flows.llm_flows.auto_flow import AutoFlow as AutoFlow
+  from ..flows.llm_flows.base_llm_flow import BaseLlmFlow as BaseLlmFlow
+  from ..flows.llm_flows.single_flow import SingleFlow as SingleFlow
+
 
 with warnings.catch_warnings():
   # LlmAgentConfig subclasses the deprecated BaseAgentConfig purely as an
@@ -143,6 +151,21 @@ OnToolErrorCallback: TypeAlias = Union[
 ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]  # type: ignore[type-arg]
 
 
+def _wrap_base_node_as_tool(node: BaseNode) -> BaseTool:
+  """Wraps a BaseNode into a NodeTool while rejecting direct BaseAgent usage."""
+  from ..tools._node_tool import NodeTool
+
+  if isinstance(node, BaseAgent):
+    raise ValueError(
+        f"Agent '{node.name}' cannot be used directly as a tool. Agents"
+        ' should be invoked as sub-agents.'
+    )
+  return NodeTool(
+      node=node,
+      description=node.description,
+  )
+
+
 async def _convert_tool_union_to_tools(
     tool_union: ToolUnion,
     ctx: Optional[ReadonlyContext],
@@ -190,22 +213,7 @@ async def _convert_tool_union_to_tools(
   from ..workflow._base_node import BaseNode
 
   if isinstance(tool_union, BaseNode):
-    from ..tools._node_tool import NodeTool
-    from .base_agent import BaseAgent
-
-    if isinstance(tool_union, BaseAgent):
-      raise ValueError(
-          f"Agent '{tool_union.name}' cannot be used directly as a tool. Agents"
-          ' should be invoked as sub-agents.'
-      )
-
-    return [
-        NodeTool(
-            node=tool_union,
-            name=tool_union.name,
-            description=tool_union.description,
-        )
-    ]
+    return [_wrap_base_node_as_tool(tool_union)]
 
   if isinstance(tool_union, BaseTool):
     return [tool_union]
@@ -408,7 +416,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   settings, etc.
   """
 
-  mode: Literal['chat', 'task', 'single_turn'] | None = None
+  mode: _LlmAgentMode | None = None
   """The delegation mode for this agent.
 
   Options:
@@ -954,9 +962,9 @@ class LlmAgent(BaseAgent, abc.ABC):
         and self.disallow_transfer_to_peers
         and not self.sub_agents
     ):
-      return SingleFlow()
+      return _flow_class('SingleFlow')()
     else:
-      return AutoFlow()
+      return _flow_class('AutoFlow')()
 
   def _get_subagent_to_resume(
       self, ctx: InvocationContext
@@ -984,6 +992,8 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     # Last event is from user or another agent.
     if last_event.author == 'user':
+      from ..flows.llm_flows.tools._functions import find_matching_function_call
+
       function_call_event = find_matching_function_call(
           ctx._get_events(current_invocation=True), last_event
       )
@@ -1089,7 +1099,7 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     # Task mode agents deliver their final output via finish_task, not intermediate
     # conversational text turns. Skip output_key processing on text responses for task mode.
-    if getattr(self, 'mode', None) == 'task':
+    if getattr(self, 'mode', None) == _AgentMode.TASK:
       return
 
     # Handle text responses
@@ -1141,7 +1151,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     """
     if (
         not self.output_key
-        or getattr(self, 'mode', None) == 'task'
+        or getattr(self, 'mode', None) == _AgentMode.TASK
         or self.output_schema
         or event.author != self.name
         or event.partial
@@ -1255,27 +1265,13 @@ class LlmAgent(BaseAgent, abc.ABC):
   @classmethod
   def _pre_validate_tools(cls, data: Any) -> Any:
     if isinstance(data, dict) and 'tools' in data and data['tools']:
-      from google.adk.agents.base_agent import BaseAgent
-      from google.adk.tools._node_tool import NodeTool
       from google.adk.workflow._base_node import BaseNode
 
-      new_tools = []
-      for t in data['tools']:
-        if isinstance(t, BaseAgent):
-          raise ValueError(
-              f"Agent '{t.name}' cannot be used directly as a tool. Agents"
-              ' should be invoked as sub-agents.'
-          )
-        elif isinstance(t, BaseNode):
-          new_tools.append(NodeTool(node=t, description=t.description))
-        else:
-          new_tools.append(t)
-      data['tools'] = new_tools
+      data['tools'] = [
+          _wrap_base_node_as_tool(t) if isinstance(t, BaseNode) else t
+          for t in data['tools']
+      ]
     return data
-
-  @model_validator(mode='after')
-  def __model_validator_after(self) -> LlmAgent:
-    return self
 
   @field_validator('generate_content_config', mode='after')
   @classmethod
@@ -1334,7 +1330,7 @@ class LlmAgent(BaseAgent, abc.ABC):
           stacklevel=3,
       )
 
-    if self.mode == 'task':
+    if self.mode == _AgentMode.TASK:
       from .llm.task._finish_task_tool import FinishTaskTool
 
       self.tools.append(FinishTaskTool(self))
@@ -1352,12 +1348,28 @@ class LlmAgent(BaseAgent, abc.ABC):
         mode = getattr(sub_agent, 'mode', None)
         # LlmAgent sub-agents default to chat mode (unchanged behavior).
         if isinstance(sub_agent, LlmAgent) and mode is None:
-          sub_agent.mode = 'chat'
-          mode = 'chat'
-        if mode == 'single_turn':
+          sub_agent.mode = _AgentMode.CHAT.value
+          mode = _AgentMode.CHAT.value
+        if mode == _AgentMode.SINGLE_TURN:
           self.tools.append(_SingleTurnAgentTool(sub_agent))
-        elif mode == 'task':
+        elif mode == _AgentMode.TASK:
           self.tools.append(_TaskAgentTool(sub_agent))
 
 
 Agent: TypeAlias = LlmAgent
+
+if not TYPE_CHECKING:
+  __getattr__, __dir__ = _lazy.accessors(
+      globals(),
+      {
+          'AutoFlow': 'google.adk.flows.llm_flows.auto_flow',
+          'BaseLlmFlow': 'google.adk.flows.llm_flows.base_llm_flow',
+          'SingleFlow': 'google.adk.flows.llm_flows.single_flow',
+      },
+  )
+
+
+def _flow_class(name: str) -> type[BaseLlmFlow]:
+  """Returns this module's `name` attribute, so a patched flow class is used."""
+  flow: type[BaseLlmFlow] = getattr(sys.modules[__name__], name)
+  return flow

@@ -12,7 +12,7 @@ description = "Agent Development Kit"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [ { name = "Google LLC", email = "googleapis-packages@google.com" } ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
@@ -20,7 +20,6 @@ classifiers = [
   "Operating System :: OS Independent",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -34,6 +33,7 @@ dependencies = [
   "aiosqlite>=0.21",
   "authlib>=1.6.6,<2",
   "click>=8.1.8,<9",
+  "cryptography>=42",
   "fastapi>=0.133,<1",
   "google-auth[pyopenssl]>=2.47",
   "google-genai>=2.19,<3",
@@ -79,7 +79,19 @@ optional-dependencies.all = [
   "google-antigravity>=0.1.7,<0.2",
   "google-api-python-client>=2.157,<3",
   "google-cloud-agentidentitycredentials>=0.1,<0.2",
-  "google-cloud-aiplatform[agent-engines,evaluation]>=1.148.1,<2",
+  # Keep this range identical to google-cloud-aiplatform below. Both
+  # distributions install the top-level `agentplatform` package and share 63
+  # files, so whichever lands last owns them; holding the pair to one release
+  # is what keeps that from mattering. PEP 508 cannot say "same version as
+  # that other distribution", so uv.lock and the constraints files are what
+  # actually pin them together -- this comment is why not to let them drift.
+  "google-cloud-agentplatform[agent_engines]>=2.2,<3",
+  # Still needed alongside agentplatform for the Evaluation SDK, which stays
+  # on the GAPIC-backed `vertexai` surface. The deprecated Code Interpreter
+  # executor needs this distribution too, but no extra declares it for that
+  # purpose: it is on its way out, so VertexAiCodeExecutor tells the caller to
+  # install it directly rather than widening an extra to carry it.
+  "google-cloud-aiplatform[evaluation]>=2.2,<3",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
   "google-cloud-bigtable>=2.39.1",
@@ -88,6 +100,7 @@ optional-dependencies.all = [
   "google-cloud-eventarc-publishing>=0.10,<1",
   "google-cloud-firestore>=2.11,<3",
   "google-cloud-iamconnectorcredentials>=0.1,<0.2",
+  "google-cloud-kms>=3,<4",
   "google-cloud-modelarmor>=0.7,<1",
   "google-cloud-parametermanager>=0.4,<1",
   "google-cloud-pubsub>=2,<3",
@@ -131,7 +144,7 @@ optional-dependencies.all = [
   "redis>=4.2",
   "rouge-score>=0.1.2",
   "slack-bolt>=1.22",
-  "sqlalchemy>=2,<3",
+  "sqlalchemy[asyncio]>=2,<3",
   "sqlalchemy-spanner>=1.14",
   "tabulate>=0.9",
   "toolbox-adk>=1,<2",
@@ -159,7 +172,7 @@ optional-dependencies.daytona = [
   "daytona>=0.191", # For DaytonaEnvironment remote sandbox.
 ]
 optional-dependencies.db = [
-  "sqlalchemy>=2,<3",
+  "sqlalchemy[asyncio]>=2,<3",
   "sqlalchemy-spanner>=1.14",
 ]
 optional-dependencies.dev = [
@@ -196,10 +209,10 @@ optional-dependencies.e2b = [
 ]
 optional-dependencies.eval = [
   "gepa>=0.1",
-  "google-cloud-aiplatform[evaluation]>=1.148",
+  "google-cloud-aiplatform[evaluation]>=2.2,<3",
   "google-cloud-texttospeech>=2.37",
-  "jinja2>=3.1.4,<4",                           # For eval template rendering
-  "nltk!=3.10.1",                               # Transitive via rouge-score; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
+  "jinja2>=3.1.4,<4",                            # For eval template rendering
+  "nltk!=3.10.1",                                # Transitive via rouge-score; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "openpyxl>=3.1.5,<4",
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
@@ -226,13 +239,21 @@ optional-dependencies.extensions = [
   "toolbox-adk>=1,<2",
 ]
 optional-dependencies.gcp = [
-  "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
+  # Agent Platform only, not google-cloud-aiplatform: the standalone package
+  # carries no GAPIC stack, so `pip install google-adk[gcp]` no longer drags in
+  # ~1000 generated aiplatform_v1 modules. The Evaluation SDK is still on the
+  # GAPIC-backed `vertexai` surface and asks for google-cloud-aiplatform
+  # through the eval, all and test extras. The deprecated Code Interpreter
+  # executor needs it as well and no extra covers that case; see the note on
+  # the aiplatform entry in `all`.
+  "google-cloud-agentplatform[agent_engines]>=2.2,<3",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
   "google-cloud-bigtable>=2.39.1",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
   "google-cloud-eventarc-publishing>=0.10,<1",
+  "google-cloud-kms>=3,<4",
   "google-cloud-modelarmor>=0.7,<1",
   "google-cloud-parametermanager>=0.4,<1",
   "google-cloud-pubsub>=2,<3",
@@ -269,6 +290,7 @@ optional-dependencies.mongodb = [ "pymongo>=4.9,<5" ]
 optional-dependencies.oci = [
   "oci>=2.126", # OCI Generative AI native SDK (OCIGenAILlm)
 ]
+optional-dependencies.openai = [ "openai>=2.20,<3" ]
 optional-dependencies.otel-gcp = [
   "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
@@ -297,7 +319,19 @@ optional-dependencies.test = [
   "google-antigravity>=0.1.7,<0.2",
   "google-api-python-client>=2.157,<3",
   "google-cloud-agentidentitycredentials>=0.1,<0.2",
-  "google-cloud-aiplatform[agent-engines,evaluation]>=1.148.1,<2",
+  # Keep this range identical to google-cloud-aiplatform below. Both
+  # distributions install the top-level `agentplatform` package and share 63
+  # files, so whichever lands last owns them; holding the pair to one release
+  # is what keeps that from mattering. PEP 508 cannot say "same version as
+  # that other distribution", so uv.lock and the constraints files are what
+  # actually pin them together -- this comment is why not to let them drift.
+  "google-cloud-agentplatform[agent_engines]>=2.2,<3",
+  # Still needed alongside agentplatform for the Evaluation SDK, which stays
+  # on the GAPIC-backed `vertexai` surface. The deprecated Code Interpreter
+  # executor needs this distribution too, but no extra declares it for that
+  # purpose: it is on its way out, so VertexAiCodeExecutor tells the caller to
+  # install it directly rather than widening an extra to carry it.
+  "google-cloud-aiplatform[evaluation]>=2.2,<3",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
   "google-cloud-bigtable>=2.39.1",
@@ -348,7 +382,7 @@ optional-dependencies.test = [
   "python-multipart>=0.0.9",
   "rouge-score>=0.1.2",
   "slack-bolt>=1.22",
-  "sqlalchemy>=2,<3",
+  "sqlalchemy[asyncio]>=2,<3",
   "sqlalchemy-spanner>=1.14",
   "tabulate>=0.9",
   "tomli>=2,<3; python_version<'3.11'",

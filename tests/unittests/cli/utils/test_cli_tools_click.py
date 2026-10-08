@@ -1277,6 +1277,90 @@ def test_cli_deploy_docker_failure(
   assert "Deploy failed: boom" in result.output
 
 
+def test_cli_deploy_agent_engine_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Exception from to_agent_engine should surface with a non-zero exit."""
+
+  def _boom(*_a: Any, **_k: Any) -> None:  # noqa: D401
+    raise RuntimeError("boom")
+
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_agent_engine", _boom)
+
+  agent_dir = tmp_path / "agent5"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "agent_engine",
+          "--project",
+          "test-proj",
+          "--region",
+          "us-central1",
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 1
+  assert "Deploy failed: boom" in result.output
+
+
+def test_cli_deploy_gke_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Exception from to_gke should surface with a non-zero exit."""
+
+  def _boom(*_a: Any, **_k: Any) -> None:  # noqa: D401
+    raise RuntimeError("boom")
+
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_gke", _boom)
+
+  agent_dir = tmp_path / "agent6"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "gke",
+          "--project",
+          "test-proj",
+          "--region",
+          "us-central1",
+          "--cluster_name",
+          "test-cluster",
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 1
+  assert "Deploy failed: boom" in result.output
+
+
+def test_cli_deploy_cloud_run_click_error_is_surfaced_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A ClickException from the deployer keeps its own message."""
+
+  def _reject(*_a: Any, **_k: Any) -> None:
+    raise click.ClickException("extra_packages path not found: nope")
+
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", _reject)
+
+  agent_dir = tmp_path / "agent_click_error"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main, ["deploy", "cloud_run", str(agent_dir)]
+  )
+
+  assert result.exit_code == 1
+  assert "Error: extra_packages path not found: nope" in result.output
+  assert "Deploy failed" not in result.output
+
+
 def test_cli_deploy_cloud_run_passthrough_args(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1528,6 +1612,38 @@ def test_cli_deploy_agent_engine_otel_to_cloud_success(
   assert called_kwargs.get("otel_to_cloud")
 
 
+def test_cli_deploy_agent_engine_usage_error_exits_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A usage error keeps click's exit code 2 and its usage message."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_agent_engine", rec)
+
+  agent_dir = tmp_path / "agent_ae_usage"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "agent_engine",
+          "--project",
+          "test-proj",
+          "--region",
+          "us-central1",
+          "--validate-agent-import",
+          "--skip-agent-import-validation",
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 2
+  assert "Usage:" in result.output
+  assert "Error: Do not pass both --validate-agent-import" in result.output
+  assert "Deploy failed" not in result.output
+  assert not rec.calls
+
+
 # cli deploy gke
 def test_cli_deploy_gke_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1642,6 +1758,50 @@ def test_cli_api_server_invokes_uvicorn(
   assert _patch_uvicorn.calls, "uvicorn.Server.run must be called"
 
 
+@pytest.mark.parametrize("command", ["web", "api_server"])
+def test_cli_server_passes_avatar_config(
+    tmp_path: Path,
+    _patch_uvicorn: _Recorder,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+  """Both server commands pass parsed avatar configuration to the app."""
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  mock_get_app = _Recorder()
+  monkeypatch.setattr("google.adk.cli.fast_api.get_fast_api_app", mock_get_app)
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [command, "--avatar_config", '{"avatarName":"Kai"}', str(agents_dir)],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert mock_get_app.calls[0][1]["avatar_config"].avatar_name == "Kai"
+
+
+@pytest.mark.parametrize("command", ["web", "api_server"])
+def test_cli_server_passes_max_llm_calls(
+    tmp_path: Path,
+    _patch_uvicorn: _Recorder,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+  """Both server commands pass the requested LLM call limit to the app."""
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  mock_get_app = _Recorder()
+  monkeypatch.setattr("google.adk.cli.fast_api.get_fast_api_app", mock_get_app)
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [command, "--max_llm_calls", "37", str(agents_dir)],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert mock_get_app.calls[0][1]["max_llm_calls"] == 37
+
+
 def test_cli_web_passes_service_uris(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_uvicorn: _Recorder
 ) -> None:
@@ -1672,6 +1832,35 @@ def test_cli_web_passes_service_uris(
   assert called_kwargs.get("session_service_uri") == "sqlite:///test.db"
   assert called_kwargs.get("artifact_service_uri") == "gs://mybucket"
   assert called_kwargs.get("memory_service_uri") == "rag://mycorpus"
+
+
+def test_cli_api_server_passes_auto_create_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _patch_uvicorn: _Recorder,
+) -> None:
+  """`adk api_server --auto_create_session` enables automatic sessions."""
+  agents_dir = tmp_path / "agents_api"
+  agents_dir.mkdir()
+
+  mock_get_app = _Recorder()
+  monkeypatch.setattr("google.adk.cli.fast_api.get_fast_api_app", mock_get_app)
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "api_server",
+          str(agents_dir),
+          "--auto_create_session",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert mock_get_app.calls
+
+  called_kwargs = mock_get_app.calls[-1][1]
+  assert called_kwargs["auto_create_session"] is True
 
 
 @pytest.mark.parametrize("command", ["web", "api_server"])
@@ -2716,8 +2905,64 @@ def test_fast_api_common_options_documented_defaults() -> None:
   assert captured["a2a"] is False
   assert captured["allow_origins"] == ()
   assert captured["log_level"] == "INFO"
+  assert captured["avatar_config"] is None
+  assert captured["max_llm_calls"] is None
   # --verbose is consumed while folding it into log_level.
   assert "verbose" not in captured
+
+
+@pytest.mark.parametrize("from_file", [False, True])
+def test_fast_api_common_options_parses_avatar_config(
+    tmp_path: Path, from_file: bool
+) -> None:
+  """Avatar configuration accepts either inline JSON or a JSON file."""
+  command, captured = _fast_api_command()
+  config_json = '{"avatarName":"Kai","videoBitrateBps":1000000}'
+  value = config_json
+  if from_file:
+    config_path = tmp_path / "avatar.json"
+    config_path.write_text(config_json, encoding="utf-8")
+    value = str(config_path)
+
+  result = CliRunner().invoke(command, ["--avatar_config", value])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["avatar_config"].avatar_name == "Kai"
+  assert captured["avatar_config"].video_bitrate_bps == 1000000
+
+
+def test_fast_api_common_options_rejects_invalid_avatar_config() -> None:
+  """Invalid inline avatar JSON fails before either server starts."""
+  command, _ = _fast_api_command()
+
+  result = CliRunner().invoke(command, ["--avatar_config", "{invalid}"])
+
+  assert result.exit_code == 2
+  assert "valid AvatarConfig JSON object" in result.output
+
+
+def test_fast_api_common_options_rejects_missing_avatar_config_file(
+    tmp_path: Path,
+) -> None:
+  """A non-JSON value that is not a readable file is a usage error."""
+  command, _ = _fast_api_command()
+  missing_path = tmp_path / "missing_avatar.json"
+
+  result = CliRunner().invoke(command, ["--avatar_config", str(missing_path)])
+
+  assert result.exit_code == 2
+  assert "could not read avatar configuration file" in result.output
+  assert "missing_avatar.json" in result.output
+
+
+def test_fast_api_common_options_parses_max_llm_calls() -> None:
+  """The common server option parses an explicit per-run LLM call limit."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(command, ["--max_llm_calls", "37"])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["max_llm_calls"] == 37
 
 
 # adk test
@@ -3240,7 +3485,7 @@ def test_cli_migrate_session_defaults_to_safe_unpickling(
 def test_cli_migrate_session_reports_the_underlying_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  """A failed migration is reported to the user rather than raised."""
+  """A failed migration is reported to the user and exits non-zero."""
 
   def explode(*args: Any, **kwargs: Any) -> None:
     raise RuntimeError("destination schema is newer")
@@ -3261,4 +3506,5 @@ def test_cli_migrate_session_reports_the_underlying_failure(
       ],
   )
 
+  assert result.exit_code == 1
   assert "Migration failed: destination schema is newer" in result.output

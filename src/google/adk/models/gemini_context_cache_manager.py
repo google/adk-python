@@ -596,10 +596,11 @@ class GeminiContextCacheManager:
       span.set_attribute("model", model)
       span.set_attribute("ttl_seconds", cache_request_config.ttl_seconds)
 
+      # Credentials can live in per-request headers, so they stay out of logs.
       logger.debug(
           "Creating cache with model %s and config: %s",
           model,
-          cache_config,
+          cache_config.model_copy(update={"http_options": None}),
       )
       cached_content = await self.genai_client.aio.caches.create(
           model=model,

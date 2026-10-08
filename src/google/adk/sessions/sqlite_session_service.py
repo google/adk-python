@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
@@ -142,9 +143,7 @@ def _parse_db_path(db_path: str) -> tuple[str, str, bool]:
     return db_path, db_path, False
 
   normalized_path = raw_path
-  if normalized_path.startswith("//"):
-    normalized_path = normalized_path[1:]
-  elif normalized_path.startswith("/"):
+  if normalized_path.startswith("/"):
     normalized_path = normalized_path[1:]
 
   if parsed.query:
@@ -185,6 +184,8 @@ class SqliteSessionService(BaseSessionService):
         db_path
     )
     self._schema_ready = False
+    self._schema_lock = asyncio.Lock()
+    self._memory_conn: aiosqlite.Connection | None = None
 
     if self._is_migration_needed():
       raise RuntimeError(
@@ -206,13 +207,15 @@ class SqliteSessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
-    if session_id:
-      session_id = session_id.strip()
-    if not session_id:
-      session_id = platform_uuid.new_uuid()
     now = platform_time.get_time()
 
     async with self._get_db_connection() as db:
+      if session_id:
+        session_id = await self._resolve_session_id(
+            db, app_name, user_id, session_id
+        )
+      if not session_id:
+        session_id = platform_uuid.new_uuid()
       # Check if session_id already exists
       async with db.execute(
           "SELECT 1 FROM sessions WHERE app_name=? AND user_id=? AND id=?",
@@ -286,6 +289,9 @@ class SqliteSessionService(BaseSessionService):
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
     async with self._get_db_connection() as db:
+      session_id = await self._resolve_session_id(
+          db, app_name, user_id, session_id
+      )
       async with db.execute(
           "SELECT state, update_time FROM sessions WHERE app_name=? AND"
           " user_id=? AND id=?",
@@ -310,10 +316,8 @@ class SqliteSessionService(BaseSessionService):
         query_parts.append("AND timestamp >= ?")
         params.append(config.after_timestamp)
 
-      # Break timestamp ties on id so tied events come back in the same order
-      # on every read; otherwise a replayed conversation shuffles and
-      # `num_recent_events` truncates at an arbitrary point in the tie.
-      query_parts.append("ORDER BY timestamp DESC, id DESC")
+      # Break timestamp ties on rowid so tied events reload in append order.
+      query_parts.append("ORDER BY timestamp DESC, rowid DESC")
 
       if config and config.num_recent_events is not None:
         query_parts.append("LIMIT ?")
@@ -409,6 +413,9 @@ class SqliteSessionService(BaseSessionService):
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     async with self._get_db_connection() as db:
+      session_id = await self._resolve_session_id(
+          db, app_name, user_id, session_id
+      )
       await db.execute(
           "DELETE FROM sessions WHERE app_name=? AND user_id=? AND id=?",
           (app_name, user_id, session_id),
@@ -518,21 +525,53 @@ class SqliteSessionService(BaseSessionService):
       session.last_update_time = event_timestamp
 
     # Also update the in-memory session
-    await super().append_event(session=session, event=event)
-    return event
+    return self._commit_event_to_session(session, event)
+
+  async def close(self) -> None:
+    """Closes any persistent resources."""
+    async with self._schema_lock:
+      if self._memory_conn is not None:
+        await self._memory_conn.close()
+        self._memory_conn = None
+        self._schema_ready = False
 
   @asynccontextmanager
   async def _get_db_connection(self) -> AsyncIterator[aiosqlite.Connection]:
     """Connects to the db and performs initial setup."""
-    async with aiosqlite.connect(
-        self._db_connect_path, uri=self._db_connect_uri
-    ) as db:
-      db.row_factory = aiosqlite.Row
-      await db.execute(PRAGMA_FOREIGN_KEYS)
-      if not self._schema_ready:
-        await db.executescript(CREATE_SCHEMA_SQL)
-        self._schema_ready = True
-      yield db
+    if self._db_path in ("", ":memory:"):
+      async with self._schema_lock:
+        if self._memory_conn is None:
+          conn = aiosqlite.connect(
+              self._db_connect_path, uri=self._db_connect_uri
+          )
+          setattr(getattr(conn, "_thread", conn), "daemon", True)
+          await conn
+          try:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute(PRAGMA_FOREIGN_KEYS)
+            await conn.executescript(CREATE_SCHEMA_SQL)
+          except BaseException:
+            await conn.close()
+            raise
+          self._memory_conn = conn
+          self._schema_ready = True
+        try:
+          yield self._memory_conn
+        except BaseException:
+          await self._memory_conn.rollback()
+          raise
+    else:
+      async with aiosqlite.connect(
+          self._db_connect_path, uri=self._db_connect_uri
+      ) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute(PRAGMA_FOREIGN_KEYS)
+        if not self._schema_ready:
+          async with self._schema_lock:
+            if not self._schema_ready:
+              await db.executescript(CREATE_SCHEMA_SQL)
+              self._schema_ready = True
+        yield db
 
   async def _get_state(
       self,
@@ -561,18 +600,24 @@ class SqliteSessionService(BaseSessionService):
         (app_name, user_id),
     )
 
-  async def _get_session_state(
+  async def _resolve_session_id(
       self,
       db: aiosqlite.Connection,
       app_name: str,
       user_id: str,
       session_id: str,
-  ) -> dict[str, Any]:
-    return await self._get_state(
-        db,
-        "SELECT state FROM sessions WHERE app_name=? AND user_id=? AND id=?",
+  ) -> str:
+    """Returns session_id if a row is stored under it, else its stripped form."""
+    if not session_id or session_id == session_id.strip():
+      return session_id
+    # Databases migrated from DatabaseSessionService keep padded ids verbatim.
+    async with db.execute(
+        "SELECT 1 FROM sessions WHERE app_name=? AND user_id=? AND id=?",
         (app_name, user_id, session_id),
-    )
+    ) as cursor:
+      if await cursor.fetchone():
+        return session_id
+    return session_id.strip()
 
   async def _upsert_app_state(
       self,
@@ -617,13 +662,14 @@ class SqliteSessionService(BaseSessionService):
       now: float,
   ) -> None:
     """Atomically updates session state with dict.update() semantics."""
+    delta_json = json.dumps(delta)
     await db.execute(
         "UPDATE sessions SET"
         f" state=({_MERGE_STATE_SQL.format(delta='?', state='state')}),"
         " update_time=? WHERE app_name=? AND user_id=? AND id=?",
         (
-            json.dumps(delta),
-            json.dumps(delta),
+            delta_json,
+            delta_json,
             now,
             app_name,
             user_id,

@@ -20,7 +20,6 @@ import logging
 from typing import TYPE_CHECKING
 
 from . import basic
-from . import request_confirmation
 from .base_llm_flow import BaseLlmFlow
 from .context import _cache
 from .context import _compaction
@@ -31,6 +30,7 @@ from .extensions import _planning
 from .prompt import _identity
 from .prompt import _instructions
 from .prompt import _schema as _output_schema_processor
+from .tools import _confirmation as request_confirmation
 
 if TYPE_CHECKING:
   from ._base_llm_processor import BaseLlmRequestProcessor
@@ -40,7 +40,13 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 
 def _create_request_processors() -> list[BaseLlmRequestProcessor]:
-  """Create the standard request processor list for a single-agent flow."""
+  """Create the standard request processor list for a single-agent flow.
+
+  The list order below is authoritative: processors run in insertion order,
+  and the comments spell out the constraints that order has to respect. Each
+  processor declares a stable `name` so callers can locate one without relying
+  on its index, and insert relative to it instead of appending blindly.
+  """
   from ...auth import auth_preprocessor
 
   return [
@@ -74,7 +80,11 @@ def _create_request_processors() -> list[BaseLlmRequestProcessor]:
 
 
 def _create_response_processors() -> list[BaseLlmResponseProcessor]:
-  """Create the standard response processor list for a single-agent flow."""
+  """Create the standard response processor list for a single-agent flow.
+
+  As with the request processors, the list order is authoritative and each
+  processor carries a stable `name` for callers to locate it by.
+  """
   return [
       _planning.response_processor,
       _code_execution.response_processor,

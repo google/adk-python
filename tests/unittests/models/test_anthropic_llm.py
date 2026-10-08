@@ -1194,6 +1194,151 @@ def test_content_to_message_param(
       mock_logger.warning.assert_not_called()
 
 
+def test_content_to_message_param_skips_empty_text_part():
+  """An empty text part must be skipped instead of raising NotImplementedError.
+
+  ADK can emit `Part(text='')` itself, e.g. when code execution produces no
+  output, and Anthropic rejects empty text blocks.
+  """
+  content = types.Content(
+      role="user",
+      parts=[
+          types.Part(text="run it"),
+          types.Part(text=""),
+      ],
+  )
+
+  result = content_to_message_param(content)
+
+  assert result["role"] == "user"
+  assert result["content"] == [{"type": "text", "text": "run it"}]
+
+
+def test_content_to_message_param_skips_empty_text_part_with_metadata():
+  """An empty text part carrying part_metadata is skipped without raising."""
+  part = types.Part(text="", part_metadata={"key": "value"})
+  content = types.Content(
+      role="user",
+      parts=[
+          types.Part(text="run it"),
+          part,
+      ],
+  )
+
+  result = content_to_message_param(content)
+
+  assert result["role"] == "user"
+  assert result["content"] == [{"type": "text", "text": "run it"}]
+
+
+def test_content_to_message_param_keeps_non_text_payload_with_empty_text():
+  """A part that has other payload alongside empty text is not dropped."""
+  part = types.Part(text="")
+  part.function_call = types.FunctionCall(id="call_1", name="tool", args={})
+  content = types.Content(role="model", parts=[part])
+
+  result = content_to_message_param(content)
+
+  assert len(result["content"]) == 1
+  assert result["content"][0]["type"] == "tool_use"
+
+
+def test_content_to_message_param_lone_empty_text_emits_placeholder_block():
+  """A message holding only an empty text part emits a placeholder block.
+
+  ADK emits `Part(text='')` for code execution with no output. Dropping the
+  turn would cause the conversation to end on an assistant turn, which Anthropic
+  interprets as assistant prefill. A placeholder block preserves the turn.
+  """
+  content = types.Content(
+      role="user",
+      parts=[
+          types.Part(text=""),
+      ],
+  )
+
+  result = content_to_message_param(content)
+
+  assert result["role"] == "user"
+  # Non-whitespace placeholder ('.') preserves the user turn without triggering
+  # Anthropic's HTTP 400 rejection on whitespace-only text blocks.
+  assert result["content"] == [{"type": "text", "text": "."}]
+
+
+def test_content_to_message_param_model_empty_text_emits_no_placeholder():
+  """A model turn holding only an empty text part emits no placeholder block.
+
+  A trailing assistant message with a placeholder would be interpreted by
+  Claude as assistant prefill.
+  """
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text=""),
+      ],
+  )
+
+  result = content_to_message_param(content)
+
+  assert result["role"] == "assistant"
+  assert result["content"] == []
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_retains_turn_with_lone_empty_text_part(
+    claude_llm, generate_content_response, generate_llm_response
+):
+  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.messages.create.return_value = mock_coro()
+
+      llm_request = LlmRequest(
+          contents=[
+              types.Content(
+                  role="user",
+                  parts=[types.Part(text="run it")],
+              ),
+              types.Content(
+                  role="model",
+                  parts=[types.Part(text="running")],
+              ),
+              types.Content(
+                  role="user",
+                  parts=[types.Part(text="")],
+              ),
+          ]
+      )
+
+      responses = [
+          resp
+          async for resp in claude_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+      assert len(responses) == 1
+
+      mock_client.messages.create.assert_called_once()
+      call_kwargs = mock_client.messages.create.call_args.kwargs
+      assert len(call_kwargs["messages"]) == 3
+      assert call_kwargs["messages"][0]["content"] == [
+          {"type": "text", "text": "run it"}
+      ]
+      assert call_kwargs["messages"][1]["content"] == [
+          {"type": "text", "text": "running"}
+      ]
+      assert call_kwargs["messages"][2]["content"] == [
+          {"type": "text", "text": "."}
+      ]
+
+
 # --- Tests for Bug #2: json.dumps for dict/list function results ---
 
 
@@ -3088,6 +3233,8 @@ async def _capture_anthropic_messages(
             2,
         ),
         ("matching_empty_ids_pair", [""], [""], 1),
+        ("multiple_empty_ids_pair_distinctly", ["", ""], ["", ""], 2),
+        ("multiple_none_ids_pair_distinctly", [None, None], [None, None], 2),
         ("none_and_empty_collapse", [None], [""], 1),
         ("repeated_invalid_id_consistent", ["bad!"], ["bad!"], 1),
     ],
@@ -3134,6 +3281,155 @@ async def test_generate_content_async_pairs_invalid_tool_ids(
   ]
   assert len(set(use_ids)) == expected_unique
   assert set(use_ids) == set(result_ids)
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_multiturn_empty_tool_ids_unique(
+    generate_content_response,
+    generate_llm_response,
+):
+  """Multi-turn conversation with empty tool IDs assigns unique paired tool IDs."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  contents = [
+      Content(role="user", parts=[Part.from_text(text="Question 1")]),
+      Content(
+          role="model",
+          parts=[_make_tool_call_part("execute_sql", "")],
+      ),
+      Content(
+          role="user",
+          parts=[_make_tool_response_part("execute_sql", "")],
+      ),
+      Content(role="user", parts=[Part.from_text(text="Question 2")]),
+      Content(
+          role="model",
+          parts=[_make_tool_call_part("execute_sql", "")],
+      ),
+      Content(
+          role="user",
+          parts=[_make_tool_response_part("execute_sql", "")],
+      ),
+  ]
+
+  messages = await _capture_anthropic_messages(
+      llm, contents, generate_content_response, generate_llm_response
+  )
+
+  use_ids = [
+      b["id"]
+      for m in messages
+      if m["role"] == "assistant"
+      for b in m["content"]
+      if b["type"] == "tool_use"
+  ]
+  result_ids = [
+      b["tool_use_id"]
+      for m in messages
+      if m["role"] == "user"
+      for b in m["content"]
+      if b["type"] == "tool_result"
+  ]
+  assert len(use_ids) == 2
+  assert len(set(use_ids)) == 2
+  assert use_ids == result_ids
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_named_response_removes_from_fallback_list(
+    generate_content_response,
+    generate_llm_response,
+):
+  """Named response removes assigned ID from fallback list so anonymous response gets next call."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  contents = [
+      Content(role="user", parts=[Part.from_text(text="Question 1")]),
+      Content(
+          role="model",
+          parts=[
+              _make_tool_call_part("fetch_schema", ""),
+              _make_tool_call_part("execute_sql", ""),
+          ],
+      ),
+      Content(
+          role="user",
+          parts=[
+              _make_tool_response_part("fetch_schema", ""),
+              _make_tool_response_part("", ""),
+          ],
+      ),
+  ]
+
+  messages = await _capture_anthropic_messages(
+      llm, contents, generate_content_response, generate_llm_response
+  )
+
+  use_ids = [
+      b["id"]
+      for m in messages
+      if m["role"] == "assistant"
+      for b in m["content"]
+      if b["type"] == "tool_use"
+  ]
+  result_ids = [
+      b["tool_use_id"]
+      for m in messages
+      if m["role"] == "user"
+      for b in m["content"]
+      if b["type"] == "tool_result"
+  ]
+  assert len(use_ids) == 2
+  assert len(set(use_ids)) == 2
+  assert len(set(result_ids)) == 2
+  assert use_ids == result_ids
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_anonymous_response_removes_from_named_map(
+    generate_content_response,
+    generate_llm_response,
+):
+  """Anonymous response removes assigned ID from named map so named response gets next call."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  contents = [
+      Content(role="user", parts=[Part.from_text(text="Question 1")]),
+      Content(
+          role="model",
+          parts=[
+              _make_tool_call_part("fetch_schema", ""),
+              _make_tool_call_part("fetch_schema", ""),
+          ],
+      ),
+      Content(
+          role="user",
+          parts=[
+              _make_tool_response_part("", ""),
+              _make_tool_response_part("fetch_schema", ""),
+          ],
+      ),
+  ]
+
+  messages = await _capture_anthropic_messages(
+      llm, contents, generate_content_response, generate_llm_response
+  )
+
+  use_ids = [
+      b["id"]
+      for m in messages
+      if m["role"] == "assistant"
+      for b in m["content"]
+      if b["type"] == "tool_use"
+  ]
+  result_ids = [
+      b["tool_use_id"]
+      for m in messages
+      if m["role"] == "user"
+      for b in m["content"]
+      if b["type"] == "tool_result"
+  ]
+  assert len(use_ids) == 2
+  assert len(set(use_ids)) == 2
+  assert len(set(result_ids)) == 2
+  assert use_ids == result_ids
 
 
 @pytest.mark.asyncio

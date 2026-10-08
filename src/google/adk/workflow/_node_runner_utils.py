@@ -60,14 +60,16 @@ async def run_node_async(
     yield_user_message: bool = False,
     node: BaseNode | None = None,
     session: Optional[Session] = None,
+    abort_signal: Optional[asyncio.Event] = None,
 ) -> AsyncGenerator[Event, None]:
   """Runs a BaseNode or Workflow in async mode."""
+  from ..runners import _CALLER_CLOSED_EARLY_MSG
   from ..runners import _find_active_task_scope
 
   caller_ctx = context.get_current()
 
   async def _run() -> AsyncGenerator[Event, None]:
-    nonlocal invocation_id, new_message, session
+    nonlocal invocation_id, new_message, node, session
     with _instrumentation.record_invocation(
         entrypoint_node=node or runner.agent,
         conversation_id=session_id,
@@ -116,12 +118,18 @@ async def run_node_async(
           run_config=run_config or RunConfig(),
           invocation_id=invocation_id,
       )
+      if abort_signal is not None:
+        # Attached here rather than passed to `_new_invocation_context`, whose
+        # signature subclasses override. Safe at this point because nothing has
+        # derived a sub-context from this one yet.
+        ic._attach_abort_signal(abort_signal)  # pylint: disable=protected-access
       if node and node is not runner.agent:
         ic.agent = node
         runner._restore_branch_from_history(  # pylint: disable=protected-access
             ic, node, root=runner.agent, invocation_id=invocation_id
         )
       ic._event_queue = asyncio.Queue()  # pylint: disable=protected-access
+      ic._abort_state.loop = asyncio.get_running_loop()  # pylint: disable=protected-access
 
       # 2. Append user message to session and resolve node_input
       # A message that joins a paused task only borrowed that invocation's id,
@@ -147,7 +155,8 @@ async def run_node_async(
       # on_run_error_callback: they are part of runner execution even though
       # they run before the main event loop. Notification-only; the original
       # exception is always re-raised, and after_run stays success-only.
-      run_error = None
+      run_error: BaseException | None = None
+      closing_early = False
       try:
         try:
           should_process_message = bool(
@@ -166,13 +175,41 @@ async def run_node_async(
             )
             if modified_user_message is not None:
               new_message = modified_user_message
-              if not resume_inputs:
+              resume_inputs = runner._extract_resume_inputs(new_message)  # pylint: disable=protected-access
+              runner._validate_new_message(new_message, resume_inputs)  # pylint: disable=protected-access
+              if not invocation_id:
+                resolved_inv_id = runner._resolve_invocation_id_from_fr(  # pylint: disable=protected-access
+                    session, new_message
+                )
+                if resolved_inv_id:
+                  ic.invocation_id = resolved_inv_id
+                  continues_paused_task = False
+              if resume_inputs and not continues_paused_task:
+                recovered_content = runner._find_user_message_for_invocation(  # pylint: disable=protected-access
+                    ic.session.events, ic.invocation_id
+                )
+                if recovered_content is not None:
+                  node_input = recovered_content
+                  ic.user_content = recovered_content
+              else:
                 ic.user_content = new_message
                 node_input = new_message
 
             user_event = await runner._append_user_event(  # pylint: disable=protected-access
                 ic, new_message, state_delta=state_delta
             )
+            if (
+                modified_user_message is not None
+                and isinstance(runner.agent, BaseAgent)
+                and runner._uses_legacy_sub_agent_picker()  # pylint: disable=protected-access
+            ):
+              node = runner._find_agent_to_run(ic.session, runner.agent)  # pylint: disable=protected-access
+              ic.agent = node
+              ic.branch = None
+              if node is not runner.agent:
+                runner._restore_branch_from_history(  # pylint: disable=protected-access
+                    ic, node, root=runner.agent, invocation_id=ic.invocation_id
+                )
             if yield_user_message and user_event:
               yield user_event
           elif state_delta:
@@ -271,34 +308,80 @@ async def run_node_async(
             finally:
               # _cleanup_root_task re-raises a root-node Exception (if any) after
               # the event stream has drained.
-              await runner._cleanup_root_task(task, runner.agent.name)  # pylint: disable=protected-access
+              await runner._cleanup_root_task(  # pylint: disable=protected-access
+                  task, runner.agent.name
+              )
+            if ic.is_aborted:
+              abort_events = await runner._synthesize_abort_events_if_needed(  # pylint: disable=protected-access
+                  ic
+              )
+              for abort_event in abort_events:
+                yield abort_event
+        except GeneratorExit:
+          # Caller cancelled or broke out of the generator early (e.g. via aclosing).
+          # GeneratorExit is a BaseException, but early generator close is considered
+          # a successful run completion, so do not treat it as run_error.
+          closing_early = True
+          raise
         except Exception as e:
           # An unhandled exception escaped runner execution. Notify plugins
           # (notification-only) and re-raise. after_run stays success-only.
           run_error = e
           await _notify_run_error(ic.plugin_manager, ic, e)
           raise
+        except asyncio.CancelledError as e:
+          if (
+              e.args and e.args[0] == _CALLER_CLOSED_EARLY_MSG
+          ) or ic.is_aborted:
+            closing_early = True
+          else:
+            run_error = e
+          raise
+        except BaseException as e:
+          # Other BaseExceptions (such as KeyboardInterrupt)
+          # represent aborts/interrupts; mark run_error so after_run callbacks do not fire.
+          run_error = e
+          raise
       finally:
-        # Success path (also caller early-stop via GeneratorExit, which is not
-        # an Exception): run after_run and compaction. _cleanup_root_task has
-        # already run in the inner finally above when a root task was created.
-        # A failure in this success cleanup (e.g. an after_run plugin raising,
-        # which PluginManager surfaces as a RuntimeError) is itself an
-        # unhandled runner error, so notify on_run_error_callback once and
-        # re-raise. on_run_error is notification-only and never raises, so
-        # there is no recursive notification.
+        # Success path (also caller early-stop via GeneratorExit,
+        # _CALLER_CLOSED_EARLY_MSG, or abort_signal): run after_run and
+        # compaction.
+        # _cleanup_root_task has already run in the inner finally above when a
+        # root task was created. A failure in this success cleanup (e.g. an
+        # after_run plugin raising, which PluginManager surfaces as a
+        # RuntimeError) is itself an unhandled runner error, so notify
+        # on_run_error_callback once and re-raise (unless closing_early).
+        if ic.is_aborted:
+          # Best-effort: only reached on early close or error, where raising
+          # would mask the in-flight exception and skip after_run.
+          try:
+            await runner._synthesize_abort_events_if_needed(ic)  # pylint: disable=protected-access
+          except Exception:  # pylint: disable=broad-exception-caught
+            logger.error(
+                "Failed to seal aborted invocation %s.",
+                ic.invocation_id,
+                exc_info=True,
+            )
         if run_error is None:
           try:
             await ic.plugin_manager.run_after_run_callback(
                 invocation_context=ic
             )
-            await runner._run_post_invocation_compaction(  # pylint: disable=protected-access
-                session=session,
-                skip_token_compaction=ic.token_compaction_checked,
-            )
+            if not ic.is_aborted:
+              await runner._run_post_invocation_compaction(  # pylint: disable=protected-access
+                  session=session,
+              )
           except Exception as e:
             await _notify_run_error(ic.plugin_manager, ic, e)
-            raise
+            if closing_early:
+              logger.error(
+                  "after_run callback failed while closing invocation %s"
+                  " early.",
+                  ic.invocation_id,
+                  exc_info=True,
+              )
+            else:
+              raise
 
   async with aclosing(_with_caller_context(_run(), caller_ctx)) as agen:
     async for event in agen:

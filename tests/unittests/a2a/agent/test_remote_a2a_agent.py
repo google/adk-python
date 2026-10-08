@@ -29,7 +29,6 @@ from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
 from a2a.types import AgentInterface
 from a2a.types import AgentSkill
-from a2a.types import Artifact
 from a2a.types import Message as A2AMessage
 from a2a.types import Task as A2ATask
 from a2a.types import TaskArtifactUpdateEvent
@@ -60,9 +59,9 @@ from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_preprocessor import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows._fencing import QUOTED_CONTENT_BEGIN
-from google.adk.flows.llm_flows._fencing import QUOTED_CONTENT_END
-from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_BEGIN
+from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_END
+from google.adk.flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.sessions.session import Session
 from google.genai import types as genai_types
 import httpx
@@ -536,8 +535,67 @@ class TestRemoteA2aAgentResolution:
             httpx_client=mock_client, base_url="https://example.com"
         )
         mock_resolver.get_agent_card.assert_called_once_with(
-            relative_card_path="/agent.json", http_kwargs=None
+            relative_card_path="/agent.json",
+            http_kwargs={"timeout": remote_a2a_agent.DEFAULT_TIMEOUT},
         )
+
+  @pytest.mark.asyncio
+  async def test_resolve_agent_card_from_url_uses_configured_timeout(self):
+    """Test that configured timeout is used for card resolution."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="https://example.com/agent.json",
+        timeout=15.0,
+    )
+
+    with patch.object(agent, "_ensure_httpx_client") as mock_ensure_client:
+      mock_client = AsyncMock()
+      mock_ensure_client.return_value = mock_client
+
+      with patch(
+          "google.adk.a2a.agent._remote_a2a_agent.A2ACardResolver"
+      ) as mock_resolver_class:
+        mock_resolver = AsyncMock()
+        mock_resolver.get_agent_card.return_value = self.agent_card
+        mock_resolver_class.return_value = mock_resolver
+
+        result = await agent._resolve_agent_card_from_url(
+            "https://example.com/agent.json", Mock()
+        )
+
+        assert result == self.agent_card
+        mock_resolver.get_agent_card.assert_called_once_with(
+            relative_card_path="/agent.json", http_kwargs={"timeout": 15.0}
+        )
+
+  @pytest.mark.asyncio
+  async def test_resolve_agent_card_from_url_with_shared_client_does_not_inject_timeout(
+      self,
+  ):
+    """Test that timeout is not injected when using a shared client."""
+    shared_client = httpx.AsyncClient()
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="https://example.com/agent.json",
+        httpx_client=shared_client,
+    )
+
+    with patch(
+        "google.adk.a2a.agent._remote_a2a_agent.A2ACardResolver"
+    ) as mock_resolver_class:
+      mock_resolver = AsyncMock()
+      mock_resolver.get_agent_card.return_value = self.agent_card
+      mock_resolver_class.return_value = mock_resolver
+
+      result = await agent._resolve_agent_card_from_url(
+          "https://example.com/agent.json", Mock()
+      )
+
+      assert result == self.agent_card
+      mock_resolver.get_agent_card.assert_called_once_with(
+          relative_card_path="/agent.json",
+          http_kwargs={},
+      )
 
   @pytest.mark.asyncio
   async def test_resolve_agent_card_from_url_invalid_url(self):
@@ -633,7 +691,10 @@ class TestRemoteA2aAgentResolution:
 
     mock_resolver.get_agent_card.assert_called_once_with(
         relative_card_path="/agent.json",
-        http_kwargs={"headers": {"Authorization": "Bearer abc"}},
+        http_kwargs={
+            "headers": {"Authorization": "Bearer abc"},
+            "timeout": remote_a2a_agent.DEFAULT_TIMEOUT,
+        },
     )
 
   @pytest.mark.asyncio
@@ -672,7 +733,10 @@ class TestRemoteA2aAgentResolution:
 
     mock_resolver.get_agent_card.assert_called_once_with(
         relative_card_path="/agent.json",
-        http_kwargs={"headers": {"X-Common": "b", "X-A": "1", "X-B": "2"}},
+        http_kwargs={
+            "headers": {"X-Common": "b", "X-A": "1", "X-B": "2"},
+            "timeout": remote_a2a_agent.DEFAULT_TIMEOUT,
+        },
     )
 
   @pytest.mark.asyncio
@@ -711,6 +775,68 @@ class TestRemoteA2aAgentResolution:
     assert agent._agent_card is None
     assert agent._a2a_client is None
     assert agent._is_resolved is False
+
+  @pytest.mark.asyncio
+  async def test_ensure_resolved_caches_card_per_invocation_with_interceptor(
+      self,
+  ):
+    """With a card interceptor, the card is resolved only once per invocation."""
+    provider = AsyncMock(
+        return_value=A2aCardRequestConfig(headers={"Authorization": "Bearer x"})
+    )
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="https://example.com/agent.json",
+        config=A2aRemoteAgentConfig(
+            card_request_interceptors=[
+                CardRequestInterceptor(before_request=provider)
+            ]
+        ),
+    )
+
+    ctx = Mock(spec=InvocationContext)
+    ctx._private_metadata = {}
+
+    with patch.object(
+        agent, "_resolve_agent_card_from_url", new_callable=AsyncMock
+    ) as mock_resolve_url:
+      mock_resolve_url.return_value = self.agent_card
+      with patch.object(agent, "_ensure_httpx_client") as mock_ensure:
+        mock_ensure.return_value = AsyncMock()
+        mock_factory = Mock()
+        mock_factory.create.return_value = Mock()
+        agent._a2a_client_factory = mock_factory
+
+        client1 = await agent._ensure_resolved(ctx)
+        client2 = await agent._ensure_resolved(ctx)
+
+    assert mock_resolve_url.await_count == 1
+    assert mock_factory.create.call_count == 1
+    assert client1 is client2
+    assert agent._agent_card is None
+
+  @pytest.mark.asyncio
+  async def test_resolve_agent_card_does_not_cache_unauthenticated_card(self):
+    """When auth is unresolved, _resolve_agent_card must not cache the unauthenticated card."""
+    from fastapi.openapi.models import HTTPBearer
+
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="https://example.com/agent.json",
+        auth_scheme=HTTPBearer(),
+    )
+    ctx = Mock(spec=InvocationContext)
+    ctx.credential_by_key = {}
+    ctx._private_metadata = {}
+
+    with patch.object(
+        agent, "_resolve_agent_card_from_url", new_callable=AsyncMock
+    ) as mock_resolve_url:
+      mock_resolve_url.return_value = self.agent_card
+      card = await agent._resolve_agent_card(ctx)
+
+    assert card is self.agent_card
+    assert "_remote_a2a_card_test_agent" not in ctx._private_metadata
 
   @pytest.mark.asyncio
   async def test_card_interceptor_does_not_leak_across_sessions(self):
@@ -1250,6 +1376,42 @@ class TestRemoteA2aAgentResolution:
         await agent._ensure_resolved(Mock())
 
     assert agent.description == "Converts currencies"
+
+  @pytest.mark.asyncio
+  async def test_ensure_resolved_adopts_prefetched_card_description(self):
+    """Initializing a prefetched public card still adopts its description."""
+    agent_card = create_test_agent_card()
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+    agent._agent_card = agent_card
+    mock_factory = Mock()
+    mock_factory.create.return_value = Mock()
+    agent._a2a_client_factory = mock_factory
+
+    with patch.object(agent, "_ensure_httpx_client", new_callable=AsyncMock):
+      await agent._ensure_resolved(Mock())
+
+    assert agent_card.description in agent.description
+
+  @pytest.mark.asyncio
+  async def test_get_transfer_description_fences_remote_card_description(self):
+    """Transfer description from remote card must be fenced with quote_untrusted."""
+    agent_card = create_test_agent_card()
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+    with patch.object(
+        agent,
+        "_resolve_agent_card",
+        new_callable=AsyncMock,
+        return_value=agent_card,
+    ):
+      desc = await agent._get_transfer_description(Mock())
+
+    assert desc.startswith(QUOTED_CONTENT_BEGIN)
+    assert desc.endswith(QUOTED_CONTENT_END)
+    assert agent_card.description in desc
 
   @pytest.mark.asyncio
   async def test_ensure_resolved_already_resolved(self):
@@ -2282,6 +2444,7 @@ class TestRemoteA2aAgentMessageHandling:
     """Test handling of a task status update with no message."""
     mock_a2a_task = Mock(spec=A2ATask)
     mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
 
     mock_update = Mock(spec=TaskStatusUpdateEvent)
     mock_update.status = Mock(A2ATaskStatus)
@@ -2292,7 +2455,9 @@ class TestRemoteA2aAgentMessageHandling:
         (mock_a2a_task, mock_update), self.mock_context
     )
 
-    assert result is None
+    assert result.content is None
+    assert result.is_final_response()
+    assert result.custom_metadata["a2a:task_id"] == "task-123"
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_filters_thought_parts_from_completed_task(
@@ -3422,6 +3587,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     """Test handling of a task status update with no message."""
     mock_a2a_task = Mock(spec=A2ATask)
     mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
 
     mock_update = Mock(spec=TaskStatusUpdateEvent)
     mock_update.status = Mock(A2ATaskStatus)
@@ -3432,7 +3598,9 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
         (mock_a2a_task, mock_update), self.mock_context
     )
 
-    assert result is None
+    assert result.content is None
+    assert result.is_final_response()
+    assert result.custom_metadata["a2a:task_id"] == "task-123"
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_artifact_update(self):
@@ -6581,6 +6749,7 @@ def _resume_events(
     responses,
     user_text=None,
     task_id="task-123",
+    relayed_by=None,
 ):
   """Builds the ``[pause_event, user_response_event]`` sequence seen on resume.
 
@@ -6592,6 +6761,8 @@ def _resume_events(
       which needs two responses in the same turn.
     user_text: optional sibling text part appended to the response event.
     task_id: value stamped into the pausing event's a2a metadata.
+    relayed_by: name of the remote agent whose own pause this is, relayed into
+      the caller's session; None for a pause raised by a local agent.
 
   Returns:
     ``[pause_event, user_response_event]``.
@@ -6602,16 +6773,19 @@ def _resume_events(
       )
       for name, cid in calls
   ]
+  call_metadata = {
+      A2A_METADATA_PREFIX + "task_id": task_id,
+      A2A_METADATA_PREFIX + "context_id": "context-123",
+  }
+  if relayed_by:
+    call_metadata[A2A_METADATA_PREFIX + "response"] = {"id": task_id}
   call_event = Event(
       invocation_id="inv-1",
-      author="agent",
+      author=relayed_by or "agent",
       id="e_call",
       content=genai_types.Content(role="model", parts=call_parts),
       long_running_tool_ids={cid for _, cid in calls if cid},
-      custom_metadata={
-          A2A_METADATA_PREFIX + "task_id": task_id,
-          A2A_METADATA_PREFIX + "context_id": "context-123",
-      },
+      custom_metadata=call_metadata,
   )
   response_parts = [
       genai_types.Part(
@@ -6769,6 +6943,88 @@ class TestHitlResumeRewrite:
     )
     assert parts
     assert "data" not in _kinds(parts)
+
+  @pytest.mark.parametrize(
+      ("name", "response"),
+      [
+          ("adk_request_confirmation", {"confirmed": True}),
+          ("adk_request_input", {"company_name": "Okta"}),
+      ],
+  )
+  def test_relayed_remote_pause_is_forwarded_as_function_response(
+      self, name, response
+  ):
+    """The answer to the remote agent's own pause resumes it, id intact."""
+    message = _make_agent()._create_a2a_request_for_user_function_response(  # pylint: disable=protected-access
+        _make_ctx(
+            _resume_events(
+                calls=[(name, "fc-1")],
+                responses=[(name, "fc-1", response)],
+                user_text="yes",
+                relayed_by="test_agent",
+            )
+        )
+    )
+    assert _kinds(message.parts) == ["data"]
+    assert _data(message.parts[0]).get("id") == "fc-1"
+    assert _data(message.parts[0]).get("response") == response
+    assert message.task_id == "task-123"
+
+  def test_pause_relayed_by_another_remote_agent_is_flattened(self):
+    """A pause another remote agent raised is not this agent's to resume."""
+    parts = _forwarded_parts(
+        _make_agent(),
+        _resume_events(
+            calls=[("adk_request_confirmation", "fc-1")],
+            responses=[
+                ("adk_request_confirmation", "fc-1", {"confirmed": True})
+            ],
+            relayed_by="other_agent",
+        ),
+    )
+    assert _kinds(parts) == ["text"]
+
+  def test_own_name_pause_without_a2a_response_is_flattened(self):
+    """A local pause under the agent's own name is not a relayed one."""
+    pause, answer = _resume_events(
+        calls=[("adk_request_confirmation", "fc-1")],
+        responses=[("adk_request_confirmation", "fc-1", {"confirmed": True})],
+    )
+    parts = _forwarded_parts(
+        _make_agent(),
+        [pause.model_copy(update={"author": "test_agent"}), answer],
+    )
+    assert _kinds(parts) == ["text"]
+
+  def test_relayed_mock_input_required_is_flattened(self):
+    """A call ADK synthesized for the remote agent is still answered as text."""
+    parts = _forwarded_parts(
+        _make_agent(),
+        _resume_events(
+            calls=[("mock_function_call_for_required_user_input", "fc-1")],
+            responses=[(
+                "mock_function_call_for_required_user_input",
+                "fc-1",
+                {"result": "Okta"},
+            )],
+            relayed_by="test_agent",
+        ),
+    )
+    assert _kinds(parts) == ["text"]
+    assert _text(parts[0]) == "Okta"
+
+  def test_relayed_credential_answer_is_dropped(self):
+    """A credential never reaches the remote agent, even for its own pause."""
+    message = _make_agent()._create_a2a_request_for_user_function_response(  # pylint: disable=protected-access
+        _make_ctx(
+            _resume_events(
+                calls=[("adk_request_credential", "fc-1")],
+                responses=[("adk_request_credential", "fc-1", _AUTH_PAYLOAD)],
+                relayed_by="test_agent",
+            )
+        )
+    )
+    assert message is None
 
   def test_real_long_running_tool_response_is_preserved(self):
     """A real remote long-running tool response is preserved id-for-id."""
@@ -7501,3 +7757,713 @@ class TestRemoteA2aAgentAuth:
 
     assert events == [auth_request_event]
     ctx.set_agent_state.assert_not_called()
+
+
+async def _send_remote_task_followups(
+    initial_state,
+    followup_parts,
+    *,
+    bare_completion=False,
+    repeat_pause=False,
+    use_v2=False,
+):
+  """Run three public Runner turns against a scripted A2A transport."""
+  from google.adk.runners import Runner
+  from google.adk.sessions import InMemorySessionService
+
+  agent = RemoteA2aAgent(
+      name="currency", agent_card=create_test_agent_card(name="currency")
+  )
+  requests = []
+  metadata = (
+      {remote_a2a_agent._NEW_A2A_ADK_INTEGRATION_EXTENSION: True}
+      if use_v2
+      else None
+  )
+
+  async def send_message(client, *, request, **kwargs):
+    del client, kwargs
+    requests.append(request)
+    state = (
+        initial_state
+        if len(requests) == 1 or (repeat_pause and len(requests) == 2)
+        else _compat.TS_COMPLETED
+    )
+    task = _compat.make_task(
+        id="currency-task",
+        context_id="currency-context",
+        metadata=metadata,
+        status=_compat.make_task_status(
+            state,
+            message=_compat.make_message(
+                message_id="reply",
+                role="agent",
+                parts=[_compat.make_text_part("Currency response")],
+            ),
+        ),
+    )
+    if bare_completion and len(requests) == 2:
+      update = _compat.make_task_status_update_event(
+          task_id=task.id,
+          context_id=task.context_id,
+          status=_compat.make_task_status(_compat.TS_COMPLETED),
+          final=True,
+      )
+      if _compat.IS_A2A_V1:
+        from a2a.types import StreamResponse
+
+        raw = StreamResponse()
+        raw.status_update.CopyFrom(update)
+        yield raw
+      else:
+        yield task, update
+    else:
+      yield _make_stream_task(task)
+
+  runner = Runner(
+      app_name="continuation",
+      agent=agent,
+      session_service=InMemorySessionService(),
+      auto_create_session=True,
+  )
+  try:
+    with (
+        patch.object(agent, "_ensure_resolved", return_value=object()),
+        patch.object(_compat, "send_message", side_effect=send_message),
+    ):
+      for parts in (
+          [genai_types.Part(text="Convert ten USD")],
+          followup_parts,
+          [genai_types.Part(text="Start another conversion")],
+      ):
+        async for _ in runner.run_async(
+            user_id="user",
+            session_id="session",
+            new_message=genai_types.Content(role="user", parts=parts),
+        ):
+          pass
+  finally:
+    await runner.close()
+  return requests
+
+
+@pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+@pytest.mark.parametrize(
+    "initial_state", [_compat.TS_INPUT_REQUIRED, _compat.TS_AUTH_REQUIRED]
+)
+@pytest.mark.parametrize(
+    "followup_parts",
+    [
+        [genai_types.Part(text="CAD")],
+        [
+            genai_types.Part.from_bytes(
+                data=b"CAD", mime_type="application/octet-stream"
+            )
+        ],
+    ],
+    ids=["text", "attachment"],
+)
+async def test_user_input_resumes_paused_remote_task(
+    use_v2, initial_state, followup_parts
+):
+  """Text and attachments continue a paused task in its context."""
+  requests = await _send_remote_task_followups(
+      initial_state, followup_parts, use_v2=use_v2
+  )
+
+  assert not requests[0].task_id
+  assert requests[1].context_id == "currency-context"
+  assert requests[1].task_id == "currency-task"
+  assert requests[1].parts
+  # Completion ends that task even though the remote context is reused.
+  assert requests[2].context_id == "currency-context"
+  assert not requests[2].task_id
+
+
+@pytest.mark.parametrize(
+    "initial_state",
+    [
+        _compat.TS_COMPLETED,
+        _compat.TS_FAILED,
+        _compat.TS_CANCELED,
+        _compat.TS_SUBMITTED,
+        _compat.TS_WORKING,
+        _compat.TS_UNKNOWN,
+    ],
+)
+async def test_new_message_does_not_resume_remote_task_without_a_pause(
+    initial_state,
+):
+  """An existing context alone does not continue a remote task."""
+  requests = await _send_remote_task_followups(
+      initial_state, [genai_types.Part(text="Start another conversion")]
+  )
+
+  assert requests[1].context_id == "currency-context"
+  assert not requests[1].task_id
+
+
+@pytest.mark.parametrize(
+    "scope, latest_state, response_context, expected_task_id",
+    [
+        ("current", "input-required", "context", "current-task"),
+        ("current", "auth-required", "context", "current-task"),
+        ("current", "completed", "context", None),
+        ("current", "input-required", "different-context", None),
+        ("new-delegation", "input-required", "context", None),
+    ],
+)
+async def test_remote_task_continuation_respects_latest_response_and_scope(
+    scope, latest_state, response_context, expected_task_id
+):
+  """Continuation ignores stale tasks, sibling tasks, and other contexts."""
+  from google.adk.sessions import InMemorySessionService
+
+  agent = RemoteA2aAgent(
+      name="currency",
+      mode="task",
+      agent_card=create_test_agent_card(name="currency"),
+      context_builder=lambda ctx, name, converter: (
+          [_compat.make_text_part("Continue")],
+          "context",
+      ),
+  )
+
+  def response(task_id, state, task_scope, context_id="context"):
+    return Event(
+        author="currency",
+        isolation_scope=task_scope,
+        custom_metadata={
+            "a2a:task_id": task_id,
+            "a2a:context_id": context_id,
+            "a2a:response": {"status": {"state": state}},
+        },
+    )
+
+  session = Session(
+      id="session",
+      app_name="continuation",
+      user_id="user",
+      events=[
+          response("stale-task", "input-required", "current"),
+          _make_dummy_task_trigger_event("new-delegation", "currency"),
+          response("current-task", latest_state, "current", response_context),
+          response("sibling-task", "input-required", "sibling"),
+          Event(
+              author="user",
+              invocation_id="invocation",
+              content=genai_types.Content(
+                  role="user", parts=[genai_types.Part(text="Continue")]
+              ),
+          ),
+      ],
+  )
+  ctx = InvocationContext(
+      invocation_id="invocation",
+      session=session,
+      session_service=InMemorySessionService(),
+      agent=agent,
+      isolation_scope=scope,
+  )
+  requests = []
+
+  async def send_message(client, *, request, **kwargs):
+    del client, kwargs
+    requests.append(request)
+    yield _make_stream_message(
+        _compat.make_message(
+            message_id="reply",
+            role="agent",
+            parts=[_compat.make_text_part("Response")],
+        )
+    )
+
+  try:
+    with (
+        patch.object(agent, "_ensure_resolved", return_value=object()),
+        patch.object(_compat, "send_message", side_effect=send_message),
+    ):
+      async for _ in agent.run_async(ctx):
+        pass
+  finally:
+    await agent.cleanup()
+
+  assert len(requests) == 1
+  assert (requests[0].task_id or None) == expected_task_id
+
+
+def _bare_task_stream(
+    state, *, use_v2=False, artifact_text=None, empty_message=False
+):
+  """Build SDK-native status updates with their accumulated task snapshots."""
+  metadata = (
+      {remote_a2a_agent._NEW_A2A_ADK_INTEGRATION_EXTENSION: True}
+      if use_v2
+      else None
+  )
+  task = _compat.make_task(
+      id="currency-task",
+      context_id="currency-context",
+      status=_compat.make_task_status(_compat.TS_WORKING),
+      metadata=metadata,
+  )
+  responses = [_make_stream_task(copy.deepcopy(task))]
+  if artifact_text is not None:
+    artifact = _compat.make_artifact(
+        artifact_id="answer",
+        parts=[_compat.make_text_part(artifact_text)],
+    )
+    update = TaskArtifactUpdateEvent(
+        task_id=task.id,
+        context_id=task.context_id,
+        artifact=artifact,
+        last_chunk=True,
+    )
+    if _compat.IS_A2A_V1:
+      from a2a.types import StreamResponse
+
+      responses.append(StreamResponse(artifact_update=update))
+    else:
+      task.artifacts = [artifact]
+      responses.append((task.model_copy(deep=True), update))
+  message = (
+      _compat.make_message(message_id="empty", role="agent", parts=[])
+      if empty_message
+      else None
+  )
+  status = _compat.make_task_status(state, message=message)
+  update = _compat.make_task_status_update_event(
+      task_id=task.id,
+      context_id=task.context_id,
+      status=status,
+      final=state not in remote_a2a_agent._UNFINISHED_TASK_STATES,
+  )
+  if _compat.IS_A2A_V1:
+    from a2a.types import StreamResponse
+
+    responses.append(StreamResponse(status_update=update))
+  else:
+    task.status = status
+    responses.append((task, update))
+  return responses
+
+
+async def _run_remote_task_responses(
+    responses, *, same_invocation=False, plugins=None, config=None
+):
+  """Exercise the public Runner with a serialized session on each user turn."""
+  from google.adk.runners import Runner
+  from google.adk.sessions import InMemorySessionService
+
+  class SerializedSessionService(InMemorySessionService):
+
+    async def get_session(self, **kwargs):
+      session = await super().get_session(**kwargs)
+      return (
+          Session.model_validate_json(session.model_dump_json())
+          if session is not None
+          else None
+      )
+
+  agent = RemoteA2aAgent(
+      name="currency",
+      agent_card=create_test_agent_card(name="currency"),
+      config=config,
+      context_builder=(
+          lambda ctx, name, converter: (
+              [_compat.make_text_part(ctx.user_content.parts[0].text)],
+              "currency-context",
+          )
+      )
+      if same_invocation
+      else None,
+  )
+  requests = []
+  turns = []
+  service = SerializedSessionService()
+
+  async def send_message(client, *, request, **kwargs):
+    del client, kwargs
+    script = responses[len(requests)]
+    requests.append(request)
+    for response in script:
+      if isinstance(response, Exception):
+        raise response
+      yield response
+
+  runner = Runner(
+      app_name="continuation",
+      agent=agent,
+      session_service=service,
+      auto_create_session=True,
+      plugins=plugins,
+  )
+  try:
+    with (
+        patch.object(agent, "_ensure_resolved", return_value=object()),
+        patch.object(_compat, "send_message", side_effect=send_message),
+    ):
+      for text in ("Convert ten USD", "CAD", "Start another conversion"):
+        turns.append([
+            event
+            async for event in runner.run_async(
+                user_id="user",
+                session_id="session",
+                invocation_id="same-invocation" if same_invocation else None,
+                new_message=genai_types.Content(
+                    role="user", parts=[genai_types.Part(text=text)]
+                ),
+            )
+        ])
+    session = await service.get_session(
+        app_name="continuation", user_id="user", session_id="session"
+    )
+  finally:
+    await runner.close()
+  return requests, turns, session
+
+
+@pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+@pytest.mark.parametrize("empty_message", [False, True])
+@pytest.mark.parametrize("same_invocation", [False, True])
+@pytest.mark.parametrize(
+    "pause", [_compat.TS_INPUT_REQUIRED, _compat.TS_AUTH_REQUIRED]
+)
+async def test_bare_task_boundaries_survive_session_reload(
+    use_v2, empty_message, same_invocation, pause
+):
+  requests, turns, session = await _run_remote_task_responses(
+      [
+          _bare_task_stream(pause, use_v2=use_v2, empty_message=empty_message),
+          _bare_task_stream(
+              _compat.TS_COMPLETED, use_v2=use_v2, empty_message=empty_message
+          ),
+          _bare_task_stream(
+              _compat.TS_COMPLETED, use_v2=use_v2, empty_message=empty_message
+          ),
+      ],
+      same_invocation=same_invocation,
+  )
+  assert [r.task_id or None for r in requests] == [None, "currency-task", None]
+  assert all(turn[-1].content is None for turn in turns)
+  assert all(turn[-1].is_final_response() for turn in turns)
+  assert session.events[-1].custom_metadata["a2a:response"]["status"] == (
+      turns[-1][-1].custom_metadata["a2a:response"]["status"]
+  )
+
+
+@pytest.mark.parametrize("use_v2", [False, True])
+async def test_repeated_bare_pauses_continue_the_same_task(use_v2):
+  requests, _, _ = await _run_remote_task_responses([
+      _bare_task_stream(_compat.TS_INPUT_REQUIRED, use_v2=use_v2),
+      _bare_task_stream(_compat.TS_AUTH_REQUIRED, use_v2=use_v2),
+      _bare_task_stream(_compat.TS_COMPLETED, use_v2=use_v2),
+  ])
+  assert [r.task_id or None for r in requests] == [
+      None,
+      "currency-task",
+      "currency-task",
+  ]
+
+
+async def test_plugin_handled_turn_does_not_consume_remote_pause():
+  from google.adk.plugins.base_plugin import BasePlugin
+
+  class SkipSecondTurn(BasePlugin):
+
+    async def before_run_callback(self, *, invocation_context):
+      if invocation_context.user_content.parts[0].text == "CAD":
+        return genai_types.Content(
+            role="model", parts=[genai_types.Part(text="Please try again")]
+        )
+
+  requests, turns, _ = await _run_remote_task_responses(
+      [
+          _bare_task_stream(_compat.TS_INPUT_REQUIRED),
+          _bare_task_stream(_compat.TS_COMPLETED),
+      ],
+      plugins=[SkipSecondTurn(name="skip_second")],
+  )
+  assert turns[1][0].content.parts[0].text == "Please try again"
+  assert [r.task_id or None for r in requests] == [None, "currency-task"]
+
+
+@pytest.mark.parametrize(
+    "second_response",
+    [
+        [_bare_task_stream(_compat.TS_WORKING, use_v2=True)[0]],
+        [
+            _bare_task_stream(_compat.TS_WORKING, use_v2=True)[0],
+            httpx.ReadError("Connection lost"),
+        ],
+        [
+            _bare_task_stream(_compat.TS_WORKING, use_v2=True)[0],
+            RuntimeError("Invalid remote response"),
+        ],
+    ],
+    ids=["unfinished", "http-error", "response-error"],
+)
+async def test_failed_continuation_does_not_reuse_an_old_pause(second_response):
+  requests, turns, _ = await _run_remote_task_responses([
+      _bare_task_stream(_compat.TS_INPUT_REQUIRED, use_v2=True),
+      second_response,
+      _bare_task_stream(_compat.TS_COMPLETED, use_v2=True),
+  ])
+  assert [r.task_id or None for r in requests] == [None, "currency-task", None]
+  assert [_compat.part_text(part) for part in requests[2].parts] == [
+      "CAD",
+      "Start another conversion",
+  ]
+  assert turns[1][-1].error_message
+
+
+@pytest.mark.parametrize("use_v2", [False, True])
+async def test_bare_completion_keeps_preceding_artifact_output(use_v2):
+  requests, turns, session = await _run_remote_task_responses([
+      _bare_task_stream(_compat.TS_INPUT_REQUIRED, use_v2=use_v2),
+      _bare_task_stream(
+          _compat.TS_COMPLETED, use_v2=use_v2, artifact_text="Ten CAD"
+      ),
+      _bare_task_stream(_compat.TS_COMPLETED, use_v2=use_v2),
+  ])
+  assert not requests[2].task_id
+  assert [
+      part.text
+      for event in turns[1]
+      if event.content
+      for part in event.content.parts
+      if part.text
+  ] == ["Ten CAD"]
+  assert turns[1][-1].content is None
+  assert any(
+      event.content and any(p.text == "Ten CAD" for p in event.content.parts)
+      for event in session.events
+  )
+
+
+async def test_filtered_completion_does_not_infer_continuation_from_old_pause():
+  async def filter_completion(ctx, response, event):
+    del ctx
+    if (
+        isinstance(response, tuple)
+        and response[0].status.state == _compat.TS_COMPLETED
+    ):
+      return None
+    return event
+
+  config = A2aRemoteAgentConfig(
+      request_interceptors=[RequestInterceptor(after_request=filter_completion)]
+  )
+  requests, turns, _ = await _run_remote_task_responses(
+      [
+          _bare_task_stream(_compat.TS_INPUT_REQUIRED),
+          _bare_task_stream(_compat.TS_COMPLETED),
+          _bare_task_stream(_compat.TS_COMPLETED),
+      ],
+      config=config,
+  )
+  assert turns[0][-1].custom_metadata["a2a:task_id"] == "currency-task"
+  assert all(not request.task_id for request in requests)
+  assert not any(
+      event.custom_metadata.get("a2a:response", {})
+      .get("status", {})
+      .get("state")
+      in ("completed", "TASK_STATE_COMPLETED")
+      for turn in turns[1:]
+      for event in turn
+      if event.custom_metadata
+  )
+
+
+@pytest.mark.parametrize(
+    "converter_name",
+    [
+        "a2a_task_converter",
+        "a2a_status_update_converter",
+        "a2a_message_converter",
+        "a2a_artifact_update_converter",
+        "a2a_part_converter",
+    ],
+)
+async def test_custom_inbound_converters_keep_explicit_task_routing(
+    converter_name,
+):
+  default = A2aRemoteAgentConfig.model_fields[converter_name].default
+
+  def converter(*args):
+    return default(*args)
+
+  requests, _, _ = await _run_remote_task_responses(
+      [
+          _bare_task_stream(_compat.TS_INPUT_REQUIRED, use_v2=True),
+          _bare_task_stream(_compat.TS_COMPLETED, use_v2=True),
+          _bare_task_stream(_compat.TS_COMPLETED, use_v2=True),
+      ],
+      config=A2aRemoteAgentConfig(**{converter_name: converter}),
+  )
+  assert all(not request.task_id for request in requests)
+
+
+async def test_before_request_hook_keeps_automatic_task_continuation():
+  async def before_request(ctx, request, parameters):
+    del ctx
+    return request, parameters
+
+  requests, _, _ = await _run_remote_task_responses(
+      [
+          _bare_task_stream(_compat.TS_INPUT_REQUIRED),
+          _bare_task_stream(_compat.TS_COMPLETED),
+          _bare_task_stream(_compat.TS_COMPLETED),
+      ],
+      config=A2aRemoteAgentConfig(
+          request_interceptors=[
+              RequestInterceptor(before_request=before_request)
+          ]
+      ),
+  )
+  assert [r.task_id or None for r in requests] == [None, "currency-task", None]
+
+
+@pytest.mark.parametrize("use_v2", [False, True])
+@pytest.mark.parametrize("empty_message", [False, True])
+async def test_agent_tool_keeps_artifact_before_bare_completion(
+    use_v2, empty_message
+):
+  from google.adk.sessions import InMemorySessionService
+  from google.adk.tools.agent_tool import AgentTool
+  from google.adk.tools.tool_context import ToolContext
+
+  agent = RemoteA2aAgent(
+      name="currency", agent_card=create_test_agent_card(name="currency")
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name="parent", user_id="user"
+  )
+  ctx = InvocationContext(
+      invocation_id="invocation",
+      session=session,
+      session_service=session_service,
+      agent=agent,
+  )
+
+  async def send_message(client, **kwargs):
+    del client, kwargs
+    for response in _bare_task_stream(
+        _compat.TS_COMPLETED,
+        use_v2=use_v2,
+        artifact_text="Ten CAD",
+        empty_message=empty_message,
+    ):
+      yield response
+
+  with (
+      patch.object(agent, "_ensure_resolved", return_value=object()),
+      patch.object(_compat, "send_message", side_effect=send_message),
+  ):
+    result = await AgentTool(agent=agent).run_async(
+        args={"request": "Convert ten USD to CAD"},
+        tool_context=ToolContext(ctx),
+    )
+  assert result == "Ten CAD"
+
+
+@pytest.mark.parametrize(
+    "override", ["legacy-part", "v2-status", "after-request"]
+)
+def test_response_filters_preserve_explicit_function_response_routing(override):
+  from google.adk.sessions import InMemorySessionService
+
+  kwargs = {}
+  if override == "legacy-part":
+    kwargs["a2a_part_converter"] = lambda part: None
+  elif override == "v2-status":
+    kwargs["config"] = A2aRemoteAgentConfig(
+        a2a_status_update_converter=lambda *args: None
+    )
+  else:
+
+    async def filter_response(ctx, response, event):
+      return None
+
+    kwargs["config"] = A2aRemoteAgentConfig(
+        request_interceptors=[RequestInterceptor(after_request=filter_response)]
+    )
+  agent = RemoteA2aAgent(
+      name="currency",
+      agent_card=create_test_agent_card(name="currency"),
+      **kwargs,
+  )
+  session = Session(
+      id="session",
+      app_name="continuation",
+      user_id="user",
+      events=[
+          Event(
+              author="currency",
+              content=genai_types.Content(
+                  role="model",
+                  parts=[
+                      genai_types.Part(
+                          function_call=genai_types.FunctionCall(
+                              id="input", name="select_currency", args={}
+                          )
+                      )
+                  ],
+              ),
+              custom_metadata={
+                  "a2a:task_id": "currency-task",
+                  "a2a:context_id": "currency-context",
+                  "a2a:response": {"status": {"state": "input-required"}},
+              },
+          ),
+          Event(
+              author="user",
+              content=genai_types.Content(
+                  role="user",
+                  parts=[
+                      genai_types.Part(
+                          function_response=genai_types.FunctionResponse(
+                              id="input",
+                              name="select_currency",
+                              response={"value": "CAD"},
+                          )
+                      )
+                  ],
+              ),
+          ),
+      ],
+  )
+  ctx = InvocationContext(
+      invocation_id="invocation",
+      session=session,
+      session_service=InMemorySessionService(),
+      agent=agent,
+  )
+  assert agent._get_resumable_task_id(ctx, "currency-context") is None
+  request = agent._create_a2a_request_for_user_function_response(ctx)
+  assert request.task_id == "currency-task"
+  assert request.context_id == "currency-context"
+
+
+async def test_after_request_metadata_overrides_are_preserved():
+  async def override_metadata(ctx, response, event):
+    del ctx, response
+    event.custom_metadata.update({
+        "a2a:task_id": "caller-task",
+        "a2a:context_id": "caller-context",
+    })
+    return event
+
+  _, turns, _ = await _run_remote_task_responses(
+      [_bare_task_stream(_compat.TS_COMPLETED) for _ in range(3)],
+      config=A2aRemoteAgentConfig(
+          request_interceptors=[
+              RequestInterceptor(after_request=override_metadata)
+          ]
+      ),
+  )
+  for turn in turns:
+    assert turn[-1].custom_metadata["a2a:task_id"] == "caller-task"
+    assert turn[-1].custom_metadata["a2a:context_id"] == "caller-context"
+    assert turn[-1].custom_metadata["a2a:response"]["id"] == "currency-task"
