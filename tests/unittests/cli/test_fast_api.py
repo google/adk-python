@@ -140,7 +140,7 @@ def _event_state_delta(state_delta: dict[str, Any]):
 
 
 # Define mocked async generator functions for the Runner
-async def dummy_run_live(self, session, live_request_queue, **kwargs):
+async def dummy_run_live(self, live_request_queue=None, **kwargs):
   yield _event_1()
   await asyncio.sleep(0)
 
@@ -1160,9 +1160,9 @@ def test_app_with_gemini_enterprise(
 
   with (
       patch("google.auth.default", return_value=(MagicMock(), "test-project")),
-      patch("vertexai.init", new_callable=MagicMock) as mock_vertexai_init,
       patch(
-          "vertexai.agent_engines.AdkApp", return_value=mock_adk_app_instance
+          "agentplatform.frameworks.AdkApp",
+          return_value=mock_adk_app_instance,
       ) as mock_adk_app_cls,
       patch("google.adk.agents.Agent", new_callable=MagicMock),
       patch(
@@ -1183,7 +1183,6 @@ def test_app_with_gemini_enterprise(
         mock_eval_set_results_manager,
         gemini_enterprise_app_name="gemini_app",
     )
-    client.mock_vertexai_init = mock_vertexai_init
     client.mock_adk_app_cls = mock_adk_app_cls
     client.mock_adk_app_instance = mock_adk_app_instance
     yield client
@@ -1220,9 +1219,9 @@ def test_app_with_gemini_enterprise_sync_stream(
 
   with (
       patch("google.auth.default", return_value=(MagicMock(), "test-project")),
-      patch("vertexai.init", new_callable=MagicMock),
       patch(
-          "vertexai.agent_engines.AdkApp", return_value=mock_adk_app_instance
+          "agentplatform.frameworks.AdkApp",
+          return_value=mock_adk_app_instance,
       ),
       patch("google.adk.agents.Agent", new_callable=MagicMock),
       patch(
@@ -2856,11 +2855,12 @@ def test_agent_run_live_redacts_oauth2_client_secret(
   async def run_live_with_auth_request(
       self,
       *,
-      session,
+      user_id,
+      session_id,
       live_request_queue,
       run_config=None,
   ):
-    del self, session, live_request_queue, run_config
+    del self, user_id, session_id, live_request_queue, run_config
     yield Event(
         author="agent",
         invocation_id="invocation_id",
@@ -5952,10 +5952,8 @@ def test_run_live_hides_internal_metadata(
 ):
   """/run_live sends events without ADK-internal custom_metadata."""
 
-  async def run_live_with_internal_metadata(
-      self, session, live_request_queue, **kwargs
-  ):
-    del session, live_request_queue, kwargs
+  async def run_live_with_internal_metadata(self, live_request_queue, **kwargs):
+    del live_request_queue, kwargs
     yield Event(
         author="dummy agent",
         invocation_id="invocation_id",
@@ -5992,6 +5990,39 @@ def test_run_live_websocket_missing_app_name_raises_error(
     with test_app.websocket_connect(url) as ws:
       ws.receive_json()
   assert exc_info.value.code == 1008
+
+
+def test_run_live_websocket_delegates_session_existence_to_runner(test_app):
+  """/run_live delegates session existence to run_live instead of pre-fetching."""
+  url = (
+      "/run_live?app_name=test_app&user_id=user"
+      "&session_id=nonexistent&modalities=AUDIO"
+  )
+  with test_app.websocket_connect(url) as ws:
+    data = ws.receive_json()
+    assert data["author"] == "dummy agent"
+
+
+def test_run_live_websocket_returns_1002_on_session_not_found(
+    test_app, monkeypatch
+):
+  """/run_live closes with 1002 when the runner raises SessionNotFoundError."""
+  from fastapi.websockets import WebSocketDisconnect
+
+  async def run_live_session_not_found(self, **kwargs):
+    raise SessionNotFoundError("Session not found: nonexistent")
+    yield  # make it an async generator  # pylint: disable=unreachable
+
+  monkeypatch.setattr(Runner, "run_live", run_live_session_not_found)
+
+  url = (
+      "/run_live?app_name=test_app&user_id=user"
+      "&session_id=nonexistent&modalities=AUDIO"
+  )
+  with pytest.raises(WebSocketDisconnect) as exc_info:
+    with test_app.websocket_connect(url) as ws:
+      ws.receive_json()
+  assert exc_info.value.code == 1002
 
 
 def test_is_single_agent_directory(tmp_path):

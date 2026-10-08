@@ -26,6 +26,7 @@ from google.genai import types as genai_types
 import pandas as pd
 from typing_extensions import override
 
+from ..dependencies._agentplatform import agentplatform
 from ..dependencies.vertexai import vertexai
 from .app_details import AgentDetails
 from .eval_case import ConversationScenario
@@ -78,14 +79,17 @@ class _VertexAiEvalFacade(Evaluator):
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", None)
     api_key = os.environ.get("GOOGLE_API_KEY", None)
 
+    # The client comes from agentplatform: 2.x deprecates vertexai.Client
+    # with a FutureWarning, and agentplatform's evals methods take every
+    # argument the vertexai ones do and return the same types.
     if api_key:
-      self._client = vertexai.Client(api_key=api_key)
+      self._client = agentplatform.Client(api_key=api_key)
     elif project_id or location:
       if not project_id:
         raise ValueError("Missing project id." + _ERROR_MESSAGE_SUFFIX)
       if not location:
         raise ValueError("Missing location." + _ERROR_MESSAGE_SUFFIX)
-      self._client = vertexai.Client(project=project_id, location=location)
+      self._client = agentplatform.Client(project=project_id, location=location)
     else:
       raise ValueError(
           "Either API Key or Google cloud Project id and location should be"

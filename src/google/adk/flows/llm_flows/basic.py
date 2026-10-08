@@ -25,6 +25,7 @@ from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...utils import model_name_utils
+from ...utils._agent_mode import AgentMode as _AgentMode
 from ._base_llm_processor import BaseLlmRequestProcessor
 from .core._utils import as_llm_agent
 from .core._utils import copy_http_options as _copy_http_options
@@ -133,7 +134,7 @@ def _build_basic_request(
   # task-mode agents skip output_schema configuration in
   # the basic flow. Structured output for tasks is collected via the
   # finish_task tool schema instead.
-  if getattr(agent, 'mode', None) != 'task' and agent.output_schema:
+  if getattr(agent, 'mode', None) != _AgentMode.TASK and agent.output_schema:
     if not agent.tools or model.capabilities.output_schema_and_tools:
       llm_request.set_output_schema(agent.output_schema)
 

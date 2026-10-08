@@ -26,13 +26,14 @@ from dataclasses import dataclass
 from dataclasses import field
 import logging
 from typing import Any
-from typing import Literal
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
 from ..agents.base_agent import BaseAgent
 from ..events._node_path_builder import _NodePathBuilder
+from ..utils._agent_mode import AgentMode
+from ..utils._agent_mode import DefaultLlmNodeMode
 from ._base_node import BaseNode
 from ._errors import DynamicNodeFailError
 from ._errors import NodeInterruptedError
@@ -335,7 +336,7 @@ class DynamicNodeScheduler:
     node_path = str(base_path_builder.append(target_node_name, run_id))
     if (
         override_isolation_scope is None
-        and getattr(node, 'mode', None) == 'task'
+        and getattr(node, 'mode', None) == AgentMode.TASK
     ):
       override_isolation_scope = node_path
 
@@ -684,8 +685,8 @@ async def run_node_internal(
   is_root_agent_run = (
       ctx.parent_ctx is None and ctx.node is None and not ctx.node_path
   )
-  default_llm_mode: Literal['chat', 'single_turn'] = (
-      'chat' if is_root_agent_run else 'single_turn'
+  default_llm_mode: DefaultLlmNodeMode = (
+      AgentMode.CHAT if is_root_agent_run else AgentMode.SINGLE_TURN
   )
   built_node = build_node(node, default_llm_mode=default_llm_mode)
 

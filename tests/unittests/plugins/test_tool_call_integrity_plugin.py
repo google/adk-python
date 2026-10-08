@@ -1390,7 +1390,23 @@ async def test_e2e_untouched_trailing_call_runs_on_resume():
 
 
 @pytest.mark.asyncio
+async def test_e2e_modified_trailing_call_runs_without_plugin():
+  """Without the plugin, a modified trailing call runs on resume as modified."""
+  bank = _Bank()
+  runner, session_service = _resumable_runner(bank, None)
+  session = await session_service.create_session(app_name=_APP, user_id=_USER)
+  await session_service.append_event(session, _transfer_event())
+  stored = _stored_events(session_service, session.id)[-1]
+  stored.content.parts[0].function_call.args["amount"] = 999
+
+  await _resume(runner, session.id)
+
+  assert bank.transfers == [{"amount": 999, "recipient": "alice", "memo": None}]
+
+
+@pytest.mark.asyncio
 async def test_e2e_modified_trailing_call_is_blocked():
+  """A modified trailing call is rejected on resume and does not run."""
   bank = _Bank()
   plugin = ToolCallIntegrityPlugin(secret_key=_KEY)
   runner, session_service = _resumable_runner(bank, plugin)

@@ -32,6 +32,10 @@ from typing import Optional
 import warnings
 
 import click
+from packaging.requirements import InvalidRequirement
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+from packaging.utils import NormalizedName
 from packaging.version import parse
 
 from ..version import __version__
@@ -45,9 +49,22 @@ _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
 _GEMINI_ENTERPRISE_FLAG_MIN_VERSION: Final[str] = '2.2.0'
+# The deployed image runs `adk api_server`, which imports `agentplatform`, so
+# the staged requirements must resolve to the v2 SDK and not to a v1 release
+# that only ships the legacy `vertexai` surface.
 _AGENT_ENGINE_REQUIREMENT: Final[str] = (
-    'google-cloud-aiplatform[adk,agent_engines]'
+    'google-cloud-aiplatform[adk,agent_engines]>=2.2,<3'
 )
+_AGENT_ENGINE_MIN_VERSION: Final[str] = '2.2'
+# Either distribution provides the top-level `agentplatform` package: the
+# bundled google-cloud-aiplatform, and the standalone package it was split
+# into. An agent may legitimately pin either one. Held in canonical form,
+# because `Requirement.name` preserves whatever spelling the agent wrote and
+# `google_cloud_aiplatform` is the same distribution as `google-cloud-aiplatform`.
+_AGENT_PLATFORM_DISTRIBUTIONS: Final[frozenset[str]] = frozenset({
+    canonicalize_name('google-cloud-aiplatform'),
+    canonicalize_name('google-cloud-agentplatform'),
+})
 # Full Cloud Build private worker pool resource name, e.g.
 # projects/my-project/locations/us-central1/workerPools/my-private-pool
 _WORKER_POOL_RESOURCE_RE: Final[re.Pattern[str]] = re.compile(
@@ -164,20 +181,67 @@ def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
   with open(requirements_txt_path, 'r', encoding='utf-8') as f:
     requirements = f.read()
 
-  for line in requirements.splitlines():
-    stripped = line.strip()
-    if (
-        stripped
-        and not stripped.startswith('#')
-        and stripped.startswith('google-cloud-aiplatform')
-    ):
-      return
+  # Canonical names, in first-seen order, so the appended floors are stable and
+  # each distribution gets exactly one however many lines name it.
+  pinned_distributions: dict[NormalizedName, None] = {}
+  hash_checking = False
+  # A backslash at end of line continues the requirement onto the next one,
+  # which is how `uv export` and `pip-compile --generate-hashes` lay out each
+  # pin and its `--hash` options.
+  for line in re.sub(r'\\\r?\n', ' ', requirements).splitlines():
+    # A requirements file comment runs from an unquoted `#` to end of line, and
+    # `Requirement()` rejects one left in place, so a pin carrying a trailing
+    # comment would otherwise look like no pin at all. The `#` has to be
+    # preceded by whitespace or start the line, so that the fragment in a
+    # direct URL reference survives.
+    stripped = re.split(r'(?:^|\s)#', line, maxsplit=1)[0].strip()
+    if not stripped:
+      continue
+    # pip checks hashes for the whole file once any requirement carries
+    # `--hash`, or when `--require-hashes` is given.
+    if '--hash' in stripped or stripped.startswith('--require-hashes'):
+      hash_checking = True
+    # Per-requirement options such as `--hash` follow the specifier, and
+    # `Requirement()` rejects them, so parse only what comes before.
+    specifier = re.split(r'\s+--', stripped, maxsplit=1)[0]
+    if specifier.startswith('-'):
+      continue
+    try:
+      existing = Requirement(specifier)
+    except InvalidRequirement:
+      continue
+    name = canonicalize_name(existing.name)
+    if name in _AGENT_PLATFORM_DISTRIBUTIONS:
+      pinned_distributions[name] = None
+
+  if pinned_distributions and hash_checking:
+    # A hash-locked file already pins each distribution to one exact, hashed
+    # release, and in hash-checking mode pip rejects any requirement without a
+    # hash, so appending a floor would fail the image build outright. Leave the
+    # agent's lock as written, as this function did before it stated floors.
+    return
 
   with open(requirements_txt_path, 'a', encoding='utf-8') as f:
     if requirements and not requirements.endswith('\n'):
       f.write('\n')
-    f.write(f'{_AGENT_ENGINE_REQUIREMENT}\n')
-    f.write(f'google-adk[a2a]=={__version__}\n')
+    if pinned_distributions:
+      # The agent already asks for an Agent Platform distribution. Rather than
+      # judging whether its specifier can reach the v2 surface, state the floor
+      # as a second requirement on the same distribution and let pip reconcile
+      # the two. pip is the authority on what a specifier set allows, so a pin
+      # that cannot reach the floor fails the image build with a resolver error
+      # naming both lines, instead of this function having to reimplement -- and
+      # get wrong -- the rules for `<2`, `>=1.0,!=2.2`, `~=2.3` and the rest.
+      # The deployed image runs `adk api_server`, which reaches for
+      # `Client.runtimes`; a v1 release only has `Client.agent_engines`, so
+      # failing the build is the point. Every pinned distribution gets its own
+      # floor: both ship the `agentplatform` package, so a v1 pin on either one
+      # can put the v1 surface on disk.
+      for name in pinned_distributions:
+        f.write(f'{name}>={_AGENT_ENGINE_MIN_VERSION},<3\n')
+    else:
+      f.write(f'{_AGENT_ENGINE_REQUIREMENT}\n')
+      f.write(f'google-adk[a2a]=={__version__}\n')
 
 
 # What a deployment advertises to Agent Platform: one entry per operation the
@@ -375,6 +439,189 @@ _AGENT_ENGINE_CLASS_METHODS = [
                 'query': {'type': 'string'},
             },
             'required': ['user_id', 'query'],
+            'type': 'object',
+        },
+        'api_mode': 'async',
+    },
+    {
+        'name': 'async_save_artifact',
+        'description': (
+            'Saves an artifact to the artifact service storage.\n\n       '
+            ' Args:\n            user_id (str):\n                Required. The'
+            ' ID of the user.\n            filename (str):\n               '
+            ' Required. The filename of the artifact.\n            artifact'
+            ' (Union[types.Part, Dict[str, Any], str]):\n               '
+            ' Required. The artifact to save.\n            session_id'
+            ' (Optional[str]):\n                Optional. The ID of the'
+            ' session.\n            custom_metadata (Optional[Dict[str,'
+            ' Any]]):\n                Optional. Custom metadata to associate'
+            ' with the artifact.\n            **kwargs (dict[str, Any]):\n     '
+            '           Optional. Additional keyword arguments to pass to the\n'
+            '                artifact service.\n\n        Returns:\n           '
+            ' int: The revision ID.\n        '
+        ),
+        'parameters': {
+            'properties': {
+                'user_id': {'type': 'string'},
+                'filename': {'type': 'string'},
+                'artifact': {
+                    'anyOf': [
+                        {'additionalProperties': True, 'type': 'object'},
+                        {'type': 'string'},
+                    ]
+                },
+                'session_id': {'type': 'string', 'nullable': True},
+                'custom_metadata': {'type': 'object', 'nullable': True},
+            },
+            'required': ['user_id', 'filename', 'artifact'],
+            'type': 'object',
+        },
+        'api_mode': 'async',
+    },
+    {
+        'name': 'async_load_artifact',
+        'description': (
+            'Gets an artifact from the artifact service storage.\n\n       '
+            ' Args:\n            user_id (str):\n                Required. The'
+            ' ID of the user.\n            filename (str):\n               '
+            ' Required. The filename of the artifact.\n            session_id'
+            ' (Optional[str]):\n                Optional. The ID of the'
+            ' session.\n            version (Optional[int]):\n               '
+            ' Optional. The version of the artifact.\n            **kwargs'
+            ' (dict[str, Any]):\n                Optional. Additional keyword'
+            ' arguments to pass to the\n                artifact service.\n\n  '
+            '      Returns:\n            Optional[types.Part]: The artifact or'
+            ' None if not found.\n        '
+        ),
+        'parameters': {
+            'properties': {
+                'user_id': {'type': 'string'},
+                'filename': {'type': 'string'},
+                'session_id': {'type': 'string', 'nullable': True},
+                'version': {'type': 'integer', 'nullable': True},
+            },
+            'required': ['user_id', 'filename'],
+            'type': 'object',
+        },
+        'api_mode': 'async',
+    },
+    {
+        'name': 'async_list_artifact_keys',
+        'description': (
+            'Lists all the artifact filenames within a session.\n\n       '
+            ' Args:\n            user_id (str):\n                Required. The'
+            ' ID of the user.\n            session_id (Optional[str]):\n       '
+            '         Optional. The ID of the session.\n            **kwargs'
+            ' (dict[str, Any]):\n                Optional. Additional keyword'
+            ' arguments to pass to the\n                artifact service.\n\n  '
+            '      Returns:\n            list[str]: A list of artifact'
+            ' filenames.\n        '
+        ),
+        'parameters': {
+            'properties': {
+                'user_id': {'type': 'string'},
+                'session_id': {'type': 'string', 'nullable': True},
+            },
+            'required': ['user_id'],
+            'type': 'object',
+        },
+        'api_mode': 'async',
+    },
+    {
+        'name': 'async_delete_artifact',
+        'description': (
+            'Deletes an artifact.\n\n        Args:\n            user_id'
+            ' (str):\n                Required. The ID of the user.\n          '
+            '  filename (str):\n                Required. The filename of the'
+            ' artifact.\n            session_id (Optional[str]):\n             '
+            '   Optional. The ID of the session.\n            **kwargs'
+            ' (dict[str, Any]):\n                Optional. Additional keyword'
+            ' arguments to pass to the\n                artifact service.\n    '
+            '    '
+        ),
+        'parameters': {
+            'properties': {
+                'user_id': {'type': 'string'},
+                'filename': {'type': 'string'},
+                'session_id': {'type': 'string', 'nullable': True},
+            },
+            'required': ['user_id', 'filename'],
+            'type': 'object',
+        },
+        'api_mode': 'async',
+    },
+    {
+        'name': 'async_list_versions',
+        'description': (
+            'Lists all versions of an artifact.\n\n        Args:\n           '
+            ' user_id (str):\n                Required. The ID of the user.\n  '
+            '          filename (str):\n                Required. The filename'
+            ' of the artifact.\n            session_id (Optional[str]):\n      '
+            '          Optional. The ID of the session.\n            **kwargs'
+            ' (dict[str, Any]):\n                Optional. Additional keyword'
+            ' arguments to pass to the\n                artifact service.\n\n  '
+            '      Returns:\n            list[int]: A list of all available'
+            ' versions of the artifact.\n        '
+        ),
+        'parameters': {
+            'properties': {
+                'user_id': {'type': 'string'},
+                'filename': {'type': 'string'},
+                'session_id': {'type': 'string', 'nullable': True},
+            },
+            'required': ['user_id', 'filename'],
+            'type': 'object',
+        },
+        'api_mode': 'async',
+    },
+    {
+        'name': 'async_list_artifact_versions',
+        'description': (
+            'Lists all versions and their metadata for a specific'
+            ' artifact.\n\n        Args:\n            user_id (str):\n         '
+            '       Required. The ID of the user.\n            filename'
+            ' (str):\n                Required. The filename of the'
+            ' artifact.\n            session_id (Optional[str]):\n             '
+            '   Optional. The ID of the session.\n            **kwargs'
+            ' (dict[str, Any]):\n                Optional. Additional keyword'
+            ' arguments to pass to the\n                artifact service.\n\n  '
+            '      Returns:\n            list[ArtifactVersion]: A list of'
+            ' ArtifactVersion objects.\n        '
+        ),
+        'parameters': {
+            'properties': {
+                'user_id': {'type': 'string'},
+                'filename': {'type': 'string'},
+                'session_id': {'type': 'string', 'nullable': True},
+            },
+            'required': ['user_id', 'filename'],
+            'type': 'object',
+        },
+        'api_mode': 'async',
+    },
+    {
+        'name': 'async_get_artifact_version',
+        'description': (
+            'Gets the metadata for a specific version of an artifact.\n\n      '
+            '  Args:\n            user_id (str):\n                Required. The'
+            ' ID of the user.\n            filename (str):\n               '
+            ' Required. The filename of the artifact.\n            session_id'
+            ' (Optional[str]):\n                Optional. The ID of the'
+            ' session.\n            version (Optional[int]):\n               '
+            ' Optional. The version number of the artifact.\n            '
+            '**kwargs (dict[str, Any]):\n                Optional. Additional'
+            ' keyword arguments to pass to the\n                artifact'
+            ' service.\n\n        Returns:\n            Optional['
+            'ArtifactVersion]: An ArtifactVersion object or None.\n        '
+        ),
+        'parameters': {
+            'properties': {
+                'user_id': {'type': 'string'},
+                'filename': {'type': 'string'},
+                'session_id': {'type': 'string', 'nullable': True},
+                'version': {'type': 'integer', 'nullable': True},
+            },
+            'required': ['user_id', 'filename'],
             'type': 'object',
         },
         'api_mode': 'async',
@@ -1355,8 +1602,7 @@ def to_agent_engine(
     # Set env_vars in agent_config to None if it is not set.
     agent_config['env_vars'] = agent_config.get('env_vars', env_vars)
 
-    import vertexai
-
+    from ..dependencies._agentplatform import agentplatform
     from ..utils._google_client_headers import get_tracking_headers
 
     if not (api_key or project or region):
@@ -1369,14 +1615,14 @@ def to_agent_engine(
 
     click.echo('Initializing Agent Platform client...')
     if project and region:
-      client = vertexai.Client(
+      client = agentplatform.Client(
           project=project,
           location=region,
           http_options={'headers': get_tracking_headers()},
       )
       click.echo('Agent Platform client initialized with project and region.')
     elif api_key:
-      client = vertexai.Client(
+      client = agentplatform.Client(
           api_key=api_key,
           http_options={'headers': get_tracking_headers()},
       )
@@ -1387,6 +1633,20 @@ def to_agent_engine(
           'key or project and region.'
       )
       return
+
+    # A v1 google-cloud-aiplatform also ships an importable `agentplatform`,
+    # whose client exposes `agent_engines` where v2 exposes `runtimes`. The
+    # import above therefore succeeds against either, and without this check
+    # the mismatch surfaces only as a bare AttributeError from the create call
+    # further down, after the deploy already looks under way.
+    if getattr(client, 'runtimes', None) is None:
+      raise click.ClickException(
+          'The installed Agent Platform SDK exposes `Client.agent_engines`'
+          ' rather than `Client.runtimes`, so it predates the surface this'
+          ' deployment uses. Install google-cloud-agentplatform>=2.2, or'
+          ' google-cloud-aiplatform>=2.2,<3 if you depend on the bundled'
+          ' distribution.'
+      )
 
     if skip_agent_import_validation:
       warnings.warn(
@@ -1497,8 +1757,8 @@ def to_agent_engine(
 
     resource_name = agent_engine_id
     if not resource_name:
-      agent_engine = client.agent_engines.create()
-      resource_name = agent_engine.api_resource.name
+      runtime = client.runtimes.create()
+      resource_name = runtime.api_resource.name
       click.secho(f'Created a new instance: {resource_name}', fg='green')
     elif project and region and not resource_name.startswith('projects/'):
       resource_name = f'projects/{project}/locations/{region}/reasoningEngines/{agent_engine_id}'
@@ -1506,13 +1766,13 @@ def to_agent_engine(
     create_dockerfile_for_agent_engine(resource_name)
     click.echo(f'Dockerfile created at {os.getcwd()}/Dockerfile.')
     try:
-      client.agent_engines.update(name=resource_name, config=agent_config)
+      client.runtimes.update(name=resource_name, config=agent_config)
       click.secho(f'Deployed to Agent Platform: {resource_name}', fg='green')
     except Exception as e:
       click.secho(f'Failed to deploy to Agent Platform: {e}', fg='red')
       # Only delete the instance if it was newly created in this function.
       if agent_engine_id is None:
-        client.agent_engines.delete(name=resource_name)
+        client.runtimes.delete(name=resource_name)
         click.secho(f'Cleaned up the instance: {resource_name}', fg='green')
       raise e
     _print_agent_engine_url(resource_name)

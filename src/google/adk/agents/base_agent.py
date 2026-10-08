@@ -33,7 +33,6 @@ from typing import TypeVar
 from typing import Union
 
 from google.genai import types
-from opentelemetry import context
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -47,7 +46,6 @@ from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..features import experimental
 from ..features import FeatureName
-from ..telemetry import _instrumentation
 from ..utils._callback_pipeline import _normalize_callbacks
 from ..utils._callback_pipeline import _run_callbacks
 from ..utils._callback_pipeline import _stop_on_truthy
@@ -407,6 +405,10 @@ class BaseAgent(BaseNode, abc.ABC):
       impl_fn: Callable[[InvocationContext], AsyncGenerator[Event, None]],
   ) -> AsyncGenerator[Event, None]:
     """Runs an agent implementation generator with full callback and trace lifecycle."""
+    from opentelemetry import context
+
+    from ..telemetry import _instrumentation
+
     caller_ctx = context.get_current()
 
     async def _run() -> AsyncGenerator[Event, None]:

@@ -53,19 +53,35 @@ def _normalize_oauth_scopes(
   return list(scopes)
 
 
-def _without_client_secret(auth_config: AuthConfig) -> AuthConfig:
-  """Returns a copy of auth_config with OAuth2 client secrets removed.
+def _credential_without_configured_secrets(
+    credential: AuthCredential | None,
+) -> AuthCredential | None:
+  """Returns a copy of credential with every agent-supplied secret removed."""
+  redacted = _credential_without_client_secret(credential)
+  if redacted is None:
+    return None
+  redacted.api_key = None
+  if redacted.http is not None:
+    redacted.http.credentials.password = None
+    redacted.http.credentials.token = None
+    redacted.http.additional_headers = None
+  return redacted
+
+
+def _without_configured_secrets(auth_config: AuthConfig) -> AuthConfig:
+  """Returns a copy of auth_config carrying no secret the agent configured.
 
   The auth request travels to, and is echoed back by, the client, and is
-  persisted in the session. The client secret belongs to the agent, never to
-  the end user, so it is stripped here and re-attached from the tool's own
-  configuration when the token exchange happens.
+  persisted in the session. An API key, an HTTP password or token, and an
+  OAuth2 client secret all belong to the agent rather than to the end user,
+  so none of them are sent. The tool's own configuration still holds them when
+  the credential is finally prepared.
   """
   redacted = auth_config.model_copy(deep=True)
-  redacted.raw_auth_credential = _credential_without_client_secret(
+  redacted.raw_auth_credential = _credential_without_configured_secrets(
       redacted.raw_auth_credential
   )
-  redacted.exchanged_auth_credential = _credential_without_client_secret(
+  redacted.exchanged_auth_credential = _credential_without_configured_secrets(
       redacted.exchanged_auth_credential
   )
   return redacted
@@ -224,7 +240,7 @@ class AuthHandler:
       )
 
   def generate_auth_request(self) -> AuthConfig:
-    return _without_client_secret(self._generate_auth_request())
+    return _without_configured_secrets(self._generate_auth_request())
 
   def _generate_auth_request(self) -> AuthConfig:
     if not isinstance(

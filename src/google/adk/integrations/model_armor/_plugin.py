@@ -109,7 +109,10 @@ class ModelArmorPlugin(BasePlugin):
     if not self._config.prompt_template_name:
       return None
 
-    text = _extract_request_text(llm_request)
+    content = _latest_user_text_content(llm_request)
+    if content is None:
+      return None
+    text = _content_text(content)
     if not text:
       return None
 
@@ -120,6 +123,11 @@ class ModelArmorPlugin(BasePlugin):
     except Exception:  # pylint: disable=broad-except
       logger.exception('Model Armor input screening call failed.')
       return self._handle_screening_failure(self._config.input_blocked_message)
+
+    deidentified_text = self._deidentified_text(result, direction='input')
+    if deidentified_text is not None:
+      _replace_text_parts(content, deidentified_text)
+      return None
 
     return self._handle_sanitization_result(
         result,
@@ -145,6 +153,10 @@ class ModelArmorPlugin(BasePlugin):
     except Exception:  # pylint: disable=broad-except
       logger.exception('Model Armor output screening call failed.')
       return self._handle_screening_failure(self._config.output_blocked_message)
+
+    deidentified_text = self._deidentified_text(result, direction='output')
+    if deidentified_text is not None:
+      return _deidentified_response(llm_response, deidentified_text)
 
     return self._handle_sanitization_result(
         result,
@@ -272,6 +284,54 @@ class ModelArmorPlugin(BasePlugin):
 
     return False
 
+  def _deidentified_text(
+      self, result: modelarmor_v1.SanitizationResult, *, direction: str
+  ) -> Optional[str]:
+    """Returns the text to continue with, or None to fall back to blocking.
+
+    Model Armor returns de-identified text whenever the SDP filter matched,
+    even when another filter matched too, so every other filter is checked
+    first: de-identified text is only used when SDP is the sole match.
+    """
+    if not self._config.deidentify_sensitive_data:
+      return None
+    if result.invocation_result != modelarmor_v1.InvocationResult.SUCCESS:
+      return None
+    if result.filter_match_state != modelarmor_v1.FilterMatchState.MATCH_FOUND:
+      return None
+
+    deidentify_result = None
+    for filter_result in result.filter_results.values():
+      # pylint: disable-next=protected-access
+      kind = filter_result._pb.WhichOneof('filter_result')
+      if kind is None:
+        return None
+      if kind != 'sdp_filter_result':
+        # Fail closed: a filter that does not report NO_MATCH_FOUND, including
+        # a filter type this code does not know, keeps the content blocked.
+        match_state = getattr(getattr(filter_result, kind), 'match_state', None)
+        if match_state != modelarmor_v1.FilterMatchState.NO_MATCH_FOUND:
+          return None
+        continue
+      sdp_result = filter_result.sdp_filter_result
+      if 'deidentify_result' in sdp_result:
+        deidentify_result = sdp_result.deidentify_result
+
+    if (
+        deidentify_result is None
+        or deidentify_result.match_state
+        != modelarmor_v1.FilterMatchState.MATCH_FOUND
+        or deidentify_result.execution_state
+        != modelarmor_v1.FilterExecutionState.EXECUTION_SUCCESS
+        or not deidentify_result.data.text
+    ):
+      return None
+
+    logger.info(
+        'Model Armor %s sanitization de-identified sensitive data.', direction
+    )
+    return str(deidentify_result.data.text)
+
   def _handle_screening_failure(
       self, blocked_message: str
   ) -> Optional[LlmResponse]:
@@ -291,17 +351,17 @@ class ModelArmorPlugin(BasePlugin):
     )
 
 
-def _extract_request_text(llm_request: LlmRequest) -> Optional[str]:
-  """Extracts the latest user text from an LlmRequest."""
+def _latest_user_text_content(
+    llm_request: LlmRequest,
+) -> Optional[types.Content]:
+  """Returns the most recent user content that has screenable text."""
   if not llm_request.contents:
     return None
-  # Screen the most recent user turn.
   for content in reversed(llm_request.contents):
     if content.role != 'user':
       continue
-    text = _content_text(content)
-    if text:
-      return text
+    if _content_text(content):
+      return content
   return None
 
 
@@ -329,6 +389,40 @@ def _content_text(content: Optional[types.Content]) -> Optional[str]:
   if not texts:
     return None
   return '\n'.join(texts)
+
+
+def _replace_text_parts(content: types.Content, text: str) -> None:
+  """Replaces the screened text parts of ``content`` with one text part.
+
+  The screened text joins every non-thought text part, so the de-identified
+  text replaces them as a single part at the position of the first one.
+  Thought parts and non-text parts are kept as they are.
+  """
+  parts = []
+  inserted = False
+  for part in content.parts or []:
+    if part.text and not part.thought:
+      if not inserted:
+        parts.append(types.Part(text=text))
+        inserted = True
+      continue
+    parts.append(part)
+  content.parts = parts
+
+
+def _deidentified_response(llm_response: LlmResponse, text: str) -> LlmResponse:
+  """Returns a copy of ``llm_response`` carrying the de-identified text."""
+  response = llm_response.model_copy(deep=True)
+  transcription = response.output_transcription
+  if transcription and transcription.text:
+    transcription.text = text
+  elif response.content:
+    _replace_text_parts(response.content, text)
+  response.custom_metadata = {
+      **(response.custom_metadata or {}),
+      'model_armor_deidentified': True,
+  }
+  return response
 
 
 _SKIP = object()

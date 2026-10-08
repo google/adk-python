@@ -31,7 +31,7 @@ import pydantic
 from typing_extensions import override
 
 if TYPE_CHECKING:
-  import vertexai
+  import agentplatform
 
 from . import _session_util
 from ..events.event import Event
@@ -168,11 +168,11 @@ class VertexAiSessionService(BaseSessionService):
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
     """
     try:
-      import vertexai  # noqa: F401
+      from ..dependencies._agentplatform import agentplatform  # noqa: F401
     except ImportError as e:
       from ..utils._dependency import missing_extra
 
-      raise missing_extra('google-cloud-aiplatform', 'gcp') from e
+      raise missing_extra('google-cloud-agentplatform', 'gcp') from e
 
     self._project = project
     self._location = location
@@ -222,7 +222,7 @@ class VertexAiSessionService(BaseSessionService):
       config['session_id'] = session_id
     config.update(kwargs)
     api_client = self._get_api_client()
-    api_response = await api_client.agent_engines.sessions.create(
+    api_response = await _sessions_api(api_client).create(
         name=f'reasoningEngines/{reasoning_engine_id}',
         user_id=user_id,
         config=config,
@@ -272,14 +272,14 @@ class VertexAiSessionService(BaseSessionService):
 
     try:
       if config and config.num_recent_events == 0:
-        get_session_response = await api_client.agent_engines.sessions.get(
+        get_session_response = await _sessions_api(api_client).get(
             name=session_resource_name
         )
         events_iterator = None
       else:
         get_session_response, events_iterator = await asyncio.gather(
-            api_client.agent_engines.sessions.get(name=session_resource_name),
-            api_client.agent_engines.sessions.events.list(
+            _sessions_api(api_client).get(name=session_resource_name),
+            _sessions_api(api_client).events.list(
                 name=session_resource_name,
                 **list_events_kwargs,
             ),
@@ -336,7 +336,7 @@ class VertexAiSessionService(BaseSessionService):
     config = {}
     if user_id is not None:
       config['filter'] = f'user_id={_quote_filter_literal(user_id)}'
-    sessions_iterator = await api_client.agent_engines.sessions.list(
+    sessions_iterator = await _sessions_api(api_client).list(
         name=f'reasoningEngines/{reasoning_engine_id}',
         config=config,
     )
@@ -370,9 +370,7 @@ class VertexAiSessionService(BaseSessionService):
     api_client = self._get_api_client()
     # Enforce ownership: delete_session otherwise ignores user_id entirely.
     try:
-      existing = await api_client.agent_engines.sessions.get(
-          name=session_resource_name
-      )
+      existing = await _sessions_api(api_client).get(name=session_resource_name)
     except ClientError as e:
       if e.code == 404:
         return
@@ -383,7 +381,7 @@ class VertexAiSessionService(BaseSessionService):
       )
 
     try:
-      await api_client.agent_engines.sessions.delete(
+      await _sessions_api(api_client).delete(
           name=session_resource_name,
       )
     except Exception as e:
@@ -508,7 +506,7 @@ class VertexAiSessionService(BaseSessionService):
     async def _do_append(cfg: dict[str, Any]) -> None:
       for attempt in range(2):
         try:
-          await api_client.agent_engines.sessions.events.append(
+          await _sessions_api(api_client).events.append(
               name=(
                   f'reasoningEngines/{reasoning_engine_id}/'
                   f'sessions/{session.id}'
@@ -570,7 +568,7 @@ class VertexAiSessionService(BaseSessionService):
   ) -> Optional[Union[types.HttpOptions, types.HttpOptionsDict]]:
     return None
 
-  def _get_api_client(self) -> vertexai.AsyncClient:
+  def _get_api_client(self) -> agentplatform.AsyncClient:
     """Returns the API client for the running event loop.
 
     The client is built once per event loop and reused. An async client belongs
@@ -582,7 +580,7 @@ class VertexAiSessionService(BaseSessionService):
     """
     return per_loop_value(self, '_api_client_per_loop', self._build_api_client)
 
-  def _build_api_client(self) -> vertexai.AsyncClient:
+  def _build_api_client(self) -> agentplatform.AsyncClient:
     """Instantiates an API client for the given project and location.
 
     Subclasses that need custom credentials or an endpoint should override this
@@ -590,14 +588,14 @@ class VertexAiSessionService(BaseSessionService):
     client must vary per call (e.g. per-tenant), in which case callers never
     close the returned client.
     """
-    import vertexai
+    from ..dependencies._agentplatform import agentplatform
 
     if self._express_mode_api_key:
-      return vertexai.Client(
+      return agentplatform.Client(
           http_options=self._api_client_http_options_override(),
           api_key=self._express_mode_api_key,
       ).aio
-    return vertexai.Client(
+    return agentplatform.Client(
         project=self._project,
         location=self._location,
         http_options=self._api_client_http_options_override(),
@@ -622,7 +620,24 @@ def _get_raw_event(api_event_obj: object) -> dict[str, Any] | None:
   return None
 
 
-def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
+def _sessions_api(api_client: Any) -> Any:
+  """Returns the sessions surface of whichever client a subclass supplies.
+
+  The service builds an `agentplatform` client, where sessions hang off the
+  client itself. A subclass may still override `_get_api_client` or
+  `_build_api_client` to return a `vertexai` client, and in 2.x that client
+  only has the legacy `agent_engines.sessions` path -- no client has both. The
+  two paths take the same arguments and, from 2.2, return the same classes, so
+  falling back keeps those subclasses working instead of raising
+  AttributeError on their first call.
+  """
+  sessions = getattr(api_client, 'sessions', None)
+  if sessions is not None:
+    return sessions
+  return api_client.agent_engines.sessions
+
+
+def _from_api_event(api_event_obj: agentplatform.types.SessionEvent) -> Event:
   """Converts an API event object to an Event object."""
   # Prioritize reading from raw_event to restore full state. Fall back to
   # top-level fields for older data that lacks raw_event.

@@ -51,6 +51,86 @@ Both appear in the codebase. Follow this convention:
 - **Existing files**: match the style already in the file.
 - Do not refactor one into the other without a reason.
 
+## Agent Mode Constants and Type Aliases
+
+Use `google.adk.utils._agent_mode` for agent execution and delegation modes
+rather than scattering raw `'chat'`, `'task'`, and `'single_turn'` strings or
+repeating `Literal[...]` unions:
+
+- **Runtime checks and defaults**: use `AgentMode.CHAT`, `AgentMode.TASK`,
+  `AgentMode.SINGLE_TURN`, and `DELEGATED_TASK_MODES`
+  (`frozenset({AgentMode.TASK, AgentMode.SINGLE_TURN})`). `AgentMode`
+  subclasses `(str, enum.Enum)`, so members compare equal to plain strings.
+- **Type annotations**: use the shared type aliases from `utils/_agent_mode.py`
+  (`LlmAgentMode`, `SingleTurnAgentMode`, `TaskAgentMode`,
+  `DefaultLlmNodeMode`).
+
+```python
+# Bad — raw mode strings and duplicated Literal unions
+def run_agent(
+    agent: BaseAgent,
+    default_mode: Literal['chat', 'single_turn'] = 'single_turn',
+) -> None:
+  if getattr(agent, 'mode', None) == 'single_turn':
+    ...
+  if agent.mode in ('task', 'single_turn'):
+    ...
+
+# Good — shared enum, constant set, and type alias
+from ..utils._agent_mode import AgentMode
+from ..utils._agent_mode import DefaultLlmNodeMode
+from ..utils._agent_mode import DELEGATED_TASK_MODES
+
+def run_agent(
+    agent: BaseAgent,
+    default_mode: DefaultLlmNodeMode = AgentMode.SINGLE_TURN,
+) -> None:
+  if getattr(agent, 'mode', None) == AgentMode.SINGLE_TURN:
+    ...
+  if agent.mode in DELEGATED_TASK_MODES:
+    ...
+```
+
+## Path and Node Builders (`_NodePathBuilder`, `_BranchPath`, `build_node`)
+
+Never manipulate workflow node paths or execution branch strings with ad-hoc
+`str.split`, `str.startswith`, or f-string concatenation, and never manually
+wrap or mutate `NodeLike` targets in place:
+
+- **Workflow node paths (`'wf@1/node@2'`)**: use `_NodePathBuilder` from
+  `google.adk.events._node_path_builder` (`.from_string()`, `.append()`,
+  `.parent`, `.node_name`, `.run_id`, `.static_path`, `.is_descendant_of()`,
+  `.is_direct_child_of()`, `.get_direct_child()`).
+- **Execution branch paths (`'parent@1.child@2'`)**: use `_BranchPath` from
+  `google.adk.events._branch_path` (`.from_string()`, `.create_sub_branch()`,
+  `.append()`, `.parent`, `.segments`, `.run_ids`, `.is_descendant_of()`,
+  `.common_prefix()`, `.is_tool_branch()`).
+- **Workflow node construction**: use `build_node` from
+  `google.adk.workflow.utils._workflow_graph_utils` to normalize any `NodeLike`
+  (`BaseNode`, `BaseAgent`, `BaseTool`, or callable) into a `BaseNode` without
+  mutating shared `LlmAgent` instances in place.
+
+```python
+# Bad — raw '/' / '.' / '@' string splitting, prefix matching, and manual wrapping
+if event_path == node_path or event_path.startswith(f'{node_path}/'):
+  ...
+sub_branch = f'{ctx.branch}.{agent.name}' if ctx.branch else agent.name
+
+# Good — structured builders handle run_ids and hierarchy checks
+from ..events._branch_path import _BranchPath
+from ..events._node_path_builder import _NodePathBuilder
+from ..workflow.utils._workflow_graph_utils import build_node
+
+self_path = _NodePathBuilder.from_string(node_path)
+ev_path = _NodePathBuilder.from_string(event_path)
+if ev_path == self_path or ev_path.is_descendant_of(self_path):
+  ...
+sub_branch = str(
+    _BranchPath.create_sub_branch(ctx.branch, name=agent.name, run_id=run_id)
+)
+executable_node = build_node(target, default_llm_mode=AgentMode.SINGLE_TURN)
+```
+
 ## Abstract Types for Function Parameters
 
 Annotate parameters with abstract types from `collections.abc` so callers can
