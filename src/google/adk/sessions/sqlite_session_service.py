@@ -52,12 +52,22 @@ PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
 # Merges {delta} into {state} with dict.update() semantics: keys in the delta
 # always win with their delta value (including SQL NULL / JSON null), unlike
 # json_patch() which deep-merges dict values and treats null as "delete key".
+#
+# json_group_object writes a REAL with 15 significant digits, which rounds
+# floats such as 0.1 + 0.2 for every key in the row. A REAL is written with 17
+# digits when 15 do not read back as the same value, so floats round-trip.
 _MERGE_STATE_SQL = """
         SELECT json_group_object(
                  key,
                  CASE
                    WHEN type IN ('object','array') THEN json(value)
                    WHEN type IN ('true','false') THEN json(type)
+                   WHEN type = 'real' THEN json(
+                     CASE
+                       WHEN CAST(printf('%!.15g', value) AS REAL) = value
+                         THEN printf('%!.15g', value)
+                       ELSE printf('%!.17g', value)
+                     END)
                    ELSE value
                  END)
         FROM (
@@ -358,7 +368,7 @@ class SqliteSessionService(BaseSessionService):
     sessions_list = []
     async with self._get_db_connection() as db:
       # Fetch sessions
-      if user_id:
+      if user_id is not None:
         session_rows = await db.execute_fetchall(
             "SELECT id, user_id, state, update_time FROM sessions WHERE"
             " app_name=? AND user_id=? ORDER BY update_time, user_id, id",
@@ -376,7 +386,7 @@ class SqliteSessionService(BaseSessionService):
 
       # Fetch user states
       user_states_map: dict[str, dict[str, Any]] = {}
-      if user_id:
+      if user_id is not None:
         user_state = await self._get_user_state(db, app_name, user_id)
         if user_state:
           user_states_map[user_id] = user_state

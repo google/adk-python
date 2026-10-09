@@ -89,7 +89,7 @@ class OAuth2DiscoveryManager:
           response.raise_for_status()
           metadata = AuthorizationServerMetadata.model_validate(response.json())
           # Validate issuer to defend against MIX-UP attacks
-          if metadata.issuer == issuer_url.rstrip("/"):
+          if metadata.issuer.rstrip("/") == issuer_url.rstrip("/"):
             return metadata
           else:
             logger.warning(

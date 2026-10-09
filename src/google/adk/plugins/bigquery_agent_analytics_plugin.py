@@ -1709,6 +1709,13 @@ def _require_finite(name: str, value: Any, minimum_exclusive: float) -> float:
   return float(value)
 
 
+def _is_async_callable(fn: object) -> bool:
+  """Returns whether ``fn`` is a coroutine function or async callable object."""
+  return inspect.iscoroutinefunction(fn) or inspect.iscoroutinefunction(
+      getattr(fn, "__call__", None)
+  )
+
+
 def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
   """Validates runtime settings at construction time.
 
@@ -1717,7 +1724,7 @@ def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
   every batch is dropped without a single attempt.
 
   Raises:
-      ValueError: If any batch, queue, duration, or retry setting is
+      ValueError: If any batch, queue, duration, retry, or callback setting is
         invalid.
   """
   _require_count("batch_size", config.batch_size, 1)
@@ -1761,6 +1768,22 @@ def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
     raise ValueError(
         "retry_config.max_delay must be >= initial_delay, got"
         f" max_delay={retry.max_delay} initial_delay={retry.initial_delay}."
+    )
+  if config.on_schema_error is not None and (
+      not callable(config.on_schema_error)
+      or _is_async_callable(config.on_schema_error)
+  ):
+    raise ValueError(
+        "on_schema_error must be a synchronous callable or None, got"
+        f" {config.on_schema_error!r}."
+    )
+  if config.on_schema_ready is not None and (
+      not callable(config.on_schema_ready)
+      or _is_async_callable(config.on_schema_ready)
+  ):
+    raise ValueError(
+        "on_schema_ready must be a synchronous callable or None, got"
+        f" {config.on_schema_ready!r}."
     )
 
 
@@ -2461,6 +2484,43 @@ class BigQueryLoggerConfig:
         never written to BigQuery: the row's ``error_message`` still names
         only the exception class. ``False`` (the default) logs a constant
         message with no traceback.
+      on_schema_error: Optional synchronous callback invoked with the triggering
+        exception each time the table readiness pass fails to read, create, or
+        upgrade the BigQuery table. It runs on a worker thread, not the event
+        loop, and fires at most once per readiness pass, so it may be called
+        repeatedly while setup retries; keep it fast and non-blocking. Once a
+        pass completes with ``True`` (see ``on_schema_ready``), later setups of
+        the same plugin, including after ``close()``, after a fork, and in
+        copies pickled afterwards, skip the pass, so neither callback fires
+        again and later table outages surface only as append-time drops. Later
+        setups run the pass again only if the setup awaiting that pass was
+        cancelled, or after a ``create_analytics_views()`` call tries to create
+        the views and one fails; a call that creates every view makes later
+        setups skip the pass, and that call's own view creation never invokes
+        either callback. This callback is not invoked for analytics-view
+        creation failures or label-only ``update_table`` refresh failures (those
+        are logged and swallowed without raising). Exceptions it raises are
+        logged and suppressed so the original exception still propagates. If the
+        plugin is serialized with the standard ``pickle`` module, the callback
+        must be picklable (e.g. a module-level function; lambdas and closures
+        fail with standard ``pickle``, and bound methods pickle their instance).
+      on_schema_ready: Optional synchronous no-arg callback invoked each time
+        the table readiness pass completes with ``True`` (i.e. the table exists
+        or was created/upgraded and all requested views succeeded; not called
+        when view creation returns ``False`` or when an exception is raised).
+        After such a pass, later setups of the same plugin, including after
+        ``close()``, after a fork, and in copies pickled afterwards, skip the
+        pass, so neither callback fires again and later table outages surface
+        only as append-time drops. Later setups run the pass again only if the
+        setup awaiting that pass was cancelled, or after a
+        ``create_analytics_views()`` call tries to create the views and one
+        fails; a call that creates every view makes later setups skip the pass,
+        and that call's own view creation never invokes either callback. It runs
+        on a worker thread, not the event loop; keep it fast and non-blocking.
+        Exceptions it raises are logged and suppressed. If the plugin is
+        serialized with the standard ``pickle`` module, the callback must be
+        picklable (e.g. a module-level function; lambdas and closures fail with
+        standard ``pickle``, and bound methods pickle their instance).
   """
 
   enabled: bool = True
@@ -2550,6 +2610,8 @@ class BigQueryLoggerConfig:
   # local formatter-failure warning. The traceback can embed the unformatted
   # content; see the class docstring before enabling it.
   debug_content_formatter_errors: bool = False
+  on_schema_error: Optional[Callable[[Exception], None]] = None
+  on_schema_ready: Optional[Callable[[], None]] = None
 
 
 # ==============================================================================
@@ -5934,6 +5996,44 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     await self._get_loop_state(claimed_generation=claimed_generation)
 
+  def _notify_schema_error(self, exc: Exception) -> None:
+    """Invokes ``config.on_schema_error(exc)`` if configured."""
+    callback = self.config.on_schema_error
+    if callback is None:
+      return
+    try:
+      result = callback(exc)
+      if inspect.iscoroutine(result):
+        result.close()
+        logger.warning(
+            "BigQueryLoggerConfig.on_schema_error returned a coroutine;"
+            " callback must be synchronous."
+        )
+    except Exception:  # pylint: disable=broad-exception-caught
+      logger.warning(
+          "Exception raised by BigQueryLoggerConfig.on_schema_error callback",
+          exc_info=True,
+      )
+
+  def _notify_schema_ready(self) -> None:
+    """Invokes ``config.on_schema_ready()`` if configured."""
+    callback = self.config.on_schema_ready
+    if callback is None:
+      return
+    try:
+      result = callback()
+      if inspect.iscoroutine(result):
+        result.close()
+        logger.warning(
+            "BigQueryLoggerConfig.on_schema_ready returned a coroutine;"
+            " callback must be synchronous."
+        )
+    except Exception:  # pylint: disable=broad-exception-caught
+      logger.warning(
+          "Exception raised by BigQueryLoggerConfig.on_schema_ready callback",
+          exc_info=True,
+      )
+
   def _ensure_schema_exists(self) -> bool:
     """Ensures the BigQuery table exists with the correct schema.
 
@@ -5954,6 +6054,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         or created, or a required schema upgrade failed.
     """
     client = self._require_client()
+    self._require_schema()
+    try:
+      ready = self._ensure_schema_exists_impl(client)
+    except Exception as e:
+      self._notify_schema_error(e)
+      raise
+    if ready:
+      self._notify_schema_ready()
+    return ready
+
+  def _ensure_schema_exists_impl(self, client: bigquery.Client) -> bool:
+    """Table readiness pass; see ``_ensure_schema_exists``."""
     try:
       existing_table = client.get_table(self.full_table_id)
       if self.config.auto_schema_upgrade:

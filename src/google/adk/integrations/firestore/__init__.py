@@ -12,6 +12,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Firestore integrations for ADK.
+
+This module provides session and memory services backed by Google Cloud
+Firestore. They require the optional ``google-cloud-firestore`` package.
+"""
+
 from __future__ import annotations
 
-"""Firestore integrations for ADK."""
+import typing
+
+if typing.TYPE_CHECKING:
+  from .firestore_memory_service import FirestoreMemoryService
+  from .firestore_session_service import FirestoreSessionService
+
+# Map attribute names to relative module paths.
+_lazy_imports = {
+    "FirestoreMemoryService": ".firestore_memory_service",
+    "FirestoreSessionService": ".firestore_session_service",
+}
+
+__all__ = [
+    "FirestoreMemoryService",
+    "FirestoreSessionService",
+]
+
+
+def __getattr__(name: str) -> typing.Any:
+  if name in _lazy_imports:
+    import importlib
+
+    module_path = _lazy_imports[name]
+    module = importlib.import_module(module_path, __name__)
+    return getattr(module, name)
+  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+  return list(_lazy_imports.keys())
