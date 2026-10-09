@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+from ...utils._agent_mode import AgentMode
 from .._base_node import BaseNode
 from .._base_node import START
 from .._errors import GraphValidationError
@@ -163,7 +164,6 @@ def _validate_start_edges(edges: list[Edge]) -> None:
 
 def _validate_default_routes(edges: list[Edge]) -> None:
   """Checks constraints on DEFAULT_ROUTE."""
-  default_route_edges: dict[str, str] = {}
   for edge in edges:
     if isinstance(edge.route, list) and DEFAULT_ROUTE in edge.route:
       raise GraphValidationError(
@@ -172,16 +172,6 @@ def _validate_default_routes(edges: list[Edge]) -> None:
           f"{edge.from_node.name}, to={edge.to_node.name})."
           " Use a separate edge for DEFAULT_ROUTE."
       )
-    if edge.route == DEFAULT_ROUTE:
-      from_node_name = edge.from_node.name
-      if from_node_name in default_route_edges:
-        raise GraphValidationError(
-            "Graph validation failed. Multiple DEFAULT_ROUTE edges found"
-            f" from node {from_node_name} to"
-            f" {default_route_edges[from_node_name]} and"
-            f" {edge.to_node.name}"
-        )
-      default_route_edges[from_node_name] = edge.to_node.name
 
 
 def _validate_static_schemas(edges: list[Edge]) -> None:
@@ -207,7 +197,7 @@ def _validate_chat_agent_wiring(edges: list[Edge]) -> None:
     to_node = edge.to_node
     if (
         isinstance(to_node, LlmAgent)
-        and getattr(to_node, "mode", None) == "chat"
+        and getattr(to_node, "mode", None) == AgentMode.CHAT
     ):
       if edge.from_node.name != START.name:
         raise GraphValidationError(

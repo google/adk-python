@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import time
+from unittest.mock import MagicMock
 from unittest.mock import Mock
 
 from google.adk.agents.base_agent import BaseAgent
@@ -20,8 +23,10 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.invocation_context import LlmCallsLimitExceededError
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps import ResumabilityConfig
+from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.platform.thread import create_thread
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
 from google.genai.types import Content
@@ -129,6 +134,343 @@ class TestInvocationContext:
     )
     assert not events
 
+  def test_abort_without_external_signal_trips_internal_signal(self):
+    """Calling abort() without an explicit signal sets is_aborted and trips internal signal."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+    )
+    assert ctx.is_aborted is False
+    assert ctx._abort_signal.is_set() is False
+
+    ctx.abort()
+
+    assert ctx.is_aborted is True
+    assert ctx._abort_signal.is_set() is True
+
+  async def test_abort_same_tick_immediacy(self):
+    """Calling abort() on the event loop thread sets is_aborted and trips signal on the same tick."""
+    abort_signal = asyncio.Event()
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+    )
+    ctx._attach_abort_signal(abort_signal)
+    assert ctx.is_aborted is False
+    assert abort_signal.is_set() is False
+
+    ctx.abort()
+
+    assert ctx.is_aborted is True
+    assert abort_signal.is_set() is True
+
+  async def test_abort_cross_thread_wakeup(self):
+    """Calling abort() from a worker thread wakes a coroutine awaiting the attached signal."""
+    abort_signal = asyncio.Event()
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+    )
+    ctx._attach_abort_signal(abort_signal)
+
+    woke = asyncio.Event()
+
+    async def parked_waiter():
+      await abort_signal.wait()
+      woke.set()
+
+    waiter_task = asyncio.create_task(parked_waiter())
+    await asyncio.sleep(0.05)
+
+    def foreign_worker():
+      time.sleep(0.05)
+      ctx.abort()
+
+    worker_thread = create_thread(target=foreign_worker)
+    worker_thread.start()
+
+    await asyncio.wait_for(woke.wait(), timeout=2.0)
+    worker_thread.join()
+    await waiter_task
+
+    assert ctx.is_aborted is True
+    assert abort_signal.is_set() is True
+
+  async def test_abort_initialized_outside_loop_cross_thread_wakeup(self):
+    """Attaching an abort signal inside a running loop enables cross-thread wakeup even if context was created synchronously."""
+    loop_holder = []
+
+    def create_ctx_sync():
+      loop_holder.append(
+          InvocationContext(
+              session_service=Mock(spec=BaseSessionService),
+              agent=Mock(spec=BaseAgent),
+              invocation_id='inv_outside_loop',
+              session=Mock(spec=Session, events=[]),
+          )
+      )
+
+    init_thread = create_thread(target=create_ctx_sync)
+    init_thread.start()
+    init_thread.join()
+    ctx = loop_holder[0]
+
+    abort_signal = asyncio.Event()
+    ctx._attach_abort_signal(abort_signal)
+
+    woke = asyncio.Event()
+
+    async def parked_waiter():
+      await abort_signal.wait()
+      woke.set()
+
+    waiter_task = asyncio.create_task(parked_waiter())
+    await asyncio.sleep(0.05)
+
+    def foreign_worker():
+      time.sleep(0.05)
+      ctx.abort()
+
+    worker_thread = create_thread(target=foreign_worker)
+    worker_thread.start()
+
+    await asyncio.wait_for(woke.wait(), timeout=2.0)
+    worker_thread.join()
+    await waiter_task
+
+    assert ctx.is_aborted is True
+    assert abort_signal.is_set() is True
+
+  async def test_abort_signal_captures_loop_and_wakes_on_cross_thread_abort(
+      self,
+  ):
+    """Awaiting _abort_signal.wait() captures the running loop and wakes when abort() is called from another thread."""
+    ctx_holder = []
+
+    def create_ctx_sync():
+      ctx_holder.append(
+          InvocationContext(
+              session_service=Mock(spec=BaseSessionService),
+              agent=Mock(spec=BaseAgent),
+              invocation_id='inv_abort_signal_wait',
+              session=Mock(spec=Session, events=[]),
+          )
+      )
+
+    init_thread = create_thread(target=create_ctx_sync)
+    init_thread.start()
+    init_thread.join()
+    ctx = ctx_holder[0]
+    assert ctx._abort_state.loop is None
+
+    woke = asyncio.Event()
+
+    async def parked_waiter():
+      await ctx._abort_signal.wait()
+      woke.set()
+
+    waiter_task = asyncio.create_task(parked_waiter())
+    await asyncio.sleep(0.05)
+
+    def foreign_worker():
+      time.sleep(0.05)
+      ctx.abort()
+
+    worker_thread = create_thread(target=foreign_worker)
+    worker_thread.start()
+
+    await asyncio.wait_for(woke.wait(), timeout=2.0)
+    worker_thread.join()
+    await waiter_task
+
+    assert ctx.is_aborted is True
+
+  def test_abort_with_closed_loop_falls_back_to_direct_set(self):
+    """Calling abort() after its event loop closes still sets is_aborted without raising RuntimeError."""
+    loop = asyncio.new_event_loop()
+
+    async def init_on_loop():
+      ctx = InvocationContext(
+          session_service=Mock(spec=BaseSessionService),
+          agent=Mock(spec=BaseAgent),
+          invocation_id='inv_closed_loop',
+          session=Mock(spec=Session, events=[]),
+      )
+      ctx._attach_abort_signal(asyncio.Event())
+      return ctx
+
+    ctx = loop.run_until_complete(init_on_loop())
+    loop.close()
+
+    ctx.abort()
+
+    assert ctx.is_aborted is True
+    assert ctx._abort_signal.is_set() is True
+
+  def test_abort_signal_not_in_model_fields(self):
+    """The abort signal is private and excluded from Pydantic model fields."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_priv_attr',
+        session=Mock(spec=Session, events=[]),
+    )
+    assert 'abort_signal' not in InvocationContext.model_fields
+    assert '_abort_signal' not in InvocationContext.model_fields
+    assert not hasattr(ctx, 'abort_signal')
+    assert isinstance(ctx._abort_signal, asyncio.Event)
+    assert ctx._abort_signal.is_set() is False
+
+  def test_attach_abort_signal(self):
+    """Attaching a caller-owned abort signal shares it across model_copy() instances."""
+    custom_signal = asyncio.Event()
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_signal',
+        session=Mock(spec=Session, events=[]),
+    )
+    ctx._attach_abort_signal(custom_signal)
+
+    assert ctx._abort_signal is custom_signal
+    assert ctx.model_copy()._abort_signal is custom_signal
+
+  def test_abort_signal_propagates_across_model_copy(self):
+    """Calling abort() on a copied context immediately sets is_aborted on the parent context."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_parent',
+        session=Mock(spec=Session, events=[]),
+    )
+    copied = ctx.model_copy()
+    assert ctx.is_aborted is False
+    assert copied.is_aborted is False
+
+    copied.abort()
+
+    assert copied.is_aborted is True
+    assert ctx.is_aborted is True
+    assert ctx._abort_signal.is_set() is True
+
+  def test_abort_state_deepcopy_shares_instance(self):
+    """Deepcopying InvocationContext preserves shared _abort_state instance."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_deep',
+        session=Mock(spec=Session, events=[]),
+    )
+    copied = ctx.model_copy(deep=True)
+    assert copied._abort_state is ctx._abort_state
+
+    copied.abort()
+    assert copied.is_aborted is True
+    assert ctx.is_aborted is True
+
+  async def test_model_copy_deep_with_running_async_generator(self):
+    """Calling model_copy(deep=True) inside a running event loop with active async generators does not raise."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_deep_running_loop',
+        session=Mock(spec=Session, events=[]),
+    )
+
+    async def sample_generator():
+      yield 1
+
+    gen = sample_generator()
+    try:
+      copied = ctx.model_copy(deep=True)
+      assert copied._abort_state is ctx._abort_state
+    finally:
+      await gen.aclose()
+
+  async def test_abort_signal_on_model_copy_wakes_when_parent_aborts_from_thread(
+      self,
+  ):
+    """A coroutine awaiting _abort_signal.wait() on a copied context wakes when the parent aborts from a worker thread."""
+    ctx_holder = []
+
+    def create_ctx_sync():
+      ctx_holder.append(
+          InvocationContext(
+              session_service=Mock(spec=BaseSessionService),
+              agent=Mock(spec=BaseAgent),
+              invocation_id='inv_parent',
+              session=Mock(spec=Session, events=[]),
+          )
+      )
+
+    init_thread = create_thread(target=create_ctx_sync)
+    init_thread.start()
+    init_thread.join()
+    ctx = ctx_holder[0]
+    copied = ctx.model_copy()
+
+    woke = asyncio.Event()
+
+    async def parked_waiter():
+      await copied._abort_signal.wait()
+      woke.set()
+
+    waiter_task = asyncio.create_task(parked_waiter())
+    await asyncio.sleep(0.05)
+
+    def foreign_worker():
+      time.sleep(0.05)
+      ctx.abort()
+
+    worker_thread = create_thread(target=foreign_worker)
+    worker_thread.start()
+
+    await asyncio.wait_for(woke.wait(), timeout=2.0)
+    worker_thread.join()
+    await waiter_task
+
+    assert copied.is_aborted is True
+    assert ctx.is_aborted is True
+
+  def test_abort_foreign_thread_sets_is_aborted_immediately(self):
+    """Calling abort() from a worker thread sets is_aborted synchronously before the loop processes callbacks."""
+    loop = Mock(spec=asyncio.AbstractEventLoop)
+    loop.call_soon_threadsafe = Mock()
+
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_foreign',
+        session=Mock(spec=Session, events=[]),
+    )
+    ctx._abort_state.loop = loop
+
+    worker_exc = None
+
+    def foreign_worker():
+      nonlocal worker_exc
+      try:
+        ctx.abort()
+        assert ctx.is_aborted is True
+      except BaseException as e:
+        worker_exc = e
+
+    worker = create_thread(target=foreign_worker)
+    worker.start()
+    worker.join()
+
+    if worker_exc is not None:
+      raise worker_exc
+
+    assert ctx.is_aborted is True
+    loop.call_soon_threadsafe.assert_called_once()
+
 
 class TestInvocationContextInitialization:
   """Test suite for InvocationContext initialization."""
@@ -146,6 +488,23 @@ class TestInvocationContextInitialization:
     # Access private attribute to verify
     assert inv_ctx._custom_metadata == {'test_key': 'test_value'}
 
+  def test_custom_metadata_drops_internal_keys(self):
+    """Callers cannot set ADK-internal keys in the context's custom_metadata."""
+    run_cfg = RunConfig(
+        custom_metadata={
+            'test_key': 'test_value',
+            INTERNAL_METADATA_PREFIX + 'planted': 'x',
+        }
+    )
+    inv_ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+        run_config=run_cfg,
+    )
+    assert inv_ctx._custom_metadata == {'test_key': 'test_value'}
+
   def test_custom_metadata_default_empty(self):
     """Tests that _custom_metadata is empty by default when no RunConfig is provided."""
     inv_ctx = InvocationContext(
@@ -155,6 +514,16 @@ class TestInvocationContextInitialization:
         session=Mock(spec=Session, events=[]),
     )
     assert inv_ctx._custom_metadata == {}
+
+  def test_private_metadata_default_empty(self):
+    """Tests that _private_metadata is empty by default."""
+    inv_ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+    )
+    assert inv_ctx._private_metadata == {}
 
   def test_custom_metadata_empty_run_config(self):
     """Tests that _custom_metadata is empty when RunConfig has no custom_metadata."""
@@ -528,6 +897,89 @@ class TestInvocationContextWithAppResumablity:
     assert 'sub_agent_2' not in invocation_context.end_of_agents
     assert 'sub_sub_agent_1' not in invocation_context.agent_states
     assert 'sub_sub_agent_1' not in invocation_context.end_of_agents
+
+  def test_set_and_load_agent_state_keyed_by_node_path(self):
+    """Parallel workflow branches sharing an agent name isolate state by node_path."""
+
+    class _StepState(BaseAgentState):
+      step: int = 0
+
+    helper = BaseAgent(name='helper')
+    base_ctx = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    branch1_ctx = base_ctx.model_copy(
+        update={'agent': helper, 'node_path': 'wf@1/helper@1'}
+    )
+    branch2_ctx = base_ctx.model_copy(
+        update={'agent': helper, 'node_path': 'wf@1/helper@2'}
+    )
+
+    branch1_ctx.set_agent_state('helper', agent_state=_StepState(step=1))
+    branch2_ctx.set_agent_state('helper', end_of_agent=True)
+
+    assert base_ctx.agent_states == {'wf@1/helper@1': {'step': 1}}
+    assert base_ctx.end_of_agents == {
+        'wf@1/helper@1': False,
+        'wf@1/helper@2': True,
+    }
+    loaded_branch1 = helper._load_agent_state(branch1_ctx, _StepState)
+    assert loaded_branch1 is not None
+    assert loaded_branch1.step == 1
+    assert helper._load_agent_state(branch2_ctx, _StepState) is None
+
+    ev1 = helper._create_agent_state_event(branch1_ctx)
+    ev2 = helper._create_agent_state_event(branch2_ctx)
+    assert ev1.actions.agent_state == {'step': 1}
+    assert not ev1.actions.end_of_agent
+    assert ev2.actions.agent_state is None
+    assert ev2.actions.end_of_agent is True
+
+    # A stale True under self.name must not override an explicit False under
+    # node_path.
+    base_ctx.end_of_agents['helper'] = True
+    ev1_with_stale_name = helper._create_agent_state_event(branch1_ctx)
+    assert not ev1_with_stale_name.actions.end_of_agent
+
+    # When node_path has ended, stale state under self.name must not be loaded
+    # or emitted in the state event.
+    base_ctx.agent_states['helper'] = {'step': 999}
+    assert helper._load_agent_state(branch2_ctx, _StepState) is None
+    ev2_with_stale_name = helper._create_agent_state_event(branch2_ctx)
+    assert ev2_with_stale_name.actions.agent_state is None
+    assert ev2_with_stale_name.actions.end_of_agent is True
+
+  def test_load_agent_state_mock_context_compatibility(self):
+    """Loading agent state from unconfigured or mock context returns None safely."""
+
+    class _StepState(BaseAgentState):
+      step: int = 0
+
+    helper = BaseAgent(name='helper')
+
+    # MagicMock context without agent_states explicitly set
+    magic_ctx = MagicMock()
+    assert helper._load_agent_state(magic_ctx, _StepState) is None
+
+    # Mock context with empty agent_states and mock end_of_agents (not a container)
+    plain_ctx = Mock()
+    plain_ctx.agent_states = {}
+    plain_ctx.end_of_agents = Mock()
+    plain_ctx.invocation_id = 'test_inv'
+    plain_ctx.branch = 'main'
+    assert helper._load_agent_state(plain_ctx, _StepState) is None
+    ev = helper._create_agent_state_event(plain_ctx)
+    assert ev.actions.agent_state is None
+
+    # Mock(spec=InvocationContext) where Pydantic model field node_path is unset
+    spec_ctx = Mock(spec=InvocationContext)
+    spec_ctx.agent_states = {}
+    spec_ctx.end_of_agents = {'helper': True}
+    spec_ctx.invocation_id = 'test_inv'
+    spec_ctx.branch = 'main'
+    assert helper._load_agent_state(spec_ctx, _StepState) is None
+    spec_ev = helper._create_agent_state_event(spec_ctx)
+    assert spec_ev.actions.end_of_agent is True
 
 
 class TestIncrementLlmCallCount:

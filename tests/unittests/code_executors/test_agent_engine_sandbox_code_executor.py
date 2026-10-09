@@ -68,15 +68,15 @@ class TestAgentEngineSandboxCodeExecutor:
           ),
       )
 
-  @patch("vertexai.Client")
+  @patch("agentplatform.Client")
   def test_execute_code_success(
       self,
-      mock_vertexai_client,
+      mock_agentplatform_client,
       mock_invocation_context,
   ):
     # Setup Mocks
     mock_api_client = MagicMock()
-    mock_vertexai_client.return_value = mock_api_client
+    mock_agentplatform_client.return_value = mock_api_client
     mock_response = MagicMock()
     mock_json_output = MagicMock()
     mock_json_output.mime_type = "application/json"
@@ -103,9 +103,7 @@ class TestAgentEngineSandboxCodeExecutor:
         mock_file_output,
         mock_png_file_output,
     ]
-    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
-        mock_response
-    )
+    mock_api_client.sandboxes.execute_code.return_value = mock_response
 
     # Execute
     executor = AgentEngineSandboxCodeExecutor(
@@ -124,25 +122,23 @@ class TestAgentEngineSandboxCodeExecutor:
     assert result.output_files[1].mime_type == "image/png"
     assert result.output_files[1].name == "file.png"
     assert result.output_files[1].content == sample_png_bytes
-    mock_api_client.agent_engines.sandboxes.execute_code.assert_called_once_with(
+    mock_api_client.sandboxes.execute_code.assert_called_once_with(
         name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789",
         input_data={"code": 'print("hello world")'},
     )
 
-  @patch("vertexai.Client")
+  @patch("agentplatform.Client")
   def test_execute_code_sends_input_files_with_content_key(
       self,
-      mock_vertexai_client,
+      mock_agentplatform_client,
       mock_invocation_context,
   ):
     """Input files must be sent under the 'content' key the SDK expects."""
     mock_api_client = MagicMock()
-    mock_vertexai_client.return_value = mock_api_client
+    mock_agentplatform_client.return_value = mock_api_client
     mock_response = MagicMock()
     mock_response.outputs = []
-    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
-        mock_response
-    )
+    mock_api_client.sandboxes.execute_code.return_value = mock_response
 
     executor = AgentEngineSandboxCodeExecutor(
         sandbox_resource_name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
@@ -155,23 +151,21 @@ class TestAgentEngineSandboxCodeExecutor:
     )
     executor.execute_code(mock_invocation_context, code_input)
 
-    _, call_kwargs = (
-        mock_api_client.agent_engines.sandboxes.execute_code.call_args
-    )
+    _, call_kwargs = mock_api_client.sandboxes.execute_code.call_args
     sent_files = call_kwargs["input_data"]["files"]
     assert sent_files == [
         {"name": "data.csv", "content": "a,b,c", "mime_type": "text/csv"}
     ]
 
-  @patch("vertexai.Client")
+  @patch("agentplatform.Client")
   def test_execute_code_recreates_sandbox_when_get_returns_none(
       self,
-      mock_vertexai_client,
+      mock_agentplatform_client,
       mock_invocation_context,
   ):
     # Setup Mocks
     mock_api_client = MagicMock()
-    mock_vertexai_client.return_value = mock_api_client
+    mock_agentplatform_client.return_value = mock_api_client
 
     # Existing sandbox name stored in session, but get() will return None
     existing_sandbox_name = "projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/old"
@@ -180,13 +174,13 @@ class TestAgentEngineSandboxCodeExecutor:
     }
 
     # Mock get to return None (simulating missing/expired sandbox)
-    mock_api_client.agent_engines.sandboxes.get.return_value = None
+    mock_api_client.sandboxes.get.return_value = None
 
     # Mock create operation to return a new sandbox resource name
     operation_mock = MagicMock()
     created_sandbox_name = "projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
     operation_mock.response.name = created_sandbox_name
-    mock_api_client.agent_engines.sandboxes.create.return_value = operation_mock
+    mock_api_client.sandboxes.create.return_value = operation_mock
 
     # Mock execute_code response
     mock_response = MagicMock()
@@ -197,9 +191,7 @@ class TestAgentEngineSandboxCodeExecutor:
     ).encode("utf-8")
     mock_json_output.metadata = None
     mock_response.outputs = [mock_json_output]
-    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
-        mock_response
-    )
+    mock_api_client.sandboxes.execute_code.return_value = mock_response
 
     # Execute using agent_engine_resource_name so a sandbox can be created
     executor = AgentEngineSandboxCodeExecutor(
@@ -211,32 +203,32 @@ class TestAgentEngineSandboxCodeExecutor:
     result = executor.execute_code(mock_invocation_context, code_input)
 
     # Assert get was called for the existing sandbox
-    mock_api_client.agent_engines.sandboxes.get.assert_called_once_with(
+    mock_api_client.sandboxes.get.assert_called_once_with(
         name=existing_sandbox_name
     )
 
     # Assert create was called and session updated with new sandbox
-    mock_api_client.agent_engines.sandboxes.create.assert_called_once()
+    mock_api_client.sandboxes.create.assert_called_once()
     assert (
         mock_invocation_context.session.state["sandbox_name"]
         == created_sandbox_name
     )
 
     # Assert execute_code used the created sandbox name
-    mock_api_client.agent_engines.sandboxes.execute_code.assert_called_once_with(
+    mock_api_client.sandboxes.execute_code.assert_called_once_with(
         name=created_sandbox_name,
         input_data={"code": 'print("hello world")'},
     )
 
-  @patch("vertexai.Client")
+  @patch("agentplatform.Client")
   def test_execute_code_recreates_sandbox_when_get_raises_client_error(
       self,
-      mock_vertexai_client,
+      mock_agentplatform_client,
       mock_invocation_context,
   ):
     # Setup Mocks
     mock_api_client = MagicMock()
-    mock_vertexai_client.return_value = mock_api_client
+    mock_agentplatform_client.return_value = mock_api_client
 
     # Existing sandbox name stored in session
     existing_sandbox_name = "projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/old"
@@ -247,7 +239,7 @@ class TestAgentEngineSandboxCodeExecutor:
     # Mock get to raise ClientError with code 404
     from google.genai.errors import ClientError
 
-    mock_api_client.agent_engines.sandboxes.get.side_effect = ClientError(
+    mock_api_client.sandboxes.get.side_effect = ClientError(
         code=404, response_json={"message": "Not Found"}
     )
 
@@ -255,7 +247,7 @@ class TestAgentEngineSandboxCodeExecutor:
     operation_mock = MagicMock()
     created_sandbox_name = "projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
     operation_mock.response.name = created_sandbox_name
-    mock_api_client.agent_engines.sandboxes.create.return_value = operation_mock
+    mock_api_client.sandboxes.create.return_value = operation_mock
 
     # Mock execute_code response
     mock_response = MagicMock()
@@ -266,9 +258,7 @@ class TestAgentEngineSandboxCodeExecutor:
     ).encode("utf-8")
     mock_json_output.metadata = None
     mock_response.outputs = [mock_json_output]
-    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
-        mock_response
-    )
+    mock_api_client.sandboxes.execute_code.return_value = mock_response
 
     # Execute using agent_engine_resource_name so a sandbox can be created
     executor = AgentEngineSandboxCodeExecutor(
@@ -280,38 +270,38 @@ class TestAgentEngineSandboxCodeExecutor:
     result = executor.execute_code(mock_invocation_context, code_input)
 
     # Assert get was called for the existing sandbox
-    mock_api_client.agent_engines.sandboxes.get.assert_called_once_with(
+    mock_api_client.sandboxes.get.assert_called_once_with(
         name=existing_sandbox_name
     )
 
     # Assert create was called and session updated with new sandbox
-    mock_api_client.agent_engines.sandboxes.create.assert_called_once()
+    mock_api_client.sandboxes.create.assert_called_once()
     assert (
         mock_invocation_context.session.state["sandbox_name"]
         == created_sandbox_name
     )
 
     # Assert execute_code used the created sandbox name
-    mock_api_client.agent_engines.sandboxes.execute_code.assert_called_once_with(
+    mock_api_client.sandboxes.execute_code.assert_called_once_with(
         name=created_sandbox_name,
         input_data={"code": 'print("hello world")'},
     )
 
-  @patch("vertexai.Client")
+  @patch("agentplatform.Client")
   def test_execute_code_creates_sandbox_if_missing(
       self,
-      mock_vertexai_client,
+      mock_agentplatform_client,
       mock_invocation_context,
   ):
     # Setup Mocks
     mock_api_client = MagicMock()
-    mock_vertexai_client.return_value = mock_api_client
+    mock_agentplatform_client.return_value = mock_api_client
 
     # Mock create operation to return a sandbox resource name
     operation_mock = MagicMock()
     created_sandbox_name = "projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
     operation_mock.response.name = created_sandbox_name
-    mock_api_client.agent_engines.sandboxes.create.return_value = operation_mock
+    mock_api_client.sandboxes.create.return_value = operation_mock
 
     # Mock execute_code response
     mock_response = MagicMock()
@@ -322,9 +312,7 @@ class TestAgentEngineSandboxCodeExecutor:
     ).encode("utf-8")
     mock_json_output.metadata = None
     mock_response.outputs = [mock_json_output]
-    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
-        mock_response
-    )
+    mock_api_client.sandboxes.execute_code.return_value = mock_response
 
     # Ensure session.state behaves like a dict for storing sandbox_name
     mock_invocation_context.session.state = {}
@@ -340,10 +328,8 @@ class TestAgentEngineSandboxCodeExecutor:
     result = executor.execute_code(mock_invocation_context, code_input)
 
     # Assert sandbox creation was called and session state updated
-    mock_api_client.agent_engines.sandboxes.create.assert_called_once()
-    create_call_kwargs = (
-        mock_api_client.agent_engines.sandboxes.create.call_args.kwargs
-    )
+    mock_api_client.sandboxes.create.assert_called_once()
+    create_call_kwargs = mock_api_client.sandboxes.create.call_args.kwargs
     assert create_call_kwargs["name"] == (
         "projects/123/locations/us-central1/reasoningEngines/456"
     )
@@ -359,20 +345,20 @@ class TestAgentEngineSandboxCodeExecutor:
     )
 
     # Assert execute_code used the created sandbox name
-    mock_api_client.agent_engines.sandboxes.execute_code.assert_called_once_with(
+    mock_api_client.sandboxes.execute_code.assert_called_once_with(
         name=created_sandbox_name,
         input_data={"code": 'print("hello world")'},
     )
 
-  @patch("vertexai.Client")
+  @patch("agentplatform.Client")
   def test_execute_code_sends_correct_field_names_for_input_files(
       self,
-      mock_vertexai_client,
+      mock_agentplatform_client,
       mock_invocation_context,
   ):
     """Input files are sent with 'content' and 'mime_type' keys (not 'contents'/'mimeType')."""
     mock_api_client = MagicMock()
-    mock_vertexai_client.return_value = mock_api_client
+    mock_agentplatform_client.return_value = mock_api_client
 
     mock_response = MagicMock()
     mock_json_output = MagicMock()
@@ -382,9 +368,7 @@ class TestAgentEngineSandboxCodeExecutor:
     )
     mock_json_output.metadata = None
     mock_response.outputs = [mock_json_output]
-    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
-        mock_response
-    )
+    mock_api_client.sandboxes.execute_code.return_value = mock_response
 
     executor = AgentEngineSandboxCodeExecutor(
         sandbox_resource_name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
@@ -400,7 +384,7 @@ class TestAgentEngineSandboxCodeExecutor:
 
     executor.execute_code(mock_invocation_context, code_input)
 
-    mock_api_client.agent_engines.sandboxes.execute_code.assert_called_once_with(
+    mock_api_client.sandboxes.execute_code.assert_called_once_with(
         name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789",
         input_data={
             "code": "import pandas as pd; df = pd.read_csv('data.csv')",
@@ -428,7 +412,7 @@ class TestAgentEngineSandboxCodeExecutor:
     assert executor._project_id == "123"
     assert executor._location == "us-central1"
 
-  @patch("vertexai.Client")
+  @patch("agentplatform.Client")
   @patch.dict(
       os.environ,
       {
@@ -437,23 +421,23 @@ class TestAgentEngineSandboxCodeExecutor:
       },
   )
   def test_execute_code_with_auto_create_agent_engine(
-      self, mock_vertexai_client, mock_invocation_context
+      self, mock_agentplatform_client, mock_invocation_context
   ):
     """Tests that Agent Engine is created lazily in execute_code."""
     # Setup Mocks
     mock_api_client = MagicMock()
-    mock_vertexai_client.return_value = mock_api_client
+    mock_agentplatform_client.return_value = mock_api_client
 
     # Mock Engine Creation
     mock_created_engine = MagicMock()
     mock_created_engine.api_resource.name = "projects/test-project-456/locations/us-central1/reasoningEngines/auto-created-ae-1"
-    mock_api_client.agent_engines.create.return_value = mock_created_engine
+    mock_api_client.runtimes.create.return_value = mock_created_engine
 
     # Mock create operation to return a sandbox resource name
     operation_mock = MagicMock()
     created_sandbox_name = "projects/test-project-456/locations/us-central1/reasoningEngines/auto-created-ae-1/sandboxEnvironments/789"
     operation_mock.response.name = created_sandbox_name
-    mock_api_client.agent_engines.sandboxes.create.return_value = operation_mock
+    mock_api_client.sandboxes.create.return_value = operation_mock
 
     # Mock execute_code response
     mock_response = MagicMock()
@@ -464,9 +448,7 @@ class TestAgentEngineSandboxCodeExecutor:
     ).encode("utf-8")
     mock_json_output.metadata = None
     mock_response.outputs = [mock_json_output]
-    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
-        mock_response
-    )
+    mock_api_client.sandboxes.execute_code.return_value = mock_response
 
     # Execute
     executor = AgentEngineSandboxCodeExecutor()
@@ -474,19 +456,19 @@ class TestAgentEngineSandboxCodeExecutor:
     executor.execute_code(mock_invocation_context, code_input)
 
     # Assert
-    mock_api_client.agent_engines.create.assert_called_once()
+    mock_api_client.runtimes.create.assert_called_once()
     assert (
         executor.agent_engine_resource_name
         == "projects/test-project-456/locations/us-central1/reasoningEngines/auto-created-ae-1"
     )
     assert executor.sandbox_resource_name is None
-    mock_api_client.agent_engines.sandboxes.create.assert_called_once()
+    mock_api_client.sandboxes.create.assert_called_once()
     assert (
         mock_invocation_context.session.state["sandbox_name"]
         == created_sandbox_name
     )
 
-  @patch("vertexai.Client")
+  @patch("agentplatform.Client")
   @patch.dict(
       os.environ,
       {
@@ -495,12 +477,12 @@ class TestAgentEngineSandboxCodeExecutor:
       },
   )
   def test_execute_code_auto_create_agent_engine_fails(
-      self, mock_vertexai_client, mock_invocation_context
+      self, mock_agentplatform_client, mock_invocation_context
   ):
     """Tests error handling when auto-creating Agent Engine fails."""
     mock_api_client = MagicMock()
-    mock_vertexai_client.return_value = mock_api_client
-    mock_api_client.agent_engines.create.side_effect = Exception(
+    mock_agentplatform_client.return_value = mock_api_client
+    mock_api_client.runtimes.create.side_effect = Exception(
         "Failed to auto-create Agent Engine"
     )
 
@@ -510,17 +492,17 @@ class TestAgentEngineSandboxCodeExecutor:
     with pytest.raises(Exception, match="Failed to auto-create Agent Engine"):
       executor.execute_code(mock_invocation_context, code_input)
 
-  @patch("vertexai.Client")
+  @patch("agentplatform.Client")
   def test_execute_code_persists_sandbox_name_in_code_execution_context(
-      self, mock_vertexai_client, mock_invocation_context
+      self, mock_agentplatform_client, mock_invocation_context
   ):
     """Tests that execute_code persists sandbox_name into _code_execution_context for state_delta propagation."""
     mock_api_client = MagicMock()
-    mock_vertexai_client.return_value = mock_api_client
+    mock_agentplatform_client.return_value = mock_api_client
     existing_sandbox_name = "projects/test-proj/locations/us-central1/reasoningEngines/123/sandboxEnvironments/sb-789"
     mock_sandbox = MagicMock()
     mock_sandbox.state = "STATE_RUNNING"
-    mock_api_client.agent_engines.sandboxes.get.return_value = mock_sandbox
+    mock_api_client.sandboxes.get.return_value = mock_sandbox
 
     mock_json_output = MagicMock()
     mock_json_output.mime_type = "application/json"
@@ -530,9 +512,7 @@ class TestAgentEngineSandboxCodeExecutor:
     mock_json_output.metadata = None
     mock_response = MagicMock()
     mock_response.outputs = [mock_json_output]
-    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
-        mock_response
-    )
+    mock_api_client.sandboxes.execute_code.return_value = mock_response
 
     mock_invocation_context.session.state = {
         "_code_execution_context": {"sandbox_name": existing_sandbox_name}
@@ -556,4 +536,4 @@ class TestAgentEngineSandboxCodeExecutor:
         ]
         == existing_sandbox_name
     )
-    mock_api_client.agent_engines.sandboxes.create.assert_not_called()
+    mock_api_client.sandboxes.create.assert_not_called()

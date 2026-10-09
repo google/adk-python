@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+import contextlib
 from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
 import contextvars
@@ -56,6 +57,13 @@ except ImportError:
 
   _AIO_SUPPORTED = False
 
+try:
+  import aiohttp.helpers
+  import yarl
+except ImportError:
+  aiohttp = None  # type: ignore[assignment]
+  yarl = None  # type: ignore[assignment]
+
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
@@ -64,6 +72,7 @@ from ...dependencies._mcp import ClientSession
 from ...dependencies._mcp import create_mcp_http_client as _create_mcp_http_client
 from ...dependencies._mcp import ElicitationFnT
 from ...dependencies._mcp import IS_MCP_SDK_V2
+from ...dependencies._mcp import McpError
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...dependencies._mcp import sse_client
@@ -81,6 +90,7 @@ except (ImportError, AttributeError):
 from ...features import FeatureName
 from ...features import is_feature_enabled
 from ...telemetry import tracing
+from ...utils._google_client_headers import merge_tracking_headers
 from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -105,6 +115,12 @@ _SESSION_USE_PIN_WARN_SECONDS = 4 * _SESSION_IDLE_TTL_SECONDS
 # A failed mTLS probe is not retried for this long. Not cached for the life of
 # the manager, so credentials granted while the process runs are picked up.
 _MTLS_PROBE_RETRY_INTERVAL_SECONDS = 300.0
+
+# The headers `merge_tracking_headers` writes, spelled the way it spells them.
+# HTTP header names are case-insensitive and a caller may have used any casing,
+# but a dict is not: leaving their spelling alongside ours would put the header
+# on the wire twice, so theirs is folded onto ours before merging.
+_TRACKING_HEADER_NAMES = frozenset(('user-agent', 'x-goog-api-client'))
 
 
 def create_mcp_http_client(
@@ -234,6 +250,52 @@ def _has_cancelled_error_context(exc: BaseException) -> bool:
   return False
 
 
+# The Streamable HTTP spec has a server answer any request carrying a session
+# id it no longer holds with HTTP 404, and the SDK turns that answer into a
+# JSON-RPC error rather than surfacing the status code. It is the one signal
+# that separates "the server forgot this session" from an ordinary tool
+# failure, and it arrives while the transport underneath is still healthy.
+# The 1.x SDK spells the code 32600, the 2.x SDK INVALID_REQUEST (-32600).
+_SESSION_TERMINATED_ERROR_CODE = 32600
+_INVALID_REQUEST_ERROR_CODE = -32600
+# 2.x raises INVALID_REQUEST for ordinary bad requests too, so that spelling
+# counts only alongside the message the SDK pairs with the 404.
+_SESSION_TERMINATED_MESSAGE = 'Session terminated'
+
+
+def _reports_session_terminated(exc: McpError) -> bool:
+  """Whether this MCP error is the server's own session-terminated report."""
+  if exc.error.code == _SESSION_TERMINATED_ERROR_CODE:
+    return True
+  return (
+      exc.error.code == _INVALID_REQUEST_ERROR_CODE
+      and exc.error.message == _SESSION_TERMINATED_MESSAGE
+  )
+
+
+def _is_session_terminated_error(exc: BaseException | None) -> bool:
+  """Whether exc is the server reporting it no longer holds our session.
+
+  Only ``__cause__`` is followed. ``retry_on_errors`` re-runs the call from
+  inside its own ``except``, so on the second attempt every exception carries
+  the first attempt's in ``__context__``, and walking that would read a fresh
+  session as dead because the session before it was.
+
+  Args:
+      exc: The exception raised by a call made on a pooled session.
+
+  Returns:
+      True if the server reported the session terminated, False otherwise.
+  """
+  seen: set[int] = set()
+  while exc is not None and id(exc) not in seen:
+    seen.add(id(exc))
+    if isinstance(exc, McpError) and _reports_session_terminated(exc):
+      return True
+    exc = exc.__cause__
+  return False
+
+
 class StdioConnectionParams(BaseModel):
   """Parameters for the MCP Stdio connection.
 
@@ -325,7 +387,11 @@ class _DebugHttpxClientFactory:
       timeout: httpx.Timeout | None = None,
       auth: httpx.Auth | None = None,
   ) -> httpx.AsyncClient:
-    client = self._base_factory(headers=headers, timeout=timeout, auth=auth)
+    client = self._base_factory(
+        headers=headers,
+        timeout=None if timeout is None else httpx.PortableTimeout(timeout),
+        auth=auth,
+    )
     if hasattr(client, 'event_hooks') and isinstance(client.event_hooks, dict):
       client.event_hooks.setdefault('response', []).append(self._response_hook)
     return client
@@ -606,12 +672,21 @@ class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
       # prevent aiohttp from forcibly closing the stream after sse_read_timeout.
       timeout_val = 0.0
 
+    proxy = proxy_auth = None
+    if aiohttp is not None and yarl is not None:
+      with contextlib.suppress(LookupError):
+        proxy, proxy_auth = await asyncio.to_thread(
+            aiohttp.helpers.get_env_proxy_for_url,
+            yarl.URL(str(request.url)),
+        )
     auth_response: Any = await self._auth_session.request(
         method=request.method,
         url=str(request.url),
         data=content if content else None,
         headers=headers_dict,
         timeout=timeout_val,
+        proxy=proxy,
+        proxy_auth=proxy_auth,
     )
 
     # google-auth-aio uses aiohttp internally, which automatically handles
@@ -914,11 +989,15 @@ class MCPSessionManager:
   ) -> Optional[Dict[str, str]]:
     """Merges base connection headers with additional headers.
 
+    The ADK client tokens are added on top, so that an MCP server sees the
+    traffic as coming from ADK rather than from bare httpx.
+
     Args:
         additional_headers: Optional headers to merge with connection headers.
 
     Returns:
-        Merged headers dictionary, or None if no headers are provided.
+        Merged headers dictionary, or None for stdio connections, which do not
+        support headers.
     """
     if isinstance(self._connection_params, StdioConnectionParams) or isinstance(
         self._connection_params, StdioServerParameters
@@ -936,22 +1015,33 @@ class MCPSessionManager:
     if additional_headers:
       base_headers.update(additional_headers)
 
-    return base_headers
+    return merge_tracking_headers({
+        key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
+        for key, value in base_headers.items()
+    })
 
   def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
 
-    Reads two attributes ADK does not own: the SDK holds the transport streams
-    on the session privately, and each stream reports its own closed flag. A
-    session that lacks either one reads as connected rather than raising,
-    because a release is free to restructure both away and this probe is not
-    the only thing standing between a dead session and a caller.
+    Reads attributes ADK does not own, and where they hang moved between SDK
+    majors. On 1.x the session holds the transport streams and each stream
+    reports its own closed flag. On 2.x the transport moved behind a
+    dispatcher, which reports one closed flag of its own and need not hold
+    streams at all, so a session holding no streams is read there instead. A
+    session offering neither reads as connected rather than raising, because
+    a release is free to restructure them away and this probe is not the only
+    thing standing between a dead session and a caller.
 
     `create_session` pairs this with `SessionContext._is_task_alive`, which
-    ADK owns and which catches strictly more: a crashed transport can leave
-    the streams open while the task behind them is already dead. That pairing
+    ADK owns. Neither check subsumes the other: a crashed transport can
+    leave the streams open while the task behind them is already dead, and a
+    transport that closes under a live session leaves that task parked on
+    its close event, where only these flags report the death. That pairing
     runs under `_MCP_GRACEFUL_ERROR_HANDLING`, which is on by default. The
     kill switch drops it and leaves this probe on its own.
+
+    Neither probe sees a session the server itself has dropped while the
+    transport stays up; `_discard_session` handles that case.
 
     Args:
         session: The ClientSession to check.
@@ -959,6 +1049,16 @@ class MCPSessionManager:
     Returns:
         True if the session is known to be disconnected, False otherwise.
     """
+    if not hasattr(session, '_read_stream'):
+      dispatcher = getattr(session, '_dispatcher', None)
+      if not hasattr(dispatcher, '_closed'):
+        logger.debug(
+            'MCP session %s offers no closed flag to read, on itself or on a'
+            ' dispatcher; reading it as connected.',
+            type(session).__name__,
+        )
+        return False
+      return bool(getattr(dispatcher, '_closed', False))
     read_stream = getattr(session, '_read_stream', None)
     write_stream = getattr(session, '_write_stream', None)
     return bool(
@@ -1019,6 +1119,52 @@ class MCPSessionManager:
     # Start the idle clock now, at the end of the call.
     if session_key in self._sessions:
       self._session_last_used[session_key] = time.monotonic()
+
+  def _discard_session(
+      self,
+      headers: Optional[Dict[str, str]] = None,
+      *,
+      session: Optional[ClientSession] = None,
+  ) -> None:
+    """Drops the pooled session for these headers and closes its transport.
+
+    Called when the server has reported that it no longer holds the session,
+    which the pool cannot otherwise detect: the HTTP connection underneath
+    stays healthy, so every disconnection probe reads the dead session as
+    live and hands it back. Dropping the entry is what makes the next call
+    build a fresh session.
+
+    The transport is torn down even with calls still in flight, unlike the
+    idle sweep, which defers to them. A call in flight on the session that
+    failed is addressed to one the server has already forgotten and cannot be
+    completed by leaving the transport open.
+
+    Args:
+        headers: The headers the caller passed to ``create_session``.
+        session: The session the call actually failed on. The key alone is not
+          enough to identify it: another caller failing on the same session
+          discards it first and the retry pools a replacement under that same
+          key, and the replacement is live and in use by someone else. Omitted
+          means discard whatever is pooled.
+    """
+    session_key = self._generate_session_key(self._merge_headers(headers))
+    entry = self._sessions.get(session_key)
+    if entry is None or (session is not None and entry[0] is not session):
+      return
+    # One atomic pop, so that two callers racing on the same dead session
+    # cannot both take the entry and close the same exit stack twice.
+    if self._sessions.pop(session_key, None) is None:
+      return
+    logger.info(
+        'Discarding MCP session the server no longer holds: %s', session_key
+    )
+    _, exit_stack, stored_loop = entry
+    self._forget_session(session_key)
+    task = asyncio.ensure_future(
+        self._close_exit_stack(session_key, exit_stack, stored_loop)
+    )
+    self._eviction_tasks.add(task)
+    task.add_done_callback(self._eviction_tasks.discard)
 
   async def _cleanup_session(
       self,

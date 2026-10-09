@@ -116,3 +116,12 @@ Read `gen_ai.response.finish_reasons` on the `call_llm` span rather than
 inferring from the text — `max_tokens` means raise `max_output_tokens`,
 `safety` and `recitation` mean the model refused. See
 `references/logs-and-traces.md`.
+
+## The run ends with `error_code="INVOCATION_ABORTED"`
+
+`abort_signal` was set on `runner.run_async`, or the HTTP client disconnected
+from `/run_sse` before the stream finished. The runner synthesizes a terminal
+event with `error_code="INVOCATION_ABORTED"` and seals any in-flight
+`FunctionCall` with a `FunctionResponse` carrying `{"error": "Invocation was
+aborted by client."}` so the session remains valid for the next turn. Source: `Runner._synthesize_abort_events_if_needed` in
+`src/google/adk/runners.py`, `src/google/adk/cli/api_server.py`.

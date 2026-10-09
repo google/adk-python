@@ -713,6 +713,186 @@ class TestScanNodeEvents:
 
     assert results["task@1"].isolation_scope == "direct_scope"
 
+  def test_scan_function_call_and_response_do_not_set_finished_after_resume(
+      self,
+  ):
+    """Intermediate function_call / function_response events must not mark a node as finished."""
+    fc_event = Event(
+        node_info=NodeInfo(path="/wf@1/agent@1"),
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        id="fc-1", name="my_tool", args={}
+                    )
+                )
+            ],
+        ),
+        invocation_id="test_id",
+    )
+    fr_event = Event(
+        node_info=NodeInfo(path="/wf@1/agent@1"),
+        content=types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="fc-1", name="my_tool", response={"result": "ok"}
+                    )
+                )
+            ],
+        ),
+        invocation_id="test_id",
+    )
+
+    for ev in (fc_event, fr_event):
+      results = _reconstruct_node_states(
+          [ev], "/wf@1", invocation_id="test_id", group_by_direct_child=True
+      )
+      assert results["agent@1"].finished_after_resume is False
+
+  def test_scan_completion_events_set_finished_after_resume(self):
+    """Empty completion events, state-delta flush events, and end_of_agent events set finished_after_resume=True."""
+    from google.adk.events.event_actions import EventActions
+
+    empty_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        invocation_id="test_id",
+    )
+    delta_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        actions=EventActions(state_delta={"k": "v"}),
+        invocation_id="test_id",
+    )
+    end_agent_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        actions=EventActions(agent_state={"step": 1}, end_of_agent=True),
+        invocation_id="test_id",
+    )
+
+    for ev in (empty_event, delta_event, end_agent_event):
+      results = _reconstruct_node_states(
+          [ev], "/wf@1", invocation_id="test_id", group_by_direct_child=True
+      )
+      assert results["node_a@1"].finished_after_resume is True
+
+  def test_scan_partial_and_error_events_do_not_set_finished_after_resume(self):
+    """Streaming partial chunks and failed events must not set finished_after_resume=True."""
+    partial_event = Event(
+        node_info=NodeInfo(path="/wf@1/agent@1"),
+        partial=True,
+        content=types.Content(role="model", parts=[types.Part(text="chunk")]),
+        invocation_id="test_id",
+    )
+    error_event = Event(
+        node_info=NodeInfo(path="/wf@1/agent@1"),
+        error_code="ValueError",
+        error_message="boom",
+        invocation_id="test_id",
+    )
+
+    for ev in (partial_event, error_event):
+      results = _reconstruct_node_states(
+          [ev], "/wf@1", invocation_id="test_id", group_by_direct_child=True
+      )
+      assert results["agent@1"].finished_after_resume is False
+
+  def test_scan_later_empty_completion_clears_error_code(self):
+    """A retry attempt that succeeds with None output clears the prior attempt's error_code, whereas a partial chunk does not."""
+    error_event = Event(
+        node_info=NodeInfo(path="/wf@1/tool_node@1"),
+        error_code="RuntimeError",
+        error_message="transient failure",
+        invocation_id="test_id",
+    )
+    partial_event = Event(
+        node_info=NodeInfo(path="/wf@1/tool_node@1"),
+        partial=True,
+        content=types.Content(role="model", parts=[types.Part(text="chunk")]),
+        invocation_id="test_id",
+    )
+    empty_completion = Event(
+        node_info=NodeInfo(path="/wf@1/tool_node@1"),
+        invocation_id="test_id",
+    )
+
+    partial_results = _reconstruct_node_states(
+        [error_event, partial_event],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+    assert partial_results["tool_node@1"].error_code == "RuntimeError"
+    assert partial_results["tool_node@1"].finished_after_resume is False
+
+    results = _reconstruct_node_states(
+        [error_event, empty_completion],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert results["tool_node@1"].error_code is None
+    assert results["tool_node@1"].finished_after_resume is True
+
+  def test_scan_direct_interrupt_on_branch_does_not_clobber_branch_run_id_owner(
+      self,
+  ):
+    """A direct interrupt response on a branch must not overwrite another interrupt whose ID matches a branch run_id."""
+    event_int_a = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        long_running_tool_ids={"int-1"},
+        invocation_id="test_id",
+    )
+    event_fr_a = Event(
+        author="user",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="int-1",
+                        name="adk_request_input",
+                        response={"result": "answer-1"},
+                    )
+                )
+            ]
+        ),
+        invocation_id="test_id",
+    )
+    event_int_b = Event(
+        node_info=NodeInfo(path="/wf@1/node_b@1"),
+        long_running_tool_ids={"int-2"},
+        branch="wf@1.worker@int-1",
+        invocation_id="test_id",
+    )
+    event_fr_b = Event(
+        author="user",
+        branch="wf@1.worker@int-1",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="int-2",
+                        name="adk_request_input",
+                        response={"result": "answer-2"},
+                    )
+                )
+            ]
+        ),
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [event_int_a, event_fr_a, event_int_b, event_fr_b],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert results["node_a@1"].resolved_responses == {"int-1": "answer-1"}
+    assert results["node_b@1"].resolved_responses == {"int-2": "answer-2"}
+
 
 # --- is_terminal_event ---
 #

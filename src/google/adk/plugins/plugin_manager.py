@@ -379,13 +379,15 @@ class PluginManager:
         )
 
   async def close(self) -> None:
-    """Calls the close method on all registered plugins concurrently.
+    """Calls the close method on all registered plugins sequentially.
 
-    If this manager was constructed with `skip_closing_plugins=True`, this
-    method is a no-op so plugins owned by another component (e.g. a parent
-    `Runner`) are not torn down while still in use.
+    If `set_skip_closing_plugins(True)` was called, this method is a no-op so
+    plugins owned by another component (e.g. a parent `Runner`) are not torn
+    down while still in use.
 
     Raises:
+      asyncio.CancelledError: If closing was cancelled. The remaining plugins
+        are still closed before it is re-raised.
       RuntimeError: If one or more plugins failed to close, containing
         details of all failures.
     """
@@ -395,6 +397,7 @@ class PluginManager:
       )
       return
     exceptions = {}
+    cancelled_error = None
     # We iterate sequentially to avoid creating new tasks which can cause issues
     # with some libraries (like anyio/mcp) that rely on task-local context.
     for plugin in self.plugins:
@@ -407,12 +410,13 @@ class PluginManager:
           # This might still cause issues with task-local contexts, but
           # asyncio.timeout is not available.
           await asyncio.wait_for(plugin.close(), timeout=self._close_timeout)
+      except asyncio.CancelledError as e:
+        cancelled_error = e
+        logger.warning("Cancelled while closing plugin: %s", plugin.name)
       except Exception as e:
         exceptions[plugin.name] = e
-        if isinstance(e, (asyncio.TimeoutError, asyncio.CancelledError)):
-          logger.warning(
-              "Timeout/Cancelled while closing plugin: %s", plugin.name
-          )
+        if isinstance(e, asyncio.TimeoutError):
+          logger.warning("Timeout while closing plugin: %s", plugin.name)
         else:
           logger.error(
               "Error during close of plugin %s: %s",
@@ -420,6 +424,9 @@ class PluginManager:
               e,
               exc_info=e,
           )
+
+    if cancelled_error is not None:
+      raise cancelled_error
 
     if exceptions:
       error_summary = ", ".join(

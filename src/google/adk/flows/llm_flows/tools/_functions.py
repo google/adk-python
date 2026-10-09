@@ -24,16 +24,16 @@ from typing import TYPE_CHECKING
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types
 
-from . import _batch_executor as _batch_tool_executor
-from ....auth.auth_tool import AuthConfig
-from ....auth.auth_tool import AuthToolArguments
 from ....events.event import Event
 from ....tools.base_tool import BaseTool
 from ....tools.tool_confirmation import ToolConfirmation
 from ..core._utils import require_agent_name as _require_agent_name
+from ._batch_executor import handle_function_call_list_async as _handle_function_call_list_async
+from ._live_caller import handle_function_calls_live as _handle_function_calls_live
 
 if TYPE_CHECKING:
   from ....agents.invocation_context import InvocationContext
+  from ....auth.auth_tool import AuthConfig
 
 AF_FUNCTION_CALL_ID_PREFIX = 'adk-'
 REQUEST_EUC_FUNCTION_CALL_NAME = 'adk_request_credential'
@@ -136,6 +136,8 @@ def build_auth_request_event(
   Returns:
     Event with auth request function calls.
   """
+  from ....auth.auth_tool import AuthToolArguments
+
   parts: list[types.Part] = []
   long_running_tool_ids: set[str] = set()
 
@@ -254,7 +256,7 @@ async def handle_function_call_list_async(
     tool_confirmation_dict: Optional[dict[str, ToolConfirmation]] = None,
 ) -> Optional[Event]:
   """Calls the functions and returns the function response event."""
-  return await _batch_tool_executor.handle_function_call_list_async(
+  return await _handle_function_call_list_async(
       invocation_context=invocation_context,
       function_calls=function_calls,
       tools_dict=tools_dict,
@@ -289,7 +291,7 @@ async def handle_function_calls_live(
     tools_dict: dict[str, BaseTool],
 ) -> Event | None:
   """Calls the functions and returns the function response event."""
-  return await _batch_tool_executor.handle_function_calls_live(
+  return await _handle_function_calls_live(
       invocation_context=invocation_context,
       function_call_event=function_call_event,
       tools_dict=tools_dict,

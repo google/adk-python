@@ -19,10 +19,14 @@ from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import get_all_tool_calls
 from google.adk.evaluation.eval_case import get_all_tool_calls_with_responses
 from google.adk.evaluation.eval_case import get_all_tool_responses
+from google.adk.evaluation.eval_case import get_all_usage_metadata
 from google.adk.evaluation.eval_case import IntermediateData
+from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_case import InvocationEvent
 from google.adk.evaluation.eval_case import InvocationEvents
 from google.adk.evaluation.eval_case import SessionInput
+from google.adk.evaluation.eval_rubrics import Rubric
+from google.adk.evaluation.eval_rubrics import RubricContent
 from google.genai import types as genai_types
 import pytest
 
@@ -142,6 +146,45 @@ def test_eval_case_put_accepts_web_ui_transcript_indices():
   assert 'toolUseIndex' not in dumped_event
   tool_calls = get_all_tool_calls(invocation.intermediate_data)
   assert tool_calls[0].name == 'get_weather'
+
+
+def test_rubric_content_text_property_defaults_to_none():
+  """A RubricContent without text_property round-trips (required-Optional fix)."""
+  content = RubricContent(text_property=None)
+
+  assert content.text_property is None
+  # Simulates the GET(exclude_none=True) -> PUT cycle: an omitted text_property
+  # must still validate (Pydantic v2 treats Optional-without-default as required).
+  assert (
+      RubricContent.model_validate(
+          content.model_dump(exclude_none=True)
+      ).text_property
+      is None
+  )
+
+
+def test_eval_case_with_rubric_missing_text_property_round_trips():
+  """An EvalCase carrying a rubric whose text_property is None survives a
+
+  GET(exclude_none=True) -> PUT round-trip instead of raising a 422.
+  """
+  rubric = Rubric(
+      rubric_id='r1',
+      rubric_content=RubricContent(text_property=None),
+  )
+  eval_case = EvalCase(
+      eval_id='case_1',
+      conversation=[],
+      rubrics=[rubric],
+  )
+
+  # response_model_exclude_none=True drops text_property=None from the wire.
+  wire = eval_case.model_dump(by_alias=True, exclude_none=True)
+
+  # The PUT re-validates the wire; a required-Optional trap would 422 here.
+  revalidated = EvalCase.model_validate(wire)
+  assert revalidated.rubrics is not None
+  assert revalidated.rubrics[0].rubric_content.text_property is None
 
 
 def test_session_input_accepts_session_id():
@@ -416,3 +459,36 @@ def test_conversation_and_conversation_scenario_mutual_exclusion():
   # these two should not cause exceptions
   EvalCase(eval_id='test_id', conversation=[])
   EvalCase(eval_id='test_id', conversation_scenario=test_conversation_scenario)
+
+
+def test_get_all_usage_metadata():
+  """Tests get_all_usage_metadata extraction from InvocationEvents."""
+  # No intermediate data
+  inv_none = Invocation(user_content=genai_types.Content(parts=[]))
+  assert get_all_usage_metadata(inv_none) == []
+
+  # IntermediateData (legacy) returns []
+  inv_legacy = Invocation(
+      user_content=genai_types.Content(parts=[]),
+      intermediate_data=IntermediateData(tool_uses=[]),
+  )
+  assert get_all_usage_metadata(inv_legacy) == []
+
+  # InvocationEvents with usage metadata
+  usage1 = genai_types.GenerateContentResponseUsageMetadata(
+      total_token_count=10
+  )
+  usage2 = genai_types.GenerateContentResponseUsageMetadata(
+      total_token_count=20
+  )
+  inv_events = Invocation(
+      user_content=genai_types.Content(parts=[]),
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(author='agent', usage_metadata=usage1),
+              InvocationEvent(author='tool'),
+              InvocationEvent(author='agent', usage_metadata=usage2),
+          ]
+      ),
+  )
+  assert get_all_usage_metadata(inv_events) == [usage1, usage2]

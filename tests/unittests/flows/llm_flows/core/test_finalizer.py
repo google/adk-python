@@ -250,6 +250,9 @@ async def test_handle_after_model_callback_grounding_with_callback_override(
     agent_response.grounding_metadata = state_metadata
 
   assert result == agent_response
+  assert result.grounding_metadata == (
+      state_metadata if expect_metadata else None
+  )
   agent_callback.assert_called_once()
 
 
@@ -311,6 +314,9 @@ async def test_handle_after_model_callback_grounding_with_plugin_override(
     plugin_response.grounding_metadata = state_metadata
 
   assert result == plugin_response
+  assert result.grounding_metadata == (
+      state_metadata if expect_metadata else None
+  )
   plugin.after_model_callback.assert_called_once()
 
 
@@ -324,16 +330,16 @@ async def test_handle_after_model_callback_caches_canonical_tools():
     canonical_tools_call_count += 1
     from google.adk.tools.base_tool import BaseTool
 
-    class MockGoogleSearchTool(BaseTool):
+    class MockResearchTool(BaseTool):
 
       def __init__(self):
-        super().__init__(name="google_search_agent", description="Mock search")
+        super().__init__(name="research_agent", description="Mock research")
         self.propagate_grounding_metadata = True
 
       async def call(self, **kwargs):
         return "mock result"
 
-    return [MockGoogleSearchTool()]
+    return [MockResearchTool()]
 
   agent = Agent(name="test_agent", tools=[google_search, dummy_tool])
 
@@ -376,10 +382,7 @@ async def test_handle_after_model_callback_caches_canonical_tools():
 
     assert invocation_context.canonical_tools_cache is not None
     assert len(invocation_context.canonical_tools_cache) == 1
-    assert (
-        invocation_context.canonical_tools_cache[0].name
-        == "google_search_agent"
-    )
+    assert invocation_context.canonical_tools_cache[0].name == "research_agent"
 
     assert result1.grounding_metadata == {"foo": "bar"}
     assert result2.grounding_metadata == {"foo": "bar"}
@@ -456,3 +459,168 @@ async def test_run_and_handle_error_reraises_when_unhandled():
         failing_generator(), ctx, llm_request, event
     ):
       pass
+
+
+# --- Tests for has_meaningful_content ---
+
+
+def test_has_meaningful_content_none_response():
+  assert not _model_response_finalizer.has_meaningful_content(None)
+
+
+def test_has_meaningful_content_none_content():
+  resp = LlmResponse(content=None)
+  assert not _model_response_finalizer.has_meaningful_content(resp)
+
+
+def test_has_meaningful_content_empty_parts():
+  resp = LlmResponse(content=types.Content(role="model", parts=[]))
+  assert not _model_response_finalizer.has_meaningful_content(resp)
+
+
+def test_has_meaningful_content_thought_only():
+  resp = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[types.Part(text="Thinking about this...", thought=True)],
+      )
+  )
+  assert not _model_response_finalizer.has_meaningful_content(resp)
+
+
+def test_has_meaningful_content_multiple_thoughts_only():
+  resp = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(text="Step 1...", thought=True),
+              types.Part(text="Step 2...", thought=True),
+          ],
+      )
+  )
+  assert not _model_response_finalizer.has_meaningful_content(resp)
+
+
+def test_has_meaningful_content_whitespace_only():
+  resp = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[types.Part.from_text(text="   \n\t  ")],
+      )
+  )
+  assert not _model_response_finalizer.has_meaningful_content(resp)
+
+
+def test_has_meaningful_content_empty_string():
+  resp = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[types.Part.from_text(text="")],
+      )
+  )
+  assert not _model_response_finalizer.has_meaningful_content(resp)
+
+
+def test_has_meaningful_content_valid_text():
+  resp = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[types.Part.from_text(text="Hello world")],
+      )
+  )
+  assert _model_response_finalizer.has_meaningful_content(resp)
+
+
+def test_has_meaningful_content_thought_and_valid_text():
+  resp = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(text="Thinking...", thought=True),
+              types.Part.from_text(text="Final answer."),
+          ],
+      )
+  )
+  assert _model_response_finalizer.has_meaningful_content(resp)
+
+
+def test_has_meaningful_content_function_call():
+  resp = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[types.Part.from_function_call(name="search", args={})],
+      )
+  )
+  assert _model_response_finalizer.has_meaningful_content(resp)
+
+
+def test_has_meaningful_content_function_response():
+  resp = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[types.Part.from_function_response(name="search", response={})],
+      )
+  )
+  assert _model_response_finalizer.has_meaningful_content(resp)
+
+
+def test_has_meaningful_content_executable_code():
+  resp = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  executable_code=types.ExecutableCode(
+                      code="print(1)", language=types.Language.PYTHON
+                  )
+              )
+          ],
+      )
+  )
+  assert _model_response_finalizer.has_meaningful_content(resp)
+
+
+def test_has_meaningful_content_code_execution_result():
+  resp = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  code_execution_result=types.CodeExecutionResult(
+                      outcome=types.Outcome.OUTCOME_OK, output="1"
+                  )
+              )
+          ],
+      )
+  )
+  assert _model_response_finalizer.has_meaningful_content(resp)
+
+
+def test_has_meaningful_content_inline_data():
+  resp = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  inline_data=types.Blob(data=b"data", mime_type="image/png")
+              )
+          ],
+      )
+  )
+  assert _model_response_finalizer.has_meaningful_content(resp)
+
+
+def test_has_meaningful_content_file_data():
+  resp = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  file_data=types.FileData(
+                      file_uri="gs://bucket/file", mime_type="application/pdf"
+                  )
+              )
+          ],
+      )
+  )
+  assert _model_response_finalizer.has_meaningful_content(resp)

@@ -923,6 +923,90 @@ def test_execute_sql_non_select_stmt_write_protected_persistent_target(
     }
 
 
+@pytest.mark.parametrize(
+    ("query", "statement_type"),
+    [
+        pytest.param(
+            "CREATE TEMP TABLE my_table AS SELECT 123 AS num;"
+            " DROP TABLE my_dataset.my_table",
+            "SCRIPT",
+            id="script",
+        ),
+        pytest.param(
+            "CALL my_dataset.my_procedure()",
+            "CALL",
+            id="call",
+        ),
+        pytest.param(
+            "EXPORT DATA OPTIONS (uri = 'gs://my_bucket/*.csv', format ="
+            " 'CSV') AS SELECT * FROM my_dataset.my_table",
+            "EXPORT_DATA",
+            id="export-data",
+        ),
+        pytest.param(
+            "INSERT INTO my_table (num) VALUES (123)",
+            "INSERT",
+            id="insert",
+        ),
+        pytest.param(
+            "DROP TABLE my_table",
+            "DROP_TABLE",
+            id="drop-table",
+        ),
+    ],
+)
+def test_execute_sql_unconfined_stmt_write_protected(query, statement_type):
+  """Test execute_sql tool for a statement the dry run leaves undestined.
+
+  A dry run that reports no destination shows nothing about where the statement
+  writes, so the protected write mode should fail every non-SELECT it leaves
+  undestined, whether that statement writes through other statements like a
+  script, a procedure call and an export, or writes to one table like an INSERT
+  and a DROP TABLE.
+  """
+  project = "my_project"
+  query_result = []
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    # The mock instance
+    bq_client = Client.return_value
+
+    # Simulate the result of the query API creating the BigQuery session
+    session_creator_job = mock.create_autospec(bigquery.QueryJob)
+    session_creator_job.session_info.session_id = "test-bq-session-id"
+    session_creator_job.destination.dataset_id = "_anonymous_dataset"
+
+    # Simulate the result of query API
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = statement_type
+    query_job.destination = None
+    bq_client.query.side_effect = (
+        lambda sql, **kwargs: session_creator_job
+        if sql == "SELECT 1"
+        else query_job
+    )
+
+    # Simulate the result of query_and_wait API
+    bq_client.query_and_wait.return_value = query_result
+
+    # Test the tool
+    result = query_tool.execute_sql(
+        project, query, credentials, tool_settings, tool_context
+    )
+
+    assert result == {
+        "status": "ERROR",
+        "error_details": (
+            "Protected write mode only supports SELECT statements, or write"
+            " operations in the anonymous dataset of a BigQuery session."
+        ),
+    }
+    bq_client.query_and_wait.assert_not_called()
+
+
 def test_validate_subquery_success():
   """Test _validate_subquery with a SELECT statement."""
   subquery = "SELECT 1"
@@ -2549,6 +2633,107 @@ def test_execute_sql_maximum_bytes_billed_config():
     bq_client.query_and_wait.assert_called_once()
     call_args = bq_client.query_and_wait.call_args
     assert call_args.kwargs["job_config"].maximum_bytes_billed == 11_000_000
+
+
+_KMS_KEY_NAME = "projects/p/locations/us/keyRings/r/cryptoKeys/k"
+
+
+@pytest.mark.parametrize(
+    ("write_mode", "query_call_count"),
+    [
+        pytest.param(WriteMode.BLOCKED, 1, id="write-blocked"),
+        pytest.param(WriteMode.PROTECTED, 2, id="write-protected"),
+        pytest.param(WriteMode.ALLOWED, 1, id="write-allowed"),
+    ],
+)
+def test_execute_sql_encrypts_select_results_with_kms_key(
+    write_mode, query_call_count
+):
+  """A SELECT runs with the configured KMS key as its destination key.
+
+  Blocked and protected write modes reuse the dry run they already make to
+  find the statement type. Allowed write mode makes one dry run for it.
+  """
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_config = BigQueryToolConfig(
+      write_mode=write_mode, kms_key_name=_KMS_KEY_NAME
+  )
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+  tool_context.state.get.return_value = None
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = "SELECT"
+    bq_client.query.return_value = query_job
+
+    result = query_tool.execute_sql(
+        "my_project",
+        "SELECT 123 AS num",
+        credentials,
+        tool_config,
+        tool_context,
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert bq_client.query.call_count == query_call_count
+    job_config = bq_client.query_and_wait.call_args.kwargs["job_config"]
+    assert (
+        job_config.destination_encryption_configuration.kms_key_name
+        == _KMS_KEY_NAME
+    )
+
+
+def test_execute_sql_does_not_set_kms_key_for_non_select():
+  """A statement other than SELECT runs without a job-level KMS key.
+
+  BigQuery rejects a job-level key for DDL, DML and scripts.
+  """
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_config = BigQueryToolConfig(
+      write_mode=WriteMode.ALLOWED, kms_key_name=_KMS_KEY_NAME
+  )
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = "CREATE_TABLE"
+    bq_client.query.return_value = query_job
+
+    result = query_tool.execute_sql(
+        "my_project",
+        "CREATE TABLE ds.t AS SELECT 1 AS x",
+        credentials,
+        tool_config,
+        tool_context,
+    )
+
+    assert result["status"] == "SUCCESS"
+    job_config = bq_client.query_and_wait.call_args.kwargs["job_config"]
+    assert job_config.destination_encryption_configuration is None
+
+
+def test_execute_sql_without_kms_key_adds_no_dry_run():
+  """Without a KMS key, allowed write mode still makes no dry run."""
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_config = BigQueryToolConfig(write_mode=WriteMode.ALLOWED)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+
+    query_tool.execute_sql(
+        "my_project",
+        "SELECT 123 AS num",
+        credentials,
+        tool_config,
+        tool_context,
+    )
+
+    bq_client.query.assert_not_called()
+    job_config = bq_client.query_and_wait.call_args.kwargs["job_config"]
+    assert job_config.destination_encryption_configuration is None
 
 
 @pytest.mark.parametrize(

@@ -41,6 +41,7 @@ from typing import TypeVar
 from a2a.client.client import ClientConfig as A2AClientConfig
 from a2a.client.client_factory import ClientFactory as A2AClientFactory
 from a2a.types import AgentCard
+from a2a.types import AgentSkill
 from a2a.types import APIKeySecurityScheme
 from a2a.types import Artifact
 from a2a.types import Message
@@ -148,6 +149,7 @@ if IS_A2A_V1:
   TS_INPUT_REQUIRED = TaskState.Value("TASK_STATE_INPUT_REQUIRED")
   TS_AUTH_REQUIRED = TaskState.Value("TASK_STATE_AUTH_REQUIRED")
   TS_CANCELED = TaskState.Value("TASK_STATE_CANCELED")
+  TS_REJECTED = TaskState.Value("TASK_STATE_REJECTED")
 
   TP_JSONRPC = TransportProtocol.JSONRPC
   TP_HTTP_JSON = TransportProtocol.HTTP_JSON
@@ -164,6 +166,7 @@ else:
   TS_INPUT_REQUIRED = TaskState.input_required
   TS_AUTH_REQUIRED = TaskState.auth_required
   TS_CANCELED = TaskState.canceled
+  TS_REJECTED = TaskState.rejected
 
   TP_JSONRPC = getattr(TransportProtocol, "jsonrpc")
   TP_HTTP_JSON = getattr(TransportProtocol, "http_json")
@@ -571,6 +574,71 @@ def build_agent_card(
   return parse_agent_card(card_data)
 
 
+def build_agent_skill(
+    *,
+    id: str,
+    name: str,
+    description: str,
+    tags: list[str],
+    examples: list[str] | None = None,
+    input_modes: list[str] | None = None,
+    output_modes: list[str] | None = None,
+    security: list[dict[str, list[str]]] | None = None,
+) -> AgentSkill:
+  """Builds an ``AgentSkill`` from primitive fields."""
+  if IS_A2A_V1:
+    security_requirements = []
+    if security:
+      for req in security:
+        schemes = {}
+        for scheme_name, scopes in req.items():
+          schemes[scheme_name] = {"list": scopes}
+        security_requirements.append({"schemes": schemes})
+
+    skill_data = {
+        "id": id,
+        "name": name,
+        "description": description,
+        "tags": list(tags) if tags is not None else [],
+        "examples": list(examples) if examples is not None else [],
+        "input_modes": list(input_modes) if input_modes is not None else [],
+        "output_modes": list(output_modes) if output_modes is not None else [],
+        "security_requirements": security_requirements,
+    }
+    msg = AgentSkill()
+    ParseDict(skill_data, msg)
+    return msg
+  else:
+    return _as_factory(AgentSkill)(
+        id=id,
+        name=name,
+        description=description,
+        tags=tags,
+        examples=examples,
+        input_modes=input_modes,
+        output_modes=output_modes,
+        security=security,
+    )
+
+
+def get_skill_security(
+    skill: AgentSkill,
+) -> list[dict[str, list[str]]] | None:
+  """Gets security requirements from an ``AgentSkill``."""
+  if IS_A2A_V1:
+    if not skill.security_requirements:
+      return None
+    security = []
+    for req in skill.security_requirements:
+      req_dict = {}
+      for scheme_name, string_list in req.schemes.items():
+        req_dict[scheme_name] = list(string_list.list)
+      security.append(req_dict)
+    return security
+  else:
+    return getattr(skill, "security", None)
+
+
 # -----------------------------------------------------------------------------
 # Client error & ClientCallContext shims
 # -----------------------------------------------------------------------------
@@ -727,8 +795,16 @@ def make_stream_normalizer() -> Callable[[Any], Any]:
     if kind == "message":
       return payload
     if kind == "task":
-      # A full task state is already passed; use it as the aggregate.
-      state["task"] = payload
+      # A full task state is already passed; use it as the aggregate. Carry over
+      # any artifacts the running aggregate already holds that the snapshot lacks.
+      running: Optional[Task] = state["task"]
+      aggregate = _snapshot(payload)
+      if running is not None and running.artifacts:
+        known = {a.artifact_id for a in aggregate.artifacts}
+        for artifact in running.artifacts:
+          if artifact.artifact_id not in known:
+            aggregate.artifacts.append(artifact)
+      state["task"] = aggregate
       return (_snapshot(payload), None)
     task = _ensure_task(payload)
     if kind == "artifact_update":
@@ -763,7 +839,8 @@ async def send_message(
   1.x: ``send_message(request, *, context)`` takes no ``request_metadata``
   kwarg; metadata is embedded in ``SendMessageRequest.metadata`` (a proto
   ``Struct``).
-  0.3.x: ``send_message`` accepts ``request_metadata`` directly as a kwarg.
+  0.3.x: ``request_metadata`` is passed as a kwarg only when set, because
+  clients before a2a-sdk 0.3.11 do not accept it.
   """
   if IS_A2A_V1:
     from a2a.types import SendMessageRequest
@@ -776,10 +853,11 @@ async def send_message(
       async for item in agen:
         yield item
   else:
+    kwargs: dict[str, Any] = {}
+    if request_metadata:
+      kwargs["request_metadata"] = request_metadata
     async with Aclosing(
-        client.send_message(
-            request=request, request_metadata=request_metadata, context=context
-        )
+        client.send_message(request=request, context=context, **kwargs)
     ) as agen:
       async for item in agen:
         yield item

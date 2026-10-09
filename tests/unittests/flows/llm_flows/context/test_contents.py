@@ -18,12 +18,12 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.event_actions import EventCompaction
-from google.adk.flows.llm_flows import _nl_planning
 from google.adk.flows.llm_flows.context import _contents as contents
 from google.adk.flows.llm_flows.context._contents import request_processor
-from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from google.adk.labs.openai import OpenAIResponsesLlm
+from google.adk.flows.llm_flows.extensions import _planning as _nl_planning
+from google.adk.flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from google.adk.flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.integrations.openai import OpenAIResponsesLlm
 from google.adk.models.anthropic_llm import AnthropicLlm
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
@@ -1779,7 +1779,7 @@ def test_id_pairing_model_types_probes_optional_providers_once():
   optional_modules = (
       "google.adk.models.anthropic_llm",
       "google.adk.models.lite_llm",
-      "google.adk.labs.openai",
+      "google.adk.integrations.openai._openai_responses_llm",
   )
   probed = []
 
@@ -2411,3 +2411,46 @@ async def test_include_contents_none_resume_after_an_interleaved_user_turn():
       if part.function_call
   ]
   assert [c.id for c in function_calls] == ["call_1"]
+
+
+@pytest.mark.asyncio
+async def test_include_contents_none_ignores_submitted_tool_result_without_matching_call():
+  """An unmatched user-submitted function_response does not blank out the current turn."""
+  agent = Agent(
+      model="gemini-2.5-flash", name="test_agent", include_contents="none"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("current turn question"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="missing_call_id",
+                          name="ask_for_approval",
+                          response={"status": "approved"},
+                      )
+                  )
+              ],
+              role="user",
+          ),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents == [types.UserContent("current turn question")]

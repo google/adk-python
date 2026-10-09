@@ -15,12 +15,16 @@
 from __future__ import annotations
 
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskStatusUpdateEvent
 from google.adk.a2a import _compat
 from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
+from google.adk.a2a.converters.utils import _get_adk_metadata_key
+from google.adk.events import _internal_metadata
 from google.adk.events import event_actions
+from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
 from google.adk.events.event import Event
 from google.genai import types as genai_types
 import pytest
@@ -127,6 +131,70 @@ class TestFromAdk:
     assert final[0].append is False
     assert final[0].artifact.artifact_id == artifact_id
     assert "agent-1" not in agents_artifacts
+
+  def test_convert_event_to_a2a_events_omits_internal_custom_metadata(
+      self, monkeypatch
+  ):
+    """ADK-internal custom_metadata keys are not sent to remote clients."""
+    self.mock_event.content = genai_types.Content(
+        parts=[genai_types.Part(text="hello")], role="model"
+    )
+    self.mock_event.custom_metadata = {
+        "keep": 1,
+        INTERNAL_METADATA_PREFIX + "stamp": "x",
+    }
+    captured = []
+    monkeypatch.setattr(
+        _compat,
+        "set_struct_metadata",
+        lambda target, metadata: captured.append(metadata),
+    )
+
+    with patch.object(_internal_metadata.logger, "debug") as debug:
+      convert_event_to_a2a_events(
+          self.mock_event,
+          {},
+          task_id="task-123",
+          context_id="context-456",
+          part_converter=Mock(return_value=[_compat.make_text_part("hello")]),
+      )
+
+    debug.assert_not_called()
+    assert captured
+    assert all(
+        metadata[_get_adk_metadata_key("custom_metadata")] == {"keep": 1}
+        for metadata in captured
+    )
+
+  def test_convert_event_to_a2a_events_passes_stubbed_custom_metadata(
+      self, monkeypatch
+  ):
+    """A Mock event whose custom_metadata is not a dict does not break."""
+    self.mock_event.content = genai_types.Content(
+        parts=[genai_types.Part(text="hello")], role="model"
+    )
+    self.mock_event.custom_metadata = Mock()
+    captured = []
+    monkeypatch.setattr(
+        _compat,
+        "set_struct_metadata",
+        lambda target, metadata: captured.append(metadata),
+    )
+
+    result = convert_event_to_a2a_events(
+        self.mock_event,
+        {},
+        task_id="task-123",
+        context_id="context-456",
+        part_converter=Mock(return_value=[_compat.make_text_part("hello")]),
+    )
+
+    assert result
+    assert captured
+    assert all(
+        _get_adk_metadata_key("custom_metadata") in metadata
+        for metadata in captured
+    )
 
   def test_convert_event_to_a2a_events_error(self):
     """Test conversion of event with error to TaskStatusUpdateEvent."""

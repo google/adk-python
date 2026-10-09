@@ -96,6 +96,16 @@ class BaseTool(ABC):
   NOTE: the entire dict must be JSON serializable.
   """
 
+  behavior: Optional[types.Behavior] = None
+  """Controls whether the tool is blocking or non-blocking (Live API only).
+
+  - ``NON_BLOCKING``: the model continues the conversation while the tool
+    executes in the background.
+  - ``BLOCKING``: the model waits for the tool response before continuing.
+
+  This field is currently only supported for live. ``None`` preserves the default behavior.
+  """
+
   response_scheduling: Optional[types.FunctionResponseScheduling] = None
   """Controls when the model reacts to the tool's response (Live API only).
 
@@ -120,6 +130,7 @@ class BaseTool(ABC):
       description: str,
       is_long_running: bool = False,
       custom_metadata: Optional[dict[str, Any]] = None,
+      behavior: Optional[types.Behavior] = None,
       response_scheduling: Optional[types.FunctionResponseScheduling] = None,
   ):
     self.name = name
@@ -127,6 +138,7 @@ class BaseTool(ABC):
     self.is_long_running = is_long_running
     self._defers_response = False
     self.custom_metadata = custom_metadata
+    self.behavior = behavior
     self.response_scheduling = response_scheduling
 
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:

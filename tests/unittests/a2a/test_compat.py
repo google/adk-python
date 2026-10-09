@@ -164,6 +164,72 @@ def test_build_agent_card_converts_model_arguments_to_card_fields():
 
 
 # -----------------------------------------------------------------------------
+# build_agent_skill / get_skill_security
+# -----------------------------------------------------------------------------
+class _FakeStringList:
+
+  def __init__(self, values: list[str]):
+    self.list = values
+
+
+class _FakeSecurityRequirement:
+
+  def __init__(self, schemes: dict[str, list[str]]):
+    self.schemes = {k: _FakeStringList(v) for k, v in schemes.items()}
+
+
+class _FakeV1Skill:
+
+  def __init__(self, requirements: list[dict[str, list[str]]]):
+    self.security_requirements = [
+        _FakeSecurityRequirement(req) for req in requirements
+    ]
+
+
+def test_build_agent_skill_without_security_returns_none_from_get_skill_security():
+  skill = _compat.build_agent_skill(
+      id='skill-1',
+      name='Skill One',
+      description='Skill description',
+      tags=['tag-1'],
+      examples=['example input'],
+      input_modes=['text/plain'],
+      output_modes=['application/json'],
+  )
+  assert skill.id == 'skill-1'
+  assert skill.name == 'Skill One'
+  assert skill.description == 'Skill description'
+  assert list(skill.tags) == ['tag-1']
+  assert list(skill.examples) == ['example input']
+  assert list(skill.input_modes) == ['text/plain']
+  assert list(skill.output_modes) == ['application/json']
+  assert _compat.get_skill_security(skill) is None
+
+
+def test_build_agent_skill_with_security_round_trips_through_get_skill_security():
+  security = [{'oauth2': ['read', 'write']}, {'api_key': []}]
+  skill = _compat.build_agent_skill(
+      id='skill-1',
+      name='Skill One',
+      description='Skill description',
+      tags=['tag-1'],
+      security=security,
+  )
+  assert _compat.get_skill_security(skill) == security
+
+
+def test_get_skill_security_v1_returns_none_when_empty(monkeypatch):
+  monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
+  assert _compat.get_skill_security(_FakeV1Skill([])) is None
+
+
+def test_get_skill_security_v1_extracts_scheme_scopes(monkeypatch):
+  monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
+  security = [{'oauth2': ['read', 'write']}, {'api_key': []}]
+  assert _compat.get_skill_security(_FakeV1Skill(security)) == security
+
+
+# -----------------------------------------------------------------------------
 # rebind_client_factory_httpx
 # -----------------------------------------------------------------------------
 def _factory_with_custom_transport(httpx_client, consumers):
@@ -272,6 +338,35 @@ def test_stream_item_kind_v1_without_payload_raises(monkeypatch):
   monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
   with pytest.raises(ValueError, match='no known payload field'):
     _compat.stream_item_kind(_FakeStreamResponse())
+
+
+# -----------------------------------------------------------------------------
+# send_message
+# -----------------------------------------------------------------------------
+class _ClientWithoutRequestMetadata:
+  """A 0.3.x client whose ``send_message`` predates ``request_metadata``."""
+
+  async def send_message(self, request, *, context=None):
+    yield (request, context)
+
+
+@v03_only
+@pytest.mark.parametrize('request_metadata', [None, {}])
+async def test_send_message_without_metadata_skips_the_kwarg(request_metadata):
+  message = _compat.make_message(message_id='m-1', role='user')
+  context = object()
+
+  items = [
+      item
+      async for item in _compat.send_message(
+          _ClientWithoutRequestMetadata(),
+          request=message,
+          request_metadata=request_metadata,
+          context=context,
+      )
+  ]
+
+  assert items == [(message, context)]
 
 
 # -----------------------------------------------------------------------------
@@ -519,3 +614,94 @@ def test_a2a_to_dict_v1_keeps_the_flat_raw_field_by_default(monkeypatch):
   monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
 
   assert _compat.a2a_to_dict(_v1_file_part())['raw'] == _ENCODED_PAYLOAD
+
+
+# --------------------------------------------------------------------------
+# make_stream_normalizer
+# --------------------------------------------------------------------------
+v1_only = pytest.mark.skipif(
+    not _compat.IS_A2A_V1, reason='1.x StreamResponse shapes'
+)
+
+
+def _v1_artifact_chunk(artifact_id: str, text: str, *, append: bool):
+  from a2a.types import Artifact
+  from a2a.types import StreamResponse
+  from a2a.types import TaskArtifactUpdateEvent
+
+  return StreamResponse(
+      artifact_update=TaskArtifactUpdateEvent(
+          task_id='task-1',
+          context_id='ctx-1',
+          append=append,
+          last_chunk=False,
+          artifact=Artifact(
+              artifact_id=artifact_id, parts=[_compat.make_text_part(text)]
+          ),
+      )
+  )
+
+
+def _v1_task_snapshot():
+  from a2a.types import StreamResponse
+  from a2a.types import Task
+  from a2a.types import TaskState
+  from a2a.types import TaskStatus
+
+  # What a server or proxy emits as the running task's state: status only.
+  return StreamResponse(
+      task=Task(
+          id='task-1',
+          context_id='ctx-1',
+          status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+      )
+  )
+
+
+@v1_only
+def test_stream_normalizer_task_snapshot_keeps_streamed_artifacts():
+  """A running-Task snapshot arriving between chunks must not discard artifacts from aggregate state."""
+  normalize = _compat.make_stream_normalizer()
+
+  normalize(_v1_artifact_chunk('art-1', 'The', append=False))
+  task, _ = normalize(_v1_task_snapshot())
+  assert not task.artifacts
+
+  task, _ = normalize(_v1_artifact_chunk('art-1', ' sky', append=True))
+
+  assert len(task.artifacts) == 1
+  assert [p.text for p in task.artifacts[0].parts] == ['The', ' sky']
+
+
+@v1_only
+def test_stream_normalizer_task_snapshot_with_artifacts_is_authoritative():
+  """A snapshot that carries an artifact wins for that id in the aggregate."""
+  from a2a.types import Artifact
+  from a2a.types import StreamResponse
+  from a2a.types import Task
+  from a2a.types import TaskState
+  from a2a.types import TaskStatus
+
+  normalize = _compat.make_stream_normalizer()
+  normalize(_v1_artifact_chunk('art-1', 'stale', append=False))
+  normalize(_v1_artifact_chunk('art-2', 'other', append=False))
+
+  snapshot = StreamResponse(
+      task=Task(
+          id='task-1',
+          context_id='ctx-1',
+          status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+          artifacts=[
+              Artifact(
+                  artifact_id='art-1', parts=[_compat.make_text_part('fresh')]
+              )
+          ],
+      )
+  )
+  task, _ = normalize(snapshot)
+  assert [a.artifact_id for a in task.artifacts] == ['art-1']
+  assert [p.text for p in task.artifacts[0].parts] == ['fresh']
+
+  task, _ = normalize(_v1_artifact_chunk('art-2', ' appended', append=True))
+  by_id = {a.artifact_id: [p.text for p in a.parts] for a in task.artifacts}
+  assert by_id == {'art-1': ['fresh'], 'art-2': ['other', ' appended']}

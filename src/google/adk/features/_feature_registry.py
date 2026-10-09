@@ -34,12 +34,14 @@ class FeatureName(str, Enum):
   BIG_QUERY_TOOL_CONFIG = "BIG_QUERY_TOOL_CONFIG"
   BIGTABLE_TOOL_SETTINGS = "BIGTABLE_TOOL_SETTINGS"
   BIGTABLE_TOOLSET = "BIGTABLE_TOOLSET"
+  CASCADE_LIVE = "CASCADE_LIVE"
   COMPUTER_USE = "COMPUTER_USE"
   DATA_AGENT_TOOL_CONFIG = "DATA_AGENT_TOOL_CONFIG"
   DATA_AGENT_TOOLSET = "DATA_AGENT_TOOLSET"
   DYNAMIC_INSTRUCTION_ROUTING = "DYNAMIC_INSTRUCTION_ROUTING"
   DAYTONA_ENVIRONMENT = "DAYTONA_ENVIRONMENT"
   E2B_ENVIRONMENT = "E2B_ENVIRONMENT"
+  ELEVEN_LABS = "ELEVEN_LABS"
   ENVIRONMENT_SIMULATION = "ENVIRONMENT_SIMULATION"
   EVENTARC_TOOL_CONFIG = "EVENTARC_TOOL_CONFIG"
   EVENTARC_TOOLSET = "EVENTARC_TOOLSET"
@@ -59,6 +61,9 @@ class FeatureName(str, Enum):
   # enum member by name. Keeping it private avoids a backward-compat
   # obligation for what is intended as a temporary, internal kill-switch.
   _MCP_GRACEFUL_ERROR_HANDLING = "MCP_GRACEFUL_ERROR_HANDLING"
+  # Off by default since it changes wire behavior. Enable with
+  # `ADK_ENABLE_MCP_MODERN_PROTOCOL=1`. No effect on MCP SDK 1.x.
+  _MCP_MODERN_PROTOCOL = "MCP_MODERN_PROTOCOL"
   MONGODB_TOOLSET = "MONGODB_TOOLSET"
   MONGODB_TOOL_SETTINGS = "MONGODB_TOOL_SETTINGS"
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
@@ -131,6 +136,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.BIGTABLE_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
+    FeatureName.CASCADE_LIVE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.COMPUTER_USE: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -147,6 +155,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.E2B_ENVIRONMENT: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.ELEVEN_LABS: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.ENVIRONMENT_SIMULATION: FeatureConfig(
@@ -190,6 +201,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName._MCP_GRACEFUL_ERROR_HANDLING: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName._MCP_MODERN_PROTOCOL: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
     ),
     FeatureName.MONGODB_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True

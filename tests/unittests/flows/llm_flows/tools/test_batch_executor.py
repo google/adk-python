@@ -96,20 +96,6 @@ def test_merge_parallel_function_response_events_multiple() -> None:
   assert merged.actions.state_delta == {'key1': 'val1', 'key2': 'val2'}
 
 
-def test_is_non_blocking_tool() -> None:
-  assert not _batch_tool_executor._is_non_blocking_tool(None)
-
-  tool_without_scheduling = BaseTool(name='t1', description='desc')
-  assert not _batch_tool_executor._is_non_blocking_tool(tool_without_scheduling)
-
-  tool_with_scheduling = BaseTool(
-      name='t2',
-      description='desc',
-      response_scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
-  )
-  assert _batch_tool_executor._is_non_blocking_tool(tool_with_scheduling)
-
-
 @pytest.mark.asyncio
 async def test_gather_or_cancel_success() -> None:
   async def worker(n: int) -> int:
@@ -201,3 +187,64 @@ async def test_start_execute_task_keeps_parallel_calls_isolated() -> None:
   ])
 
   assert results == ['call-0', 'call-1', 'call-2']
+
+
+@pytest.mark.asyncio
+async def test_execute_prepared_function_calls_sets_live_session_id_and_merges() -> (
+    None
+):
+  mock_ic = mock.MagicMock()
+  mock_ic.session.state = {}
+  prepared_1 = _prepared_call_with_snapshot('call-1')
+  prepared_2 = _prepared_call_with_snapshot('call-2')
+
+  ev1 = Event(
+      invocation_id='inv-1',
+      author='agent',
+      content=types.Content(
+          role='user', parts=[types.Part.from_text(text='r1')]
+      ),
+  )
+  ev2 = Event(
+      invocation_id='inv-1',
+      author='agent',
+      content=types.Content(
+          role='user', parts=[types.Part.from_text(text='r2')]
+      ),
+  )
+  call_executor = mock.AsyncMock(side_effect=[ev1, ev2])
+
+  merged = await _batch_tool_executor._execute_prepared_function_calls(
+      mock_ic,
+      [prepared_1, prepared_2],
+      call_executor=call_executor,
+      live_session_id='live-sess-1',
+  )
+
+  assert merged is not None
+  assert merged.live_session_id == 'live-sess-1'
+  assert merged.content is not None
+  assert [p.text for p in merged.content.parts] == ['r1', 'r2']
+
+
+@pytest.mark.asyncio
+async def test_handle_function_calls_live_compat_wrapper() -> None:
+  mock_context = mock.MagicMock()
+  mock_event = mock.MagicMock()
+  mock_tools = {'tool': mock.MagicMock()}
+  mock_result = mock.MagicMock()
+
+  with mock.patch(
+      'google.adk.flows.llm_flows.tools._live_caller.handle_function_calls_live',
+      new_callable=mock.AsyncMock,
+      return_value=mock_result,
+  ) as mock_handle:
+    res = await _batch_tool_executor.handle_function_calls_live(
+        mock_context, mock_event, mock_tools
+    )
+    assert res is mock_result
+    mock_handle.assert_awaited_once_with(
+        invocation_context=mock_context,
+        function_call_event=mock_event,
+        tools_dict=mock_tools,
+    )

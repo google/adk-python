@@ -318,6 +318,64 @@ async def test_close_raises_runtime_error_on_plugin_exception(
 
 
 @pytest.mark.asyncio
+async def test_close_closes_remaining_plugins_and_reraises_cancellation():
+  """Tests that cancellation propagates only after all plugins are closed."""
+  plugins = [TestPlugin(name=f"plugin{i}") for i in range(1, 4)]
+  for plugin in plugins:
+    plugin.close = AsyncMock()
+  plugins[1].close = AsyncMock(side_effect=asyncio.CancelledError())
+  service = PluginManager(plugins=plugins)
+
+  with pytest.raises(asyncio.CancelledError):
+    await service.close()
+
+  for plugin in plugins:
+    plugin.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_close_closes_remaining_plugins_when_task_is_cancelled():
+  """Tests that a real task cancellation still closes the remaining plugins."""
+  started = asyncio.Event()
+
+  async def blocking_close():
+    started.set()
+    await asyncio.sleep(10)
+
+  plugins = [TestPlugin(name=f"plugin{i}") for i in range(1, 4)]
+  plugins[0].close = AsyncMock()
+  plugins[1].close = blocking_close
+  plugins[2].close = AsyncMock()
+  service = PluginManager(plugins=plugins)
+  task = asyncio.create_task(service.close())
+  await started.wait()
+
+  task.cancel()
+
+  with pytest.raises(asyncio.CancelledError):
+    await task
+
+  plugins[0].close.assert_awaited_once()
+  plugins[2].close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_close_closes_remaining_plugins_after_plugin_error():
+  """Tests that a failing plugin does not stop the remaining ones closing."""
+  plugins = [TestPlugin(name=f"plugin{i}") for i in range(1, 4)]
+  for plugin in plugins:
+    plugin.close = AsyncMock()
+  plugins[1].close = AsyncMock(side_effect=ValueError("Shutdown error"))
+  service = PluginManager(plugins=plugins)
+
+  with pytest.raises(RuntimeError, match="'plugin2': ValueError"):
+    await service.close()
+
+  for plugin in plugins:
+    plugin.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_close_with_timeout(plugin1: TestPlugin):
   """Tests that close respects the timeout and raises on failure."""
   service = PluginManager(close_timeout=0.1)

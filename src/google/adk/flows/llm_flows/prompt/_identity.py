@@ -23,6 +23,7 @@ from typing_extensions import override
 from ....agents.invocation_context import InvocationContext
 from ....events.event import Event
 from ....models.llm_request import LlmRequest
+from ....utils._agent_mode import AgentMode
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..core._utils import as_llm_agent
 
@@ -30,12 +31,14 @@ from ..core._utils import as_llm_agent
 class _IdentityLlmRequestProcessor(BaseLlmRequestProcessor):
   """Gives the agent identity from the framework."""
 
+  name = 'identity'
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
     agent = as_llm_agent(invocation_context)
-    if getattr(agent, 'mode', None) != 'single_turn':
+    if getattr(agent, 'mode', None) != AgentMode.SINGLE_TURN:
       si = f'You are an agent. Your internal name is "{agent.name}".'
       if agent.description:
         si += f' The description about you is "{agent.description}".'

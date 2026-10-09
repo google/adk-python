@@ -38,6 +38,7 @@ from ..evaluator import EvaluationResult
 from ..evaluator import Evaluator
 from ..evaluator import PerInvocationResult
 from ..llm_as_judge import AutoRaterScore
+from ..llm_as_judge_utils import build_judge_request_config
 from ..llm_as_judge_utils import get_eval_status
 from ..llm_as_judge_utils import get_text_from_content
 from ..llm_as_judge_utils import Label
@@ -133,6 +134,12 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     self._criterion = self._deserialize_criterion(eval_metric)
 
     self._llm_options = self._criterion.judge_model_options
+    # Force AFC off on judge requests so google-genai does not log a
+    # per-request warning when the judge sends no tools; see
+    # build_judge_request_config.
+    self._llm_config = build_judge_request_config(
+        self._llm_options.judge_model_config
+    )
     self._stop_signal = self._criterion.stop_signal
     self._llm = self._setup_llm()
 
@@ -334,10 +341,6 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
         previous_invocations=invocation_history,
     )
 
-    config = (
-        self._llm_options.judge_model_config
-        or genai_types.GenerateContentConfig()
-    )
     llm_request = LlmRequest(
         model=self._llm_options.judge_model,
         contents=[
@@ -346,7 +349,7 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
                 role="user",
             )
         ],
-        config=config,
+        config=self._llm_config,
     )
     add_default_retry_options_if_not_present(llm_request)
     num_samples = self._llm_options.num_samples

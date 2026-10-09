@@ -287,16 +287,60 @@ def test_run_cmd_with_type_config(
   assert "model: gemini-2.5-flash" in yaml_content
   assert "description: A helpful assistant for user questions." in yaml_content
 
-  # Should create empty __init__.py
-  init_file = agent_dir / "__init__.py"
-  assert init_file.exists()
-  assert init_file.read_text().strip() == ""
+  # Config agents are YAML-loaded; do not emit a package marker.
+  assert not (agent_dir / "__init__.py").exists()
 
   # Should still create .env file
   env_file = agent_dir / ".env"
   assert env_file.exists()
   assert "GOOGLE_API_KEY=test-key" in env_file.read_text()
   assert (agent_dir / ".gitignore").read_text() == ".env\n.adk/\n"
+
+
+def test_run_cmd_prints_next_steps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  """A new agent should come with the commands to run it and grow it."""
+  echo = _Recorder()
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+  monkeypatch.setattr(click, "echo", echo)
+
+  cli_create.run_cmd(
+      "my_agent",
+      model="gemini-3.5-flash",
+      google_api_key="test-key",
+      google_cloud_project=None,
+      google_cloud_region=None,
+      type="code",
+  )
+
+  (message,), _ = echo.calls[-1]
+  assert "adk run my_agent\n" in message
+  assert "adk web .\n" in message
+  assert "uvx google-agents-cli setup\n" in message
+
+
+def test_run_cmd_next_steps_point_adk_web_at_parent_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  """A nested agent path should make adk web serve the folder holding it."""
+  echo = _Recorder()
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+  monkeypatch.setattr(click, "echo", echo)
+  agent_path = os.path.join("agents", "my_agent")
+
+  cli_create.run_cmd(
+      agent_path,
+      model="gemini-3.5-flash",
+      google_api_key="test-key",
+      google_cloud_project=None,
+      google_cloud_region=None,
+      type="code",
+  )
+
+  (message,), _ = echo.calls[-1]
+  assert f"adk run {agent_path}\n" in message
+  assert "adk web agents\n" in message
 
 
 # Prompt helpers
@@ -326,11 +370,19 @@ def test_prompt_for_model_gemini(monkeypatch: pytest.MonkeyPatch) -> None:
   assert cli_create._prompt_for_model() == "gemini-3.5-flash"
 
 
+def test_prompt_for_model_gemini_38_flash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Selecting option '2' should return the gemini-3.8-flash model string."""
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: "2")
+  assert cli_create._prompt_for_model() == "gemini-3.8-flash"
+
+
 def test_prompt_for_model_other(monkeypatch: pytest.MonkeyPatch) -> None:
-  """Selecting option '2' should return placeholder and call secho."""
+  """Selecting option '3' should return placeholder and call secho."""
   called: Dict[str, bool] = {}
 
-  monkeypatch.setattr(click, "prompt", lambda *a, **k: "2")
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: "3")
 
   def _fake_secho(*_a: Any, **_k: Any) -> None:
     called["secho"] = True

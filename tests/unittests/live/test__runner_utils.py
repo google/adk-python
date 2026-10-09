@@ -16,6 +16,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import logging
 from typing import Any
 from typing import AsyncGenerator
 
@@ -83,6 +86,102 @@ async def test_new_invocation_context_for_live_subagents_audio_transcription():
   assert ic.live_request_queue is queue
   assert ic.run_config.output_audio_transcription is not None
   assert ic.run_config.input_audio_transcription is not None
+
+
+def _multi_agent_runner() -> Runner:
+  parent_agent = _MockLiveAgent(name="parent")
+  parent_agent.sub_agents = [_MockLiveAgent(name="child")]
+  return Runner(
+      app_name="test_app",
+      agent=parent_agent,
+      session_service=InMemorySessionService(),
+  )
+
+
+@pytest.mark.asyncio
+async def test_new_invocation_context_for_live_respects_explicit_opt_out(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  runner = _multi_agent_runner()
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+  run_config = RunConfig(
+      response_modalities=[types.Modality.AUDIO],
+      output_audio_transcription=None,
+      input_audio_transcription=None,
+  )
+
+  with caplog.at_level(logging.WARNING, logger="google_adk"):
+    ic = _runner_utils.new_invocation_context_for_live(
+        runner,
+        session,
+        live_request_queue=LiveRequestQueue(),
+        run_config=run_config,
+    )
+
+  assert ic.run_config is not None
+  assert ic.run_config.output_audio_transcription is None
+  assert ic.run_config.input_audio_transcription is None
+  # The caller's config object must not be mutated either.
+  assert run_config.output_audio_transcription is None
+  assert run_config.input_audio_transcription is None
+  assert "agent transfer" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_new_invocation_context_for_live_opt_out_without_modalities(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  runner = _multi_agent_runner()
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+  run_config = RunConfig(input_audio_transcription=None)
+
+  with caplog.at_level(logging.WARNING, logger="google_adk"):
+    ic = _runner_utils.new_invocation_context_for_live(
+        runner,
+        session,
+        live_request_queue=LiveRequestQueue(),
+        run_config=run_config,
+    )
+
+  assert ic.run_config is not None
+  assert ic.run_config.input_audio_transcription is None
+  assert "agent transfer" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_new_invocation_context_for_live_without_subagents_passthrough(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  runner = Runner(
+      app_name="test_app",
+      agent=_MockLiveAgent(name="solo"),
+      session_service=InMemorySessionService(),
+  )
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+  run_config = RunConfig(
+      response_modalities=[types.Modality.AUDIO],
+      output_audio_transcription=None,
+      input_audio_transcription=None,
+  )
+
+  with caplog.at_level(logging.WARNING, logger="google_adk"):
+    ic = _runner_utils.new_invocation_context_for_live(
+        runner,
+        session,
+        live_request_queue=LiveRequestQueue(),
+        run_config=run_config,
+    )
+
+  assert ic.run_config is not None
+  assert ic.run_config.output_audio_transcription is None
+  assert ic.run_config.input_audio_transcription is None
+  assert "agent transfer" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -250,3 +349,88 @@ async def test_run_node_live_notifies_plugins_when_the_root_node_fails():
       pass
 
   assert [str(e) for e in plugin.errors] == ["root node exploded"]
+
+
+@pytest.mark.asyncio
+async def test_merge_live_event_streams_interleaves_agent_and_queued_events():
+  """merge_live_event_streams drains both agent_events and ic._event_queue."""
+  agent = _MockLiveAgent(name="root")
+  runner = Runner(
+      app_name="test_app",
+      agent=agent,
+      session_service=InMemorySessionService(),
+  )
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+  ic = _runner_utils.new_invocation_context_for_live(
+      runner, session, live_request_queue=LiveRequestQueue()
+  )
+  ic._event_queue = asyncio.Queue()
+
+  async def _agent_stream() -> AsyncGenerator[Event, None]:
+    await ic._enqueue_event(Event(author="queued_tool"))
+    yield Event(author="agent_turn")
+
+  collected = [
+      event.author
+      async for event in _runner_utils._merge_live_event_streams(
+          runner, ic, _agent_stream()
+      )
+  ]
+  assert set(collected) == {"agent_turn", "queued_tool"}
+
+
+@pytest.mark.asyncio
+async def test_merge_live_event_streams_closes_while_queued_events_back_up():
+  """Stopping the merge early must not hang on events nobody will read.
+
+  A streaming tool can enqueue faster than the caller reads, which leaves the
+  queue pump parked on the full merged queue. When the caller stops, the merge
+  cancels that pump, and the pump must end rather than block on putting its
+  end-of-stream sentinel into a queue that is no longer drained.
+  """
+  agent = _MockLiveAgent(name="root")
+  runner = Runner(
+      app_name="test_app",
+      agent=agent,
+      session_service=InMemorySessionService(),
+  )
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+  ic = _runner_utils.new_invocation_context_for_live(
+      runner, session, live_request_queue=LiveRequestQueue()
+  )
+  ic._event_queue = asyncio.Queue()
+  for i in range(3):
+    # Partial, so the producer does not wait for each one to be consumed.
+    ic._event_queue.put_nowait(
+        (Event(author=f"streaming_tool_{i}", partial=True), None)
+    )
+
+  async def _agent_stream() -> AsyncGenerator[Event, None]:
+    # A live session stays open until the caller ends it.
+    await asyncio.Event().wait()
+    yield Event(author="unreachable")
+
+  async def _read_one_then_stop() -> str:
+    async with contextlib.aclosing(
+        _runner_utils._merge_live_event_streams(runner, ic, _agent_stream())
+    ) as events:
+      async for event in events:
+        return event.author
+    return ""
+
+  # Bounded, so a regression fails here instead of hanging the whole run. Not
+  # asyncio.wait_for: its cancellation unblocks the stuck pump, the merge's
+  # cleanup swallows that, and the call then returns as if nothing hung.
+  task = asyncio.create_task(_read_one_then_stop())
+  done, _ = await asyncio.wait({task}, timeout=5)
+  if not done:
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+      await task
+    pytest.fail("Closing the merge hung on the backed-up queue pump.")
+
+  assert task.result() == "streaming_tool_0"

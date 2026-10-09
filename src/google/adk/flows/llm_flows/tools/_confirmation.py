@@ -124,6 +124,12 @@ async def _resolve_confirmation_targets(
         dynamically_requested_fc_ids.add(fr.id)
 
   for event in events:
+    # If this confirmation request was authored by another agent, skip it to let that
+    # agent's processor handle it.
+    agent = invocation_context.agent
+    if agent and event.author and event.author != agent.name:
+      continue
+
     event_function_calls = event.get_function_calls()
     if not event_function_calls:
       continue
@@ -253,6 +259,8 @@ def _map_confirmation_to_original_fc_ids(
 class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
   """Handles tool confirmation information to build the LLM request."""
 
+  name = "request_confirmation"
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
@@ -268,6 +276,7 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     # Step 1: Find the last user-authored event and parse confirmation
     # responses from it.
     confirmations_by_fc_id: dict[str, ToolConfirmation] = {}
+    has_non_confirmation_response = False
     for k in range(len(events) - 1, -1, -1):
       event = events[k]
       if not event.author or event.author != "user":
@@ -278,6 +287,7 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
 
       for function_response in responses:
         if function_response.name != REQUEST_CONFIRMATION_FUNCTION_CALL_NAME:
+          has_non_confirmation_response = True
           continue
         if not function_response.id or function_response.response is None:
           continue
@@ -298,25 +308,50 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     # the session and the toolset have moved on since the approval, so the
     # strict checks in `_resolve_confirmation_targets` can now legitimately fail
     # and abort the invocation.
+    #
+    # The same confirmation response can also arrive again in a later user
+    # event (a client retry, a resubmitted form). The tool result from the
+    # first resume then sits before the last user event, so look for results
+    # after the first user event that answered each confirmation instead.
+    # The "requires confirmation" placeholder result is emitted before that
+    # answer, so it does not count.
     confirmation_to_original_fc_id = _map_confirmation_to_original_fc_ids(
         events, set(confirmations_by_fc_id.keys())
     )
-    responded_fc_ids: set[str] = set()
-    for event in reversed(events):
-      if event.author == "user":
-        break
+    original_to_confirmation_fc_id = {
+        original_fc_id: confirmation_fc_id
+        for confirmation_fc_id, original_fc_id in (
+            confirmation_to_original_fc_id.items()
+        )
+    }
+    answered_confirmation_fc_ids: set[str] = set()
+    consumed_confirmation_fc_ids: set[str] = set()
+    consumed_in_current_turn = False
+    for i, event in enumerate(events):
       for function_response in event.get_function_responses():
-        if function_response.id:
-          responded_fc_ids.add(function_response.id)
+        if not function_response.id:
+          continue
+        if event.author == "user":
+          if function_response.id in confirmations_by_fc_id:
+            answered_confirmation_fc_ids.add(function_response.id)
+        elif (
+            confirmation_fc_id := original_to_confirmation_fc_id.get(
+                function_response.id
+            )
+        ) and confirmation_fc_id in answered_confirmation_fc_ids:
+          consumed_confirmation_fc_ids.add(confirmation_fc_id)
+          if i > k:
+            consumed_in_current_turn = True
 
     confirmations_by_fc_id = {
         confirmation_fc_id: confirmation
         for confirmation_fc_id, confirmation in confirmations_by_fc_id.items()
-        if confirmation_to_original_fc_id.get(confirmation_fc_id)
-        not in responded_fc_ids
+        if confirmation_fc_id not in consumed_confirmation_fc_ids
     }
 
     if not confirmations_by_fc_id:
+      if not consumed_in_current_turn and not has_non_confirmation_response:
+        invocation_context.end_invocation = True
       return
 
     # Resolve all canonical tools and build tools_dict. Deliberately after the
