@@ -26,7 +26,7 @@ surfacing in review. Read the one reference for the topic you are touching.
 | --- | --- |
 | Adding a `.py` file; deciding public vs private; `__init__.py` and `__all__` | [visibility.md](references/visibility.md) |
 | Writing `import` lines; relative vs absolute; circular imports; `TYPE_CHECKING`; lazy imports | [imports.md](references/imports.md) |
-| Annotating args and returns; `Optional` vs `\| None`; keyword-only args; `isinstance`; asserts; mypy; `# type: ignore` and `cast` | [typing.md](references/typing.md) |
+| Annotating args and returns; `AgentMode` vs raw mode strings; `_NodePathBuilder`, `_BranchPath`, and `build_node`; `Optional` vs `\| None`; keyword-only args; `isinstance`; asserts; mypy; `# type: ignore` and `cast` | [typing.md](references/typing.md) |
 | Defining a Pydantic model, validator, private attribute, or on-wire payload | [pydantic.md](references/pydantic.md) |
 | Indentation, line length, quotes; running the formatter; what each hook checks | [formatting.md](references/formatting.md) |
 | Writing a docstring or an explanatory comment | [documentation.md](references/documentation.md) |

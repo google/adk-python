@@ -193,7 +193,38 @@ def _quote_unquoted_json_object_keys(value: str) -> str:
   return "".join(result)
 
 
-def _parse_tool_call_arguments(arguments: Any) -> Any:
+def _log_repaired_arguments(
+    description: str,
+    arguments: Any,
+    *,
+    function_name: str | None = None,
+    level: int = logging.WARNING,
+) -> None:
+  """Logs an argument repair, keeping the raw payload at debug level."""
+  if not logger.isEnabledFor(level):
+    return
+  if logger.isEnabledFor(logging.DEBUG):
+    if function_name:
+      logger.log(
+          level,
+          "%s for function '%s': %s",
+          description,
+          function_name,
+          arguments,
+      )
+    else:
+      logger.log(level, "%s: %s", description, arguments)
+  elif function_name:
+    logger.log(level, "%s for function '%s'", description, function_name)
+  else:
+    logger.log(level, "%s", description)
+
+
+def _parse_tool_call_arguments(
+    arguments: Any,
+    *,
+    function_name: str | None = None,
+) -> Any:
   """Parses LiteLLM tool call arguments.
 
   LiteLLM normally returns OpenAI-compatible tool call arguments as JSON
@@ -201,6 +232,16 @@ def _parse_tool_call_arguments(arguments: Any) -> Any:
   argument payload is a Python dict literal or has unquoted object keys. Keep
   strict JSON as the primary path, then repair only those complete
   object-literal shapes so ADK can still surface the intended function call.
+
+  Args:
+    arguments: The tool call arguments to parse.
+    function_name: Optional name of the function being called, for logging.
+
+  Returns:
+    The parsed arguments (typically a dict).
+
+  Raises:
+    json.JSONDecodeError: When the arguments cannot be parsed.
   """
   if not arguments:
     return {}
@@ -212,20 +253,79 @@ def _parse_tool_call_arguments(arguments: Any) -> Any:
   except json.JSONDecodeError as exc:
     json_error = exc
 
+  # Retry with Python literal eval (handles single-quoted keys, etc.).
   try:
-    return ast.literal_eval(arguments)
+    result = ast.literal_eval(arguments)
+    _log_repaired_arguments(
+        "Repaired non-strict JSON tool call arguments using literal_eval",
+        arguments,
+        function_name=function_name,
+        level=logging.DEBUG,
+    )
+    return result
   except (SyntaxError, ValueError):
     pass
 
+  # Retry after quoting unquoted JSON object keys.
   repaired_arguments = _quote_unquoted_json_object_keys(arguments)
   if repaired_arguments != arguments:
     try:
-      return json.loads(repaired_arguments)
+      result = json.loads(repaired_arguments)
+      _log_repaired_arguments(
+          "Repaired unquoted JSON object keys in tool call arguments",
+          arguments,
+          function_name=function_name,
+      )
+      return result
     except json.JSONDecodeError:
       try:
-        return ast.literal_eval(repaired_arguments)
+        result = ast.literal_eval(repaired_arguments)
+        _log_repaired_arguments(
+            "Repaired unquoted JSON object keys in tool call arguments using"
+            " literal_eval",
+            arguments,
+            function_name=function_name,
+        )
+        return result
       except (SyntaxError, ValueError):
         pass
+
+  # Retry after stripping Markdown code fences (```json ... ```).
+  stripped = arguments.strip()
+  if (
+      stripped.startswith("```")
+      and stripped.endswith("```")
+      and len(stripped) >= 6
+  ):
+    candidate = stripped[3:-3].strip()
+    if candidate.lower().startswith("json"):
+      candidate = candidate[4:].strip()
+    if candidate and candidate != arguments:
+      candidates = [candidate]
+      repaired_candidate = _quote_unquoted_json_object_keys(candidate)
+      if repaired_candidate != candidate:
+        candidates.append(repaired_candidate)
+      for text in candidates:
+        try:
+          result = json.loads(text)
+          _log_repaired_arguments(
+              "Repaired Markdown-fenced tool call arguments",
+              arguments,
+              function_name=function_name,
+          )
+          return result
+        except json.JSONDecodeError:
+          pass
+        try:
+          result = ast.literal_eval(text)
+          _log_repaired_arguments(
+              "Repaired Markdown-fenced tool call arguments using literal_eval",
+              arguments,
+              function_name=function_name,
+          )
+          return result
+        except (SyntaxError, ValueError):
+          pass
 
   raise json_error
 
@@ -858,9 +958,15 @@ def _extract_reasoning_value(message: Message | Delta | None) -> Any:
 
 
 _GEMMA4_MODEL_PATTERN = re.compile(r"gemma-?4")
+_STANDARD_TOOL_ROLE_PROVIDERS = frozenset({"openai", "azure", "lm_studio"})
 
 
-def _is_gemma4_model(model: str) -> bool:
+def _is_gemma4_model(
+    model: str,
+    *,
+    provider: str = "",
+    custom_llm_provider: Optional[str] = None,
+) -> bool:
   """Detects Gemma 4 models across naming conventions.
 
   Ollama uses "gemma4" (e.g. "ollama/gemma4:e2b"), while Hugging Face,
@@ -868,12 +974,34 @@ def _is_gemma4_model(model: str) -> bool:
   "google/gemma-4-26B-A4B"). Both need role='tool_responses' for tool
   results.
 
+  OpenAI-compatible endpoints (e.g. "openai/google/gemma-4-e4b",
+  "lm_studio/google/gemma-4-e4b") require the standard role='tool' and are
+  excluded.
+
   Args:
     model: The model name to check.
+    provider: The provider name if known.
+    custom_llm_provider: The custom LLM provider if specified.
 
   Returns:
-    True if the model is a Gemma 4 model, False otherwise.
+    True if the model is a Gemma 4 model requiring tool_responses, False
+    otherwise.
   """
+  effective_provider = next(
+      (
+          candidate
+          for raw in (
+              custom_llm_provider,
+              provider,
+              _get_provider_from_model(model),
+          )
+          # Skip 'litellm_proxy' because it only names the transport.
+          if raw and (candidate := raw.strip().lower()) != _PROXY_PROVIDER
+      ),
+      "",
+  )
+  if effective_provider in _STANDARD_TOOL_ROLE_PROVIDERS:
+    return False
   return bool(_GEMMA4_MODEL_PATTERN.search(model.lower()))
 
 
@@ -1012,6 +1140,9 @@ class FunctionChunk(BaseModel):
   name: Optional[str]
   args: Optional[str]
   index: Optional[int] = 0
+  # Gemini signs only some calls (the first of a parallel batch), so most
+  # chunks carry none.
+  thought_signature: bytes | None = None
 
 
 class TextChunk(BaseModel):
@@ -1446,6 +1577,7 @@ async def _content_to_message_param(
     model: str = "",
     upload_params: Optional[Dict[str, Any]] = None,
     is_proxied: bool = False,
+    custom_llm_provider: Optional[str] = None,
 ) -> Union[Message, list[Message]] | None:
   """Converts a types.Content to a litellm Message or list of Messages.
 
@@ -1458,6 +1590,7 @@ async def _content_to_message_param(
     model: The LiteLLM model string, used for provider-specific behavior.
     upload_params: Endpoint overrides forwarded to file uploads.
     is_proxied: Whether the request is routed through a LiteLLM Proxy.
+    custom_llm_provider: The custom LLM provider if specified.
 
   Returns:
     A litellm Message, a list of litellm Messages, or None if skipped.
@@ -1480,12 +1613,16 @@ async def _content_to_message_param(
           if isinstance(response, str)
           else _safe_json_serialize(response)
       )
-      # gemma4 requires role='tool_responses' for recognizing function_response parts as responses
-      # from the tool call, instead of OpenAI-compatible 'tool' role used by other models.
-      # Earlier Gemma versions before version 4 do not support tool use,
-      # so this check is intentionally scoped to only look for "gemma4" in the model name.
+      # gemma4 requires role='tool_responses' for recognizing function_response
+      # parts as responses from the tool call, except on OpenAI-compatible
+      # endpoints (openai, azure, lm_studio) which require the standard 'tool'
+      # role. Earlier Gemma versions before version 4 do not support tool use.
       tool_role: Literal["tool", "tool_responses"] = (
-          "tool_responses" if _is_gemma4_model(model) else "tool"
+          "tool_responses"
+          if _is_gemma4_model(
+              model, provider=provider, custom_llm_provider=custom_llm_provider
+          )
+          else "tool"
       )
       tool_messages.append(
           _tool_message(
@@ -1511,6 +1648,7 @@ async def _content_to_message_param(
         model=model,
         upload_params=upload_params,
         is_proxied=is_proxied,
+        custom_llm_provider=custom_llm_provider,
     )
     follow_up_messages = (
         follow_up if isinstance(follow_up, list) else [follow_up]
@@ -1657,7 +1795,12 @@ async def _content_to_message_param(
     )
 
 
-def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
+def _ensure_tool_results(
+    messages: List[Message],
+    model: str,
+    *,
+    custom_llm_provider: Optional[str] = None,
+) -> List[Message]:
   """Insert placeholder tool messages for missing tool results.
 
   LiteLLM-backed providers like OpenAI and Anthropic reject histories where an
@@ -1676,7 +1819,9 @@ def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
   healed_messages: List[Message] = []
   pending_tool_call_ids: List[str] = []
   expected_tool_role: Literal["tool", "tool_responses"] = (
-      "tool_responses" if _is_gemma4_model(model) else "tool"
+      "tool_responses"
+      if _is_gemma4_model(model, custom_llm_provider=custom_llm_provider)
+      else "tool"
   )
 
   for message in messages:
@@ -2710,6 +2855,9 @@ def _model_response_to_chunk(
               name=func_name,
               args=func_args,
               index=func_index,
+              thought_signature=_extract_thought_signature_from_tool_call(
+                  tool_call
+              ),
           ), finish_reason
 
     if finish_reason and not (message_content or tool_calls or reasoning_parts):
@@ -2878,7 +3026,10 @@ def _message_to_generate_content_response(
       if tool_call.type == "function":
         thought_signature = _extract_thought_signature_from_tool_call(tool_call)
         try:
-          args = _parse_tool_call_arguments(tool_call.function.arguments)
+          args = _parse_tool_call_arguments(
+              tool_call.function.arguments,
+              function_name=tool_call.function.name,
+          )
         except json.JSONDecodeError:
           args = None
         # Report the condition the way Gemini reports it natively instead of
@@ -3138,6 +3289,7 @@ async def _get_completion_inputs(
     upload_params: Optional[Dict[str, Any]] = None,
     *,
     is_proxied: bool = False,
+    custom_llm_provider: Optional[str] = None,
 ) -> Tuple[
     List[Message],
     Optional[List[Dict[str, Any]]],
@@ -3152,6 +3304,7 @@ async def _get_completion_inputs(
     model: The model string to use for determining provider-specific behavior.
     upload_params: Endpoint overrides forwarded to file uploads.
     is_proxied: Whether the request is routed through a LiteLLM Proxy.
+    custom_llm_provider: The custom LLM provider if specified.
 
   Returns:
     The litellm inputs (message list, tool dictionary, response format,
@@ -3171,6 +3324,7 @@ async def _get_completion_inputs(
         model=model,
         upload_params=upload_params,
         is_proxied=is_proxied,
+        custom_llm_provider=custom_llm_provider,
     )
     if isinstance(message_param_or_list, list):
       messages.extend(message_param_or_list)
@@ -3186,7 +3340,11 @@ async def _get_completion_inputs(
             content=system_instruction,
         ),
     )
-  messages = _ensure_tool_results(messages, model)
+  messages = _ensure_tool_results(
+      messages,
+      model,
+      custom_llm_provider=custom_llm_provider,
+  )
 
   # 2. Convert tool declarations
   tools: Optional[List[Dict[str, Any]]] = None
@@ -3697,6 +3855,9 @@ class LiteLlm(BaseLlm):
             is_proxied=_is_proxied_model(
                 effective_model, self._additional_args
             ),
+            custom_llm_provider=self._additional_args.get(
+                "custom_llm_provider"
+            ),
         )
     )
     normalized_messages = _normalize_ollama_chat_messages(
@@ -3779,7 +3940,7 @@ class LiteLlm(BaseLlm):
       # Track function calls by index
       function_calls: dict[int, dict[str, Any]] = (
           {}
-      )  # index -> {name, args_parts, id}
+      )  # index -> {name, args_parts, id, thought_signature}
       tool_call_trackers: Dict[int, _BraceDepthTracker] = {}
       completion_args["stream"] = True
       completion_args["stream_options"] = {"include_usage": True}
@@ -3803,22 +3964,41 @@ class LiteLlm(BaseLlm):
         for index, func_data in function_calls.items():
           if func_data["id"]:
             args = "".join(func_data["args_parts"])
+            tool_call_arguments: Any = args
             try:
-              _parse_tool_call_arguments(args)
+              tool_call_arguments = _parse_tool_call_arguments(
+                  args,
+                  function_name=func_data["name"],
+              )
             except json.JSONDecodeError:
               has_incomplete_tool_call_args = True
               continue
-            tool_calls.append(
-                ChatCompletionMessageToolCall(
-                    type="function",
-                    id=func_data["id"],
-                    function=ChatCompletionToolCallFunctionChunk(
-                        name=func_data["name"],
-                        arguments=args,
+            tool_call = ChatCompletionMessageToolCall(
+                type="function",
+                id=func_data["id"],
+                function=ChatCompletionToolCallFunctionChunk(
+                    name=func_data["name"],
+                    # Serialise a repaired dict to strict JSON so the
+                    # downstream parse finds valid JSON and logs no second
+                    # repair. A non-dict must stay the original string.
+                    arguments=(
+                        json.dumps(tool_call_arguments)
+                        if isinstance(tool_call_arguments, dict)
+                        else args
                     ),
-                    index=index,
-                )
+                ),
+                index=index,
             )
+            # Put the signature back where a non-streamed tool call carries
+            # it, so the conversion below restores it onto the part. Gemini 3
+            # rejects the next request when a call in the current turn has
+            # lost its signature.
+            signature = func_data["thought_signature"]
+            if signature:
+              tool_call["extra_content"] = {
+                  "google": {"thought_signature": signature}
+              }
+            tool_calls.append(tool_call)
 
         if has_incomplete_tool_call_args:
           if finish_reason == "length":
@@ -3927,10 +4107,19 @@ class LiteLlm(BaseLlm):
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index
             if index not in function_calls:
-              function_calls[index] = {"name": "", "args_parts": [], "id": None}
+              function_calls[index] = {
+                  "name": "",
+                  "args_parts": [],
+                  "id": None,
+                  "thought_signature": None,
+              }
 
             if chunk.name:
               function_calls[index]["name"] += chunk.name
+            if chunk.thought_signature:
+              function_calls[index][
+                  "thought_signature"
+              ] = chunk.thought_signature
             if chunk.args:
               args_parts = function_calls[index]["args_parts"]
               args_parts.append(chunk.args)

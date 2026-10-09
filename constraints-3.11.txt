@@ -120,6 +120,7 @@ attrs==26.1.0
     #   aiohttp
     #   e2b
     #   jsonschema
+    #   opensandbox
     #   referencing
 authlib==1.7.2
     # via
@@ -375,6 +376,10 @@ durationpy==0.10
     #   -c constraints-3.11.txt.stable.tmp
     #   kubernetes
 e2b==2.34.0
+    # via
+    #   -c constraints-3.11.txt.stable.tmp
+    #   google-adk (pyproject.toml)
+elevenlabs==2.66.0
     # via
     #   -c constraints-3.11.txt.stable.tmp
     #   google-adk (pyproject.toml)
@@ -801,6 +806,7 @@ httpx==0.28.1
     #   crewai-core
     #   daytona
     #   e2b
+    #   elevenlabs
     #   google-adk
     #   google-adk-community
     #   google-genai
@@ -812,11 +818,13 @@ httpx==0.28.1
     #   llama-index-core
     #   mcp
     #   openai
+    #   opensandbox
 httpx-sse==0.4.3
     # via
     #   -c constraints-3.11.txt.stable.tmp
     #   langchain-community
     #   mcp
+    #   opensandbox
 httpx-ws==0.9.0
     # via
     #   -c constraints-3.11.txt.stable.tmp
@@ -1201,6 +1209,10 @@ openpyxl==3.1.5
     #   -c constraints-3.11.txt.stable.tmp
     #   google-adk (pyproject.toml)
     #   crewai
+opensandbox==0.1.16
+    # via
+    #   -c constraints-3.11.txt.stable.tmp
+    #   google-adk (pyproject.toml)
 opentelemetry-api==1.42.1
     # via
     #   -c constraints-3.11.txt.stable.tmp
@@ -1563,6 +1575,7 @@ pydantic==2.12.5
     #   daytona-api-client-async
     #   daytona-toolbox-api-client
     #   daytona-toolbox-api-client-async
+    #   elevenlabs
     #   fastapi
     #   google-adk
     #   google-antigravity
@@ -1583,11 +1596,13 @@ pydantic==2.12.5
     #   llama-index-workflows
     #   mcp
     #   openai
+    #   opensandbox
     #   pydantic-settings
     #   toolbox-core
 pydantic-core==2.41.5
     # via
     #   -c constraints-3.11.txt.stable.tmp
+    #   elevenlabs
     #   instructor
     #   pydantic
 pydantic-settings==2.10.1
@@ -1700,6 +1715,7 @@ python-dateutil==2.9.0.post0
     #   kubernetes
     #   lance-namespace-urllib3-client
     #   oci
+    #   opensandbox
     #   pandas
     #   pendulum
     #   posthog
@@ -1791,6 +1807,7 @@ requests==2.34.2
     #   google-adk (pyproject.toml)
     #   crewai-tools
     #   docker
+    #   elevenlabs
     #   flit
     #   google-adk
     #   google-api-core
@@ -2129,6 +2146,7 @@ typing-extensions==4.16.0
     #   daytona-toolbox-api-client
     #   daytona-toolbox-api-client-async
     #   e2b
+    #   elevenlabs
     #   fastapi
     #   google-adk
     #   google-cloud-agentplatform
@@ -2254,6 +2272,7 @@ websockets==15.0.1
     # via
     #   -c constraints-3.11.txt.stable.tmp
     #   google-adk (pyproject.toml)
+    #   elevenlabs
     #   google-adk
     #   google-antigravity
     #   google-genai

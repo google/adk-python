@@ -60,6 +60,7 @@ from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
 from google.adk.models.lite_llm import _model_response_to_chunk
 from google.adk.models.lite_llm import _model_response_to_generate_content_response
 from google.adk.models.lite_llm import _parse_deepseek_tool_calls_from_text
+from google.adk.models.lite_llm import _parse_tool_call_arguments
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
 from google.adk.models.lite_llm import _redact_file_uri_for_log
 from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
@@ -4208,6 +4209,142 @@ async def test_generate_content_async_cleans_an_embedded_signature_id():
   assert part.thought_signature == b"embedded_sig"
 
 
+def _streamed_tool_call_chunk(
+    *,
+    index,
+    call_id=None,
+    name=None,
+    arguments=None,
+    signature=None,
+    finish_reason=None,
+):
+  """One streamed delta with a tool call, signed the way Vertex signs it."""
+  extra = {}
+  if signature is not None:
+    extra["extra_content"] = {
+        "google": {"thought_signature": base64.b64encode(signature).decode()}
+    }
+  return ModelResponseStream(
+      model="test_model",
+      choices=[
+          StreamingChoices(
+              finish_reason=finish_reason,
+              delta=Delta(
+                  role="assistant",
+                  tool_calls=[
+                      ChatCompletionDeltaToolCall(
+                          type="function",
+                          id=call_id,
+                          function=Function(name=name, arguments=arguments),
+                          index=index,
+                          **extra,
+                      )
+                  ],
+              ),
+          )
+      ],
+  )
+
+
+def _streamed_finish_chunk(finish_reason="tool_calls"):
+  return ModelResponseStream(
+      model="test_model",
+      choices=[StreamingChoices(finish_reason=finish_reason, delta=Delta())],
+  )
+
+
+def test_model_response_to_chunk_keeps_thought_signature():
+  """A streamed tool call's signature is carried on its FunctionChunk."""
+  chunks = list(
+      _model_response_to_chunk(
+          _streamed_tool_call_chunk(
+              index=0,
+              call_id="call_1",
+              name="get_weather",
+              arguments='{"city": "Oslo"}',
+              signature=b"streamed_sig",
+          )
+      )
+  )
+
+  function_chunk = chunks[0][0]
+  assert isinstance(function_chunk, FunctionChunk)
+  assert function_chunk.thought_signature == b"streamed_sig"
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_keeps_thought_signature(
+    mock_completion, lite_llm_instance
+):
+  """The signature on the first fragment survives assembly and goes back out."""
+  mock_completion.return_value = iter([
+      _streamed_tool_call_chunk(
+          index=0,
+          call_id="call_1",
+          name="get_weather",
+          arguments='{"city": ',
+          signature=b"streamed_sig",
+      ),
+      _streamed_tool_call_chunk(index=0, arguments='"Oslo"}'),
+      _streamed_finish_chunk(),
+  ])
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  final_response = responses[-1]
+  assert not final_response.partial
+  part = final_response.content.parts[0]
+  assert part.function_call.id == "call_1"
+  assert part.function_call.args == {"city": "Oslo"}
+  assert part.thought_signature == b"streamed_sig"
+  # The follow-up request is the one Gemini 3 rejects without a signature.
+  outbound = await _content_to_message_param(final_response.content)
+  sig_b64 = base64.b64encode(b"streamed_sig").decode()
+  assert outbound["tool_calls"][0]["extra_content"] == {
+      "google": {"thought_signature": sig_b64}
+  }
+
+
+@pytest.mark.asyncio
+async def test_streaming_parallel_tool_calls_keep_signature_per_call(
+    mock_completion, lite_llm_instance
+):
+  """Gemini signs only the first parallel call; the second stays unsigned."""
+  mock_completion.return_value = iter([
+      _streamed_tool_call_chunk(
+          index=0,
+          call_id="call_1",
+          name="get_weather",
+          arguments='{"city": "Oslo"}',
+          signature=b"first_sig",
+      ),
+      _streamed_tool_call_chunk(
+          index=1,
+          call_id="call_2",
+          name="get_weather",
+          arguments='{"city": "Bergen"}',
+      ),
+      _streamed_finish_chunk(),
+  ])
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  parts = responses[-1].content.parts
+  assert [p.function_call.id for p in parts] == ["call_1", "call_2"]
+  assert parts[0].thought_signature == b"first_sig"
+  assert parts[1].thought_signature is None
+
+
 def test_message_to_generate_content_response_no_thought_signature():
   """Parts without thought_signature have thought_signature=None."""
   message = ChatCompletionAssistantMessage(
@@ -6439,6 +6576,114 @@ async def test_streaming_tool_call_complete_with_length_finish_reason(
 
 
 @pytest.mark.asyncio
+async def test_streaming_tool_call_repaired_with_length_finish_reason_warns_once(
+    mock_completion, lite_llm_instance, caplog
+):
+  """Tests that repaired tool call arguments with finish_reason='length' warn only once."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_456",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{test_arg: "value"}',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="length", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  with caplog.at_level(logging.WARNING):
+    responses = [
+        response
+        async for response in lite_llm_instance.generate_content_async(
+            LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+        )
+    ]
+
+  assert len(responses) == 2
+  final_response = responses[1]
+  assert final_response.content.parts[0].function_call.args == {
+      "test_arg": "value"
+  }
+  repair_warnings = [
+      r
+      for r in caplog.records
+      if r.levelno == logging.WARNING and "Repaired" in r.message
+  ]
+  assert len(repair_warnings) == 1
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_repaired_with_tool_calls_finish_reason_warns_once(
+    mock_completion, lite_llm_instance, caplog
+):
+  """Tests that repaired tool call arguments with finish_reason='tool_calls' warn only once."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_456",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{test_arg: "value"}',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  with caplog.at_level(logging.WARNING):
+    responses = [
+        response
+        async for response in lite_llm_instance.generate_content_async(
+            LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+        )
+    ]
+
+  assert len(responses) == 2
+  final_response = responses[1]
+  assert final_response.content.parts[0].function_call.args == {
+      "test_arg": "value"
+  }
+  repair_warnings = [
+      r
+      for r in caplog.records
+      if r.levelno == logging.WARNING and "Repaired" in r.message
+  ]
+  assert len(repair_warnings) == 1
+
+
+@pytest.mark.asyncio
 async def test_streaming_tool_call_malformed_arguments_is_refused(
     mock_completion, lite_llm_instance
 ):
@@ -6487,6 +6732,113 @@ async def test_streaming_tool_call_malformed_arguments_is_refused(
   assert final_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
   # The tool must not run with arguments the model never finished sending.
   assert final_response.content is None
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_non_object_json_arguments_reports_malformed(
+    mock_completion, lite_llm_instance
+):
+  """Streamed JSON arguments that decode to a non-object keep streamed text and drop tool call."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      content="Looking that up.",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_789",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='["test_arg", "test_value"]',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 3
+  final_response = responses[-1]
+  assert final_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert (
+      final_response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  )
+  assert "test_function" in final_response.error_message
+  assert [part.text for part in final_response.content.parts] == [
+      "Looking that up."
+  ]
+  assert not any(part.function_call for part in final_response.content.parts)
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_non_object_json_arguments_with_length_reports_max_tokens(
+    mock_completion, lite_llm_instance
+):
+  """Streamed non-object JSON arguments with finish_reason='length' keep streamed text."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      content="Looking that up.",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_789",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='["test_arg", "test_value"]',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="length", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 3
+  final_response = responses[-1]
+  assert final_response.error_code == types.FinishReason.MAX_TOKENS
+  assert final_response.finish_reason == types.FinishReason.MAX_TOKENS
+  assert "Maximum tokens reached" in final_response.error_message
+  assert "test_function" in final_response.error_message
+  assert [part.text for part in final_response.content.parts] == [
+      "Looking that up."
+  ]
+  assert not any(part.function_call for part in final_response.content.parts)
 
 
 @pytest.mark.asyncio
@@ -10492,3 +10844,119 @@ async def test_generate_content_async_custom_llm_provider_litellm_proxy_upload(
       api_base="http://proxy:4000",
       api_key="proxy-key",
   )
+
+
+class TestParseToolCallArguments:
+  """Tests for _parse_tool_call_arguments."""
+
+  @pytest.mark.parametrize(
+      "arguments,expected",
+      [
+          ('{"a": 1}', {"a": 1}),
+          (None, {}),
+          ("", {}),
+          ({"a": 1}, {"a": 1}),
+          ("{a: 1}", {"a": 1}),
+          ('```json\n{"a": 1}\n```', {"a": 1}),
+          ('```JSON\n{"a": 1}\n```', {"a": 1}),
+          ("```\n{a: 1}\n```", {"a": 1}),
+          ('{"a": 1,}', {"a": 1}),
+          ("{'a': 1}", {"a": 1}),
+          ("{}", {}),
+          ('{"a": {"b": 2}}', {"a": {"b": 2}}),
+          ('{"a": [1, 2, 3]}', {"a": [1, 2, 3]}),
+          ('{"a": "he\\"llo"}', {"a": 'he"llo'}),
+      ],
+  )
+  def test_valid_and_repaired_arguments(self, arguments, expected):
+    """Tool call arguments parse valid JSON and repair recoverable formats."""
+    assert _parse_tool_call_arguments(arguments) == expected
+
+  @pytest.mark.parametrize(
+      "arguments",
+      [
+          "{bad",
+          '{"a": 1} extra stuff',
+          '{"amount": 100} {"amount": 100000}',
+          'I will call the tool with {"path": "/x"}',
+          'Here is the result: ```json\n{"a": 1}\n```',
+          "```json" + "\n" * 10000,
+      ],
+  )
+  def test_ambiguous_and_malformed_arguments_raise(self, arguments):
+    """Ambiguous or unrecoverable inputs raise JSONDecodeError."""
+    with pytest.raises(json.JSONDecodeError):
+      _parse_tool_call_arguments(arguments)
+
+  def test_repaired_arguments_log_warning_without_raw_payload(self, caplog):
+    """Repaired non-strict JSON arguments emit a warning without raw payload."""
+    with caplog.at_level(logging.WARNING):
+      _parse_tool_call_arguments("{a: 1}", function_name="test_fn")
+    assert "Repaired" in caplog.text
+    assert "test_fn" in caplog.text
+    assert "{a: 1}" not in caplog.text
+
+  def test_repaired_arguments_log_debug_with_raw_payload(self, caplog):
+    """Repaired non-strict JSON arguments emit warning with payload at debug level."""
+    with caplog.at_level(logging.DEBUG):
+      _parse_tool_call_arguments("{a: 1}", function_name="test_fn")
+    assert "test_fn" in caplog.text
+    assert "{a: 1}" in caplog.text
+    warning_records = [
+        r for r in caplog.records if r.levelno == logging.WARNING
+    ]
+    assert len(warning_records) == 1
+    assert "{a: 1}" in warning_records[0].message
+
+  def test_repaired_arguments_without_function_name(self, caplog):
+    """Repaired arguments log correctly without function_name."""
+    with caplog.at_level(logging.WARNING):
+      _parse_tool_call_arguments("{a: 1}")
+    assert "Repaired" in caplog.text
+    assert "{a: 1}" not in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG):
+      _parse_tool_call_arguments("{a: 1}")
+    warning_records = [
+        r for r in caplog.records if r.levelno == logging.WARNING
+    ]
+    assert len(warning_records) == 1
+    assert "{a: 1}" in warning_records[0].message
+
+  def test_literal_eval_layer_logs_debug_not_warning(self, caplog):
+    """Python dict literal arguments log at debug rather than warning."""
+    with caplog.at_level(logging.WARNING):
+      _parse_tool_call_arguments("{'a': 1}", function_name="test_fn")
+    assert not any(r.levelno == logging.WARNING for r in caplog.records)
+
+    with caplog.at_level(logging.DEBUG):
+      _parse_tool_call_arguments("{'a': 1}", function_name="test_fn")
+    assert not any(r.levelno == logging.WARNING for r in caplog.records)
+    debug_records = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.DEBUG and "literal_eval" in r.message
+    ]
+    assert len(debug_records) == 1
+    assert "test_fn" in debug_records[0].message
+    assert "{'a': 1}" in debug_records[0].message
+
+  def test_literal_eval_without_function_name_logs_debug(self, caplog):
+    """Python dict literal without function_name logs at debug."""
+    with caplog.at_level(logging.DEBUG):
+      _parse_tool_call_arguments("{'a': 1}")
+    assert not any(r.levelno == logging.WARNING for r in caplog.records)
+    debug_records = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.DEBUG and "literal_eval" in r.message
+    ]
+    assert len(debug_records) == 1
+    assert "{'a': 1}" in debug_records[0].message
+
+  def test_strict_json_does_not_log_warning(self, caplog):
+    """Strict JSON arguments parse without warning logs."""
+    with caplog.at_level(logging.WARNING):
+      _parse_tool_call_arguments('{"a": 1}', function_name="test_fn")
+    assert "Repaired" not in caplog.text

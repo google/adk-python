@@ -1033,6 +1033,13 @@ def adk_services_options(*, default_use_local_storage: bool = True):
     help="Optional. Initial state for the run as a JSON string.",
 )
 @click.option(
+    "--state_file",
+    type=click.Path(
+        exists=True, dir_okay=False, file_okay=True, resolve_path=True
+    ),
+    help="Optional. Path to a JSON file containing initial state for the run.",
+)
+@click.option(
     "--timeout",
     type=str,
     help="Optional. Timeout for a single turn or query (e.g., 30s, 5m).",
@@ -1080,6 +1087,7 @@ def cli_run(
     use_local_storage: bool = True,
     default_llm_model: Optional[str] = None,
     log_level: str = "INFO",
+    state_file: Optional[str] = None,
 ):
   """Runs an agent. If no query is provided, enters interactive mode.
 
@@ -1096,6 +1104,25 @@ def cli_run(
   agent_parent_folder = os.path.dirname(agent)
   agent_folder_name = os.path.basename(agent)
 
+  if state is not None and state_file is not None:
+    raise click.UsageError(
+        "Options 'state' and 'state_file' cannot be set together."
+    )
+
+  state_str = state
+  if state_file is not None:
+    try:
+      state_str = Path(state_file).read_text(encoding="utf-8")
+      json.loads(state_str)
+    except OSError as e:
+      raise click.ClickException(
+          f"Failed to read --state_file '{state_file}': {e}"
+      ) from e
+    except json.JSONDecodeError as e:
+      raise click.ClickException(
+          f"Invalid JSON for --state_file '{state_file}': {e}"
+      ) from e
+
   # If query is provided, we run in single-step mode (JSONL output)
   if query is not None:
     from .cli import run_once_cli
@@ -1105,7 +1132,7 @@ def cli_run(
             agent_parent_dir=agent_parent_folder,
             agent_folder_name=agent_folder_name,
             query=query,
-            state_str=state,
+            state_str=state_str,
             session_id=session_id,
             replay=replay,
             timeout=timeout,
@@ -1131,7 +1158,7 @@ def cli_run(
             saved_session_file=resume,
             save_session=save_session,
             session_id=session_id,
-            state_str=state,
+            state_str=state_str,
             timeout=timeout,
             in_memory=in_memory,
             jsonl=jsonl,
@@ -2977,6 +3004,18 @@ def cli_migrate_session(
         " `build_config.worker_pool` in `.agent_engine_config.json`."
     ),
 )
+@click.option(
+    "--service_account",
+    type=str,
+    default=None,
+    help=(
+        "Optional. Google Cloud service account email used as the Agent Engine"
+        " runtime identity (e.g. my-agent@my-project.iam.gserviceaccount.com)."
+        " Overrides GOOGLE_CLOUD_SERVICE_ACCOUNT in the .env file and"
+        " service_account in .agent_engine_config.json. When omitted, Agent"
+        " Engine uses its default service agent."
+    ),
+)
 @adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
@@ -3014,6 +3053,7 @@ def cli_deploy_agent_engine(
     worker_pool: str | None = None,
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: str | None = None,
+    service_account: str | None = None,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -3032,6 +3072,12 @@ def cli_deploy_agent_engine(
     # With a private Cloud Build worker pool (VPC-SC / private network)
     adk deploy agent_engine --project=[project] --region=[region]
       --worker_pool=projects/[project]/locations/[region]/workerPools/[pool]
+      my_agent
+
+    \b
+    # With a custom runtime service account
+    adk deploy agent_engine --project=[project] --region=[region]
+      --service_account=my-agent@[project].iam.gserviceaccount.com
       my_agent
   """
   # The deploy path logs progress on both `agentplatform_genai.runtimes` and
@@ -3072,6 +3118,7 @@ def cli_deploy_agent_engine(
         adk_version=adk_version,
         extra_packages=list(extra_packages),
         worker_pool=worker_pool,
+        service_account=service_account,
     )
   except (click.ClickException, click.Abort):
     raise

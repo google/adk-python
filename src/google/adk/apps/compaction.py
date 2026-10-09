@@ -77,7 +77,7 @@ def _serialized_size(events: list[Event]) -> int:
   for event in events:
     content = _request_content(event)
     if content is not None:
-      total += len(content.model_dump_json(exclude_none=True))
+      total += len(content.model_dump_json(exclude_none=True, fallback=str))
   return total
 
 

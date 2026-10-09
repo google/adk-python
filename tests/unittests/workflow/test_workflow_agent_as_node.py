@@ -20,7 +20,6 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext as BaseInvocationContext
 from google.adk.events.event import Event
-from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.workflow import START
@@ -28,6 +27,7 @@ from google.adk.workflow._workflow import Workflow
 from google.genai import types
 import pytest
 
+from .workflow_testing_utils import create_runner
 from .workflow_testing_utils import InputCapturingNode
 from .workflow_testing_utils import simplify_events_with_node
 
@@ -97,7 +97,7 @@ async def test_run_async_with_agent_nodes(request: pytest.FixtureRequest):
       ],
   )
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   msg = types.Content(parts=[types.Part(text='start')], role='user')
@@ -128,7 +128,7 @@ async def test_run_async_with_agent_node_piping_data(
       ],
   )
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   msg = types.Content(parts=[types.Part(text='start')], role='user')
