@@ -206,7 +206,14 @@ async def test_native_stdio_tool_error_is_not_success(
   assert results[0].status == InferenceStatus.SUCCESS
   assert ready.read_text() == 'ready\n'
   assert calls.read_text().splitlines() == ['checked']
-  response = model.requests[-1].contents[-1].parts[0].function_response
+  responses = [
+      part.function_response
+      for content in model.requests[-1].contents
+      for part in content.parts
+      if part.function_response is not None
+  ]
+  assert len(responses) == 1 and responses[0].name == 'probe'
+  response = responses[0]
   assert response.response['isError'] is True
   assert response.response['content'][0]['text'] == 'native-result:checked'
   close.assert_awaited_once_with()
