@@ -458,9 +458,12 @@ class GcsArtifactService(BaseArtifactService):
               display_name=display_name,
           )
       )
-    return types.Part.from_bytes(
+    artifact = types.Part.from_bytes(
         data=artifact_bytes, mime_type=blob.content_type
     )
+    if artifact_util._is_rewind_tombstone(artifact):
+      return None
+    return artifact
 
   def _list_artifact_keys(
       self, app_name: str, user_id: str, session_id: Optional[str]
