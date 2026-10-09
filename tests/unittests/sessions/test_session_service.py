@@ -21,6 +21,7 @@ import inspect
 import os
 from pathlib import Path
 import sqlite3
+import threading
 import time
 from typing import Any
 from unittest import mock
@@ -367,6 +368,87 @@ async def test_sqlite_session_service_accepts_absolute_sqlite_urls(tmp_path):
   assert abs_db_path.exists()
 
 
+@pytest.mark.parametrize(
+    'db_path', [':memory:', '', 'sqlite:///', 'sqlite:///:memory:']
+)
+async def test_sqlite_session_service_memory_db_path_keeps_sessions_and_events(
+    db_path: str,
+) -> None:
+  """SqliteSessionService retains in-memory and empty-path databases across operations."""
+  threads_before = set(threading.enumerate())
+  session_service = SqliteSessionService(db_path=db_path)
+  try:
+    session = await session_service.create_session(
+        app_name='app', user_id='user', session_id='session', state={'count': 0}
+    )
+    event = Event(
+        author='agent',
+        invocation_id='invocation',
+        actions=EventActions(state_delta={'count': 1}),
+    )
+    await session_service.append_event(session, event)
+
+    stored_session = await session_service.get_session(
+        app_name='app', user_id='user', session_id=session.id
+    )
+
+    new_threads = set(threading.enumerate()) - threads_before
+    assert new_threads
+    assert all(thread.daemon for thread in new_threads)
+    assert stored_session is not None
+    assert stored_session.state == {'count': 1}
+    assert [stored_event.id for stored_event in stored_session.events] == [
+        event.id
+    ]
+
+    await session_service.close()
+    assert (
+        await session_service.get_session(
+            app_name='app', user_id='user', session_id=session.id
+        )
+        is None
+    )
+  finally:
+    await session_service.close()
+
+
+async def test_sqlite_session_service_memory_rolls_back_failed_operation() -> (
+    None
+):
+  """Failed operations on a shared in-memory connection roll back partial state writes."""
+  session_service = SqliteSessionService(db_path=':memory:')
+  try:
+    session = await session_service.create_session(
+        app_name='app',
+        user_id='user',
+        session_id='session',
+        state={'app:a': 1, 'user:u': 1, 's': 1},
+    )
+    event = Event(id='event-1', author='agent', invocation_id='inv-1')
+    await session_service.append_event(session, event)
+
+    duplicate_event = Event(
+        id='event-1',
+        author='agent',
+        invocation_id='inv-2',
+        actions=EventActions(state_delta={'app:a': 99, 'user:u': 99, 's': 99}),
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+      await session_service.append_event(session, duplicate_event)
+
+    await session_service.create_session(
+        app_name='app', user_id='user', session_id='other'
+    )
+    stored_session = await session_service.get_session(
+        app_name='app', user_id='user', session_id='session'
+    )
+
+    assert stored_session is not None
+    assert stored_session.state == {'app:a': 1, 'user:u': 1, 's': 1}
+  finally:
+    await session_service.close()
+
+
 @pytest.mark.asyncio
 async def test_get_empty_session(session_service):
   assert not await session_service.get_session(
@@ -627,6 +709,32 @@ async def test_list_sessions_all_users(session_service):
   assert sessions_all_map['session1a'].state == {'key': 'value1a'}
   assert sessions_all_map['session1b'].state == {'key': 'value1b'}
   assert sessions_all_map['session2a'].state == {'key': 'value2a'}
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_with_empty_user_id_lists_only_that_user(
+    session_service,
+):
+  """An empty user id is a user id, not a request for every user."""
+  app_name = 'my_app'
+  await session_service.create_session(
+      app_name=app_name, user_id='', session_id='empty_user_session'
+  )
+  await session_service.create_session(
+      app_name=app_name,
+      user_id='other_user',
+      session_id='other_user_session',
+      state={'user:name': 'other'},
+  )
+
+  list_sessions_response = await session_service.list_sessions(
+      app_name=app_name, user_id=''
+  )
+
+  assert [s.id for s in list_sessions_response.sessions] == [
+      'empty_user_session'
+  ]
+  assert list_sessions_response.sessions[0].state == {}
 
 
 @pytest.mark.asyncio
@@ -1161,6 +1269,63 @@ async def test_user_state_none_valued_delta_is_stored_not_dropped(
   assert session1b.state.get('user:pref') is None
   assert 'user:pref' in session1.state
   assert session1.state.get('user:pref') is None
+
+
+# Floats that need more than 15 significant digits to read back unchanged.
+_EXACT_NUMBERS = {
+    'ratio': 0.1 + 0.2,
+    'epoch_seconds': 1727500000.1234567,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prefix', ['', 'user:', 'app:'])
+async def test_numbers_survive_unrelated_state_delta(session_service, prefix):
+  """Stored numbers read back unchanged after an unrelated state_delta."""
+  numbers = {prefix + key: value for key, value in _EXACT_NUMBERS.items()}
+  session = await session_service.create_session(
+      app_name='my_app', user_id='u1', session_id='s1', state=numbers
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={prefix + 'other': 1}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  assert {key: reloaded.state[key] for key in numbers} == numbers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prefix', ['', 'user:', 'app:'])
+async def test_number_valued_state_delta_is_stored_exactly(
+    session_service, prefix
+):
+  """Numbers written by a state_delta read back unchanged."""
+  numbers = {prefix + key: value for key, value in _EXACT_NUMBERS.items()}
+  # Seed the scope so the delta is merged into existing state.
+  session = await session_service.create_session(
+      app_name='my_app',
+      user_id='u1',
+      session_id='s1',
+      state={prefix + 'seed': 1},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta=numbers),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  assert {key: reloaded.state[key] for key in numbers} == numbers
 
 
 @pytest.mark.asyncio
@@ -3099,6 +3264,169 @@ async def test_returned_session_scoped_state_uses_configured_copy_depth(
     override_feature_enabled(
         FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, False
     )
+
+
+class _CountsDeepCopies:
+  """A value that records how often it is deep-copied."""
+
+  def __init__(self):
+    self.copies = 0
+
+  def __deepcopy__(self, memo):
+    self.copies += 1
+    return _CountsDeepCopies()
+
+
+def _mutable_object_ids(value: Any, seen: set[int] | None = None) -> set[int]:
+  """Returns the ids of every container and model reachable from value."""
+  seen = set() if seen is None else seen
+  if isinstance(value, (str, int, float, bytes, enum.Enum, type(None))):
+    return seen
+  if id(value) in seen:
+    return seen
+  seen.add(id(value))
+  if isinstance(value, dict):
+    children = list(value.values())
+  elif isinstance(value, (list, tuple, set, frozenset)):
+    children = list(value)
+  else:
+    children = list(vars(value).values())
+    children.append(getattr(value, '__pydantic_private__', None))
+  for child in children:
+    _mutable_object_ids(child, seen)
+  return seen
+
+
+@pytest.mark.asyncio
+async def test_in_memory_get_session_copies_only_selected_events():
+  """A filtered read pays to copy the events it returns and no others."""
+  service = InMemorySessionService()
+  session = await service.create_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+  old_value = _CountsDeepCopies()
+  await service.append_event(
+      session, Event(author='user', custom_metadata={'v': old_value})
+  )
+  await service.append_event(session, Event(author='user', invocation_id='i2'))
+
+  fetched = await service.get_session(
+      app_name='my_app',
+      user_id='u1',
+      session_id='s1',
+      config=GetSessionConfig(num_recent_events=1),
+  )
+
+  assert [e.invocation_id for e in fetched.events] == ['i2']
+  assert old_value.copies == 0
+
+
+@pytest.mark.asyncio
+async def test_in_memory_get_session_events_share_nothing_with_storage():
+  """A returned event equals the stored one but shares no object with it."""
+  service = InMemorySessionService()
+  session = await service.create_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+  event = Event(
+      author='agent',
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(text='hi', part_metadata={'k': ['v']}),
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name='tool',
+                      args={'a': {'b': 1}},
+                      partial_args=[types.PartialArg(json_path='$.a')],
+                  )
+              ),
+          ],
+      ),
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_tokens_details=[
+              types.ModalityTokenCount(
+                  modality=types.MediaModality.TEXT, token_count=3
+              )
+          ],
+      ),
+      output_transcription=types.Transcription(text='hi'),
+      actions=EventActions(state_delta={'k': {'n': [1]}}),
+      long_running_tool_ids={'f1'},
+  )
+  await service.append_event(session, event)
+
+  fetched = await service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  stored_event = service.sessions['my_app']['u1']['s1'].events[0]
+  assert fetched.events[0] == stored_event
+  assert _mutable_object_ids(fetched.events[0]).isdisjoint(
+      _mutable_object_ids(stored_event)
+  )
+
+
+@pytest.mark.asyncio
+async def test_in_memory_get_session_keeps_shared_state_values_shared():
+  """Two state keys holding one value still hold one value after a read."""
+  service = InMemorySessionService()
+  await service.create_session(app_name='my_app', user_id='u1', session_id='s1')
+  stored = service.sessions['my_app']['u1']['s1']
+  stored.state['x'] = stored.state['y'] = {'n': [1]}
+
+  fetched = await service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  assert fetched.state['x'] is fetched.state['y']
+  assert fetched.state['x'] is not stored.state['x']
+
+
+@pytest.mark.asyncio
+async def test_in_memory_get_session_copies_mock_events():
+  """A test that stores a mock event gets a copy of it back, not the mock."""
+  service = InMemorySessionService()
+  await service.create_session(app_name='my_app', user_id='u1', session_id='s1')
+  stored_event = mock.Mock(spec=Event)
+  service.sessions['my_app']['u1']['s1'].events.append(stored_event)
+
+  fetched = await service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  assert isinstance(fetched.events[0], mock.Mock)
+  assert fetched.events[0] is not stored_event
+
+
+@pytest.mark.asyncio
+async def test_in_memory_list_sessions_omits_events_without_copying_them():
+  """An event holding a value that cannot be copied is still listable."""
+  service = InMemorySessionService()
+  session = await service.create_session(app_name='my_app', user_id='user')
+  await service.append_event(
+      session,
+      Event(author='user', custom_metadata={'lock': threading.Lock()}),
+  )
+
+  response = await service.list_sessions(app_name='my_app', user_id='user')
+
+  assert [listed.events for listed in response.sessions] == [[]]
+  assert len(service.sessions['my_app']['user'][session.id].events) == 1
+
+
+@pytest.mark.asyncio
+async def test_in_memory_get_session_copies_private_attributes():
+  """A returned session carries the private attributes the stored one has."""
+  service = InMemorySessionService()
+  await service.create_session(app_name='my_app', user_id='u1', session_id='s1')
+  service.sessions['my_app']['u1']['s1']._storage_update_marker = 'm1'
+
+  fetched = await service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  assert fetched._storage_update_marker == 'm1'
 
 
 @pytest.mark.asyncio

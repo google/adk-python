@@ -116,13 +116,18 @@ def test_vertex_ai_memory_bank_service_fails_on_creation():
       )
     raise
 
-  with mock.patch.dict("sys.modules", {"vertexai": None}):
+  with mock.patch.dict("sys.modules", {"agentplatform": None}):
+    # The service reaches Agent Platform through the dependency shim, so the
+    # shim has to be evicted too: left cached, it hands back the module it
+    # imported before the patch and the guard never runs.
+    sys.modules.pop("google.adk.dependencies._agentplatform", None)
     sys.modules.pop("google.adk.memory.vertex_ai_memory_bank_service", None)
     from google.adk.memory import VertexAiMemoryBankService
 
     with pytest.raises(ImportError) as exc_info:
       VertexAiMemoryBankService(agent_engine_id="123")
-    assert "google-cloud-aiplatform" in str(exc_info.value)
+    # Names the distribution the `gcp` extra actually installs.
+    assert "google-cloud-agentplatform" in str(exc_info.value)
 
 
 def test_database_session_service_fails_on_creation():
@@ -180,13 +185,17 @@ def test_vertex_ai_session_service_fails_on_creation():
       )
     raise
 
-  with mock.patch.dict("sys.modules", {"vertexai": None}):
+  with mock.patch.dict("sys.modules", {"agentplatform": None}):
+    # See the memory-bank case above: the dependency shim has to be evicted
+    # alongside the service, or its cached module satisfies the import.
+    sys.modules.pop("google.adk.dependencies._agentplatform", None)
     sys.modules.pop("google.adk.sessions.vertex_ai_session_service", None)
     from google.adk.sessions import VertexAiSessionService
 
     with pytest.raises(ImportError) as exc_info:
       VertexAiSessionService(agent_engine_id="123")
-    assert "google-cloud-aiplatform" in str(exc_info.value)
+    # Names the distribution the `gcp` extra actually installs.
+    assert "google-cloud-agentplatform" in str(exc_info.value)
 
 
 def test_bigquery_agent_analytics_plugin_fails_on_import_naming_its_extra():
@@ -268,6 +277,31 @@ def test_vertexai_dependency_shim_raises_clear_importerror():
     assert "//third_party/py/google/cloud/aiplatform" in message
 
 
+def test_agentplatform_dependency_shim_raises_clear_importerror():
+  """Verify that the Agent Platform dependency shim points at the dependency.
+
+  A top-level `agentplatform` is not importable in every build -- some expose
+  it only as `google.cloud.aiplatform.agentplatform` -- so call sites route
+  through this shim rather than importing the top-level name.
+  """
+  module_path = _REPO_ROOT / "dependencies_internal/_agentplatform.py"
+  if not module_path.is_file():
+    pytest.skip("Agent Platform dependency shim is not present in this build.")
+  with mock.patch.dict("sys.modules", {"google.cloud.aiplatform": None}):
+    spec = importlib.util.spec_from_file_location(
+        "_test_google_adk_dependencies_agentplatform", module_path
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+
+    with pytest.raises(ImportError) as exc_info:
+      spec.loader.exec_module(module)
+
+    message = str(exc_info.value)
+    assert "//third_party/py/google/cloud/aiplatform" in message
+
+
 # =============================================================================
 # Approach 2: High-Fidelity Integration Tests (Clean Venv, Skipped by Default)
 # =============================================================================
@@ -337,7 +371,8 @@ except ImportError as e:
   )
   output = result.stdout.strip()
   assert "CAUGHT_IMPORT_ERROR" in output
-  assert "google-cloud-aiplatform" in output
+  # Names the distribution the `gcp` extra actually installs.
+  assert "google-cloud-agentplatform" in output
 
 
 @pytest.mark.skipif(not RUN_INTEGRATION, reason="Requires ADK_TEST_NETWORK=1")
@@ -385,4 +420,5 @@ except ImportError as e:
   )
   output = result.stdout.strip()
   assert "CAUGHT_IMPORT_ERROR" in output
-  assert "google-cloud-aiplatform" in output
+  # Names the distribution the `gcp` extra actually installs.
+  assert "google-cloud-agentplatform" in output

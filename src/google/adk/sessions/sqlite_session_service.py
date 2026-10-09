@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
@@ -51,12 +52,22 @@ PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
 # Merges {delta} into {state} with dict.update() semantics: keys in the delta
 # always win with their delta value (including SQL NULL / JSON null), unlike
 # json_patch() which deep-merges dict values and treats null as "delete key".
+#
+# json_group_object writes a REAL with 15 significant digits, which rounds
+# floats such as 0.1 + 0.2 for every key in the row. A REAL is written with 17
+# digits when 15 do not read back as the same value, so floats round-trip.
 _MERGE_STATE_SQL = """
         SELECT json_group_object(
                  key,
                  CASE
                    WHEN type IN ('object','array') THEN json(value)
                    WHEN type IN ('true','false') THEN json(type)
+                   WHEN type = 'real' THEN json(
+                     CASE
+                       WHEN CAST(printf('%!.15g', value) AS REAL) = value
+                         THEN printf('%!.15g', value)
+                       ELSE printf('%!.17g', value)
+                     END)
                    ELSE value
                  END)
         FROM (
@@ -183,6 +194,8 @@ class SqliteSessionService(BaseSessionService):
         db_path
     )
     self._schema_ready = False
+    self._schema_lock = asyncio.Lock()
+    self._memory_conn: aiosqlite.Connection | None = None
 
     if self._is_migration_needed():
       raise RuntimeError(
@@ -355,7 +368,7 @@ class SqliteSessionService(BaseSessionService):
     sessions_list = []
     async with self._get_db_connection() as db:
       # Fetch sessions
-      if user_id:
+      if user_id is not None:
         session_rows = await db.execute_fetchall(
             "SELECT id, user_id, state, update_time FROM sessions WHERE"
             " app_name=? AND user_id=? ORDER BY update_time, user_id, id",
@@ -373,7 +386,7 @@ class SqliteSessionService(BaseSessionService):
 
       # Fetch user states
       user_states_map: dict[str, dict[str, Any]] = {}
-      if user_id:
+      if user_id is not None:
         user_state = await self._get_user_state(db, app_name, user_id)
         if user_state:
           user_states_map[user_id] = user_state
@@ -524,18 +537,51 @@ class SqliteSessionService(BaseSessionService):
     # Also update the in-memory session
     return self._commit_event_to_session(session, event)
 
+  async def close(self) -> None:
+    """Closes any persistent resources."""
+    async with self._schema_lock:
+      if self._memory_conn is not None:
+        await self._memory_conn.close()
+        self._memory_conn = None
+        self._schema_ready = False
+
   @asynccontextmanager
   async def _get_db_connection(self) -> AsyncIterator[aiosqlite.Connection]:
     """Connects to the db and performs initial setup."""
-    async with aiosqlite.connect(
-        self._db_connect_path, uri=self._db_connect_uri
-    ) as db:
-      db.row_factory = aiosqlite.Row
-      await db.execute(PRAGMA_FOREIGN_KEYS)
-      if not self._schema_ready:
-        await db.executescript(CREATE_SCHEMA_SQL)
-        self._schema_ready = True
-      yield db
+    if self._db_path in ("", ":memory:"):
+      async with self._schema_lock:
+        if self._memory_conn is None:
+          conn = aiosqlite.connect(
+              self._db_connect_path, uri=self._db_connect_uri
+          )
+          setattr(getattr(conn, "_thread", conn), "daemon", True)
+          await conn
+          try:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute(PRAGMA_FOREIGN_KEYS)
+            await conn.executescript(CREATE_SCHEMA_SQL)
+          except BaseException:
+            await conn.close()
+            raise
+          self._memory_conn = conn
+          self._schema_ready = True
+        try:
+          yield self._memory_conn
+        except BaseException:
+          await self._memory_conn.rollback()
+          raise
+    else:
+      async with aiosqlite.connect(
+          self._db_connect_path, uri=self._db_connect_uri
+      ) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute(PRAGMA_FOREIGN_KEYS)
+        if not self._schema_ready:
+          async with self._schema_lock:
+            if not self._schema_ready:
+              await db.executescript(CREATE_SCHEMA_SQL)
+              self._schema_ready = True
+        yield db
 
   async def _get_state(
       self,

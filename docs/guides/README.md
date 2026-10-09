@@ -53,6 +53,7 @@ This directory contains specific developer guides for the ADK Python implementat
 ### Events
 * [Event and NodeInfo](events/event/index.md) - Understanding Event and NodeInfo in workflows.
 * [RequestInput](events/request_input/index.md) - How to use RequestInput for human-in-the-loop interactions.
+* [Reserved custom_metadata keys](events/internal_metadata/index.md) - The `Event.custom_metadata` keys that only ADK can set, and how restored events are marked.
 
 ### Examples
 * [Example and ExampleTool](examples/example/index.md) - Showing the model worked input and output pairs so that it gets the shape of its own answers right.
@@ -80,6 +81,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Live
 * [Live tools](live/tools/index.md) - Asynchronous background execution and response scheduling for Gemini Live agents.
+* [CascadeLive](live/cascade_live/index.md) - A live-composing model wrapping a text reasoner in speech-to-text and text-to-speech transforms.
 * [LiveRequestQueue](live/live_request_queue/index.md) - Streaming content, realtime audio, and stream control signals to live agents.
 
 ### Memory
@@ -99,6 +101,7 @@ This directory contains specific developer guides for the ADK Python implementat
 ### Plugins
 * [ReflectAndRetryModelPlugin](plugins/reflect_retry_model_plugin/index.md) - Self-healing, concurrent-safe error recovery for model failures.
 * [ReflectAndRetryToolPlugin](plugins/reflect_retry_tool_plugin/index.md) - Self-healing, concurrent-safe error recovery for tool failures.
+* [ToolCallIntegrityPlugin](plugins/tool_call_integrity_plugin/index.md) - Optional HMAC integrity check for stored function call arguments.
 
 ### Runners
 * [Runner and InMemoryRunner](runners/runner/index.md) - Managing session lifecycles, state resolution, and streaming agent execution events.

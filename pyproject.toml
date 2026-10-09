@@ -12,7 +12,7 @@ description = "Agent Development Kit"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [ { name = "Google LLC", email = "googleapis-packages@google.com" } ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
@@ -20,7 +20,6 @@ classifiers = [
   "Operating System :: OS Independent",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -76,11 +75,24 @@ optional-dependencies.all = [
   "daytona>=0.191",
   "docker>=7",
   "e2b>=2,<3",
+  "elevenlabs>=2.22.1,<3",
   "gepa>=0.1",
   "google-antigravity>=0.1.7,<0.2",
   "google-api-python-client>=2.157,<3",
   "google-cloud-agentidentitycredentials>=0.1,<0.2",
-  "google-cloud-aiplatform[agent-engines,evaluation]>=1.148.1,<2",
+  # Keep this range identical to google-cloud-aiplatform below. Both
+  # distributions install the top-level `agentplatform` package and share 63
+  # files, so whichever lands last owns them; holding the pair to one release
+  # is what keeps that from mattering. PEP 508 cannot say "same version as
+  # that other distribution", so uv.lock and the constraints files are what
+  # actually pin them together -- this comment is why not to let them drift.
+  "google-cloud-agentplatform[agent_engines]>=2.2,<3",
+  # Still needed alongside agentplatform for the Evaluation SDK, which stays
+  # on the GAPIC-backed `vertexai` surface. The deprecated Code Interpreter
+  # executor needs this distribution too, but no extra declares it for that
+  # purpose: it is on its way out, so VertexAiCodeExecutor tells the caller to
+  # install it directly rather than widening an extra to carry it.
+  "google-cloud-aiplatform[evaluation]>=2.2,<3",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
   "google-cloud-bigtable>=2.39.1",
@@ -115,6 +127,7 @@ optional-dependencies.all = [
   "oci>=2.126",
   "openai>=2.20,<3",
   "openpyxl>=3.1.5,<4",
+  "opensandbox>=0.1.15,<0.2",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
@@ -196,12 +209,15 @@ optional-dependencies.docs = [
 optional-dependencies.e2b = [
   "e2b>=2,<3", # For E2BEnvironment remote sandbox.
 ]
+optional-dependencies.elevenlabs = [
+  "elevenlabs>=2.22.1,<3", # 2.22.1 added RealtimeEvents.COMMITTED_TRANSCRIPT.
+]
 optional-dependencies.eval = [
   "gepa>=0.1",
-  "google-cloud-aiplatform[evaluation]>=1.148,<2",
+  "google-cloud-aiplatform[evaluation]>=2.2,<3",
   "google-cloud-texttospeech>=2.37",
-  "jinja2>=3.1.4,<4",                              # For eval template rendering
-  "nltk!=3.10.1",                                  # Transitive via rouge-score; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
+  "jinja2>=3.1.4,<4",                            # For eval template rendering
+  "nltk!=3.10.1",                                # Transitive via rouge-score; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "openpyxl>=3.1.5,<4",
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
@@ -228,7 +244,14 @@ optional-dependencies.extensions = [
   "toolbox-adk>=1,<2",
 ]
 optional-dependencies.gcp = [
-  "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
+  # Agent Platform only, not google-cloud-aiplatform: the standalone package
+  # carries no GAPIC stack, so `pip install google-adk[gcp]` no longer drags in
+  # ~1000 generated aiplatform_v1 modules. The Evaluation SDK is still on the
+  # GAPIC-backed `vertexai` surface and asks for google-cloud-aiplatform
+  # through the eval, all and test extras. The deprecated Code Interpreter
+  # executor needs it as well and no extra covers that case; see the note on
+  # the aiplatform entry in `all`.
+  "google-cloud-agentplatform[agent_engines]>=2.2,<3",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
   "google-cloud-bigtable>=2.39.1",
@@ -273,6 +296,9 @@ optional-dependencies.oci = [
   "oci>=2.126", # OCI Generative AI native SDK (OCIGenAILlm)
 ]
 optional-dependencies.openai = [ "openai>=2.20,<3" ]
+optional-dependencies.opensandbox = [
+  "opensandbox>=0.1.15,<0.2", # For OpenSandbox remote sandbox.
+]
 optional-dependencies.otel-gcp = [
   "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
@@ -301,7 +327,19 @@ optional-dependencies.test = [
   "google-antigravity>=0.1.7,<0.2",
   "google-api-python-client>=2.157,<3",
   "google-cloud-agentidentitycredentials>=0.1,<0.2",
-  "google-cloud-aiplatform[agent-engines,evaluation]>=1.148.1,<2",
+  # Keep this range identical to google-cloud-aiplatform below. Both
+  # distributions install the top-level `agentplatform` package and share 63
+  # files, so whichever lands last owns them; holding the pair to one release
+  # is what keeps that from mattering. PEP 508 cannot say "same version as
+  # that other distribution", so uv.lock and the constraints files are what
+  # actually pin them together -- this comment is why not to let them drift.
+  "google-cloud-agentplatform[agent_engines]>=2.2,<3",
+  # Still needed alongside agentplatform for the Evaluation SDK, which stays
+  # on the GAPIC-backed `vertexai` surface. The deprecated Code Interpreter
+  # executor needs this distribution too, but no extra declares it for that
+  # purpose: it is on its way out, so VertexAiCodeExecutor tells the caller to
+  # install it directly rather than widening an extra to carry it.
+  "google-cloud-aiplatform[evaluation]>=2.2,<3",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
   "google-cloud-bigtable>=2.39.1",
@@ -333,6 +371,7 @@ optional-dependencies.test = [
   "nltk!=3.10.1",                                                    # Transitive via rouge-score and llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "openai>=2.20,<3",
   "openpyxl>=3.1.5,<4",
+  "opensandbox>=0.1.15,<0.2",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",

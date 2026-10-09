@@ -726,7 +726,7 @@ def test_completed_model_text_with_thinking_includes_thought_part_first():
 def test_active_tool_call_without_thinking_emits_immediately():
   """An ACTIVE tool call without thinking emits immediately without delay."""
   pending_calls: list[Event] = []
-  seen_thoughts: set[str] = set()
+  seen_thoughts: dict[str, str] = {}
   state = dict(
       ctx=_make_ctx(),
       author='agy',
@@ -802,7 +802,7 @@ def test_subagent_step_populates_hierarchy_custom_metadata():
 def test_active_thinking_cached_in_latest_thoughts_attaches_on_done_flush():
   """An ACTIVE thinking step cached in latest_thoughts attaches on flush."""
   pending_calls: list[Event] = []
-  seen_thoughts: set[str] = set()
+  seen_thoughts: dict[str, str] = {}
   latest_thoughts: dict[str, tuple[str, genai_types.Part]] = {}
   tool_results = _tool_result_capture.ToolResultBuffer()
   state = dict(
@@ -1096,7 +1096,7 @@ def test_active_step_with_partial_thinking_and_tool_call_waits_for_done():
 def test_remaining_thinking_suffix_appends_after_early_tool_response():
   """When a tool responds while thinking is ACTIVE, the DONE suffix appends."""
   pending_calls: list[Event] = []
-  seen_thoughts: set[str] = set()
+  seen_thoughts: dict[str, str] = {}
   latest_thoughts: dict[str, tuple[str, genai_types.Part]] = {}
   tool_results = _tool_result_capture.ToolResultBuffer()
   state = dict(
@@ -1173,3 +1173,52 @@ def test_remaining_thinking_suffix_appends_after_early_tool_response():
       == '\nRemaining thought summary after tool finished.'
   )
   assert not _event_converter.convert_step_to_events(done_think, **state)
+
+
+def test_parallel_tool_calls_without_ids_receive_distinct_synthesized_ids():
+  """Two calls without IDs get distinct IDs and pair even out of order."""
+  turn = _Turn()
+  step = sdk_types.Step(
+      step_index=2,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.DONE,
+      tool_calls=[
+          sdk_types.ToolCall(name='read_file', args={'path': 'a.txt'}, id=None),
+          sdk_types.ToolCall(name='read_file', args={'path': 'b.txt'}, id=None),
+      ],
+  )
+
+  events = turn.step(step)
+
+  assert len(events) == 2
+  id_0 = events[0].content.parts[0].function_call.id
+  id_1 = events[1].content.parts[0].function_call.id
+  assert id_0 == '2-read_file-{"path": "a.txt"}'
+  assert id_1 == '2-read_file-{"path": "b.txt"}'
+  assert id_0 != id_1
+
+  second_only_resp = sdk_types.Step(
+      step_index=2,
+      type=sdk_types.StepType.TOOL_CALL,
+      status=sdk_types.StepStatus.DONE,
+      tool_calls=[
+          sdk_types.ToolCall(name='read_file', args={'path': 'b.txt'}, id=None),
+      ],
+      content='{"output": "b contents"}',
+  )
+  second_events = turn.step(second_only_resp)
+  assert len(second_events) == 1
+  assert second_events[0].content.parts[0].function_response.id == id_1
+
+  first_only_resp = sdk_types.Step(
+      step_index=2,
+      type=sdk_types.StepType.TOOL_CALL,
+      status=sdk_types.StepStatus.DONE,
+      tool_calls=[
+          sdk_types.ToolCall(name='read_file', args={'path': 'a.txt'}, id=None),
+      ],
+      content='{"output": "a contents"}',
+  )
+  first_events = turn.step(first_only_resp)
+  assert len(first_events) == 1
+  assert first_events[0].content.parts[0].function_response.id == id_0

@@ -77,12 +77,6 @@ async def postprocess_handle_function_calls_async(
   if function_response_event := await functions.handle_function_calls_async(
       invocation_context, function_call_event, llm_request.tools_dict
   ):
-    json_response = _output_schema_processor.get_structured_model_response(
-        function_response_event
-    )
-    if json_response is not None:
-      function_response_event.actions.transfer_to_agent = None
-
     auth_event = functions.generate_auth_event(
         invocation_context, function_response_event
     )
@@ -110,7 +104,9 @@ async def postprocess_handle_function_calls_async(
       yield function_response_event
 
     # Check if this is a set_model_response function response
-    if json_response is not None:
+    if json_response := _output_schema_processor.get_structured_model_response(
+        function_response_event
+    ):
       # Create and yield a final model response event
       final_event = _output_schema_processor.create_final_model_response_event(
           invocation_context, json_response

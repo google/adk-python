@@ -34,7 +34,6 @@ from typing import TYPE_CHECKING
 import warnings
 
 from google.genai import types
-from opentelemetry import context
 from typing_extensions import Self
 
 from .agents.base_agent import BaseAgent
@@ -56,9 +55,6 @@ from .events._internal_metadata import without_internal_metadata
 from .events._rewind_events import _apply_rewinds
 from .events.event import Event
 from .events.event_actions import EventActions
-from .flows.llm_flows.context import _contents as contents
-from .flows.llm_flows.tools._functions import find_matching_function_call as _find_matching_function_call
-from .live import _runner_utils as _live_runner_utils
 from .live.live_request_queue import LiveRequestQueue
 from .memory.base_memory_service import BaseMemoryService
 from .platform.thread import create_thread
@@ -67,9 +63,9 @@ from .plugins.plugin_manager import PluginManager
 from .sessions.base_session_service import BaseSessionService
 from .sessions.base_session_service import GetSessionConfig
 from .sessions.session import Session
-from .telemetry import _instrumentation
-from .telemetry.tracing import tracer
 from .tools.base_toolset import BaseToolset
+from .utils import _lazy
+from .utils._agent_mode import AgentMode as _AgentMode
 from .utils._debug_output import print_event
 from .utils._runner_utils import _notify_run_error
 from .utils._runner_utils import _with_caller_context
@@ -78,14 +74,12 @@ from .workflow._base_node import BaseNode
 if TYPE_CHECKING:
   from .apps.app import App
   from .apps.app import ResumabilityConfig
+  from .telemetry.tracing import tracer as tracer
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 _EventQueueItem = tuple[object, asyncio.Event | None]
 
-# Silence unused warning.
-# tracer is imported for backwards compatibility, to avoid breaking change in the API.
-_ = tracer
 
 # App names already told that agent transfer runs without a context cache.
 _UNCACHED_TRANSFER_APPS: set[str] = set()
@@ -219,7 +213,9 @@ def _can_transfer_between_agents(root: Any) -> bool:
 
 def _stamp_event_branch_context(ic: InvocationContext, event: Event) -> None:
   """Stamps the event with the branch and isolation scope of its matching function call."""
-  if function_call := _find_matching_function_call(
+  from .flows.llm_flows.tools._functions import find_matching_function_call
+
+  if function_call := find_matching_function_call(
       ic._get_events(current_invocation=True), event
   ):
     event.branch = function_call.branch
@@ -622,6 +618,8 @@ class Runner:
       run_config: Optional[RunConfig] = None,
   ) -> AsyncGenerator[Event, None]:
     """Run a non-agent BaseNode in live mode."""
+    from .live import _runner_utils as _live_runner_utils
+
     async with aclosing(
         _live_runner_utils.run_node_live(
             self,
@@ -664,10 +662,14 @@ class Runner:
       self,
       session: Session,
       new_message: types.Content,
+      *,
+      strict: bool = True,
   ) -> Optional[str]:
     """Infer invocation_id by matching function responses to FC events.
 
-    Raises ValueError if responses resolve to different invocations.
+    When ``strict`` is True, raises ValueError if responses resolve to
+    different invocations or any response id has no matching function call.
+    When ``strict`` is False, returns None in those cases instead.
     """
     fr_ids = {
         p.function_response.id
@@ -688,18 +690,22 @@ class Runner:
         break
 
     if fr_ids:
+      if not strict:
+        return None
       raise ValueError(
           f'Function call not found for function response ids: {fr_ids}.'
           ' Ensure each function response ID matches an existing function'
           ' call in the session history.'
       )
     if len(invocation_ids) > 1:
+      if not strict:
+        return None
       raise ValueError(
           'Function responses resolve to multiple'
           f' invocations: {invocation_ids}. All function responses in a'
           ' single message must belong to the same invocation.'
       )
-    return invocation_ids.pop()
+    return invocation_ids.pop() if invocation_ids else None
 
   async def _build_and_append_user_event(
       self,
@@ -1192,16 +1198,16 @@ class Runner:
     from .workflow._base_node import BaseNode
 
     if isinstance(self.agent, LlmAgent):
-      if self.agent.mode is None:
-        # LlmAgent as root agent defaults to chat mode.
-        self.agent.mode = 'chat'
+      # LlmAgent as root agent defaults to chat mode without mutating the
+      # shared agent instance in place.
+      effective_mode = self.agent.mode or _AgentMode.CHAT
 
       # A root LlmAgent runs in chat mode (the default) or task mode. Task mode
       # is fully supported for any caller: the agent runs to completion via the
       # finish_task tool and its result is promoted onto the terminal event's
       # output field (an A2A server turns that into an artifact; a direct caller
       # reads it off the event stream).
-      if self.agent.mode in ('chat', 'task'):
+      if effective_mode in (_AgentMode.CHAT, _AgentMode.TASK):
         session = await self._get_or_create_session(
             user_id=user_id,
             session_id=session_id,
@@ -1220,7 +1226,7 @@ class Runner:
       else:
         raise ValueError(
             "LlmAgent as root agent must have mode='chat' or 'task', but got"
-            f" mode='{self.agent.mode}'."
+            f" mode='{effective_mode}'."
         )
       async with aclosing(
           self._run_node_async(
@@ -1267,6 +1273,10 @@ class Runner:
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
+      from opentelemetry import context
+
+      from .telemetry import _instrumentation
+
       caller_ctx_trace = context.get_current()
       with _instrumentation.record_invocation(
           entrypoint_node=root_agent,
@@ -1298,6 +1308,18 @@ class Runner:
         if not is_resumable:
           if new_message is None:
             raise ValueError('A new message is required for a new invocation.')
+          resolved_invocation_id = self._resolve_invocation_id_from_fr(
+              session, new_message, strict=False
+          )
+          if resolved_invocation_id is not None:
+            if invocation_id and invocation_id != resolved_invocation_id:
+              logger.warning(
+                  'Provided invocation_id %s is ignored because new_message'
+                  ' has a function response with invocation_id %s.',
+                  invocation_id,
+                  resolved_invocation_id,
+              )
+            invocation_id = resolved_invocation_id
           invocation_context = await self._setup_context_for_new_invocation(
               session=session,
               new_message=new_message,
@@ -1453,13 +1475,14 @@ class Runner:
     # transcription events should not be appended.
     # Function call and function response events should be appended.
     # Other control events should be appended.
-    if is_live_call and contents._is_live_model_media_event_with_inline_data(
-        event
-    ):
-      # We don't append live model media events with inline data to avoid
-      # storing large blobs in the session. However, events with file_data
-      # (references to artifacts) should be appended.
-      return False
+    if is_live_call:
+      from .flows.llm_flows.context import _contents as contents
+
+      if contents._is_live_model_media_event_with_inline_data(event):
+        # We don't append live model media events with inline data to avoid
+        # storing large blobs in the session. However, events with file_data
+        # (references to artifacts) should be appended.
+        return False
     return True
 
   def _get_output_event(
@@ -1783,6 +1806,8 @@ class Runner:
         Either `session` or both `user_id` and `session_id` must be provided.
     """
 
+    from .live import _runner_utils as _live_runner_utils
+
     async with aclosing(
         _live_runner_utils.run_live(
             self,
@@ -1800,7 +1825,10 @@ class Runner:
     """Returns whether chat-mode root LlmAgent uses the legacy sub-agent picker."""
     from .agents.llm_agent import LlmAgent  # pylint: disable=g-import-not-at-top
 
-    if not isinstance(self.agent, LlmAgent) or self.agent.mode != 'chat':
+    if (
+        not isinstance(self.agent, LlmAgent)
+        or (self.agent.mode or _AgentMode.CHAT) != _AgentMode.CHAT
+    ):
       return False
     remote_a2a_agent_class: tuple[Any, ...] = ()
     try:
@@ -1811,7 +1839,7 @@ class Runner:
       pass
     return not any(
         isinstance(sa, (LlmAgent,) + remote_a2a_agent_class)
-        and getattr(sa, 'mode', None) == 'task'
+        and getattr(sa, 'mode', None) == _AgentMode.TASK
         for sa in self.agent.sub_agents or []
     )
 
@@ -2022,8 +2050,16 @@ class Runner:
         invocation_context.session, root_agent
     )
     if invocation_context.agent and invocation_context.agent is not root_agent:
+      fr_invocation_id = self._resolve_invocation_id_from_fr(
+          invocation_context.session,
+          invocation_context.user_content or new_message,
+          strict=False,
+      )
       self._restore_branch_from_history(
-          invocation_context, invocation_context.agent, root=root_agent
+          invocation_context,
+          invocation_context.agent,
+          root=root_agent,
+          invocation_id=fr_invocation_id,
       )
     return invocation_context
 
@@ -2405,3 +2441,9 @@ class InMemoryRunner(Runner):
         memory_service=InMemoryMemoryService(),
         plugin_close_timeout=plugin_close_timeout,
     )
+
+
+if not TYPE_CHECKING:
+  __getattr__, __dir__ = _lazy.accessors(
+      globals(), {'tracer': 'google.adk.telemetry.tracing'}
+  )

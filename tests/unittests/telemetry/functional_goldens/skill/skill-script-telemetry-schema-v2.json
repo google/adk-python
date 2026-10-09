@@ -94,7 +94,7 @@
             "logs": []
           },
           {
-            "name": "execute_tool run_skill_script",
+            "name": "execute_tool run_skill_script registry-skill scripts/ec_0.py",
             "attributes": {
               "gen_ai.operation.name": "execute_tool",
               "gen_ai.tool.description": "Executes a script from a skill's scripts/ directory.",
@@ -211,7 +211,7 @@
             "logs": []
           },
           {
-            "name": "execute_tool run_skill_script",
+            "name": "execute_tool run_skill_script registry-skill scripts/ec_1.py",
             "attributes": {
               "gen_ai.operation.name": "execute_tool",
               "gen_ai.tool.description": "Executes a script from a skill's scripts/ directory.",
@@ -347,7 +347,7 @@
             "logs": []
           },
           {
-            "name": "execute_tool run_skill_script",
+            "name": "execute_tool run_skill_script registry-skill scripts/ec_10.py",
             "attributes": {
               "gen_ai.operation.name": "execute_tool",
               "gen_ai.tool.description": "Executes a script from a skill's scripts/ directory.",
@@ -501,7 +501,7 @@
             "logs": []
           },
           {
-            "name": "execute_tool run_skill_script",
+            "name": "execute_tool run_skill_script registry-skill scripts/ec_20.py",
             "attributes": {
               "gen_ai.operation.name": "execute_tool",
               "gen_ai.tool.description": "Executes a script from a skill's scripts/ directory.",

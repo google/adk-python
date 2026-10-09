@@ -27,6 +27,8 @@ from fastapi.openapi.models import OAuthFlows
 from fastapi.openapi.models import OpenIdConnect
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import HttpAuth
+from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_handler import AuthHandler
 from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
@@ -514,7 +516,7 @@ class TestGenerateAuthRequest:
   """Tests for the generate_auth_request method."""
 
   def test_non_oauth_scheme(self):
-    """Test with a non-OAuth auth scheme."""
+    """Test that non-OAuth scheme secrets are redacted in the auth request."""
     # Use a SecurityBase instance without using APIKey which has validation issues
     api_key_scheme = APIKey(**{"name": "test_api_key", "in": APIKeyIn.header})
 
@@ -534,7 +536,38 @@ class TestGenerateAuthRequest:
     handler = AuthHandler(config)
     result = handler.generate_auth_request()
 
-    assert result == config
+    # api key is stripped from the client-facing request; everything else stays.
+    assert result.auth_scheme == config.auth_scheme
+    assert result.credential_key == config.credential_key
+    assert result.raw_auth_credential.api_key is None
+    assert result.exchanged_auth_credential.api_key is None
+
+  def test_http_password_and_token_are_not_requested(self):
+    """The configured HTTP password and token are not sent out either."""
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP,
+        http=HttpAuth(
+            scheme="basic",
+            credentials=HttpCredentials(
+                username="test_user",
+                password="test_password",
+                token="test_token",
+            ),
+            additional_headers={"x-extra": "test_header_secret"},
+        ),
+    )
+    config = AuthConfig(
+        auth_scheme=APIKey(**{"name": "test_api_key", "in": APIKeyIn.header}),
+        raw_auth_credential=credential,
+    )
+
+    result = AuthHandler(config).generate_auth_request()
+
+    requested_http = result.raw_auth_credential.http
+    assert requested_http.credentials.password is None
+    assert requested_http.credentials.token is None
+    assert requested_http.additional_headers is None
+    assert requested_http.credentials.username == "test_user"
 
   def test_with_existing_auth_uri(self, auth_config_with_exchanged):
     """Test when auth_uri already exists in exchanged credential."""
@@ -907,6 +940,7 @@ class TestParseAndStoreAuthResponse:
     auth_config.auth_scheme = APIKey(
         **{"name": "test_api_key", "in": APIKeyIn.header}
     )
+    auth_config.exchanged_auth_credential.api_key = "user_supplied_api_key"
 
     handler = AuthHandler(auth_config)
     state = MockState()
@@ -916,7 +950,9 @@ class TestParseAndStoreAuthResponse:
     credential_key = auth_config.credential_key
     expected = auth_config.exchanged_auth_credential.model_copy(deep=True)
     expected.oauth2.client_secret = None
-    assert state["temp:" + credential_key] == expected
+    stored = state["temp:" + credential_key]
+    assert stored == expected
+    assert stored.api_key == "user_supplied_api_key"
 
   @patch("google.adk.auth.auth_handler.AuthHandler.exchange_auth_token")
   @pytest.mark.asyncio

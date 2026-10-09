@@ -27,14 +27,17 @@ import sys
 import threading
 import time
 import traceback
+from typing import Any
 from unittest import mock
 import warnings
 
 from google.adk.agents import base_agent
+from google.adk.agents import llm_agent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import event as event_lib
 from google.adk.events import event_actions as event_actions_lib
+from google.adk.models import google_llm
 from google.adk.models import llm_request as llm_request_lib
 from google.adk.models import llm_response as llm_response_lib
 from google.adk.platform import thread as platform_thread
@@ -1514,6 +1517,266 @@ class TestBigQueryAgentAnalyticsPlugin:
     )
     _assert_common_fields(log_entry, "AGENT_STARTING")
     assert log_entry["content"] == "Test Instruction"
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_logs_agent_config_attributes(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """AGENT_STARTING records the agent description, model, and sub-agents."""
+    agent = llm_agent.LlmAgent(
+        name="root_agent",
+        model="gemini-2.5-flash",
+        description="Routes requests to specialists.",
+        instruction="Delegate to the right specialist.",
+        sub_agents=[
+            llm_agent.LlmAgent(name="sub_a"),
+            llm_agent.LlmAgent(name="sub_b"),
+        ],
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "AGENT_STARTING")
+    assert log_entry["content"] == "Delegate to the right specialist."
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["agent_description"] == "Routes requests to specialists."
+    assert attributes["model"] == "gemini-2.5-flash"
+    assert attributes["sub_agents"] == ["sub_a", "sub_b"]
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_resolves_model_name_from_base_llm(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """A BaseLlm model is logged by its model name."""
+    agent = llm_agent.LlmAgent(
+        name="root_agent", model=google_llm.Gemini(model="gemini-2.5-pro")
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["model"] == "gemini-2.5-pro"
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_inherits_model_from_parent_agent(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """An LLM sub-agent inherits its ancestor's model; non-LLM agents do not."""
+    sub_agent = llm_agent.LlmAgent(name="sub_a")
+    workflow_sub = base_agent.BaseAgent(name="workflow_sub")
+    _ = llm_agent.LlmAgent(
+        name="root_agent",
+        model="gemini-2.5-flash",
+        sub_agents=[sub_agent, workflow_sub],
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=sub_agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["model"] == "gemini-2.5-flash"
+
+    mock_write_client.append_rows.reset_mock()
+    await bq_plugin_inst.before_agent_callback(
+        agent=workflow_sub, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    workflow_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    workflow_attributes = json.loads(workflow_entry["attributes"])
+    assert "model" not in workflow_attributes
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_captures_static_instruction(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """static_instruction is normalized and logged in attributes only."""
+    agent_static_only = llm_agent.LlmAgent(
+        name="root_agent",
+        static_instruction=types.Content(
+            role="user",
+            parts=[types.Part(text="Cached system prompt.")],
+        ),
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent_static_only, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry["content"] is None
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["static_instruction"] == "Cached system prompt."
+
+    mock_write_client.append_rows.reset_mock()
+    agent_list_static = llm_agent.LlmAgent(
+        name="root_agent",
+        static_instruction=["You are a router.", "Be brief."],
+    )
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent_list_static, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry_list = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry_list["content"] is None
+    attributes_list = json.loads(log_entry_list["attributes"])
+    assert (
+        attributes_list["static_instruction"] == "You are a router.\nBe brief."
+    )
+
+    mock_write_client.append_rows.reset_mock()
+    agent_both = llm_agent.LlmAgent(
+        name="root_agent",
+        static_instruction="Cached base instruction.",
+        instruction="Dynamic user-turn instruction.",
+    )
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent_both, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry_both = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry_both["content"] == "Dynamic user-turn instruction."
+    attributes_both = json.loads(log_entry_both["attributes"])
+    assert attributes_both["static_instruction"] == "Cached base instruction."
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_skips_callable_instruction(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """An InstructionProvider is logged as None with instruction_source."""
+    agent = llm_agent.LlmAgent(
+        name="root_agent", instruction=lambda ctx: "dynamic instruction"
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "AGENT_STARTING")
+    assert log_entry["content"] is None
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["instruction_source"] == "provider"
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_omits_empty_agent_config(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Unset description, model, and sub-agents add no attributes."""
+    agent = llm_agent.LlmAgent(name="root_agent")
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry["content"] is None
+    attributes = json.loads(log_entry["attributes"])
+    assert "agent_description" not in attributes
+    assert "instruction_source" not in attributes
+    assert "static_instruction" not in attributes
+    assert "model" not in attributes
+    assert "sub_agents" not in attributes
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_ignores_non_string_agent_config(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      mock_agent,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Non-string agent fields, such as mocks, never reach attributes."""
+    unnamed_sub_agent = mock.create_autospec(
+        base_agent.BaseAgent, instance=True, spec_set=True
+    )
+    type(mock_agent).description = mock.PropertyMock(
+        return_value=mock.MagicMock()
+    )
+    type(mock_agent).model = mock.PropertyMock(return_value=mock.MagicMock())
+    type(mock_agent).sub_agents = mock.PropertyMock(
+        return_value=[unnamed_sub_agent]
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=mock_agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry["content"] == "Test Instruction"
+    attributes = json.loads(log_entry["attributes"])
+    assert "agent_description" not in attributes
+    assert "model" not in attributes
+    assert "sub_agents" not in attributes
 
   @pytest.mark.asyncio
   async def test_after_agent_callback_logs_correctly(
@@ -7387,12 +7650,31 @@ class TestEventId:
     assert event_ids[0] == event_ids[1]
 
 
+_PICKLED_SCHEMA_ERROR_CALLS: list[Exception] = []
+_PICKLED_SCHEMA_READY_CALLS: list[bool] = []
+
+
+def _module_level_on_schema_error(exc: Exception) -> None:
+  _PICKLED_SCHEMA_ERROR_CALLS.append(exc)
+
+
+def _module_level_on_schema_ready() -> None:
+  _PICKLED_SCHEMA_READY_CALLS.append(True)
+
+
 class TestSchemaAutoUpgrade:
   """Tests for _ensure_schema_exists with auto_schema_upgrade."""
 
-  def _make_plugin(self, auto_schema_upgrade=False):
+  def _make_plugin(
+      self,
+      auto_schema_upgrade=False,
+      on_schema_error=None,
+      on_schema_ready=None,
+  ):
     config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
         auto_schema_upgrade=auto_schema_upgrade,
+        on_schema_error=on_schema_error,
+        on_schema_ready=on_schema_ready,
     )
     with mock.patch("google.cloud.bigquery.Client"):
       plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
@@ -7695,6 +7977,428 @@ class TestSchemaAutoUpgrade:
     )
     with pytest.raises(cloud_exceptions.ServiceUnavailable):
       plugin._ensure_schema_exists()
+
+  def test_on_schema_error_not_called_on_table_creation(self):
+    """on_schema_error is not invoked when table is created normally."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=False, on_schema_error=hook)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+
+    plugin._ensure_schema_exists()
+
+    hook.assert_not_called()
+
+  def test_on_schema_error_not_called_when_table_exists(self):
+    """on_schema_error is not invoked when existing table is ready."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=False, on_schema_error=hook)
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [bigquery.SchemaField("timestamp", "TIMESTAMP")]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    plugin._ensure_schema_exists()
+
+    hook.assert_not_called()
+
+  def test_on_schema_error_not_called_on_view_failure(self):
+    """on_schema_error is not invoked when analytics view creation fails."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=False, on_schema_error=hook)
+    plugin.config.create_views = True
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [bigquery.SchemaField("timestamp", "TIMESTAMP")]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    with mock.patch.object(
+        plugin, "_create_analytics_views", return_value=False
+    ):
+      assert plugin._ensure_schema_exists() is False
+
+    hook.assert_not_called()
+
+  def test_on_schema_error_not_called_when_client_uninitialized(self):
+    """on_schema_error is not invoked when client is None (RuntimeError)."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=False, on_schema_error=hook)
+    plugin.client = None
+
+    with pytest.raises(RuntimeError):
+      plugin._ensure_schema_exists()
+
+    hook.assert_not_called()
+
+  def test_on_schema_error_called_on_incompatible_schema(self):
+    """on_schema_error is invoked with ValueError on incompatible schema."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=True, on_schema_error=hook)
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "STRING", mode="REQUIRED"),
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    with pytest.raises(ValueError) as exc_info:
+      plugin._ensure_schema_exists()
+
+    hook.assert_called_once_with(exc_info.value)
+
+  def test_on_schema_error_called_on_get_table_error(self):
+    """on_schema_error is invoked when get_table fails with Forbidden."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=True, on_schema_error=hook)
+    err = cloud_exceptions.Forbidden("access denied")
+    plugin.client.get_table.side_effect = err
+
+    with pytest.raises(cloud_exceptions.Forbidden):
+      plugin._ensure_schema_exists()
+
+    hook.assert_called_once_with(err)
+
+  def test_on_schema_error_called_on_create_table_error(self):
+    """on_schema_error is invoked when create_table fails after NotFound."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=True, on_schema_error=hook)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound(
+        "table not found"
+    )
+    create_err = cloud_exceptions.NotFound("dataset not found")
+    plugin.client.create_table.side_effect = create_err
+
+    with pytest.raises(cloud_exceptions.NotFound) as exc_info:
+      plugin._ensure_schema_exists()
+
+    assert exc_info.value is create_err
+    hook.assert_called_once_with(create_err)
+
+  def test_on_schema_error_called_on_conflict_refetch_error(self):
+    """on_schema_error is invoked when post-Conflict readiness check fails."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=True, on_schema_error=hook)
+    refetch_err = cloud_exceptions.ServiceUnavailable("control plane down")
+    plugin.client.get_table.side_effect = [
+        cloud_exceptions.NotFound("not found"),
+        refetch_err,
+    ]
+    plugin.client.create_table.side_effect = cloud_exceptions.Conflict(
+        "already exists"
+    )
+
+    with pytest.raises(cloud_exceptions.ServiceUnavailable):
+      plugin._ensure_schema_exists()
+
+    hook.assert_called_once_with(refetch_err)
+
+  def test_on_schema_error_callback_exception_is_suppressed(self):
+    """Exceptions raised by on_schema_error do not mask the schema error."""
+    hook = mock.MagicMock(side_effect=RuntimeError("callback crashed"))
+    plugin = self._make_plugin(auto_schema_upgrade=True, on_schema_error=hook)
+    err = cloud_exceptions.Forbidden("access denied")
+    plugin.client.get_table.side_effect = err
+
+    with pytest.raises(cloud_exceptions.Forbidden) as exc_info:
+      plugin._ensure_schema_exists()
+
+    assert exc_info.value is err
+    hook.assert_called_once_with(err)
+
+  def test_on_schema_error_called_on_additive_upgrade_update_table_error(self):
+    """on_schema_error is called when update_table fails on additive upgrade."""
+    error_hook = mock.MagicMock()
+    ready_hook = mock.MagicMock()
+    plugin = self._make_plugin(
+        auto_schema_upgrade=True,
+        on_schema_error=error_hook,
+        on_schema_ready=ready_hook,
+    )
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+    update_err = cloud_exceptions.Forbidden("cannot update schema")
+    plugin.client.update_table.side_effect = update_err
+
+    with pytest.raises(cloud_exceptions.Forbidden) as exc_info:
+      plugin._ensure_schema_exists()
+
+    assert exc_info.value is update_err
+    error_hook.assert_called_once_with(update_err)
+    ready_hook.assert_not_called()
+
+  def test_on_schema_error_not_called_on_label_only_update_table_error(self):
+    """Label-only update_table failure calls on_schema_ready, not error."""
+    error_hook = mock.MagicMock()
+    ready_hook = mock.MagicMock()
+    plugin = self._make_plugin(
+        auto_schema_upgrade=True,
+        on_schema_error=error_hook,
+        on_schema_ready=ready_hook,
+    )
+    plugin.config.create_views = False
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = list(plugin._schema)
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+    plugin.client.update_table.side_effect = cloud_exceptions.Forbidden(
+        "labels policy denied"
+    )
+
+    assert plugin._ensure_schema_exists() is True
+    error_hook.assert_not_called()
+    ready_hook.assert_called_once_with()
+
+  @pytest.mark.parametrize("auto_schema_upgrade", [True, False])
+  def test_on_schema_error_not_called_when_schema_not_initialized(
+      self, auto_schema_upgrade
+  ):
+    """on_schema_error is not invoked when _schema is None (RuntimeError)."""
+    error_hook = mock.MagicMock()
+    ready_hook = mock.MagicMock()
+    plugin = self._make_plugin(
+        auto_schema_upgrade=auto_schema_upgrade,
+        on_schema_error=error_hook,
+        on_schema_ready=ready_hook,
+    )
+    plugin._schema = None
+
+    with pytest.raises(
+        RuntimeError, match="BigQuery schema is not initialized"
+    ):
+      plugin._ensure_schema_exists()
+
+    plugin.client.get_table.assert_not_called()
+    error_hook.assert_not_called()
+    ready_hook.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_on_schema_error_called_via_ensure_started_across_retries(
+      self, mock_auth_default, mock_bq_client, mock_write_client
+  ):
+    """_ensure_started calls on_schema_error on retries and ready once."""
+    _ = mock_auth_default, mock_write_client
+    loop_thread_id = threading.get_ident()
+    error_thread_ids: list[int] = []
+    ready_thread_ids: list[int] = []
+    error_hook = mock.MagicMock(
+        side_effect=lambda _exc: error_thread_ids.append(threading.get_ident())
+    )
+    ready_hook = mock.MagicMock(
+        side_effect=lambda: ready_thread_ids.append(threading.get_ident())
+    )
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        create_views=False,
+        on_schema_error=error_hook,
+        on_schema_ready=ready_hook,
+    )
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    )
+    err1 = cloud_exceptions.ServiceUnavailable("attempt 1 failed")
+    err2 = cloud_exceptions.Forbidden("attempt 2 failed")
+    ready_table = mock.MagicMock(spec=bigquery.Table)
+    ready_table.schema = bigquery_agent_analytics_plugin._get_events_schema()
+    ready_table.labels = {
+        bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY: (
+            bigquery_agent_analytics_plugin._SCHEMA_VERSION
+        )
+    }
+    mock_bq_client.get_table.side_effect = [err1, err2, ready_table]
+
+    try:
+      assert await plugin._ensure_started() == "failed"
+      error_hook.assert_called_once_with(err1)
+      ready_hook.assert_not_called()
+
+      plugin._setup_retry_at = 0.0
+      assert await plugin._ensure_started() == "failed"
+      assert error_hook.call_args_list == [mock.call(err1), mock.call(err2)]
+      ready_hook.assert_not_called()
+
+      plugin._setup_retry_at = 0.0
+      assert await plugin._ensure_started() == "ok"
+      assert error_hook.call_count == 2
+      ready_hook.assert_called_once_with()
+      assert len(error_thread_ids) == 2
+      assert all(tid != loop_thread_id for tid in error_thread_ids)
+      assert len(ready_thread_ids) == 1
+      assert ready_thread_ids[0] != loop_thread_id
+    finally:
+      await plugin.shutdown()
+
+  def test_on_schema_callbacks_stdlib_pickle_roundtrip(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Module-level schema callbacks round-trip through stdlib pickle."""
+    _ = mock_auth_default, mock_bq_client
+    _PICKLED_SCHEMA_ERROR_CALLS.clear()
+    _PICKLED_SCHEMA_READY_CALLS.clear()
+    try:
+      config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          auto_schema_upgrade=False,
+          create_views=False,
+          on_schema_error=_module_level_on_schema_error,
+          on_schema_ready=_module_level_on_schema_ready,
+      )
+      plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      )
+      unpickled = pickle.loads(pickle.dumps(plugin))
+      assert unpickled.config.on_schema_error is _module_level_on_schema_error
+      assert unpickled.config.on_schema_ready is _module_level_on_schema_ready
+
+      unpickled.client = mock.MagicMock()
+      unpickled.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+      unpickled._schema = bigquery_agent_analytics_plugin._get_events_schema()
+      existing = mock.MagicMock(spec=bigquery.Table)
+      existing.schema = list(unpickled._schema)
+      existing.labels = {}
+      unpickled.client.get_table.return_value = existing
+
+      assert unpickled._ensure_schema_exists() is True
+      assert _PICKLED_SCHEMA_READY_CALLS == [True]
+      assert not _PICKLED_SCHEMA_ERROR_CALLS
+
+      err = cloud_exceptions.Forbidden("denied")
+      unpickled.client.get_table.side_effect = err
+      with pytest.raises(cloud_exceptions.Forbidden):
+        unpickled._ensure_schema_exists()
+      assert _PICKLED_SCHEMA_ERROR_CALLS == [err]
+    finally:
+      _PICKLED_SCHEMA_ERROR_CALLS.clear()
+      _PICKLED_SCHEMA_READY_CALLS.clear()
+
+  def test_on_schema_ready_called_when_table_exists(self):
+    """on_schema_ready is invoked when existing table is ready."""
+    ready_hook = mock.MagicMock()
+    plugin = self._make_plugin(
+        auto_schema_upgrade=False, on_schema_ready=ready_hook
+    )
+    plugin.config.create_views = False
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [bigquery.SchemaField("timestamp", "TIMESTAMP")]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    assert plugin._ensure_schema_exists() is True
+    ready_hook.assert_called_once_with()
+
+  def test_on_schema_ready_called_on_table_creation(self):
+    """on_schema_ready is invoked when table is created on NotFound."""
+    ready_hook = mock.MagicMock()
+    plugin = self._make_plugin(
+        auto_schema_upgrade=False, on_schema_ready=ready_hook
+    )
+    plugin.config.create_views = False
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+
+    assert plugin._ensure_schema_exists() is True
+    ready_hook.assert_called_once_with()
+
+  def test_on_schema_ready_not_called_on_view_failure(self):
+    """on_schema_ready is not called when _create_analytics_views fails."""
+    ready_hook = mock.MagicMock()
+    plugin = self._make_plugin(
+        auto_schema_upgrade=False, on_schema_ready=ready_hook
+    )
+    plugin.config.create_views = True
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [bigquery.SchemaField("timestamp", "TIMESTAMP")]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    with mock.patch.object(
+        plugin, "_create_analytics_views", return_value=False
+    ):
+      assert plugin._ensure_schema_exists() is False
+
+    ready_hook.assert_not_called()
+
+  def test_on_schema_ready_not_called_on_error(self):
+    """on_schema_ready is not invoked when get_table or create_table raises."""
+    ready_hook = mock.MagicMock()
+    plugin = self._make_plugin(
+        auto_schema_upgrade=False, on_schema_ready=ready_hook
+    )
+    plugin.client.get_table.side_effect = cloud_exceptions.Forbidden("denied")
+
+    with pytest.raises(cloud_exceptions.Forbidden):
+      plugin._ensure_schema_exists()
+
+    ready_hook.assert_not_called()
+
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    plugin.client.create_table.side_effect = cloud_exceptions.Forbidden(
+        "cannot create"
+    )
+    with pytest.raises(cloud_exceptions.Forbidden):
+      plugin._ensure_schema_exists()
+
+    ready_hook.assert_not_called()
+
+  def test_on_schema_ready_callback_exception_is_suppressed(self):
+    """Exceptions raised by on_schema_ready are logged and suppressed."""
+    ready_hook = mock.MagicMock(side_effect=RuntimeError("ready hook crashed"))
+    plugin = self._make_plugin(
+        auto_schema_upgrade=False, on_schema_ready=ready_hook
+    )
+    plugin.config.create_views = False
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [bigquery.SchemaField("timestamp", "TIMESTAMP")]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    assert plugin._ensure_schema_exists() is True
+    ready_hook.assert_called_once_with()
+
+  def test_on_schema_callbacks_returning_coroutine_closed_and_warned(
+      self, caplog
+  ):
+    """Sync wrappers returning a coroutine close it and log a warning."""
+    created_coros: list[tuple[str, Any]] = []
+
+    async def _coro() -> None:
+      await asyncio.sleep(0)
+
+    def _make_coro(tag: str):
+      coro = _coro()
+      assert coro.cr_frame is not None
+      created_coros.append((tag, coro))
+      return coro
+
+    plugin = self._make_plugin(
+        auto_schema_upgrade=False,
+        on_schema_error=lambda _exc: _make_coro("error"),
+        on_schema_ready=lambda: _make_coro("ready"),
+    )
+    plugin.config.create_views = False
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [bigquery.SchemaField("timestamp", "TIMESTAMP")]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    with caplog.at_level(logging.WARNING):
+      assert plugin._ensure_schema_exists() is True
+    assert len(created_coros) == 1
+    assert created_coros[0][0] == "ready"
+    assert created_coros[0][1].cr_frame is None
+    assert "on_schema_ready returned a coroutine" in caplog.text
+
+    caplog.clear()
+    plugin.client.get_table.side_effect = cloud_exceptions.Forbidden("denied")
+    with caplog.at_level(logging.WARNING):
+      with pytest.raises(cloud_exceptions.Forbidden):
+        plugin._ensure_schema_exists()
+    assert len(created_coros) == 2
+    assert created_coros[1][0] == "error"
+    assert created_coros[1][1].cr_frame is None
+    assert "on_schema_error returned a coroutine" in caplog.text
 
 
 class TestToolProvenance:
@@ -8824,6 +9528,25 @@ class TestAnalyticsViews:
     assert (
         "JSON_VALUE(attributes, '$.finish_reason') AS finish_reason" in columns
     )
+
+  def test_agent_starting_view_exposes_agent_config_columns(self):
+    """AGENT_STARTING views read string or object content and agent config."""
+    columns = bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS["AGENT_STARTING"]
+
+    assert columns == [
+        (
+            "COALESCE(JSON_VALUE(content, '$.text_summary'),"
+            " IF(REGEXP_CONTAINS(JSON_VALUE(content, '$'),"
+            " r'^(?:<(?:function|bound method) |<.+ at"
+            " 0x[0-9a-fA-F]+>|functools\\.partial\\()'), NULL,"
+            " JSON_VALUE(content, '$'))) AS agent_instruction"
+        ),
+        "JSON_VALUE(attributes, '$.instruction_source') AS instruction_source",
+        "JSON_VALUE(attributes, '$.static_instruction') AS static_instruction",
+        "JSON_VALUE(attributes, '$.agent_description') AS agent_description",
+        "JSON_VALUE(attributes, '$.model') AS model",
+        "JSON_QUERY(attributes, '$.sub_agents') AS sub_agents",
+    ]
 
   @pytest.mark.parametrize("event_type", ["NODE_OUTPUT", "NODE_ERROR"])
   def test_node_views_expose_workflow_identity(self, event_type):
@@ -13385,6 +14108,38 @@ def test_project_view_columns_noop_without_denylist():
   assert plugin._project_view_columns(exprs) == exprs
 
 
+@pytest.mark.parametrize(
+    ("denied_column", "expected_aliases"),
+    [
+        ("attributes", ["agent_instruction"]),
+        (
+            "content",
+            [
+                "instruction_source",
+                "static_instruction",
+                "agent_description",
+                "model",
+                "sub_agents",
+            ],
+        ),
+    ],
+)
+def test_project_view_columns_agent_starting_respects_denylist(
+    denied_column, expected_aliases
+):
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          payload_column_denylist=[denied_column]
+      )
+  )
+
+  kept = plugin._project_view_columns(
+      bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS["AGENT_STARTING"]
+  )
+
+  assert [expr.rsplit(" AS ", 1)[1] for expr in kept] == expected_aliases
+
+
 # --- otel correlation ---
 
 
@@ -14888,7 +15643,7 @@ class TestSafetyLifecycleHardening:
   def test_invalid_runtime_config_rejected_at_construction(
       self, mock_auth_default, mock_bq_client
   ):
-    """Invalid batch/queue/duration/retry settings fail at construction."""
+    """Invalid runtime config settings fail at construction."""
     _ = mock_auth_default, mock_bq_client
     retry = bigquery_agent_analytics_plugin.RetryConfig
     bad_configs = [
@@ -14901,6 +15656,8 @@ class TestSafetyLifecycleHardening:
         dict(retry_config=retry(initial_delay=-1.0)),
         dict(retry_config=retry(multiplier=0.5)),
         dict(retry_config=retry(initial_delay=5.0, max_delay=1.0)),
+        dict(on_schema_error="not-callable"),
+        dict(on_schema_ready="not-callable"),
     ]
     for kwargs in bad_configs:
       config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(**kwargs)
@@ -14908,6 +15665,87 @@ class TestSafetyLifecycleHardening:
         bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
             PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
         )
+
+  _INVALID_SCHEMA_CALLBACK_IDS = (
+      "not_callable",
+      "async_fn",
+      "async_callable",
+      "async_mock",
+  )
+
+  @staticmethod
+  def _invalid_schema_callbacks():
+    async def _async_fn(*_args):
+      pass
+
+    class _AsyncCallable:
+
+      async def __call__(self, *_args):
+        pass
+
+    return [
+        "not-callable",
+        _async_fn,
+        _AsyncCallable(),
+        mock.AsyncMock(),
+    ]
+
+  @pytest.mark.parametrize("field_name", ["on_schema_error", "on_schema_ready"])
+  @pytest.mark.parametrize(
+      "bad_hook",
+      _invalid_schema_callbacks(),
+      ids=_INVALID_SCHEMA_CALLBACK_IDS,
+  )
+  def test_invalid_schema_callback_rejected_at_construction(
+      self, mock_auth_default, mock_bq_client, field_name, bad_hook
+  ):
+    """Non-callable or async schema callbacks fail at construction."""
+    _ = mock_auth_default, mock_bq_client
+    pattern = rf"^{field_name} must be a synchronous callable or None"
+    with pytest.raises(ValueError, match=pattern):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          PROJECT_ID,
+          DATASET_ID,
+          table_id=TABLE_ID,
+          **{field_name: bad_hook},
+      )
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        **{field_name: bad_hook}
+    )
+    with pytest.raises(ValueError, match=pattern):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          PROJECT_ID,
+          DATASET_ID,
+          table_id=TABLE_ID,
+          config=config,
+      )
+
+  @pytest.mark.parametrize("field_name", ["on_schema_error", "on_schema_ready"])
+  @pytest.mark.parametrize(
+      "bad_hook",
+      _invalid_schema_callbacks(),
+      ids=_INVALID_SCHEMA_CALLBACK_IDS,
+  )
+  def test_invalid_schema_callback_rejected_at_unpickling(
+      self, mock_auth_default, mock_bq_client, field_name, bad_hook
+  ):
+    """Non-callable or async schema callbacks fail during __setstate__."""
+    _ = mock_auth_default, mock_bq_client
+    pattern = rf"^{field_name} must be a synchronous callable or None"
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    state = plugin.__getstate__()
+    state["config"] = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        **{field_name: bad_hook}
+    )
+    restored = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
+            bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin
+        )
+    )
+    with pytest.raises(ValueError, match=pattern):
+      restored.__setstate__(state)
 
   @pytest.mark.asyncio
   async def test_final_attributes_pass_redacts_direct_producers(

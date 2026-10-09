@@ -371,13 +371,13 @@ class MockAsyncClient:
     """Initializes MockClient."""
     self.session_dict: dict[str, Any] = {}
     self.event_dict: dict[str, Tuple[List[Any], Optional[str]]] = {}
-    self.agent_engines = mock.AsyncMock()
-    self.agent_engines.sessions.get.side_effect = self._get_session
-    self.agent_engines.sessions.list.side_effect = self._list_sessions
-    self.agent_engines.sessions.delete.side_effect = self._delete_session
-    self.agent_engines.sessions.create.side_effect = self._create_session
-    self.agent_engines.sessions.events.list.side_effect = self._list_events
-    self.agent_engines.sessions.events.append.side_effect = self._append_event
+    self.sessions = mock.AsyncMock()
+    self.sessions.get.side_effect = self._get_session
+    self.sessions.list.side_effect = self._list_sessions
+    self.sessions.delete.side_effect = self._delete_session
+    self.sessions.create.side_effect = self._create_session
+    self.sessions.events.list.side_effect = self._list_events
+    self.sessions.events.append.side_effect = self._append_event
     self.last_create_session_config: dict[str, Any] = {}
     self.last_list_sessions_config: dict[str, Any] = {}
 
@@ -515,9 +515,9 @@ class MockAsyncClientWithPagination:
     self._session_data = session_data
     self._events_pages = events_pages
     self._closed = False
-    self.agent_engines = mock.AsyncMock()
-    self.agent_engines.sessions.get.side_effect = self._get_session
-    self.agent_engines.sessions.events.list.side_effect = self._list_events
+    self.sessions = mock.AsyncMock()
+    self.sessions.get.side_effect = self._get_session
+    self.sessions.events.list.side_effect = self._list_events
 
   async def __aenter__(self):
     return self
@@ -653,6 +653,63 @@ def mock_get_api_client(mock_api_client_instance):
     yield
 
 
+class _LegacyShapedClient:
+  """Shaped like a 2.x `vertexai` client: sessions exist only under
+  `agent_engines`, and there is no top-level `sessions` attribute."""
+
+  def __init__(self, inner: MockAsyncClient) -> None:
+    self.agent_engines = types.SimpleNamespace(sessions=inner.sessions)
+
+
+@pytest.mark.asyncio
+async def test_falls_back_to_agent_engines_for_a_vertexai_shaped_client(
+    mock_api_client_instance,
+):
+  """A subclass returning a `vertexai` client keeps working.
+
+  Several subclasses override `_get_api_client` to return
+  `vertexai.Client(...).aio`, which in 2.x only has `agent_engines.sessions`.
+  Every session operation has to reach that path rather than raise
+  AttributeError on `.sessions`.
+  """
+  legacy_client = _LegacyShapedClient(mock_api_client_instance)
+  assert getattr(legacy_client, 'sessions', None) is None
+  session_service = mock_vertex_ai_session_service()
+
+  with mock.patch.object(
+      session_service, '_get_api_client', return_value=legacy_client
+  ):
+    created = await session_service.create_session(
+        app_name='123', user_id='user'
+    )
+    fetched = await session_service.get_session(
+        app_name='123', user_id='user', session_id='1'
+    )
+    listed = await session_service.list_sessions(app_name='123', user_id='user')
+    await session_service.append_event(
+        fetched,
+        Event(
+            invocation_id='legacy_invocation',
+            author='user',
+            timestamp=1734005533.0,
+        ),
+    )
+    await session_service.delete_session(
+        app_name='123', user_id='user', session_id='1'
+    )
+
+  assert created.user_id == 'user'
+  assert fetched is not None and fetched.id == '1'
+  assert listed.sessions
+  sessions = mock_api_client_instance.sessions
+  sessions.create.assert_awaited()
+  sessions.get.assert_awaited()
+  sessions.events.list.assert_awaited()
+  sessions.list.assert_awaited()
+  sessions.events.append.assert_awaited()
+  sessions.delete.assert_awaited()
+
+
 @pytest.mark.asyncio
 async def test_initialize_with_project_location_and_api_key_error():
   with pytest.raises(ValueError) as excinfo:
@@ -675,7 +732,7 @@ async def test_get_session_returns_none_when_invalid_argument(
 ):
   session_service = mock_vertex_ai_session_service()
   # Simulate the API raising a session not found exception.
-  mock_api_client_instance.agent_engines.sessions.get.side_effect = ClientError(
+  mock_api_client_instance.sessions.get.side_effect = ClientError(
       code=404,
       response_json={
           'message': (
@@ -1271,10 +1328,8 @@ async def test_append_event_does_not_mutate_session_on_remote_failure() -> None:
   """
   append = mock.AsyncMock(side_effect=[RuntimeError('network failure'), None])
   client = types.SimpleNamespace(
-      agent_engines=types.SimpleNamespace(
-          sessions=types.SimpleNamespace(
-              events=types.SimpleNamespace(append=append),
-          )
+      sessions=types.SimpleNamespace(
+          events=types.SimpleNamespace(append=append),
       )
   )
 
@@ -1669,7 +1724,7 @@ async def test_append_event_fallback_for_older_sdk(mock_api_client_instance):
         name, author, invocation_id, timestamp, config
     )
 
-  mock_client.agent_engines.sessions.events.append.side_effect = side_effect
+  mock_client.sessions.events.append.side_effect = side_effect
 
   await session_service.append_event(session, event_to_append)
 
@@ -1728,7 +1783,7 @@ async def test_get_session_strips_full_resource_name(
       app_name='123', user_id='user', session_id=resource_name
   )
   assert session.id == 'session-123'
-  mock_api_client_instance.agent_engines.sessions.get.assert_called_once_with(
+  mock_api_client_instance.sessions.get.assert_called_once_with(
       name='reasoningEngines/123/sessions/session-123'
   )
 
@@ -1748,7 +1803,7 @@ def test_get_api_client_reuses_one_client_within_an_event_loop():
     await session_service.create_session(app_name='123', user_id='user')
 
   with mock.patch(
-      'vertexai.Client',
+      'agentplatform.Client',
       side_effect=lambda **_: mock.MagicMock(aio=MockAsyncClient()),
   ) as mock_client_constructor:
     asyncio.run(create_twice())
@@ -1761,7 +1816,7 @@ def test_get_api_client_builds_a_separate_client_per_event_loop():
   session_service = mock_vertex_ai_session_service()
 
   with mock.patch(
-      'vertexai.Client',
+      'agentplatform.Client',
       side_effect=lambda **_: mock.MagicMock(aio=MockAsyncClient()),
   ) as mock_client_constructor:
     asyncio.run(session_service.create_session(app_name='123', user_id='user'))
@@ -1796,9 +1851,7 @@ async def test_append_event_retries_once_on_429(mock_api_client_instance):
       )
     return await real_append(*args, **kwargs)
 
-  mock_api_client_instance.agent_engines.sessions.events.append.side_effect = (
-      side_effect
-  )
+  mock_api_client_instance.sessions.events.append.side_effect = side_effect
 
   with mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep:
     result = await session_service.append_event(
@@ -1833,9 +1886,7 @@ async def test_append_event_raises_after_retry_on_persistent_429(
         429, {'error': {'code': 429, 'message': 'Resource exhausted'}}
     )
 
-  mock_api_client_instance.agent_engines.sessions.events.append.side_effect = (
-      side_effect
-  )
+  mock_api_client_instance.sessions.events.append.side_effect = side_effect
 
   with mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep:
     with pytest.raises(ClientError) as exc_info:
@@ -1860,17 +1911,14 @@ async def test_append_event_does_not_retry_on_read_timeout(
       author='model',
       timestamp=1734005533.0,
   )
-  mock_api_client_instance.agent_engines.sessions.events.append.side_effect = (
+  mock_api_client_instance.sessions.events.append.side_effect = (
       httpx.ReadTimeout('Read timed out')
   )
 
   with mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep:
     with pytest.raises(httpx.ReadTimeout):
       await session_service.append_event(session=session, event=event_to_append)
-    assert (
-        mock_api_client_instance.agent_engines.sessions.events.append.call_count
-        == 1
-    )
+    assert mock_api_client_instance.sessions.events.append.call_count == 1
     mock_sleep.assert_not_called()
 
 
@@ -1889,16 +1937,13 @@ async def test_append_event_does_not_retry_on_non_429_client_error(
       author='model',
       timestamp=1734005533.0,
   )
-  mock_api_client_instance.agent_engines.sessions.events.append.side_effect = (
-      ClientError(400, {'error': {'code': 400, 'message': 'Bad request'}})
+  mock_api_client_instance.sessions.events.append.side_effect = ClientError(
+      400, {'error': {'code': 400, 'message': 'Bad request'}}
   )
 
   with mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep:
     with pytest.raises(ClientError) as exc_info:
       await session_service.append_event(session=session, event=event_to_append)
     assert exc_info.value.code == 400
-    assert (
-        mock_api_client_instance.agent_engines.sessions.events.append.call_count
-        == 1
-    )
+    assert mock_api_client_instance.sessions.events.append.call_count == 1
     mock_sleep.assert_not_called()

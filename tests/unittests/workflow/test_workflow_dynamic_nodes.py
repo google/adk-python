@@ -38,6 +38,8 @@ from google.adk.workflow._workflow import Workflow
 from google.genai import types
 import pytest
 
+from .workflow_testing_utils import create_runner
+
 # --- Helpers ---
 
 
@@ -124,7 +126,7 @@ async def test_dynamic_node_fresh_execution():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   events = await _run(runner, ss, session, 'go')
@@ -162,7 +164,7 @@ async def test_dynamic_node_with_downstream_static():
       edges=[(START, parent, after)],
   )
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   events = await _run(runner, ss, session, 'hello')
@@ -212,7 +214,7 @@ async def test_dynamic_node_interrupted_resume():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   # Run 1: interrupts
@@ -274,7 +276,7 @@ async def test_dynamic_node_completed_dedup_on_resume():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   # Run 1: completer completes, interrupter interrupts
@@ -353,7 +355,7 @@ async def test_dynamic_node_sequential_interrupts():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   # Run 1: a interrupts, parent never reaches b
@@ -409,7 +411,7 @@ async def test_dynamic_node_run_id_reused_on_resume():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   # Run 1: interrupts
@@ -476,7 +478,7 @@ async def test_nested_static_workflow_with_dynamic_interrupt():
       edges=[(START, inner_wf)],
   )
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=outer_wf, session_service=ss)
+  runner = create_runner(app_name='test', node=outer_wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   # Run 1: dynamic approver interrupts inside inner_wf
@@ -533,7 +535,7 @@ async def test_dynamic_workflow_with_static_interrupt():
       edges=[(START, parent)],
   )
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=outer_wf, session_service=ss)
+  runner = create_runner(app_name='test', node=outer_wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   # Run 1: inner_wf's static node interrupts
@@ -597,7 +599,7 @@ async def test_dynamic_workflow_with_nested_dynamic_interrupt():
       edges=[(START, parent)],
   )
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=outer_wf, session_service=ss)
+  runner = create_runner(app_name='test', node=outer_wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   # Run 1: deeply nested approver interrupts
@@ -673,7 +675,7 @@ async def test_parallel_parents_same_named_dynamic_children():
       ],
   )
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   # Run 1: parent_a completes, parent_b's child interrupts
@@ -741,7 +743,7 @@ async def test_dynamic_node_use_as_output_with_interrupt():
       edges=[(START, parent)],
   )
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   # Run 1: child interrupts
@@ -831,7 +833,7 @@ async def test_dynamic_node_none_output_not_rerun():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   # Run 1: A interrupts
@@ -896,7 +898,7 @@ async def test_dynamic_node_rerun_on_resume_false():
       edges=[(START, parent)],
   )
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   # Run 1: child interrupts
@@ -939,7 +941,7 @@ async def test_dynamic_nodes_get_run_id_one():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   events = await _run(runner, ss, session, 'go')
@@ -984,7 +986,7 @@ async def test_dynamic_node_keeps_run_id_on_resume():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   # Run 1: child interrupts.
@@ -1031,7 +1033,7 @@ async def test_custom_run_id_used_on_events():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   events = await _run(runner, ss, session, 'go')
@@ -1076,7 +1078,7 @@ async def test_dynamic_node_failure_handling():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   events = await _run(runner, ss, session, 'go')
@@ -1118,7 +1120,7 @@ async def test_detached_dynamic_node_failure_surfaces():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   with pytest.raises(ValueError, match='detached boom'):
@@ -1158,7 +1160,7 @@ async def test_detached_dynamic_node_interrupt_surfaces():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   with pytest.raises(RuntimeError, match='detached node cannot be resumed'):
@@ -1186,7 +1188,7 @@ async def test_detached_dynamic_node_success_keeps_workflow_succeeding():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   events = await _run(runner, ss, session, 'go')
@@ -1222,7 +1224,7 @@ async def test_detached_dynamic_node_finished_before_graph_end_is_not_checked():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   events = await _run(runner, ss, session, 'go')
@@ -1277,7 +1279,7 @@ async def test_workflow_resume_does_not_rerun_completed_llm_agent():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   # When the workflow is run until it interrupts
@@ -1331,7 +1333,7 @@ async def test_dynamic_node_parallel_execution():
 
   wf = Workflow(name='wf', edges=[(START, parent_node)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   events = await _run(runner, ss, session, 'go')
@@ -1418,7 +1420,7 @@ async def test_inner_llm_agent_node_input_survives_tool_round_trip():
 
   wf = Workflow(name='wf', edges=[(START, parent)])
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   # When the workflow runs end-to-end through the tool round trip

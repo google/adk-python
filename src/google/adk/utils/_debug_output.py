@@ -60,7 +60,10 @@ def print_event(event: Event, *, verbose: bool = False) -> None:
       text_buffer.clear()
 
   for part in event.content.parts:
-    # Text parts are always shown regardless of verbose setting
+    if part.thought and not verbose:
+      continue
+
+    # Response text is shown regardless of verbose setting
     # because they contain the actual agent responses users expect
     if part.text:
       text_buffer.append(part.text)

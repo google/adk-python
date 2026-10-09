@@ -144,9 +144,10 @@ If a metric name in `criteria` is also present in `custom_metrics`, the
 `code_config` in `CustomMetricConfig` will be used to locate the custom metric
 implementation.
 
-The `metric` field in `CustomMetricConfig` can be used to provide metric
-information like `min_value`, `max_value`, and `description`. If `metric`
-is not provided, a default `MetricInfo` will be created, using
+The `metric_info` field in `CustomMetricConfig` can be used to provide metric
+information like `description` and the value range in
+`metric_value_info.interval`. If `metric_info` is not provided, a default
+`MetricInfo` will be created, using
 `description` from `CustomMetricConfig` if provided, and default values
 for `min_value` (0.0) and `max_value` (1.0).
 
@@ -166,10 +167,14 @@ Example:
       "code_config": {
         "name": "path.to.my.custom.metric.function"
       },
-      "metric": {
+      "metric_info": {
         "metric_name": "my_custom_metric",
-        "min_value": -10.0,
-        "max_value": 10.0,
+        "metric_value_info": {
+          "interval": {
+            "min_value": -10.0,
+            "max_value": 10.0
+          }
+        },
         "description": "My custom metric."
       }
     }

@@ -376,3 +376,25 @@ async def test_send_to_model_caches_only_audio_blobs():
       mock.call(video_blob),
       mock.call(audio_blob),
   ]
+
+
+async def test_send_to_model_does_not_mutate_caller_content_role():
+  """Defaulting role='user' must not mutate the caller's Content object."""
+  flow = _TestBaseLlmFlow()
+  queue = LiveRequestQueue()
+  content = types.Content(parts=[types.Part.from_text(text='hello')])
+  queue.send_content(content)
+  queue.close()
+  context = _create_test_context(live_request_queue=queue)
+  await context.session_service.create_session(
+      app_name='test_app', user_id='u1', session_id='s1'
+  )
+  mock_connection = mock.AsyncMock()
+
+  await _live_llm_flow.send_to_model(
+      flow, mock_connection, context, LlmRequest()
+  )
+
+  assert content.role is None
+  sent_content = mock_connection._send_content.await_args.args[0]
+  assert sent_content.role == 'user'

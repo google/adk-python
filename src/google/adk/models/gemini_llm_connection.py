@@ -18,25 +18,19 @@ import logging
 from typing import AsyncGenerator
 from typing import cast
 from typing import Final
-from typing import Union
 
 from google.genai import types
 
 from ..utils import model_name_utils
-from ..utils.content_utils import filter_audio_parts
+from ..utils.content_utils import _filter_media_parts
 from ..utils.context_utils import Aclosing
 from ..utils.variant_utils import GoogleLLMVariant
 from .base_llm_connection import BaseLlmConnection
+from .base_llm_connection import RealtimeInput
 from .llm_response import LlmResponse
 
 logger = logging.getLogger('google_adk.' + __name__)
 
-RealtimeInput = Union[
-    types.Blob,
-    types.ActivityStart,
-    types.ActivityEnd,
-    types.LiveClientRealtimeInput,
-]
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -82,10 +76,12 @@ class GeminiLlmConnection(BaseLlmConnection):
     # TODO: Remove this filter and translate unary contents to streaming
     # contents properly.
 
-    # Filter out audio parts from history because:
+    # Filter out audio and internal `_adk_live` artifact parts because:
     # 1. audio has already been transcribed.
     # 2. sending audio via connection.send or connection.send_live_content is
     # not supported by LIVE API (session will be corrupted).
+    # 3. `_adk_live` artifacts persisted by `save_live_blob` are internal
+    # `artifact://` references that the model cannot resolve.
     # This method is called when:
     # 1. Agent transfer to a new agent
     # 2. Establishing a new live connection with previous ADK session history
@@ -93,7 +89,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     contents = [
         filtered
         for content in history
-        if (filtered := filter_audio_parts(content)) is not None
+        if (filtered := _filter_media_parts(content)) is not None
     ]
 
     if contents:

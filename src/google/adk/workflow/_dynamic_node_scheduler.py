@@ -32,6 +32,8 @@ from pydantic import ValidationError
 
 from ..agents.base_agent import BaseAgent
 from ..events._node_path_builder import _NodePathBuilder
+from ..utils._agent_mode import AgentMode
+from ..utils._agent_mode import DefaultLlmNodeMode
 from ._base_node import BaseNode
 from ._errors import DynamicNodeFailError
 from ._errors import NodeInterruptedError
@@ -334,7 +336,7 @@ class DynamicNodeScheduler:
     node_path = str(base_path_builder.append(target_node_name, run_id))
     if (
         override_isolation_scope is None
-        and getattr(node, 'mode', None) == 'task'
+        and getattr(node, 'mode', None) == AgentMode.TASK
     ):
       override_isolation_scope = node_path
 
@@ -680,7 +682,13 @@ async def run_node_internal(
         ' response.'
     )
 
-  built_node = build_node(node)
+  is_root_agent_run = (
+      ctx.parent_ctx is None and ctx.node is None and not ctx.node_path
+  )
+  default_llm_mode: DefaultLlmNodeMode = (
+      AgentMode.CHAT if is_root_agent_run else AgentMode.SINGLE_TURN
+  )
+  built_node = build_node(node, default_llm_mode=default_llm_mode)
 
   if isinstance(node, BaseAgent) and isinstance(built_node, BaseAgent):
     built_node.parent_agent = node.parent_agent

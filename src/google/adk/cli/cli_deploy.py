@@ -13,9 +13,11 @@
 # limitations under the License.
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 import importlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -31,6 +33,10 @@ from typing import Optional
 import warnings
 
 import click
+from packaging.requirements import InvalidRequirement
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+from packaging.utils import NormalizedName
 from packaging.version import parse
 
 from ..version import __version__
@@ -40,18 +46,60 @@ from .deployers._dockerfile_template import _render_install_agent_deps
 from .deployers._dockerfile_template import _validate_app_name
 from .utils import _onboarding
 
+logger = logging.getLogger('google_adk.' + __name__)
+
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
 _GEMINI_ENTERPRISE_FLAG_MIN_VERSION: Final[str] = '2.2.0'
+# The deployed image runs `adk api_server`, which imports `agentplatform`, so
+# the staged requirements must resolve to the v2 SDK and not to a v1 release
+# that only ships the legacy `vertexai` surface.
 _AGENT_ENGINE_REQUIREMENT: Final[str] = (
-    'google-cloud-aiplatform[adk,agent_engines]'
+    'google-cloud-aiplatform[adk,agent_engines]>=2.2,<3'
 )
+_AGENT_ENGINE_MIN_VERSION: Final[str] = '2.2'
+# Either distribution provides the top-level `agentplatform` package: the
+# bundled google-cloud-aiplatform, and the standalone package it was split
+# into. An agent may legitimately pin either one. Held in canonical form,
+# because `Requirement.name` preserves whatever spelling the agent wrote and
+# `google_cloud_aiplatform` is the same distribution as `google-cloud-aiplatform`.
+_AGENT_PLATFORM_DISTRIBUTIONS: Final[frozenset[str]] = frozenset({
+    canonicalize_name('google-cloud-aiplatform'),
+    canonicalize_name('google-cloud-agentplatform'),
+})
 # Full Cloud Build private worker pool resource name, e.g.
 # projects/my-project/locations/us-central1/workerPools/my-private-pool
 _WORKER_POOL_RESOURCE_RE: Final[re.Pattern[str]] = re.compile(
     r'^projects/[^/]+/locations/[^/]+/workerPools/[^/]+$'
 )
+
+
+def _validate_trigger_options(
+    trigger_sources: str | None,
+    trigger_oidc_audience: str | None,
+    trigger_oidc_service_accounts: str | None,
+) -> None:
+  if trigger_sources and not trigger_oidc_audience:
+    raise click.UsageError(
+        '--trigger_oidc_audience is required when --trigger_sources is set'
+    )
+  if trigger_oidc_service_accounts and not trigger_oidc_audience:
+    raise click.UsageError(
+        '--trigger_oidc_service_accounts requires --trigger_oidc_audience to'
+        ' be set'
+    )
+  if (
+      trigger_sources
+      and trigger_oidc_audience
+      and not trigger_oidc_service_accounts
+  ):
+    logger.warning(
+        '--trigger_oidc_audience is set without'
+        ' --trigger_oidc_service_accounts; any Google account can obtain a'
+        ' token for this audience. Set --trigger_oidc_service_accounts to'
+        ' restrict caller identity.'
+    )
 
 
 def _validate_worker_pool(worker_pool: str) -> str:
@@ -135,6 +183,77 @@ def _apply_worker_pool_to_agent_config(
     agent_config.pop('build_config', None)
 
 
+# Runtime service account email for Agent Engine, e.g.
+# my-agent@my-project.iam.gserviceaccount.com
+_SERVICE_ACCOUNT_EMAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r'^[a-zA-Z0-9._+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+)
+
+
+def _validate_service_account(service_account: str) -> str:
+  """Validates an Agent Engine runtime service account email.
+
+  Args:
+    service_account: Google Cloud service account email.
+
+  Returns:
+    The validated service account email.
+
+  Raises:
+    click.ClickException: If the email is empty or malformed.
+  """
+  service_account = service_account.strip()
+  if not service_account:
+    raise click.ClickException(
+        'service_account must be a non-empty service account email.'
+    )
+  if not _SERVICE_ACCOUNT_EMAIL_RE.fullmatch(service_account):
+    raise click.ClickException(
+        'Invalid service_account email. Expected a Google Cloud service'
+        ' account email such as'
+        ' my-agent@my-project.iam.gserviceaccount.com.'
+        f' Got: {service_account}'
+    )
+  return service_account
+
+
+def _apply_service_account_to_agent_config(
+    agent_config: dict[str, Any],
+    service_account: Optional[str],
+) -> None:
+  """Sets top-level ``service_account`` on the Agent Engine update config.
+
+  Precedence (highest last):
+
+  1. Existing ``service_account`` in ``.agent_engine_config.json``.
+  2. Explicit ``service_account`` argument (CLI / resolved from
+     ``GOOGLE_CLOUD_SERVICE_ACCOUNT``), which overrides the config file.
+
+  The Vertex Agent Engine SDK maps ``config.service_account`` onto
+  ``spec.service_account`` (runtime identity). This is distinct from
+  ``build_config.service_account`` (Cloud Build identity).
+  """
+  if service_account is not None:
+    validated = _validate_service_account(service_account)
+    existing = agent_config.get('service_account')
+    if existing and existing != validated:
+      click.echo(
+          'Overriding service_account in agent platform config with'
+          f' {validated}'
+      )
+    agent_config['service_account'] = validated
+    return
+
+  existing = agent_config.get('service_account')
+  if existing is None:
+    return
+  if not isinstance(existing, str):
+    raise click.ClickException(
+        'service_account in agent platform config must be a string email.'
+    )
+  agent_config['service_account'] = _validate_service_account(existing)
+
+
 def _on_rm_error(func: Callable[..., Any], path: str, exc_info: Any) -> None:
   """Error handler for shutil.rmtree to handle read-only files on Windows."""
   os.chmod(path, stat.S_IWRITE)
@@ -163,20 +282,67 @@ def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
   with open(requirements_txt_path, 'r', encoding='utf-8') as f:
     requirements = f.read()
 
-  for line in requirements.splitlines():
-    stripped = line.strip()
-    if (
-        stripped
-        and not stripped.startswith('#')
-        and stripped.startswith('google-cloud-aiplatform')
-    ):
-      return
+  # Canonical names, in first-seen order, so the appended floors are stable and
+  # each distribution gets exactly one however many lines name it.
+  pinned_distributions: dict[NormalizedName, None] = {}
+  hash_checking = False
+  # A backslash at end of line continues the requirement onto the next one,
+  # which is how `uv export` and `pip-compile --generate-hashes` lay out each
+  # pin and its `--hash` options.
+  for line in re.sub(r'\\\r?\n', ' ', requirements).splitlines():
+    # A requirements file comment runs from an unquoted `#` to end of line, and
+    # `Requirement()` rejects one left in place, so a pin carrying a trailing
+    # comment would otherwise look like no pin at all. The `#` has to be
+    # preceded by whitespace or start the line, so that the fragment in a
+    # direct URL reference survives.
+    stripped = re.split(r'(?:^|\s)#', line, maxsplit=1)[0].strip()
+    if not stripped:
+      continue
+    # pip checks hashes for the whole file once any requirement carries
+    # `--hash`, or when `--require-hashes` is given.
+    if '--hash' in stripped or stripped.startswith('--require-hashes'):
+      hash_checking = True
+    # Per-requirement options such as `--hash` follow the specifier, and
+    # `Requirement()` rejects them, so parse only what comes before.
+    specifier = re.split(r'\s+--', stripped, maxsplit=1)[0]
+    if specifier.startswith('-'):
+      continue
+    try:
+      existing = Requirement(specifier)
+    except InvalidRequirement:
+      continue
+    name = canonicalize_name(existing.name)
+    if name in _AGENT_PLATFORM_DISTRIBUTIONS:
+      pinned_distributions[name] = None
+
+  if pinned_distributions and hash_checking:
+    # A hash-locked file already pins each distribution to one exact, hashed
+    # release, and in hash-checking mode pip rejects any requirement without a
+    # hash, so appending a floor would fail the image build outright. Leave the
+    # agent's lock as written, as this function did before it stated floors.
+    return
 
   with open(requirements_txt_path, 'a', encoding='utf-8') as f:
     if requirements and not requirements.endswith('\n'):
       f.write('\n')
-    f.write(f'{_AGENT_ENGINE_REQUIREMENT}\n')
-    f.write(f'google-adk[a2a]=={__version__}\n')
+    if pinned_distributions:
+      # The agent already asks for an Agent Platform distribution. Rather than
+      # judging whether its specifier can reach the v2 surface, state the floor
+      # as a second requirement on the same distribution and let pip reconcile
+      # the two. pip is the authority on what a specifier set allows, so a pin
+      # that cannot reach the floor fails the image build with a resolver error
+      # naming both lines, instead of this function having to reimplement -- and
+      # get wrong -- the rules for `<2`, `>=1.0,!=2.2`, `~=2.3` and the rest.
+      # The deployed image runs `adk api_server`, which reaches for
+      # `Client.runtimes`; a v1 release only has `Client.agent_engines`, so
+      # failing the build is the point. Every pinned distribution gets its own
+      # floor: both ship the `agentplatform` package, so a v1 pin on either one
+      # can put the v1 surface on disk.
+      for name in pinned_distributions:
+        f.write(f'{name}>={_AGENT_ENGINE_MIN_VERSION},<3\n')
+    else:
+      f.write(f'{_AGENT_ENGINE_REQUIREMENT}\n')
+      f.write(f'google-adk[a2a]=={__version__}\n')
 
 
 # What a deployment advertises to Agent Platform: one entry per operation the
@@ -374,6 +540,189 @@ _AGENT_ENGINE_CLASS_METHODS = [
                 'query': {'type': 'string'},
             },
             'required': ['user_id', 'query'],
+            'type': 'object',
+        },
+        'api_mode': 'async',
+    },
+    {
+        'name': 'async_save_artifact',
+        'description': (
+            'Saves an artifact to the artifact service storage.\n\n       '
+            ' Args:\n            user_id (str):\n                Required. The'
+            ' ID of the user.\n            filename (str):\n               '
+            ' Required. The filename of the artifact.\n            artifact'
+            ' (Union[types.Part, Dict[str, Any], str]):\n               '
+            ' Required. The artifact to save.\n            session_id'
+            ' (Optional[str]):\n                Optional. The ID of the'
+            ' session.\n            custom_metadata (Optional[Dict[str,'
+            ' Any]]):\n                Optional. Custom metadata to associate'
+            ' with the artifact.\n            **kwargs (dict[str, Any]):\n     '
+            '           Optional. Additional keyword arguments to pass to the\n'
+            '                artifact service.\n\n        Returns:\n           '
+            ' int: The revision ID.\n        '
+        ),
+        'parameters': {
+            'properties': {
+                'user_id': {'type': 'string'},
+                'filename': {'type': 'string'},
+                'artifact': {
+                    'anyOf': [
+                        {'additionalProperties': True, 'type': 'object'},
+                        {'type': 'string'},
+                    ]
+                },
+                'session_id': {'type': 'string', 'nullable': True},
+                'custom_metadata': {'type': 'object', 'nullable': True},
+            },
+            'required': ['user_id', 'filename', 'artifact'],
+            'type': 'object',
+        },
+        'api_mode': 'async',
+    },
+    {
+        'name': 'async_load_artifact',
+        'description': (
+            'Gets an artifact from the artifact service storage.\n\n       '
+            ' Args:\n            user_id (str):\n                Required. The'
+            ' ID of the user.\n            filename (str):\n               '
+            ' Required. The filename of the artifact.\n            session_id'
+            ' (Optional[str]):\n                Optional. The ID of the'
+            ' session.\n            version (Optional[int]):\n               '
+            ' Optional. The version of the artifact.\n            **kwargs'
+            ' (dict[str, Any]):\n                Optional. Additional keyword'
+            ' arguments to pass to the\n                artifact service.\n\n  '
+            '      Returns:\n            Optional[types.Part]: The artifact or'
+            ' None if not found.\n        '
+        ),
+        'parameters': {
+            'properties': {
+                'user_id': {'type': 'string'},
+                'filename': {'type': 'string'},
+                'session_id': {'type': 'string', 'nullable': True},
+                'version': {'type': 'integer', 'nullable': True},
+            },
+            'required': ['user_id', 'filename'],
+            'type': 'object',
+        },
+        'api_mode': 'async',
+    },
+    {
+        'name': 'async_list_artifact_keys',
+        'description': (
+            'Lists all the artifact filenames within a session.\n\n       '
+            ' Args:\n            user_id (str):\n                Required. The'
+            ' ID of the user.\n            session_id (Optional[str]):\n       '
+            '         Optional. The ID of the session.\n            **kwargs'
+            ' (dict[str, Any]):\n                Optional. Additional keyword'
+            ' arguments to pass to the\n                artifact service.\n\n  '
+            '      Returns:\n            list[str]: A list of artifact'
+            ' filenames.\n        '
+        ),
+        'parameters': {
+            'properties': {
+                'user_id': {'type': 'string'},
+                'session_id': {'type': 'string', 'nullable': True},
+            },
+            'required': ['user_id'],
+            'type': 'object',
+        },
+        'api_mode': 'async',
+    },
+    {
+        'name': 'async_delete_artifact',
+        'description': (
+            'Deletes an artifact.\n\n        Args:\n            user_id'
+            ' (str):\n                Required. The ID of the user.\n          '
+            '  filename (str):\n                Required. The filename of the'
+            ' artifact.\n            session_id (Optional[str]):\n             '
+            '   Optional. The ID of the session.\n            **kwargs'
+            ' (dict[str, Any]):\n                Optional. Additional keyword'
+            ' arguments to pass to the\n                artifact service.\n    '
+            '    '
+        ),
+        'parameters': {
+            'properties': {
+                'user_id': {'type': 'string'},
+                'filename': {'type': 'string'},
+                'session_id': {'type': 'string', 'nullable': True},
+            },
+            'required': ['user_id', 'filename'],
+            'type': 'object',
+        },
+        'api_mode': 'async',
+    },
+    {
+        'name': 'async_list_versions',
+        'description': (
+            'Lists all versions of an artifact.\n\n        Args:\n           '
+            ' user_id (str):\n                Required. The ID of the user.\n  '
+            '          filename (str):\n                Required. The filename'
+            ' of the artifact.\n            session_id (Optional[str]):\n      '
+            '          Optional. The ID of the session.\n            **kwargs'
+            ' (dict[str, Any]):\n                Optional. Additional keyword'
+            ' arguments to pass to the\n                artifact service.\n\n  '
+            '      Returns:\n            list[int]: A list of all available'
+            ' versions of the artifact.\n        '
+        ),
+        'parameters': {
+            'properties': {
+                'user_id': {'type': 'string'},
+                'filename': {'type': 'string'},
+                'session_id': {'type': 'string', 'nullable': True},
+            },
+            'required': ['user_id', 'filename'],
+            'type': 'object',
+        },
+        'api_mode': 'async',
+    },
+    {
+        'name': 'async_list_artifact_versions',
+        'description': (
+            'Lists all versions and their metadata for a specific'
+            ' artifact.\n\n        Args:\n            user_id (str):\n         '
+            '       Required. The ID of the user.\n            filename'
+            ' (str):\n                Required. The filename of the'
+            ' artifact.\n            session_id (Optional[str]):\n             '
+            '   Optional. The ID of the session.\n            **kwargs'
+            ' (dict[str, Any]):\n                Optional. Additional keyword'
+            ' arguments to pass to the\n                artifact service.\n\n  '
+            '      Returns:\n            list[ArtifactVersion]: A list of'
+            ' ArtifactVersion objects.\n        '
+        ),
+        'parameters': {
+            'properties': {
+                'user_id': {'type': 'string'},
+                'filename': {'type': 'string'},
+                'session_id': {'type': 'string', 'nullable': True},
+            },
+            'required': ['user_id', 'filename'],
+            'type': 'object',
+        },
+        'api_mode': 'async',
+    },
+    {
+        'name': 'async_get_artifact_version',
+        'description': (
+            'Gets the metadata for a specific version of an artifact.\n\n      '
+            '  Args:\n            user_id (str):\n                Required. The'
+            ' ID of the user.\n            filename (str):\n               '
+            ' Required. The filename of the artifact.\n            session_id'
+            ' (Optional[str]):\n                Optional. The ID of the'
+            ' session.\n            version (Optional[int]):\n               '
+            ' Optional. The version number of the artifact.\n            '
+            '**kwargs (dict[str, Any]):\n                Optional. Additional'
+            ' keyword arguments to pass to the\n                artifact'
+            ' service.\n\n        Returns:\n            Optional['
+            'ArtifactVersion]: An ArtifactVersion object or None.\n        '
+        ),
+        'parameters': {
+            'properties': {
+                'user_id': {'type': 'string'},
+                'filename': {'type': 'string'},
+                'session_id': {'type': 'string', 'nullable': True},
+                'version': {'type': 'integer', 'nullable': True},
+            },
+            'required': ['user_id', 'filename'],
             'type': 'object',
         },
         'api_mode': 'async',
@@ -705,6 +1054,64 @@ def _get_ignore_patterns_func(
   return shutil.ignore_patterns(*patterns)
 
 
+def _stage_extra_packages(
+    requested_extra_packages: Sequence[tuple[str, str]],
+    build_context: str,
+    *,
+    reserved_names: Sequence[str],
+) -> list[str]:
+  """Copies extra packages into the container build context.
+
+  Args:
+    requested_extra_packages: (path, base_dir) pairs. A relative path is
+      resolved against its base_dir; an absolute path is taken as is.
+    build_context: The folder the container image is built from.
+    reserved_names: Names the deployment generates in the build context after
+      this point, and which an entry must therefore not take.
+
+  Returns:
+    The names of the staged entries, relative to the build context.
+
+  Raises:
+    click.ClickException: If a path does not exist, or its name collides with
+      something else in the build context.
+  """
+  staged_extra_packages: list[str] = []
+  for pkg, base_dir in requested_extra_packages:
+    pkg_src = pkg if os.path.isabs(pkg) else os.path.join(base_dir, pkg)
+    pkg_src = os.path.abspath(pkg_src)
+    if not os.path.exists(pkg_src):
+      raise click.ClickException(f'extra_packages path not found: {pkg}')
+    base = os.path.basename(os.path.normpath(pkg_src))
+    dst = os.path.join(build_context, base)
+    if os.path.exists(dst) or base in reserved_names:
+      raise click.ClickException(
+          f'extra_packages entry has a conflicting name: {base}'
+      )
+    if os.path.isdir(pkg_src):
+      shutil.copytree(pkg_src, dst, dirs_exist_ok=True)
+    else:
+      shutil.copy2(pkg_src, dst)
+    staged_extra_packages.append(base)
+  return staged_extra_packages
+
+
+def _get_extra_packages_copy(
+    staged_extra_packages: Sequence[str], build_context: str
+) -> str:
+  """Returns the Dockerfile lines that copy staged extra packages."""
+  if not staged_extra_packages:
+    return ''
+  copy_lines = [
+      f'COPY --chown=myuser:myuser "{base}/" "/app/{base}/"'
+      if os.path.isdir(os.path.join(build_context, base))
+      else f'COPY --chown=myuser:myuser "{base}" "/app/{base}"'
+      for base in staged_extra_packages
+  ]
+  copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
+  return '\n'.join(copy_lines)
+
+
 def run(
     *,
     agent_folder: str,
@@ -734,6 +1141,7 @@ def run(
     env: tuple[str, ...] = (),
     extra_gcloud_args: tuple[str, ...] | None = None,
     with_cloud_run_sandbox: bool = False,
+    extra_packages: list[str] | None = None,
 ) -> None:
   """Deploys an agent to Google Cloud Run.
 
@@ -772,7 +1180,13 @@ def run(
     use_local_storage: Whether to use local .adk storage in the container.
     with_cloud_run_sandbox: Whether to enable the Cloud Run sandbox for code
       execution.
+    extra_packages: Additional local file or directory paths to stage alongside
+      the agent and make importable in the image. A relative path is resolved
+      against the current working directory.
   """
+  _validate_trigger_options(
+      trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
+  )
   app_name = _validate_app_name(
       app_name or os.path.basename(os.path.normpath(agent_folder))
   )
@@ -798,6 +1212,12 @@ def run(
         app_name, requirements_txt_path, '# No requirements.txt found.'
     )
     click.echo('Copying agent source code completed.')
+
+    staged_extra_packages = _stage_extra_packages(
+        [(pkg, os.getcwd()) for pkg in extra_packages or []],
+        temp_folder,
+        reserved_names=('Dockerfile',),
+    )
 
     # create Dockerfile
     click.echo('Creating Dockerfile...')
@@ -842,7 +1262,9 @@ def run(
         trigger_oidc_service_accounts_option=trigger_oidc_service_accounts_option,
         gemini_enterprise_option='',
         express_mode_option='',
-        extra_packages_copy='',
+        extra_packages_copy=_get_extra_packages_copy(
+            staged_extra_packages, temp_folder
+        ),
         extra_env_vars='',
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
@@ -996,6 +1418,7 @@ def to_agent_engine(
     adk_version: Optional[str] = None,
     extra_packages: Optional[list[str]] = None,
     worker_pool: Optional[str] = None,
+    service_account: Optional[str] = None,
 ) -> None:
   """Deploys an agent to Gemini Enterprise Agent Platform.
 
@@ -1069,7 +1492,15 @@ def to_agent_engine(
       deploys can reach private networks / comply with org build policies.
       Overrides `worker_pool` / `build_config.worker_pool` from
       `.agent_engine_config.json` when both are present.
+    service_account (str): Optional. Google Cloud service account email used
+      as the Agent Engine runtime identity. Overrides
+      ``GOOGLE_CLOUD_SERVICE_ACCOUNT`` in the ``.env`` file and
+      ``service_account`` in ``.agent_engine_config.json`` when both are
+      present. When omitted, Agent Engine uses its default service agent.
   """
+  _validate_trigger_options(
+      trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
+  )
   app_name = os.path.basename(os.path.normpath(agent_folder))
   _validate_app_name(app_name)
   display_name = display_name or app_name
@@ -1175,24 +1606,11 @@ def to_agent_engine(
     requested_extra_packages = [
         (pkg, original_cwd) for pkg in extra_packages or []
     ] + [(pkg, agent_folder_abs) for pkg in config_extra_packages]
-    staged_extra_packages = []
-    for pkg, base_dir in requested_extra_packages:
-      pkg_src = pkg if os.path.isabs(pkg) else os.path.join(base_dir, pkg)
-      pkg_src = os.path.abspath(pkg_src)
-      if not os.path.exists(pkg_src):
-        raise click.ClickException(f'extra_packages path not found: {pkg}')
-      base = os.path.basename(os.path.normpath(pkg_src))
-      dst = os.path.join(temp_folder_path, base)
-      # The Dockerfile is written after this loop, so it is not on disk yet.
-      if os.path.exists(dst) or base == 'Dockerfile':
-        raise click.ClickException(
-            f'extra_packages entry has a conflicting name: {base}'
-        )
-      if os.path.isdir(pkg_src):
-        shutil.copytree(pkg_src, dst, dirs_exist_ok=True)
-      else:
-        shutil.copy2(pkg_src, dst)
-      staged_extra_packages.append(base)
+    staged_extra_packages = _stage_extra_packages(
+        requested_extra_packages,
+        temp_folder_path,
+        reserved_names=('Dockerfile',),
+    )
 
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     if requirements_file:
@@ -1251,6 +1669,23 @@ def to_agent_engine(
           else:
             region = env_region
             click.echo(f'{region=} set by GOOGLE_CLOUD_LOCATION in {env_file}')
+      # Pop so the SA email is not forwarded as a runtime env var.
+      if 'GOOGLE_CLOUD_SERVICE_ACCOUNT' in env_vars:
+        env_service_account = env_vars.pop('GOOGLE_CLOUD_SERVICE_ACCOUNT')
+        if env_service_account:
+          if service_account:
+            click.secho(
+                'Ignoring GOOGLE_CLOUD_SERVICE_ACCOUNT in .env as'
+                ' `--service_account` was explicitly passed and takes'
+                ' precedence',
+                fg='yellow',
+            )
+          else:
+            service_account = env_service_account
+            click.echo(
+                f'{service_account=} set by GOOGLE_CLOUD_SERVICE_ACCOUNT in'
+                f' {env_file}'
+            )
     if api_key:
       if 'GOOGLE_API_KEY' in env_vars:
         click.secho(
@@ -1294,11 +1729,11 @@ def to_agent_engine(
             f' {sorted(env_vars)}'
         )
       agent_config['env_vars'] = env_vars
+    _apply_service_account_to_agent_config(agent_config, service_account)
     # Set env_vars in agent_config to None if it is not set.
     agent_config['env_vars'] = agent_config.get('env_vars', env_vars)
 
-    import vertexai
-
+    from ..dependencies._agentplatform import agentplatform
     from ..utils._google_client_headers import get_tracking_headers
 
     if not (api_key or project or region):
@@ -1311,14 +1746,14 @@ def to_agent_engine(
 
     click.echo('Initializing Agent Platform client...')
     if project and region:
-      client = vertexai.Client(
+      client = agentplatform.Client(
           project=project,
           location=region,
           http_options={'headers': get_tracking_headers()},
       )
       click.echo('Agent Platform client initialized with project and region.')
     elif api_key:
-      client = vertexai.Client(
+      client = agentplatform.Client(
           api_key=api_key,
           http_options={'headers': get_tracking_headers()},
       )
@@ -1329,6 +1764,20 @@ def to_agent_engine(
           'key or project and region.'
       )
       return
+
+    # A v1 google-cloud-aiplatform also ships an importable `agentplatform`,
+    # whose client exposes `agent_engines` where v2 exposes `runtimes`. The
+    # import above therefore succeeds against either, and without this check
+    # the mismatch surfaces only as a bare AttributeError from the create call
+    # further down, after the deploy already looks under way.
+    if getattr(client, 'runtimes', None) is None:
+      raise click.ClickException(
+          'The installed Agent Platform SDK exposes `Client.agent_engines`'
+          ' rather than `Client.runtimes`, so it predates the surface this'
+          ' deployment uses. Install google-cloud-agentplatform>=2.2, or'
+          ' google-cloud-aiplatform>=2.2,<3 if you depend on the bundled'
+          ' distribution.'
+      )
 
     if skip_agent_import_validation:
       warnings.warn(
@@ -1364,16 +1813,6 @@ def to_agent_engine(
           if trigger_oidc_service_accounts
           else ''
       )
-      extra_packages_copy = ''
-      if staged_extra_packages:
-        copy_lines = [
-            f'COPY --chown=myuser:myuser "{base}/" "/app/{base}/"'
-            if os.path.isdir(os.path.join(temp_folder_path, base))
-            else f'COPY --chown=myuser:myuser "{base}" "/app/{base}"'
-            for base in staged_extra_packages
-        ]
-        copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
-        extra_packages_copy = '\n'.join(copy_lines)
       agent_engine_uri = f'agentengine://{resource_name}'
       supports_gemini_enterprise_flag = parse(adk_version) >= parse(
           _GEMINI_ENTERPRISE_FLAG_MIN_VERSION
@@ -1422,7 +1861,9 @@ def to_agent_engine(
           express_mode_option=(
               '--express_mode' if api_key and not project else ''
           ),
-          extra_packages_copy=extra_packages_copy,
+          extra_packages_copy=_get_extra_packages_copy(
+              staged_extra_packages, temp_folder_path
+          ),
           extra_env_vars=extra_env_vars,
       )
       with open('Dockerfile', 'w', encoding='utf-8') as f:
@@ -1447,8 +1888,8 @@ def to_agent_engine(
 
     resource_name = agent_engine_id
     if not resource_name:
-      agent_engine = client.agent_engines.create()
-      resource_name = agent_engine.api_resource.name
+      runtime = client.runtimes.create()
+      resource_name = runtime.api_resource.name
       click.secho(f'Created a new instance: {resource_name}', fg='green')
     elif project and region and not resource_name.startswith('projects/'):
       resource_name = f'projects/{project}/locations/{region}/reasoningEngines/{agent_engine_id}'
@@ -1456,13 +1897,13 @@ def to_agent_engine(
     create_dockerfile_for_agent_engine(resource_name)
     click.echo(f'Dockerfile created at {os.getcwd()}/Dockerfile.')
     try:
-      client.agent_engines.update(name=resource_name, config=agent_config)
+      client.runtimes.update(name=resource_name, config=agent_config)
       click.secho(f'Deployed to Agent Platform: {resource_name}', fg='green')
     except Exception as e:
       click.secho(f'Failed to deploy to Agent Platform: {e}', fg='red')
       # Only delete the instance if it was newly created in this function.
       if agent_engine_id is None:
-        client.agent_engines.delete(name=resource_name)
+        client.runtimes.delete(name=resource_name)
         click.secho(f'Cleaned up the instance: {resource_name}', fg='green')
       raise e
     _print_agent_engine_url(resource_name)
@@ -1501,6 +1942,7 @@ def to_gke(
     service_type: Literal[
         'ClusterIP', 'NodePort', 'LoadBalancer'
     ] = 'ClusterIP',
+    extra_packages: Optional[list[str]] = None,
 ) -> None:
   """Deploys an agent to Google Kubernetes Engine(GKE).
 
@@ -1529,7 +1971,13 @@ def to_gke(
     memory_service_uri: The URI of the memory service.
     use_local_storage: Whether to use local .adk storage in the container.
     service_type: The Kubernetes Service type (default: ClusterIP).
+    extra_packages: Additional local file or directory paths to stage alongside
+      the agent and make importable in the image. A relative path is resolved
+      against the current working directory.
   """
+  _validate_trigger_options(
+      trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
+  )
   click.secho(
       '\n🚀 Starting ADK Agent Deployment to GKE...', fg='cyan', bold=True
   )
@@ -1564,6 +2012,11 @@ def to_gke(
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     install_agent_deps = _render_install_agent_deps(
         app_name, requirements_txt_path, ''
+    )
+    staged_extra_packages = _stage_extra_packages(
+        [(pkg, os.getcwd()) for pkg in extra_packages or []],
+        temp_folder,
+        reserved_names=('Dockerfile', 'deployment.yaml'),
     )
     click.secho('✅ Environment prepared.', fg='green')
 
@@ -1610,7 +2063,9 @@ def to_gke(
         trigger_oidc_service_accounts_option=trigger_oidc_service_accounts_option,
         gemini_enterprise_option='',
         express_mode_option='',
-        extra_packages_copy='',
+        extra_packages_copy=_get_extra_packages_copy(
+            staged_extra_packages, temp_folder
+        ),
         extra_env_vars='',
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')

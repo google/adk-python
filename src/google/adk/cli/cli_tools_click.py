@@ -622,25 +622,28 @@ def cli_conformance_record(
     paths: tuple[str, ...],
     streaming_mode: StreamingMode,
 ):
-  """Generate ADK conformance test YAML files from TestCaseInput specifications.
+  """Generate ADK conformance test recordings from spec.yaml files.
 
   NOTE: this is work in progress.
 
-  This command reads TestCaseInput specifications from input.yaml files,
-  executes the specified test cases against agents, and generates conformance
-  test files with recorded agent interactions as test.yaml files.
+  This command reads TestSpec specifications from spec.yaml files, executes
+  the specified test cases against agents, and writes the recorded agent
+  interactions next to each spec.yaml.
 
   Expected directory structure:
-  category/name/input.yaml (TestCaseInput) -> category/name/test.yaml (TestCase)
+  category/name/spec.yaml (TestSpec) -> category/name/generated-recordings.yaml
+  and category/name/generated-session.yaml ('-sse' suffix in sse mode)
 
   PATHS: One or more directories containing test case specifications.
   If no paths are provided, defaults to 'tests/' directory.
 
+  STREAMING_MODE: The streaming mode to record in: none or sse.
+
   Examples:
 
-  Use default directory: adk conformance record
+  Use default directory: adk conformance record none
 
-  Custom directories: adk conformance record tests/core tests/tools
+  Custom directories: adk conformance record tests/core tests/tool sse
   """
 
   try:
@@ -756,11 +759,11 @@ def cli_conformance_test(
 
   \b
   # Run tests from specific folders
-  adk conformance test tests/core tests/tools
+  adk conformance test tests/core tests/tool
 
   \b
   # Run a single test case
-  adk conformance test tests/core/description_001
+  adk conformance test tests/core/sys_instruction_001
 
   \b
   # Run in live mode (when available)
@@ -1030,6 +1033,13 @@ def adk_services_options(*, default_use_local_storage: bool = True):
     help="Optional. Initial state for the run as a JSON string.",
 )
 @click.option(
+    "--state_file",
+    type=click.Path(
+        exists=True, dir_okay=False, file_okay=True, resolve_path=True
+    ),
+    help="Optional. Path to a JSON file containing initial state for the run.",
+)
+@click.option(
     "--timeout",
     type=str,
     help="Optional. Timeout for a single turn or query (e.g., 30s, 5m).",
@@ -1077,6 +1087,7 @@ def cli_run(
     use_local_storage: bool = True,
     default_llm_model: Optional[str] = None,
     log_level: str = "INFO",
+    state_file: Optional[str] = None,
 ):
   """Runs an agent. If no query is provided, enters interactive mode.
 
@@ -1093,6 +1104,25 @@ def cli_run(
   agent_parent_folder = os.path.dirname(agent)
   agent_folder_name = os.path.basename(agent)
 
+  if state is not None and state_file is not None:
+    raise click.UsageError(
+        "Options 'state' and 'state_file' cannot be set together."
+    )
+
+  state_str = state
+  if state_file is not None:
+    try:
+      state_str = Path(state_file).read_text(encoding="utf-8")
+      json.loads(state_str)
+    except OSError as e:
+      raise click.ClickException(
+          f"Failed to read --state_file '{state_file}': {e}"
+      ) from e
+    except json.JSONDecodeError as e:
+      raise click.ClickException(
+          f"Invalid JSON for --state_file '{state_file}': {e}"
+      ) from e
+
   # If query is provided, we run in single-step mode (JSONL output)
   if query is not None:
     from .cli import run_once_cli
@@ -1102,7 +1132,7 @@ def cli_run(
             agent_parent_dir=agent_parent_folder,
             agent_folder_name=agent_folder_name,
             query=query,
-            state_str=state,
+            state_str=state_str,
             session_id=session_id,
             replay=replay,
             timeout=timeout,
@@ -1128,7 +1158,7 @@ def cli_run(
             saved_session_file=resume,
             save_session=save_session,
             session_id=session_id,
-            state_str=state,
+            state_str=state_str,
             timeout=timeout,
             in_memory=in_memory,
             jsonl=jsonl,
@@ -1313,8 +1343,8 @@ def cli_eval(
 ):
   """Evaluates an agent given the eval sets.
 
-  AGENT_MODULE_FILE_PATH: The path to the __init__.py file that contains a
-  module by the name "agent". "agent" module contains a root_agent.
+  AGENT_MODULE_FILE_PATH: The path to the agent folder, whose __init__.py
+  imports a module by the name "agent". "agent" module contains a root_agent.
 
   EVAL_SET_FILE_PATH_OR_ID: You can specify one or more eval set file paths or
   eval set id.
@@ -1593,8 +1623,8 @@ def cli_optimize(
 ):
   """Optimizes the root agent instructions using the GEPA optimizer.
 
-  AGENT_MODULE_FILE_PATH: The path to the __init__.py file that contains a
-  module by the name "agent". "agent" module contains a root_agent.
+  AGENT_MODULE_FILE_PATH: The path to the agent folder, whose __init__.py
+  imports a module by the name "agent". "agent" module contains a root_agent.
 
   SAMPLER_CONFIG_FILE_PATH: The path to the config for the LocalEvalSampler,
   which contains the eval config and the eval sets to use for training and
@@ -1843,7 +1873,7 @@ def cli_generate_eval_cases(
   if it has not been created in advance.
 
   Args:
-    agent_module_file_path: The path to the agent module file.
+    agent_module_file_path: The path to the agent folder.
     eval_set_id: The id of the eval set to generate cases for.
     user_simulation_config_file: The path to the user simulation config file.
     eval_storage_uri: The eval storage uri.
@@ -2528,6 +2558,20 @@ def cli_api_server(
         " execution. Requires the 'gcloud beta run deploy' release track."
     ),
 )
+@click.option(
+    "--extra_packages",
+    multiple=True,
+    type=str,
+    default=(),
+    help=(
+        "Optional. Additional local package paths (a file or directory) to"
+        " stage and deploy alongside the agent, and make importable in the"
+        " deployed image. Each entry is placed at `/app/<basename>` and `/app`"
+        " is added to PYTHONPATH, so a top-level name that matches an installed"
+        " dependency will shadow it at runtime; pick distinct names."
+        " Repeatable."
+    ),
+)
 @deploy_options
 @adk_services_options(default_use_local_storage=False)
 @click.pass_context
@@ -2557,6 +2601,7 @@ def cli_deploy_cloud_run(
     trigger_oidc_service_accounts: str | None = None,
     provider_args: tuple[str, ...] = (),
     env: tuple[str, ...] = (),
+    extra_packages: tuple[str, ...] = (),
 ):
   """Deploys an agent to Cloud Run.
 
@@ -2607,6 +2652,7 @@ def cli_deploy_cloud_run(
         env=env,
         extra_gcloud_args=tuple(gcloud_args),
         with_cloud_run_sandbox=with_cloud_run_sandbox,
+        extra_packages=list(extra_packages),
     )
   except (click.ClickException, click.Abort):
     raise
@@ -2958,6 +3004,18 @@ def cli_migrate_session(
         " `build_config.worker_pool` in `.agent_engine_config.json`."
     ),
 )
+@click.option(
+    "--service_account",
+    type=str,
+    default=None,
+    help=(
+        "Optional. Google Cloud service account email used as the Agent Engine"
+        " runtime identity (e.g. my-agent@my-project.iam.gserviceaccount.com)."
+        " Overrides GOOGLE_CLOUD_SERVICE_ACCOUNT in the .env file and"
+        " service_account in .agent_engine_config.json. When omitted, Agent"
+        " Engine uses its default service agent."
+    ),
+)
 @adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
@@ -2995,6 +3053,7 @@ def cli_deploy_agent_engine(
     worker_pool: str | None = None,
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: str | None = None,
+    service_account: str | None = None,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -3014,8 +3073,16 @@ def cli_deploy_agent_engine(
     adk deploy agent_engine --project=[project] --region=[region]
       --worker_pool=projects/[project]/locations/[region]/workerPools/[pool]
       my_agent
+
+    \b
+    # With a custom runtime service account
+    adk deploy agent_engine --project=[project] --region=[region]
+      --service_account=my-agent@[project].iam.gserviceaccount.com
+      my_agent
   """
-  logging.getLogger("vertexai_genai.agentengines").setLevel(logging.INFO)
+  # The deploy path logs progress on both `agentplatform_genai.runtimes` and
+  # `agentplatform_genai.agentengines`; raise the parent so neither is lost.
+  logging.getLogger("agentplatform_genai").setLevel(logging.INFO)
   try:
     if validate_agent_import and skip_agent_import_validation_alias:
       raise click.UsageError(
@@ -3051,6 +3118,7 @@ def cli_deploy_agent_engine(
         adk_version=adk_version,
         extra_packages=list(extra_packages),
         worker_pool=worker_pool,
+        service_account=service_account,
     )
   except (click.ClickException, click.Abort):
     raise
@@ -3200,6 +3268,20 @@ def cli_deploy_agent_engine(
     ),
     default=None,
 )
+@click.option(
+    "--extra_packages",
+    multiple=True,
+    type=str,
+    default=(),
+    help=(
+        "Optional. Additional local package paths (a file or directory) to"
+        " stage and deploy alongside the agent, and make importable in the"
+        " deployed image. Each entry is placed at `/app/<basename>` and `/app`"
+        " is added to PYTHONPATH, so a top-level name that matches an installed"
+        " dependency will shadow it at runtime; pick distinct names."
+        " Repeatable."
+    ),
+)
 @adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
@@ -3229,6 +3311,7 @@ def cli_deploy_gke(
     trigger_sources: str | None = None,
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: str | None = None,
+    extra_packages: tuple[str, ...] = (),
 ):
   """Deploys an agent to GKE.
 
@@ -3265,6 +3348,7 @@ def cli_deploy_gke(
         trigger_sources=trigger_sources,
         trigger_oidc_audience=trigger_oidc_audience,
         trigger_oidc_service_accounts=trigger_oidc_service_accounts,
+        extra_packages=list(extra_packages),
     )
   except (click.ClickException, click.Abort):
     raise

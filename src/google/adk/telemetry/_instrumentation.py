@@ -648,6 +648,10 @@ async def record_tool_execution(
               span, tel_ctx.response_source, invocation_context
           )
         if tel_ctx.skill_telemetry is not None:
+          if resolve_schema_version() >= SCHEMA_VERSION_SEMCONV_ALIGNED:
+            span.update_name(
+                _skill_span_name(tool.name, tel_ctx.skill_telemetry)
+            )
           _dispatch_skill_telemetry(
               span,
               tel_ctx.skill_telemetry,
@@ -722,6 +726,21 @@ async def record_inference_telemetry(
           "Failed to record inference metrics for agent %s",
           agent.name if agent is not None else "<unknown>",
       )
+
+
+def _skill_span_name(tool_name: str, skill_telemetry: SkillTelemetry) -> str:
+  """Names an ``execute_tool`` span per the GenAI semconv skill refinements."""
+  skill_name = skill_telemetry.skill_name.maybe_hallucinated_value
+  match skill_telemetry:
+    case SkillLoadTelemetry():
+      return f"execute_tool {tool_name} {skill_name}"
+    case SkillResourceLoadTelemetry():
+      resource_name = skill_telemetry.resource_path.maybe_hallucinated_value
+    case SkillScriptExecutionTelemetry():
+      resource_name = skill_telemetry.script_path.maybe_hallucinated_value
+    case _:
+      assert_never(skill_telemetry)
+  return f"execute_tool {tool_name} {skill_name} {resource_name}"
 
 
 def _dispatch_skill_telemetry(

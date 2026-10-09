@@ -27,6 +27,7 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 from urllib.parse import quote
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from google.adk.a2a import _compat
 from google.adk.agents.base_agent import BaseAgent
@@ -38,8 +39,10 @@ from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactServ
 from google.adk.auth.auth_credential import _redact_credential_secrets
 from google.adk.cli import api_server as api_server_module
 from google.adk.cli import fast_api as fast_api_module
+from google.adk.cli import service_registry as service_registry_module
 from google.adk.cli.api_server import RunAgentRequest
 from google.adk.cli.fast_api import get_fast_api_app
+from google.adk.cli.utils.base_agent_loader import _AgentLoadError
 from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.evaluation.eval_case import EvalCase
@@ -137,7 +140,7 @@ def _event_state_delta(state_delta: dict[str, Any]):
 
 
 # Define mocked async generator functions for the Runner
-async def dummy_run_live(self, session, live_request_queue, **kwargs):
+async def dummy_run_live(self, live_request_queue=None, **kwargs):
   yield _event_1()
   await asyncio.sleep(0)
 
@@ -769,7 +772,6 @@ def test_api_server_get_runner_async_rejects_internal_special_agent_name(
     mock_eval_sets_manager,
     mock_eval_set_results_manager,
 ):
-  from fastapi import HTTPException
   from google.adk.cli.api_server import ApiServer
 
   special_app_name = "__adk_agent_builder_assistant"
@@ -823,7 +825,7 @@ def test_special_agents_allowed_only_on_loopback_web_server(
 ):
   # The agent builder assistant writes files the server imports, and the dev
   # server is unauthenticated, so it must not be reachable off the machine.
-  _create_test_client(
+  client = _create_test_client(
       mock_session_service,
       mock_artifact_service,
       mock_memory_service,
@@ -835,6 +837,14 @@ def test_special_agents_allowed_only_on_loopback_web_server(
   )
 
   assert mock_agent_loader._allow_special_agents is expected
+  if not expected:
+    # Refused by the server itself, not by a 500 from the loader.
+    response = client.get(
+        "/apps/__adk_agent_builder_assistant/app-info",
+        headers={"host": "127.0.0.1:8000"},
+    )
+    assert response.status_code == 403
+    assert "internal special agents" in response.json()["detail"]
 
 
 @pytest.fixture
@@ -1150,9 +1160,9 @@ def test_app_with_gemini_enterprise(
 
   with (
       patch("google.auth.default", return_value=(MagicMock(), "test-project")),
-      patch("vertexai.init", new_callable=MagicMock) as mock_vertexai_init,
       patch(
-          "vertexai.agent_engines.AdkApp", return_value=mock_adk_app_instance
+          "agentplatform.frameworks.AdkApp",
+          return_value=mock_adk_app_instance,
       ) as mock_adk_app_cls,
       patch("google.adk.agents.Agent", new_callable=MagicMock),
       patch(
@@ -1173,7 +1183,6 @@ def test_app_with_gemini_enterprise(
         mock_eval_set_results_manager,
         gemini_enterprise_app_name="gemini_app",
     )
-    client.mock_vertexai_init = mock_vertexai_init
     client.mock_adk_app_cls = mock_adk_app_cls
     client.mock_adk_app_instance = mock_adk_app_instance
     yield client
@@ -1210,9 +1219,9 @@ def test_app_with_gemini_enterprise_sync_stream(
 
   with (
       patch("google.auth.default", return_value=(MagicMock(), "test-project")),
-      patch("vertexai.init", new_callable=MagicMock),
       patch(
-          "vertexai.agent_engines.AdkApp", return_value=mock_adk_app_instance
+          "agentplatform.frameworks.AdkApp",
+          return_value=mock_adk_app_instance,
       ),
       patch("google.adk.agents.Agent", new_callable=MagicMock),
       patch(
@@ -1515,6 +1524,55 @@ def test_agent_run_sse_unknown_app_returns_404(test_app, mock_agent_loader):
     response = test_app.post("/run_sse", json=payload)
     assert response.status_code == 404
     assert "Agent not found: unknown_app" in response.json()["detail"]
+
+
+def test_get_adk_app_info_load_failure_returns_500(test_app, mock_agent_loader):
+  """Test app-info returns 500, not 404, when the agent fails to load."""
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=_AgentLoadError(
+          "Fail to load 'broken_app' module. ToolConfig"
+      ),
+  ):
+    response = test_app.get("/apps/broken_app/app-info")
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Failed to load agent"
+
+
+def test_get_adk_app_info_loader_http_error_is_preserved(
+    test_app, mock_agent_loader
+):
+  """Test a loader's own HTTPException keeps its status."""
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=HTTPException(status_code=403, detail="Not your agent"),
+  ):
+    response = test_app.get("/apps/forbidden_app/app-info")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Not your agent"
+
+
+def test_agent_run_sse_load_failure_returns_500(test_app, mock_agent_loader):
+  """Test /run_sse returns 500, not 404, when the agent fails to load."""
+  payload = {
+      "app_name": "broken_app",
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": True,
+  }
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=_AgentLoadError(
+          "Fail to load 'broken_app' module. ToolConfig"
+      ),
+  ):
+    response = test_app.post("/run_sse", json=payload)
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Failed to load agent"
 
 
 def test_create_session_with_id(test_app, test_session_info):
@@ -2797,11 +2855,12 @@ def test_agent_run_live_redacts_oauth2_client_secret(
   async def run_live_with_auth_request(
       self,
       *,
-      session,
+      user_id,
+      session_id,
       live_request_queue,
       run_config=None,
   ):
-    del self, session, live_request_queue, run_config
+    del self, user_id, session_id, live_request_queue, run_config
     yield Event(
         author="agent",
         invocation_id="invocation_id",
@@ -5893,10 +5952,8 @@ def test_run_live_hides_internal_metadata(
 ):
   """/run_live sends events without ADK-internal custom_metadata."""
 
-  async def run_live_with_internal_metadata(
-      self, session, live_request_queue, **kwargs
-  ):
-    del session, live_request_queue, kwargs
+  async def run_live_with_internal_metadata(self, live_request_queue, **kwargs):
+    del live_request_queue, kwargs
     yield Event(
         author="dummy agent",
         invocation_id="invocation_id",
@@ -5933,6 +5990,39 @@ def test_run_live_websocket_missing_app_name_raises_error(
     with test_app.websocket_connect(url) as ws:
       ws.receive_json()
   assert exc_info.value.code == 1008
+
+
+def test_run_live_websocket_delegates_session_existence_to_runner(test_app):
+  """/run_live delegates session existence to run_live instead of pre-fetching."""
+  url = (
+      "/run_live?app_name=test_app&user_id=user"
+      "&session_id=nonexistent&modalities=AUDIO"
+  )
+  with test_app.websocket_connect(url) as ws:
+    data = ws.receive_json()
+    assert data["author"] == "dummy agent"
+
+
+def test_run_live_websocket_returns_1002_on_session_not_found(
+    test_app, monkeypatch
+):
+  """/run_live closes with 1002 when the runner raises SessionNotFoundError."""
+  from fastapi.websockets import WebSocketDisconnect
+
+  async def run_live_session_not_found(self, **kwargs):
+    raise SessionNotFoundError("Session not found: nonexistent")
+    yield  # make it an async generator  # pylint: disable=unreachable
+
+  monkeypatch.setattr(Runner, "run_live", run_live_session_not_found)
+
+  url = (
+      "/run_live?app_name=test_app&user_id=user"
+      "&session_id=nonexistent&modalities=AUDIO"
+  )
+  with pytest.raises(WebSocketDisconnect) as exc_info:
+    with test_app.websocket_connect(url) as ws:
+      ws.receive_json()
+  assert exc_info.value.code == 1002
 
 
 def test_is_single_agent_directory(tmp_path):
@@ -6036,6 +6126,94 @@ def test_single_agent_mode_detection(
     response = client.get("/list-apps")
     assert response.status_code == 200
     assert response.json() == ["my_only_agent"]
+
+
+def test_single_agent_mode_loads_services_module_from_agent_dir(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Verify a services module in the agent folder registers custom services."""
+  agent_folder = tmp_path / "my_only_agent"
+  agent_folder.mkdir()
+  (agent_folder / "agent.py").write_text("root_agent = None")
+  (agent_folder / "services.py").write_text(
+      "from google.adk.cli.service_registry import get_service_registry\n"
+      "\n"
+      "\n"
+      "def _custom_session_factory(uri, **kwargs):\n"
+      "  return 'custom-session-service'\n"
+      "\n"
+      "\n"
+      "get_service_registry().register_session_service(\n"
+      "    'customscheme', _custom_session_factory\n"
+      ")\n"
+  )
+
+  original_sys_path = list(sys.path)
+  sys.modules.pop("services", None)
+
+  try:
+    # A fresh registry can only know the scheme if the agent's services.py ran.
+    with (
+        patch.object(
+            service_registry_module, "_service_registry_instance", None
+        ),
+        patch.object(signal, "signal", autospec=True, return_value=None),
+        patch.object(
+            fast_api_module,
+            "create_session_service_from_options",
+            autospec=True,
+            return_value=mock_session_service,
+        ),
+        patch.object(
+            fast_api_module,
+            "create_artifact_service_from_options",
+            autospec=True,
+            return_value=mock_artifact_service,
+        ),
+        patch.object(
+            fast_api_module,
+            "create_memory_service_from_options",
+            autospec=True,
+            return_value=mock_memory_service,
+        ),
+        patch.object(
+            fast_api_module,
+            "LocalEvalSetsManager",
+            autospec=True,
+            return_value=mock_eval_sets_manager,
+        ),
+        patch.object(
+            fast_api_module,
+            "LocalEvalSetResultsManager",
+            autospec=True,
+            return_value=mock_eval_set_results_manager,
+        ),
+    ):
+      get_fast_api_app(
+          agents_dir=str(agent_folder),
+          web=True,
+          session_service_uri="",
+          artifact_service_uri="",
+          memory_service_uri="",
+          allow_origins=None,
+          a2a=False,
+          host="127.0.0.1",
+          port=8000,
+      )
+
+      registry = service_registry_module.get_service_registry()
+      assert (
+          registry.create_session_service("customscheme://db")
+          == "custom-session-service"
+      )
+  finally:
+    sys.modules.pop("services", None)
+    sys.path[:] = original_sys_path
 
 
 def test_single_agent_mode_sets_default_app(
@@ -6973,7 +7151,6 @@ def test_span_buffers_filled_when_web_enabled(
 
 
 def test_app_info_rejects_special_agent_only_in_api_server_mode(
-    test_app,
     mock_session_service,
     mock_artifact_service,
     mock_memory_service,
@@ -6996,9 +7173,21 @@ def test_app_info_rejects_special_agent_only_in_api_server_mode(
   assert blocked.status_code == 403
   assert "internal special agents" in blocked.json()["detail"]
 
-  # Same request on the dev server gets past the guard and is answered on the
-  # merits of the loaded agent (which here is not an LlmAgent).
-  allowed = test_app.get("/apps/__internal_assistant/app-info")
+  # Same request on a loopback-bound dev server gets past the guard and is
+  # answered on the merits of the loaded agent (which here is not an LlmAgent).
+  dev_client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      bind_host="127.0.0.1",
+  )
+  allowed = dev_client.get(
+      "/apps/__internal_assistant/app-info",
+      headers={"host": "127.0.0.1:8000"},
+  )
   assert allowed.status_code == 400
   assert allowed.json()["detail"] == "Root agent is not an LlmAgent"
 

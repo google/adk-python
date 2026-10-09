@@ -31,7 +31,7 @@ from ...features import FeatureName
 from ...utils import _json_utils
 
 if TYPE_CHECKING:
-  import vertexai
+  import agentplatform
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -106,15 +106,16 @@ class SandboxClient:
 
   def __init__(
       self,
-      vertexai_client: "vertexai.Client",
+      vertexai_client: "agentplatform.Client",
       sandbox: Any,
       access_token: str,
   ):
     """Initialize the sandbox client.
 
     Args:
-      vertexai_client: The Vertex AI client instance.
-      sandbox: The sandbox object from vertexai SDK (SandboxEnvironment).
+      vertexai_client: The Agent Platform client instance.
+      sandbox: The sandbox object from the agentplatform SDK
+        (SandboxEnvironment).
       access_token: The access token for authenticating with the sandbox.
     """
     self._client = vertexai_client
@@ -167,7 +168,7 @@ class SandboxClient:
     request_dict = {"command": command, "params": params}
 
     response = await asyncio.to_thread(
-        self._client.agent_engines.sandboxes.send_command,
+        self._client.sandboxes.send_command,
         http_method="POST",
         path="cdp",
         access_token=self._access_token,
@@ -199,7 +200,7 @@ class SandboxClient:
     try:
       request_dict = {"commands": commands, "stop_on_error": stop_on_error}
       response = await asyncio.to_thread(
-          self._client.agent_engines.sandboxes.send_command,
+          self._client.sandboxes.send_command,
           http_method="POST",
           path="cdps",
           access_token=self._access_token,
@@ -287,7 +288,7 @@ class SandboxClient:
     for attempt in range(max_retries):
       try:
         response = await asyncio.to_thread(
-            self._client.agent_engines.sandboxes.send_command,
+            self._client.sandboxes.send_command,
             http_method="GET",
             path="tabs",
             access_token=self._access_token,
@@ -667,7 +668,7 @@ class SandboxClient:
 
     try:
       response = await asyncio.to_thread(
-          self._client.agent_engines.sandboxes.send_command,
+          self._client.sandboxes.send_command,
           http_method="GET",
           path="",
           access_token=self._access_token,
