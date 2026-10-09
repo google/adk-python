@@ -50,6 +50,7 @@ from typing_extensions import Annotated
 
 from ..events.event import Event
 from ..events.request_input import RequestInput
+from ..utils._callable_utils import unwrap_callable
 from ..utils.variant_utils import get_google_llm_variant
 from ..utils.variant_utils import GoogleLLMVariant
 
@@ -253,7 +254,7 @@ def _get_function_fields(
 
   # Get type hints with forward reference resolution
   try:
-    type_hints = get_type_hints(func, include_extras=True)
+    type_hints = get_type_hints(unwrap_callable(func), include_extras=True)
   except (TypeError, NameError, AttributeError):
     # TypeError can happen with mock objects or complex annotations. NameError
     # / AttributeError happen when an annotation is an unresolvable forward
@@ -459,7 +460,7 @@ def _build_response_json_schema(
     return None
 
   try:
-    type_hints = get_type_hints(func, include_extras=True)
+    type_hints = get_type_hints(unwrap_callable(func), include_extras=True)
     return_annotation = type_hints.get('return', return_annotation)
   except (TypeError, NameError, AttributeError):
     func_globals = _get_callable_globals(func)
@@ -486,7 +487,7 @@ def _build_response_json_schema(
       logging.debug(
           'Failed to build schema with config, retrying without config for'
           ' %s: %s',
-          func.__name__,
+          get_callable_name(func),
           e,
       )
       adapter = pydantic.TypeAdapter(return_annotation)
@@ -494,7 +495,7 @@ def _build_response_json_schema(
   except Exception:
     logging.warning(
         'Failed to build response JSON schema for %s',
-        func.__name__,
+        get_callable_name(func),
         exc_info=True,
     )
     # Fall back to untyped response
