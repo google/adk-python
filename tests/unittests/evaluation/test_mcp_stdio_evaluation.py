@@ -45,25 +45,61 @@ async def native_stdio_toolset(tmp_path):
   calls = tmp_path / 'calls.txt'
   ready = tmp_path / 'ready.txt'
   server = tmp_path / 'server.py'
-  server.write_text(textwrap.dedent(f"""\
+  # A finite wire peer avoids a test-only dependency on one SDK's server API.
+  server.write_text(
+      textwrap.dedent("""\
+      import json
       from pathlib import Path
-      from mcp.server import MCPServer
-      from mcp.types import CallToolResult, TextContent
+      import sys
 
-      app = MCPServer('finite-evaluation-test')
-
-      @app.tool()
-      def probe(value: str):
-          with Path({str(calls)!r}).open('a') as output:
-              output.write(value + '\\n')
-          return CallToolResult(
-              content=[TextContent(type='text', text='native-result:' + value)],
-              is_error=False,
-          )
-
-      Path({str(ready)!r}).write_text('ready\\n')
-      app.run(transport='stdio')
-      """))
+      tool_error = False
+      Path(@@READY@@).write_text('ready\\n')
+      for line in sys.stdin:
+          request = json.loads(line)
+          assert request['jsonrpc'] == '2.0'
+          method = request['method']
+          if method == 'notifications/initialized':
+              assert 'id' not in request
+              continue
+          request_id = request['id']
+          params = request.get('params', {})
+          if method == 'initialize':
+              result = {
+                  'protocolVersion': params['protocolVersion'],
+                  'capabilities': {'tools': {'listChanged': False}},
+                  'serverInfo': {'name': 'finite-evaluation-test', 'version': '1'},
+              }
+          elif method == 'ping':
+              result = {}
+          elif method == 'tools/list':
+              result = {'tools': [{
+                  'name': 'probe',
+                  'description': 'Return one recorded finite probe.',
+                  'inputSchema': {
+                      'type': 'object',
+                      'properties': {'value': {'type': 'string'}},
+                      'required': ['value'],
+                  },
+              }]}
+          elif method == 'tools/call':
+              assert params['name'] == 'probe'
+              value = params['arguments']['value']
+              assert isinstance(value, str)
+              with Path(@@CALLS@@).open('a') as output:
+                  output.write(value + '\\n')
+              result = {
+                  'content': [{'type': 'text', 'text': 'native-result:' + value}],
+                  'isError': tool_error,
+              }
+          else:
+              raise RuntimeError('unexpected MCP method: ' + method)
+          print(json.dumps({
+              'jsonrpc': '2.0', 'id': request_id, 'result': result,
+          }), flush=True)
+      """)
+      .replace('@@READY@@', repr(str(ready)))
+      .replace('@@CALLS@@', repr(str(calls)))
+  )
   toolset = McpToolset(
       connection_params=StdioConnectionParams(
           server_params=StdioServerParameters(
@@ -219,7 +255,7 @@ async def test_native_stdio_tool_error_is_not_success(
   toolset, calls, ready, server = native_stdio_toolset
   processes = mocker.spy(anyio, 'open_process')
   server.write_text(
-      server.read_text().replace('is_error=False', 'is_error=True')
+      server.read_text().replace('tool_error = False', 'tool_error = True')
   )
   close = mocker.spy(toolset, 'close')
   model = MockModel.create(
