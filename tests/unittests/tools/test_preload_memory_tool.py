@@ -41,6 +41,58 @@ def _memory(text: str) -> MemoryEntry:
   )
 
 
+@pytest.mark.parametrize('thought', [True, False, None])
+@pytest.mark.asyncio
+async def test_preload_memory_preserves_visible_text_only(thought):
+  """Recalled reasoning is not presented as a previous conversation answer."""
+  memory = MemoryEntry(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(text='Consider a zeppelin.', thought=thought),
+              types.Part(text='Take the train to Paris.'),
+          ],
+      ),
+      author='assistant',
+  )
+  request = LlmRequest()
+  original_content = memory.content.model_copy(deep=True)
+
+  await PreloadMemoryTool().process_llm_request(
+      tool_context=_tool_context(memory), llm_request=request
+  )
+
+  recalled_text = request.contents[0].parts[0].text
+  assert 'Take the train to Paris.' in recalled_text
+  assert ('Consider a zeppelin.' in recalled_text) == (not thought)
+  assert memory.content == original_content
+
+
+@pytest.mark.parametrize(
+    'parts',
+    [
+        [],
+        [types.Part(text='Consider a zeppelin.', thought=True)],
+        [
+            types.Part(
+                inline_data=types.Blob(data=b'hello', mime_type='text/plain')
+            )
+        ],
+    ],
+)
+@pytest.mark.asyncio
+async def test_preload_memory_omits_entries_without_visible_text(parts):
+  """Empty, non-text and thought-only memories do not add conversation text."""
+  memory = MemoryEntry(content=types.Content(role='model', parts=parts))
+  request = LlmRequest()
+
+  await PreloadMemoryTool().process_llm_request(
+      tool_context=_tool_context(memory), llm_request=request
+  )
+
+  assert not request.contents
+
+
 @pytest.mark.asyncio
 async def test_preload_memory_keeps_system_prefix_stable():
   """Recalled memory goes into contents, never into the system instruction."""
