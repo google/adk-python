@@ -10989,7 +10989,7 @@ class TestParseToolCallArguments:
 
   def test_repaired_arguments_log_warning_without_raw_payload(self, caplog):
     """Repaired non-strict JSON arguments emit a warning without raw payload."""
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
       _parse_tool_call_arguments("{a: 1}", function_name="test_fn")
     assert "Repaired" in caplog.text
     assert "test_fn" in caplog.text
@@ -10997,7 +10997,7 @@ class TestParseToolCallArguments:
 
   def test_repaired_arguments_log_debug_with_raw_payload(self, caplog):
     """Repaired non-strict JSON arguments emit warning with payload at debug level."""
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG, logger="google_adk"):
       _parse_tool_call_arguments("{a: 1}", function_name="test_fn")
     assert "test_fn" in caplog.text
     assert "{a: 1}" in caplog.text
@@ -11009,13 +11009,13 @@ class TestParseToolCallArguments:
 
   def test_repaired_arguments_without_function_name(self, caplog):
     """Repaired arguments log correctly without function_name."""
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
       _parse_tool_call_arguments("{a: 1}")
     assert "Repaired" in caplog.text
     assert "{a: 1}" not in caplog.text
 
     caplog.clear()
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG, logger="google_adk"):
       _parse_tool_call_arguments("{a: 1}")
     warning_records = [
         r for r in caplog.records if r.levelno == logging.WARNING
@@ -11025,11 +11025,11 @@ class TestParseToolCallArguments:
 
   def test_literal_eval_layer_logs_debug_not_warning(self, caplog):
     """Python dict literal arguments log at debug rather than warning."""
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
       _parse_tool_call_arguments("{'a': 1}", function_name="test_fn")
     assert not any(r.levelno == logging.WARNING for r in caplog.records)
 
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG, logger="google_adk"):
       _parse_tool_call_arguments("{'a': 1}", function_name="test_fn")
     assert not any(r.levelno == logging.WARNING for r in caplog.records)
     debug_records = [
@@ -11043,7 +11043,7 @@ class TestParseToolCallArguments:
 
   def test_literal_eval_without_function_name_logs_debug(self, caplog):
     """Python dict literal without function_name logs at debug."""
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG, logger="google_adk"):
       _parse_tool_call_arguments("{'a': 1}")
     assert not any(r.levelno == logging.WARNING for r in caplog.records)
     debug_records = [
@@ -11056,6 +11056,6 @@ class TestParseToolCallArguments:
 
   def test_strict_json_does_not_log_warning(self, caplog):
     """Strict JSON arguments parse without warning logs."""
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
       _parse_tool_call_arguments('{"a": 1}', function_name="test_fn")
     assert "Repaired" not in caplog.text
