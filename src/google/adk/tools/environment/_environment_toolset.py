@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -76,15 +78,57 @@ class EnvironmentToolset(BaseToolset):
     self._environment = environment
     self._max_output_chars = max_output_chars
     self._environment_initialized = False
+    self._init_lock_map: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+    self._lock_map_lock = threading.Lock()
+
+  def _get_init_lock(self) -> asyncio.Lock:
+    # Note: Mutual exclusion for lazy initialization is guaranteed per event
+    # loop; concurrent threads running distinct event loops on a shared toolset
+    # instance each acquire their own loop-local lock.
+    current_loop = asyncio.get_running_loop()
+    with self._lock_map_lock:
+      lock = self._init_lock_map.get(current_loop)
+      if lock is None:
+        for stale_loop in [
+            loop for loop in self._init_lock_map if loop.is_closed()
+        ]:
+          del self._init_lock_map[stale_loop]
+        lock = asyncio.Lock()
+        self._init_lock_map[current_loop] = lock
+      return lock
+
+  def __getstate__(self) -> dict[str, Any]:
+    state = dict(super().__getstate__())
+    state.pop('_lock_map_lock', None)
+    state['_init_lock_map'] = {}
+    state['_environment_initialized'] = False
+    state['_cached_prefixed_tools'] = None
+    state['_cached_invocation_id'] = None
+    return state
+
+  def __setstate__(self, state: dict[str, Any]) -> None:
+    super_setstate = getattr(super(), '__setstate__', None)
+    if super_setstate is not None:
+      super_setstate(state)
+    else:
+      self.__dict__.update(state)
+    self._init_lock_map = {}
+    self._lock_map_lock = threading.Lock()
+
+  async def _ensure_initialized(self) -> None:
+    if self._environment_initialized:
+      return
+    async with self._get_init_lock():
+      if not self._environment_initialized:
+        await self._environment.initialize()
+        self._environment_initialized = True
 
   @override
   async def get_tools(
       self,
       readonly_context: Optional[ReadonlyContext] = None,
   ) -> list[BaseTool]:
-    if not self._environment_initialized:
-      await self._environment.initialize()
-      self._environment_initialized = True
+    await self._ensure_initialized()
     return [
         ExecuteTool(self._environment, max_output_chars=self._max_output_chars),
         ReadFileTool(
@@ -99,9 +143,7 @@ class EnvironmentToolset(BaseToolset):
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
     """Inject environment-level system instruction."""
-    if not self._environment_initialized:
-      await self._environment.initialize()
-      self._environment_initialized = True
+    await self._ensure_initialized()
     working_dir = self._environment.working_dir
     instruction = ENVIRONMENT_INSTRUCTION.format(
         working_dir=working_dir,
@@ -110,6 +152,10 @@ class EnvironmentToolset(BaseToolset):
 
   @override
   async def close(self) -> None:
-    if self._environment_initialized:
-      await self._environment.close()
-      self._environment_initialized = False
+    async with self._get_init_lock():
+      if self._environment_initialized:
+        await self._environment.close()
+        self._environment_initialized = False
+      self._cached_prefixed_tools = None
+      self._cached_invocation_id = None
+    await super().close()
