@@ -45,14 +45,18 @@ def native_stdio_toolset(tmp_path):
   server.write_text(textwrap.dedent(f"""\
       from pathlib import Path
       from mcp.server import MCPServer
+      from mcp.types import CallToolResult, TextContent
 
       app = MCPServer('finite-evaluation-test')
 
       @app.tool()
-      def probe(value: str) -> str:
+      def probe(value: str):
           with Path({str(calls)!r}).open('a') as output:
               output.write(value + '\\n')
-          return 'native-result:' + value
+          return CallToolResult(
+              content=[TextContent(type='text', text='native-result:' + value)],
+              is_error=False,
+          )
 
       Path({str(ready)!r}).write_text('ready\\n')
       app.run(transport='stdio')
@@ -116,6 +120,7 @@ def _assert_successful_native_inference(results, model, calls, ready):
       if part.function_response is not None
   ]
   assert len(responses) == 1 and responses[0].name == 'probe'
+  assert responses[0].response['isError'] is False, 'MCP tool reported an error'
   assert responses[0].response['content'][0]['text'] == 'native-result:checked'
   return invocation
 
@@ -173,6 +178,39 @@ async def test_unavailable_toolset_cannot_satisfy_native_control(
   )
   close.assert_awaited_once_with()
   with pytest.raises(AssertionError, match='MCP server did not start'):
+    _assert_successful_native_inference(results, model, calls, ready)
+
+
+@pytest.mark.asyncio
+async def test_native_stdio_tool_error_is_not_success(
+    mocker, native_stdio_toolset
+):
+  toolset, calls, ready, server = native_stdio_toolset
+  server.write_text(
+      server.read_text().replace('is_error=False', 'is_error=True')
+  )
+  close = mocker.spy(toolset, 'close')
+  model = MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name='probe', args={'value': 'checked'}
+          ),
+          types.Part(text='Probe complete.'),
+      ]
+  )
+
+  results = await _run_native_eval(mocker, model, toolset)
+
+  # A tool error can reach the model as ordinary content and still end inference.
+  # Matching text alone must not turn that error result into MCP success.
+  assert results[0].status == InferenceStatus.SUCCESS
+  assert ready.read_text() == 'ready\n'
+  assert calls.read_text().splitlines() == ['checked']
+  response = model.requests[-1].contents[-1].parts[0].function_response
+  assert response.response['isError'] is True
+  assert response.response['content'][0]['text'] == 'native-result:checked'
+  close.assert_awaited_once_with()
+  with pytest.raises(AssertionError, match='MCP tool reported an error'):
     _assert_successful_native_inference(results, model, calls, ready)
 
 
