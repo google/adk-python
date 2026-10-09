@@ -1725,11 +1725,13 @@ async def _content_to_message_param(
         else None
     )
     if final_content and isinstance(final_content, list):
-      # when the content is a single text object, we can use it directly.
-      # this is needed for ollama_chat provider which fails if content is a list
-      first_content = final_content[0]
-      if first_content["type"] == "text":
-        final_content = first_content["text"]
+      # Send the text as a plain string: ollama_chat fails if content is a
+      # list, and OpenAI-style APIs accept only text in assistant content.
+      text_blocks = [
+          block["text"] for block in final_content if block["type"] == "text"
+      ]
+      if text_blocks:
+        final_content = _NEW_LINE.join(text_blocks)
 
     # For Anthropic models, rebuild thinking_blocks with signatures so that
     # thinking is preserved across tool call boundaries. Without this,

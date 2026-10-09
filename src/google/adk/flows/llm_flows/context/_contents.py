@@ -30,12 +30,12 @@ from ....events.event import Event
 from ....models.base_llm import BaseLlm
 from ....models.llm_request import LlmRequest
 from ....utils._agent_mode import AgentMode
+from ....utils._function_call_names import AF_FUNCTION_CALL_ID_PREFIX
+from ....utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ....utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..core._utils import as_llm_agent
 from ..tools._functions import _collect_function_call_ids
-from ..tools._functions import AF_FUNCTION_CALL_ID_PREFIX
-from ..tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ..tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..tools._rearranger import _drop_orphaned_function_responses
 from ..tools._rearranger import _rearrange_events_for_async_function_responses_in_history
 from ..tools._rearranger import _rearrange_events_for_latest_function_response

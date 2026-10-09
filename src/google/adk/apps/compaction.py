@@ -31,6 +31,7 @@ from ..sessions.session import Session
 from ..telemetry.tracing import _build_compaction_attributes
 from ..telemetry.tracing import _build_compaction_result_attributes
 from ..telemetry.tracing import tracer
+from ..utils._function_call_names import CLIENT_FUNCTION_CALL_NAMES as _CLIENT_FUNCTION_CALL_NAMES
 from ..workflow import BaseNode
 from .app import App
 from .app import EventsCompactionConfig
@@ -548,13 +549,7 @@ def _provably_dead_call_ids(
         synthetic_hitl_ids = {
             fc.id
             for fc in event.get_function_calls()
-            if fc.id
-            and fc.name
-            in (
-                'adk_request_confirmation',
-                'adk_request_credential',
-                'adk_request_input',
-            )
+            if fc.id and fc.name in _CLIENT_FUNCTION_CALL_NAMES
         }
         protected_ids.update(event.long_running_tool_ids - synthetic_hitl_ids)
     if is_newest_or_unscoped and event.actions:

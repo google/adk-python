@@ -25,9 +25,9 @@ from ..agents.readonly_context import ReadonlyContext
 from ..events.event import Event
 from ..flows.llm_flows._base_llm_processor import BaseLlmRequestProcessor
 from ..flows.llm_flows.tools._functions import handle_function_calls_async
-from ..flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..models.llm_request import LlmRequest
 from ..sessions.state import State
+from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from ._auth_resume import find_requested_auth_configs
 from ._auth_resume import store_auth_response
 

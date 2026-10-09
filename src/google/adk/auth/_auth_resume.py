@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
-from ..flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from .auth_credential import AuthCredential
 from .auth_credential import AuthCredentialTypes
 from .auth_handler import AuthHandler
