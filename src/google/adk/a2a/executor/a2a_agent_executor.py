@@ -44,6 +44,8 @@ from .task_result_aggregator import TaskResultAggregator
 from .utils import _enqueue_canceled_task_event
 from .utils import _require_request_context
 from .utils import execute_after_agent_interceptors
+from .utils import execute_after_event_interceptors
+from .utils import execute_before_agent_interceptors
 
 #: Env var that puts exception text back into the failure message sent to the peer.
 #: Off by default, and meant for local debugging only: enabling it on a
@@ -57,17 +59,14 @@ _ERROR_ID_LENGTH = 12
 #: Fixed summary the peer receives. It deliberately carries no throwable text.
 _FAILURE_SUMMARY = 'Agent execution failed.'
 
-
 def _new_error_id() -> str:
   """Returns a short opaque id correlating a peer-visible failure with the log."""
   return platform_uuid.new_uuid().replace('-', '')[:_ERROR_ID_LENGTH]
-
 
 def _debug_errors_enabled() -> bool:
   """Whether exception text should be echoed to the peer. Local debugging only."""
   value = os.environ.get(_DEBUG_ERRORS_ENV_VAR, '')
   return value.strip().lower() in ('1', 'true', 'yes', 'on')
-
 
 def failure_text(error: Exception, error_id: str) -> str:
   """Builds the failure text handed back to the remote peer.
@@ -82,11 +81,8 @@ def failure_text(error: Exception, error_id: str) -> str:
   if _debug_errors_enabled():
     text = f'{text} {error}'
   return text
-from .utils import execute_after_event_interceptors
-from .utils import execute_before_agent_interceptors
 
 logger = logging.getLogger('google_adk.' + __name__)
-
 
 @a2a_experimental
 class A2aAgentExecutor(AgentExecutor):

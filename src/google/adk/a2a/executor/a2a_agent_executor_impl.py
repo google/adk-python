@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 from typing import Awaitable
 from typing import Callable
 import uuid
@@ -28,6 +29,7 @@ from a2a.types import Task
 from a2a.types import TaskStatusUpdateEvent
 from typing_extensions import override
 
+from google.adk.platform import uuid as platform_uuid
 from .. import _compat
 from ...runners import Runner
 from ...sessions import base_session_service
@@ -46,6 +48,46 @@ from .utils import _require_request_context
 from .utils import execute_after_agent_interceptors
 from .utils import execute_after_event_interceptors
 from .utils import execute_before_agent_interceptors
+
+
+#: Env var that puts exception text back into the failure message sent to the peer.
+#: Off by default, and meant for local debugging only: enabling it on a
+#: network-reachable deployment restores the disclosure the opaque id exists to
+#: prevent.
+_DEBUG_ERRORS_ENV_VAR = 'ADK_DEBUG_ERRORS'
+
+#: Length of the correlation id, matching ``newErrorId()`` in adk-java.
+_ERROR_ID_LENGTH = 12
+
+#: Fixed summary the peer receives. It deliberately carries no throwable text.
+_FAILURE_SUMMARY = 'Agent execution failed.'
+
+
+def _new_error_id() -> str:
+  """Returns a short opaque id correlating a peer-visible failure with the log."""
+  return platform_uuid.new_uuid().replace('-', '')[:_ERROR_ID_LENGTH]
+
+
+def _debug_errors_enabled() -> bool:
+  """Whether exception text should be echoed to the peer. Local debugging only."""
+  value = os.environ.get(_DEBUG_ERRORS_ENV_VAR, '')
+  return value.strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def failure_text(error: Exception, error_id: str) -> str:
+  """Builds the failure text handed back to the remote peer.
+
+  The peer is not trusted with the throwable: exception text routinely names
+  absolute filesystem paths, module locations, configuration values and echoed
+  request payloads, none of which the caller needs and all of which are useful
+  reconnaissance. Set ``ADK_DEBUG_ERRORS=1`` to restore the old behaviour while
+  debugging locally.
+  """
+  text = f'{_FAILURE_SUMMARY} (error_id: {error_id})'
+  if _debug_errors_enabled():
+    text = f'{text} {error}'
+  return text
+
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -153,7 +195,16 @@ class _A2aAgentExecutor(AgentExecutor):
           run_request,
       )
     except Exception as e:
-      logger.error('Error handling A2A request: %s', e, exc_info=True)
+      error_id = _new_error_id()
+      # The throwable is logged with its correlation id and never sent to the
+      # peer: a remote caller is not trusted with internal paths, hostnames or
+      # upstream error text.
+      logger.error(
+          'Error handling A2A request (error_id: %s): %s',
+          error_id,
+          e,
+          exc_info=True,
+      )
       # Publish failure event
       try:
         await event_queue.enqueue_event(
@@ -165,7 +216,7 @@ class _A2aAgentExecutor(AgentExecutor):
                     message=Message(
                         message_id=str(uuid.uuid4()),
                         role=_compat.ROLE_AGENT,
-                        parts=[_compat.make_text_part(str(e))],
+                        parts=[_compat.make_text_part(failure_text(e, error_id))],
                     ),
                 ),
                 final=True,
