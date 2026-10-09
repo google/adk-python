@@ -3062,6 +3062,42 @@ async def test_input_transcription_does_not_split_a_live_request(normalized):
     assert invocations[0].user_content.parts[0].text == "Question"
 
 
+@pytest.mark.parametrize("normalized", [False, True])
+async def test_live_barge_in_counts_interrupted_and_new_generations(normalized):
+  """A transcribed interruption followed by a new answer counts twice."""
+  events = await _live_receiver_count_events([
+      _live_text("First answer"),
+      types.LiveServerMessage(
+          server_content=types.LiveServerContent(interrupted=True)
+      ),
+      types.LiveServerMessage(
+          server_content=types.LiveServerContent(
+              input_transcription=types.Transcription(
+                  text="stop", finished=True
+              )
+          )
+      ),
+      _live_text("Stopped"),
+      _live_complete(),
+  ])
+  if normalized:
+    events = EvaluationGenerator._normalize_live_transcriptions(events)
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+  assert len(invocations) == 1
+  assert invocations[0].inference_call_count == 2
+  assert (
+      _InferenceCallCountV1Evaluator()
+      .evaluate_invocations(invocations)
+      .overall_score
+      == 2
+  )
+  assert invocations[0].final_response.parts[0].text == "Stopped"
+  if normalized:
+    assert invocations[0].user_content.parts[0].text == "stop"
+
+
 async def test_late_live_usage_is_preserved_without_starting_another_call():
   """The receiver can surface usage on its next receive after completion."""
   events = await _live_receiver_count_events([
