@@ -247,6 +247,43 @@ def test_entry_point_loads_only_allowlisted_packages(statement: str) -> None:
   )
 
 
+@pytest.fixture
+def preloaded_startup_package(tmp_path, monkeypatch):
+  package = tmp_path / 'startup_package'
+  package.mkdir()
+  (package / '__init__.py').write_text('value = 1\n')
+  (package / 'extra.py').write_text('value = 2\n')
+  (tmp_path / 'sitecustomize.py').write_text('import startup_package\n')
+  monkeypatch.setenv('PYTHONPATH', str(tmp_path))
+  return tmp_path
+
+
+def test_import_measurement_excludes_interpreter_startup(
+    preloaded_startup_package,
+):
+  assert (
+      loaded_top_level_packages("assert 'startup_package' in sys.modules")
+      == frozenset()
+  )
+
+
+def test_import_measurement_detects_new_package_after_startup(
+    preloaded_startup_package,
+):
+  (preloaded_startup_package / 'new_package.py').write_text('value = 3\n')
+  assert loaded_top_level_packages(
+      "assert 'startup_package' in sys.modules\nimport new_package"
+  ) == frozenset({'new_package'})
+
+
+def test_import_measurement_detects_new_submodule_of_preloaded_package(
+    preloaded_startup_package,
+):
+  assert loaded_top_level_packages(
+      "assert 'startup_package' in sys.modules\nimport startup_package.extra"
+  ) == frozenset({'startup_package'})
+
+
 def test_constructing_agent_defers_optional_mcp_server_stack():
   """A normal Agent does not import MCP just because its extra is installed."""
   if importlib.util.find_spec('mcp') is None:
