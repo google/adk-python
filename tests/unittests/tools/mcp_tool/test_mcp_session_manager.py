@@ -446,6 +446,36 @@ class TestMCPSessionManager:
     assert merged["user-agent"].startswith("google-adk/")
     assert merged["user-agent"].endswith(" my-app/1.0")
 
+  def test_merge_headers_preserves_tracking_case_aliases(self):
+    """MCP keeps base and additional custom tokens when their casing differs."""
+    base_headers = {
+        "User-Agent": "base-client/1 shared/1",
+        "X-Goog-Api-Client": "base-sdk/1 shared/1",
+        "X-Custom": "base",
+    }
+    additional = {
+        "user-agent": "extra-client/1 shared/1",
+        "x-goog-api-client": "extra-sdk/1 shared/1",
+        "X-Custom": "extra",
+    }
+    manager = MCPSessionManager(
+        SseConnectionParams(url="https://example.com/mcp", headers=base_headers)
+    )
+
+    merged = manager._merge_headers(additional)
+    request = httpx.Request("GET", "https://example.com/mcp", headers=merged)
+
+    for key, expected_custom in (
+        ("user-agent", "base-client/1 shared/1 extra-client/1"),
+        ("x-goog-api-client", "base-sdk/1 shared/1 extra-sdk/1"),
+    ):
+      values = request.headers.get_list(key)
+      assert len(values) == 1
+      assert values[0].endswith(" " + expected_custom)
+    assert merged["X-Custom"] == "extra"
+    assert base_headers["User-Agent"] == "base-client/1 shared/1"
+    assert additional["user-agent"] == "extra-client/1 shared/1"
+
   def test_is_session_disconnected(self):
     """Test session disconnection detection."""
     manager = MCPSessionManager(self.mock_stdio_connection_params)

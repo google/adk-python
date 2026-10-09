@@ -16,6 +16,7 @@ import sys
 
 from google.adk import version
 from google.adk.utils import _google_client_headers
+import httpx
 import pytest
 
 _EXPECTED_BASE_HEADER = (
@@ -77,6 +78,64 @@ def test_merge_tracking_headers(input_headers, expected_headers):
   """Test merge_tracking_headers with various inputs."""
   headers = _google_client_headers.merge_tracking_headers(input_headers)
   assert headers == expected_headers
+
+
+@pytest.mark.parametrize(
+    "user_agent_key, api_client_key",
+    [
+        ("User-Agent", "X-Goog-Api-Client"),
+        ("USER-AGENT", "X-GOOG-API-CLIENT"),
+    ],
+)
+def test_merge_tracking_headers_merges_case_insensitively(
+    user_agent_key, api_client_key
+):
+  """Each tracking header reaches the transport once with custom tokens kept."""
+  input_headers = {
+      user_agent_key: "custom-client/1",
+      api_client_key: "custom-sdk/1",
+      "X-Custom": "value",
+  }
+
+  headers = _google_client_headers.merge_tracking_headers(input_headers)
+  request = httpx.Request("GET", "https://example.test", headers=headers)
+
+  assert request.headers.get_list("user-agent") == [
+      f"{_EXPECTED_BASE_HEADER} custom-client/1"
+  ]
+  assert request.headers.get_list("x-goog-api-client") == [
+      f"{_EXPECTED_BASE_HEADER} custom-sdk/1"
+  ]
+  assert headers["X-Custom"] == "value"
+  assert input_headers == {
+      user_agent_key: "custom-client/1",
+      api_client_key: "custom-sdk/1",
+      "X-Custom": "value",
+  }
+
+
+def test_merge_tracking_headers_preserves_all_case_aliases():
+  """Case aliases merge into one transport field without losing custom tokens."""
+  input_headers = {
+      "User-Agent": f"first-client/1 shared/1 {_EXPECTED_BASE_HEADER}",
+      "user-agent": "second-client/1 shared/1",
+      "X-Goog-Api-Client": "first-sdk/1 shared/1",
+      "x-goog-api-client": "second-sdk/1 shared/1",
+      "X-Custom": "value",
+  }
+  original_headers = input_headers.copy()
+
+  headers = _google_client_headers.merge_tracking_headers(input_headers)
+  request = httpx.Request("GET", "https://example.test", headers=headers)
+
+  assert request.headers.get_list("user-agent") == [
+      f"{_EXPECTED_BASE_HEADER} first-client/1 shared/1 second-client/1"
+  ]
+  assert request.headers.get_list("x-goog-api-client") == [
+      f"{_EXPECTED_BASE_HEADER} first-sdk/1 shared/1 second-sdk/1"
+  ]
+  assert headers["X-Custom"] == "value"
+  assert input_headers == original_headers
 
 
 def test_get_tracking_http_options():
