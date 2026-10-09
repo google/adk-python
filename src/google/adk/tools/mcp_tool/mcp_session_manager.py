@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+import contextlib
 from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
 import contextvars
@@ -55,6 +56,13 @@ except ImportError:
     pass
 
   _AIO_SUPPORTED = False
+
+try:
+  import aiohttp.helpers
+  import yarl
+except ImportError:
+  aiohttp = None  # type: ignore[assignment]
+  yarl = None  # type: ignore[assignment]
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -664,12 +672,21 @@ class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
       # prevent aiohttp from forcibly closing the stream after sse_read_timeout.
       timeout_val = 0.0
 
+    proxy = proxy_auth = None
+    if aiohttp is not None and yarl is not None:
+      with contextlib.suppress(LookupError):
+        proxy, proxy_auth = await asyncio.to_thread(
+            aiohttp.helpers.get_env_proxy_for_url,
+            yarl.URL(str(request.url)),
+        )
     auth_response: Any = await self._auth_session.request(
         method=request.method,
         url=str(request.url),
         data=content if content else None,
         headers=headers_dict,
         timeout=timeout_val,
+        proxy=proxy,
+        proxy_auth=proxy_auth,
     )
 
     # google-auth-aio uses aiohttp internally, which automatically handles

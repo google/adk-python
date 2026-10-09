@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
-from typing import Literal
 from typing import Optional
 from typing import Union
 from urllib.parse import urlparse
@@ -64,10 +63,11 @@ from ...flows.llm_flows.context._fencing import _is_other_agent_reply
 from ...flows.llm_flows.context._fencing import _present_other_agent_message
 from ...flows.llm_flows.context._fencing import quote_untrusted
 from ...flows.llm_flows.tools._functions import find_matching_function_call
-from ...flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ...flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ...flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...sessions.session import Session
+from ...utils._agent_mode import AgentMode
+from ...utils._agent_mode import TaskAgentMode
+from ...utils._function_call_names import CLIENT_FUNCTION_CALL_NAMES
+from ...utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from ...utils.context_utils import Aclosing
 from ..converters.event_converter import convert_a2a_message_to_event
 from ..converters.event_converter import convert_a2a_task_to_event
@@ -118,11 +118,9 @@ _MOCK_FUNCTION_CALL_NAMES = frozenset({
 })
 
 # Pause names answered locally as text when the pause was raised on this side.
-_HUMAN_INPUT_FUNCTION_CALL_NAMES = _MOCK_FUNCTION_CALL_NAMES | {
-    REQUEST_INPUT_FUNCTION_CALL_NAME,
-    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-    REQUEST_EUC_FUNCTION_CALL_NAME,
-}
+_HUMAN_INPUT_FUNCTION_CALL_NAMES = (
+    _MOCK_FUNCTION_CALL_NAMES | CLIENT_FUNCTION_CALL_NAMES
+)
 
 # Function call names whose *response* carries credential material.
 _CREDENTIAL_FUNCTION_CALL_NAMES = frozenset({
@@ -642,7 +640,7 @@ class RemoteA2aAgent(BaseAgent):
   - Session state management across requests
   """
 
-  mode: Literal["task"] | None = None
+  mode: TaskAgentMode | None = None
   """Delegation mode.
 
   Only ``task`` is supported: the agent runs as a task sub-agent of a parent
@@ -817,7 +815,9 @@ class RemoteA2aAgent(BaseAgent):
 
   @property
   def _full_history_when_stateless(self) -> bool:
-    return self._full_history_when_stateless_param or self.mode == "task"
+    return (
+        self._full_history_when_stateless_param or self.mode == AgentMode.TASK
+    )
 
   @_full_history_when_stateless.setter
   def _full_history_when_stateless(self, value: bool) -> None:
@@ -1293,7 +1293,7 @@ class RemoteA2aAgent(BaseAgent):
 
     # Also stop on synthesized FR events for this agent (meaning the previous
     # delegation to this agent has completed).
-    if self.mode == "task":
+    if self.mode == AgentMode.TASK:
       for fr in event.get_function_responses():
         if fr.name == self.name:
           return True
@@ -1316,7 +1316,7 @@ class RemoteA2aAgent(BaseAgent):
     context_id = None
 
     events_to_process = []
-    task_scope = ctx.isolation_scope if self.mode == "task" else None
+    task_scope = ctx.isolation_scope if self.mode == AgentMode.TASK else None
     broke_loop = False
 
     for event in reversed(ctx.session.events):
@@ -1378,7 +1378,7 @@ class RemoteA2aAgent(BaseAgent):
     # root without finding the matching FC (and did not stop at a prior
     # stateful turn), the isolation scope is invalid (e.g. a workflow graph
     # node).
-    if self.mode == "task" and task_scope and not broke_loop:
+    if self.mode == AgentMode.TASK and task_scope and not broke_loop:
       raise ValueError(
           f"RemoteA2aAgent '{self.name}' in task mode could not find the"
           f" triggering FunctionCall for isolation scope '{task_scope}' in"
@@ -1418,7 +1418,7 @@ class RemoteA2aAgent(BaseAgent):
 
       for part in processed_event.content.parts:
         if (
-            self.mode == "task"
+            self.mode == AgentMode.TASK
             and task_scope
             and part.function_call
             and isinstance(part.function_call, genai_types.FunctionCall)
@@ -1483,7 +1483,7 @@ class RemoteA2aAgent(BaseAgent):
     """Returns the latest paused task in the outgoing message's context."""
     if not context_id or not self._has_default_response_persistence():
       return None
-    task_scope = ctx.isolation_scope if self.mode == "task" else None
+    task_scope = ctx.isolation_scope if self.mode == AgentMode.TASK else None
     for event in reversed(ctx.session.events):
       if task_scope and event.isolation_scope != task_scope:
         # Do not resume a task from an earlier delegation to the same agent.
@@ -1931,7 +1931,9 @@ class RemoteA2aAgent(BaseAgent):
                   _compat.a2a_to_dict(a2a_response)
               )
 
-            if self.mode == "task" and is_finish_task_terminal_fr(event):
+            if self.mode == AgentMode.TASK and is_finish_task_terminal_fr(
+                event
+            ):
               args = _find_finish_task_args_from_history(
                   ctx.session, ctx.isolation_scope, completed_fr_event=event
               )
@@ -1964,7 +1966,7 @@ class RemoteA2aAgent(BaseAgent):
 
             yield event
 
-            if self.mode == "task" and task:
+            if self.mode == AgentMode.TASK and task:
               if task.status and task.status.state in (
                   _compat.TS_FAILED,
                   _compat.TS_CANCELED,
@@ -2064,7 +2066,7 @@ class RemoteA2aAgent(BaseAgent):
         )
 
     finally:
-      if self.mode == "task" and should_release_task_control:
+      if self.mode == AgentMode.TASK and should_release_task_control:
         if task_error_message is not None:
           yield _create_finish_task_event(
               ctx=ctx,
@@ -2116,7 +2118,7 @@ class RemoteA2aAgent(BaseAgent):
     promoted = False
     async for event in super()._run_impl(ctx=ctx, node_input=node_input):
       if (
-          self.mode != "task"
+          self.mode != AgentMode.TASK
           and not promoted
           and self._promote_response_to_output(event, ctx.node_path)
       ):

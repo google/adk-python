@@ -98,7 +98,7 @@ def get_table_schema(
       project_id (str): The Google Cloud project id.
       instance_id (str): The Spanner instance id.
       database_id (str): The Spanner database id.
-      table_id (str): The Spanner table id.
+      table_name (str): The Spanner table name.
       credentials (Credentials): The credentials to use for the request.
       named_schema (str): The named schema to list tables in. Default is empty
         string "" to search for tables in the default schema of the database.

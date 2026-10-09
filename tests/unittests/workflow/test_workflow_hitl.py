@@ -32,6 +32,8 @@ from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
 from google.adk.workflow import node
@@ -41,8 +43,6 @@ from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._rehydration_utils import _wrap_response
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
 from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
-from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -1477,7 +1477,7 @@ async def test_function_node_auth_config(
   resume_part = types.Part(
       function_response=types.FunctionResponse(
           id=auth_fc_id,
-          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          name=REQUEST_EUC_FUNCTION_CALL_NAME,
           response=auth_response.model_dump(exclude_none=True, by_alias=True),
       )
   )
@@ -1543,7 +1543,7 @@ async def test_auth_credential_is_not_copied_into_checkpoint(
   resume_part = types.Part(
       function_response=types.FunctionResponse(
           id=auth_fc_id,
-          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          name=REQUEST_EUC_FUNCTION_CALL_NAME,
           response=auth_response.model_dump(exclude_none=True, by_alias=True),
       )
   )
@@ -1632,7 +1632,7 @@ async def test_second_auth_node_skips_auth_when_credential_exists(
   resume_part = types.Part(
       function_response=types.FunctionResponse(
           id=auth_fc_id,
-          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          name=REQUEST_EUC_FUNCTION_CALL_NAME,
           response=auth_response.model_dump(exclude_none=True, by_alias=True),
       )
   )

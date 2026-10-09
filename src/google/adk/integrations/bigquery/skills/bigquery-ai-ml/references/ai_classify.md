@@ -88,5 +88,5 @@ LIMIT 100;
 SELECT AI.CLASSIFY( ('Classify the review by sentiment: ', review), categories
 => [('green', 'The review is positive.'), ('yellow', 'The review is neutral.'),
 ('red', 'The review is negative.')]) AS ai_review_rating, reviewer_rating AS
-human_provided_rating, review, FROM `bigquery-public-data.imdb.reviews` WHERE
+human_provided_rating, review FROM `bigquery-public-data.imdb.reviews` WHERE
 title = 'The English Patient'

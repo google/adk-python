@@ -34,6 +34,8 @@ from google.genai import types
 
 from ....events._branch_path import _BranchPath
 from ....events.event import Event
+from ....utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
+from ....utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ._utils import require_agent_name
 
 if TYPE_CHECKING:
@@ -158,17 +160,9 @@ def _find_answer_event(
   the nested case, where the answer arrives against the sub-branch instead of
   against the original call id.
   """
-  # Imported here, not at module scope: google.adk.workflow imports back into
-  # the flows package.
-  # pylint: disable=g-import-not-at-top
-  from ....workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
-  from ....workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
-
-  # pylint: enable=g-import-not-at-top
-
   hitl_names = {
       REQUEST_INPUT_FUNCTION_CALL_NAME,
-      REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+      REQUEST_EUC_FUNCTION_CALL_NAME,
   }
   calls = call_event.get_function_calls()
   # `call_idx` is passed in rather than searched for again: the caller has

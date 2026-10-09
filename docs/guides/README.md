@@ -81,6 +81,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Live
 * [Live tools](live/tools/index.md) - Asynchronous background execution and response scheduling for Gemini Live agents.
+* [CascadeLive](live/cascade_live/index.md) - A live-composing model wrapping a text reasoner in speech-to-text and text-to-speech transforms.
 * [LiveRequestQueue](live/live_request_queue/index.md) - Streaming content, realtime audio, and stream control signals to live agents.
 
 ### Memory

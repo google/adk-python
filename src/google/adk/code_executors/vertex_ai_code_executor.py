@@ -22,6 +22,7 @@ from typing import cast
 from typing import TYPE_CHECKING
 from typing import TypedDict
 
+from typing_extensions import deprecated
 from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
@@ -111,7 +112,21 @@ def _get_code_interpreter_extension(
     resource_name: str | None = None,
 ) -> Extension:
   """Returns: Load or create the code interpreter extension."""
-  from vertexai.preview.extensions import Extension
+  try:
+    from vertexai.preview.extensions import Extension
+  except ImportError as e:
+    raise ImportError(
+        'VertexAiCodeExecutor needs the Vertex AI Extensions surface from'
+        ' google-cloud-aiplatform, which google-adk[gcp] no longer installs'
+        ' because it carries the full GAPIC stack. Vertex AI Extensions is'
+        ' deprecated: prefer AgentEngineSandboxCodeExecutor, which is the'
+        ' documented replacement and needs no extra install. See'
+        ' https://docs.cloud.google.com/vertex-ai/generative-ai/docs/extensions/migrate.'
+        ' To keep using this executor, run: pip install'
+        " 'google-cloud-aiplatform>=2.2,<3'. The bound matters: every extra"
+        ' that declares this distribution caps it below 3, and an unbounded'
+        ' install can resolve past that.'
+    ) from e
 
   if not resource_name:
     resource_name = os.environ.get('CODE_INTERPRETER_EXTENSION_NAME')
@@ -128,8 +143,19 @@ def _get_code_interpreter_extension(
   return new_code_interpreter
 
 
+@deprecated(
+    'Vertex AI Extensions is deprecated, and the Code Interpreter extension'
+    ' this executor wraps has no Agent Platform equivalent. Use'
+    ' AgentEngineSandboxCodeExecutor instead, which is the replacement named'
+    ' in the official migration guide:'
+    ' https://docs.cloud.google.com/vertex-ai/generative-ai/docs/extensions/migrate'
+)
 class VertexAiCodeExecutor(BaseCodeExecutor):
   """A code executor that uses Vertex Code Interpreter Extension to execute code.
+
+  Deprecated: Vertex AI Extensions is being retired and this executor is the
+  last part of ADK still reaching for the GAPIC-backed ``vertexai`` surface.
+  ``AgentEngineSandboxCodeExecutor`` is the documented migration target.
 
   Attributes:
     resource_name: If set, load the existing resource name of the code

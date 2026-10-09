@@ -24,16 +24,18 @@ from typing_extensions import override
 
 from ....agents.invocation_context import InvocationContext
 from ....events._branch_path import _BranchPath
+from ....events._node_path_builder import _NodePathBuilder
 from ....events._rewind_events import _apply_rewinds
 from ....events.event import Event
 from ....models.base_llm import BaseLlm
 from ....models.llm_request import LlmRequest
+from ....utils._agent_mode import AgentMode
+from ....utils._function_call_names import AF_FUNCTION_CALL_ID_PREFIX
+from ....utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ....utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..core._utils import as_llm_agent
 from ..tools._functions import _collect_function_call_ids
-from ..tools._functions import AF_FUNCTION_CALL_ID_PREFIX
-from ..tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ..tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..tools._rearranger import _drop_orphaned_function_responses
 from ..tools._rearranger import _rearrange_events_for_async_function_responses_in_history
 from ..tools._rearranger import _rearrange_events_for_latest_function_response
@@ -115,7 +117,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
         else False
     )
 
-    is_single_turn = getattr(agent, 'mode', None) == 'single_turn'
+    is_single_turn = getattr(agent, 'mode', None) == AgentMode.SINGLE_TURN
     if (
         agent.include_contents == 'default'
         and not llm_request.previous_interaction_id
@@ -406,6 +408,20 @@ def _copy_content_for_request(
   return new_content
 
 
+def _filter_single_turn_node_events(
+    current_branch: str | None,
+    events: list[Event],
+    *,
+    is_single_turn: bool,
+    node_path: str | None,
+) -> list[Event]:
+  """Retains only root and own-subtree events for an unbranched single-turn node."""
+  if current_branch is not None or not is_single_turn or not node_path:
+    return events
+  self_path = _NodePathBuilder.from_string(node_path)
+  return [e for e in events if self_path.includes_node_path(e.node_info.path)]
+
+
 def _get_contents(
     current_branch: str | None,
     events: list[Event],
@@ -445,7 +461,12 @@ def _get_contents(
   # Filter out events that are annulled by a rewind, so the rewound history is
   # never sent to the LLM. This is the same rewind logic the context compactor
   # applies, keeping the two consistent (see google.adk.events._rewind_events).
-  rewind_filtered_events = _apply_rewinds(events)
+  rewind_filtered_events = _filter_single_turn_node_events(
+      current_branch,
+      _apply_rewinds(events),
+      is_single_turn=is_single_turn,
+      node_path=node_path,
+  )
   tool_call_ids = _collect_function_call_ids(rewind_filtered_events)
 
   # Parse the events, leaving the contents and the function calls and
@@ -638,10 +659,17 @@ def _get_current_turn_contents(
   # back far enough to include the call it answers: the conversation can carry
   # on while a long-running tool is pending, so an ordinary user turn can sit
   # between the two, and anchoring there would leave the result orphaned.
+  scoped_events = _filter_single_turn_node_events(
+      current_branch,
+      events,
+      is_single_turn=is_single_turn,
+      node_path=node_path,
+  )
+
   unmatched_response_ids: set[str] = set()
-  tool_call_ids = _collect_function_call_ids(events)
-  for i in range(len(events) - 1, -1, -1):
-    event = events[i]
+  tool_call_ids = _collect_function_call_ids(scoped_events)
+  for i in range(len(scoped_events) - 1, -1, -1):
+    event = scoped_events[i]
     unmatched_response_ids -= {
         function_call.id
         for function_call in event.get_function_calls()
@@ -652,7 +680,7 @@ def _get_current_turn_contents(
       unmatched_response_ids.update(
           function_response.id
           for function_response in event.get_function_responses()
-          if function_response.id
+          if function_response.id and function_response.id in tool_call_ids
       )
     if (
         not unmatched_response_ids
@@ -675,7 +703,7 @@ def _get_current_turn_contents(
     ):
       return _get_contents(
           current_branch,
-          events[i:],
+          scoped_events[i:],
           agent_name,
           preserve_function_call_ids=preserve_function_call_ids,
           isolation_scope=isolation_scope,

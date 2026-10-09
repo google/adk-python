@@ -55,24 +55,37 @@ def test_skill_has_expected_references():
   """Verify all expected reference files are present and non-empty."""
   skill = get_bigquery_skill()
 
+  # References are synced from the upstream BigQuery skill source.
+  # Check a required subset so new upstream references don't break this test.
   expected_refs = {
-      "bigquery_ai_classify.md",
-      "bigquery_ai_detect_anomalies.md",
-      "bigquery_ai_forecast.md",
-      "bigquery_ai_generate.md",
-      "bigquery_ai_generate_bool.md",
-      "bigquery_ai_generate_double.md",
-      "bigquery_ai_generate_int.md",
-      "bigquery_ai_if.md",
-      "bigquery_ai_score.md",
-      "bigquery_ai_search.md",
-      "bigquery_ai_similarity.md",
+      "ai_agg.md",
+      "ai_causal_effect.md",
+      "ai_classify.md",
+      "ai_detect_anomalies.md",
+      "ai_evaluate.md",
+      "ai_forecast.md",
+      "ai_generate.md",
+      "ai_generate_embedding.md",
+      "ai_generate_table.md",
+      "ai_if.md",
+      "ai_key_drivers.md",
+      "ai_score.md",
+      "ai_search.md",
+      "ai_similarity.md",
+      "ml_contribution_analysis.md",
+      "ml_correlation.md",
+      "ml_detect_change_points.md",
+      "ml_seasonality.md",
+      "ml_trend.md",
+      "remote_models.md",
+      "vector_search.md",
   }
   actual_refs = set(skill.resources.list_references())
 
-  assert expected_refs == actual_refs
+  missing = expected_refs - actual_refs
+  assert not missing, f"Missing references: {sorted(missing)}"
 
-  for ref_name in expected_refs:
+  for ref_name in actual_refs:
     content = skill.resources.get_reference(ref_name)
     assert content is not None, f"Reference {ref_name} returned None"
     assert len(content) > 0, f"Reference {ref_name} is empty"

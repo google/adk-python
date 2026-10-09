@@ -40,6 +40,7 @@ from google.adk.cli import trigger_routes as trigger_routes_module
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.cli.trigger_routes import _is_transient_error
 from google.adk.cli.trigger_routes import TransientError
+from google.adk.cli.trigger_routes import TRIGGER_DELIVERY_STATE_KEY
 from google.adk.cli.trigger_routes import TriggerRouter
 from google.adk.events.event import Event
 from google.adk.runners import Runner
@@ -281,6 +282,7 @@ def client(
       mock_memory_service,
       mock_agent_loader,
       trigger_sources=["pubsub", "eventarc"],
+      trigger_auth_verifier=lambda req: None,
   )
 
 
@@ -612,7 +614,7 @@ class TestTriggerOidcVerification:
   ):
     with pytest.raises(
         ValueError,
-        match="trigger_oidc_service_accounts requires trigger_oidc_audience",
+        match="trigger_sources requires trigger_oidc_audience",
     ):
       _make_test_client(
           mock_session_service,
@@ -990,6 +992,7 @@ class TestTriggerPubSub:
         mock_memory_service,
         mock_agent_loader,
         trigger_sources=["pubsub"],
+        trigger_auth_verifier=lambda req: None,
         max_llm_calls=37,
     )
 
@@ -1386,6 +1389,7 @@ class TestTriggerEventarc:
         mock_memory_service,
         mock_agent_loader,
         trigger_sources=["eventarc"],
+        trigger_auth_verifier=lambda req: None,
         max_llm_calls=42,
     )
 
@@ -1411,6 +1415,217 @@ class TestTriggerEventarc:
     assert len(captured_run_configs) == 1
     assert captured_run_configs[0] is not None
     assert captured_run_configs[0].max_llm_calls == 42
+
+
+# ===================================================================
+# Delivery identity in session state
+# ===================================================================
+
+
+def _capture_delivery_state(monkeypatch) -> list:
+  """Patches the runner to record the delivery each run sees in state."""
+  captured = []
+
+  async def dummy_run_async_capture(
+      self, user_id, session_id, new_message, **kwargs
+  ):
+    session = await self.session_service.get_session(
+        app_name=self.app_name, user_id=user_id, session_id=session_id
+    )
+    captured.append(session.state.get(TRIGGER_DELIVERY_STATE_KEY))
+    yield _model_event("Success")
+    await asyncio.sleep(0)
+
+  monkeypatch.setattr(Runner, "run_async", dummy_run_async_capture)
+  return captured
+
+
+class TestTriggerDeliveryIdentity:
+  """The upstream delivery identity is exposed to the agent's tools."""
+
+  def test_pubsub_message_id_is_in_session_state(self, client, monkeypatch):
+    """Pub/Sub messageId and subscription are stored in session state."""
+    captured = _capture_delivery_state(monkeypatch)
+
+    payload = {
+        "message": {
+            "data": base64.b64encode(b"hello").decode(),
+            "messageId": "msg-100",
+            "publishTime": "2026-01-01T00:00:00Z",
+        },
+        "subscription": "projects/p/subscriptions/orders-sub",
+    }
+    resp = client.post("/apps/test_app/trigger/pubsub", json=payload)
+
+    assert resp.status_code == 200
+    assert captured == [{
+        "source": "pubsub",
+        "id": "msg-100",
+        "subscription": "projects/p/subscriptions/orders-sub",
+        "publish_time": "2026-01-01T00:00:00Z",
+    }]
+
+  def test_pubsub_without_message_id_stores_none(self, client, monkeypatch):
+    """A Pub/Sub request without messageId still records the source."""
+    captured = _capture_delivery_state(monkeypatch)
+
+    payload = {"message": {"data": base64.b64encode(b"hello").decode()}}
+    resp = client.post("/apps/test_app/trigger/pubsub", json=payload)
+
+    assert resp.status_code == 200
+    assert captured[0]["source"] == "pubsub"
+    assert captured[0]["id"] is None
+
+  def test_pubsub_redelivery_lets_tool_skip_repeated_side_effect(
+      self, client, monkeypatch
+  ):
+    """A tool can use the delivery id to avoid repeating a side effect.
+
+    Setup: a runner that pays an invoice through a provider keyed on
+      subscription and messageId, then fails on the first attempt with a
+      non-transient error. The provider's ledger lives outside the session,
+      because each delivery starts with fresh session state.
+    Act: deliver the same Pub/Sub message twice, as Pub/Sub does after a
+      500 response.
+    Assert: the first delivery returns 500, the redelivery returns 200, and
+      the payment happened exactly once.
+    """
+    payments = []
+    provider_idempotency_keys = set()
+
+    async def dummy_run_async_pay_then_fail(
+        self, user_id, session_id, new_message, **kwargs
+    ):
+      session = await self.session_service.get_session(
+          app_name=self.app_name, user_id=user_id, session_id=session_id
+      )
+      delivery = session.state[TRIGGER_DELIVERY_STATE_KEY]
+      idempotency_key = (delivery["subscription"], delivery["id"])
+      if idempotency_key not in provider_idempotency_keys:
+        payments.append("INV-1")
+        provider_idempotency_keys.add(idempotency_key)
+        raise RuntimeError("503 UNAVAILABLE")
+      yield _model_event("Already paid")
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_pay_then_fail)
+
+    payload = {
+        "message": {
+            "data": base64.b64encode(b'{"invoice": "INV-1"}').decode(),
+            "messageId": "msg-pay-1",
+        },
+        "subscription": "projects/p/subscriptions/payments",
+    }
+    first = client.post("/apps/test_app/trigger/pubsub", json=payload)
+    redelivery = client.post("/apps/test_app/trigger/pubsub", json=payload)
+
+    assert first.status_code == 500
+    assert redelivery.status_code == 200
+    assert payments == ["INV-1"]
+
+  def test_eventarc_event_id_is_in_session_state(self, client, monkeypatch):
+    """A structured CloudEvent's id, source and type are stored in state."""
+    captured = _capture_delivery_state(monkeypatch)
+
+    payload = {
+        "data": {"bucket": "my-bucket"},
+        "source": "//storage.googleapis.com/projects/_/buckets/my-bucket",
+        "type": "google.cloud.storage.object.v1.finalized",
+        "id": "evt-100",
+        "specversion": "1.0",
+    }
+    resp = client.post("/apps/test_app/trigger/eventarc", json=payload)
+
+    assert resp.status_code == 200
+    assert captured == [{
+        "source": "eventarc",
+        "id": "evt-100",
+        "event_source": "//storage.googleapis.com/projects/_/buckets/my-bucket",
+        "type": "google.cloud.storage.object.v1.finalized",
+    }]
+
+  def test_eventarc_binary_mode_reads_id_from_headers(
+      self, client, monkeypatch
+  ):
+    """In binary content mode the ce-* headers supply the delivery id."""
+    captured = _capture_delivery_state(monkeypatch)
+
+    payload = {
+        "message": {
+            "data": base64.b64encode(b"hello").decode(),
+            "messageId": "pubsub-msg-1",
+        },
+    }
+    resp = client.post(
+        "/apps/test_app/trigger/eventarc",
+        json=payload,
+        headers={
+            "ce-id": "ce-header-1",
+            "ce-source": "//pubsub.googleapis.com/projects/p/topics/t",
+            "ce-type": "google.cloud.pubsub.topic.v1.messagePublished",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert captured[0]["id"] == "ce-header-1"
+    assert (
+        captured[0]["event_source"]
+        == "//pubsub.googleapis.com/projects/p/topics/t"
+    )
+    assert (
+        captured[0]["type"] == "google.cloud.pubsub.topic.v1.messagePublished"
+    )
+
+  def test_eventarc_pubsub_wrapper_without_ce_id_uses_message_id(
+      self, client, monkeypatch
+  ):
+    """A Pub/Sub-wrapped event without ce-id falls back to the messageId."""
+    captured = _capture_delivery_state(monkeypatch)
+
+    payload = {
+        "message": {
+            "data": base64.b64encode(b"hello").decode(),
+            "messageId": "pubsub-msg-2",
+        },
+    }
+    resp = client.post("/apps/test_app/trigger/eventarc", json=payload)
+
+    assert resp.status_code == 200
+    assert captured[0]["source"] == "eventarc"
+    assert captured[0]["id"] == "pubsub-msg-2"
+
+  def test_retried_attempt_keeps_delivery_in_state(self, client, monkeypatch):
+    """An in-process retry after a 429 still sees the delivery identity."""
+    captured = []
+    attempts = {"count": 0}
+
+    async def dummy_run_async_429_once(
+        self, user_id, session_id, new_message, **kwargs
+    ):
+      session = await self.session_service.get_session(
+          app_name=self.app_name, user_id=user_id, session_id=session_id
+      )
+      captured.append(session.state.get(TRIGGER_DELIVERY_STATE_KEY))
+      attempts["count"] += 1
+      if attempts["count"] == 1:
+        raise RuntimeError("429 Resource has been exhausted")
+      yield _model_event("Success")
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_429_once)
+
+    payload = {
+        "message": {
+            "data": base64.b64encode(b"hello").decode(),
+            "messageId": "msg-retry-1",
+        },
+    }
+    with patch(
+        "google.adk.cli.trigger_routes.asyncio.sleep", new_callable=AsyncMock
+    ):
+      resp = client.post("/apps/test_app/trigger/pubsub", json=payload)
+
+    assert resp.status_code == 200
+    assert [d["id"] for d in captured] == ["msg-retry-1", "msg-retry-1"]
 
 
 # ===================================================================
@@ -1569,6 +1784,7 @@ class TestSelectiveRegistration:
         mock_memory_service,
         mock_agent_loader,
         trigger_sources=["pubsub"],
+        trigger_auth_verifier=lambda req: None,
     )
     # Pub/Sub should work
     ps_resp = client.post(
@@ -1595,6 +1811,7 @@ class TestSelectiveRegistration:
         mock_memory_service,
         mock_agent_loader,
         trigger_sources=["eventarc"],
+        trigger_auth_verifier=lambda req: None,
     )
     # Eventarc should work
     ea_resp = client.post(
@@ -1627,6 +1844,7 @@ class TestUnknownTriggerSources:
         mock_memory_service,
         mock_agent_loader,
         trigger_sources=["unknown_source", "pubsub"],
+        trigger_auth_verifier=lambda req: None,
     )
     # "pubsub" should still be registered
     ps_resp = client.post(
@@ -1655,6 +1873,7 @@ class TestUnknownTriggerSources:
         mock_memory_service,
         mock_agent_loader,
         trigger_sources=["foo", "bar"],
+        trigger_auth_verifier=lambda req: None,
     )
     unknown_resp = client.post(
         "/apps/test_app/trigger/unknown_source", json={"calls": [["test"]]}
