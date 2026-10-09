@@ -712,6 +712,32 @@ async def test_list_sessions_all_users(session_service):
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_with_empty_user_id_lists_only_that_user(
+    session_service,
+):
+  """An empty user id is a user id, not a request for every user."""
+  app_name = 'my_app'
+  await session_service.create_session(
+      app_name=app_name, user_id='', session_id='empty_user_session'
+  )
+  await session_service.create_session(
+      app_name=app_name,
+      user_id='other_user',
+      session_id='other_user_session',
+      state={'user:name': 'other'},
+  )
+
+  list_sessions_response = await session_service.list_sessions(
+      app_name=app_name, user_id=''
+  )
+
+  assert [s.id for s in list_sessions_response.sessions] == [
+      'empty_user_session'
+  ]
+  assert list_sessions_response.sessions[0].state == {}
+
+
+@pytest.mark.asyncio
 async def test_app_state_is_shared_by_all_users_of_app(session_service):
   app_name = 'my_app'
   # User 1 creates a session, establishing app:k1
@@ -1243,6 +1269,63 @@ async def test_user_state_none_valued_delta_is_stored_not_dropped(
   assert session1b.state.get('user:pref') is None
   assert 'user:pref' in session1.state
   assert session1.state.get('user:pref') is None
+
+
+# Floats that need more than 15 significant digits to read back unchanged.
+_EXACT_NUMBERS = {
+    'ratio': 0.1 + 0.2,
+    'epoch_seconds': 1727500000.1234567,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prefix', ['', 'user:', 'app:'])
+async def test_numbers_survive_unrelated_state_delta(session_service, prefix):
+  """Stored numbers read back unchanged after an unrelated state_delta."""
+  numbers = {prefix + key: value for key, value in _EXACT_NUMBERS.items()}
+  session = await session_service.create_session(
+      app_name='my_app', user_id='u1', session_id='s1', state=numbers
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={prefix + 'other': 1}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  assert {key: reloaded.state[key] for key in numbers} == numbers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prefix', ['', 'user:', 'app:'])
+async def test_number_valued_state_delta_is_stored_exactly(
+    session_service, prefix
+):
+  """Numbers written by a state_delta read back unchanged."""
+  numbers = {prefix + key: value for key, value in _EXACT_NUMBERS.items()}
+  # Seed the scope so the delta is merged into existing state.
+  session = await session_service.create_session(
+      app_name='my_app',
+      user_id='u1',
+      session_id='s1',
+      state={prefix + 'seed': 1},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta=numbers),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  assert {key: reloaded.state[key] for key in numbers} == numbers
 
 
 @pytest.mark.asyncio

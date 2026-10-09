@@ -232,6 +232,14 @@ tests/unittests/models/test_llm_request.py               # LlmRequest messages
 tests/unittests/test_runners.py                          # Runner messages
 ```
 
+### 11. Parameterize variations instead of copy-pasting tests
+
+When verifying the same contract across a matrix of modes or configurations
+(such as `AgentMode.SINGLE_TURN` vs `AgentMode.CHAT`, `include_contents='none'`
+vs `'default'`, or resumable vs non-resumable apps), use
+`@pytest.mark.parametrize` on a single focused test rather than duplicating the
+test body across multiple functions.
+
 ### Test Structure Template
 
 ```python
@@ -262,16 +270,20 @@ def test_<behavior_description>():
 
 ## ADK Test Fakes
 
-Use the fakes in `tests/unittests/testing_utils.py` instead of patching ADK
-internals:
+Use the fakes in `tests/unittests/testing_utils.py` (or
+`tests/unittests/workflow/testing_utils.py` for workflow tests) instead of
+patching ADK internals or constructing a bare `google.adk.runners.Runner`:
 
 - `testing_utils.MockModel.create(responses=[...])` builds a model that
   replies with canned responses in order and records each request in
   `.requests`.
-- `testing_utils.InMemoryRunner(root_agent=agent)` runs an agent on in-memory
-  services; `await runner.run_async('hi')` returns the events, and
-  `testing_utils.simplify_events(events)` reduces them to `(author, content)`
-  pairs.
+- `testing_utils.InMemoryRunner(root_agent=agent)` (or `node=wf` in
+  `workflow/testing_utils.py`) and `testing_utils.TestInMemoryRunner` run an
+  agent or workflow on in-memory services and automatically attach
+  `InvariantPlugin` (`check_invariants=True`) to validate event-stream
+  invariants on every turn. `await runner.run_async('hi')` returns the events,
+  and `testing_utils.simplify_events(events)` reduces them to
+  `(author, content)` pairs.
 
 Request the `env_variables` fixture from `conftest.py` to run a test against
 both the Gemini API and Vertex AI.
