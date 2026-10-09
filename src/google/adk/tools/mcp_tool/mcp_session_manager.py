@@ -108,12 +108,6 @@ _SESSION_USE_PIN_WARN_SECONDS = 4 * _SESSION_IDLE_TTL_SECONDS
 # the manager, so credentials granted while the process runs are picked up.
 _MTLS_PROBE_RETRY_INTERVAL_SECONDS = 300.0
 
-# The headers `merge_tracking_headers` writes, spelled the way it spells them.
-# HTTP header names are case-insensitive and a caller may have used any casing,
-# but a dict is not: leaving their spelling alongside ours would put the header
-# on the wire twice, so theirs is folded onto ours before merging.
-_TRACKING_HEADER_NAMES = frozenset(('user-agent', 'x-goog-api-client'))
-
 
 def create_mcp_http_client(
     headers: dict[str, str] | None = None,
@@ -998,10 +992,7 @@ class MCPSessionManager:
     if additional_headers:
       base_headers.update(additional_headers)
 
-    return merge_tracking_headers({
-        key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
-        for key, value in base_headers.items()
-    })
+    return merge_tracking_headers(base_headers)
 
   def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
