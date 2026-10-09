@@ -7286,7 +7286,7 @@ def test_add_session_to_eval_set_unknown_eval_set_is_a_client_error(
       },
   )
 
-  assert 400 <= response.status_code < 500
+  assert response.status_code == 404
 
 
 def test_get_eval_result_returns_saved_eval_set_result(
