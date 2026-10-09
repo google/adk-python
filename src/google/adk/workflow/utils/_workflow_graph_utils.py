@@ -21,8 +21,11 @@ from typing import cast
 from typing import Literal
 
 from ...tools.base_tool import BaseTool
+from ...utils._agent_mode import AgentMode
+from ...utils._agent_mode import DefaultLlmNodeMode
 from .._base_node import BaseNode
 from .._base_node import START
+from .._errors import WorkflowConfigurationError
 from .._function_node import FunctionNode
 from .._graph import NodeLike
 from .._retry_config import RetryConfig
@@ -47,6 +50,7 @@ def build_node(
     timeout: float | None = None,
     auth_config: Any = None,
     parameter_binding: Literal['state', 'node_input'] = 'state',
+    default_llm_mode: DefaultLlmNodeMode = AgentMode.SINGLE_TURN,
 ) -> BaseNode:
   """Converts a NodeLike to a BaseNode, wrapping async funcs in FunctionNode.
 
@@ -59,18 +63,20 @@ def build_node(
       wrapped node.
     timeout: If provided, overrides the timeout property of the wrapped node.
     auth_config: If provided, passed to FunctionNode for authentication.
-    parameter_binding: How function parameters are bound. ``'state'``
-      (default) binds parameters from ``ctx.state``. ``'node_input'``
-      binds parameters from ``node_input`` dict and infers
-      ``input_schema`` / ``output_schema`` from the function signature
-      (used when the node acts as an agent's tool).
+    parameter_binding: How function parameters are bound. ``'state'`` (default)
+      binds parameters from ``ctx.state``. ``'node_input'`` binds parameters
+      from ``node_input`` dict and infers ``input_schema`` / ``output_schema``
+      from the function signature (used when the node acts as an agent's tool).
+    default_llm_mode: Default mode applied to the cloned LlmAgent when its
+      ``mode`` is ``None`` and ``parent_agent`` is ``None``.
 
   Returns:
     A BaseNode instance.
 
   Raises:
-    ValueError: If node_like is not a valid type (BaseNode, BaseAgent,
-      BaseTool, callable, or 'START').
+    WorkflowConfigurationError: If node_like is not a valid type (BaseNode,
+      BaseAgent, BaseTool, callable, or 'START'), or if it is a task-mode
+      RemoteA2aAgent with no parent agent.
   """
 
   if node_like == 'START':
@@ -104,10 +110,10 @@ def build_node(
     if _remote_a2a_agent_type is not None:
       is_remote_a2a_task = (
           isinstance(node_like, _remote_a2a_agent_type)
-          and node_like.mode == 'task'
+          and node_like.mode == AgentMode.TASK
       )
     if is_remote_a2a_task and getattr(node_like, 'parent_agent', None) is None:
-      raise ValueError(
+      raise WorkflowConfigurationError(
           'RemoteA2aAgent in task mode is not supported as a standalone '
           'workflow node. It is only supported in tool-delegation mode.'
       )
@@ -123,13 +129,20 @@ def build_node(
       if isinstance(agent, LlmAgent) and agent.mode is None:
         # Sub-agents dynamically attached to a parent agent default to 'chat'
         # mode to enable agent transfer.
-        # Standalone agents in a workflow graph default to 'single_turn'.
+        # Standalone agents in a workflow graph default to `default_llm_mode`.
         if agent.parent_agent is not None:
-          agent.mode = 'chat'
+          agent.mode = AgentMode.CHAT.value
         else:
-          agent.mode = 'single_turn'
+          agent.mode = str(default_llm_mode)
 
-      if agent.mode in ('task', 'chat'):
+      if (
+          isinstance(agent, LlmAgent)
+          and agent.mode == AgentMode.SINGLE_TURN
+          and 'include_contents' not in node_like.model_fields_set
+      ):
+        agent.include_contents = 'none'
+
+      if agent.mode in (AgentMode.TASK, AgentMode.CHAT):
         agent.wait_for_output = True
 
       if isinstance(agent, LlmAgent) and agent.parallel_worker:
@@ -180,7 +193,7 @@ def build_node(
         parameter_binding=parameter_binding,
     )
   else:
-    raise ValueError(
+    raise WorkflowConfigurationError(
         f'Invalid node type: {type(node_like)}. Node must be a BaseNode, a'
         ' BaseAgent, a BaseTool, or a callable.'
     )

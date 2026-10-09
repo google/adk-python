@@ -21,6 +21,7 @@ Agent Engine Computer Use Sandbox as the remote browser environment.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import time
 from typing import Any
@@ -35,15 +36,18 @@ from ...tools.computer_use.base_computer import ComputerState
 from .sandbox_client import SandboxClient
 
 if TYPE_CHECKING:
-  import vertexai
+  import agentplatform
 
   from ...tools.tool_context import ToolContext
 
 logger = logging.getLogger("google_adk." + __name__)
 
-# Session state keys for sharing resources across sessions
+# Keys of the per-session resource record
 _STATE_KEY_AGENT_ENGINE_NAME = "_vmaas_agent_engine_name"
 _STATE_KEY_SANDBOX_NAME = "_vmaas_sandbox_name"
+
+# Number of sessions whose resources are remembered by one computer instance
+_MAX_REMEMBERED_SESSIONS = 1024
 
 # Default token timeout in seconds
 _DEFAULT_TOKEN_TIMEOUT = 3600
@@ -60,12 +64,13 @@ class AgentEngineSandboxComputer(BaseComputer):
   Computer Use Sandbox. It supports:
   - Auto-provisioning of agent engines and sandboxes
   - Bring-your-own-sandbox (BYOS) mode
-  - Session-aware resource sharing via session_state property
+  - Reuse of one sandbox across the invocations of a session
   - Automatic token refresh on expiry
 
-  When used with ComputerUseToolset, the session_state property is
-  automatically bound to tool_context.state before each tool call,
-  enabling state sharing across invocations and agent server instances.
+  When used with ComputerUseToolset, the sandbox of the invocation's session is
+  bound before each tool call, so the invocations of a session share a sandbox.
+  It is remembered by this instance, so a session served by another agent
+  server instance gets a sandbox of its own.
 
   Example usage:
     ```python
@@ -92,7 +97,7 @@ class AgentEngineSandboxComputer(BaseComputer):
       sandbox_snapshot_name: str | None = None,
       sandbox_ttl_seconds: int = 3600,
       search_engine_url: str = "https://www.google.com",
-      vertexai_client: "vertexai.Client | None" = None,
+      vertexai_client: "agentplatform.Client | None" = None,
   ):
     """Initialize the sandbox computer.
 
@@ -118,8 +123,8 @@ class AgentEngineSandboxComputer(BaseComputer):
           projects/{project}/locations/{location}/reasoningEngines/{id}/sandboxEnvironmentSnapshots/{id}
       sandbox_ttl_seconds: TTL for auto-created sandboxes (default: 1 hour).
       search_engine_url: URL to navigate to for search() method.
-      vertexai_client: Optional Vertex AI client instance. If None, creates one
-        lazily using project_id and location.
+      vertexai_client: Optional Agent Platform client instance. If None,
+        creates one lazily using project_id and location.
     """
     self._project_id = project_id
     self._location = location
@@ -155,7 +160,16 @@ class AgentEngineSandboxComputer(BaseComputer):
     # Vertex client (lazy-initialized if not provided)
     self._client = vertexai_client
 
-    # Session state for sharing the sandbox across invocations
+    # Sandbox and agent engine of every session served so far, keyed by the
+    # identity of the session. They are kept here rather than in session state
+    # because session state is writable by the caller, and a sandbox name taken
+    # from there would attach these tools to the browser of whoever owns that
+    # sandbox.
+    self._resources_by_session: collections.OrderedDict[
+        tuple[str, str, str], dict[str, Any]
+    ] = collections.OrderedDict()
+
+    # Resources of the session being served, bound by prepare()
     self._session_state: dict[str, Any] | None = None
 
     # Access token cache. Held on the instance rather than in session state:
@@ -165,15 +179,21 @@ class AgentEngineSandboxComputer(BaseComputer):
     self._token_expiry: float = 0.0
 
   async def prepare(self, tool_context: "ToolContext") -> None:
-    """Bind session state for sandbox resource sharing."""
-    self._session_state = tool_context.state
+    """Bind the sandbox resources of the invocation's session."""
+    session = tool_context.session
+    key = (session.app_name, session.user_id, session.id)
+    if key not in self._resources_by_session:
+      self._resources_by_session[key] = {}
+      if len(self._resources_by_session) > _MAX_REMEMBERED_SESSIONS:
+        self._resources_by_session.popitem(last=False)
+    self._session_state = self._resources_by_session[key]
 
-  def _get_client(self) -> "vertexai.Client":
-    """Get or create the Vertex AI client."""
+  def _get_client(self) -> "agentplatform.Client":
+    """Get or create the Agent Platform client."""
     if self._client is None:
-      import vertexai
+      from ...dependencies._agentplatform import agentplatform
 
-      self._client = vertexai.Client(
+      self._client = agentplatform.Client(
           project=self._project_id, location=self._location
       )
     return self._client
@@ -197,7 +217,7 @@ class AgentEngineSandboxComputer(BaseComputer):
     logger.info("Creating new agent engine...")
     client = self._get_client()
 
-    agent_engine = await asyncio.to_thread(client.agent_engines.create)
+    agent_engine = await asyncio.to_thread(client.runtimes.create)
     agent_engine_name = agent_engine.api_resource.name
 
     # Store in session state for sharing
@@ -218,16 +238,14 @@ class AgentEngineSandboxComputer(BaseComputer):
     if self._sandbox_name:
       # Get sandbox object from name
       sandbox = await asyncio.to_thread(
-          client.agent_engines.sandboxes.get, name=self._sandbox_name
+          client.sandboxes.get, name=self._sandbox_name
       )
       return self._sandbox_name, sandbox
 
     # Check session state for existing sandbox
     sandbox_name = self._session_state.get(_STATE_KEY_SANDBOX_NAME)
     if sandbox_name:
-      sandbox = await asyncio.to_thread(
-          client.agent_engines.sandboxes.get, name=sandbox_name
-      )
+      sandbox = await asyncio.to_thread(client.sandboxes.get, name=sandbox_name)
       return sandbox_name, sandbox
 
     # Ensure agent engine exists first
@@ -257,7 +275,7 @@ class AgentEngineSandboxComputer(BaseComputer):
       logger.info("Creating sandbox with computer use environment spec")
 
     operation = await asyncio.to_thread(
-        client.agent_engines.sandboxes.create,
+        client.sandboxes.create,
         spec=spec,
         name=agent_engine_name,
         config=config,
@@ -292,7 +310,7 @@ class AgentEngineSandboxComputer(BaseComputer):
     client = self._get_client()
 
     token = await asyncio.to_thread(
-        client.agent_engines.sandboxes.generate_access_token,
+        client.sandboxes.generate_access_token,
         service_account_email=self._service_account_email,
         timeout=_DEFAULT_TOKEN_TIMEOUT,
     )

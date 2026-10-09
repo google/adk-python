@@ -16,10 +16,18 @@
 
 from __future__ import annotations
 
+from typing import Annotated
 from typing import Optional
 
+from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlows
 from google.adk.agents.context import Context
 from google.adk.apps.app import App
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event import Event
 from google.adk.sessions.state import State
 from google.adk.sessions.state import StateSchemaError
@@ -27,10 +35,13 @@ from google.adk.workflow import FunctionNode
 from google.adk.workflow import START
 from google.adk.workflow._workflow import Workflow
 from pydantic import BaseModel
+from pydantic import Field
+from pydantic import WithJsonSchema
 import pytest
 
 from .. import testing_utils
 from .workflow_testing_utils import create_parent_invocation_context
+from .workflow_testing_utils import get_auth_request_events
 
 # ── Schema models for testing ────────────────────────────────────────
 
@@ -88,6 +99,17 @@ def test_state_allows_prefixed_keys() -> None:
   assert state['app:anything'] == 'value'
 
 
+def test_state_allows_owner_prefixed_keys() -> None:
+  """ADK's own <owner>:<key> state keys bypass schema validation."""
+  state = State(value={}, delta={}, schema=_PipelineSchema)
+  state['adk_oauth_state:wf@1/node@1'] = 'generated-state'
+  state['save_files_as_artifacts_plugin:pending_delta'] = {'f.txt': 'art@1'}
+  assert state['adk_oauth_state:wf@1/node@1'] == 'generated-state'
+  assert state['save_files_as_artifacts_plugin:pending_delta'] == {
+      'f.txt': 'art@1'
+  }
+
+
 def test_state_update_validates_all_keys() -> None:
   """State.update validates each key-value pair."""
   state = State(value={}, delta={}, schema=_PipelineSchema)
@@ -101,6 +123,88 @@ def test_state_no_schema_allows_all() -> None:
   state['anything'] = 'goes'
   state['whatever'] = 42
   assert state['anything'] == 'goes'
+
+
+class _ConstrainedSchema(BaseModel):
+  counter: int = Field(ge=1, le=10)
+  name: Annotated[str, Field(min_length=3)]
+  strict_counter: int = Field(strict=True)
+
+
+@pytest.mark.parametrize('operation', ['setitem', 'update', 'setdefault'])
+@pytest.mark.parametrize(
+    ('key', 'value'),
+    [('counter', 0), ('counter', 11), ('name', 'ab'), ('strict_counter', '1')],
+)
+def test_state_rejects_field_constraint_violations(operation, key, value):
+  """Values violating constraints raise and leave value/delta untouched."""
+  values = {'name': 'existing'} if key != 'name' else {'counter': 5}
+  delta = {}
+  original_values = values.copy()
+  state = State(value=values, delta=delta, schema=_ConstrainedSchema)
+
+  with pytest.raises(
+      StateSchemaError,
+      match=rf"Value for '{key}' does not satisfy field '{key}'",
+  ):
+    if operation == 'setitem':
+      state[key] = value
+    elif operation == 'update':
+      # A valid entry before the invalid one must not be partially committed.
+      state.update({'temp:pending': True, key: value})
+    else:
+      state.setdefault(key, value)
+
+  assert values == original_values
+  assert delta == {}
+
+
+def test_state_accepts_field_constraint_boundaries():
+  """Values at Field and Annotated constraint boundaries are accepted."""
+  state = State(value={}, delta={}, schema=_ConstrainedSchema)
+  state['counter'] = 1
+  state.update({'counter': 10, 'name': 'abc'})
+  assert state.setdefault('strict_counter', 1) == 1
+  # Existing keys do not validate an unused default.
+  assert state.setdefault('counter', 0) == 10
+  assert state.to_dict() == {'counter': 10, 'name': 'abc', 'strict_counter': 1}
+
+
+def test_state_constraints_are_scoped_per_schema_field():
+  """Fields with the same bare type enforce their own constraints."""
+
+  class PositiveSchema(BaseModel):
+    counter: int = Field(gt=0)
+    negative: int = Field(lt=0)
+
+  class NegativeSchema(BaseModel):
+    counter: int = Field(lt=0)
+
+  positive = State(value={}, delta={}, schema=PositiveSchema)
+  negative = State(value={}, delta={}, schema=NegativeSchema)
+  positive['counter'] = 1
+  positive['negative'] = -1
+  negative['counter'] = -1
+  with pytest.raises(StateSchemaError, match='counter'):
+    negative['counter'] = 1
+  with pytest.raises(StateSchemaError, match='negative'):
+    positive['negative'] = 1
+
+
+def test_state_accepts_unhashable_field_metadata():
+  """Fields with unhashable metadata like WithJsonSchema are validated."""
+
+  class Schema(BaseModel):
+    counter: Annotated[
+        int, Field(ge=1), WithJsonSchema({'type': 'integer', 'minimum': 1})
+    ]
+
+  state = State(value={}, delta={}, schema=Schema)
+  state['counter'] = 1
+  state['counter'] = 2
+  with pytest.raises(StateSchemaError, match='counter'):
+    state['counter'] = 0
+  assert state['counter'] == 2
 
 
 # ── Startup validation tests ─────────────────────────────────────────
@@ -187,6 +291,31 @@ def test_workflow_state_schema_defaults_to_none() -> None:
 
 
 # ── Runtime enforcement tests (workflow execution) ───────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('counter', [0, 1, 10, 11])
+async def test_workflow_enforces_state_field_constraints(request, counter):
+  """Workflow execution enforces state_schema field constraints."""
+
+  def write_state(ctx: Context) -> str:
+    ctx.state['counter'] = counter
+    return 'done'
+
+  wf = Workflow(
+      name='wf',
+      edges=[(START, write_state)],
+      state_schema=_ConstrainedSchema,
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=wf)
+  )
+  if counter in (0, 11):
+    with pytest.raises(StateSchemaError, match='counter'):
+      await runner.run_async(testing_utils.get_user_content('start'))
+  else:
+    events = await runner.run_async(testing_utils.get_user_content('start'))
+    assert any(isinstance(e, Event) and e.output == 'done' for e in events)
 
 
 @pytest.mark.asyncio
@@ -295,6 +424,48 @@ async def test_workflow_allows_prefixed_keys_at_runtime(
   events = await runner.run_async(testing_utils.get_user_content('start'))
   data_events = [e for e in events if isinstance(e, Event) and e.output]
   assert any(e.output == 'done' for e in data_events)
+
+
+@pytest.mark.asyncio
+async def test_workflow_schema_allows_oauth_auth_node(
+    request: pytest.FixtureRequest,
+) -> None:
+  """A node with an OAuth2 auth_config pauses for credentials under a schema."""
+  auth_config = AuthConfig(
+      auth_scheme=OAuth2(
+          flows=OAuthFlows(
+              authorizationCode=OAuthFlowAuthorizationCode(
+                  authorizationUrl='https://example.com/auth',
+                  tokenUrl='https://example.com/token',
+                  scopes={},
+              )
+          )
+      ),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(client_id='id', client_secret='secret'),
+      ),
+      credential_key='oauth_key',
+  )
+
+  def do_work(ctx: Context) -> str:
+    return 'done'
+
+  wf = Workflow(
+      name='wf',
+      edges=[(
+          START,
+          FunctionNode(
+              func=do_work, auth_config=auth_config, rerun_on_resume=True
+          ),
+      )],
+      state_schema=_PipelineSchema,
+  )
+  app = App(name=request.function.__name__, root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert get_auth_request_events(events)
 
 
 @pytest.mark.asyncio
@@ -422,3 +593,12 @@ async def test_node_without_schema_inherits_workflow_schema(
   runner = testing_utils.InMemoryRunner(app=app)
   with pytest.raises(StateSchemaError, match='unknown'):
     await runner.run_async(testing_utils.get_user_content('start'))
+
+
+def test_state_iteration() -> None:
+  """State supports key iteration while preserving truthiness when empty."""
+  empty_state = State(value={}, delta={})
+  assert bool(empty_state) is True
+
+  state = State(value={'a': 1, 'b': 2}, delta={'b': 20, 'c': 3})
+  assert list(state) == ['a', 'b', 'c']

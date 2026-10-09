@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 import json
 import os
 from pathlib import Path
@@ -34,6 +35,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.genai import types
 from pydantic import alias_generators
 import pytest
@@ -325,6 +327,22 @@ def _extract_user_content(event: dict) -> Optional[types.Content]:
   return None
 
 
+def _has_unmapped_function_response(
+    content: types.Content,
+    mapped_function_call_ids: Collection[str],
+) -> bool:
+  """Returns whether replaying content would submit an orphaned response."""
+  return bool(
+      content.parts
+      and any(
+          part.function_response
+          and part.function_response.id
+          and part.function_response.id not in mapped_function_call_ids
+          for part in content.parts
+      )
+  )
+
+
 def _remap_node_path(path: str, id_map: dict[str, str]) -> str:
   """Rewrite ``<name>@<id>`` segments in a node path using ``id_map``.
 
@@ -515,7 +533,7 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
           for part in parts:
             if "functionResponse" in part:
               func_resp = part["functionResponse"]
-              if func_resp.get("name") == "set_model_response":
+              if func_resp.get("name") == SetModelResponseTool.NAME:
                 last_was_set_model_response = True
 
         elif role == "model":
@@ -672,6 +690,9 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
       if event.get("author") == "user":
         content = _extract_user_content(event)
         if content:
+          has_unmapped_function_response = _has_unmapped_function_response(
+              content, orig_to_new_id
+          )
           # Update function response IDs if mapped
           if content.parts:
             for part in content.parts:
@@ -690,6 +711,8 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
                   branch=event.get("branch"),
               )
           )
+          if has_unmapped_function_response:
+            continue
           next_run_events = runner.run(content)
 
           # Post-process events to inject deterministic function IDs

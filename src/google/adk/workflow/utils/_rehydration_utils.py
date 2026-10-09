@@ -30,6 +30,7 @@ from pydantic import ValidationError
 from ...events._branch_path import _BranchPath
 from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
+from .._errors import WorkflowDataError
 from ._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
@@ -43,18 +44,48 @@ _RESULT_KEY = 'result'
 
 @dataclass
 class _ChildScanState:
-  """State accumulated for a child node during event scanning."""
+  """State accumulated for a child node during event scanning.
+
+  Every field starts empty and is filled in as the scan walks the event list,
+  so a field still at its default means no event carried that piece of state.
+  """
 
   run_id: str | None = None
+  """The child's run id, or None when the scan only knows its owner key."""
+
   output: Any = None
+  """The last output the child emitted, or None if it emitted none.
+
+  None is also written when a later event shows the child paused mid-run, so
+  "emitted nothing" and "emitted None" are the same state here.
+  """
+
   error_code: str | None = None
+  """The child's last error code, or None once it produced a result."""
+
   route: RouteValue | list[RouteValue] | None = None
+  """The route the child picked, or None if it picked none."""
+
   branch: str | None = None
+  """The branch carried by the output event, filled in alongside ``output``."""
+
   isolation_scope: str | None = None
+  """The isolation scope seen on the child's events, if any."""
+
   transfer_to_agent: str | None = None
+  """The agent the child asked to transfer to, or None if it asked for none."""
+
   interrupt_ids: set[str] = field(default_factory=set)
+  """Every interrupt the child raised."""
+
   resolved_ids: set[str] = field(default_factory=set)
+  """The subset of ``interrupt_ids`` a user response has come back for."""
+
   resolved_responses: dict[str, Any] = field(default_factory=dict)
+  """Responses keyed by interrupt id, for the ids in ``resolved_ids``."""
+
+  finished_after_resume: bool = False
+  """Whether the child emitted a direct completion event since its last answer (or start)."""
 
 
 def _wrap_response(value: Any) -> dict[str, Any]:
@@ -143,7 +174,7 @@ def _process_rehydrated_output(node: BaseNode, output: object) -> object:
         )
         return parsed
       except ValueError:
-        raise ValueError(
+        raise WorkflowDataError(
             f'Validation failed for rehydrated output against schema: {e}'
         ) from e
   else:
@@ -209,14 +240,18 @@ def _validate_resume_response(response_data: object, schema: object) -> object:
         )
         return model_instance.model_dump()
       except ValidationError as e:
-        raise ValueError(f'Validation failed for object schema: {e}') from e
+        raise WorkflowDataError(
+            f'Validation failed for object schema: {e}'
+        ) from e
 
     mapped_type = type_mapping.get(type_str) if type_str else None
     if mapped_type:
       try:
         return TypeAdapter(mapped_type).validate_python(response_data)
       except ValidationError as e:
-        raise ValueError(f'Failed to coerce data to {type_str}: {e}') from e
+        raise WorkflowDataError(
+            f'Failed to coerce data to {type_str}: {e}'
+        ) from e
 
     # Fallback: skip validation for complex schemas (similar to base node)
     return response_data
@@ -225,7 +260,7 @@ def _validate_resume_response(response_data: object, schema: object) -> object:
   try:
     return TypeAdapter(schema).validate_python(response_data)
   except ValidationError as e:
-    raise ValueError(f'Validation failed against schema: {e}') from e
+    raise WorkflowDataError(f'Validation failed against schema: {e}') from e
 
 
 def _reconstruct_node_states(
@@ -261,6 +296,8 @@ def _reconstruct_node_states(
 
     # 1. Match user function responses
     if event.author == 'user' and event.content and event.content.parts:
+      if not interrupt_owner and not scan_states:
+        continue
       for part in event.content.parts:
         fr = part.function_response
         if fr and fr.id:
@@ -270,7 +307,7 @@ def _reconstruct_node_states(
             try:
               response_data = _validate_resume_response(response_data, schema)
             except ValueError as e:
-              raise ValueError(
+              raise WorkflowDataError(
                   f'Validation failed for interrupt {fr.id}: {e}'
               ) from e
 
@@ -284,8 +321,9 @@ def _reconstruct_node_states(
             # not rerun never gets to pick an edge again.
             scan_states[owner].output = None
             scan_states[owner].resolved_responses[fr.id] = response_data
+            scan_states[owner].finished_after_resume = False
 
-          if event.branch:
+          elif event.branch:
             # Match the branch's run ids exactly. A substring test on the raw
             # branch string resolves an interrupt whose id merely happens to be
             # contained in another id.
@@ -303,6 +341,7 @@ def _reconstruct_node_states(
                   # Same reason as the direct branch: the node paused mid-run
                   # to ask this, so what it emitted earlier is not its result.
                   o_state.output = None
+                  o_state.finished_after_resume = False
       continue
 
     # 2. Match events under base_path
@@ -318,16 +357,16 @@ def _reconstruct_node_states(
       owner_path_builder = _NodePathBuilder.from_string(owner_key)
       scan_states[owner_key] = _ChildScanState(run_id=owner_path_builder.run_id)
 
-    child = scan_states[owner_key]
-    if event.isolation_scope:
-      child.isolation_scope = event.isolation_scope
-
     # 4. Determine if event is direct child or delegated output
     is_direct = False
     if group_by_direct_child:
       is_direct = event_path_builder.is_direct_child_of(base_path_builder)
     else:
       is_direct = event_path_builder == base_path_builder
+
+    child = scan_states[owner_key]
+    if is_direct and event.isolation_scope:
+      child.isolation_scope = event.isolation_scope
 
     has_output = event.output is not None
     use_message_as_output = False
@@ -361,10 +400,11 @@ def _reconstruct_node_states(
         child.transfer_to_agent = event.actions.transfer_to_agent
 
       # The node's outcome is whatever its latest attempt recorded, so a
-      # result clears the error left by an earlier failed attempt. A result
-      # wins on the same event too: an LlmAgent node's output rides on the
-      # response event, which carries an error code for any finish reason
-      # other than STOP, and that node did produce a result.
+      # later non-error event or result clears the error left by an earlier
+      # failed attempt. A result wins on the same event too: an LlmAgent
+      # node's output rides on the response event, which carries an error
+      # code for any finish reason other than STOP, and that node did
+      # produce a result.
       has_result = has_output or (
           event.actions is not None
           and (
@@ -372,20 +412,15 @@ def _reconstruct_node_states(
               or event.actions.transfer_to_agent is not None
           )
       )
-      if has_result:
+      if has_result or (event.error_code is None and not event.partial):
         child.error_code = None
       elif event.error_code is not None:
         child.error_code = event.error_code
 
     # 6. Extract interrupts and their schemas
-    # Modern events explicitly set long_running_tool_ids.
-    interrupt_ids_to_process = set(event.long_running_tool_ids or [])
+    from ...events._interrupts import extract_event_interrupt_ids
 
-    # Fallback for older session JSONs where RequestInput/Auth events were exported
-    # without populating long_running_tool_ids. We extract the IDs directly from the function calls.
-    from ._workflow_hitl_utils import get_request_input_interrupt_ids
-
-    interrupt_ids_to_process.update(get_request_input_interrupt_ids(event))
+    interrupt_ids_to_process = extract_event_interrupt_ids(event)
 
     if interrupt_ids_to_process:
       for interrupt_id in interrupt_ids_to_process:
@@ -395,6 +430,15 @@ def _reconstruct_node_states(
         schema_json = _extract_schema_from_event(event, interrupt_id)
         if schema_json:
           schemas_by_id[interrupt_id] = schema_json
+
+    if is_direct:
+      child.finished_after_resume = (
+          not interrupt_ids_to_process
+          and child.error_code is None
+          and not event.partial
+          and not event.get_function_calls()
+          and not event.get_function_responses()
+      )
 
   return scan_states
 

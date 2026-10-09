@@ -71,7 +71,7 @@ def system_message_body(
 
   Args:
     llm_request: The LLM request whose system instruction should be logged.
-    do_not_elide_content: When True, always include the content regardless of
+    do_not_elide: When True, always include the content regardless of
       the `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` env var. The Web
       UI exporter sets this to True because the UI needs the full content.
   """
@@ -99,7 +99,7 @@ def user_message_body(
     content: The user content for this message. Callers that emit multiple user
       messages (e.g. tracing's per-content loop) call this builder once per
       content.
-    do_not_elide_content: When True, always include the content regardless of
+    do_not_elide: When True, always include the content regardless of
       the `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` env var.
   """
   return {
@@ -124,7 +124,7 @@ def choice_body(
 
   Args:
     llm_response: The LLM response describing the choice.
-    do_not_elide_content: When True, always include the content regardless of
+    do_not_elide: When True, always include the content regardless of
       the `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` env var.
   """
   if llm_response is None:

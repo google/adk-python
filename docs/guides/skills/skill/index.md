@@ -187,10 +187,14 @@ warning instead of being stored.
 Once the skill reaches a `SkillToolset`, the toolset publishes four tools to the
 model: `list_skills`, `load_skill`, `load_skill_resource`, and
 `run_skill_script`. A fifth, `search_skills`, appears when a registry is
-configured. The model reaches the three levels by calling those tools in order:
+configured, and a sixth, `unload_skill`, when the `SKILL_LIFECYCLE` feature is
+enabled. The model reaches the three levels by calling those tools in order:
 
 1.  `list_skills` returns the name and description of every installed skill,
-    which is level 1.
+    which is level 1. Pass `discovery_mode=SkillDiscoveryMode.EAGER` on
+    `SkillToolset` to skip this turn: the catalog is injected as
+    `<available_skills>` XML in the system instruction, and the model can call
+    `load_skill` directly.
 2.  `load_skill` returns the body of the one it picked, which is level 2.
 3.  `load_skill_resource` or `run_skill_script` reaches a single file or
     script, which is level 3.
@@ -332,6 +336,28 @@ from google.adk.skills import load_skills_from_dir
 skills = load_skills_from_dir(pathlib.Path(__file__).parent / "skills")
 ```
 
+### Inject the L1 catalog instead of calling list_skills
+
+*   **Problem solved**: `list_skills` costs an extra model turn before
+    `load_skill`. With a small, stable local catalog that tax is not worth it.
+*   **Implementation**: `discovery_mode=SkillDiscoveryMode.EAGER` hides the
+    `list_skills` tool and injects the names and descriptions as
+    `<available_skills>` XML in the system instruction. The model still calls
+    `load_skill` for the body. Registry skills, if a registry is configured, are
+    still discovered only through `search_skills`. The default,
+    `SkillDiscoveryMode.LAZY`, keeps the tool and leaves the system instruction
+    free of skill names — the better trade for a large or changing catalog.
+
+```python
+from google.adk.tools.skill_toolset import SkillDiscoveryMode
+
+SkillToolset(skills=[weather_skill], discovery_mode=SkillDiscoveryMode.EAGER)
+```
+
+Removing `list_skills` with `tool_filter` also injects the catalog today, but
+that is deprecated and warns: it makes a filter silently rewrite the prompt.
+Use the mode.
+
 ### List without loading
 
 *   **Problem solved**: you want a catalog of names and descriptions without
@@ -341,6 +367,20 @@ skills = load_skills_from_dir(pathlib.Path(__file__).parent / "skills")
     than `load_skills_from_dir`, because an invalid skill is logged and skipped,
     and a base path that is not a directory produces a warning and an empty dict
     instead of an exception.
+*   **Seeing what was skipped**: a skipped skill only reaches a log, so it
+    otherwise vanishes from the catalog with no signal. Pass `on_error` to get
+    the skill ID and the exception instead of the warning: return from it to
+    keep skipping, or raise to fail the whole listing. `list_skills_in_gcs_dir`
+    and both `_async` twins take the same argument.
+
+```python
+problems: dict[str, Exception] = {}
+
+def record(skill_id: str, error: Exception) -> None:
+    problems[skill_id] = error  # `raise error` here to fail instead.
+
+skills = list_skills_in_dir(skills_dir, on_error=record)
+```
 
 ### Load from Cloud Storage
 
@@ -409,6 +449,19 @@ so it has to equal the declared `name`.
 *   **Skill names are kebab-case by default.** Snake_case requires enabling the
     `SNAKE_CASE_SKILL_NAME` feature; see
     the feature registry guide.
+*   **Releasing a skill is opt-in.** A loaded skill stays active, and its
+    `metadata.adk_additional_tools` stay declared, for the rest of the session.
+    Enabling the `SKILL_LIFECYCLE` feature adds an `unload_skill` tool the model
+    can call to drop one. Its tools go away, and later requests replace the
+    instructions it was loaded with by a short notice that it was unloaded. The
+    session's stored events keep what was originally said.
+*   **A loaded skill is a snapshot.** What the model was told is fixed in the
+    transcript, so editing a skill does not reach a session that already loaded
+    it. Pass `SkillLifecycleConfig(revalidate_skills=True)` as the toolset's
+    `lifecycle_config` to compare each active skill against its definition
+    every request and re-state the ones that changed. It costs a registry
+    lookup per active skill per turn, and re-stating a skill invalidates the
+    prompt cache.
 *   **Experimental.** The package's own
     [README](../../../../src/google/adk/skills/README.md) marks skills as
     experimental and under active development, so the API may change without

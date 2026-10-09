@@ -27,6 +27,7 @@ from pydantic import field_validator
 
 from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_node_data
+from ._errors import WorkflowConfigurationError
 from ._retry_config import RetryConfig
 
 if TYPE_CHECKING:
@@ -51,8 +52,12 @@ class BaseNode(BaseModel, abc.ABC):
   @field_validator('name')
   @classmethod
   def _validate_name(cls, v: str) -> str:
+    # Pydantic re-wraps this as a ValidationError, so the class below records
+    # whose mistake it is rather than being catchable on its own.
     if not v.isidentifier():
-      raise ValueError(f"Node name '{v}' must be a valid Python identifier.")
+      raise WorkflowConfigurationError(
+          f"Node name '{v}' must be a valid Python identifier."
+      )
     return v
 
   description: str = ''
@@ -86,6 +91,8 @@ class BaseNode(BaseModel, abc.ABC):
   workflow, so the whole sub-workflow is retried. Children that already
   produced an output or a state change are replayed rather than run again;
   a child that produced neither leaves nothing to replay and runs again.
+
+  ``None`` means the node is not retried (the default).
   """
 
   timeout: float | None = None
@@ -105,7 +112,9 @@ class BaseNode(BaseModel, abc.ABC):
   Validated with ``TypeAdapter``. A raw ``dict`` JSON schema or a genai
   ``Schema`` is accepted but never enforced.
 
-  ``None`` means no input validation (the default).
+  ``None`` means no input validation (the default). ``FunctionNode`` fills
+  this in after construction from the wrapped function's type hints, so on
+  that subclass ``None`` also means inference found nothing usable.
   """
 
   output_schema: SchemaType | None = None
@@ -115,7 +124,9 @@ class BaseNode(BaseModel, abc.ABC):
   dict with ``None`` fields dropped. A raw ``dict`` JSON schema or a genai
   ``Schema`` is accepted but never enforced.
 
-  ``None`` means no output validation (the default).
+  ``None`` means no output validation (the default). ``FunctionNode`` fills
+  this in after construction from the wrapped function's return hint, so on
+  that subclass ``None`` also means inference found nothing usable.
   """
 
   state_schema: type[BaseModel] | None = None
@@ -160,6 +171,10 @@ class BaseNode(BaseModel, abc.ABC):
   ) -> AsyncGenerator[Event, None]:
     """Public entry point. Calls _run_impl, normalizes yields to Event.
 
+    ``node_input`` is passed through ``_validate_input_data`` before
+    ``_run_impl`` sees it, and every yielded output through
+    ``_validate_output_data``.
+
     Normalization rules:
     - None -> skipped
     - Event -> pass through
@@ -198,6 +213,11 @@ class BaseNode(BaseModel, abc.ABC):
     Yields any of: Event, RequestInput, raw data, or None.
     BaseNode.run() normalizes all yields to Event before the caller
     sees them.
+
+    The base implementation raises ``NotImplementedError``, but because this
+    is an async generator it does so on the first iteration rather than at the
+    call. ``BaseNode`` therefore stays constructible without an override,
+    which ``START`` relies on.
     """
     raise NotImplementedError(
         f'_run_impl for {type(self).__name__} is not implemented.'

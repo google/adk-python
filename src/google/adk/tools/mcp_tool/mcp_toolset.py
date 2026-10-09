@@ -55,6 +55,7 @@ from ..load_mcp_resource_tool import LoadMcpResourceTool
 from ..tool_configs import BaseToolConfig
 from ..tool_configs import ToolArgsConfig
 from .mcp_session_manager import _http_debug_var
+from .mcp_session_manager import _is_session_terminated_error
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
@@ -171,6 +172,7 @@ class McpToolset(BaseToolset):
       sampling_capabilities: SamplingCapability | None = None,
       elicitation_callback: ElicitationFnT | None = None,
       credential_key: str | None = None,
+      propagate_grounding_metadata: bool = False,
   ):
     """Initializes the McpToolset.
 
@@ -223,6 +225,9 @@ class McpToolset(BaseToolset):
         elicitations used for out-of-band flows such as auth challenges.
       credential_key: A user specified key used to load and save this credential
         in a credential service. Used with auth_scheme.
+      propagate_grounding_metadata: If True, each listed tool copies
+        ``meta.adk_grounding_metadata`` from the MCP result into
+        ``temp:_adk_grounding_metadata``. Default False.
     """
 
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
@@ -264,6 +269,7 @@ class McpToolset(BaseToolset):
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
     self._require_confirmation = require_confirmation
+    self._propagate_grounding_metadata = propagate_grounding_metadata
     # Store auth config as instance variable so ADK can populate
     # exchanged_auth_credential in-place before calling get_tools()
     self._auth_config: Optional[AuthConfig] = (
@@ -417,6 +423,13 @@ class McpToolset(BaseToolset):
         logger.exception(
             f"Exception during MCP session execution: {error_message}: {e}"
         )
+        # Drop the session the server has forgotten, so the retry from
+        # @retry_on_errors builds a fresh one instead of being handed the
+        # same dead session back.
+        if _is_session_terminated_error(e):
+          self._mcp_session_manager._discard_session(  # pylint: disable=protected-access
+              session_headers, session=session
+          )
         raise ConnectionError(f"{error_message}: {e}") from e
       finally:
         self._mcp_session_manager._end_session_use(session_headers)  # pylint: disable=protected-access
@@ -532,6 +545,7 @@ class McpToolset(BaseToolset):
           progress_callback=self._progress_callback
           if hasattr(self, "_progress_callback")
           else None,
+          propagate_grounding_metadata=self._propagate_grounding_metadata,
       )
 
       if self._is_tool_selected(mcp_tool, readonly_context):

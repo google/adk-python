@@ -76,6 +76,10 @@ def _sdk_imports(source: str) -> list[str]:
   return lines
 
 
+# Exports that are `None` on SDK 1.x because they only exist in 2.x.
+_OPTIONAL_NAMES = frozenset({'negotiate_auto'})
+
+
 class TestTheSeamHolds:
   """The seam is only worth having if nothing routes around it."""
 
@@ -102,10 +106,19 @@ class TestTheSeamHolds:
     missing = [
         name
         for name in mcp_dependency.__all__
-        if getattr(mcp_dependency, name, None) is None
+        if name not in _OPTIONAL_NAMES
+        and getattr(mcp_dependency, name, None) is None
     ]
 
     assert not missing
+
+  def test_every_optional_name_is_bound(self):
+    """Optional names can be `None`, but must still be defined."""
+    unbound = [
+        name for name in _OPTIONAL_NAMES if not hasattr(mcp_dependency, name)
+    ]
+
+    assert not unbound
 
   def test_the_advertised_sdk_name_is_the_one_the_seam_imports(self):
     """Telemetry looks the SDK up in `sys.modules` by this name.

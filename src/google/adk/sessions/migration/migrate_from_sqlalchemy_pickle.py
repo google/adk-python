@@ -224,8 +224,14 @@ def migrate(
     source_engine = create_engine(source_sync_url)
     SourceSession = sessionmaker(bind=source_engine)
   except Exception as e:
-    logger.error(f"Failed to connect to source database: {e}")
-    raise RuntimeError(f"Failed to connect to source database: {e}") from e
+    # The parser quotes the rejected URL back, so report only the error type.
+    message = (
+        "Failed to connect to source database"
+        f" {_schema_check_utils._redact_db_url(source_db_url)}:"
+        f" {type(e).__name__}"
+    )
+    logger.error(message)
+    raise RuntimeError(message) from e
 
   logger.info(
       "Connecting to destination database: %s",
@@ -236,8 +242,13 @@ def migrate(
     v1.Base.metadata.create_all(dest_engine)
     DestSession = sessionmaker(bind=dest_engine)
   except Exception as e:
-    logger.error(f"Failed to connect to destination database: {e}")
-    raise RuntimeError(f"Failed to connect to destination database: {e}") from e
+    message = (
+        "Failed to connect to destination database"
+        f" {_schema_check_utils._redact_db_url(dest_db_url)}:"
+        f" {type(e).__name__}"
+    )
+    logger.error(message)
+    raise RuntimeError(message) from e
 
   with SourceSession() as source_session, DestSession() as dest_session:
     try:

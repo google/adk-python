@@ -466,90 +466,93 @@ web UI)."""),
     # Attach the content of the artifacts if the model requests them.
     # This only adds the content to the model request, instead of the session.
     if llm_request.contents and llm_request.contents[-1].parts:
-      function_response = llm_request.contents[-1].parts[0].function_response
-      if function_response and function_response.name == 'load_artifacts':
-        response = function_response.response or {}
-        raw_artifact_names = response.get('artifact_names', [])
-        if (
-            isinstance(raw_artifact_names, (str, bytes))
-            or not isinstance(raw_artifact_names, Sequence)
-            or not all(isinstance(name, str) for name in raw_artifact_names)
-        ):
-          logger.warning(
-              'Ignoring invalid artifact_names in load_artifacts response.'
-          )
-          return
-        available_names = set(artifact_names)
-        for requested_name in raw_artifact_names:
-          artifact_name = _resolve_requested_artifact_name(
-              requested_name, available_names
-          )
-          if artifact_name is None:
+      available_names = set(artifact_names)
+      for part in llm_request.contents[-1].parts:
+        function_response = part.function_response
+        if function_response and function_response.name == 'load_artifacts':
+          response = function_response.response or {}
+          raw_artifact_names = response.get('artifact_names', [])
+          if (
+              isinstance(raw_artifact_names, (str, bytes))
+              or not isinstance(raw_artifact_names, Sequence)
+              or not all(isinstance(name, str) for name in raw_artifact_names)
+          ):
             logger.warning(
-                'Artifact "%s" is not available in this session, skipping',
-                requested_name,
+                'Ignoring invalid artifact_names in load_artifacts response.'
             )
             continue
-
-          artifact = await tool_context.load_artifact(artifact_name)
-
-          # A backend may list a user-scoped artifact under its bare name, in
-          # which case the session scope searched above does not hold it. The
-          # retry stays within this user because the name was listed for them.
-          if artifact is None and not artifact_name.startswith(
-              _USER_NAMESPACE_PREFIX
-          ):
-            artifact_name = f'{_USER_NAMESPACE_PREFIX}{artifact_name}'
-            artifact = await tool_context.load_artifact(artifact_name)
-
-          if artifact is None:
-            logger.warning('Artifact "%s" not found, skipping', artifact_name)
-            continue
-
-          # The resolved name, so a callback that filters on scope sees the
-          # name the artifact was really loaded under. The prompt text below
-          # keeps the model's own wording, as the other ADK languages do.
-          if self._process_artifact is not None:
-            try:
-              artifact_part = self._process_artifact(artifact, artifact_name)
-              if inspect.isawaitable(artifact_part):
-                artifact_part = await artifact_part
-            except Exception:  # pylint: disable=broad-exception-caught
-              logger.exception(
-                  'Failed to process artifact "%s", skipping.', artifact_name
+          for requested_name in raw_artifact_names:
+            artifact_name = _resolve_requested_artifact_name(
+                requested_name, available_names
+            )
+            if artifact_name is None:
+              logger.warning(
+                  'Artifact "%s" is not available in this session, skipping',
+                  requested_name,
               )
               continue
-          else:
-            # The model's own wording, because this name is interpolated into
-            # placeholder text the model reads. The suffix heuristics inside
-            # are unaffected by the prefix.
-            artifact_part = as_safe_part_for_llm(
-                artifact, requested_name, self._enable_spreadsheet_parsing
-            )
 
-          if artifact_part is None:
-            continue
-          if artifact_part is not artifact:
-            mime_type = (
-                artifact.inline_data.mime_type if artifact.inline_data else None
-            )
-            logger.debug(
-                'Transformed artifact "%s" (mime_type=%s) to Part',
-                artifact_name,
-                mime_type,
-            )
+            artifact = await tool_context.load_artifact(artifact_name)
 
-          llm_request.contents.append(
-              types.Content(
-                  role='user',
-                  parts=[
-                      types.Part.from_text(
-                          text=f'Artifact {requested_name} is:'
-                      ),
-                      artifact_part,
-                  ],
+            # A backend may list a user-scoped artifact under its bare name, in
+            # which case the session scope searched above does not hold it. The
+            # retry stays within this user because the name was listed for them.
+            if artifact is None and not artifact_name.startswith(
+                _USER_NAMESPACE_PREFIX
+            ):
+              artifact_name = f'{_USER_NAMESPACE_PREFIX}{artifact_name}'
+              artifact = await tool_context.load_artifact(artifact_name)
+
+            if artifact is None:
+              logger.warning('Artifact "%s" not found, skipping', artifact_name)
+              continue
+
+            # The resolved name, so a callback that filters on scope sees the
+            # name the artifact was really loaded under. The prompt text below
+            # keeps the model's own wording, as the other ADK languages do.
+            if self._process_artifact is not None:
+              try:
+                artifact_part = self._process_artifact(artifact, artifact_name)
+                if inspect.isawaitable(artifact_part):
+                  artifact_part = await artifact_part
+              except Exception:  # pylint: disable=broad-exception-caught
+                logger.exception(
+                    'Failed to process artifact "%s", skipping.', artifact_name
+                )
+                continue
+            else:
+              # The model's own wording, because this name is interpolated into
+              # placeholder text the model reads. The suffix heuristics inside
+              # are unaffected by the prefix.
+              artifact_part = as_safe_part_for_llm(
+                  artifact, requested_name, self._enable_spreadsheet_parsing
               )
-          )
+
+            if artifact_part is None:
+              continue
+            if artifact_part is not artifact:
+              mime_type = (
+                  artifact.inline_data.mime_type
+                  if artifact.inline_data
+                  else None
+              )
+              logger.debug(
+                  'Transformed artifact "%s" (mime_type=%s) to Part',
+                  artifact_name,
+                  mime_type,
+              )
+
+            llm_request.contents.append(
+                types.Content(
+                    role='user',
+                    parts=[
+                        types.Part.from_text(
+                            text=f'Artifact {requested_name} is:'
+                        ),
+                        artifact_part,
+                    ],
+                )
+            )
 
 
 load_artifacts_tool = LoadArtifactsTool()

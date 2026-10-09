@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 
+from .._errors import WorkflowInvariantError
+
 
 class ReplaySequenceBarrier:
   """Unified chronological sequence barrier to ensure deterministic replay ordering."""
@@ -42,11 +44,11 @@ class ReplaySequenceBarrier:
         await asyncio.wait_for(
             self.events[key].wait(), timeout=self.timeout_sec
         )
-      except asyncio.TimeoutError:
-        raise RuntimeError(
+      except asyncio.TimeoutError as e:
+        raise WorkflowInvariantError(
             "Replay divergence detected: Timed out waiting for sequence key"
             f" '{key}' to be unblocked."
-        )
+        ) from e
 
   def check_and_advance(self, key: str) -> None:
     """Advance the sequence if the key matches the current expected execution."""

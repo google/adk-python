@@ -17,11 +17,13 @@ from __future__ import annotations
 from typing import Any
 
 from google.genai import types
+from pydantic import ValidationError
 from typing_extensions import override
 
 from ..utils._schema_utils import schema_to_json_schema
 from ..workflow._base_node import BaseNode
-from ..workflow._errors import NodeInterruptedError
+from ..workflow._errors import DynamicNodeFailError
+from ..workflow._errors import WorkflowDataError
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
@@ -115,7 +117,6 @@ class NodeTool(BaseTool):
         or node.description
         or f'Executes the node: {node.name}',
     )
-    self.is_long_running = True
 
   @override
   def _get_declaration(self) -> types.FunctionDeclaration | None:
@@ -132,45 +133,75 @@ class NodeTool(BaseTool):
       args: dict[str, Any],
       tool_context: ToolContext,
   ) -> Any:
-    import inspect
-
-    from pydantic import BaseModel
-
     input_schema = getattr(self.node, 'input_schema', None)
-    node_input: Any
-    if inspect.isclass(input_schema) and issubclass(input_schema, BaseModel):
-      try:
-        node_input = input_schema.model_validate(args)
-      except Exception as e:
-        return f'Error validating input for node: {e}'
+    schema = (
+        schema_to_json_schema(input_schema)
+        if input_schema is not None
+        else None
+    )
+    if isinstance(schema, dict) and schema.get('type') != 'object':
+      node_input = args.get('request')
     else:
-      schema = (
-          schema_to_json_schema(input_schema)
-          if input_schema is not None
-          else None
-      )
-      if isinstance(schema, dict) and schema.get('type') != 'object':
-        node_input = args.get('request')
-      else:
-        node_input = args
-
-    fc_id = tool_context.function_call_id
-    base_branch = tool_context.branch
-    segment = f'{self.name}@{fc_id}' if fc_id else self.name
-    tool_branch = f'{base_branch}.{segment}' if base_branch else segment
+      node_input = args
 
     try:
-      res = await tool_context.run_node(
-          self.node,
-          node_input=node_input,
-          override_branch=tool_branch,
-          use_sub_branch=False,
-          raise_on_wait=True,
-      )
-      if res is None:
-        return {'result': None}
-      return res
-    except NodeInterruptedError:
-      raise
-    except Exception as e:
-      return f'Error running node {self.name}: {e}'
+      node_input = self.node._validate_input_data(node_input)
+    except (ValidationError, WorkflowDataError) as e:
+      # Same shape as FunctionTool's argument validation errors, so the
+      # model can correct its arguments and retry.
+      return {
+          'error': (
+              f'Invoking `{self.name}()` failed due to argument validation'
+              f' errors:\n{e}\nYou could retry calling this tool with'
+              ' corrected argument types.'
+          )
+      }
+
+    res = await _run_node_in_tool_context(
+        self.node,
+        tool_name=self.name,
+        node_input=node_input,
+        tool_context=tool_context,
+    )
+    if res is None:
+      return {'result': None}
+    return res
+
+
+async def _run_node_in_tool_context(
+    node: BaseNode,
+    *,
+    tool_name: str,
+    node_input: Any,
+    tool_context: ToolContext,
+) -> Any:
+  """Executes a BaseNode within a ToolContext on an isolated tool branch.
+
+  The child run is keyed by the function call id, so repeated calls of the
+  same tool get distinct node paths and do not share resume state.
+  """
+  fc_id = tool_context.function_call_id
+  base_branch = tool_context.branch
+  segment = f'{tool_name}@{fc_id}' if fc_id else tool_name
+  tool_branch = f'{base_branch}.{segment}' if base_branch else segment
+  run_id = None
+  if tool_context._workflow_scheduler is None or (
+      fc_id and not fc_id.isdigit()
+  ):
+    # Under a workflow scheduler, numeric ids are reserved for auto-generated
+    # run_ids, so a numeric fc_id falls back to auto-generation.
+    run_id = fc_id
+
+  try:
+    return await tool_context.run_node(
+        node,
+        node_input=node_input,
+        run_id=run_id,
+        override_branch=tool_branch,
+        use_sub_branch=False,
+        raise_on_wait=True,
+    )
+  except DynamicNodeFailError as e:
+    # Surface the node's own error, as a FunctionTool would, so the tool
+    # pipeline runs on_tool_error callbacks with the real cause.
+    raise e.error from e

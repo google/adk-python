@@ -21,10 +21,12 @@ from types import SimpleNamespace
 from unittest import mock
 
 from google.adk.cli import agent_test_runner
+from google.adk.cli.agent_test_runner import _has_unmapped_function_response
 from google.adk.cli.agent_test_runner import make_sort_key
 from google.adk.cli.agent_test_runner import normalize_events
 from google.adk.events.event import Event
 from google.genai import types
+import pytest
 
 
 def test_normalize_events_drops_volatile_fields_and_nulls_from_json_events():
@@ -249,3 +251,49 @@ def test_rebuild_tests_preserves_non_ascii_event_text(
   assert '日本語の質問' in rebuilt
   assert '日本語の回答' in rebuilt
   assert '\\u' not in rebuilt
+
+
+@pytest.mark.parametrize(
+    ('parts', 'mapped_ids', 'expected'),
+    [
+        ([], set(), False),
+        ([types.Part(text='hello')], set(), False),
+        (
+            [
+                types.Part.from_function_response(
+                    name='tool', response={'result': 'ok'}
+                )
+            ],
+            set(),
+            False,
+        ),
+        (
+            [
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id='call-1', name='tool', response={'result': 'ok'}
+                    )
+                )
+            ],
+            {'call-1'},
+            False,
+        ),
+        (
+            [
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id='call-1', name='tool', response={'result': 'ok'}
+                    )
+                )
+            ],
+            set(),
+            True,
+        ),
+    ],
+)
+def test_has_unmapped_function_response(
+    parts: list[types.Part], mapped_ids: set[str], expected: bool
+) -> None:
+  content = types.Content(role='user', parts=parts)
+
+  assert _has_unmapped_function_response(content, mapped_ids) is expected

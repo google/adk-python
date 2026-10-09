@@ -18,19 +18,25 @@ Migrated from test_workflow_agent.py — each test validates the same
 workflow behavior through Runner(node=...) instead of agent.run_async().
 """
 
+import asyncio
 from collections import Counter
 from typing import Any
 from typing import AsyncGenerator
+from unittest import mock
 import uuid
 
 from google.adk.agents.context import Context
+from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import START
 from google.adk.workflow._join_node import JoinNode
+from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import get_common_branch_prefix
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
@@ -143,10 +149,15 @@ class _BytesOutputNode(BaseNode):
 # ---------------------------------------------------------------------------
 
 
-async def _run_workflow(wf, message='start'):
+from .._invariants import InvariantPlugin
+
+
+async def _run_workflow(wf, message='start', *, check_invariants: bool = True):
   """Run a Workflow through Runner, return collected events."""
   ss = InMemorySessionService()
   runner = Runner(app_name='test', node=wf, session_service=ss)
+  if check_invariants:
+    runner.plugin_manager.plugins.insert(0, InvariantPlugin())
   session = await ss.create_session(app_name='test', user_id='u')
   msg = types.Content(parts=[types.Part(text=message)], role='user')
   events = []
@@ -2218,3 +2229,571 @@ def test_get_common_branch_prefix_is_empty_when_any_branch_is_empty():
   """An unbranched member leaves nothing for the others to share."""
   assert get_common_branch_prefix(['A@1', '']) == ''
   assert get_common_branch_prefix(['', '']) == ''
+
+
+async def test_workflow_with_abort_signal():
+  """Setting abort_signal terminates active workflow execution early."""
+
+  class _LongRunningNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      await asyncio.sleep(5.0)
+      yield Event(output='should_not_reach_here')
+
+  node_a = _LongRunningNode(name='LongNode')
+  wf = Workflow(name='wf', edges=[(START, node_a)])
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  abort_signal = asyncio.Event()
+
+  async def trigger_abort():
+    await asyncio.sleep(0.1)
+    abort_signal.set()
+
+  asyncio.create_task(trigger_abort())
+
+  events: list[Event] = []
+  async for event in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+      abort_signal=abort_signal,
+  ):
+    events.append(event)
+
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'should_not_reach_here' not in outputs
+
+
+async def test_workflow_parallel_nodes_abort():
+  """Triggering abort_signal cancels all parallel workflow branches."""
+  cancelled_nodes = []
+
+  class _CancellableNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      try:
+        await asyncio.sleep(5.0)
+        yield Event(output=f'{self.name}_done')
+      except asyncio.CancelledError:
+        cancelled_nodes.append(self.name)
+        raise
+
+  node_1 = _CancellableNode(name='node_1')
+  node_2 = _CancellableNode(name='node_2')
+  wf = Workflow(name='parallel_wf', edges=[(START, node_1), (START, node_2)])
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  abort_signal = asyncio.Event()
+
+  async def trigger_abort():
+    await asyncio.sleep(0.1)
+    abort_signal.set()
+
+  asyncio.create_task(trigger_abort())
+
+  events: list[Event] = []
+  async for event in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+      abort_signal=abort_signal,
+  ):
+    events.append(event)
+
+  assert set(cancelled_nodes) == {'node_1', 'node_2'}
+
+
+async def test_workflow_cancel_while_parked_cleans_up_abort_task():
+  """Cancelling a workflow task while parked in wait cleans up background abort waiter tasks."""
+  started = asyncio.Event()
+
+  class _HangingNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      started.set()
+      await asyncio.sleep(10.0)
+      yield Event(output='done')
+
+  node = _HangingNode(name='hanging_node')
+  wf = Workflow(name='cancel_wf', edges=[(START, node)])
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+  abort_signal = asyncio.Event()
+
+  async def run_runner():
+    async for _ in runner.run_async(
+        user_id='u',
+        session_id=session.id,
+        new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+        abort_signal=abort_signal,
+    ):
+      pass
+
+  runner_task = asyncio.create_task(run_runner())
+  await started.wait()
+  runner_task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await runner_task
+
+  current = asyncio.current_task()
+  pending = [
+      t for t in asyncio.all_tasks() if t is not current and not t.done()
+  ]
+  assert not pending
+
+
+async def test_workflow_without_abort_signal_runs_normally():
+  """Running a workflow without an external abort_signal executes nodes with is_aborted False."""
+  observed_aborted = None
+
+  class _CheckingNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      nonlocal observed_aborted
+      observed_aborted = ctx.is_aborted
+      yield Event(output='node_done')
+
+  node = _CheckingNode(name='checking_node')
+  wf = Workflow(name='no_abort_wf', edges=[(START, node)])
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  events = []
+  async for event in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+  ):
+    events.append(event)
+
+  assert observed_aborted is False
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'node_done' in outputs
+
+
+async def test_workflow_in_node_abort_wakes_parked_run_loop():
+  """Calling abort() from inside a node wakes the workflow loop and cancels pending sibling nodes.
+
+  Both nodes stay busy after the abort, so no node task ever completes. Only the
+  run loop's wait on the abort signal can unpark it; without that wait task the
+  workflow would block until the sleeps expired.
+  """
+  cancelled_nodes = []
+
+  class _AbortingNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      ctx._invocation_context.abort()  # pylint: disable=protected-access
+      try:
+        await asyncio.sleep(5.0)
+        yield Event(output='should_not_reach_here')
+      except asyncio.CancelledError:
+        cancelled_nodes.append(self.name)
+        raise
+
+  class _BusyNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      try:
+        await asyncio.sleep(5.0)
+        yield Event(output='should_not_reach_here')
+      except asyncio.CancelledError:
+        cancelled_nodes.append(self.name)
+        raise
+
+  aborting = _AbortingNode(name='aborting_node')
+  busy = _BusyNode(name='busy_node')
+  wf = Workflow(
+      name='in_node_abort_wf', edges=[(START, aborting), (START, busy)]
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  events: list[Event] = []
+  await asyncio.wait_for(
+      _drain(
+          runner.run_async(
+              user_id='u',
+              session_id=session.id,
+              new_message=types.Content(
+                  parts=[types.Part(text='go')], role='user'
+              ),
+          ),
+          events,
+      ),
+      timeout=2.0,
+  )
+
+  assert set(cancelled_nodes) == {'aborting_node', 'busy_node'}
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'should_not_reach_here' not in outputs
+
+
+async def test_workflow_abort_does_not_record_completion_on_resumable_session():
+  """An aborted workflow must not record itself as completed.
+
+  A resumable session persists an `end_of_agent` marker on clean completion, so
+  emitting one for an aborted run would make a later resume believe the
+  workflow already finished.
+  """
+  started = asyncio.Event()
+
+  class _HangingNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      started.set()
+      await asyncio.sleep(5.0)
+      yield Event(output='should_not_reach_here')
+
+  node = _HangingNode(name='hanging_node')
+  wf = Workflow(name='abort_resumable_wf', edges=[(START, node)])
+  ss = InMemorySessionService()
+  runner = Runner(
+      app=App(
+          name='test',
+          root_agent=wf,
+          resumability_config=ResumabilityConfig(is_resumable=True),
+      ),
+      session_service=ss,
+  )
+  session = await ss.create_session(app_name='test', user_id='u')
+  abort_signal = asyncio.Event()
+
+  async def trigger_abort():
+    await started.wait()
+    abort_signal.set()
+
+  abort_task = asyncio.create_task(trigger_abort())
+
+  events: list[Event] = []
+  await asyncio.wait_for(
+      _drain(
+          runner.run_async(
+              user_id='u',
+              session_id=session.id,
+              new_message=types.Content(
+                  parts=[types.Part(text='go')], role='user'
+              ),
+              abort_signal=abort_signal,
+          ),
+          events,
+      ),
+      timeout=2.0,
+  )
+  await abort_task
+
+  assert not any(e.actions.end_of_agent for e in events)
+
+
+async def test_workflow_abort_still_emits_event_node_already_produced():
+  """An event the node already produced survives the abort break.
+
+  The node aborts and then yields; that event represents work already done
+  (for example a function response whose tool ran), so it must still reach the
+  caller instead of being dropped by the abort check.
+  """
+
+  class _AbortThenYieldNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      ctx._invocation_context.abort()  # pylint: disable=protected-access
+      yield Event(output='produced_before_abort_break')
+
+  node = _AbortThenYieldNode(name='aborting_producer')
+  wf = Workflow(name='abort_producer_wf', edges=[(START, node)])
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  events: list[Event] = []
+  await asyncio.wait_for(
+      _drain(
+          runner.run_async(
+              user_id='u',
+              session_id=session.id,
+              new_message=types.Content(
+                  parts=[types.Part(text='go')], role='user'
+              ),
+          ),
+          events,
+      ),
+      timeout=2.0,
+  )
+
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'produced_before_abort_break' in outputs
+
+
+async def test_standalone_root_node_abort_unparks_consumer_immediately():
+  """Tripping abort_signal while a standalone root BaseNode is idle unparks _consume_event_queue immediately."""
+  started = asyncio.Event()
+  cancelled = False
+
+  class _IdleRootNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      nonlocal cancelled
+      started.set()
+      try:
+        await asyncio.sleep(10.0)
+        yield Event(output='should_not_reach_here')
+      except asyncio.CancelledError:
+        cancelled = True
+        raise
+
+  node = _IdleRootNode(name='idle_root_node')
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=node, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+  abort_signal = asyncio.Event()
+
+  async def trigger_abort():
+    await started.wait()
+    abort_signal.set()
+
+  trigger_task = asyncio.create_task(trigger_abort())
+  events: list[Event] = []
+  await asyncio.wait_for(
+      _drain(
+          runner.run_async(
+              user_id='u',
+              session_id=session.id,
+              new_message=types.Content(
+                  parts=[types.Part(text='go')], role='user'
+              ),
+              abort_signal=abort_signal,
+          ),
+          events,
+      ),
+      timeout=2.0,
+  )
+  await trigger_task
+
+  assert cancelled is True
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'should_not_reach_here' not in outputs
+
+
+async def _drain(agen: AsyncGenerator[Event, None], sink: list[Event]) -> None:
+  """Consume an event stream into sink."""
+  async for event in agen:
+    sink.append(event)
+
+
+async def test_workflow_error_drains_completed_sibling_nodes():
+  """Sibling nodes that complete in the same tick as a failing node have their completions preserved."""
+  succeeding_completed = False
+  handle_completion_calls = []
+
+  class _FailingNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      await asyncio.sleep(0)
+      raise ValueError('node failure')
+      yield Event(output='should_not_reach_here')
+
+  class _SucceedingNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      nonlocal succeeding_completed
+      await asyncio.sleep(0)
+      succeeding_completed = True
+      yield Event(output='sibling_output')
+
+  failing = _FailingNode(name='failing_node')
+  succeeding = _SucceedingNode(name='succeeding_node')
+  wf = Workflow(
+      name='sibling_error_wf', edges=[(START, failing), (START, succeeding)]
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  original_handle_completion = Workflow._handle_completion
+
+  def spy_handle_completion(
+      self, loop_state, node_name, node_obj, child_ctx, ctx
+  ):
+    handle_completion_calls.append(node_name)
+    return original_handle_completion(
+        self, loop_state, node_name, node_obj, child_ctx, ctx
+    )
+
+  events: list[Event] = []
+  with mock.patch.object(
+      Workflow, '_handle_completion', new=spy_handle_completion
+  ):
+    with pytest.raises(ValueError, match='node failure'):
+      async for event in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+      ):
+        events.append(event)
+
+  assert succeeding_completed is True
+  assert 'failing_node' not in handle_completion_calls
+  assert 'succeeding_node' in handle_completion_calls
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'sibling_output' in outputs
+
+
+async def test_workflow_error_drain_marks_errored_sibling_failed_in_checkpoint():
+  """An errored sibling drained after the initial batch is marked failed in checkpoints."""
+  first_batch_emitted = asyncio.Event()
+
+  class _ImmediateSuccessNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield Event(output='first_output')
+
+  class _ImmediateFailNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      raise ValueError('first failure')
+      yield Event(output='unreachable')
+
+  class _DelayedFailNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      await first_batch_emitted.wait()
+      raise ValueError('second failure')
+      yield Event(output='unreachable')
+
+  class _DelayedSuccessNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      await first_batch_emitted.wait()
+      yield Event(output='second_output')
+
+  first_ok = _ImmediateSuccessNode(name='first_ok')
+  failing_1 = _ImmediateFailNode(name='failing_1')
+  failing_2 = _DelayedFailNode(name='failing_2')
+  second_ok = _DelayedSuccessNode(name='second_ok')
+  wf = Workflow(
+      name='drain_checkpoint_wf',
+      edges=[
+          (START, first_ok),
+          (START, failing_1),
+          (START, failing_2),
+          (START, second_ok),
+      ],
+  )
+  app = App(
+      name='test',
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  events: list[Event] = []
+  with pytest.raises(ValueError, match='first failure'):
+    async for event in runner.run_async(
+        user_id='u',
+        session_id=session.id,
+        new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+    ):
+      events.append(event)
+      if event.error_message == 'first failure':
+        first_batch_emitted.set()
+      await asyncio.sleep(0)
+
+  checkpoints = [
+      e.actions.agent_state['nodes']
+      for e in events
+      if e.actions
+      and e.actions.agent_state
+      and 'nodes' in e.actions.agent_state
+  ]
+  assert checkpoints
+  last_checkpoint = checkpoints[-1]
+  assert last_checkpoint['first_ok']['status'] == NodeStatus.COMPLETED.value
+  assert last_checkpoint['failing_1']['status'] == NodeStatus.FAILED.value
+  assert last_checkpoint['failing_2']['status'] == NodeStatus.FAILED.value
+  assert last_checkpoint['second_ok']['status'] == NodeStatus.COMPLETED.value
+
+
+@pytest.mark.asyncio
+async def test_workflow_abort_yields_abort_event_and_runs_after_run():
+  """Aborting a workflow yields one abort event; breaking out still runs after_run."""
+  after_run_called = False
+
+  class _TestPlugin(BasePlugin):
+
+    async def after_run_callback(self, *, invocation_context) -> None:
+      nonlocal after_run_called
+      after_run_called = True
+
+  class _LongRunningNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      await asyncio.sleep(5.0)
+      yield Event(output='should_not_reach_here')
+
+  wf = Workflow(name='wf', edges=[(START, _LongRunningNode(name='LongNode'))])
+  ss = InMemorySessionService()
+  runner = Runner(
+      app=App(name='test_app', root_agent=wf, plugins=[_TestPlugin(name='p')]),
+      session_service=ss,
+  )
+  session = await ss.create_session(app_name='test_app', user_id='u')
+  abort_signal = asyncio.Event()
+  asyncio.get_running_loop().call_later(0.05, abort_signal.set)
+
+  events = []
+  agen = runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+      abort_signal=abort_signal,
+  )
+  async for event in agen:
+    events.append(event)
+    if event.error_code == 'INVOCATION_ABORTED':
+      break
+  await agen.aclose()
+
+  assert [e.error_code for e in events] == ['INVOCATION_ABORTED']
+  assert after_run_called is True

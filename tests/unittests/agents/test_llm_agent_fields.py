@@ -595,6 +595,28 @@ class TestCanonicalTools:
     assert tools[1].name == 'discovery_engine_search'
     assert tools[1].__class__.__name__ == 'DiscoveryEngineSearchTool'
 
+  async def test_handle_vais_with_other_tools_missing_gcp_extra(self):
+    """Missing google-cloud-discoveryengine raises an actionable error."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            self._my_tool,
+            VertexAiSearchTool(
+                data_store_id='test_data_store_id',
+                bypass_multi_tools_limit=True,
+            ),
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+
+    with mock.patch.dict(
+        'sys.modules',
+        {'google.adk.tools.discovery_engine_search_tool': None},
+    ):
+      with pytest.raises(ImportError, match='google-adk\\[gcp\\]'):
+        await agent.canonical_tools(ctx)
+
   async def test_handle_vais_with_other_tools_no_bypass(self):
     """Test that VertexAiSearchTool is not replaced."""
     agent = LlmAgent(

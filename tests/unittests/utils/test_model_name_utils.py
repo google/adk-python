@@ -17,12 +17,14 @@
 from google.adk.models.llm_request import LlmRequest
 from google.adk.utils.model_name_utils import _is_gemini_3_x_live
 from google.adk.utils.model_name_utils import _is_managed_agent
+from google.adk.utils.model_name_utils import _supports_builtin_tools_with_function_calling
 from google.adk.utils.model_name_utils import extract_model_name
 from google.adk.utils.model_name_utils import is_gemini_1_model
 from google.adk.utils.model_name_utils import is_gemini_3_5_live_translate
 from google.adk.utils.model_name_utils import is_gemini_eap_or_2_or_above
 from google.adk.utils.model_name_utils import is_gemini_model
 from google.adk.utils.model_name_utils import is_gemini_model_id_check_disabled
+import pytest
 
 
 class TestExtractModelName:
@@ -442,6 +444,44 @@ class TestIsGemini35LiveTranslate:
     """Test edge cases."""
     assert is_gemini_3_5_live_translate(None) is False
     assert is_gemini_3_5_live_translate('') is False
+
+
+class TestSupportsBuiltinToolsWithFunctionCalling:
+  """Test the _supports_builtin_tools_with_function_calling function."""
+
+  @pytest.mark.parametrize(
+      'model_string',
+      [
+          'gemini-3.0-flash',
+          'gemini-3.1-pro',
+          'gemini-3.5-flash',
+          'gemini-3.5-flash-lite-live-preview',
+          'gemini-4.0-pro',
+          'projects/123/locations/us-central1/publishers/google/models/gemini-3.5-flash',
+          'models/gemini-3.5-flash',
+          'gemini/gemini-3.5-flash',
+      ],
+  )
+  def test_gemini_3_and_later_are_supported(self, model_string):
+    assert _supports_builtin_tools_with_function_calling(model_string) is True
+
+  @pytest.mark.parametrize(
+      'model_string',
+      [
+          'gemini-1.5-pro',
+          'gemini-2.0-flash',
+          'gemini-2.5-flash',
+          'gemini-live-2.5-flash-native-audio',
+          'projects/123/locations/us-central1/publishers/google/models/gemini-2.5-flash',
+          'gemini-flash-early-exp',
+          'claude-3-sonnet',
+          'gpt-4',
+          '',
+          None,
+      ],
+  )
+  def test_older_or_non_gemini_models_are_not_supported(self, model_string):
+    assert _supports_builtin_tools_with_function_calling(model_string) is False
 
 
 class TestIsManagedAgent:

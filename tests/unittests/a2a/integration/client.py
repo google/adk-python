@@ -68,7 +68,7 @@ def create_client(
   return agent
 
 
-def create_a2a_client(app, streaming: bool = False):
+def create_a2a_client(app, streaming: bool = False, use_legacy: bool = False):
   """Creates a bare A2A Client connected to the provided FastAPI app.
 
   This is in contrast to create_client, which wraps the a2a_client into a
@@ -77,14 +77,21 @@ def create_a2a_client(app, streaming: bool = False):
   Args:
     app: The FastAPI application (server) to connect to.
     streaming: Whether to enable streaming mode in the client.
+    use_legacy: Whether to leave out the new integration extension, so the
+      server runs its legacy executor.
 
   Returns:
     An A2A Client instance.
   """
+  headers = (
+      {}
+      if use_legacy
+      else {HTTP_EXTENSION_HEADER: _NEW_A2A_ADK_INTEGRATION_EXTENSION}
+  )
   client = httpx.AsyncClient(
       transport=httpx.ASGITransport(app=app),
       base_url="http://test",
-      headers={HTTP_EXTENSION_HEADER: _NEW_A2A_ADK_INTEGRATION_EXTENSION},
+      headers=headers,
   )
 
   client_config = _compat.make_client_config(

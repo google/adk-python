@@ -23,9 +23,20 @@ from unittest.mock import patch
 from google.adk.integrations.vmaas.sandbox_computer import _STATE_KEY_AGENT_ENGINE_NAME
 from google.adk.integrations.vmaas.sandbox_computer import _STATE_KEY_SANDBOX_NAME
 from google.adk.integrations.vmaas.sandbox_computer import AgentEngineSandboxComputer
+from google.adk.sessions import Session
 from google.adk.sessions.state import State
 from google.adk.tools.computer_use.base_computer import ComputerEnvironment
 from google.adk.tools.computer_use.base_computer import ComputerState
+
+
+def _tool_context(session_id="session1", state=None):
+  """Returns a tool context for a session, with the given session state."""
+  tool_context = MagicMock()
+  tool_context.session = Session(
+      id=session_id, app_name="test_app", user_id="test_user"
+  )
+  tool_context.state = state if state is not None else {}
+  return tool_context
 
 
 class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
@@ -251,6 +262,53 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
 
     self.assertEqual(result_name, sandbox_name)
     self.assertEqual(result_sandbox, mock_sandbox)
+
+  @patch("google.adk.integrations.vmaas.sandbox_computer.asyncio.to_thread")
+  @patch.object(AgentEngineSandboxComputer, "_get_client")
+  async def test_get_sandbox_ignores_sandbox_name_in_session_state(
+      self, mock_get_client, mock_to_thread
+  ):
+    """Test _get_sandbox does not use a sandbox name found in session state."""
+    agent_engine_name = (
+        "projects/test/locations/us-central1/reasoningEngines/123"
+    )
+    created_sandbox_name = f"{agent_engine_name}/sandboxEnvironments/created"
+    other_sandbox_name = (
+        "projects/other/locations/us-central1/reasoningEngines/456"
+        "/sandboxEnvironments/789"
+    )
+
+    operation = MagicMock()
+    operation.response.name = created_sandbox_name
+    mock_to_thread.return_value = operation
+    mock_get_client.return_value = MagicMock()
+
+    computer = AgentEngineSandboxComputer(project_id=self.project_id)
+    await computer.prepare(
+        _tool_context(state={_STATE_KEY_SANDBOX_NAME: other_sandbox_name})
+    )
+
+    result_name, _ = await computer._get_sandbox()
+
+    self.assertEqual(result_name, created_sandbox_name)
+
+  async def test_prepare_keeps_resources_of_each_session_apart(self):
+    """Test prepare binds the resources of the invocation's own session."""
+    computer = AgentEngineSandboxComputer()
+    first_context = _tool_context(session_id="session1")
+    second_context = _tool_context(session_id="session2")
+
+    await computer.prepare(first_context)
+    computer._session_state[_STATE_KEY_SANDBOX_NAME] = "sandbox1"
+    await computer.prepare(second_context)
+
+    self.assertEqual(computer._session_state, {})
+
+    await computer.prepare(first_context)
+
+    self.assertEqual(
+        computer._session_state[_STATE_KEY_SANDBOX_NAME], "sandbox1"
+    )
 
   async def test_get_access_token_cached(self):
     """Test _get_access_token uses cached token."""

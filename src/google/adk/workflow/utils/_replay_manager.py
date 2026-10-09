@@ -21,6 +21,7 @@ import logging
 from ...agents.context import Context
 from ...events._branch_path import _BranchPath
 from ...events._node_path_builder import _NodePathBuilder
+from ...events._rewind_events import _apply_rewinds
 from ...events.event import Event
 from ._rehydration_utils import _ChildScanState
 from ._rehydration_utils import _reconstruct_node_states
@@ -45,27 +46,27 @@ class ReplayManager:
   """Unifies rehydration, replay interception, and sequence barrier synchronization across static and dynamic nodes."""
 
   def __init__(self) -> None:
-    self._recovered_executions: dict[str, _ChildScanState] = {}
     self._sequence_barrier: ReplaySequenceBarrier | None = None
     self._parent_sequence_barriers: dict[str, ReplaySequenceBarrier] = {}
     self._events_by_parent: dict[str, list[Event]] = {}
     self._transitive_events_by_parent: dict[str, list[Event]] = {}
     self._fc_to_parent: dict[str, str] = {}
+    self._live_events: list[Event] = []
     self._indexed_event_count: int = 0
     self._indexed_last_event: Event | None = None
-
-  @property
-  def recovered_executions(self) -> dict[str, _ChildScanState]:
-    """Recovered child states from event scan."""
-    return self._recovered_executions
 
   @property
   def sequence_barrier(self) -> ReplaySequenceBarrier | None:
     """Sequence barrier for deterministic replay ordering."""
     return self._sequence_barrier
 
-  def _ensure_index(self, ctx: Context) -> None:
+  def _ensure_index(self, ctx: Context) -> list[Event]:
     """Ensures event indexes are initialized and up-to-date with current session.
+
+    Returns the session events the index now describes. A caller that needs
+    those events should use the returned list rather than reading them off
+    `ctx` a second time, so the events it works with are the same ones the
+    index covers.
 
     Events are appended to the session as the run proceeds and across turns, so
     the index is extended with whatever arrived since it was last updated.
@@ -77,13 +78,25 @@ class ReplayManager:
     existing buckets then hold events the session no longer has.
     """
     ic = ctx._invocation_context
-    events = ic.session.events
-    if self._indexed_prefix_is_intact(events):
-      if len(events) > self._indexed_event_count:
-        self._index_events(events[self._indexed_event_count :])
-        self._record_indexed_through(events)
-    else:
-      self._build_event_index(events)
+    raw_events = ic.session.events
+    if self._indexed_event_count > 0 and self._indexed_prefix_is_intact(
+        raw_events
+    ):
+      delta = raw_events[self._indexed_event_count :]
+      has_new_rewind = any(
+          ev.actions and ev.actions.rewind_before_invocation_id for ev in delta
+      )
+      if not has_new_rewind:
+        if delta:
+          self._live_events.extend(delta)
+          self._index_events(delta)
+          self._record_indexed_through(raw_events)
+        return self._live_events
+
+    self._live_events = _apply_rewinds(raw_events)
+    self._build_event_index(self._live_events)
+    self._record_indexed_through(raw_events)
+    return self._live_events
 
   def _indexed_prefix_is_intact(self, events: list[Event]) -> bool:
     """Whether the already-indexed events are still a prefix of `events`.
@@ -116,6 +129,7 @@ class ReplayManager:
     self._events_by_parent = {}
     self._transitive_events_by_parent = {}
     self._fc_to_parent = {}
+    self._live_events = list(events)
     self._index_events(events)
     self._record_indexed_through(events)
 
@@ -125,7 +139,7 @@ class ReplayManager:
     Interrupt ownership (`_fc_to_parent`) carries across calls: a user response
     indexed now may answer a function call indexed in an earlier batch.
     """
-    from ._workflow_hitl_utils import get_request_input_interrupt_ids
+    from ...events._interrupts import extract_event_interrupt_ids
 
     for event in events:
       if event.author == "user":
@@ -142,9 +156,7 @@ class ReplayManager:
       self._add_event_to_index(parent_path, event)
 
       # Track interrupts to route future user responses
-      interrupt_ids = set(event.long_running_tool_ids or [])
-      interrupt_ids.update(get_request_input_interrupt_ids(event))
-      for fid in interrupt_ids:
+      for fid in extract_event_interrupt_ids(event):
         self._fc_to_parent[fid] = parent_path
 
   def _index_user_event(
@@ -193,16 +205,16 @@ class ReplayManager:
     if not node_path:
       return []
 
-    self._ensure_index(ctx)
+    session_events = self._ensure_index(ctx)
     path_builder = _NodePathBuilder.from_string(node_path)
     parent_builder = path_builder.parent
     if not parent_builder or not str(parent_builder):
-      return ctx._invocation_context.session.events
+      return session_events
     parent_path = str(parent_builder)
 
     node_events = self._transitive_events_by_parent.get(parent_path, [])
     if not node_events:
-      return ctx._invocation_context.session.events
+      return session_events
 
     # Top-level user text prompts live under root key ("").
     # Merge them so multi-turn turn inputs remain visible during state reconstruction.
@@ -223,7 +235,6 @@ class ReplayManager:
       return node_events
 
     # Retain exact chronological ordering of session events.
-    session_events = ctx._invocation_context.session.events
     event_ids = node_event_ids.union(id(e) for e in user_prompts)
     return [e for e in session_events if id(e) in event_ids]
 
@@ -318,8 +329,7 @@ class ReplayManager:
     """Scan session events for direct child workflow nodes and initialize sequence barrier."""
     ic = ctx._invocation_context
 
-    # Build the index
-    self._build_event_index(ic.session.events)
+    self._ensure_index(ctx)
 
     # Use transitive parent events for static child nodes so deeper descendant events (e.g. delegated outputs/interrupts) are recovered
     filtered_events = self._transitive_events_by_parent.get(ctx.node_path, [])
@@ -336,8 +346,8 @@ class ReplayManager:
         transitive_events, ctx, ctx.node_path, strict_direct_child=False
     )
 
-    self._recovered_executions = raw_results
     self._sequence_barrier = ReplaySequenceBarrier(sequence)
+    self._parent_sequence_barriers[ctx.node_path] = self._sequence_barrier
     return raw_results, sequence
 
   def prepare_parent_sequence_barrier(

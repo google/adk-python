@@ -98,6 +98,41 @@ async def test_load_artifacts_converts_unsupported_mime_to_text():
 
 
 @pytest.mark.asyncio
+async def test_load_artifacts_multi_part_traversal():
+  """Function response is found when not at parts[0]."""
+  artifact_name = 'test.txt'
+  artifact = types.Part.from_text(text='artifact content')
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part.from_text(text='prior text part'),
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  ),
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert len(llm_request.contents) == 2
+  assert (
+      llm_request.contents[-1].parts[0].text == f'Artifact {artifact_name} is:'
+  )
+  assert llm_request.contents[-1].parts[1].text == 'artifact content'
+
+
+@pytest.mark.asyncio
 async def test_load_artifacts_converts_base64_unsupported_mime_to_text():
   """Unsupported base64 string data is converted to text parts."""
   artifact_name = 'test.csv'

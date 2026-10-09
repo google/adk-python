@@ -21,11 +21,11 @@ import sys
 import time
 from typing import AsyncIterator
 from typing import Iterator
+from typing import Literal
 from typing import TYPE_CHECKING
 
 from opentelemetry import trace
 import opentelemetry.context as context_api
-from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from typing_extensions import assert_never
 
 from . import _adk_attributes
@@ -33,6 +33,7 @@ from . import _hallucination
 from . import _metrics
 from . import _token_usage
 from . import tracing
+from ._decorators import experimental_telemetry
 from ._finish_reason import is_reported_finish_reason
 from ._schema_version import resolve_schema_version
 from ._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
@@ -40,8 +41,6 @@ from .context import TelemetryConfig
 
 # pylint: disable=g-import-not-at-top
 if TYPE_CHECKING:
-  from opentelemetry.util.types import AttributeValue
-
   from ..agents.base_agent import BaseAgent
   from ..agents.invocation_context import InvocationContext
   from ..agents.run_config import RunConfig
@@ -243,6 +242,33 @@ SkillTelemetry = (
     | SkillScriptExecutionTelemetry
 )
 
+ToolResponseSource = Literal[
+    "before_tool_callback", "on_tool_error_callback", "after_tool_callback"
+]
+ModelResponseSource = Literal[
+    "before_model_callback", "on_model_error_callback"
+]
+
+
+def record_response_source(
+    span: trace.Span,
+    source: ModelResponseSource | ToolResponseSource,
+    invocation_context: InvocationContext,
+) -> None:
+  """Names the callback that produced the response recorded on ``span``."""
+  _set_response_source(
+      tracing._telemetry_config_from_invocation_context(invocation_context),
+      span,
+      source,
+  )
+
+
+@experimental_telemetry(gate=[])
+def _set_response_source(
+    span: trace.Span, source: ModelResponseSource | ToolResponseSource
+) -> None:
+  span.set_attribute(_adk_attributes.ADK_EXPERIMENTAL_RESPONSE_SOURCE, source)
+
 
 @dataclasses.dataclass
 class ToolScope:
@@ -256,6 +282,8 @@ class ToolScope:
   function_response_event: event_lib.Event | None = None
   error_type: str | None = None
   skill_telemetry: SkillTelemetry | None = None
+  response_source: ToolResponseSource | None = None
+  """The callback that produced the recorded response, if one did."""
 
 
 @dataclasses.dataclass
@@ -322,10 +350,9 @@ def _flush_invoke_agent_metrics(
     scope: The invocation's totals.
     tel_cfg: The config the invocation ran under, for the experimental gate.
   """
-  # `token_totals` is only set under opt-in, so it carries the gate already.
   if scope.token_totals is not None:
     _metrics.record_invoke_agent_token_usage(
-        scope.agent_name, scope.token_totals
+        tel_cfg, scope.agent_name, scope.token_totals
     )
   _metrics.record_invoke_agent_inference_calls(
       scope.agent_name, scope.inference_call_count
@@ -333,40 +360,41 @@ def _flush_invoke_agent_metrics(
   _metrics.record_invoke_agent_tool_calls(
       scope.agent_name, scope.tool_call_count
   )
-  if tel_cfg.should_emit_experimental_telemetry:
-    _metrics.record_invoke_agent_skill_loads(
-        scope.agent_name, scope.skill_load_count
-    )
+  _metrics.record_invoke_agent_skill_loads(
+      tel_cfg, scope.agent_name, scope.skill_load_count
+  )
 
 
 def _flush_workflow_metrics(scope: _WorkflowScope) -> None:
   """Flushes one workflow's metrics; called once, by the scope's owner."""
-  if not scope.telemetry_config.should_emit_experimental_telemetry:
-    return
   nested = scope.parent is not None
   # We always record call counts because a count of 0 is a valid, accurate
   # measurement. For tokens, nothing having reported usage isn't the same as
   # knowing the spend was exactly zero. So we skip tokens in that case.
   if scope.token_totals is not None:
     _metrics.record_invoke_workflow_token_usage(
+        scope.telemetry_config,
         root_agent_name=scope.root_agent_name,
         workflow_name=scope.workflow_name,
         totals=scope.token_totals,
         nested=nested,
     )
   _metrics.record_invoke_workflow_inference_calls(
+      scope.telemetry_config,
       root_agent_name=scope.root_agent_name,
       workflow_name=scope.workflow_name,
       count=scope.inference_call_count,
       nested=nested,
   )
   _metrics.record_invoke_workflow_tool_calls(
+      scope.telemetry_config,
       root_agent_name=scope.root_agent_name,
       workflow_name=scope.workflow_name,
       count=scope.tool_call_count,
       nested=nested,
   )
   _metrics.record_invoke_workflow_skill_loads(
+      scope.telemetry_config,
       root_agent_name=scope.root_agent_name,
       workflow_name=scope.workflow_name,
       count=scope.skill_load_count,
@@ -615,7 +643,15 @@ async def record_tool_execution(
             invocation_context=invocation_context,
             error_type=tel_ctx.error_type,
         )
+        if response_event is not None and tel_ctx.response_source is not None:
+          record_response_source(
+              span, tel_ctx.response_source, invocation_context
+          )
         if tel_ctx.skill_telemetry is not None:
+          if resolve_schema_version() >= SCHEMA_VERSION_SEMCONV_ALIGNED:
+            span.update_name(
+                _skill_span_name(tool.name, tel_ctx.skill_telemetry)
+            )
           _dispatch_skill_telemetry(
               span,
               tel_ctx.skill_telemetry,
@@ -662,15 +698,9 @@ async def record_inference_telemetry(
   finally:
     inference_error = sys.exc_info()[1]
     _accumulate_inference_call(workflow_scope)
-    # Tokens only: the metrics keyed on them are experimental, so a run without
-    # the opt-in never builds the totals. The counts above accumulate either
-    # way, and each flush gates what it emits.
-    if tracing._telemetry_config_from_invocation_context(
-        invocation_context
-    ).should_emit_experimental_telemetry:
-      usage = _token_usage.TokenUsage.from_llm_responses(tel_ctx.llm_responses)
-      if usage is not None:
-        _accumulate_tokens(usage, workflow_scope)
+    usage = _token_usage.TokenUsage.from_llm_responses(tel_ctx.llm_responses)
+    if usage is not None:
+      _accumulate_tokens(usage, workflow_scope)
     agent = invocation_context.agent
     elapsed_s = _metrics.get_elapsed_s(tel_ctx.span, start_time)
     try:
@@ -698,6 +728,21 @@ async def record_inference_telemetry(
       )
 
 
+def _skill_span_name(tool_name: str, skill_telemetry: SkillTelemetry) -> str:
+  """Names an ``execute_tool`` span per the GenAI semconv skill refinements."""
+  skill_name = skill_telemetry.skill_name.maybe_hallucinated_value
+  match skill_telemetry:
+    case SkillLoadTelemetry():
+      return f"execute_tool {tool_name} {skill_name}"
+    case SkillResourceLoadTelemetry():
+      resource_name = skill_telemetry.resource_path.maybe_hallucinated_value
+    case SkillScriptExecutionTelemetry():
+      resource_name = skill_telemetry.script_path.maybe_hallucinated_value
+    case _:
+      assert_never(skill_telemetry)
+  return f"execute_tool {tool_name} {skill_name} {resource_name}"
+
+
 def _dispatch_skill_telemetry(
     span: trace.Span,
     skill_telemetry: SkillTelemetry,
@@ -720,9 +765,6 @@ def _dispatch_skill_telemetry(
   telemetry_config = tracing._telemetry_config_from_invocation_context(
       invocation_context
   )
-  if not telemetry_config.should_emit_experimental_telemetry:
-    return
-
   error_type = (
       tracing.resolve_error_type(error) if error is not None else error_type
   )
@@ -730,21 +772,23 @@ def _dispatch_skill_telemetry(
   match skill_telemetry:
     case SkillLoadTelemetry():
       _accumulate_skill_load(workflow_scope)
-      _trace_skill_load(span, skill_telemetry)
+      tracing._trace_skill_load(span, skill_telemetry)
       if invocation_context.agent is None:
         return
       _metrics.record_skill_load(
+          telemetry_config,
           invocation_context.agent.name,
           skill_telemetry.skill_name,
           error_type,
       )
     case SkillResourceLoadTelemetry():
-      _trace_skill_resource_load(span, skill_telemetry)
+      tracing._trace_skill_resource_load(span, skill_telemetry)
     case SkillScriptExecutionTelemetry():
-      _trace_skill_script_execution(span, skill_telemetry)
+      tracing._trace_skill_script_execution(span, skill_telemetry)
       if invocation_context.agent is None:
         return
       _metrics.record_skill_script_execution(
+          telemetry_config,
           invocation_context.agent.name,
           skill_telemetry.skill_name,
           skill_telemetry.script_path,
@@ -752,83 +796,3 @@ def _dispatch_skill_telemetry(
       )
     case _:
       assert_never(skill_telemetry)
-
-
-def _trace_skill_load(
-    span: trace.Span,
-    skill_telemetry: SkillLoadTelemetry,
-) -> None:
-  """Stamps the skill load attributes onto the ``execute_tool`` span."""
-  attributes: dict[str, AttributeValue] = {}
-  attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME] = (
-      skill_telemetry.skill_name.maybe_hallucinated_value
-  )
-  skill = skill_telemetry.skill
-
-  if skill is not None:
-    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_DESCRIPTION] = (
-        skill.description
-    )
-
-    if (uri := skill._uri) is not None:
-      attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SOURCE_URI] = uri
-
-    if (additional_tools := skill_telemetry.additional_tools) is not None:
-      attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_ADDITIONAL_TOOLS] = (
-          additional_tools
-      )
-
-  span.set_attributes(attributes)
-
-
-def _trace_skill_resource_load(
-    span: trace.Span,
-    skill_telemetry: SkillResourceLoadTelemetry,
-) -> None:
-  """Stamps the skill resource loading information in the ``execute_tool load_skill_resource`` span."""
-  attributes: dict[str, AttributeValue] = {}
-  attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME] = (
-      skill_telemetry.skill_name.maybe_hallucinated_value
-  )
-  if (skill := skill_telemetry.skill) is not None and (
-      uri := skill._uri
-  ) is not None:
-    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SOURCE_URI] = uri
-
-  attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_RESOURCE_PATH] = (
-      skill_telemetry.resource_path.maybe_hallucinated_value
-  )
-
-  span.set_attributes(attributes)
-
-
-def _trace_skill_script_execution(
-    span: trace.Span,
-    skill_telemetry: SkillScriptExecutionTelemetry,
-) -> None:
-  """Stamps the skill script execution information in the ``execute_tool run_skill_script`` span."""
-  attributes: dict[str, AttributeValue] = {}
-  attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME] = (
-      skill_telemetry.skill_name.maybe_hallucinated_value
-  )
-  attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SCRIPT_PATH] = (
-      skill_telemetry.script_path.maybe_hallucinated_value
-  )
-
-  if (script_exit_code := skill_telemetry.script_exit_code) is not None:
-    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SCRIPT_EXIT_CODE] = (
-        script_exit_code
-    )
-
-    if script_exit_code != 0:
-      span.set_status(
-          trace.Status(trace.StatusCode.ERROR, "SKILL_SCRIPT_EXECUTION_ERROR")
-      )
-      span.set_attribute(ERROR_TYPE, "SKILL_SCRIPT_EXECUTION_ERROR")
-
-  if (skill := skill_telemetry.skill) is not None and (
-      uri := skill._uri
-  ) is not None:
-    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SOURCE_URI] = uri
-
-  span.set_attributes(attributes)

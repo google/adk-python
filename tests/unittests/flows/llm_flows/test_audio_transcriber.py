@@ -16,11 +16,22 @@
 
 from __future__ import annotations
 
+import importlib
+
 from google.adk.flows.llm_flows import audio_transcriber as legacy_module
 from google.adk.flows.llm_flows.audio_transcriber import AudioTranscriber as LegacyAudioTranscriber
 from google.adk.live._audio_transcriber import AudioTranscriber
+import pytest
 
 
 def test_audio_transcriber_reexport():
   assert LegacyAudioTranscriber is AudioTranscriber
   assert getattr(legacy_module, 'AudioTranscriber') is AudioTranscriber
+
+
+def test_audio_transcriber_deprecation_warning():
+  with pytest.warns(
+      DeprecationWarning,
+      match='use google.adk.live._audio_transcriber instead',
+  ):
+    importlib.reload(legacy_module)

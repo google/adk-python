@@ -76,6 +76,30 @@ def test_bigquery_tool_config_invalid_maximum_bytes_billed():
     BigQueryToolConfig(maximum_bytes_billed=10_485_759)
 
 
+def test_bigquery_tool_config_valid_kms_key_name():
+  """Test BigQueryToolConfig accepts a Cloud KMS key resource name."""
+  key = "projects/p/locations/us/keyRings/r/cryptoKeys/k"
+  config = BigQueryToolConfig(kms_key_name=key)
+  assert config.kms_key_name == key
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        pytest.param("k", id="bare-key-id"),
+        pytest.param(
+            "projects/p/locations/us/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1",
+            id="key-version",
+        ),
+        pytest.param("projects/p/locations/us/keyRings/r", id="key-ring"),
+    ],
+)
+def test_bigquery_tool_config_invalid_kms_key_name(key):
+  """Test BigQueryToolConfig rejects a value that is not a key resource name."""
+  with pytest.raises(ValueError, match="kms_key_name must be a Cloud KMS key"):
+    BigQueryToolConfig(kms_key_name=key)
+
+
 @pytest.mark.parametrize(
     "labels",
     [
@@ -155,3 +179,22 @@ def test_bigquery_tool_config_allows_reserved_prefix_inside_a_key():
   labels = {"team-adk-bigquery-owner": "value"}
   config = BigQueryToolConfig(job_labels=labels)
   assert config.job_labels == labels
+
+
+def test_bigquery_tool_config_default_project_matching_compute_project():
+  """The common single-project setup sets both ids to the same project."""
+  config = BigQueryToolConfig(
+      compute_project_id="my-project", default_project_id="my-project"
+  )
+  assert config.default_project_id == "my-project"
+
+
+def test_bigquery_tool_config_default_project_conflicting_compute_project():
+  """A default the compute guardrail would reject is a config error."""
+  with pytest.raises(
+      ValueError,
+      match="cannot differ from compute_project_id",
+  ):
+    BigQueryToolConfig(
+        compute_project_id="compute-project", default_project_id="data-project"
+    )

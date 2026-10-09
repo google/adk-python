@@ -18,6 +18,7 @@ import asyncio
 from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
 from datetime import timedelta
+import functools
 import logging
 from types import TracebackType
 from typing import Any
@@ -28,14 +29,86 @@ from typing import TypeVar
 from ...dependencies._mcp import ClientSession
 from ...dependencies._mcp import ElicitationFnT
 from ...dependencies._mcp import IS_MCP_SDK_V2
+from ...dependencies._mcp import negotiate_auto
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
+from ...dependencies._mcp import types
 from ...features import FeatureName
 from ...features import is_feature_enabled
+from ...version import __version__
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 _T = TypeVar('_T')
+
+# Who ADK says it is when it connects. Left unset, the SDK sends its own
+# default -- `mcp` / `0.1.0` -- so a server sees no difference between an ADK
+# agent and any other script built on the SDK.
+_CLIENT_INFO = types.Implementation(name='google-adk', version=__version__)
+
+
+async def _connect(session: ClientSession) -> None:
+  """Connects ``session`` using the newest protocol both sides support.
+
+  When enabled, tries the modern protocol (``server/discover``) first, which
+  needs no ``Mcp-Session-Id`` and sends ``clientInfo`` on every request. Falls
+  back to ``initialize`` for older servers.
+
+  Args:
+    session: The session to bring up.
+  """
+  # pylint: disable-next=protected-access
+  if not is_feature_enabled(FeatureName._MCP_MODERN_PROTOCOL):
+    await session.initialize()
+  elif negotiate_auto is None:
+    _warn_probe_unavailable()
+    await session.initialize()
+  else:
+    await negotiate_auto(session)
+
+
+# Cached so it only logs once.
+@functools.cache
+def _warn_probe_unavailable() -> None:
+  logger.warning(
+      'MCP_MODERN_PROTOCOL is enabled, but the installed MCP SDK has no era'
+      ' probe ADK can use; MCP connections will use the legacy handshake.'
+  )
+
+
+_CANCEL_DRAIN_TIMEOUT: float = 5.0
+
+
+async def _cancel_and_drain(
+    task: asyncio.Future[Any],
+    *,
+    timeout: float | None = None,
+) -> None:
+  """Cancels an in-flight call and waits for it to actually stop.
+
+  Returning before the call has unwound would let it keep reading the
+  transport after the caller believes it is finished. A timeout bound
+  prevents a call that does not unwind promptly from turning a
+  cancellation into an indefinite hang.
+  """
+  task.cancel()
+  if timeout is None:
+    timeout = _CANCEL_DRAIN_TIMEOUT
+  try:
+    done, _ = await asyncio.wait([task], timeout=timeout)
+    if task in done:
+      if not task.cancelled():
+        task.exception()
+    else:
+      task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+      logger.warning(
+          'Timed out after %ss waiting for cancelled task to unwind',
+          timeout,
+      )
+  except BaseException:
+    if not task.done():
+      task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+    raise
 
 
 def _read_timeout(seconds: Optional[float]) -> Optional[float | timedelta]:
@@ -273,10 +346,18 @@ class SessionContext:
 
     coro_task = asyncio.ensure_future(coro)
 
-    done, _ = await asyncio.wait(
-        [coro_task, self._task],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
+    try:
+      done, _ = await asyncio.wait(
+          [coro_task, self._task],
+          return_when=asyncio.FIRST_COMPLETED,
+      )
+    except BaseException:
+      # asyncio.wait does not own what it waits on, so it leaves the call
+      # running when this frame is cancelled. The caller's `finally` then
+      # releases the session back to the pool while that call is still
+      # reading the transport, and the pool is free to evict it underneath.
+      await _cancel_and_drain(coro_task)
+      raise
 
     if coro_task in done:
       # If the coroutine itself raised, the exception propagates as-is
@@ -287,11 +368,7 @@ class SessionContext:
 
     # The background task finished first, indicating a transport crash.
     # Cancel the in-flight tool call and surface the original error.
-    coro_task.cancel()
-    try:
-      await coro_task
-    except BaseException:
-      pass
+    await _cancel_and_drain(coro_task)
 
     exc = self._task.exception() if not self._task.cancelled() else None
     raise ConnectionError(
@@ -372,6 +449,7 @@ class SessionContext:
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,
+                  client_info=_CLIENT_INFO,
               )
           )
         else:
@@ -384,19 +462,20 @@ class SessionContext:
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,
+                  client_info=_CLIENT_INFO,
               )
           )
         # pylint: disable-next=protected-access
         if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):
-          # Use anyio.fail_after to keep session.initialize within the AnyIO
+          # Use anyio.fail_after to keep the handshake within the AnyIO
           # cancel scope instead of asyncio.wait_for which runs in a nested
           # task.
           import anyio
 
           with anyio.fail_after(self._timeout):
-            await session.initialize()
+            await _connect(session)
         else:
-          await asyncio.wait_for(session.initialize(), timeout=self._timeout)
+          await asyncio.wait_for(_connect(session), timeout=self._timeout)
         logger.debug('Session has been successfully initialized')
 
         self._session = session
