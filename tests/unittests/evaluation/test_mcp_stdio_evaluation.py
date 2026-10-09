@@ -18,6 +18,8 @@ import logging
 import sys
 import textwrap
 
+import anyio
+from google.adk import runners
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.evaluation.base_eval_service import InferenceConfig
 from google.adk.evaluation.base_eval_service import InferenceRequest
@@ -33,12 +35,13 @@ from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.genai import types
 from mcp import StdioServerParameters
 import pytest
+import pytest_asyncio
 
 from tests.unittests.testing_utils import MockModel
 
 
-@pytest.fixture
-def native_stdio_toolset(tmp_path):
+@pytest_asyncio.fixture
+async def native_stdio_toolset(tmp_path):
   calls = tmp_path / 'calls.txt'
   ready = tmp_path / 'ready.txt'
   server = tmp_path / 'server.py'
@@ -70,7 +73,12 @@ def native_stdio_toolset(tmp_path):
       ),
       tool_filter=['probe'],
   )
-  return toolset, calls, ready, server
+  real_close = toolset.close
+  try:
+    yield toolset, calls, ready, server
+  finally:
+    # Test failures must not leave the fixture's real subprocess running.
+    await real_close()
 
 
 async def _run_native_eval(mocker, model, toolset):
@@ -99,7 +107,9 @@ async def _run_native_eval(mocker, model, toolset):
   return [result async for result in service.perform_inference(request)]
 
 
-def _assert_successful_native_inference(results, model, calls, ready):
+def _assert_successful_native_inference(
+    results, model, calls, ready, toolset, processes, caplog
+):
   assert len(results) == 1
   result = results[0]
   assert (
@@ -122,6 +132,23 @@ def _assert_successful_native_inference(results, model, calls, ready):
   assert len(responses) == 1 and responses[0].name == 'probe'
   assert responses[0].response['isError'] is False, 'MCP tool reported an error'
   assert responses[0].response['content'][0]['text'] == 'native-result:checked'
+  assert (
+      len(processes.spy_return_list) == 1
+  ), 'MCP server spawn was not observed'
+  process = processes.spy_return_list[0]
+  assert process.returncode is not None, 'MCP server did not exit'
+  assert not toolset._mcp_session_manager._sessions, 'MCP session was retained'
+  assert not toolset._mcp_session_manager._session_contexts
+  assert not [
+      record.getMessage()
+      for record in caplog.records
+      if (
+          record.name.startswith(mcp_toolset.logger.name.rsplit('.', 1)[0])
+          or record.name == runners.logger.name
+          or record.name.startswith('mcp.client.stdio')
+      )
+      and record.levelno >= logging.WARNING
+  ], 'MCP cleanup reported a warning or error'
   return invocation
 
 
@@ -130,6 +157,7 @@ async def test_native_stdio_eval_calls_tool_and_closes(
     mocker, native_stdio_toolset, caplog
 ):
   toolset, calls, ready, _ = native_stdio_toolset
+  processes = mocker.spy(anyio, 'open_process')
   close = mocker.spy(toolset, 'close')
   model = MockModel.create(
       responses=[
@@ -141,15 +169,15 @@ async def test_native_stdio_eval_calls_tool_and_closes(
   )
 
   _assert_successful_native_inference(
-      await _run_native_eval(mocker, model, toolset), model, calls, ready
+      await _run_native_eval(mocker, model, toolset),
+      model,
+      calls,
+      ready,
+      toolset,
+      processes,
+      caplog,
   )
   close.assert_awaited_once_with()
-  assert not [
-      record.getMessage()
-      for record in caplog.records
-      if record.name.startswith(mcp_toolset.logger.name.rsplit('.', 1)[0])
-      and record.levelno >= logging.WARNING
-  ]
 
 
 @pytest.mark.asyncio
@@ -157,6 +185,7 @@ async def test_unavailable_toolset_cannot_satisfy_native_control(
     mocker, native_stdio_toolset, caplog
 ):
   toolset, calls, ready, server = native_stdio_toolset
+  processes = mocker.spy(anyio, 'open_process')
   server.write_text("raise RuntimeError('unexpected setup failure')\n")
   close = mocker.spy(toolset, 'close')
   model = MockModel.create(responses=['A response without the MCP tool.'])
@@ -178,14 +207,17 @@ async def test_unavailable_toolset_cannot_satisfy_native_control(
   )
   close.assert_awaited_once_with()
   with pytest.raises(AssertionError, match='MCP server did not start'):
-    _assert_successful_native_inference(results, model, calls, ready)
+    _assert_successful_native_inference(
+        results, model, calls, ready, toolset, processes, caplog
+    )
 
 
 @pytest.mark.asyncio
 async def test_native_stdio_tool_error_is_not_success(
-    mocker, native_stdio_toolset
+    mocker, native_stdio_toolset, caplog
 ):
   toolset, calls, ready, server = native_stdio_toolset
+  processes = mocker.spy(anyio, 'open_process')
   server.write_text(
       server.read_text().replace('is_error=False', 'is_error=True')
   )
@@ -218,14 +250,17 @@ async def test_native_stdio_tool_error_is_not_success(
   assert response.response['content'][0]['text'] == 'native-result:checked'
   close.assert_awaited_once_with()
   with pytest.raises(AssertionError, match='MCP tool reported an error'):
-    _assert_successful_native_inference(results, model, calls, ready)
+    _assert_successful_native_inference(
+        results, model, calls, ready, toolset, processes, caplog
+    )
 
 
 @pytest.mark.asyncio
 async def test_native_stdio_model_failure_is_not_success(
-    mocker, native_stdio_toolset
+    mocker, native_stdio_toolset, caplog
 ):
   toolset, calls, ready, _ = native_stdio_toolset
+  processes = mocker.spy(anyio, 'open_process')
   close = mocker.spy(toolset, 'close')
   model = MockModel.create(
       responses=[], error=RuntimeError('unexpected model failure')
@@ -240,4 +275,55 @@ async def test_native_stdio_model_failure_is_not_success(
   assert results[0].error_message == 'unexpected model failure'
   close.assert_awaited_once_with()
   with pytest.raises(AssertionError, match='unexpected model failure'):
-    _assert_successful_native_inference(results, model, calls, ready)
+    _assert_successful_native_inference(
+        results, model, calls, ready, toolset, processes, caplog
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('release_session', [False, True])
+async def test_native_stdio_cleanup_failure_is_not_success(
+    mocker, native_stdio_toolset, caplog, release_session
+):
+  toolset, calls, ready, _ = native_stdio_toolset
+  processes = mocker.spy(anyio, 'open_process')
+  real_close = toolset.close
+  model = MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name='probe', args={'value': 'checked'}
+          ),
+          types.Part(text='Probe complete.'),
+      ]
+  )
+
+  async def fail_close():
+    if release_session:
+      await real_close()
+    raise RuntimeError('unexpected cleanup failure')
+
+  close = mocker.patch.object(toolset, 'close', side_effect=fail_close)
+  try:
+    results = await _run_native_eval(mocker, model, toolset)
+    assert results[0].status == InferenceStatus.SUCCESS
+    assert calls.read_text().splitlines() == ['checked']
+    close.assert_awaited_once_with()
+    assert any(
+        record.name == runners.logger.name
+        and record.levelno == logging.ERROR
+        and 'unexpected cleanup failure' in record.getMessage()
+        for record in caplog.records
+    )
+    expected = (
+        'MCP cleanup reported a warning or error'
+        if release_session
+        else 'MCP server did not exit'
+    )
+    with pytest.raises(AssertionError, match=expected):
+      _assert_successful_native_inference(
+          results, model, calls, ready, toolset, processes, caplog
+      )
+  finally:
+    await real_close()
+  assert processes.spy_return_list[0].returncode is not None
+  assert not toolset._mcp_session_manager._sessions
