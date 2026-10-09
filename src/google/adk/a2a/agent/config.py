@@ -138,6 +138,9 @@ class A2aRemoteAgentConfig(BaseModel):
   card_request_interceptors: list[CardRequestInterceptor] | None = None
   """Interceptors that inject headers into the remote agent card fetch."""
 
+  forward_session_id_as_context_id: bool = False
+  """Whether to forward the local session ID as context_id when no context_id is present."""
+
   def __deepcopy__(
       self, memo: dict[int, Any] | None = None
   ) -> A2aRemoteAgentConfig:

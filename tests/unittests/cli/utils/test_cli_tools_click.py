@@ -36,6 +36,7 @@ from click.testing import CliRunner
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import StreamingMode
 from google.adk.cli import cli_tools_click
+from google.adk.cli.deployers import DeployerFactory
 from google.adk.cli.utils import gcp_utils
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
@@ -646,6 +647,36 @@ def test_cli_run_interactive_with_state(
   assert called_kwargs.get("state_str") == '{"x": 1}'
 
 
+def test_cli_run_interactive_with_state_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` in interactive mode should pass state file contents."""
+  # Arrange
+  agent_dir = tmp_path / "agent_interactive"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+  state_file = tmp_path / "state.json"
+  state_file.write_text('{"x": 1}', encoding="utf-8")
+
+  mock_run_cli = mock.AsyncMock()
+  monkeypatch.setattr("google.adk.cli.cli.run_cli", mock_run_cli)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["run", str(agent_dir), "--state_file", str(state_file)],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  assert mock_run_cli.called
+  called_kwargs = mock_run_cli.call_args.kwargs
+  assert called_kwargs.get("state_str") == '{"x": 1}'
+
+
 def test_cli_run_options_with_query(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -682,6 +713,92 @@ def test_cli_run_options_with_query(
   assert called_kwargs.get("state_str") == '{"x": 1}'
   assert called_kwargs.get("in_memory") is True
   assert called_kwargs.get("jsonl") is True
+
+
+def test_cli_run_options_with_query_and_state_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should pass state file contents to run_once_cli."""
+  # Arrange
+  agent_dir = tmp_path / "agent_opts"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  state_file = tmp_path / "state.json"
+  state_file.write_text('{"x": 1}', encoding="utf-8")
+
+  mock_run_once = mock.AsyncMock(return_value=0)
+  monkeypatch.setattr("google.adk.cli.cli.run_once_cli", mock_run_once)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["run", str(agent_dir), "hello", "--state_file", str(state_file)],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  assert mock_run_once.called
+  called_kwargs = mock_run_once.call_args.kwargs
+  assert called_kwargs.get("query") == "hello"
+  assert called_kwargs.get("state_str") == '{"x": 1}'
+
+
+def test_cli_run_rejects_state_and_state_file_together(
+    tmp_path: Path,
+) -> None:
+  """`adk run` should reject simultaneous --state and --state_file."""
+  # Arrange
+  agent_dir = tmp_path / "agent_opts"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  state_file = tmp_path / "state.json"
+  state_file.write_text('{"x": 1}', encoding="utf-8")
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "--state",
+          '{"y": 2}',
+          "--state_file",
+          str(state_file),
+      ],
+  )
+
+  # Assert
+  assert result.exit_code != 0
+  assert (
+      "Options 'state' and 'state_file' cannot be set together."
+      in result.output
+  )
+
+
+def test_cli_run_rejects_invalid_json_in_state_file(
+    tmp_path: Path,
+) -> None:
+  """`adk run` should report --state_file when the state file is not JSON."""
+  agent_dir = tmp_path / "agent_opts"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  state_file = tmp_path / "state.json"
+  state_file.write_text("{not valid json", encoding="utf-8")
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["run", str(agent_dir), "--state_file", str(state_file)],
+  )
+
+  assert result.exit_code != 0
+  assert (
+      f"Invalid JSON for --state_file '{state_file.resolve()}'" in result.output
+  )
 
 
 def test_cli_run_auto_resume_with_query(
@@ -1189,9 +1306,9 @@ def test_cli_run_no_use_local_storage_with_query(
 def test_cli_deploy_cloud_run_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """Successful path should call cli_deploy.to_cloud_run once."""
+  """Successful path should call cli_deploy.run once."""
   rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
 
   agent_dir = tmp_path / "agent2"
   agent_dir.mkdir()
@@ -1209,18 +1326,40 @@ def test_cli_deploy_cloud_run_success(
       ],
   )
   assert result.exit_code == 0
-  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls, "cli_deploy.run must be invoked"
+
+
+def test_cli_deploy_docker_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Successful path should call cli_deploy.run once."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
+
+  agent_dir = tmp_path / "agent2"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "docker",
+          str(agent_dir),
+      ],
+  )
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.run must be invoked"
 
 
 def test_cli_deploy_cloud_run_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """Exception from to_cloud_run should be caught and surfaced via click.secho."""
+  """Exception from run should be caught and surfaced via click.secho with non-zero exit."""
 
   def _boom(*_a: Any, **_k: Any) -> None:  # noqa: D401
     raise RuntimeError("boom")
 
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", _boom)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", _boom)
 
   agent_dir = tmp_path / "agent3"
   agent_dir.mkdir()
@@ -1229,8 +1368,113 @@ def test_cli_deploy_cloud_run_failure(
       cli_tools_click.main, ["deploy", "cloud_run", str(agent_dir)]
   )
 
-  assert result.exit_code == 0
+  assert result.exit_code == 1
   assert "Deploy failed: boom" in result.output
+
+
+def test_cli_deploy_docker_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Exception from run should be caught and surfaced via click.secho with non-zero exit."""
+
+  def _boom(*_a: Any, **_k: Any) -> None:  # noqa: D401
+    raise RuntimeError("boom")
+
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", _boom)
+
+  agent_dir = tmp_path / "agent4"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main, ["deploy", "docker", str(agent_dir)]
+  )
+
+  assert result.exit_code == 1
+  assert "Deploy failed: boom" in result.output
+
+
+def test_cli_deploy_agent_engine_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Exception from to_agent_engine should surface with a non-zero exit."""
+
+  def _boom(*_a: Any, **_k: Any) -> None:  # noqa: D401
+    raise RuntimeError("boom")
+
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_agent_engine", _boom)
+
+  agent_dir = tmp_path / "agent5"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "agent_engine",
+          "--project",
+          "test-proj",
+          "--region",
+          "us-central1",
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 1
+  assert "Deploy failed: boom" in result.output
+
+
+def test_cli_deploy_gke_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Exception from to_gke should surface with a non-zero exit."""
+
+  def _boom(*_a: Any, **_k: Any) -> None:  # noqa: D401
+    raise RuntimeError("boom")
+
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_gke", _boom)
+
+  agent_dir = tmp_path / "agent6"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "gke",
+          "--project",
+          "test-proj",
+          "--region",
+          "us-central1",
+          "--cluster_name",
+          "test-cluster",
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 1
+  assert "Deploy failed: boom" in result.output
+
+
+def test_cli_deploy_cloud_run_click_error_is_surfaced_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A ClickException from the deployer keeps its own message."""
+
+  def _reject(*_a: Any, **_k: Any) -> None:
+    raise click.ClickException("extra_packages path not found: nope")
+
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", _reject)
+
+  agent_dir = tmp_path / "agent_click_error"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main, ["deploy", "cloud_run", str(agent_dir)]
+  )
+
+  assert result.exit_code == 1
+  assert "Error: extra_packages path not found: nope" in result.output
+  assert "Deploy failed" not in result.output
 
 
 def test_cli_deploy_cloud_run_passthrough_args(
@@ -1238,7 +1482,7 @@ def test_cli_deploy_cloud_run_passthrough_args(
 ) -> None:
   """Extra args after '--' should be passed through to the gcloud command."""
   rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
 
   agent_dir = tmp_path / "agent_passthrough"
   agent_dir.mkdir()
@@ -1266,7 +1510,7 @@ def test_cli_deploy_cloud_run_passthrough_args(
     print(f"Exception: {result.exception}")
 
   assert result.exit_code == 0
-  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls, "cli_deploy.run must be invoked"
 
   # Check that extra_gcloud_args were passed correctly
   called_kwargs = rec.calls[0][1]
@@ -1282,7 +1526,7 @@ def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
 ) -> None:
   """No gcloud args after '--' should be allowed."""
   rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
 
   agent_dir = tmp_path / "agent_empty_gcloud"
   agent_dir.mkdir()
@@ -1303,7 +1547,7 @@ def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
   )
 
   assert result.exit_code == 0
-  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls, "cli_deploy.run must be invoked"
 
   # Check that extra_gcloud_args is empty
   called_kwargs = rec.calls[0][1]
@@ -1315,9 +1559,9 @@ def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
 def test_cli_deploy_cloud_run_sandbox(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_sandbox: bool
 ) -> None:
-  """Verify --with_cloud_run_sandbox parameter gets forwarded to to_cloud_run."""
+  """Verify --with_cloud_run_sandbox parameter gets forwarded to run."""
   rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
 
   agent_dir = tmp_path / "agent_sandbox"
   agent_dir.mkdir()
@@ -1330,7 +1574,7 @@ def test_cli_deploy_cloud_run_sandbox(
       args,
   )
   assert result.exit_code == 0
-  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls, "cli_deploy.run must be invoked"
   assert rec.calls[0][1].get("with_cloud_run_sandbox") == with_sandbox
 
 
@@ -1339,7 +1583,7 @@ def test_cli_deploy_cloud_run_interspersed_options(
 ) -> None:
   """Options placed after the positional argument should be parsed correctly."""
   rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
 
   agent_dir = tmp_path / "agent_interspersed"
   agent_dir.mkdir()
@@ -1358,7 +1602,7 @@ def test_cli_deploy_cloud_run_interspersed_options(
   )
 
   assert result.exit_code == 0
-  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls, "cli_deploy.run must be invoked"
 
   called_kwargs = rec.calls[0][1]
   assert called_kwargs.get("project") == "test-project"
@@ -1370,7 +1614,7 @@ def test_cli_deploy_cloud_run_rejects_unknown_option_before_separator(
 ) -> None:
   """Unknown option placed before '--' separator should be rejected by Click."""
   rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
 
   agent_dir = tmp_path / "agent_bad_order"
   agent_dir.mkdir()
@@ -1390,7 +1634,7 @@ def test_cli_deploy_cloud_run_rejects_unknown_option_before_separator(
 
   assert result.exit_code == 2
   assert "No such option" in result.output
-  assert not rec.calls, "cli_deploy.to_cloud_run should not be called"
+  assert not rec.calls, "cli_deploy.run should not be called"
 
 
 def test_cli_deploy_cloud_run_forwards_extra_positional_arg(
@@ -1398,7 +1642,7 @@ def test_cli_deploy_cloud_run_forwards_extra_positional_arg(
 ) -> None:
   """Extra positional argument before '--' is forwarded to the deployment runner."""
   rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
 
   agent_dir = tmp_path / "agent_extra_pos"
   agent_dir.mkdir()
@@ -1482,6 +1726,38 @@ def test_cli_deploy_agent_engine_otel_to_cloud_success(
   assert called_kwargs.get("project") == "test-proj"
   assert called_kwargs.get("region") == "us-central1"
   assert called_kwargs.get("otel_to_cloud")
+
+
+def test_cli_deploy_agent_engine_usage_error_exits_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A usage error keeps click's exit code 2 and its usage message."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_agent_engine", rec)
+
+  agent_dir = tmp_path / "agent_ae_usage"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "agent_engine",
+          "--project",
+          "test-proj",
+          "--region",
+          "us-central1",
+          "--validate-agent-import",
+          "--skip-agent-import-validation",
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 2
+  assert "Usage:" in result.output
+  assert "Error: Do not pass both --validate-agent-import" in result.output
+  assert "Deploy failed" not in result.output
+  assert not rec.calls
 
 
 # cli deploy gke
@@ -1598,6 +1874,50 @@ def test_cli_api_server_invokes_uvicorn(
   assert _patch_uvicorn.calls, "uvicorn.Server.run must be called"
 
 
+@pytest.mark.parametrize("command", ["web", "api_server"])
+def test_cli_server_passes_avatar_config(
+    tmp_path: Path,
+    _patch_uvicorn: _Recorder,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+  """Both server commands pass parsed avatar configuration to the app."""
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  mock_get_app = _Recorder()
+  monkeypatch.setattr("google.adk.cli.fast_api.get_fast_api_app", mock_get_app)
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [command, "--avatar_config", '{"avatarName":"Kai"}', str(agents_dir)],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert mock_get_app.calls[0][1]["avatar_config"].avatar_name == "Kai"
+
+
+@pytest.mark.parametrize("command", ["web", "api_server"])
+def test_cli_server_passes_max_llm_calls(
+    tmp_path: Path,
+    _patch_uvicorn: _Recorder,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+  """Both server commands pass the requested LLM call limit to the app."""
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  mock_get_app = _Recorder()
+  monkeypatch.setattr("google.adk.cli.fast_api.get_fast_api_app", mock_get_app)
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [command, "--max_llm_calls", "37", str(agents_dir)],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert mock_get_app.calls[0][1]["max_llm_calls"] == 37
+
+
 def test_cli_web_passes_service_uris(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_uvicorn: _Recorder
 ) -> None:
@@ -1628,6 +1948,35 @@ def test_cli_web_passes_service_uris(
   assert called_kwargs.get("session_service_uri") == "sqlite:///test.db"
   assert called_kwargs.get("artifact_service_uri") == "gs://mybucket"
   assert called_kwargs.get("memory_service_uri") == "rag://mycorpus"
+
+
+def test_cli_api_server_passes_auto_create_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _patch_uvicorn: _Recorder,
+) -> None:
+  """`adk api_server --auto_create_session` enables automatic sessions."""
+  agents_dir = tmp_path / "agents_api"
+  agents_dir.mkdir()
+
+  mock_get_app = _Recorder()
+  monkeypatch.setattr("google.adk.cli.fast_api.get_fast_api_app", mock_get_app)
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "api_server",
+          str(agents_dir),
+          "--auto_create_session",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert mock_get_app.calls
+
+  called_kwargs = mock_get_app.calls[-1][1]
+  assert called_kwargs["auto_create_session"] is True
 
 
 @pytest.mark.parametrize("command", ["web", "api_server"])
@@ -1937,21 +2286,19 @@ def test_cli_deploy_cloud_run_gcloud_arg_conflict(
 ) -> None:
   """Extra gcloud args that conflict with ADK deploy args should raise ClickException."""
 
-  def _mock_to_cloud_run(*_a, **kwargs):
+  def _mock_run(*_a, **kwargs):
     # Import and call the validation function
-    from google.adk.cli.cli_deploy import _validate_gcloud_extra_args
+    deployer = DeployerFactory.get_deployer("cloud_run")
 
     # Build the same set of managed args as the real function would
     adk_managed_args = {"--source", "--project", "--port", "--verbosity"}
     if kwargs.get("region"):
       adk_managed_args.add("--region")
-    _validate_gcloud_extra_args(
+    deployer._validate_gcloud_extra_args(
         kwargs.get("extra_gcloud_args"), adk_managed_args
     )
 
-  monkeypatch.setattr(
-      "google.adk.cli.cli_deploy.to_cloud_run", _mock_to_cloud_run
-  )
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", _mock_run)
 
   agent_dir = tmp_path / "agent_conflict"
   agent_dir.mkdir()
@@ -2674,8 +3021,64 @@ def test_fast_api_common_options_documented_defaults() -> None:
   assert captured["a2a"] is False
   assert captured["allow_origins"] == ()
   assert captured["log_level"] == "INFO"
+  assert captured["avatar_config"] is None
+  assert captured["max_llm_calls"] is None
   # --verbose is consumed while folding it into log_level.
   assert "verbose" not in captured
+
+
+@pytest.mark.parametrize("from_file", [False, True])
+def test_fast_api_common_options_parses_avatar_config(
+    tmp_path: Path, from_file: bool
+) -> None:
+  """Avatar configuration accepts either inline JSON or a JSON file."""
+  command, captured = _fast_api_command()
+  config_json = '{"avatarName":"Kai","videoBitrateBps":1000000}'
+  value = config_json
+  if from_file:
+    config_path = tmp_path / "avatar.json"
+    config_path.write_text(config_json, encoding="utf-8")
+    value = str(config_path)
+
+  result = CliRunner().invoke(command, ["--avatar_config", value])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["avatar_config"].avatar_name == "Kai"
+  assert captured["avatar_config"].video_bitrate_bps == 1000000
+
+
+def test_fast_api_common_options_rejects_invalid_avatar_config() -> None:
+  """Invalid inline avatar JSON fails before either server starts."""
+  command, _ = _fast_api_command()
+
+  result = CliRunner().invoke(command, ["--avatar_config", "{invalid}"])
+
+  assert result.exit_code == 2
+  assert "valid AvatarConfig JSON object" in result.output
+
+
+def test_fast_api_common_options_rejects_missing_avatar_config_file(
+    tmp_path: Path,
+) -> None:
+  """A non-JSON value that is not a readable file is a usage error."""
+  command, _ = _fast_api_command()
+  missing_path = tmp_path / "missing_avatar.json"
+
+  result = CliRunner().invoke(command, ["--avatar_config", str(missing_path)])
+
+  assert result.exit_code == 2
+  assert "could not read avatar configuration file" in result.output
+  assert "missing_avatar.json" in result.output
+
+
+def test_fast_api_common_options_parses_max_llm_calls() -> None:
+  """The common server option parses an explicit per-run LLM call limit."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(command, ["--max_llm_calls", "37"])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["max_llm_calls"] == 37
 
 
 # adk test
@@ -3198,7 +3601,7 @@ def test_cli_migrate_session_defaults_to_safe_unpickling(
 def test_cli_migrate_session_reports_the_underlying_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  """A failed migration is reported to the user rather than raised."""
+  """A failed migration is reported to the user and exits non-zero."""
 
   def explode(*args: Any, **kwargs: Any) -> None:
     raise RuntimeError("destination schema is newer")
@@ -3219,4 +3622,5 @@ def test_cli_migrate_session_reports_the_underlying_failure(
       ],
   )
 
+  assert result.exit_code == 1
   assert "Migration failed: destination schema is newer" in result.output

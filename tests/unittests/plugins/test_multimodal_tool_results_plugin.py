@@ -121,6 +121,164 @@ async def test_tool_returning_non_list_of_parts_is_unchanged(
 
 
 @pytest.mark.asyncio
+async def test_media_parts_are_left_to_the_framework(
+    plugin: MultimodalToolResultsPlugin,
+    mock_tool: BaseTool,
+    tool_context: ToolContext,
+):
+  """A part holding media travels in the function response, so it is skipped."""
+  media_part = types.Part(
+      inline_data=types.Blob(data=b"chart", mime_type="image/png")
+  )
+
+  result = await plugin.after_tool_callback(
+      tool=mock_tool,
+      tool_args={},
+      tool_context=tool_context,
+      result=[media_part],
+  )
+
+  assert result is None
+  assert PARTS_RETURNED_BY_TOOLS_ID not in tool_context.state
+
+  callback_context = Mock(spec=CallbackContext)
+  callback_context.state = tool_context.state
+  llm_request = LlmRequest(contents=[types.Content(parts=[])])
+
+  await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=llm_request
+  )
+
+  assert llm_request.contents[-1].parts == []
+
+
+@pytest.mark.asyncio
+async def test_file_uri_parts_are_left_to_the_framework(
+    plugin: MultimodalToolResultsPlugin,
+    mock_tool: BaseTool,
+    tool_context: ToolContext,
+):
+  """A part holding a file URI travels in the function response as well."""
+  file_part = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://bucket/chart.png", mime_type="image/png"
+      )
+  )
+
+  result = await plugin.after_tool_callback(
+      tool=mock_tool,
+      tool_args={},
+      tool_context=tool_context,
+      result=[file_part],
+  )
+
+  assert result is None
+  assert PARTS_RETURNED_BY_TOOLS_ID not in tool_context.state
+
+  callback_context = Mock(spec=CallbackContext)
+  callback_context.state = tool_context.state
+  llm_request = LlmRequest(contents=[types.Content(parts=[])])
+
+  await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=llm_request
+  )
+
+  assert llm_request.contents[-1].parts == []
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        types.Part(inline_data=types.Blob(data=b"x", mime_type=None)),
+        types.Part(inline_data=types.Blob(data=None, mime_type="image/png")),
+        types.Part(
+            file_data=types.FileData(file_uri="gs://bucket/x", mime_type=None)
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_parts_the_framework_cannot_carry_are_saved(
+    plugin: MultimodalToolResultsPlugin,
+    mock_tool: BaseTool,
+    tool_context: ToolContext,
+    part: types.Part,
+):
+  """Media the function response cannot carry still needs the plugin."""
+  await plugin.after_tool_callback(
+      tool=mock_tool,
+      tool_args={},
+      tool_context=tool_context,
+      result=[part],
+  )
+
+  assert tool_context.state[PARTS_RETURNED_BY_TOOLS_ID] == [part]
+
+  callback_context = Mock(spec=CallbackContext)
+  callback_context.state = tool_context.state
+  llm_request = LlmRequest(contents=[types.Content(parts=[])])
+
+  await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=llm_request
+  )
+
+  assert llm_request.contents[-1].parts == [part]
+
+
+@pytest.mark.asyncio
+async def test_non_part_entries_are_saved_unchanged(
+    plugin: MultimodalToolResultsPlugin,
+    mock_tool: BaseTool,
+    tool_context: ToolContext,
+):
+  """An entry that is not a part at all reaches the predicate and survives it."""
+  text_part = types.Part(text="caption")
+
+  await plugin.after_tool_callback(
+      tool=mock_tool,
+      tool_args={},
+      tool_context=tool_context,
+      result=[text_part, {"a": 1}],
+  )
+
+  assert tool_context.state[PARTS_RETURNED_BY_TOOLS_ID] == [
+      text_part,
+      {"a": 1},
+  ]
+
+
+@pytest.mark.asyncio
+async def test_only_parts_the_framework_drops_are_saved(
+    plugin: MultimodalToolResultsPlugin,
+    mock_tool: BaseTool,
+    tool_context: ToolContext,
+):
+  """A text part still needs the plugin; the media part alongside it does not."""
+  text_part = types.Part(text="caption")
+  media_part = types.Part(
+      inline_data=types.Blob(data=b"chart", mime_type="image/png")
+  )
+
+  await plugin.after_tool_callback(
+      tool=mock_tool,
+      tool_args={},
+      tool_context=tool_context,
+      result=[text_part, media_part],
+  )
+
+  assert tool_context.state[PARTS_RETURNED_BY_TOOLS_ID] == [text_part]
+
+  callback_context = Mock(spec=CallbackContext)
+  callback_context.state = tool_context.state
+  llm_request = LlmRequest(contents=[types.Content(parts=[])])
+
+  await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=llm_request
+  )
+
+  assert llm_request.contents[-1].parts == [text_part]
+
+
+@pytest.mark.asyncio
 async def test_empty_contents_leaves_saved_parts_pending(
     plugin: MultimodalToolResultsPlugin,
     mock_tool: BaseTool,

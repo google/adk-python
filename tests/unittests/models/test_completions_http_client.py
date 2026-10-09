@@ -487,6 +487,171 @@ async def test_generate_content_async_streaming_function_call():
           'delta': {
               'tool_calls': [{
                   'index': 0,
+                  'function': {'arguments': '{"location": "London", '},
+              }]
+          },
+          'finish_reason': None,
+      }],
+  }
+  chunk_data_2 = {
+      'id': 'chatcmpl-123',
+      'object': 'chat.completion.chunk',
+      'created': 1234567890,
+      'model': 'gpt-3.5-turbo',
+      'service_tier': 'default',
+      'choices': [{
+          'index': 0,
+          'delta': {
+              'tool_calls': [{
+                  'index': 0,
+                  'function': {'arguments': ' "country": "UK"}'},
+              }]
+          },
+          'finish_reason': None,
+      }],
+  }
+  chunk_data_3 = {
+      'id': 'chatcmpl-123',
+      'object': 'chat.completion.chunk',
+      'created': 1234567890,
+      'model': 'gpt-3.5-turbo',
+      'service_tier': 'default',
+      'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}],
+      'usage': {
+          'prompt_tokens': 10,
+          'completion_tokens': 20,
+          'total_tokens': 30,
+      },
+  }
+
+  chunks = [
+      f'{json.dumps(chunk_data_0)}\n',
+      f'{json.dumps(chunk_data_1)}\n',
+      f'{json.dumps(chunk_data_2)}\n',
+      f'{json.dumps(chunk_data_3)}\n',
+  ]
+
+  async def mock_aiter_lines():
+    for chunk in chunks:
+      yield chunk
+
+  mock_response = AsyncMock(spec=httpx.Response)
+  mock_response.aiter_lines.return_value = mock_aiter_lines()
+  mock_response.status_code = 200
+
+  mock_stream_ctx = mock.AsyncMock()
+  mock_stream_ctx.__aenter__.return_value = mock_response
+
+  with mock.patch.object(
+      httpx.AsyncClient, 'stream', return_value=mock_stream_ctx
+  ):
+    responses = [
+        r
+        async for r in local_client.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+    # Check that we get 5 responses (one per chunk + extra final accumulated)
+    assert len(responses) == 5
+
+    # Check 1st response: partial tool call, empty args
+    assert responses[0].partial is True
+    assert responses[0].content.parts[0].function_call.name == 'get_weather'
+    assert responses[0].content.parts[0].function_call.id == 'call_123'
+
+    # Check 2nd response: partial args for first update
+    assert responses[1].partial is True
+    assert responses[1].content.parts[0].function_call.id == 'call_123'
+    assert responses[1].content.parts[0].function_call.name == 'get_weather'
+    assert responses[1].content.parts[0].function_call.args is None
+    assert (
+        responses[1].content.parts[0].function_call.partial_args[0].json_path
+        == '$.location'
+    )
+    assert (
+        responses[1].content.parts[0].function_call.partial_args[0].string_value
+        == 'London'
+    )
+
+    # Check 3rd response: partial args for second update
+    assert responses[2].partial is True
+    assert responses[2].content.parts[0].function_call.id == 'call_123'
+    assert responses[2].content.parts[0].function_call.name == 'get_weather'
+    assert responses[2].content.parts[0].function_call.args is None
+    assert (
+        responses[2].content.parts[0].function_call.partial_args[0].json_path
+        == '$.country'
+    )
+    assert (
+        responses[2].content.parts[0].function_call.partial_args[0].string_value
+        == 'UK'
+    )
+
+    # Check 4th response: last delta (empty)
+    assert responses[3].partial is True
+    assert responses[3].content.parts == []
+
+    # Check 5th response: final accumulated
+    assert responses[4].finish_reason == types.FinishReason.STOP
+    # Full accumulated args
+    assert responses[4].content.parts[0].function_call.args == {
+        'location': 'London',
+        'country': 'UK',
+    }
+
+    # Check metadata and usage
+    assert responses[4].model_version == 'gpt-3.5-turbo'
+    assert responses[4].custom_metadata['id'] == 'chatcmpl-123'
+    assert responses[4].custom_metadata['created'], 1234567890
+    assert responses[4].custom_metadata['object'], 'chat.completion.chunk'
+    assert responses[4].custom_metadata['service_tier'], 'default'
+    assert responses[4].usage_metadata is not None
+    assert responses[4].usage_metadata.prompt_token_count == 10
+    assert responses[4].usage_metadata.candidates_token_count == 20
+    assert responses[4].usage_metadata.total_token_count == 30
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_streaming_function_call_complete_json_deltas():
+  local_client = CompletionsHTTPClient(base_url='https://localhost')
+  llm_request = LlmRequest(
+      model='apigee/test',
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='hi')])
+      ],
+  )
+
+  # Mock chunks simulating complete JSON objects in arguments
+  chunk_data_0 = {
+      'id': 'chatcmpl-123',
+      'object': 'chat.completion.chunk',
+      'created': 1234567890,
+      'model': 'gpt-3.5-turbo',
+      'service_tier': 'default',
+      'choices': [{
+          'index': 0,
+          'delta': {
+              'tool_calls': [{
+                  'index': 0,
+                  'id': 'call_123',
+                  'type': 'function',
+                  'function': {'name': 'get_weather', 'arguments': ''},
+              }]
+          },
+          'finish_reason': None,
+      }],
+  }
+  chunk_data_1 = {
+      'id': 'chatcmpl-123',
+      'object': 'chat.completion.chunk',
+      'created': 1234567890,
+      'model': 'gpt-3.5-turbo',
+      'service_tier': 'default',
+      'choices': [{
+          'index': 0,
+          'delta': {
+              'tool_calls': [{
+                  'index': 0,
                   'function': {'arguments': '{"location": "London"}'},
               }]
           },
@@ -559,38 +724,44 @@ async def test_generate_content_async_streaming_function_call():
     assert responses[0].content.parts[0].function_call.name == 'get_weather'
     assert responses[0].content.parts[0].function_call.id == 'call_123'
 
-    # Check 2nd response: full args for first update
+    # Check 2nd response: partial args for first update
     assert responses[1].partial is True
-    assert responses[1].content.parts[0].function_call.args == {
-        'location': 'London'
-    }
+    assert responses[1].content.parts[0].function_call.id == 'call_123'
+    assert responses[1].content.parts[0].function_call.name == 'get_weather'
+    assert responses[1].content.parts[0].function_call.args is None
+    assert (
+        responses[1].content.parts[0].function_call.partial_args[0].json_path
+        == '$.location'
+    )
+    assert (
+        responses[1].content.parts[0].function_call.partial_args[0].string_value
+        == 'London'
+    )
 
-    # Check 3rd response: full args for second update (merged)
+    # Check 3rd response: partial args for second update
     assert responses[2].partial is True
-    assert responses[2].content.parts[0].function_call.args == {'country': 'UK'}
+    assert responses[2].content.parts[0].function_call.id == 'call_123'
+    assert responses[2].content.parts[0].function_call.name == 'get_weather'
+    assert responses[2].content.parts[0].function_call.args is None
+    assert (
+        responses[2].content.parts[0].function_call.partial_args[0].json_path
+        == '$.country'
+    )
+    assert (
+        responses[2].content.parts[0].function_call.partial_args[0].string_value
+        == 'UK'
+    )
 
     # Check 4th response: last delta (empty)
     assert responses[3].partial is True
     assert responses[3].content.parts == []
 
-    # Check 5th response: final accumulated
+    # Check 5th response: final accumulated, merged args
     assert responses[4].finish_reason == types.FinishReason.STOP
-    # Full accumulated args
     assert responses[4].content.parts[0].function_call.args == {
         'location': 'London',
         'country': 'UK',
     }
-
-    # Check metadata and usage
-    assert responses[4].model_version == 'gpt-3.5-turbo'
-    assert responses[4].custom_metadata['id'] == 'chatcmpl-123'
-    assert responses[4].custom_metadata['created'], 1234567890
-    assert responses[4].custom_metadata['object'], 'chat.completion.chunk'
-    assert responses[4].custom_metadata['service_tier'], 'default'
-    assert responses[4].usage_metadata is not None
-    assert responses[4].usage_metadata.prompt_token_count == 10
-    assert responses[4].usage_metadata.candidates_token_count == 20
-    assert responses[4].usage_metadata.total_token_count == 30
 
 
 @pytest.mark.asyncio
@@ -670,6 +841,38 @@ async def test_generate_content_async_streaming_multiple_function_calls():
     ]
 
     assert len(responses) == 4
+
+    # Check 1st response: 2 partial tool calls, empty args
+    assert responses[0].partial is True
+    assert responses[0].content.parts[0].function_call.id == 'call_1'
+    assert responses[0].content.parts[0].function_call.name == 'func_1'
+    assert responses[0].content.parts[1].function_call.id == 'call_2'
+    assert responses[0].content.parts[1].function_call.name == 'func_2'
+
+    # Check 2nd response: 2 partial tool calls, with partial args.
+    # verify id and name are carried over.
+    assert responses[1].partial is True
+    assert responses[1].content.parts[0].function_call.id == 'call_1'
+    assert responses[1].content.parts[0].function_call.name == 'func_1'
+    assert (
+        responses[1].content.parts[0].function_call.partial_args[0].json_path
+        == '$.arg'
+    )
+    assert (
+        responses[1].content.parts[0].function_call.partial_args[0].number_value
+        == 1
+    )
+    assert responses[1].content.parts[1].function_call.id == 'call_2'
+    assert responses[1].content.parts[1].function_call.name == 'func_2'
+    assert (
+        responses[1].content.parts[1].function_call.partial_args[0].json_path
+        == '$.arg'
+    )
+    assert (
+        responses[1].content.parts[1].function_call.partial_args[0].number_value
+        == 2
+    )
+
     parts = responses[-1].content.parts
     assert len(parts) == 2
 
@@ -679,8 +882,59 @@ async def test_generate_content_async_streaming_multiple_function_calls():
 
     assert parts[1].function_call.name == 'func_2'
     assert parts[1].function_call.args == {'arg': 2}
-
     assert parts[1].function_call.id == 'call_2'
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_streaming_incomplete_stream_no_finish_reason():
+  local_client = CompletionsHTTPClient(base_url='https://localhost')
+  llm_request = LlmRequest(
+      model='apigee/test',
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='hi')])
+      ],
+  )
+  chunk_data = {
+      'choices': [{
+          'index': 0,
+          'delta': {
+              'tool_calls': [{
+                  'index': 0,
+                  'id': 'call_1',
+                  'type': 'function',
+                  'function': {'name': 'func_1', 'arguments': '{"arg": 1}'},
+              }]
+          },
+          'finish_reason': None,
+      }]
+  }
+
+  chunks = [f'{json.dumps(chunk_data)}\n']
+
+  async def mock_aiter_lines():
+    for chunk in chunks:
+      yield chunk
+
+  mock_response = AsyncMock(spec=httpx.Response)
+  mock_response.aiter_lines.return_value = mock_aiter_lines()
+  mock_response.status_code = 200
+
+  mock_stream_ctx = mock.AsyncMock()
+  mock_stream_ctx.__aenter__.return_value = mock_response
+
+  with mock.patch.object(
+      httpx.AsyncClient, 'stream', return_value=mock_stream_ctx
+  ):
+    responses = [
+        r
+        async for r in local_client.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+    assert len(responses) == 1
+    assert responses[0].partial is True
+    assert responses[0].finish_reason is None
 
 
 @pytest.mark.asyncio

@@ -14,10 +14,16 @@
 
 from __future__ import annotations
 
+from typing import Any
+from typing import AsyncGenerator
+
+from google.adk.models.llm_response import LlmResponse
 from google.adk.telemetry import tracing
 from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 import pytest
 
@@ -105,6 +111,64 @@ async def test_async_generators_wrapped_in_aclosing(
 
   with aclosing_wrapping_assertions():
     await run_agent_scenario(build_test_runner(mock_test_model()))
+
+
+@pytest.mark.asyncio
+async def test_span_opened_by_the_model_does_not_parent_the_tool_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """A span the model opens must not adopt the tool call that follows it.
+
+  The goldens pin that ``execute_tool`` hangs off ``invoke_agent`` rather
+  than off ADK's own model-call spans. This pins the same for a span a
+  caller's model wrapper opens around its request: it is only current while
+  the model is answering, so it cannot become an ancestor of work the flow
+  starts once the answer is in.
+  """
+  span_exporter = InMemorySpanExporter()
+  install_telemetry(
+      monkeypatch,
+      span_exporter,
+      InMemoryLogRecordExporter(),
+      InMemoryMetricReader(),
+  )
+  wrapper_provider = TracerProvider()
+  wrapper_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
+  wrapper_tracer = wrapper_provider.get_tracer(__name__)
+
+  runner = build_test_runner(mock_test_model())
+  model_type = type(runner.agent.canonical_model)
+  respond = model_type.generate_content_async
+
+  async def _respond_within_a_span(
+      self, *args: Any, **kwargs: Any
+  ) -> AsyncGenerator[LlmResponse, None]:
+    with wrapper_tracer.start_as_current_span("model_wrapper"):
+      async for response in respond(self, *args, **kwargs):
+        yield response
+
+  monkeypatch.setattr(
+      model_type, "generate_content_async", _respond_within_a_span
+  )
+
+  await run_agent_scenario(runner)
+
+  spans = {
+      span.context.span_id: span for span in span_exporter.get_finished_spans()
+  }
+  wrapper_span_ids = {
+      span_id for span_id, span in spans.items() if span.name == "model_wrapper"
+  }
+  tool_spans = [
+      span for span in spans.values() if span.name.startswith("execute_tool")
+  ]
+
+  assert wrapper_span_ids
+  assert tool_spans
+  for span in tool_spans:
+    assert span.parent is not None
+    assert span.parent.span_id not in wrapper_span_ids
+    assert spans[span.parent.span_id].name.startswith("invoke_agent")
 
 
 @pytest.mark.asyncio

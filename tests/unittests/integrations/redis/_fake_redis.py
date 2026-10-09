@@ -17,6 +17,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from collections.abc import Awaitable
+from collections.abc import Callable
+import re
+from typing import Any
+from unittest.mock import Mock
 
 
 class FakeRedisAsync:
@@ -27,6 +32,8 @@ class FakeRedisAsync:
     self._ex_store: dict[str, int | None] = {}
     self._created_at: dict[str, float] = {}
     self._current_time: float = 0.0
+    self.scan_patterns: list[str] = []
+    self._versions: dict[str, int] = {}
 
   def advance_time(self, seconds: float) -> None:
     self._current_time += seconds
@@ -41,6 +48,7 @@ class FakeRedisAsync:
         self._store.pop(key, None)
         self._ex_store.pop(key, None)
         self._created_at.pop(key, None)
+        self._versions[key] = self._versions.get(key, 0) + 1
         return True
     return False
 
@@ -61,6 +69,7 @@ class FakeRedisAsync:
     self._store[key] = value
     self._ex_store[key] = ex
     self._created_at[key] = self._current_time
+    self._versions[key] = self._versions.get(key, 0) + 1
     return True
 
   async def delete(self, key: str) -> int:
@@ -68,11 +77,54 @@ class FakeRedisAsync:
     self._created_at.pop(key, None)
     if key in self._store:
       del self._store[key]
+      self._versions[key] = self._versions.get(key, 0) + 1
       return 1
     return 0
 
+  async def transaction(
+      self, func: Callable[[Any], Awaitable[None]], key: str
+  ) -> list[bool | None]:
+    """Retries a queued write if the watched key changed or expired."""
+    while True:
+      self._is_expired(key)
+      version = self._versions.get(key, 0)
+      pipe = Mock(get=self.get)
+      await func(pipe)
+      self._is_expired(key)
+      if self._versions.get(key, 0) != version:
+        continue
+      return [
+          await self.set(*call.args, **call.kwargs)
+          for call in pipe.set.call_args_list
+      ]
+
+  @staticmethod
+  def _glob_match(pattern: str, key: str) -> bool:
+    """Matches a key the way Redis glob-style patterns do."""
+    regex: list[str] = []
+    i = 0
+    while i < len(pattern):
+      char = pattern[i]
+      if char == "\\" and i + 1 < len(pattern):
+        regex.append(re.escape(pattern[i + 1]))
+        i += 2
+        continue
+      if char == "*":
+        regex.append(".*")
+      elif char == "?":
+        regex.append(".")
+      elif char == "[" and pattern.find("]", i + 1) != -1:
+        end = pattern.find("]", i + 1)
+        regex.append(f"[{pattern[i + 1 : end]}]")
+        i = end + 1
+        continue
+      else:
+        regex.append(re.escape(char))
+      i += 1
+    return re.fullmatch("".join(regex), key) is not None
+
   async def scan_iter(self, match: str) -> AsyncIterator[str]:
-    prefix = match.rstrip("*")
+    self.scan_patterns.append(match)
     for k in list(self._store):
-      if not self._is_expired(k) and k.startswith(prefix):
+      if not self._is_expired(k) and self._glob_match(match, k):
         yield k

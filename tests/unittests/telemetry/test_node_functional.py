@@ -20,6 +20,7 @@ from google.adk.telemetry import tracing
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 import pytest
 
 from .functional._aclosing import aclosing_wrapping_assertions
@@ -156,6 +157,51 @@ async def test_exception_preserves_attributes(
       "gen_ai.tool.call.id": tool_call_id,
       "gcp.vertex.agent.tool_response": '{"result": "<not specified>"}',
   }
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_is_not_reported_as_a_successful_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """A workflow whose node failed must not close its span clean.
+
+  A workflow catches a failing node's exception so the graph can act on it,
+  which leaves nothing unwinding by the time the span closes. The root span
+  and its duration metric read that as success, so an error rate measured on
+  them stayed at zero however many turns failed.
+  """
+  span_exporter = InMemorySpanExporter()
+  metric_reader = InMemoryMetricReader()
+  install_telemetry(
+      monkeypatch,
+      span_exporter,
+      InMemoryLogRecordExporter(),
+      metric_reader,
+  )
+
+  with pytest.raises(ValueError, match="This tool always fails"):
+    await run_node_scenario(mock_test_model(), tool_exception=TOOL_ERROR)
+
+  # The outermost workflow is the one not marked as nested inside another.
+  outermost = [
+      span
+      for span in span_exporter.get_finished_spans()
+      if span.name.startswith("invoke_workflow")
+      and dict(span.attributes or {}).get("gen_ai.workflow.nested") is None
+  ]
+  assert len(outermost) == 1
+  assert outermost[0].status.status_code is StatusCode.ERROR
+
+  error_types = [
+      dict(point.attributes).get("error.type")
+      for resource in metric_reader.get_metrics_data().resource_metrics
+      for scope in resource.scope_metrics
+      for metric in scope.metrics
+      if metric.name == "gen_ai.invoke_workflow.duration"
+      for point in metric.data.data_points
+      if dict(point.attributes).get("gen_ai.workflow.nested") is None
+  ]
+  assert error_types == ["ValueError"]
 
 
 @pytest.mark.asyncio

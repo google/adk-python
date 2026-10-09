@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 from typing import Optional
@@ -314,6 +315,30 @@ class AgentTool(BaseTool):
           update={'streaming_mode': StreamingMode.NONE}
       )
 
+    # Aborting the caller also aborts the wrapped agent. The isinstance check
+    # is intentional: tests may hand in a mocked caller context whose signal is
+    # a Mock, and the nested runner would read that as already aborted.
+    # Read the caller's loop first: reading _abort_signal records the current
+    # loop when none is set yet. getattr keeps a mocked caller context (which
+    # has no _abort_state) on the abort_signal = None path below.
+    caller_loop = getattr(
+        getattr(invocation_context, '_abort_state', None), 'loop', None
+    )
+    abort_signal: Optional[asyncio.Event] = (
+        invocation_context._abort_signal  # pylint: disable=protected-access
+    )
+    if not isinstance(abort_signal, asyncio.Event):
+      abort_signal = None
+    elif (
+        isinstance(caller_loop, asyncio.AbstractEventLoop)
+        and caller_loop is not asyncio.get_running_loop()
+    ):
+      # The tool runs in another event loop (e.g. RunConfig's tool thread
+      # pool). An asyncio.Event can only be awaited from one loop, so the
+      # nested runner's wait would fail and be taken as an abort. Run the
+      # wrapped agent without the caller's signal instead.
+      abort_signal = None
+
     last_content = None
     last_error_message = None
     last_grounding_metadata = None
@@ -323,6 +348,7 @@ class AgentTool(BaseTool):
             session_id=session.id,
             new_message=content,
             run_config=nested_run_config,
+            abort_signal=abort_signal,
         )
     ) as agen:
       async for event in agen:

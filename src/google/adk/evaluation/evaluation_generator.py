@@ -18,6 +18,7 @@ import asyncio
 import copy
 import importlib
 import logging
+import time
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
@@ -32,18 +33,19 @@ from pydantic import BaseModel
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
 
+from ..agents._streaming_mode import StreamingMode
 from ..agents.base_agent import BaseAgent
 from ..agents.callback_context import CallbackContext
 from ..agents.invocation_context import InvocationContext
 from ..agents.llm_agent import Agent
 from ..agents.readonly_context import ReadonlyContext
 from ..agents.run_config import RunConfig
-from ..agents.run_config import StreamingMode
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..events.event import Event
-from ..flows.llm_flows.functions import handle_function_calls_live
+from ..flows.llm_flows.tools._functions import handle_function_calls_live
+from ..live import _runner_utils as _live_runner_utils
 from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
 from ..memory.in_memory_memory_service import InMemoryMemoryService
@@ -253,7 +255,8 @@ class _LiveSession:
       if not isinstance(root_agent, BaseAgent):
         raise TypeError("Live evaluation requires a root agent or workflow.")
 
-      invocation_context = self.runner._new_invocation_context_for_live(
+      invocation_context = _live_runner_utils.new_invocation_context_for_live(
+          self.runner,
           self.session,
           live_request_queue=self.live_request_queue,
           run_config=run_config,
@@ -476,10 +479,13 @@ class _LiveSession:
     if graph is None:
       return callback_context_by_author
 
-    base_invocation_context = self.runner._new_invocation_context_for_live(
-        self.session,
-        live_request_queue=self.live_request_queue,
-        run_config=_LIVE_RUN_CONFIG,
+    base_invocation_context = (
+        _live_runner_utils.new_invocation_context_for_live(
+            self.runner,
+            self.session,
+            live_request_queue=self.live_request_queue,
+            run_config=_LIVE_RUN_CONFIG,
+        )
     )
 
     for node in graph.nodes:
@@ -924,6 +930,7 @@ class EvaluationGenerator:
         memory_service=memory_service,
     ) as runner:
       events: list[Event] = []
+      durations_by_invocation_id: dict[str, float] = {}
       while True:
         next_user_message = await user_simulator.get_next_user_message(
             copy.deepcopy(events)
@@ -934,12 +941,23 @@ class EvaluationGenerator:
             raise RuntimeError(
                 "A successful user-simulator result must include a message."
             )
+          # Times the agent's work; the simulator's turnaround stays outside.
+          started_at = time.monotonic()
+          invocation_id = None
           async for (
               event
           ) in EvaluationGenerator._generate_inferences_for_single_user_invocation(
               runner, user_id, session_id, user_message
           ):
             events.append(event)
+            if invocation_id is None:
+              invocation_id = event.invocation_id
+          if invocation_id is not None:
+            # Rounded to milliseconds: the measurement is not meaningful below
+            # that, and a full float would read as false precision.
+            durations_by_invocation_id[invocation_id] = round(
+                time.monotonic() - started_at, 3
+            )
         else:  # no message generated
           break
 
@@ -949,15 +967,26 @@ class EvaluationGenerator:
           )
       )
       return EvaluationGenerator.convert_events_to_eval_invocations(
-          events, app_details_by_invocation_id
+          events, app_details_by_invocation_id, durations_by_invocation_id
       )
 
   @staticmethod
   def convert_events_to_eval_invocations(
       events: list[Event],
       app_details_per_invocation: Optional[dict[str, AppDetails]] = None,
+      durations_per_invocation: Optional[dict[str, float]] = None,
   ) -> list[Invocation]:
-    """Converts a list of events to eval invocations."""
+    """Converts a list of events to eval invocations.
+
+    Args:
+      events: The events to convert, across one or more invocations.
+      app_details_per_invocation: App details keyed by invocation id.
+      durations_per_invocation: Wall-clock seconds each invocation took, keyed
+        by invocation id. Only the inference path can supply these -- they are
+        measured while the agent runs and cannot be recovered from the events
+        afterwards -- so a caller converting stored events leaves this unset and
+        the invocations carry no timing.
+    """
     events_by_invocation_id = (
         EvaluationGenerator._collect_events_by_invocation_id(events)
     )
@@ -1016,25 +1045,21 @@ class EvaluationGenerator:
 
       invocation_events = []
       for e in events_to_add:
-        # Keep the final event only when it carries tool calls (so the judge
-        # still sees the function call) or grounding metadata; every other
-        # event is always included.
-        if (
-            final_event is not None
-            and e is final_event
-            and not e.get_function_calls()
-            and not e.grounding_metadata
-        ):
-          continue
         invocation_events.append(
             InvocationEvent(
                 author=e.author,
+                # The final response's text is already on
+                # `Invocation.final_response`, so repeating it here would
+                # double-count it. Function calls stay: `get_all_tool_calls()`
+                # reads them from here.
                 content=(
                     e.content
                     if e is not final_event or e.get_function_calls()
                     else None
                 ),
                 grounding_metadata=e.grounding_metadata,
+                usage_metadata=e.usage_metadata,
+                model_version=e.model_version,
             )
         )
       invocations.append(
@@ -1046,6 +1071,7 @@ class EvaluationGenerator:
                   invocation_events=invocation_events
               ),
               creation_timestamp=invocation_timestamp,
+              duration=(durations_per_invocation or {}).get(invocation_id),
               app_details=app_details,
           )
       )

@@ -1,0 +1,17 @@
+{
+  "capabilities": {},
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["application/json"],
+  "description": "An agent that greets the user using a name taken from session state. Demonstrates how A2A request metadata can be forwarded into the remote agent's session state so that instruction templates (e.g. {user_name}) resolve correctly across the A2A boundary.",
+  "name": "greet_agent",
+  "skills": [
+    {
+      "id": "greet_user",
+      "name": "Greet User",
+      "description": "Greets the user by name using a value provided via session state / A2A request metadata.",
+      "tags": ["greeting", "state", "a2a", "metadata"]
+    }
+  ],
+  "url": "http://localhost:8001/a2a/greet_agent",
+  "version": "1.0.0"
+}

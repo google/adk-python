@@ -59,6 +59,18 @@ def _copy_session(session: Session) -> Session:
     return copy.deepcopy(session)
 
 
+def _copy_state(state: dict[str, Any]) -> dict[str, Any]:
+  """Copies state as deeply as _copy_session copies a session's own state.
+
+  Scoped state is no more reachable through the result than session state
+  is. Under IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, values merged into a returned
+  session stay aliased to the service's scoped state, by design.
+  """
+  if is_feature_enabled(FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY):
+    return dict(state)
+  return copy.deepcopy(state)
+
+
 class InMemorySessionService(BaseSessionService):
   """An in-memory implementation of the session service.
 
@@ -116,8 +128,8 @@ class InMemorySessionService(BaseSessionService):
       session_id: Optional[str] = None,
   ) -> Session:
     session_id = session_id.strip() if session_id else None
-    if session_id and self._get_session_impl(
-        app_name=app_name, user_id=user_id, session_id=session_id
+    if session_id and session_id in self.sessions.get(app_name, {}).get(
+        user_id, {}
     ):
       raise AlreadyExistsError(f'Session with id {session_id} already exists.')
     state_deltas = _session_util.extract_state_delta(state or {})
@@ -189,6 +201,7 @@ class InMemorySessionService(BaseSessionService):
       session_id: str,
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
+    session_id = session_id.strip() if session_id else session_id
     if app_name not in self.sessions:
       return None
     if user_id not in self.sessions[app_name]:
@@ -197,24 +210,25 @@ class InMemorySessionService(BaseSessionService):
       return None
 
     session = self.sessions[app_name][user_id][session_id]
-    copied_session = _copy_session(session)
-
+    events = session.events
     if config:
       if config.num_recent_events is not None:
         if config.num_recent_events == 0:
-          copied_session.events = []
+          events = []
         else:
-          copied_session.events = copied_session.events[
-              -config.num_recent_events :
-          ]
-      if config.after_timestamp:
-        i = len(copied_session.events) - 1
+          events = events[-config.num_recent_events :]
+      if config.after_timestamp is not None:
+        i = len(events) - 1
         while i >= 0:
-          if copied_session.events[i].timestamp < config.after_timestamp:
+          if events[i].timestamp < config.after_timestamp:
             break
           i -= 1
         if i >= 0:
-          copied_session.events = copied_session.events[i + 1 :]
+          events = events[i + 1 :]
+    if events is not session.events:
+      # Copy only the events being returned.
+      session = session.model_copy(update={'events': events})
+    copied_session = _copy_session(session)
 
     # Return a copy of the session object with merged state.
     return self._merge_state(app_name, user_id, copied_session)
@@ -225,10 +239,8 @@ class InMemorySessionService(BaseSessionService):
     """Merges app and user state into session state."""
     # Merge app state
     if app_name in self.app_state:
-      for key in self.app_state[app_name].keys():
-        copied_session.state[State.APP_PREFIX + key] = self.app_state[app_name][
-            key
-        ]
+      for key, value in _copy_state(self.app_state[app_name]).items():
+        copied_session.state[State.APP_PREFIX + key] = value
 
     if (
         app_name not in self.user_state
@@ -237,10 +249,8 @@ class InMemorySessionService(BaseSessionService):
       return copied_session
 
     # Merge session state with user state.
-    for key in self.user_state[app_name][user_id].keys():
-      copied_session.state[State.USER_PREFIX + key] = self.user_state[app_name][
-          user_id
-      ][key]
+    for key, value in _copy_state(self.user_state[app_name][user_id]).items():
+      copied_session.state[State.USER_PREFIX + key] = value
     return copied_session
 
   @override
@@ -269,14 +279,16 @@ class InMemorySessionService(BaseSessionService):
     if user_id is None:
       for uid in list(self.sessions[app_name].keys()):
         for session in list(self.sessions[app_name][uid].values()):
-          copied_session = _copy_session(session)
-          copied_session.events = []
+          copied_session = _copy_session(
+              session.model_copy(update={'events': []})
+          )
           copied_session = self._merge_state(app_name, uid, copied_session)
           sessions_without_events.append(copied_session)
     else:
       for session in list(self.sessions[app_name][user_id].values()):
-        copied_session = _copy_session(session)
-        copied_session.events = []
+        copied_session = _copy_session(
+            session.model_copy(update={'events': []})
+        )
         copied_session = self._merge_state(app_name, user_id, copied_session)
         sessions_without_events.append(copied_session)
 
@@ -304,12 +316,8 @@ class InMemorySessionService(BaseSessionService):
   def _delete_session_impl(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
-    if (
-        self._get_session_impl(
-            app_name=app_name, user_id=user_id, session_id=session_id
-        )
-        is None
-    ):
+    session_id = session_id.strip() if session_id else session_id
+    if session_id not in self.sessions.get(app_name, {}).get(user_id, {}):
       return
 
     self.sessions[app_name][user_id].pop(session_id)
@@ -318,7 +326,8 @@ class InMemorySessionService(BaseSessionService):
   async def get_user_state(
       self, *, app_name: str, user_id: str
   ) -> dict[str, Any]:
-    return dict(self.user_state.get(app_name, {}).get(user_id, {}))
+    user_state = self.user_state.get(app_name, {}).get(user_id, {})
+    return _copy_state(user_state)
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:

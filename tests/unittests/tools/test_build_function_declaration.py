@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
 from enum import Enum
+from enum import IntEnum
+from typing import Annotated
 from typing import Any
 
 from google.adk.features import FeatureName
@@ -25,6 +28,7 @@ from google.genai import types
 # TODO: crewai requires python 3.10 as minimum
 # from crewai_tools import FileReadTool
 from pydantic import BaseModel
+from pydantic import Field
 import pytest
 
 
@@ -103,7 +107,7 @@ class TestBuildFunctionDeclarationLegacy:
       return {'result': input_str}
 
     function_decl = _automatic_function_calling_util.build_function_declaration(
-        func=simple_function
+        func=simple_function, variant=GoogleLLMVariant.VERTEX_AI
     )
 
     assert function_decl.name == 'simple_function'
@@ -121,7 +125,7 @@ class TestBuildFunctionDeclarationLegacy:
       return {'result': input_str}
 
     function_decl = _automatic_function_calling_util.build_function_declaration(
-        func=simple_function
+        func=simple_function, variant=GoogleLLMVariant.VERTEX_AI
     )
 
     assert function_decl.name == 'simple_function'
@@ -139,7 +143,7 @@ class TestBuildFunctionDeclarationLegacy:
       return {'result': input_str}
 
     function_decl = _automatic_function_calling_util.build_function_declaration(
-        func=simple_function
+        func=simple_function, variant=GoogleLLMVariant.VERTEX_AI
     )
 
     assert function_decl.name == 'simple_function'
@@ -151,6 +155,34 @@ class TestBuildFunctionDeclarationLegacy:
         ].additional_properties.type
         is None
     )
+
+  def test_dict_input_omits_additional_properties_on_google_ai(self):
+    """Google AI rejects a declaration that carries additional_properties."""
+
+    def simple_function(input_str: dict[str, str]) -> str:
+      return str(input_str)
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function, variant=GoogleLLMVariant.GEMINI_API
+    )
+
+    schema = function_decl.parameters.properties['input_str']
+    assert schema.type == 'OBJECT'
+    assert schema.additional_properties is None
+
+  def test_list_of_dict_input_omits_additional_properties_on_google_ai(self):
+    """The dict nested inside a list is declared the same way."""
+
+    def simple_function(fruits: list[dict[str, str]]) -> str:
+      return str(fruits)
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function, variant=GoogleLLMVariant.GEMINI_API
+    )
+
+    schema = function_decl.parameters.properties['fruits'].items
+    assert schema.type == 'OBJECT'
+    assert schema.additional_properties is None
 
   def test_untyped_dict_input(self):
     def simple_function(input_str: dict) -> str:
@@ -175,7 +207,7 @@ class TestBuildFunctionDeclarationLegacy:
       return str(fruits)
 
     function_decl = _automatic_function_calling_util.build_function_declaration(
-        func=simple_function
+        func=simple_function, variant=GoogleLLMVariant.VERTEX_AI
     )
 
     assert function_decl.name == 'simple_function'
@@ -389,7 +421,7 @@ class TestBuildFunctionDeclarationLegacy:
       return {'result': input_str}
 
     function_decl = _automatic_function_calling_util.build_function_declaration(
-        func=simple_function
+        func=simple_function, variant=GoogleLLMVariant.VERTEX_AI
     )
 
     assert function_decl.name == 'simple_function'
@@ -437,6 +469,129 @@ class TestBuildFunctionDeclarationLegacy:
     with pytest.raises(ValueError):
       _automatic_function_calling_util.build_function_declaration(
           func=simple_function_with_wrong_enum
+      )
+
+  def test_int_enum(self):
+    """An IntEnum parameter declares its values as strings."""
+
+    class Level(IntEnum):
+      LOW = 1
+      HIGH = 2
+
+    def set_level(level: Level = Level.LOW):
+      return level.value
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=set_level
+    )
+
+    level_schema = function_decl.parameters.properties['level']
+    assert level_schema.type == 'STRING'
+    assert level_schema.enum == ['1', '2']
+    assert level_schema.default == '1'
+    # The declaration must be valid for types.Schema's own contract: an
+    # `enum` field on a STRING schema must contain only strings.
+    types.Schema(type=level_schema.type, enum=level_schema.enum)
+
+  def test_int_enum_rejects_non_member_default(self):
+    """An IntEnum parameter rejects a non-member default value."""
+
+    class Level(IntEnum):
+      LOW = 1
+      HIGH = 2
+
+    def set_level_with_invalid_string_default(level: Level = '1'):
+      return level.value
+
+    with pytest.raises(ValueError):
+      _automatic_function_calling_util.build_function_declaration(
+          func=set_level_with_invalid_string_default
+      )
+
+  def test_enum_unserializable_value_raises_value_error(self):
+    """An Enum with non-serializable value raises ValueError on declaration."""
+
+    class UnserializableEnum(Enum):
+      UNSERIALIZABLE = object()
+
+    def set_val(val: UnserializableEnum = UnserializableEnum.UNSERIALIZABLE):
+      return val
+
+    with pytest.raises(ValueError):
+      _automatic_function_calling_util.build_function_declaration(func=set_val)
+
+  def test_bool_enum(self):
+    """A bool Enum parameter declares its values as json-encoded strings."""
+
+    class BoolEnum(Enum):
+      YES = True
+      NO = False
+
+    def set_flag(flag: BoolEnum = BoolEnum.YES):
+      return flag.value
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=set_flag
+    )
+
+    flag_schema = function_decl.parameters.properties['flag']
+    assert flag_schema.type == 'STRING'
+    assert flag_schema.enum == ['true', 'false']
+    assert flag_schema.default == 'true'
+
+  def test_render_enum_value(self):
+    """_render_enum_value converts values to string or raises ValueError."""
+
+    class SampleEnum(Enum):
+      STR = 'hello'
+      NUM = 42
+      FLAG = True
+      UNSERIALIZABLE = object()
+
+    assert (
+        _function_parameter_parse_util._render_enum_value('hello', SampleEnum)
+        == 'hello'
+    )
+    assert (
+        _function_parameter_parse_util._render_enum_value(42, SampleEnum)
+        == '42'
+    )
+    assert (
+        _function_parameter_parse_util._render_enum_value(True, SampleEnum)
+        == 'true'
+    )
+    with pytest.raises(ValueError, match='is not serializable'):
+      _function_parameter_parse_util._render_enum_value(
+          SampleEnum.UNSERIALIZABLE.value, SampleEnum
+      )
+
+  def test_enum_fallback_with_member_default(self):
+    """An Enum falling back to pydantic succeeds with a member default."""
+
+    class DateEnum(Enum):
+      EPOCH = datetime.date(1970, 1, 1)
+
+    def set_date(date: DateEnum = DateEnum.EPOCH):
+      return date
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=set_date
+    )
+    assert 'date' in function_decl.parameters.properties
+    assert function_decl.parameters.properties['date'].default == DateEnum.EPOCH
+
+  def test_enum_fallback_rejects_invalid_default(self):
+    """An Enum falling back to pydantic rejects an invalid default value."""
+
+    class DateEnum(Enum):
+      EPOCH = datetime.date(1970, 1, 1)
+
+    def set_date_invalid(date: DateEnum = datetime.date(2000, 1, 1)):
+      return date
+
+    with pytest.raises(ValueError):
+      _automatic_function_calling_util.build_function_declaration(
+          func=set_date_invalid
       )
 
   def test_basemodel_list(self):
@@ -647,6 +802,22 @@ class TestBuildFunctionDeclarationLegacy:
 
     assert function_decl.name == 'Calc'
     assert function_decl.response is not None
+
+  def test_annotated_field_metadata_preserved(self):
+    """Test Annotated[T, Field(...)] metadata reaches the schema."""
+
+    def legacy_annotated_function(
+        count: Annotated[int, Field(description='How many widgets', ge=1)],
+    ) -> str:
+      return str(count)
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=legacy_annotated_function
+    )
+
+    count_schema = function_decl.parameters.properties['count']
+    assert count_schema.description == 'How many widgets'
+    assert count_schema.minimum == 1
 
 
 class TestBuildFunctionDeclarationWithJsonSchema:
@@ -917,6 +1088,22 @@ class TestBuildFunctionDeclarationWithJsonSchema:
     schema = decl.parameters_json_schema
     assert schema['properties']['name']['default'] == 'World'
     assert 'name' not in schema.get('required', [])
+
+  def test_annotated_field_metadata_preserved(self):
+    """Test Annotated[T, Field(...)] metadata reaches the schema."""
+
+    def json_schema_annotated_function(
+        count: Annotated[int, Field(description='How many widgets', ge=1)],
+    ) -> str:
+      return str(count)
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=json_schema_annotated_function
+    )
+
+    count_schema = function_decl.parameters_json_schema['properties']['count']
+    assert count_schema['description'] == 'How many widgets'
+    assert count_schema['minimum'] == 1
 
 
 class TestBuildFunctionDeclarationFromSchemaDict:

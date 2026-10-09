@@ -38,16 +38,22 @@ def _apply_rewinds(events: list[Event]) -> list[Event]:
   Returns:
     The chronological subset of ``events`` that survives all rewinds.
   """
+  first_idx_by_inv: dict[str, int] | None = None
   kept: list[Event] = []
   i = len(events) - 1
   while i >= 0:
     event = events[i]
     if event.actions and event.actions.rewind_before_invocation_id:
-      rewind_invocation_id = event.actions.rewind_before_invocation_id
-      for j in range(0, i, 1):
-        if events[j].invocation_id == rewind_invocation_id:
-          i = j
-          break
+      if first_idx_by_inv is None:
+        first_idx_by_inv = {}
+        for idx, ev in enumerate(events):
+          if ev.invocation_id and ev.invocation_id not in first_idx_by_inv:
+            first_idx_by_inv[ev.invocation_id] = idx
+      rewind_idx = first_idx_by_inv.get(
+          event.actions.rewind_before_invocation_id
+      )
+      if rewind_idx is not None and rewind_idx < i:
+        i = rewind_idx
     else:
       kept.append(event)
     i -= 1

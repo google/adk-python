@@ -48,7 +48,41 @@ _GCS_DISPLAY_NAME_METADATA_KEY = "adkDisplayName"
 _GCS_IS_TEXT_METADATA_KEY = "adkIsText"
 _GCS_FILE_URI_METADATA_KEY = "adkFileUri"
 _GCS_FILE_MIME_TYPE_METADATA_KEY = "adkFileMimeType"
-_MAX_ARTIFACT_REFERENCE_DEPTH = 5
+_LEGACY_GCS_FILE_URI_METADATA_KEY = "file_uri"
+# Blob metadata keys reserved for this service's own bookkeeping. They are
+# dropped from custom_metadata on save and hidden from it on read.
+_INTERNAL_METADATA_KEYS = frozenset({
+    _GCS_DISPLAY_NAME_METADATA_KEY,
+    _GCS_IS_TEXT_METADATA_KEY,
+    _GCS_FILE_URI_METADATA_KEY,
+    _GCS_FILE_MIME_TYPE_METADATA_KEY,
+    _LEGACY_GCS_FILE_URI_METADATA_KEY,
+})
+_MAX_SAVE_VERSION_ATTEMPTS = 10
+
+
+def _user_metadata(
+    blob_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+  """Returns only the metadata the caller supplied on save."""
+  if not blob_metadata:
+    return {}
+  return {
+      key: value
+      for key, value in blob_metadata.items()
+      if key not in _INTERNAL_METADATA_KEYS
+  }
+
+
+def _get_file_uri(
+    blob_metadata: dict[str, Any] | None,
+) -> str | None:
+  """Returns the file URI recorded on the blob, checking legacy keys too."""
+  if not blob_metadata:
+    return None
+  return blob_metadata.get(_GCS_FILE_URI_METADATA_KEY) or blob_metadata.get(
+      _LEGACY_GCS_FILE_URI_METADATA_KEY
+  )
 
 
 def _parse_version(blob_name: str, prefix: str) -> Optional[int]:
@@ -253,20 +287,19 @@ class GcsArtifactService(BaseArtifactService):
       artifact: Union[types.Part, dict[str, Any]],
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
-    artifact = ensure_part(artifact)
-    versions = self._list_versions(
-        app_name=app_name,
-        user_id=user_id,
-        session_id=session_id,
-        filename=filename,
-    )
-    version = 0 if not versions else max(versions) + 1
+    from google.cloud import exceptions  # pylint: disable=g-import-not-at-top
 
-    blob_name = self._get_blob_name(
-        app_name, user_id, filename, version, session_id
-    )
-    blob = self.bucket.blob(blob_name)
-    blob_metadata = {k: str(v) for k, v in (custom_metadata or {}).items()}
+    if not self._file_has_user_namespace(filename):
+      if session_id is None:
+        raise InputValidationError(
+            "Session ID must be provided for session-scoped artifacts."
+        )
+      artifact_util._validate_session_id_for_flat_storage(session_id)
+
+    artifact = ensure_part(artifact)
+    blob_metadata = {
+        k: str(v) for k, v in _user_metadata(custom_metadata).items()
+    }
     if artifact.inline_data and artifact.inline_data.display_name:
       blob_metadata[_GCS_DISPLAY_NAME_METADATA_KEY] = (
           artifact.inline_data.display_name
@@ -276,25 +309,19 @@ class GcsArtifactService(BaseArtifactService):
       # load instead of Part.from_bytes() (which would only populate
       # inline_data).
       blob_metadata[_GCS_IS_TEXT_METADATA_KEY] = "true"
-    if blob_metadata:
-      blob.metadata = blob_metadata
 
+    data: Union[str, bytes]
+    content_type: Optional[str]
     if artifact.inline_data:
-      data = artifact.inline_data.data
-      if data is None:
+      if artifact.inline_data.data is None:
         raise InputValidationError("Artifact inline_data must contain data.")
-      blob.upload_from_string(
-          data=data,
-          content_type=artifact.inline_data.mime_type,
-      )
+      data = artifact.inline_data.data
+      content_type = artifact.inline_data.mime_type
     elif artifact.text is not None:
-      blob.upload_from_string(
-          data=artifact.text,
-          content_type="text/plain",
-      )
+      data = artifact.text
+      content_type = "text/plain"
     elif artifact.file_data:
       file_data = artifact.file_data
-      assert file_data is not None
       file_uri = file_data.file_uri
       if not file_uri:
         raise InputValidationError("Artifact file_data must have a file_uri.")
@@ -311,23 +338,51 @@ class GcsArtifactService(BaseArtifactService):
             parsed_uri=parsed_uri,
         )
       # Store the URI and mime_type (if any) as blob metadata; no content to upload.
-      metadata = {
-          **(blob.metadata or {}),
-          _GCS_FILE_URI_METADATA_KEY: file_uri,
-      }
+      blob_metadata[_GCS_FILE_URI_METADATA_KEY] = file_uri
       if file_data.mime_type:
-        metadata[_GCS_FILE_MIME_TYPE_METADATA_KEY] = file_data.mime_type
-      blob.metadata = metadata
-      blob.upload_from_string(
-          b"",
-          content_type=file_data.mime_type or None,
-      )
+        blob_metadata[_GCS_FILE_MIME_TYPE_METADATA_KEY] = file_data.mime_type
+      data = b""
+      content_type = file_data.mime_type or None
     else:
       raise InputValidationError(
           "Artifact must have either inline_data or text."
       )
 
-    return version
+    versions = self._list_versions(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=filename,
+    )
+    version = 0 if not versions else max(versions) + 1
+
+    # Listing the versions does not reserve one, so a concurrent save can pick
+    # the same number. if_generation_match=0 makes the upload a create, which
+    # fails instead of overwriting the version the other save just wrote; take
+    # the next number and try again. Every attempt re-uploads the payload, so
+    # the attempts are capped and sustained contention surfaces as the last
+    # precondition failure rather than as an unbounded retry loop.
+    attempts_left = _MAX_SAVE_VERSION_ATTEMPTS
+    while True:
+      blob_name = self._get_blob_name(
+          app_name, user_id, filename, version, session_id
+      )
+      blob = self.bucket.blob(blob_name)
+      if blob_metadata:
+        blob.metadata = blob_metadata
+      try:
+        blob.upload_from_string(
+            data=data,
+            content_type=content_type,
+            if_generation_match=0,
+        )
+      except exceptions.PreconditionFailed:
+        attempts_left -= 1
+        if not attempts_left:
+          raise
+        version += 1
+        continue
+      return version
 
   def _load_artifact(
       self,
@@ -336,6 +391,8 @@ class GcsArtifactService(BaseArtifactService):
       session_id: Optional[str],
       filename: str,
       version: Optional[int] = None,
+      *,
+      max_depth: int = artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH,
   ) -> Optional[types.Part]:
     if version is None:
       versions = self._list_versions(
@@ -356,24 +413,16 @@ class GcsArtifactService(BaseArtifactService):
       return None
 
     # If the artifact was saved as a file_data URI reference, restore or resolve it.
-    file_uri = None
-    if blob.metadata:
-      file_uri = blob.metadata.get(
-          _GCS_FILE_URI_METADATA_KEY
-      ) or blob.metadata.get("file_uri")
+    file_uri = _get_file_uri(blob.metadata)
 
     if file_uri:
       if file_uri.startswith("artifact://"):
-        parsed_uri = artifact_util.parse_artifact_uri(file_uri)
-        if not parsed_uri:
-          raise InputValidationError(
-              f"Invalid artifact reference URI: {file_uri}"
-          )
-        artifact_util.validate_artifact_reference_scope(
+        parsed_uri = artifact_util.resolve_artifact_reference(
+            file_uri=file_uri,
             app_name=app_name,
             user_id=user_id,
             session_id=session_id,
-            parsed_uri=parsed_uri,
+            remaining_depth=max_depth,
         )
         return self._load_artifact(
             app_name=parsed_uri.app_name,
@@ -381,6 +430,7 @@ class GcsArtifactService(BaseArtifactService):
             session_id=parsed_uri.session_id,
             filename=parsed_uri.filename,
             version=parsed_uri.version,
+            max_depth=max_depth - 1,
         )
       mime_type = None
       if blob.metadata:
@@ -541,7 +591,7 @@ class GcsArtifactService(BaseArtifactService):
         canonical_uri=canonical_uri,
         create_time=blob.time_created.timestamp(),
         mime_type=blob.content_type,
-        custom_metadata=blob.metadata if blob.metadata else {},
+        custom_metadata=_user_metadata(blob.metadata),
     )
 
   def _list_artifact_versions_sync(
@@ -568,7 +618,7 @@ class GcsArtifactService(BaseArtifactService):
           canonical_uri=canonical_uri,
           create_time=blob.time_created.timestamp(),
           mime_type=blob.content_type,
-          custom_metadata=blob.metadata if blob.metadata else {},
+          custom_metadata=_user_metadata(blob.metadata),
       )
       artifact_versions.append(av)
 
@@ -619,7 +669,7 @@ class GcsArtifactService(BaseArtifactService):
       filename: str,
       version: Optional[int] = None,
       *,
-      max_depth: int = _MAX_ARTIFACT_REFERENCE_DEPTH,
+      max_depth: int = artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH,
   ) -> Optional[str]:
     """Generates an authenticated browser URL for an artifact."""
     if version is None:
@@ -640,29 +690,16 @@ class GcsArtifactService(BaseArtifactService):
     if not blob:
       return None
 
-    file_uri = None
-    if blob.metadata:
-      file_uri = blob.metadata.get(
-          _GCS_FILE_URI_METADATA_KEY
-      ) or blob.metadata.get("file_uri")
+    file_uri = _get_file_uri(blob.metadata)
 
     if file_uri:
       if file_uri.startswith("artifact://"):
-        if max_depth <= 0:
-          raise InputValidationError(
-              "Exceeded maximum recursion depth resolving artifact reference:"
-              f" {file_uri}"
-          )
-        parsed_uri = artifact_util.parse_artifact_uri(file_uri)
-        if not parsed_uri:
-          raise InputValidationError(
-              f"Invalid artifact reference URI: {file_uri}"
-          )
-        artifact_util.validate_artifact_reference_scope(
+        parsed_uri = artifact_util.resolve_artifact_reference(
+            file_uri=file_uri,
             app_name=app_name,
             user_id=user_id,
             session_id=session_id,
-            parsed_uri=parsed_uri,
+            remaining_depth=max_depth,
         )
         return self._get_authenticated_url_sync(
             app_name=parsed_uri.app_name,
@@ -726,7 +763,7 @@ class GcsArtifactService(BaseArtifactService):
       signing_version: Optional[Literal["v2", "v4"]] = None,
       extra_signing_options: Optional[dict[str, Any]] = None,
       *,
-      max_depth: int = _MAX_ARTIFACT_REFERENCE_DEPTH,
+      max_depth: int = artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH,
   ) -> Optional[str]:
     """Generates a time-limited signed URL for an artifact."""
     if version is None:
@@ -747,29 +784,16 @@ class GcsArtifactService(BaseArtifactService):
     if not blob:
       return None
 
-    file_uri = None
-    if blob.metadata:
-      file_uri = blob.metadata.get(
-          _GCS_FILE_URI_METADATA_KEY
-      ) or blob.metadata.get("file_uri")
+    file_uri = _get_file_uri(blob.metadata)
 
     if file_uri:
       if file_uri.startswith("artifact://"):
-        if max_depth <= 0:
-          raise InputValidationError(
-              "Exceeded maximum recursion depth resolving artifact reference:"
-              f" {file_uri}"
-          )
-        parsed_uri = artifact_util.parse_artifact_uri(file_uri)
-        if not parsed_uri:
-          raise InputValidationError(
-              f"Invalid artifact reference URI: {file_uri}"
-          )
-        artifact_util.validate_artifact_reference_scope(
+        parsed_uri = artifact_util.resolve_artifact_reference(
+            file_uri=file_uri,
             app_name=app_name,
             user_id=user_id,
             session_id=session_id,
-            parsed_uri=parsed_uri,
+            remaining_depth=max_depth,
         )
         return self._get_signed_url_sync(
             app_name=parsed_uri.app_name,

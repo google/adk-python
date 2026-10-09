@@ -16,12 +16,14 @@
 
 from datetime import datetime
 from datetime import timezone
+import logging
 import time
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from google.adk.agents.context_cache_config import ContextCacheConfig
+from google.adk.models import gemini_context_cache_manager
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.gemini_context_cache_manager import GeminiContextCacheManager
 from google.adk.models.llm_request import LlmRequest
@@ -1479,6 +1481,49 @@ class TestGeminiContextCacheManager:
     cache_config = create_call[1]["config"]
     assert cache_config.http_options is not None
     assert cache_config.http_options.timeout == 10000
+
+  async def test_create_cache_debug_log_omits_http_options(self, caplog):
+    """The cache creation debug log leaves out the transport options."""
+    mock_cached_content = AsyncMock()
+    mock_cached_content.name = (
+        "projects/test/locations/us-central1/cachedContents/test123"
+    )
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        return_value=mock_cached_content
+    )
+
+    llm_request = self.create_llm_request()
+    llm_request.cache_config = ContextCacheConfig(
+        cache_intervals=10,
+        ttl_seconds=1800,
+        min_tokens=0,
+        create_http_options=types.HttpOptions(
+            headers={"Authorization": "Bearer super-secret-token"}
+        ),
+    )
+    cache_contents_count = max(0, len(llm_request.contents) - 1)
+
+    with caplog.at_level(
+        logging.DEBUG, logger=gemini_context_cache_manager.logger.name
+    ):
+      with patch.object(
+          self.manager, "_generate_cache_fingerprint", return_value="test_fp"
+      ):
+        await self.manager._create_gemini_cache(
+            llm_request, cache_contents_count
+        )
+
+    assert "Creating cache with model" in caplog.text
+    assert "super-secret-token" not in caplog.text
+    assert "Authorization" not in caplog.text
+
+    # The header still reaches the API call it was configured for.
+    create_config = self.manager.genai_client.aio.caches.create.call_args[1][
+        "config"
+    ]
+    assert create_config.http_options.headers == {
+        "Authorization": "Bearer super-secret-token"
+    }
 
   async def test_create_without_http_options(self):
     """Test that cache creation works without create_http_options."""

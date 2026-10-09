@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import os
 from typing import Optional
 
 from google.adk.agents import LlmAgent
@@ -21,7 +22,13 @@ from google.adk.models import LlmResponse
 from google.adk.tools.vertex_ai_search_tool import VertexAiSearchTool
 from google.genai import types
 
-VERTEXAI_DATASTORE_ID = "projects/adk-agent-builder-assistant/locations/global/collections/default_collection/dataStores/adk-agent-builder-sample-datastore_1758230446136"
+VERTEXAI_DATASTORE_ID = os.environ.get("VERTEXAI_DATASTORE_ID")
+if not VERTEXAI_DATASTORE_ID:
+  raise ValueError(
+      "VERTEXAI_DATASTORE_ID environment variable not set. Set it to the"
+      " full resource name of your own Vertex AI Search data store, as"
+      " projects/.../locations/.../collections/.../dataStores/... ."
+  )
 
 
 def citation_retrieval_after_model_callback(

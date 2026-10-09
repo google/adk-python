@@ -22,6 +22,8 @@ from .plugin_manager import PluginManager
 
 if TYPE_CHECKING:
   from ._reflect_retry_model_plugin import ReflectAndRetryModelPlugin
+  from ._tool_call_integrity_plugin import ToolCallIntegrityError
+  from ._tool_call_integrity_plugin import ToolCallIntegrityPlugin
   from .debug_logging_plugin import DebugLoggingPlugin
   from .logging_plugin import LoggingPlugin
   from .reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
@@ -33,6 +35,8 @@ __all__ = [
     "PluginManager",
     "ReflectAndRetryModelPlugin",
     "ReflectAndRetryToolPlugin",
+    "ToolCallIntegrityError",
+    "ToolCallIntegrityPlugin",
 ]
 
 _LAZY_MEMBERS: dict[str, str] = {
@@ -40,6 +44,8 @@ _LAZY_MEMBERS: dict[str, str] = {
     "LoggingPlugin": "logging_plugin",
     "ReflectAndRetryModelPlugin": "_reflect_retry_model_plugin",
     "ReflectAndRetryToolPlugin": "reflect_retry_tool_plugin",
+    "ToolCallIntegrityError": "_tool_call_integrity_plugin",
+    "ToolCallIntegrityPlugin": "_tool_call_integrity_plugin",
 }
 
 

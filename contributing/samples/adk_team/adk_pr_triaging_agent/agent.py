@@ -29,8 +29,7 @@ from google.adk import Agent
 import requests
 
 # LABEL_TO_OWNER (component -> owner GitHub login; the owner becomes the PR's
-# assignee) is imported from component_owners and shared verbatim with
-# adk_triaging_agent, so the two can't drift. Keep it in sync with OWNERS.
+# assignee) is imported from component_owners. Keep it in sync with OWNERS.
 # This agent only reads the map to pick an assignee; the component names are
 # never written to the PR as labels.
 
@@ -279,6 +278,7 @@ root_agent = Agent(
       - If it's about workflow agents or workflow execution, the component is "workflow".
       - If it's agent orchestration, agent definition, the component is "core".
       - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), the component is "mcp".
+      - If it's about A2A (Agent-to-Agent) protocol or RemoteA2aAgent, the component is "a2a".
       - If you can't find an appropriate component for the PR, follow the previous instruction that starts with "IMPORTANT:".
 
       # 4. Steps

@@ -44,7 +44,12 @@ def resolve_scope_key(scope: TrackingScope, invocation_id: str | None) -> str:
 
 
 class ScopedFailureTracker:
-  """Thread-safe failure counter scoped by invocation or global key."""
+  """Failure counter scoped by invocation or global key.
+
+  Updates are serialized by an asyncio lock, so concurrent coroutines on one
+  event loop cannot lose an increment. The lock gives no mutual exclusion
+  between threads, so an instance must not be shared across them.
+  """
 
   def __init__(self) -> None:
     self._scoped_failure_counters: dict[str, PerItemFailuresCounter] = {}

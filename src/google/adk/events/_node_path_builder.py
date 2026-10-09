@@ -107,6 +107,13 @@ class _NodePathBuilder:
       return False
     return self._segments[:-1] == parent._segments
 
+  def includes_node_path(self, node_path: str | None) -> bool:
+    """Checks if an event's ``node_path`` is empty, equals self, or is in self's subtree."""
+    if not node_path:
+      return True
+    path = _NodePathBuilder.from_string(node_path)
+    return path == self or path.is_descendant_of(self)
+
   def get_direct_child(self, descendant: _NodePathBuilder) -> _NodePathBuilder:  # pylint: disable=protected-access
     """Returns a new _NodePathBuilder for the direct child towards the descendant."""
     if len(descendant._segments) <= len(self._segments):

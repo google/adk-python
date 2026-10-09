@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from collections.abc import Callable
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
@@ -28,6 +29,8 @@ from opentelemetry import context as context_api
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OPERATION_NAME
 from opentelemetry.trace import Span
+from opentelemetry.trace import Status
+from opentelemetry.trace import StatusCode
 
 from . import _metrics
 from ..agents.context import Context
@@ -66,7 +69,7 @@ class TelemetryContext:
 
 @asynccontextmanager
 async def start_as_current_node_span(
-    context: Context, node: BaseNode
+    context: Context, node: BaseNode, node_context: Context | None = None
 ) -> AsyncIterator[TelemetryContext]:
   """Creates a scope-based OpenTelemetry span, representing a node invocation.
 
@@ -89,6 +92,9 @@ async def start_as_current_node_span(
   Args:
     context: Context in which the span is created.
     node: The node to be invoked inside the created span.
+    node_context: The node's own context, when the caller has one. A workflow
+      stores a failed child's exception here instead of letting it unwind, so
+      it is the only place the span can learn the turn went wrong.
 
   Yields:
     Context with the started span.
@@ -101,7 +107,7 @@ async def start_as_current_node_span(
     with _invoke_agent_span(context, node) as tel_ctx:
       yield tel_ctx
   elif isinstance(node, Workflow):
-    with _invoke_workflow_span(context, node) as tel_ctx:
+    with _invoke_workflow_span(context, node, node_context) as tel_ctx:
       yield tel_ctx
   else:
     with _invoke_node_span(context, node) as tel_ctx:
@@ -123,7 +129,7 @@ def _invoke_agent_span(
 
 @contextmanager
 def _invoke_workflow_span(
-    context: Context, workflow: Workflow
+    context: Context, workflow: Workflow, node_context: Context | None = None
 ) -> Iterator[TelemetryContext]:
   """Opens an `invoke_workflow` span plus its duration metric for ``node``."""
   with _use_invoke_workflow_span(
@@ -132,6 +138,9 @@ def _invoke_workflow_span(
       otel_context=context.telemetry_context.otel_context,
       telemetry_config=_telemetry_config_from_invocation_context(
           context.get_invocation_context()
+      ),
+      get_recorded_error=(
+          None if node_context is None else lambda: node_context.error
       ),
   ) as span:
     tel_ctx = TelemetryContext(otel_context=context_api.get_current())
@@ -175,6 +184,7 @@ def _use_invoke_workflow_span(
     *,
     otel_context: context_api.Context | None = None,
     telemetry_config: TelemetryConfig | None = None,
+    get_recorded_error: Callable[[], BaseException | None] | None = None,
 ) -> Iterator[Span]:
   """Opens an `invoke_workflow {workflow_name}` span and its token scope.
 
@@ -188,6 +198,10 @@ def _use_invoke_workflow_span(
     otel_context: Context to open the span under; defaults to the one in force.
     telemetry_config: The run's config, carrying the experimental opt-in. Read
       only for a root scope; a nested one inherits the decision already made.
+    get_recorded_error: Consulted when no exception is unwinding, for the
+      failure a node stored as data instead of raising. A workflow catches a
+      node's exception so the graph can act on it, so the span would otherwise
+      close clean on a turn that failed.
 
   Yields:
     The `invoke_workflow` span.
@@ -230,6 +244,7 @@ def _use_invoke_workflow_span(
 
   start_s = time.monotonic()
   workflow_span: Span | None = None
+  recorded_error: BaseException | None = None
   try:
     with (
         tracer.start_as_current_span(
@@ -250,10 +265,18 @@ def _use_invoke_workflow_span(
       finally:
         context_api.detach(scope_token)
         _instrumentation._flush_workflow_metrics(scope)
+        # A node hands its failure back as data rather than letting it unwind,
+        # so nothing is in flight here and the span would otherwise be recorded
+        # as a success. Mark it inside the span, where it still exists.
+        if sys.exc_info()[1] is None and get_recorded_error is not None:
+          recorded_error = get_recorded_error()
+          if recorded_error is not None:
+            span.record_exception(recorded_error)
+            span.set_status(Status(StatusCode.ERROR, str(recorded_error)))
   finally:
     _metrics.record_workflow_invocation_duration(
         workflow_name=workflow_name,
         elapsed_s=_metrics.get_elapsed_s(workflow_span, start_s),
         nested=nested,
-        error=sys.exc_info()[1],
+        error=sys.exc_info()[1] or recorded_error,
     )

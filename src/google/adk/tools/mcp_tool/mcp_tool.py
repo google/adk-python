@@ -23,11 +23,14 @@ from typing import Callable
 from typing import cast
 from typing import Protocol
 from typing import runtime_checkable
+from typing import TYPE_CHECKING
 import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
+from google.genai.types import GroundingMetadata
 from opentelemetry import propagate
+from pydantic import ValidationError
 from typing_extensions import override
 
 from ...agents.callback_context import CallbackContext
@@ -42,9 +45,12 @@ from ...dependencies._mcp import Tool as McpBaseTool
 from ...events.ui_widget import UiWidget
 from ...features import FeatureName
 from ...features import is_feature_enabled
-from ...flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ...flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ...flows.llm_flows.context._fencing import fence_schema_descriptions
+from ...flows.llm_flows.context._fencing import fence_tool_description
+from ...flows.llm_flows.context._fencing import TOOL_DESCRIPTION_PREAMBLE
+from ...flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ...flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ...flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...utils.context_utils import find_context_parameter
 # `is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)` gates the
 # error-boundary and transport-crash-detection behavior added in this module.
@@ -54,12 +60,17 @@ from ...utils.context_utils import find_context_parameter
 # part of the ADK public API; consumers flip the env var, not the symbol.
 from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
+from ..set_model_response_tool import SetModelResponseTool
 from ..tool_context import ToolContext
 from ..transfer_to_agent_tool import transfer_to_agent
 from .mcp_session_manager import _http_debug_var
+from .mcp_session_manager import _is_session_terminated_error
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .session_context import SessionContext
+
+if TYPE_CHECKING:
+  from ...models.llm_request import LlmRequest
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -71,6 +82,7 @@ _RESERVED_TOOL_NAMES = frozenset({
     REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
     REQUEST_INPUT_FUNCTION_CALL_NAME,
     transfer_to_agent.__name__,
+    SetModelResponseTool.NAME,
 })
 
 _UNSET = object()
@@ -291,6 +303,7 @@ class McpTool(BaseAuthenticatedTool):
           | None
       ) = None,
       progress_callback: ProgressFnT | ProgressCallbackFactory | None = None,
+      propagate_grounding_metadata: bool = False,
   ):
     """Initializes an McpTool.
 
@@ -317,6 +330,10 @@ class McpTool(BaseAuthenticatedTool):
             The factory receives (tool_name, callback_context, **kwargs) and
             returns a ProgressFnT or None. This allows callbacks to access
             and modify runtime context like session state.
+        propagate_grounding_metadata: If True, copy
+          ``meta.adk_grounding_metadata`` from the MCP result into
+          ``temp:_adk_grounding_metadata`` so the flow can attach it to
+          ``LlmResponse``. Default False.
 
     Raises:
         ValueError: If the MCP tool name collides with a reserved ADK tool
@@ -342,20 +359,43 @@ class McpTool(BaseAuthenticatedTool):
     self._require_confirmation = require_confirmation
     self._header_provider = header_provider
     self._progress_callback = progress_callback
+    self.propagate_grounding_metadata = propagate_grounding_metadata
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
     """Gets the function declaration for the tool.
 
     Returns:
-        FunctionDeclaration: The Gemini function declaration for the tool.
+      FunctionDeclaration: The Gemini function declaration for the tool.
     """
+    return self._build_declaration(fenced=False)
+
+  def _build_fenced_declaration(self) -> FunctionDeclaration:
+    """Builds the fenced function declaration for the tool."""
+    return self._build_declaration(fenced=True)
+
+  def _build_declaration(self, *, fenced: bool = False) -> FunctionDeclaration:
     input_schema = _read_field(self._mcp_tool, "inputSchema", "input_schema")
-    output_schema = _read_field(self._mcp_tool, "outputSchema", "output_schema")
+    description = (
+        fence_tool_description(self.description) if fenced else self.description
+    )
+    input_schema = (
+        fence_schema_descriptions(input_schema)
+        if fenced and input_schema is not None
+        else input_schema
+    )
     if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      output_schema = _read_field(
+          self._mcp_tool, "outputSchema", "output_schema"
+      )
+      output_schema = (
+          fence_schema_descriptions(output_schema)
+          if fenced and output_schema is not None
+          else output_schema
+      )
       function_decl = FunctionDeclaration(
           name=self.name,
-          description=self.description,
+          description=description,
           parameters_json_schema=input_schema,
           response_json_schema=output_schema,
       )
@@ -363,10 +403,61 @@ class McpTool(BaseAuthenticatedTool):
       parameters = _to_gemini_schema(input_schema)
       function_decl = FunctionDeclaration(
           name=self.name,
-          description=self.description,
+          description=description,
           parameters=parameters,
       )
     return function_decl
+
+  @override
+  async def process_llm_request(
+      self, *, tool_context: ToolContext, llm_request: LlmRequest
+  ) -> None:
+    await super().process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+    if (
+        llm_request.config
+        and llm_request.config.system_instruction is not None
+        and not isinstance(llm_request.config.system_instruction, str)
+    ):
+      logger.error(
+          "Cannot fence tool descriptions: system_instruction must be a str or"
+          " None, got %s; skipping fencing for this request.",
+          type(llm_request.config.system_instruction).__name__,
+      )
+      return
+
+    # The tool declaration is fenced when it goes to the model, while
+    # _get_declaration keeps the server's own text for other consumers
+    # (e.g. dev UI tool listings via get_tools_info).
+    replaced = False
+    if llm_request.config and llm_request.config.tools:
+      for tool in reversed(llm_request.config.tools):
+        function_declarations = getattr(tool, "function_declarations", None)
+        if function_declarations:
+          for i in range(len(function_declarations) - 1, -1, -1):
+            if getattr(function_declarations[i], "name", None) == self.name:
+              function_declarations[i] = self._build_fenced_declaration()
+              replaced = True
+              break
+        if replaced:
+          break
+
+    if not replaced:
+      logger.error(
+          "Failed to find function declaration for tool %r in LlmRequest to"
+          " apply fencing.",
+          self.name,
+      )
+
+    current_instruction = (
+        llm_request.config.system_instruction
+        if llm_request.config
+        and isinstance(llm_request.config.system_instruction, str)
+        else ""
+    )
+    if TOOL_DESCRIPTION_PREAMBLE not in current_instruction:
+      llm_request.append_instructions([TOOL_DESCRIPTION_PREAMBLE])
 
   @property
   def raw_mcp_tool(self) -> McpBaseTool:
@@ -604,36 +695,46 @@ class McpTool(BaseAuthenticatedTool):
     # its transport closed underneath it.
     self._mcp_session_manager._begin_session_use(final_headers)  # pylint: disable=protected-access
     try:
-      if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
-        # Race the tool call against the background session task so that
-        # transport crashes (e.g. non-2xx HTTP responses from an AGW with
-        # Model Armor) surface immediately instead of hanging until
-        # sse_read_timeout (default 5 minutes) expires. ConnectionError is
-        # intentionally NOT caught here. Replaying a tool call after an
-        # ambiguous transport failure could duplicate a remote side effect, so
-        # the failure surfaces to the run_async wrapper without an automatic
-        # retry.
-        #
-        # The isinstance check is intentional: tests and external subclasses
-        # may inject mock session managers whose `_get_session_context`
-        # returns a Mock instead of a real SessionContext (or None). Falling
-        # back to the direct await keeps those callers working.
-        session_context = self._mcp_session_manager._get_session_context(  # pylint: disable=protected-access
-            headers=final_headers
-        )
-        if isinstance(session_context, SessionContext):
-          response = await session_context._run_guarded(call_coro)  # pylint: disable=protected-access
+      try:
+        if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+          # Race the tool call against the background session task so that
+          # transport crashes (e.g. non-2xx HTTP responses from an AGW with
+          # Model Armor) surface immediately instead of hanging until
+          # sse_read_timeout (default 5 minutes) expires. ConnectionError is
+          # intentionally NOT caught here. Replaying a tool call after an
+          # ambiguous transport failure could duplicate a remote side effect, so
+          # the failure surfaces to the run_async wrapper without an automatic
+          # retry.
+          #
+          # The isinstance check is intentional: tests and external subclasses
+          # may inject mock session managers whose `_get_session_context`
+          # returns a Mock instead of a real SessionContext (or None). Falling
+          # back to the direct await keeps those callers working.
+          session_context = self._mcp_session_manager._get_session_context(  # pylint: disable=protected-access
+              headers=final_headers
+          )
+          if isinstance(session_context, SessionContext):
+            response = await session_context._run_guarded(call_coro)  # pylint: disable=protected-access
+          else:
+            response = await call_coro
         else:
+          # Pre-fix behavior: await the call directly. This is what causes the
+          # ~300s hang when the underlying transport crashes.
           response = await call_coro
-      else:
-        # Pre-fix behavior: await the call directly. This is what causes the
-        # ~300s hang when the underlying transport crashes.
-        response = await call_coro
+      except Exception as e:
+        # The server has forgotten this session, so drop it here rather than
+        # let the next call be handed the same dead one.
+        if _is_session_terminated_error(e):
+          self._mcp_session_manager._discard_session(  # pylint: disable=protected-access
+              final_headers, session=session
+          )
+        raise
     finally:
       self._mcp_session_manager._end_session_use(final_headers)  # pylint: disable=protected-access
 
     # Keep the caller's key names off the installed SDK's field naming.
     result = _dump_mcp_model(response)
+    self._store_grounding_metadata_from_result(result, tool_context)
 
     # 2.x-only field. Acting on it (`input_required` drives elicitation) is a
     # feature, not compatibility. Not dropped on 1.x, where a key of that name
@@ -663,6 +764,29 @@ class McpTool(BaseAuthenticatedTool):
           )
       )
     return result
+
+  def _store_grounding_metadata_from_result(
+      self, result: dict[str, Any], tool_context: ToolContext
+  ) -> None:
+    """Copies ADK grounding from MCP meta into session temp state."""
+    if not self.propagate_grounding_metadata:
+      return
+    meta = result.get("meta")
+    if not isinstance(meta, dict):
+      return
+    raw = meta.get("adk_grounding_metadata")
+    if raw is None:
+      return
+    try:
+      metadata = GroundingMetadata.model_validate(raw)
+    except ValidationError as e:
+      logger.warning(
+          "Ignoring _meta.adk_grounding_metadata from %s: %s",
+          self.name,
+          e,
+      )
+      return
+    tool_context.state["temp:_adk_grounding_metadata"] = metadata
 
   def _detect_error_in_response(self, response: Any) -> str | None:
     """Telemetry hook: returns an error type if the response indicates an error."""
@@ -774,23 +898,30 @@ class McpTool(BaseAuthenticatedTool):
           )
           logger.error(error_msg)
           raise ValueError(error_msg)
-        elif (
-            self._credentials_manager._auth_config.auth_scheme.in_
-            != APIKeyIn.header
-        ):
-          error_msg = (
-              "McpTool only supports header-based API key authentication."
-              " Configured location:"
-              f" {self._credentials_manager._auth_config.auth_scheme.in_}"
-          )
-          logger.error(error_msg)
-          raise ValueError(error_msg)
         else:
-          headers = {
-              self._credentials_manager._auth_config.auth_scheme.name: (
-                  credential.api_key
-              )
-          }
+          # `in_` and `name` are declared on APIKey; a CustomAuthScheme may
+          # carry them too, so read them off the scheme rather than requiring
+          # an APIKey instance. A scheme with neither used to raise
+          # AttributeError here.
+          scheme = self._credentials_manager._auth_config.auth_scheme
+          key_location = getattr(scheme, "in_", None)
+          key_name = getattr(scheme, "name", None)
+          if key_location != APIKeyIn.header:
+            error_msg = (
+                "McpTool only supports header-based API key authentication."
+                f" Configured location: {key_location} (scheme:"
+                f" {type(scheme).__name__})"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+          if not isinstance(key_name, str):
+            error_msg = (
+                "API key auth scheme"
+                f" {type(scheme).__name__} carries no header name."
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+          headers = {key_name: credential.api_key}
       elif credential.service_account:
         # Service accounts should be exchanged for access tokens before reaching this point
         logger.warning(

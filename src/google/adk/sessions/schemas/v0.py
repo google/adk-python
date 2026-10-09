@@ -42,7 +42,6 @@ from sqlalchemy import Dialect
 from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
 from sqlalchemy import Index
-from sqlalchemy import inspect
 from sqlalchemy import Text
 from sqlalchemy.dialects import mysql
 from sqlalchemy.ext.mutable import MutableDict
@@ -167,8 +166,15 @@ class StorageSession(Base):
   create_time: Mapped[datetime] = mapped_column(
       PreciseTimestamp, default=func.now()
   )
+  # No `onupdate=func.now()` here: `DatabaseSessionService.append_event`
+  # always sets this column explicitly. An `onupdate` default would only
+  # fire when SQLAlchemy considers the column unchanged (the new event's
+  # timestamp equals the one already stored) but another column, such as
+  # `state`, did change -- writing the database's own clock over the
+  # explicit value and desynchronizing the in-memory revision marker read
+  # before commit from what is actually in storage.
   update_time: Mapped[datetime] = mapped_column(
-      PreciseTimestamp, default=func.now(), onupdate=func.now()
+      PreciseTimestamp, default=func.now()
   )
 
   storage_events: Mapped[list[StorageEvent]] = relationship(
@@ -185,26 +191,10 @@ class StorageSession(Base):
 
     This is a compatibility alias for callers that used the pre-`main` API.
     """
-    sqlalchemy_session = inspect(self).session
-    is_sqlite = bool(
-        sqlalchemy_session
-        and sqlalchemy_session.bind
-        and sqlalchemy_session.bind.dialect.name == "sqlite"
-    )
-    is_postgresql = bool(
-        sqlalchemy_session
-        and sqlalchemy_session.bind
-        and sqlalchemy_session.bind.dialect.name == "postgresql"
-    )
-    return self.get_update_timestamp(
-        is_sqlite=is_sqlite, is_postgresql=is_postgresql
-    )
+    return self.get_update_timestamp()
 
-  def get_update_timestamp(
-      self, is_sqlite: bool = False, is_postgresql: bool = False
-  ) -> float:
+  def get_update_timestamp(self) -> float:
     """Returns the time zone aware update timestamp."""
-    del is_sqlite, is_postgresql  # Unused.
     if self.update_time.tzinfo is None:
       # SQLite and PostgreSQL do not support timezone. SQLAlchemy returns a naive datetime
       # object without timezone information. We need to convert it to UTC
@@ -223,8 +213,6 @@ class StorageSession(Base):
       self,
       state: dict[str, Any] | None = None,
       events: list[Event] | None = None,
-      is_sqlite: bool = False,
-      is_postgresql: bool = False,
   ) -> Session:
     """Converts the storage session to a session object."""
     if state is None:
@@ -238,9 +226,7 @@ class StorageSession(Base):
         id=self.id,
         state=state,
         events=events,
-        last_update_time=self.get_update_timestamp(
-            is_sqlite=is_sqlite, is_postgresql=is_postgresql
-        ),
+        last_update_time=self.get_update_timestamp(),
     )
     session._storage_update_marker = self.get_update_marker()
     return session
@@ -320,13 +306,27 @@ class StorageEvent(Base):
           ondelete="CASCADE",
       ),
       Index(
-          "idx_events_app_user_session_ts",
+          "idx_events_app_user_session_ts_id",
           "app_name",
           "user_id",
           "session_id",
           desc("timestamp"),
+          desc("id"),
       ),
   )
+
+  @classmethod
+  def stored_event_fields(cls) -> frozenset[str]:
+    """Returns the names of the event fields this table has a column for.
+
+    Read off the columns rather than listed, so it cannot drift from them. The
+    legacy layout is frozen, so any event field outside this set is one the
+    table can never hold.
+    """
+    names = set(cls.__mapper__.columns.keys())
+    names.discard("long_running_tool_ids_json")
+    names.add("long_running_tool_ids")
+    return frozenset(names)
 
   @property
   def long_running_tool_ids(self) -> set[str]:
