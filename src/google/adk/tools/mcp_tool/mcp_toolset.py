@@ -63,7 +63,7 @@ from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
 from .mcp_tool import _dump_mcp_model
 from .mcp_tool import _RESERVED_TOOL_NAMES
-from .mcp_tool import MCPTool
+from .mcp_tool import McpTool
 from .mcp_tool import ProgressCallbackFactory
 from .mcp_tool import ProgressFnT
 
@@ -535,7 +535,7 @@ class McpToolset(BaseToolset):
         )
         continue
 
-      mcp_tool = MCPTool(
+      mcp_tool = McpTool(
           mcp_tool=tool,
           mcp_session_manager=self._mcp_session_manager,
           auth_scheme=self._auth_scheme,
