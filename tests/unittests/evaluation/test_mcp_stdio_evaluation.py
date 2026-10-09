@@ -18,7 +18,6 @@ import logging
 import sys
 import textwrap
 
-import anyio
 from google.adk import runners
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.evaluation.base_eval_service import InferenceConfig
@@ -34,6 +33,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.genai import types
 from mcp import StdioServerParameters
+from mcp.client import stdio
 import pytest
 import pytest_asyncio
 
@@ -193,7 +193,7 @@ async def test_native_stdio_eval_calls_tool_and_closes(
     mocker, native_stdio_toolset, caplog
 ):
   toolset, calls, ready, _ = native_stdio_toolset
-  processes = mocker.spy(anyio, 'open_process')
+  processes = mocker.spy(stdio, '_create_platform_compatible_process')
   close = mocker.spy(toolset, 'close')
   model = MockModel.create(
       responses=[
@@ -221,7 +221,7 @@ async def test_unavailable_toolset_cannot_satisfy_native_control(
     mocker, native_stdio_toolset, caplog
 ):
   toolset, calls, ready, server = native_stdio_toolset
-  processes = mocker.spy(anyio, 'open_process')
+  processes = mocker.spy(stdio, '_create_platform_compatible_process')
   server.write_text("raise RuntimeError('unexpected setup failure')\n")
   close = mocker.spy(toolset, 'close')
   model = MockModel.create(responses=['A response without the MCP tool.'])
@@ -253,7 +253,7 @@ async def test_native_stdio_tool_error_is_not_success(
     mocker, native_stdio_toolset, caplog
 ):
   toolset, calls, ready, server = native_stdio_toolset
-  processes = mocker.spy(anyio, 'open_process')
+  processes = mocker.spy(stdio, '_create_platform_compatible_process')
   server.write_text(
       server.read_text().replace('tool_error = False', 'tool_error = True')
   )
@@ -296,7 +296,7 @@ async def test_native_stdio_model_failure_is_not_success(
     mocker, native_stdio_toolset, caplog
 ):
   toolset, calls, ready, _ = native_stdio_toolset
-  processes = mocker.spy(anyio, 'open_process')
+  processes = mocker.spy(stdio, '_create_platform_compatible_process')
   close = mocker.spy(toolset, 'close')
   model = MockModel.create(
       responses=[], error=RuntimeError('unexpected model failure')
@@ -322,7 +322,7 @@ async def test_native_stdio_cleanup_failure_is_not_success(
     mocker, native_stdio_toolset, caplog, release_session
 ):
   toolset, calls, ready, _ = native_stdio_toolset
-  processes = mocker.spy(anyio, 'open_process')
+  processes = mocker.spy(stdio, '_create_platform_compatible_process')
   real_close = toolset.close
   model = MockModel.create(
       responses=[
