@@ -4,7 +4,7 @@
 
 This sample provides a minimal agent to demonstrate non-blocking tool execution in ADK Live mode (`adk web` / `run_live`).
 
-When a tool declaration is configured with `response_scheduling` set to `WHEN_IDLE`, `SILENT`, or `INTERRUPT`, it indicates to the model that response handling can occur asynchronously.
+When a tool is configured with `behavior` set to `types.Behavior.NON_BLOCKING`, ADK runs it in a background task and the model keeps conversing instead of waiting for the result.
 
 ## Sample Inputs
 
@@ -24,7 +24,7 @@ When a tool declaration is configured with `response_scheduling` set to `WHEN_ID
 
 ### Expected Behavior
 
-The model should continue conversing and generating audio/transcription responses immediately while the tool executes in the background. The tool result is delivered later per the `response_scheduling` mode.
+The model should continue conversing and generating audio/transcription responses immediately while the tool executes in the background. The tool result is delivered once the tool finishes.
 
 ## Evaluating this agent
 
