@@ -22,6 +22,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -3624,3 +3625,180 @@ def test_cli_migrate_session_reports_the_underlying_failure(
 
   assert result.exit_code == 1
   assert "Migration failed: destination schema is newer" in result.output
+
+
+@pytest.fixture
+def graph_agent_dir(tmp_path: Path) -> Path:
+  # A name unique to the test, so sys.modules never serves a stale package.
+  agent_dir = tmp_path / f"graph_agent_{tmp_path.name}"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").write_text("from . import agent\n")
+  (agent_dir / "agent.py").write_text(
+      "from google.adk.agents import LlmAgent\n"
+      "def lookup(q: str) -> str:\n"
+      '  """Looks something up."""\n'
+      "  return q\n"
+      'helper = LlmAgent(name="helper", model="gemini-2.0-flash",'
+      " tools=[lookup])\n"
+      'root_agent = LlmAgent(name="root", model="gemini-2.0-flash",'
+      " sub_agents=[helper])\n"
+  )
+  return agent_dir
+
+
+@pytest.mark.unmute_click
+def test_cli_graph_prints_dot_to_stdout(graph_agent_dir: Path) -> None:
+  result = CliRunner().invoke(
+      cli_tools_click.main, ["graph", str(graph_agent_dir)]
+  )
+
+  assert result.exit_code == 0, result.output
+  assert "root -> helper" in result.output
+  assert "helper -> lookup" in result.output
+  assert "🤖 root" in result.output
+
+
+@pytest.mark.unmute_click
+def test_cli_graph_ascii_only_strips_non_ascii(
+    graph_agent_dir: Path, tmp_path: Path
+) -> None:
+  out = tmp_path / "graph.dot"
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["graph", str(graph_agent_dir), "--ascii-only", "--output", str(out)],
+  )
+
+  assert result.exit_code == 0, result.output
+  dot = out.read_text(encoding="utf-8")
+  assert dot.isascii()
+  assert 'label="root"' in dot
+  assert 'label="lookup"' in dot
+
+
+@pytest.mark.unmute_click
+def test_cli_graph_image_format_requires_output(graph_agent_dir: Path) -> None:
+  result = CliRunner().invoke(
+      cli_tools_click.main, ["graph", str(graph_agent_dir), "--format", "svg"]
+  )
+
+  assert result.exit_code == 2
+  assert "--output is required" in result.output
+
+
+@pytest.mark.unmute_click
+def test_cli_graph_ascii_only_rejects_image_format(
+    graph_agent_dir: Path, tmp_path: Path
+) -> None:
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "graph",
+          str(graph_agent_dir),
+          "--format",
+          "png",
+          "--ascii-only",
+          "--output",
+          str(tmp_path / "g.png"),
+      ],
+  )
+
+  assert result.exit_code == 2
+  assert "--ascii-only only applies" in result.output
+
+
+@pytest.mark.unmute_click
+def test_cli_graph_writes_rendered_image(
+    graph_agent_dir: Path, tmp_path: Path
+) -> None:
+  out = tmp_path / "graph.svg"
+
+  with mock.patch("graphviz.Digraph.pipe", return_value=b"<svg/>") as pipe:
+    result = CliRunner().invoke(
+        cli_tools_click.main,
+        [
+            "graph",
+            str(graph_agent_dir),
+            "--format",
+            "svg",
+            "--output",
+            str(out),
+        ],
+    )
+
+  assert result.exit_code == 0, result.output
+  pipe.assert_called_once_with(format="svg")
+  assert out.read_bytes() == b"<svg/>"
+
+
+@pytest.mark.unmute_click
+def test_cli_graph_reports_missing_graphviz(
+    graph_agent_dir: Path, tmp_path: Path
+) -> None:
+  import graphviz
+
+  with mock.patch(
+      "graphviz.Digraph.pipe", side_effect=graphviz.ExecutableNotFound(["dot"])
+  ):
+    result = CliRunner().invoke(
+        cli_tools_click.main,
+        [
+            "graph",
+            str(graph_agent_dir),
+            "--format",
+            "png",
+            "--output",
+            str(tmp_path / "g.png"),
+        ],
+    )
+
+  assert result.exit_code == 1
+  assert "install Graphviz" in result.output
+  assert not (tmp_path / "g.png").exists()
+
+
+@pytest.mark.unmute_click
+def test_cli_graph_ascii_only_keeps_non_ascii_names_distinct(
+    tmp_path: Path,
+) -> None:
+  agent_dir = tmp_path / f"graph_names_{tmp_path.name}"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").write_text("from . import agent\n")
+  (agent_dir / "agent.py").write_text(
+      "from google.adk.agents import LlmAgent\n"
+      'a = LlmAgent(name="助手", model="gemini-2.0-flash")\n'
+      'b = LlmAgent(name="café", model="gemini-2.0-flash")\n'
+      'root_agent = LlmAgent(name="root", model="gemini-2.0-flash",'
+      " sub_agents=[a, b])\n",
+      encoding="utf-8",
+  )
+  out = tmp_path / "graph.dot"
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["graph", str(agent_dir), "--ascii-only", "--output", str(out)],
+  )
+
+  assert result.exit_code == 0, result.output
+  dot = out.read_text(encoding="utf-8")
+  assert re.search(r'root -> "?助手"? ', dot)
+  assert re.search(r'root -> "?café"? ', dot)
+  assert 'label="助手"' in dot
+
+
+@pytest.mark.unmute_click
+def test_cli_graph_reports_unwritable_output(
+    graph_agent_dir: Path, tmp_path: Path
+) -> None:
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "graph",
+          str(graph_agent_dir),
+          "--output",
+          str(tmp_path / "missing_dir" / "graph.dot"),
+      ],
+  )
+
+  assert result.exit_code == 1
+  assert "Failed to write" in result.output

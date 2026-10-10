@@ -24,6 +24,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import textwrap
@@ -1169,6 +1170,109 @@ def cli_run(
             default_llm_model=default_llm_model,
         )
     )
+
+
+@main.command("graph", cls=HelpfulCommand)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["dot", "png", "svg"]),
+    default="dot",
+    show_default=True,
+    help=(
+        "Optional. Output format. png and svg are rendered by Graphviz, which"
+        " must be installed."
+    ),
+)
+@click.option(
+    "--output",
+    type=click.Path(dir_okay=False, file_okay=True, resolve_path=True),
+    help=(
+        "Optional. File to write the graph to. Defaults to stdout for dot;"
+        " required for png and svg."
+    ),
+)
+@click.option(
+    "--ascii-only",
+    is_flag=True,
+    help=(
+        "Optional. Drop the emoji prefix from node labels in the dot output,"
+        " for consoles that cannot encode them. Non-ASCII agent names are kept."
+    ),
+)
+@click.argument(
+    "agent",
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+)
+def cli_graph(
+    agent: str,
+    output_format: str,
+    output: Optional[str],
+    ascii_only: bool,
+):
+  """Renders an agent's structure as a Graphviz graph.
+
+  AGENT: The path to the agent source code folder.
+
+  Example:
+
+    adk graph path/to/my_agent
+    adk graph path/to/my_agent --format svg --output my_agent.svg
+  """
+  import graphviz
+
+  from ..apps.app import App
+  from .agent_graph import get_agent_graph
+  from .utils.agent_loader import AgentLoader
+
+  if output_format != "dot" and not output:
+    raise click.UsageError(
+        f"--output is required for --format {output_format}."
+    )
+  if ascii_only and output_format != "dot":
+    raise click.UsageError("--ascii-only only applies to --format dot.")
+
+  agent_dir = Path(agent)
+  try:
+    loaded = AgentLoader(agents_dir=str(agent_dir.parent)).load_agent(
+        agent_dir.name
+    )
+  except Exception as e:  # pylint: disable=broad-exception-caught
+    raise click.ClickException(f"Failed to load agent '{agent}': {e}") from e
+  root_agent = loaded.root_agent if isinstance(loaded, App) else loaded
+
+  try:
+    graph = asyncio.run(get_agent_graph(root_agent, []))
+  except Exception as e:  # pylint: disable=broad-exception-caught
+    raise click.ClickException(f"Failed to build the agent graph: {e}") from e
+
+  if output_format == "dot":
+    dot = graph.source
+    if ascii_only:
+      dot = re.sub(r'label="[^\x00-\x7f]+ ', 'label="', dot)
+    if not output:
+      click.echo(dot)
+      return
+    content = dot.encode("utf-8")
+  else:
+    try:
+      content = graph.pipe(format=output_format)
+    except graphviz.ExecutableNotFound as e:
+      raise click.ClickException(
+          "Graphviz 'dot' executable not found; install Graphviz to render"
+          f" {output_format}, or use --format dot. ({e})"
+      ) from e
+    except graphviz.CalledProcessError as e:
+      raise click.ClickException(
+          f"Graphviz failed to render {output_format}: {e}"
+      ) from e
+
+  try:
+    Path(output).write_bytes(content)
+  except OSError as e:
+    raise click.ClickException(f"Failed to write '{output}': {e}") from e
 
 
 @main.command(
