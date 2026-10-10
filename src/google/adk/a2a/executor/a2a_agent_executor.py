@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+from typing import Any
 from typing import Awaitable
 from typing import Callable
 
@@ -25,6 +26,7 @@ from a2a.server.events.event_queue import EventQueue
 from a2a.types import Artifact
 from a2a.types import Message
 from a2a.types import TaskArtifactUpdateEvent
+from a2a.types import TaskStatusUpdateEvent
 from google.adk.platform import uuid as platform_uuid
 from google.adk.runners import Runner
 from google.adk.sessions.session import Session
@@ -33,6 +35,8 @@ from typing_extensions import override
 from .. import _compat
 from ...utils.context_utils import Aclosing
 from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
+from ..converters.event_converter import is_euc_part
+from ..converters.event_converter import is_long_running_part
 from ..converters.request_converter import AgentRunRequest
 from ..converters.utils import _get_adk_metadata_key
 from ..experimental import a2a_experimental
@@ -223,6 +227,12 @@ class A2aAgentExecutor(AgentExecutor):
     )
 
     task_result_aggregator = TaskResultAggregator()
+    # Long-running calls (e.g. ``adk_request_confirmation``) are held back
+    # from the intermediate stream and sent once, in the terminal event,
+    # instead of once as a masked WORKING update and again as the final
+    # result. See https://github.com/google/adk-python/issues/7247.
+    long_running_message_parts: list[Any] = []
+    long_running_state: Any = None
     last_adk_event = None
     async with Aclosing(runner.run_async(**vars(run_request))) as agen:
       async for adk_event in agen:
@@ -241,6 +251,22 @@ class A2aAgentExecutor(AgentExecutor):
               self._config.execute_interceptors,
           )
           for e in a2a_events:
+            if (
+                isinstance(e, TaskStatusUpdateEvent)
+                and e.status
+                and e.status.message
+                and any(
+                    is_long_running_part(part)
+                    for part in e.status.message.parts
+                )
+            ):
+              long_running_message_parts.extend(e.status.message.parts)
+              long_running_state = (
+                  _compat.TS_AUTH_REQUIRED
+                  if any(is_euc_part(part) for part in e.status.message.parts)
+                  else _compat.TS_INPUT_REQUIRED
+              )
+              continue
             task_result_aggregator.process_event(e)
             await event_queue.enqueue_event(e)
 
@@ -261,7 +287,24 @@ class A2aAgentExecutor(AgentExecutor):
           final_metadata[_get_adk_metadata_key(key)] = val
 
     # publish the task result event - this is final
-    if (
+    if long_running_message_parts:
+      # Long-running calls were held back from the intermediate stream above;
+      # send them exactly once, as the terminal event.
+      final_event = _compat.make_task_status_update_event(
+          task_id=task_id,
+          context_id=context_id,
+          status=_compat.make_task_status(
+              long_running_state,
+              message=Message(
+                  message_id=platform_uuid.new_uuid(),
+                  role=_compat.ROLE_AGENT,
+                  parts=long_running_message_parts,
+              ),
+          ),
+          final=True,
+          metadata=final_metadata,
+      )
+    elif (
         task_result_aggregator.task_state == _compat.TS_WORKING
         and task_result_aggregator.task_status_message is not None
         and task_result_aggregator.task_status_message.parts
