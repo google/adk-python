@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -500,10 +501,46 @@ class TestA2aAgentExecutor:
     assert failure_event.status.state == _compat.TS_FAILED
     _assert_final(failure_event)
     _failure_part = failure_event.status.message.parts[0]
-    if _compat.IS_A2A_V1:
-      assert "Test error" in _failure_part.text
-    else:
-      assert "Test error" in _failure_part.root.text
+    _text = _failure_part.text if _compat.IS_A2A_V1 else _failure_part.root.text
+    assert "Agent execution failed." in _text
+    assert "Test error" not in _text
+
+  @pytest.mark.asyncio
+  async def test_execute_failure_message_omits_exception_text(self):
+    """The peer gets a fixed summary and an id, never the exception text."""
+    self.mock_context.task_id = "test-task-id"
+    self.mock_context.current_task = None
+    self.mock_request_converter.side_effect = FileNotFoundError(
+        2, "No such file or directory", "/srv/secrets/sa-key.json"
+    )
+
+    await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    failure_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
+    part = failure_event.status.message.parts[0]
+    text = part.text if _compat.IS_A2A_V1 else part.root.text
+    assert "/srv/secrets/sa-key.json" not in text
+    assert re.fullmatch(
+        r"Agent execution failed\. \(error_id: [0-9a-f]{8}\)", text
+    )
+
+  @pytest.mark.asyncio
+  async def test_execute_failure_message_includes_detail_when_opted_in(
+      self, monkeypatch
+  ):
+    """`ADK_A2A_DEBUG_ERRORS=1` puts the exception text back."""
+    monkeypatch.setenv("ADK_A2A_DEBUG_ERRORS", "1")
+    self.mock_context.task_id = "test-task-id"
+    self.mock_context.current_task = None
+    self.mock_request_converter.side_effect = Exception("Test error")
+
+    await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    failure_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
+    part = failure_event.status.message.parts[0]
+    text = part.text if _compat.IS_A2A_V1 else part.root.text
+    assert "Agent execution failed." in text
+    assert "Test error" in text
 
   @pytest.mark.asyncio
   async def test_handle_request_with_non_working_state(self):
