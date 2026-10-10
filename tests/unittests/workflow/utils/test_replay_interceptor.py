@@ -96,12 +96,17 @@ def test_cross_turn_unresolved_interrupts_no_rerun():
   assert result.interrupts == {'fc-2'}
 
 
-def test_cross_turn_unresolved_interrupts_rerun():
-  """Cross-turn unresolved interrupts with rerun resolves progress and reruns."""
-  # Given unresolved interrupts and node with rerun_on_resume
+def test_cross_turn_unresolved_descendant_interrupts_rerun():
+  """A rerun_on_resume node reruns once its own interrupts are all answered.
+
+  The remaining unresolved interrupt belongs to a descendant dynamic node, so
+  the parent reruns to let that child advance.
+  """
+  # Given the node's only direct interrupt resolved and a descendant's pending
   recovered = _ChildScanState(
       run_id='1',
       interrupt_ids={'fc-1', 'fc-2'},
+      direct_interrupt_ids={'fc-1'},
       resolved_ids={'fc-1'},
       resolved_responses={'fc-1': 'ans'},
   )
@@ -116,6 +121,30 @@ def test_cross_turn_unresolved_interrupts_rerun():
   # Then it reruns with partial resolved inputs
   assert result.should_run
   assert result.resume_inputs == {'fc-1': 'ans'}
+
+
+def test_cross_turn_unresolved_direct_interrupts_wait():
+  """A rerun_on_resume node waits while any of its own interrupts is pending."""
+  # Given two direct interrupts of which only one has been answered
+  recovered = _ChildScanState(
+      run_id='1',
+      interrupt_ids={'fc-1', 'fc-2'},
+      direct_interrupt_ids={'fc-1', 'fc-2'},
+      resolved_ids={'fc-1'},
+      resolved_responses={'fc-1': 'ans'},
+  )
+  node = BaseNode(name='node', rerun_on_resume=True)
+
+  # When checked
+  result = check_interception(
+      node=node,
+      recovered=recovered,
+  )
+
+  # Then it keeps waiting on the unanswered one instead of rerunning
+  assert not result.should_run
+  assert result.interrupts == {'fc-2'}
+  assert result.resume_inputs is None
 
 
 def test_cross_turn_completed():

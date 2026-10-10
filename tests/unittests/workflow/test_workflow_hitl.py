@@ -1053,23 +1053,7 @@ async def test_rerun_with_multiple_hitl_and_outputs(
   assert node_b.received_inputs == ['final_output']
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        False,
-        pytest.param(
-            True,
-            marks=pytest.mark.xfail(
-                reason=(
-                    'A rerun_on_resume node is re-run as soon as one interrupt'
-                    ' resolves instead of waiting for all pending interrupts;'
-                    ' fixing this needs a change to the shared replay'
-                    ' interception logic.'
-                )
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_rerun_on_resume_waits_for_all_interrupts(
     request: pytest.FixtureRequest,
@@ -1182,14 +1166,10 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
     )
     assert final_state2['nodes']['NodeA']['interrupts'] == ['req2']
 
-  # The node should NOT have produced any RequestInput or data output in resumable mode.
-  # In non-resumable mode, it re-yields the pending interrupt 'req2'.
+  # The node should NOT have produced any RequestInput or data output since it
+  # did not rerun while req2 was still pending.
   req_events2 = workflow_testing_utils.get_request_input_events(events2)
-  if resumable:
-    assert len(req_events2) == 0
-  else:
-    assert len(req_events2) == 1
-    assert get_request_input_interrupt_ids(req_events2[0]) == ['req2']
+  assert len(req_events2) == 0
 
   # Run 3: provide req2 — now all interrupts resolved, node should rerun.
   events3 = await runner.run_async(

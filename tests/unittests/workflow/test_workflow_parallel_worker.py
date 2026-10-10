@@ -22,9 +22,11 @@ from google.adk.agents.context import Context
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
+from google.adk.events.request_input import RequestInput
 from google.adk.workflow import BaseNode
 from google.adk.workflow import START
 from google.adk.workflow._node import node
+from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._parallel_worker import _ParallelWorker as ParallelWorker
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
@@ -470,7 +472,6 @@ class _HitlWorkerNode(BaseNode):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason='ctx.run_node needs barrier for parallel HITL')
 async def test_parallel_worker_pauses_for_human_input(
     request: pytest.FixtureRequest,
 ):
@@ -525,11 +526,11 @@ async def test_parallel_worker_pauses_for_human_input(
           },
       ),
       (
-          'parallel_worker_hitl_agent@1/Worker@1',
+          'parallel_worker_hitl_agent@1/Worker@1/Worker@1',
           {'output': 'item1_processed'},
       ),
       (
-          'parallel_worker_hitl_agent',
+          'parallel_worker_hitl_agent@1/Worker@1/Worker@2',
           testing_utils.simplify_content(req_events[0].content),
       ),
   ]
@@ -552,7 +553,16 @@ async def test_parallel_worker_pauses_for_human_input(
 
   assert simplified_events2 == [
       (
-          'parallel_worker_hitl_agent@1/Worker@1',
+          'parallel_worker_hitl_agent@1/NodeA@1',
+          {
+              'output': [
+                  {'val': 'item1', 'ask': False},
+                  {'val': 'item2', 'ask': True},
+              ],
+          },
+      ),
+      (
+          'parallel_worker_hitl_agent@1/Worker@1/Worker@2',
           {'output': 'item2_resumed'},
       ),
       (
@@ -855,7 +865,6 @@ async def test_parallel_worker_limits_parallel_workers(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason='Hangs: ctx.run_node needs barrier for parallel HITL')
 async def test_parallel_worker_hitl_respects_parallel_workers_limits(
     request: pytest.FixtureRequest,
 ):
@@ -957,11 +966,11 @@ async def test_parallel_worker_hitl_respects_parallel_workers_limits(
           },
       ),
       (
-          'max_parallel_workers_hitl_agent',
+          'max_parallel_workers_hitl_agent@1/Worker@1/Worker@2',
           testing_utils.simplify_content(req_events[0].content),
       ),
       (
-          'max_parallel_workers_hitl_agent@1/Worker__0@1',
+          'max_parallel_workers_hitl_agent@1/Worker@1/Worker@1',
           {'output': 'item1_processed'},
       ),
   ]
@@ -999,11 +1008,17 @@ async def test_parallel_worker_hitl_respects_parallel_workers_limits(
   simplified_events2 = simplify_events_with_node(events2)
   assert simplified_events2 == [
       (
-          'max_parallel_workers_hitl_agent@1/Worker__1@1',
+          'max_parallel_workers_hitl_agent@1/NodeA@1',
+          {
+              'output': items,
+          },
+      ),
+      (
+          'max_parallel_workers_hitl_agent@1/Worker@1/Worker@2',
           {'output': 'item2_resumed'},
       ),
       (
-          'max_parallel_workers_hitl_agent',
+          'max_parallel_workers_hitl_agent@1/Worker@1/Worker@3',
           testing_utils.simplify_content(req_events_2[0].content),
       ),
   ]
@@ -1032,7 +1047,13 @@ async def test_parallel_worker_hitl_respects_parallel_workers_limits(
 
   assert simplified_events3 == [
       (
-          'max_parallel_workers_hitl_agent@1/Worker__2@1',
+          'max_parallel_workers_hitl_agent@1/NodeA@1',
+          {
+              'output': items,
+          },
+      ),
+      (
+          'max_parallel_workers_hitl_agent@1/Worker@1/Worker@3',
           {'output': 'item3_resumed'},
       ),
       (
@@ -1129,6 +1150,75 @@ async def test_parallel_worker_cancels_in_flight_items(
   await asyncio.wait_for(
       asyncio.gather(*(event.wait() for event in cancelled.values())), timeout=1
   )
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_waits_for_in_flight_items_on_interrupt(
+    request: pytest.FixtureRequest,
+):
+  """An interrupted item does not cancel its siblings still in flight.
+
+  Setup: 2 items. item1 blocks on a gate the test controls; item2 requests
+    input while item1 is still running.
+  Assert: the run is still going after item2 interrupts, and once item1 is
+    released its output is part of run 1 while the worker checkpoints as
+    WAITING. Previously the interrupt was treated as a failure, which
+    cancelled item1 and lost its result.
+  """
+  item1_release = asyncio.Event()
+  item2_interrupted = asyncio.Event()
+
+  @node(name='Worker')
+  async def gated_hitl_worker(
+      ctx: Context, node_input: str
+  ) -> AsyncGenerator[Any, None]:
+    if node_input == 'item2':
+      item2_interrupted.set()
+      yield RequestInput(interrupt_id='req_item2', message='Input for item2')
+    else:
+      await item1_release.wait()
+      yield Event(output='item1_processed')
+
+  node_a = _ProducerNode(items=['item1', 'item2'], name='NodeA')
+  worker = ParallelWorker(node=gated_hitl_worker)
+  agent = Workflow(
+      name='in_flight_interrupt_agent',
+      edges=[(START, node_a), (node_a, worker)],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+  run_task = asyncio.create_task(
+      runner.run_async(testing_utils.get_user_content('start'))
+  )
+
+  # When item2 interrupts while item1 is still blocked on its gate
+  await asyncio.wait_for(item2_interrupted.wait(), timeout=_MAX_WAIT_S)
+  # Give the interrupt time to reach the worker. Before the fix this is where
+  # it cancelled item1 and finished the run.
+  await asyncio.sleep(0.1)
+
+  # Then the run is still waiting on item1 rather than finished without it
+  assert not run_task.done()
+
+  # When item1 is released
+  item1_release.set()
+  events1 = await asyncio.wait_for(run_task, timeout=_MAX_WAIT_S)
+
+  # Then item1's output is part of run 1 and the worker is WAITING on item2
+  assert (
+      'in_flight_interrupt_agent@1/Worker@1/Worker@1',
+      {'output': 'item1_processed'},
+  ) in simplify_events_with_node(events1)
+  checkpoints = [
+      e.actions.agent_state for e in events1 if e.actions.agent_state
+  ]
+  worker_state = checkpoints[-1]['nodes']['Worker']
+  assert worker_state['status'] == NodeStatus.WAITING.value
+  assert worker_state['interrupts'] == ['req_item2']
 
 
 @pytest.mark.asyncio
