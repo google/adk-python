@@ -286,6 +286,7 @@ def validate_node_data(
     data: Any,
     *,
     preserve_content: bool = False,
+    exclude_none: bool = True,
 ) -> Any:
   """Validates and sanitizes node input or output data against a schema."""
   if data is None or schema is None:
@@ -296,7 +297,7 @@ def validate_node_data(
 
   def _to_serializable(val: Any) -> Any:
     if isinstance(val, BaseModel):
-      return val.model_dump(exclude_none=True)
+      return val.model_dump(exclude_none=exclude_none)
     if isinstance(val, list):
       return [_to_serializable(item) for item in val]
     if isinstance(val, dict):

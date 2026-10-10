@@ -562,3 +562,35 @@ class TestPreprocessArgs:
     result = preprocess_args(raw_args, None)
     assert result == raw_args
     assert result is not raw_args
+
+
+@pytest.mark.parametrize("container", ["model", "list", "dict"])
+@pytest.mark.parametrize("exclude_none", [False, True])
+def test_validate_node_data_nullable_fields(container, exclude_none):
+  """Input conversion can retain None without changing output omission."""
+
+  class NullableModel(BaseModel):
+    value: str | None
+
+  schema = NullableModel
+  data = {"value": None}
+  expected = {} if exclude_none else {"value": None}
+  if container == "list":
+    schema = list[NullableModel]
+    data = [data]
+    expected = [expected]
+  elif container == "dict":
+    schema = dict[str, NullableModel]
+    data = {"item": data}
+    expected = {"item": expected}
+
+  assert validate_node_data(schema, data, exclude_none=exclude_none) == expected
+
+
+def test_validate_node_data_omits_none_by_default():
+  """Existing callers keep their output serialization behavior."""
+
+  class NullableModel(BaseModel):
+    value: str | None
+
+  assert validate_node_data(NullableModel, {"value": None}) == {}
