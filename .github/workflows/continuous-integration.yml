@@ -138,6 +138,12 @@ jobs:
           source .venv/bin/activate
           uv sync --all-extras $SKIP_PACKAGE_FLAGS
 
+          # Drop the baseline's .mypy_cache so the PR run starts fresh.
+          # Reusing it can reorder Literal[...] members in an unchanged
+          # error message, which then fails the text comparison below even
+          # though the PR introduced no new type error.
+          rm -rf .mypy_cache
+
           # Run mypy on PR code, apply same processing
           uv run mypy . | grep "error:" | sed 's/:\([0-9]\+\):/::/g' | sort > pr_errors.txt || true
           echo "Found $(wc -l < pr_errors.txt) errors on PR branch."
