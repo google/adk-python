@@ -2847,9 +2847,14 @@ def _model_response_to_chunk(
           func_args = function_obj.get("arguments")
           func_index = tool_call.get("index", idx)
           tool_call_id = tool_call.get("id")
+          thought_signature = _extract_thought_signature_from_tool_call(
+              tool_call
+          )
 
-          # Ignore empty chunks that don't carry any information.
-          if not func_name and not func_args:
+          # Ignore empty chunks that don't carry any information. A chunk
+          # with only a signature still counts: the signature belongs to the
+          # call another chunk names.
+          if not func_name and not func_args and not thought_signature:
             continue
 
           yield FunctionChunk(
@@ -2857,9 +2862,7 @@ def _model_response_to_chunk(
               name=func_name,
               args=func_args,
               index=func_index,
-              thought_signature=_extract_thought_signature_from_tool_call(
-                  tool_call
-              ),
+              thought_signature=thought_signature,
           ), finish_reason
 
     if finish_reason and not (message_content or tool_calls or reasoning_parts):
@@ -3943,6 +3946,8 @@ class LiteLlm(BaseLlm):
       function_calls: dict[int, dict[str, Any]] = (
           {}
       )  # index -> {name, args_parts, id, thought_signature}
+      # Signatures that arrived before any chunk naming their call.
+      pending_signatures: dict[int, bytes] = {}
       tool_call_trackers: Dict[int, _BraceDepthTracker] = {}
       completion_args["stream"] = True
       completion_args["stream_options"] = {"include_usage": True}
@@ -4080,6 +4085,7 @@ class LiteLlm(BaseLlm):
         text_parts.clear()
         reasoning_parts = []
         function_calls.clear()
+        pending_signatures.clear()
         tool_call_trackers.clear()
         # The reason belongs to the segment just finalized; carrying it into
         # the next one would stamp the wrong reason on the next response.
@@ -4106,14 +4112,33 @@ class LiteLlm(BaseLlm):
         for chunk, finish_reason in _model_response_to_chunk(part):
           if finish_reason:
             last_finish_reason = finish_reason
-          if isinstance(chunk, FunctionChunk):
+          if (
+              isinstance(chunk, FunctionChunk)
+              and not chunk.name
+              and not chunk.args
+              and chunk.thought_signature
+          ):
+            # Only a signature. Opening a call for it would send the model a
+            # call with no name, so attach it to the call at its own index
+            # (the fallback index may already point past that call), or hold
+            # it for the call that starts there next.
+            signed_call = function_calls.get(
+                chunk.index if chunk.index is not None else fallback_index
+            )
+            if signed_call is not None:
+              signed_call["thought_signature"] = chunk.thought_signature
+            else:
+              pending_signatures[chunk.index or fallback_index] = (
+                  chunk.thought_signature
+              )
+          elif isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index
             if index not in function_calls:
               function_calls[index] = {
                   "name": "",
                   "args_parts": [],
                   "id": None,
-                  "thought_signature": None,
+                  "thought_signature": pending_signatures.pop(index, None),
               }
 
             if chunk.name:

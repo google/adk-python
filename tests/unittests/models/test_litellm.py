@@ -4444,6 +4444,89 @@ async def test_streaming_parallel_tool_calls_keep_signature_per_call(
   assert parts[1].thought_signature is None
 
 
+def test_model_response_to_chunk_keeps_a_signature_only_delta():
+  """A delta with only a signature is kept so it can reach its call."""
+  chunks = list(
+      _model_response_to_chunk(
+          _streamed_tool_call_chunk(index=0, signature=b"late_sig")
+      )
+  )
+
+  function_chunk = chunks[0][0]
+  assert isinstance(function_chunk, FunctionChunk)
+  assert not function_chunk.name and not function_chunk.args
+  assert function_chunk.thought_signature == b"late_sig"
+
+
+@pytest.mark.asyncio
+async def test_streaming_signature_after_its_call_signs_that_call(
+    mock_completion, lite_llm_instance
+):
+  """A signature-only delta that trails a later call still signs its own."""
+  mock_completion.return_value = iter([
+      _streamed_tool_call_chunk(
+          index=0,
+          call_id="call_1",
+          name="get_weather",
+          arguments='{"city": "Oslo"}',
+      ),
+      _streamed_tool_call_chunk(
+          index=1,
+          call_id="call_2",
+          name="get_weather",
+          arguments='{"city": "Bergen"}',
+      ),
+      _streamed_tool_call_chunk(index=0, signature=b"late_sig"),
+      _streamed_finish_chunk(),
+  ])
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  parts = responses[-1].content.parts
+  assert [p.function_call.id for p in parts] == ["call_1", "call_2"]
+  assert [p.thought_signature for p in parts] == [b"late_sig", None]
+
+
+@pytest.mark.asyncio
+async def test_streaming_signature_before_its_call_signs_that_call(
+    mock_completion, lite_llm_instance
+):
+  """A signature-only delta ahead of its call opens no call of its own."""
+  mock_completion.return_value = iter([
+      _streamed_tool_call_chunk(index=0, signature=b"early_sig"),
+      _streamed_tool_call_chunk(
+          index=0,
+          call_id="call_1",
+          name="get_weather",
+          arguments='{"city": "Oslo"}',
+      ),
+      _streamed_finish_chunk(),
+  ])
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  streamed_calls = [
+      part.function_call
+      for response in responses
+      for part in (response.content.parts if response.content else [])
+      if part.function_call
+  ]
+  assert all(call.name == "get_weather" for call in streamed_calls)
+  parts = responses[-1].content.parts
+  assert [p.function_call.id for p in parts] == ["call_1"]
+  assert parts[0].thought_signature == b"early_sig"
+
+
 def test_message_to_generate_content_response_no_thought_signature():
   """Parts without thought_signature have thought_signature=None."""
   message = ChatCompletionAssistantMessage(
