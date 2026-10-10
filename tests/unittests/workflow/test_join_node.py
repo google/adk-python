@@ -16,11 +16,16 @@
 
 from google.adk import workflow
 from google.adk.apps import app
+from google.adk.apps.app import ResumabilityConfig
+from google.adk.events.event import Event
+from google.adk.events.request_input import RequestInput
 from google.adk.workflow import _base_node as base_node
 from google.adk.workflow import _graph as workflow_graph
 from google.adk.workflow import _join_node as join_node
 from google.adk.workflow import START
 from google.adk.workflow._workflow import Workflow
+from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
 from pydantic import BaseModel
 import pytest
 
@@ -348,3 +353,156 @@ async def test_join_node_computes_common_branch_prefix(
   assert len(capture_events) > 0
   for e in capture_events:
     assert e.branch is None
+
+
+@pytest.mark.asyncio
+async def test_join_node_in_loop_waits_for_each_iteration(
+    request: pytest.FixtureRequest,
+):
+  """Tests JoinNode in a loop waits for every predecessor's new run.
+
+  NodeB sits one hop further from START than NodeA, so on the second
+  iteration NodeA completes first. The join must not fire with NodeB's
+  output left over from the first iteration.
+  """
+  iteration = 0
+  join_inputs = []
+
+  def node_a(node_input):
+    nonlocal iteration
+    iteration += 1
+    return f'A{iteration}'
+
+  def node_x(node_input):
+    return 'x'
+
+  def node_b(node_input):
+    return f'B{iteration}'
+
+  def node_check(node_input):
+    join_inputs.append(node_input)
+    if len(join_inputs) < 2:
+      yield Event(route='again')
+    else:
+      yield Event(route='done', output='finished')
+
+  def node_end(node_input):
+    return node_input
+
+  a = workflow.node(node_a, name='NodeA')
+  x = workflow.node(node_x, name='NodeX')
+  b = workflow.node(node_b, name='NodeB')
+  check = workflow.node(node_check, name='NodeCheck')
+  end = workflow.node(node_end, name='NodeEnd')
+  join = join_node.JoinNode(name='NodeJoin')
+  agent = workflow.Workflow(
+      name='test_join_node_loop',
+      edges=[
+          workflow_graph.Edge(from_node=START, to_node=a),
+          workflow_graph.Edge(from_node=START, to_node=x),
+          workflow_graph.Edge(from_node=x, to_node=b),
+          workflow_graph.Edge(from_node=a, to_node=join),
+          workflow_graph.Edge(from_node=b, to_node=join),
+          workflow_graph.Edge(from_node=join, to_node=check),
+          workflow_graph.Edge(from_node=check, to_node=a, route='again'),
+          workflow_graph.Edge(from_node=check, to_node=x, route='again'),
+          workflow_graph.Edge(from_node=check, to_node=end, route='done'),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=app.App(name=request.function.__name__, root_agent=agent)
+  )
+
+  await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert join_inputs == [
+      {'NodeA': 'A1', 'NodeB': 'B1'},
+      {'NodeA': 'A2', 'NodeB': 'B2'},
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('is_resumable', [False, True])
+async def test_join_node_in_loop_waits_for_predecessor_paused_for_input(
+    request: pytest.FixtureRequest, is_resumable: bool
+):
+  """Tests JoinNode in a loop waits for a predecessor that asks the user.
+
+  On the second iteration NodeB pauses for input. The join must not fire
+  with NodeB's first-iteration output while it waits, and must fire once
+  with both second-iteration outputs after the resume.
+  """
+  a_runs = 0
+  b_runs = 0
+  join_inputs = []
+
+  def node_a(node_input):
+    nonlocal a_runs
+    a_runs += 1
+    return f'A{a_runs}'
+
+  def node_x(node_input):
+    return 'x'
+
+  def node_b(ctx, node_input):
+    nonlocal b_runs
+    if b_runs == 1 and 'ask' not in ctx.resume_inputs:
+      return RequestInput(interrupt_id='ask', message='Continue?')
+    b_runs += 1
+    return f'B{b_runs}'
+
+  def node_check(node_input):
+    join_inputs.append(node_input)
+    if len(join_inputs) < 2:
+      yield Event(route='again')
+    else:
+      yield Event(route='done', output='finished')
+
+  def node_end(node_input):
+    return node_input
+
+  a = workflow.node(node_a, name='NodeA')
+  x = workflow.node(node_x, name='NodeX')
+  b = workflow.node(node_b, name='NodeB', rerun_on_resume=True)
+  check = workflow.node(node_check, name='NodeCheck')
+  end = workflow.node(node_end, name='NodeEnd')
+  join = join_node.JoinNode(name='NodeJoin')
+  agent = workflow.Workflow(
+      name='test_join_node_loop_hitl',
+      edges=[
+          workflow_graph.Edge(from_node=START, to_node=a),
+          workflow_graph.Edge(from_node=START, to_node=x),
+          workflow_graph.Edge(from_node=x, to_node=b),
+          workflow_graph.Edge(from_node=a, to_node=join),
+          workflow_graph.Edge(from_node=b, to_node=join),
+          workflow_graph.Edge(from_node=join, to_node=check),
+          workflow_graph.Edge(from_node=check, to_node=a, route='again'),
+          workflow_graph.Edge(from_node=check, to_node=x, route='again'),
+          workflow_graph.Edge(from_node=check, to_node=end, route='done'),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=app.App(
+          name=request.function.__name__,
+          root_agent=agent,
+          resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+      )
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert join_inputs == [{'NodeA': 'A1', 'NodeB': 'B1'}]
+
+  request_events = workflow_testing_utils.get_request_input_events(events)
+  interrupt_id = get_request_input_interrupt_ids(request_events[0])[0]
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id, {'ok': True})
+      ),
+      invocation_id=events[0].invocation_id,
+  )
+
+  assert join_inputs == [
+      {'NodeA': 'A1', 'NodeB': 'B1'},
+      {'NodeA': 'A2', 'NodeB': 'B2'},
+  ]
