@@ -1702,6 +1702,83 @@ async def test_adk_function_call_ids_preserved_for_lite_llm_model():
 
 
 @pytest.mark.asyncio
+async def test_adk_function_call_ids_preserved_for_lite_llm_subclass():
+  """A LiteLlm subclass that declares its own capabilities keeps `adk-*` ids."""
+  from google.adk.models import LlmCapabilities
+  from google.adk.models.lite_llm import LiteLlm
+
+  class _CustomLiteLlm(LiteLlm):
+
+    @property
+    def capabilities(self) -> LlmCapabilities:
+      return LlmCapabilities(output_schema_and_tools=True)
+
+  agent = Agent(
+      model=_CustomLiteLlm(model="openai/gpt-4o-mini"),
+      name="test_agent",
+  )
+  llm_request = LlmRequest(model="openai/gpt-4o-mini")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
+
+
+@pytest.mark.asyncio
 async def test_adk_function_call_ids_preserved_for_openai_responses_model():
   """Responses API replay needs call_id values to match tool outputs."""
   agent = Agent(
@@ -1808,6 +1885,58 @@ def test_id_pairing_model_types_probes_optional_providers_once():
   assert first == ()
   assert second is first
   assert probed == list(optional_modules)
+
+
+@pytest.mark.asyncio
+async def test_deciding_to_preserve_ids_imports_no_provider_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Running a turn must not drag in the SDK of a provider it is not using.
+
+  Import attempts are counted rather than `sys.modules` inspected, because a
+  module another test already imported would hide the regression. For the
+  same reason the memoized `_id_pairing_model_types` is cleared first: once
+  warm, it answers without importing anything.
+  """
+  optional_modules = (
+      "google.adk.models.anthropic_llm",
+      "google.adk.models.lite_llm",
+      "google.adk.integrations.openai._openai_responses_llm",
+  )
+  probed = []
+
+  class _RecordsProviderImports:
+
+    def find_spec(self, name, path=None, target=None):
+      if name in optional_modules:
+        probed.append(name)
+      return None
+
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Hello"),
+      ),
+  ]
+  for name in optional_modules:
+    monkeypatch.delitem(sys.modules, name, raising=False)
+  monkeypatch.setattr(
+      sys, "meta_path", [_RecordsProviderImports(), *sys.meta_path]
+  )
+  contents._id_pairing_model_types.cache_clear()
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert probed == []
 
 
 @pytest.mark.asyncio
