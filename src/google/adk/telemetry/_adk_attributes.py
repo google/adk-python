@@ -43,3 +43,17 @@ ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED = (
 
 # Names the callback that produced the response the span records.
 ADK_EXPERIMENTAL_RESPONSE_SOURCE = 'adk.experimental.response.source'
+
+ADK_EXPERIMENTAL_GROUNDING_GROUNDED = 'adk.experimental.grounding.grounded'
+ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT = (
+    'adk.experimental.grounding.query_count'
+)
+ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT = (
+    'adk.experimental.grounding.chunk_count'
+)
+ADK_EXPERIMENTAL_GROUNDING_WEB_SEARCH_QUERIES = (
+    'adk.experimental.grounding.web_search_queries'
+)
+ADK_EXPERIMENTAL_GROUNDING_SOURCE_URIS = (
+    'adk.experimental.grounding.source_uris'
+)
