@@ -14,12 +14,15 @@
 
 """Tests for runner.rewind_async."""
 
+from pathlib import Path
 from typing import Any
 from typing import Optional
 from typing import Union
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.artifacts.base_artifact_service import BaseArtifactService
 from google.adk.artifacts.base_artifact_service import ensure_part
+from google.adk.artifacts.file_artifact_service import FileArtifactService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.events.event import EventActions
@@ -398,3 +401,57 @@ class TestRunnerRewindNoFileData:
     )
     last_event = rewound_session.events[-1]
     assert last_event.actions.state_delta == {"overridden": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("storage", ["in_memory", "file"])
+async def test_rewind_removes_artifact_created_after_rewind_point(
+    storage: str, tmp_path: Path
+) -> None:
+  """An artifact first saved after the rewind point no longer loads."""
+  artifact_service: BaseArtifactService = (
+      FileArtifactService(root_dir=tmp_path)
+      if storage == "file"
+      else InMemoryArtifactService()
+  )
+  runner = Runner(
+      app_name="test_app",
+      agent=BaseAgent(name="test_agent"),
+      session_service=InMemorySessionService(),
+      artifact_service=artifact_service,
+  )
+  session = await runner.session_service.create_session(
+      app_name="test_app", user_id="u1", session_id="s1"
+  )
+  await runner.session_service.append_event(
+      session=session, event=Event(invocation_id="inv1", author="user")
+  )
+  await artifact_service.save_artifact(
+      app_name="test_app",
+      user_id="u1",
+      session_id="s1",
+      filename="report.txt",
+      artifact=types.Part.from_text(text="draft"),
+  )
+  await runner.session_service.append_event(
+      session=session,
+      event=Event(
+          invocation_id="inv2",
+          author="agent",
+          actions=EventActions(artifact_delta={"report.txt": 0}),
+      ),
+  )
+
+  await runner.rewind_async(
+      user_id="u1", session_id="s1", rewind_before_invocation_id="inv2"
+  )
+
+  assert (
+      await artifact_service.load_artifact(
+          app_name="test_app",
+          user_id="u1",
+          session_id="s1",
+          filename="report.txt",
+      )
+      is None
+  )
