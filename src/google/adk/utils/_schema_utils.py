@@ -37,6 +37,7 @@ from pydantic import TypeAdapter
 from typing_extensions import Annotated
 
 from . import _json_utils
+from .content_utils import extract_text_from_content
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -312,9 +313,7 @@ def validate_node_data(
     return _validate_python_object(data)
 
   if isinstance(data, types.Content):
-    # Extract text part
-    text_parts = [p.text for p in data.parts if p.text] if data.parts else []
-    text_str = "".join(text_parts)
+    text_str = extract_text_from_content(data)
 
     # Validate the text
     if schema is str:

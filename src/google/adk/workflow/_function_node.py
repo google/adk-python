@@ -44,6 +44,7 @@ from ..utils._callable_utils import CallableSpec
 from ..utils._schema_utils import annotation_accepts_content
 from ..utils._schema_utils import annotation_expects_str
 from ..utils._sync_runner import _SYNC_CALLABLE_RUNNER
+from ..utils.content_utils import extract_text_from_content
 from ..utils.context_utils import Aclosing
 from ._base_node import BaseNode
 from ._errors import WorkflowConfigurationError
@@ -205,12 +206,11 @@ _GENERATOR_ORIGINS = (
 def _content_to_str(
     content: types.Content, func_name: str, param_name: str
 ) -> str:
-  """Extracts text from a Content object, warning on non-text parts."""
-  texts = []
+  """Extracts answer text from Content, warning on non-text parts."""
   for part in content.parts or []:
-    if part.text is not None:
-      texts.append(part.text)
-    elif part.inline_data or part.file_data or part.executable_code:
+    if part.text is None and (
+        part.inline_data or part.file_data or part.executable_code
+    ):
       logger.warning(
           'Parameter "%s" of function "%s" expects str but received'
           " Content with non-text parts (e.g. inline_data, file_data)."
@@ -218,7 +218,7 @@ def _content_to_str(
           param_name,
           func_name,
       )
-  return "".join(texts)
+  return extract_text_from_content(content)
 
 
 _expects_str = annotation_expects_str
