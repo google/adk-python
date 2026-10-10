@@ -256,6 +256,106 @@ def test_run_cmd_invalid_app_name(
     )
 
 
+@pytest.mark.parametrize(
+    "invalid_name",
+    [
+        "my-agent",
+        "class",
+    ],
+)
+def test_run_cmd_rejects_non_identifier_or_keyword_agent_name(
+    invalid_name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  """Kebab-case and Python keywords should be rejected before any dialogs."""
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+  model_prompt_called = False
+
+  def _fail_if_prompted():
+    nonlocal model_prompt_called
+    model_prompt_called = True
+    return "gemini-2.5-flash"
+
+  monkeypatch.setattr(cli_create, "_prompt_for_model", _fail_if_prompted)
+
+  with pytest.raises(
+      click.BadParameter, match="must be a valid Python identifier"
+  ):
+    cli_create.run_cmd(
+        invalid_name,
+        model=None,
+        google_api_key=None,
+        google_cloud_project=None,
+        google_cloud_region=None,
+        type="code",
+    )
+  assert not model_prompt_called
+
+
+@pytest.mark.parametrize(
+    "valid_name",
+    [
+        "my_agent",
+        "MyAgent",
+        "myAgent",
+    ],
+)
+def test_run_cmd_accepts_valid_identifier_names(
+    valid_name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  """snake_case, PascalCase, and camelCase should be accepted."""
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+
+  cli_create.run_cmd(
+      valid_name,
+      model="gemini-2.5-flash",
+      google_api_key="test-key",
+      google_cloud_project=None,
+      google_cloud_region=None,
+      type="code",
+  )
+  assert (tmp_path / valid_name / "agent.py").exists()
+
+
+def test_run_cmd_allows_kebab_case_for_config_agents(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  """Config-based agents do not rely on Python imports and allow kebab-case."""
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+
+  cli_create.run_cmd(
+      "my-config-agent",
+      model="gemini-2.5-flash",
+      google_api_key="test-key",
+      google_cloud_project=None,
+      google_cloud_region=None,
+      type="config",
+  )
+  config_file = tmp_path / "my-config-agent" / "root_agent.yaml"
+  assert config_file.exists()
+  content = config_file.read_text(encoding="utf-8")
+  assert "model: gemini-2.5-flash" in content
+
+
+def test_run_cmd_rejects_kebab_case_when_prompted_as_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  """If type is not passed, choosing CODE in prompt still validates identifier."""
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+  monkeypatch.setattr(cli_create, "_prompt_to_choose_type", lambda: "CODE")
+
+  with pytest.raises(
+      click.BadParameter, match="must be a valid Python identifier"
+  ):
+    cli_create.run_cmd(
+        "kebab-agent",
+        model="gemini-2.5-flash",
+        google_api_key="test-key",
+        google_cloud_project=None,
+        google_cloud_region=None,
+        type=None,
+    )
+
+
 def test_run_cmd_with_type_config(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

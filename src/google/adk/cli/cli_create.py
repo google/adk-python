@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import keyword
 import os
 from typing import Optional
 
@@ -227,6 +228,19 @@ def run_cmd(
   except ValueError as exc:
     raise click.BadParameter(str(exc)) from exc
 
+  if not type:
+    type = _prompt_to_choose_type()
+
+  resolved_type = type.lower()
+  if resolved_type == "code" and (
+      not app_name.isidentifier() or keyword.iskeyword(app_name)
+  ):
+    raise click.BadParameter(
+        f"Invalid agent name '{app_name}': code-based agents must be a valid"
+        " Python identifier (e.g. 'my_agent', not 'my-agent') and cannot be a"
+        " Python keyword."
+    )
+
   agent_folder = os.path.join(os.getcwd(), agent_name)
   # check folder doesn't exist or it's empty. Otherwise, throw
   if os.path.exists(agent_folder) and os.listdir(agent_folder):
@@ -256,16 +270,13 @@ def run_cmd(
         google_cloud_project = auth_info.project_id
         google_cloud_region = auth_info.region
 
-  if not type:
-    type = _prompt_to_choose_type()
-
   _generate_files(
       agent_folder,
       google_api_key=google_api_key,
       google_cloud_project=google_cloud_project,
       google_cloud_region=google_cloud_region,
       model=model,
-      type=type.lower(),
+      type=resolved_type,
   )
   agents_dir = os.path.dirname(os.path.normpath(agent_name))
   click.echo(
