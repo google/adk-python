@@ -602,3 +602,88 @@ def test_search_memory_is_thread_safe_against_concurrent_writes():
   assert (
       not errors
   ), f'search_memory raced with concurrent writes: {errors[0]!r}'
+
+
+@pytest.mark.parametrize('ingest_session', [True, False])
+async def test_ingested_memories_do_not_follow_caller_event_mutations(
+    ingest_session: bool,
+) -> None:
+  """Changing an ingested event does not rewrite the stored memory."""
+  service = InMemoryMemoryService()
+  event = Event(
+      id='event',
+      author='user',
+      timestamp=12345,
+      content=types.Content(parts=[types.Part(text='I prefer jasmine tea.')]),
+  )
+  session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='session',
+      events=[event],
+  )
+  if ingest_session:
+    await service.add_session_to_memory(session)
+  else:
+    await service.add_events_to_memory(
+        app_name=session.app_name,
+        user_id=session.user_id,
+        session_id=session.id,
+        events=session.events,
+    )
+
+  event.author = 'changed'
+  event.content.parts[0].text = 'I prefer coffee.'
+  result = await service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='jasmine'
+  )
+
+  assert len(result.memories) == 1
+  assert result.memories[0].author == 'user'
+  assert result.memories[0].content.parts[0].text == 'I prefer jasmine tea.'
+
+
+@pytest.mark.parametrize('ingest_session', [True, False])
+async def test_retrieved_memories_do_not_mutate_storage_or_session_history(
+    ingest_session: bool,
+) -> None:
+  """Editing a search result leaves subsequent recall and its source intact."""
+  service = InMemoryMemoryService()
+  session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='session',
+      events=[
+          Event(
+              id='event',
+              author='user',
+              timestamp=12345,
+              content=types.Content(
+                  parts=[types.Part(text='I prefer jasmine tea.')]
+              ),
+          ),
+      ],
+  )
+  if ingest_session:
+    await service.add_session_to_memory(session)
+  else:
+    await service.add_events_to_memory(
+        app_name=session.app_name,
+        user_id=session.user_id,
+        session_id=session.id,
+        events=session.events,
+    )
+  first_result = await service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='jasmine'
+  )
+
+  first_result.memories[0].content.parts.clear()
+  second_result = await service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='jasmine'
+  )
+
+  assert len(second_result.memories) == 1
+  assert (
+      second_result.memories[0].content.parts[0].text == 'I prefer jasmine tea.'
+  )
+  assert session.events[0].content.parts[0].text == 'I prefer jasmine tea.'
