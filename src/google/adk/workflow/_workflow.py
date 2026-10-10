@@ -97,6 +97,14 @@ class _LoopState(DynamicNodeState):
   node_branches: dict[str, str] = field(default_factory=dict)
   """Cached static node branches."""
 
+  join_arrivals: dict[str, set[str]] = field(default_factory=dict)
+  """Predecessors that completed since each wait-for-all node last fired.
+
+  Keyed by the wait-for-all node's name. Cleared when that node fires, so in
+  a loop it waits for every predecessor's next run instead of counting runs
+  left over from an earlier iteration.
+  """
+
   pending_tasks: dict[str, asyncio.Task[Context]] = field(default_factory=dict)
   """Running static node tasks."""
 
@@ -790,6 +798,7 @@ class Workflow(BaseNode):
     loop_state.node_branches[node_name] = (
         child_ctx._invocation_context.branch or ""
     )
+    self._record_join_arrivals(loop_state, node_name)
 
     # A genuine execution records a checkpoint on completion. A replayed
     # fast-forward instead re-surfaces its recovered output so a resumable
@@ -808,27 +817,37 @@ class Workflow(BaseNode):
         child_ctx._invocation_context.branch,
     )
 
+  def _record_join_arrivals(
+      self, loop_state: _LoopState, node_name: str
+  ) -> None:
+    """Record node_name's completed run for each wait-for-all successor."""
+    graph = self._require_graph()
+    for edge in graph.edges:
+      if (
+          edge.from_node.name == node_name
+          and edge.to_node._requires_all_predecessors
+      ):
+        loop_state.join_arrivals.setdefault(edge.to_node.name, set()).add(
+            node_name
+        )
+
   def _buffer_barrier_trigger(
       self, loop_state: _LoopState, target_name: str
   ) -> None:
     """Buffer a trigger for target_name once all predecessors have completed.
 
-    No-op while any predecessor is still outstanding.
+    No-op while any predecessor is still outstanding. Only runs completed
+    since target_name last fired count, so each firing consumes them.
     """
     graph = self._require_graph()
     predecessors = {
         e.from_node.name for e in graph.edges if e.to_node.name == target_name
     }
+    arrivals = loop_state.join_arrivals.get(target_name, set())
     # START never executes, so it is satisfied as soon as the workflow begins.
-    if not all(
-        p == START.name
-        or (
-            loop_state.nodes.get(p)
-            and loop_state.nodes[p].status == NodeStatus.COMPLETED
-        )
-        for p in predecessors
-    ):
+    if not all(p == START.name or p in arrivals for p in predecessors):
       return
+    loop_state.join_arrivals.pop(target_name, None)
 
     outputs = {p: loop_state.node_outputs.get(p) for p in predecessors}
     branches = [loop_state.node_branches.get(p, "") for p in predecessors]
