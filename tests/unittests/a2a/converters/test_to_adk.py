@@ -29,6 +29,7 @@ from google.adk.a2a.converters.part_converter import A2A_DATA_PART_END_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_START_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_TEXT_MIME_TYPE
+from google.adk.a2a.converters.to_adk_event import _artifact_event_id
 from google.adk.a2a.converters.to_adk_event import _extract_all_metadata_fields
 from google.adk.a2a.converters.to_adk_event import _extract_genai_metadata
 from google.adk.a2a.converters.to_adk_event import _PEER_SETTABLE_ACTION_FIELDS
@@ -856,6 +857,63 @@ class TestToAdk:
     assert event.partial is True
     assert len(event.content.parts) == 1
     assert event.content.parts[0] == mock_genai_part
+
+  def test_chunks_of_one_artifact_share_the_event_id(self):
+    """The chunks of one artifact and the update that closes it share an id.
+
+    ADK's A2A server ends a streamed response with a ``last_chunk`` update that
+    replaces the artifact with the full text (``append=False``). The shared id,
+    as in local streaming, tells a consumer it replaces the chunks.
+    """
+
+    def chunk(text, *, append, last_chunk, artifact_id="art-1"):
+      return TaskArtifactUpdateEvent(
+          task_id="task-1",
+          context_id="context-1",
+          append=append,
+          last_chunk=last_chunk,
+          artifact=_compat.make_artifact(
+              artifact_id=artifact_id,
+              parts=[_compat.make_text_part(text)],
+          ),
+      )
+
+    events = [
+        convert_a2a_artifact_update_to_event(
+            update, author="test-author", invocation_context=self.mock_context
+        )
+        for update in (
+            chunk("Hello, ", append=False, last_chunk=False),
+            chunk("world!", append=True, last_chunk=False),
+            chunk("Hello, world!", append=False, last_chunk=True),
+        )
+    ]
+    other = convert_a2a_artifact_update_to_event(
+        chunk(
+            "Another answer.",
+            append=False,
+            last_chunk=True,
+            artifact_id="art-2",
+        ),
+        author="test-author",
+        invocation_context=self.mock_context,
+    )
+
+    assert [event.partial for event in events] == [True, True, False]
+    assert len({event.id for event in events}) == 1
+    assert other.id != events[0].id
+
+  def test_artifact_event_id_is_scoped_to_the_invocation(self):
+    """The same artifact id in another invocation gives another event id."""
+    other_context = Mock(spec=InvocationContext)
+    other_context.invocation_id = "other-invocation"
+    other_context.branch = None
+
+    assert _artifact_event_id("art-1", self.mock_context) != _artifact_event_id(
+        "art-1", other_context
+    )
+    assert _artifact_event_id("", self.mock_context) is None
+    assert _artifact_event_id("art-1", None) is None
 
   def test_convert_a2a_artifact_update_to_event_none(self):
     """Test convert_a2a_artifact_update_to_event with None."""

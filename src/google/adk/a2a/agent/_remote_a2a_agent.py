@@ -76,6 +76,7 @@ from ..converters.part_converter import A2APartToGenAIPartConverter
 from ..converters.part_converter import convert_a2a_part_to_genai_part
 from ..converters.part_converter import convert_genai_part_to_a2a_part
 from ..converters.part_converter import GenAIPartToA2APartConverter
+from ..converters.to_adk_event import _artifact_event_id
 from ..converters.to_adk_event import _create_mock_function_call_for_required_user_input
 from ..converters.to_adk_event import _TASK_RESPONSE_BOUNDARY_STATES
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
@@ -1645,6 +1646,9 @@ class RemoteA2aAgent(BaseAgent):
           if not event:
             return None
           event.partial = not update.last_chunk
+          event_id = _artifact_event_id(update.artifact.artifact_id, ctx)
+          if event_id:
+            event.id = event_id
         else:
           # This is a streaming update without a message (e.g. status change)
           # or a partial artifact update. We don't emit an event for these
