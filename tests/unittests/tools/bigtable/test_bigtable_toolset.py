@@ -253,18 +253,27 @@ async def test_bigtable_parameterized_view_tool_login_flow():
 
 
 @pytest.mark.asyncio
-async def test_bigtable_parameterized_view_tool_execution_session_state_fallback():
-  """Test that BigtableParameterizedViewTool falls back to tool_context.state for custom parameters."""
+async def test_bigtable_parameterized_view_tool_ignores_state_for_custom_parameters():
+  """Test that BigtableParameterizedViewTool never resolves view parameters
+
+  from tool_context.state, even when a name matching view_parameter_names is
+  present there. tool_context.state is writable by the caller, so a view
+  parameter taken from it (e.g. a caller-chosen tenant_id) would let the
+  caller pick whose rows a parameterized view returns, defeating the view's
+  own row-level restriction. See the class docstring for the security
+  rationale.
+  """
 
   def mock_execute_sql(_view_parameters=None):
     return {"status": "SUCCESS", "_view_parameters": _view_parameters}
 
-  # Create session with application-level state
+  # A caller-controlled tenant_id sitting in session state, as if a prior
+  # tool call (or the model itself) had written it there.
   session = Session(
       id="session-1",
       app_name="test-app",
       user_id="user-123",
-      state={"tenant_id": "tenant-xyz"},
+      state={"tenant_id": "attacker-chosen-tenant"},
   )
 
   invocation_context = mock.create_autospec(InvocationContext, instance=True)
@@ -273,7 +282,8 @@ async def test_bigtable_parameterized_view_tool_execution_session_state_fallback
 
   tool_context = Context(invocation_context=invocation_context)
 
-  # Ensure 'tenant_id' is NOT a top-level property or attribute on tool_context
+  # Confirm the test setup: 'tenant_id' is not a top-level attribute of
+  # tool_context, only a key in its (caller-writable) state.
   assert not hasattr(tool_context, "tenant_id")
   assert "tenant_id" in tool_context.state
 
@@ -290,9 +300,10 @@ async def test_bigtable_parameterized_view_tool_execution_session_state_fallback
       tool_context=tool_context,
   )
 
+  # tenant_id is silently omitted rather than taken from state.
   assert res == {
       "status": "SUCCESS",
-      "_view_parameters": {"tenant_id": "tenant-xyz"},
+      "_view_parameters": {},
   }
 
 
@@ -330,11 +341,12 @@ async def test_bigtable_parameterized_view_tool_execution_multiple_parameters():
       tool_context=tool_context,
   )
 
+  # Only user_id resolves, since it is the only one of the three that is a
+  # real tool_context attribute; tenant_id and agent_id are only present in
+  # state, which is never consulted, so they are silently omitted.
   assert res == {
       "status": "SUCCESS",
       "_view_parameters": {
           "user_id": "user-123",
-          "tenant_id": "tenant-xyz",
-          "agent_id": "agent-123",
       },
   }
