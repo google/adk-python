@@ -17,6 +17,8 @@
 import copy
 from unittest import mock
 
+from fastapi.openapi.models import APIKey
+from fastapi.openapi.models import APIKeyIn
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.llm_agent import LlmAgent
@@ -25,11 +27,15 @@ from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.agents.sequential_agent import SequentialAgentState
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.ui_widget import UiWidget
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils.context_utils import Aclosing
+from google.genai.types import Content
 from google.genai.types import FunctionCall
 from google.genai.types import FunctionResponse
 from google.genai.types import GenerateContentResponse
@@ -1120,3 +1126,147 @@ class TestHITLConfirmationWithUngatedParallelSibling:
         gated_tool.name: expected_gated_response,
         sibling_tool.name: {"result": "sibling ran"},
     }]
+
+
+class TestHITLConfirmationReplay:
+  """Tests delivering the same confirmation response more than once."""
+
+  @pytest.mark.parametrize("confirmed", [True, False])
+  @pytest.mark.asyncio
+  async def test_repeated_confirmation_does_not_rerun_tool(
+      self, confirmed: bool
+  ):
+    """A confirmation already acted on does not run the tool again."""
+    tool_calls = []
+
+    def _transfer(tool_context: ToolContext) -> dict[str, str]:
+      tool_calls.append(tool_context.function_call_id)
+      return {"result": "transferred"}
+
+    tool = FunctionTool(func=_transfer, require_confirmation=True)
+    mock_model = testing_utils.MockModel(
+        responses=[
+            _create_llm_response_from_tools([tool]),
+            _create_llm_response_from_text("response after first resume"),
+        ]
+    )
+    agent = LlmAgent(name="root_agent", model=mock_model, tools=[tool])
+    # The repeated confirmation response is itself a second response to the
+    # same function call, which the invariant checker rejects by design.
+    runner = testing_utils.InMemoryRunner(
+        root_agent=agent, check_invariants=False
+    )
+
+    events = await runner.run_async(
+        testing_utils.UserContent("test user query")
+    )
+    user_confirmation = testing_utils.UserContent(
+        Part(
+            function_response=FunctionResponse(
+                id=events[1].content.parts[0].function_call.id,
+                name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                response={"confirmed": confirmed},
+            )
+        )
+    )
+    await runner.run_async(user_confirmation)
+    assert len(tool_calls) == (1 if confirmed else 0)
+
+    events = await runner.run_async(user_confirmation)
+
+    assert len(tool_calls) == (1 if confirmed else 0)
+    assert not events
+
+  @pytest.mark.asyncio
+  async def test_repeated_confirmation_with_non_confirmation_response_continues(
+      self,
+  ):
+    """A replayed confirmation with another response does not end the turn."""
+    tool_calls = []
+    auth_config = AuthConfig(
+        auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Api-Key"}),
+        credential_key="my_key",
+    )
+
+    def _transfer(tool_context: ToolContext) -> dict[str, str]:
+      tool_calls.append(tool_context.function_call_id)
+      return {"result": "transferred"}
+
+    def _fetch(tool_context: ToolContext) -> dict[str, str]:
+      if not tool_context.get_auth_response(auth_config):
+        tool_context.request_credential(auth_config)
+        return {"status": "pending_auth"}
+      return {"result": "fetched"}
+
+    tool = FunctionTool(func=_transfer, require_confirmation=True)
+    auth_tool = FunctionTool(func=_fetch)
+    mock_model = testing_utils.MockModel(
+        responses=[
+            _create_llm_response_from_tools([tool, auth_tool]),
+            _create_llm_response_from_text("waiting for auth"),
+            _create_llm_response_from_text("completed after auth"),
+        ]
+    )
+    agent = LlmAgent(
+        name="root_agent", model=mock_model, tools=[tool, auth_tool]
+    )
+    runner = testing_utils.InMemoryRunner(
+        root_agent=agent, check_invariants=False
+    )
+
+    events = await runner.run_async(
+        testing_utils.UserContent("test user query")
+    )
+    confirmation_fc_id = next(
+        fc.id
+        for event in events
+        for fc in event.get_function_calls()
+        if fc.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+    )
+    auth_fc_id = next(
+        fc.id
+        for event in events
+        for fc in event.get_function_calls()
+        if fc.name == "adk_request_credential"
+    )
+    confirmation_response = Part(
+        function_response=FunctionResponse(
+            id=confirmation_fc_id,
+            name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+            response={"confirmed": True},
+        )
+    )
+    await runner.run_async(testing_utils.UserContent(confirmation_response))
+    assert len(tool_calls) == 1
+
+    auth_response = AuthConfig(
+        auth_scheme=auth_config.auth_scheme,
+        credential_key=auth_config.credential_key,
+        exchanged_auth_credential=AuthCredential(
+            auth_type=AuthCredentialTypes.API_KEY,
+            api_key="secret_key",
+        ),
+    )
+    events = await runner.run_async(
+        Content(
+            role="user",
+            parts=[
+                confirmation_response,
+                Part(
+                    function_response=FunctionResponse(
+                        id=auth_fc_id,
+                        name="adk_request_credential",
+                        response=auth_response.model_dump(
+                            exclude_none=True, by_alias=True
+                        ),
+                    )
+                ),
+            ],
+        )
+    )
+
+    assert len(tool_calls) == 1
+    assert testing_utils.simplify_events(copy.deepcopy(events))[-1] == (
+        agent.name,
+        "completed after auth",
+    )

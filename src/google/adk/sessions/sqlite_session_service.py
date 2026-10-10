@@ -52,12 +52,22 @@ PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
 # Merges {delta} into {state} with dict.update() semantics: keys in the delta
 # always win with their delta value (including SQL NULL / JSON null), unlike
 # json_patch() which deep-merges dict values and treats null as "delete key".
+#
+# json_group_object writes a REAL with 15 significant digits, which rounds
+# floats such as 0.1 + 0.2 for every key in the row. A REAL is written with 17
+# digits when 15 do not read back as the same value, so floats round-trip.
 _MERGE_STATE_SQL = """
         SELECT json_group_object(
                  key,
                  CASE
                    WHEN type IN ('object','array') THEN json(value)
                    WHEN type IN ('true','false') THEN json(type)
+                   WHEN type = 'real' THEN json(
+                     CASE
+                       WHEN CAST(printf('%!.15g', value) AS REAL) = value
+                         THEN printf('%!.15g', value)
+                       ELSE printf('%!.17g', value)
+                     END)
                    ELSE value
                  END)
         FROM (

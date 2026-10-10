@@ -43,6 +43,8 @@ from ..memory.base_memory_service import BaseMemoryService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME as _REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME as _REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..utils.context_utils import Aclosing
 from ..utils.env_utils import is_env_enabled
 from .service_registry import load_services_module
@@ -107,8 +109,8 @@ async def run_input_file(
   return session
 
 
-_REQUEST_INPUT = 'adk_request_input'
-_REQUEST_CONFIRMATION = 'adk_request_confirmation'
+_REQUEST_INPUT = _REQUEST_INPUT_FUNCTION_CALL_NAME
+_REQUEST_CONFIRMATION = _REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 
 
 def _collect_pending_function_calls(
@@ -696,7 +698,7 @@ async def run_once_cli(
           None,
       )
 
-      if fc and fc.name == 'adk_request_confirmation':
+      if fc and fc.name == _REQUEST_CONFIRMATION_FUNCTION_CALL_NAME:
         # Try to parse as JSON to support passing custom payload or explicit confirmed flag.
         try:
           parsed = json.loads(query)
@@ -713,7 +715,7 @@ async def run_once_cli(
                 types.Part(
                     function_response=types.FunctionResponse(
                         id=interrupt_id,
-                        name='adk_request_confirmation',
+                        name=_REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
                         response=response,
                     )
                 )
@@ -727,7 +729,7 @@ async def run_once_cli(
                 types.Part(
                     function_response=types.FunctionResponse(
                         id=interrupt_id,
-                        name='adk_request_input',
+                        name=_REQUEST_INPUT_FUNCTION_CALL_NAME,
                         response={'result': query},
                     )
                 )

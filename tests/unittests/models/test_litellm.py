@@ -3140,6 +3140,105 @@ async def test_content_to_message_param_assistant_message():
 
 
 @pytest.mark.asyncio
+async def test_content_to_message_param_assistant_keeps_every_text_part():
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part.from_text(text="First paragraph."),
+          types.Part.from_text(text="Second paragraph."),
+      ],
+  )
+
+  message = await _content_to_message_param(content)
+
+  assert message["role"] == "assistant"
+  assert message["content"] == "First paragraph.\nSecond paragraph."
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_assistant_text_around_thought():
+  # Progressive SSE streaming stores interleaved thinking as text, thought,
+  # text; the text after the thought must survive the conversion.
+  thought_part = types.Part.from_text(text="internal reasoning")
+  thought_part.thought = True
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part.from_text(text="Before."),
+          thought_part,
+          types.Part.from_text(text="After."),
+      ],
+  )
+
+  message = await _content_to_message_param(content)
+
+  assert message["content"] == "Before.\nAfter."
+  assert message["reasoning_content"] == "internal reasoning"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_assistant_joins_text_around_media():
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part.from_text(text="Here is the chart."),
+          types.Part.from_bytes(data=b"test_image", mime_type="image/png"),
+          types.Part.from_text(text="It shows growth."),
+      ],
+  )
+
+  message = await _content_to_message_param(content)
+
+  assert message["content"] == "Here is the chart.\nIt shows growth."
+
+  leading_media_content = types.Content(
+      role="model",
+      parts=[
+          types.Part.from_bytes(data=b"test_image", mime_type="image/png"),
+          types.Part.from_text(text="Here is the chart."),
+          types.Part.from_text(text="It shows growth."),
+      ],
+  )
+
+  leading_media_message = await _content_to_message_param(leading_media_content)
+
+  assert (
+      leading_media_message["content"] == "Here is the chart.\nIt shows growth."
+  )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_sends_full_multi_part_assistant_turn(
+    mock_acompletion, mock_completion
+):
+  llm_client = MockLLMClient(mock_acompletion, mock_completion)
+  lite_llm_instance = LiteLlm(model="test_model", llm_client=llm_client)
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="Hi")]),
+          types.Content(
+              role="model",
+              parts=[
+                  types.Part.from_text(text="Part one."),
+                  types.Part.from_text(text="Part two."),
+              ],
+          ),
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Continue")]
+          ),
+      ]
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  _, kwargs = mock_acompletion.call_args
+  assistant_message = kwargs["messages"][1]
+  assert assistant_message["role"] == "assistant"
+  assert assistant_message["content"] == "Part one.\nPart two."
+
+
+@pytest.mark.asyncio
 async def test_content_to_message_param_user_filters_thought_parts():
   thought_part = types.Part.from_text(text="internal reasoning")
   thought_part.thought = True
@@ -10890,7 +10989,7 @@ class TestParseToolCallArguments:
 
   def test_repaired_arguments_log_warning_without_raw_payload(self, caplog):
     """Repaired non-strict JSON arguments emit a warning without raw payload."""
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
       _parse_tool_call_arguments("{a: 1}", function_name="test_fn")
     assert "Repaired" in caplog.text
     assert "test_fn" in caplog.text
@@ -10898,7 +10997,7 @@ class TestParseToolCallArguments:
 
   def test_repaired_arguments_log_debug_with_raw_payload(self, caplog):
     """Repaired non-strict JSON arguments emit warning with payload at debug level."""
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG, logger="google_adk"):
       _parse_tool_call_arguments("{a: 1}", function_name="test_fn")
     assert "test_fn" in caplog.text
     assert "{a: 1}" in caplog.text
@@ -10910,13 +11009,13 @@ class TestParseToolCallArguments:
 
   def test_repaired_arguments_without_function_name(self, caplog):
     """Repaired arguments log correctly without function_name."""
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
       _parse_tool_call_arguments("{a: 1}")
     assert "Repaired" in caplog.text
     assert "{a: 1}" not in caplog.text
 
     caplog.clear()
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG, logger="google_adk"):
       _parse_tool_call_arguments("{a: 1}")
     warning_records = [
         r for r in caplog.records if r.levelno == logging.WARNING
@@ -10926,11 +11025,11 @@ class TestParseToolCallArguments:
 
   def test_literal_eval_layer_logs_debug_not_warning(self, caplog):
     """Python dict literal arguments log at debug rather than warning."""
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
       _parse_tool_call_arguments("{'a': 1}", function_name="test_fn")
     assert not any(r.levelno == logging.WARNING for r in caplog.records)
 
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG, logger="google_adk"):
       _parse_tool_call_arguments("{'a': 1}", function_name="test_fn")
     assert not any(r.levelno == logging.WARNING for r in caplog.records)
     debug_records = [
@@ -10944,7 +11043,7 @@ class TestParseToolCallArguments:
 
   def test_literal_eval_without_function_name_logs_debug(self, caplog):
     """Python dict literal without function_name logs at debug."""
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG, logger="google_adk"):
       _parse_tool_call_arguments("{'a': 1}")
     assert not any(r.levelno == logging.WARNING for r in caplog.records)
     debug_records = [
@@ -10957,6 +11056,6 @@ class TestParseToolCallArguments:
 
   def test_strict_json_does_not_log_warning(self, caplog):
     """Strict JSON arguments parse without warning logs."""
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
       _parse_tool_call_arguments('{"a": 1}', function_name="test_fn")
     assert "Repaired" not in caplog.text

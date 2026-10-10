@@ -71,6 +71,20 @@ and defaults `model_dump_json()` to `by_alias=True`, so Python stays
 snake_case while the wire format stays camelCase without every call site
 remembering to pass `by_alias`.
 
+### Never Pollute Persisted Models with Transient Flags
+
+Do not add transient control or bookkeeping fields (such as `NodeInfo.flush`
+or temporary routing flags) as serialized fields on persisted models (`Event`,
+`NodeInfo`, `Session`, `Content`).
+
+- For in-memory state on a model instance, use `PrivateAttr()`.
+- For ADK-internal event metadata that must survive storage across a
+  pause/resume boundary without being writable by external callers or exposed
+  in public responses, use `google.adk.events._internal_metadata`
+  (`INTERNAL_METADATA_PREFIX = '__adk_internal_'`,
+  `without_internal_metadata()`, `public_metadata()`, `internal_metadata()`,
+  and `public_event()`).
+
 ## `field_validator` — Single-Field Validation
 
 Use `@field_validator` when a constraint needs logic that `Field()` cannot

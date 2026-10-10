@@ -820,10 +820,16 @@ class CompletionsHTTPClient:
             _function_response_media_content_parts(part.function_response)
         )
     if function_responses:
-      if response_media_parts:
+      # Any other parts in the same content (e.g. text the user sent with the
+      # tool result) cannot go in a tool-role message either, so they follow
+      # the tool results together with the media.
+      follow_up_parts = response_media_parts + content_parts
+      if len(follow_up_parts) == 1 and follow_up_parts[0]['type'] == 'text':
         function_responses.append(
-            {'role': 'user', 'content': response_media_parts}
+            {'role': 'user', 'content': follow_up_parts[0]['text']}
         )
+      elif follow_up_parts:
+        function_responses.append({'role': 'user', 'content': follow_up_parts})
       return function_responses
 
     message: dict[str, Any] = {'role': role}

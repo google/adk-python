@@ -1271,6 +1271,63 @@ async def test_user_state_none_valued_delta_is_stored_not_dropped(
   assert session1.state.get('user:pref') is None
 
 
+# Floats that need more than 15 significant digits to read back unchanged.
+_EXACT_NUMBERS = {
+    'ratio': 0.1 + 0.2,
+    'epoch_seconds': 1727500000.1234567,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prefix', ['', 'user:', 'app:'])
+async def test_numbers_survive_unrelated_state_delta(session_service, prefix):
+  """Stored numbers read back unchanged after an unrelated state_delta."""
+  numbers = {prefix + key: value for key, value in _EXACT_NUMBERS.items()}
+  session = await session_service.create_session(
+      app_name='my_app', user_id='u1', session_id='s1', state=numbers
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={prefix + 'other': 1}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  assert {key: reloaded.state[key] for key in numbers} == numbers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prefix', ['', 'user:', 'app:'])
+async def test_number_valued_state_delta_is_stored_exactly(
+    session_service, prefix
+):
+  """Numbers written by a state_delta read back unchanged."""
+  numbers = {prefix + key: value for key, value in _EXACT_NUMBERS.items()}
+  # Seed the scope so the delta is merged into existing state.
+  session = await session_service.create_session(
+      app_name='my_app',
+      user_id='u1',
+      session_id='s1',
+      state={prefix + 'seed': 1},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta=numbers),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  assert {key: reloaded.state[key] for key in numbers} == numbers
+
+
 @pytest.mark.asyncio
 async def test_temp_state_is_not_persisted_in_state_or_events(session_service):
   app_name = 'my_app'
@@ -3832,7 +3889,7 @@ def test_list_sessions_sync_unknown_app_or_user_returns_empty_response():
 
 
 # ---------------------------------------------------------------------------
-# Regression tests for duplicate-event deduplication (issue #5723)
+# append_event idempotency for re-delivered events
 # ---------------------------------------------------------------------------
 
 
@@ -3845,8 +3902,9 @@ def test_list_sessions_sync_unknown_app_or_user_returns_empty_response():
 async def test_append_event_is_idempotent_for_same_event_id(session_service):
   """Re-delivering an event must not duplicate entries or double-apply state.
 
-  A broadcast can re-deliver the same event either as the same object or as
-  an equal copy, so both must be deduplicated.
+  A caller that retries ``append_event`` (e.g. a write buffer behind an RPC)
+  can re-deliver the same event either as the same object or as an equal
+  copy, so both must be deduplicated.
   """
   app_name = 'test_app'
   user_id = 'user_dup'
@@ -3860,8 +3918,8 @@ async def test_append_event_is_idempotent_for_same_event_id(session_service):
       actions=EventActions(state_delta={'session:counter': 1}),
   )
 
-  # Re-deliver as the same object and again as an equal copy (a broadcast
-  # to several concurrent session references can produce either).
+  # Re-deliver as the same object and again as an equal copy (a retried
+  # call can produce either).
   await session_service.append_event(session=session, event=event)
   await session_service.append_event(session=session, event=event)
   await session_service.append_event(
