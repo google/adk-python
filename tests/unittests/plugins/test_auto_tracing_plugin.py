@@ -112,6 +112,10 @@ def _run_class_static_method(module):
   return module.C().static_method(5)
 
 
+def _run_class_class_method(module):
+  return module.C.class_method(5)
+
+
 class _Ctx:
 
   def __init__(self, agent):
@@ -173,6 +177,7 @@ def _instrument(
         (_run_class_method, "._method"),
         (_run_class_async_method, "._async_method"),
         (_run_class_static_method, "._static_method"),
+        (_run_class_class_method, "._class_method"),
     ],
 )
 def test_emits_span(fixture, run_fn, expected_substr):
@@ -226,7 +231,7 @@ def test_staticmethod_stays_a_staticmethod(fixture):
   assert cls().static_method(5) == 15
 
 
-def test_classmethod_is_left_alone(fixture):
+def test_classmethod_stays_a_classmethod(fixture):
   _instrument(fixture.tracer)
   cls = fixture.module.C
   assert isinstance(inspect.getattr_static(cls, "class_method"), classmethod)
@@ -789,3 +794,141 @@ def test_sync_gen_caps_buffered_items(fixture):
     assert f"first {cap}:" in rendered, rendered
   finally:
     sys.modules.pop(name, None)
+
+
+_DESCRIPTOR_MODULE_NAME = (
+    "google.adk.tests.unittests.plugins.descriptor_test_fixture"
+)
+
+
+def _build_descriptor_module() -> types.ModuleType:
+  module = types.ModuleType(_DESCRIPTOR_MODULE_NAME)
+  module.__name__ = _DESCRIPTOR_MODULE_NAME
+
+  def slugify(text):
+    return text.strip().lower().replace(" ", "-")
+
+  def build(cls, name):
+    return cls.slugify(name)
+
+  def instance_method(self, x):
+    return x + 1
+
+  def shared(self, x):
+    return x * 2
+
+  async def async_slugify(text):
+    return text.strip().lower().replace(" ", "-")
+
+  async def async_build(cls, name):
+    return await cls.async_slugify(name)
+
+  for fn in (
+      slugify,
+      build,
+      instance_method,
+      shared,
+      async_slugify,
+      async_build,
+  ):
+    fn.__module__ = _DESCRIPTOR_MODULE_NAME
+
+  tools = type(
+      "Tools",
+      (),
+      {
+          "slugify": staticmethod(slugify),
+          "build": classmethod(build),
+          "instance_method": instance_method,
+          "async_slugify": staticmethod(async_slugify),
+          "async_build": classmethod(async_build),
+      },
+  )
+  zbase = type("ZBase", (), {"shared": shared})
+  achild = type("AChild", (zbase,), {})
+  for cls in (tools, zbase, achild):
+    cls.__module__ = _DESCRIPTOR_MODULE_NAME
+  module.AChild = achild
+  module.Tools = tools
+  module.ZBase = zbase
+  return module
+
+
+def test_staticmethod_stays_callable_on_instance(fixture):
+  module = _build_descriptor_module()
+  sys.modules[_DESCRIPTOR_MODULE_NAME] = module
+  try:
+    plugin = auto_tracing_plugin.AutoTracingPlugin(
+        tracer=fixture.tracer,
+        extra_scope_prefixes=(_DESCRIPTOR_MODULE_NAME,),
+    )
+    asyncio.run(plugin.before_run_callback(invocation_context=None))
+    assert isinstance(module.Tools.__dict__["slugify"], staticmethod)
+    assert module.Tools().slugify("Hello World") == "hello-world"
+    assert any("slugify" in n for n in _span_names(fixture.exporter))
+  finally:
+    sys.modules.pop(_DESCRIPTOR_MODULE_NAME, None)
+
+
+def test_classmethod_is_traced(fixture):
+  module = _build_descriptor_module()
+  sys.modules[_DESCRIPTOR_MODULE_NAME] = module
+  try:
+    plugin = auto_tracing_plugin.AutoTracingPlugin(
+        tracer=fixture.tracer,
+        extra_scope_prefixes=(_DESCRIPTOR_MODULE_NAME,),
+    )
+    asyncio.run(plugin.before_run_callback(invocation_context=None))
+    assert isinstance(module.Tools.__dict__["build"], classmethod)
+    assert module.Tools.build("Hello World") == "hello-world"
+    assert any("build" in n for n in _span_names(fixture.exporter))
+  finally:
+    sys.modules.pop(_DESCRIPTOR_MODULE_NAME, None)
+
+
+def test_inherited_method_is_not_pinned_on_subclass(fixture):
+  module = _build_descriptor_module()
+  sys.modules[_DESCRIPTOR_MODULE_NAME] = module
+  try:
+    plugin = auto_tracing_plugin.AutoTracingPlugin(
+        tracer=fixture.tracer,
+        extra_scope_prefixes=(_DESCRIPTOR_MODULE_NAME,),
+    )
+    asyncio.run(plugin.before_run_callback(invocation_context=None))
+    assert "shared" not in module.AChild.__dict__
+    assert module.AChild().shared(3) == 6
+    assert any("shared" in n for n in _span_names(fixture.exporter))
+  finally:
+    sys.modules.pop(_DESCRIPTOR_MODULE_NAME, None)
+
+
+async def test_async_staticmethod_stays_callable_on_instance(fixture):
+  module = _build_descriptor_module()
+  sys.modules[_DESCRIPTOR_MODULE_NAME] = module
+  try:
+    plugin = auto_tracing_plugin.AutoTracingPlugin(
+        tracer=fixture.tracer,
+        extra_scope_prefixes=(_DESCRIPTOR_MODULE_NAME,),
+    )
+    await plugin.before_run_callback(invocation_context=None)
+    assert isinstance(module.Tools.__dict__["async_slugify"], staticmethod)
+    assert await module.Tools().async_slugify("Hello World") == "hello-world"
+    assert any("async_slugify" in n for n in _span_names(fixture.exporter))
+  finally:
+    sys.modules.pop(_DESCRIPTOR_MODULE_NAME, None)
+
+
+async def test_async_classmethod_is_traced(fixture):
+  module = _build_descriptor_module()
+  sys.modules[_DESCRIPTOR_MODULE_NAME] = module
+  try:
+    plugin = auto_tracing_plugin.AutoTracingPlugin(
+        tracer=fixture.tracer,
+        extra_scope_prefixes=(_DESCRIPTOR_MODULE_NAME,),
+    )
+    await plugin.before_run_callback(invocation_context=None)
+    assert isinstance(module.Tools.__dict__["async_build"], classmethod)
+    assert await module.Tools.async_build("Hello World") == "hello-world"
+    assert any("async_build" in n for n in _span_names(fixture.exporter))
+  finally:
+    sys.modules.pop(_DESCRIPTOR_MODULE_NAME, None)
