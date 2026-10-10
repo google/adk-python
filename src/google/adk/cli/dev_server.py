@@ -1285,6 +1285,8 @@ class DevServer(ApiServer):
         self.eval_sets_manager.add_eval_case(
             app_name, eval_set_id, new_eval_case
         )
+      except NotFoundError as nfe:
+        raise HTTPException(status_code=404, detail=str(nfe)) from nfe
       except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve)) from ve
 
