@@ -90,6 +90,7 @@ def check_interception(
     )
 
   unresolved = recovered.interrupt_ids - recovered.resolved_ids
+  direct_unresolved = recovered.direct_interrupt_ids - recovered.resolved_ids
 
   should_run = False
   output = None
@@ -99,9 +100,15 @@ def check_interception(
 
   if unresolved:
     # Case 2: Cross-turn unresolved interrupts remain.
-    # Rerun natively with resolved inputs if the node supports rerun and some
-    # progress was made; otherwise remain waiting and bubble unresolved interrupts.
-    if node.rerun_on_resume and recovered.resolved_ids:
+    # A node with unresolved direct interrupts of its own must wait until all of
+    # them are answered before rerunning. A parent node whose unresolved
+    # interrupts belong only to descendant dynamic nodes reruns when progress was
+    # made so the unblocked child can advance.
+    if (
+        not direct_unresolved
+        and node.rerun_on_resume
+        and recovered.resolved_ids
+    ):
       should_run = True
       resume_inputs = recovered.resolved_responses
     else:
