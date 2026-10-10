@@ -2983,6 +2983,7 @@ def _model_response_to_generate_content_response(
           "cache_creation_input_tokens",
           cache_creation,
       )
+    llm_response.cache_creation_token_count = cache_creation
 
   grounding_metadata = _extract_grounding_metadata(response)
   if grounding_metadata:
@@ -3949,6 +3950,7 @@ class LiteLlm(BaseLlm):
       aggregated_llm_response = None
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
+      cache_creation_token_count = None
       grounding_metadata = None
       last_finish_reason: str | None = None
       last_model_version: str | None = None
@@ -4201,6 +4203,7 @@ class LiteLlm(BaseLlm):
                   "cache_creation_input_tokens",
                   chunk.cache_creation_tokens,
               )
+            cache_creation_token_count = chunk.cache_creation_tokens
 
           # LiteLLM 1.81+ can set finish_reason="stop" on partial chunks. Only
           # finalize tool calls on an explicit tool_calls/length finish_reason,
@@ -4271,6 +4274,9 @@ class LiteLlm(BaseLlm):
       if aggregated_llm_response:
         if usage_metadata:
           aggregated_llm_response.usage_metadata = usage_metadata
+          aggregated_llm_response.cache_creation_token_count = (
+              cache_creation_token_count
+          )
           usage_metadata = None
         if grounding_metadata:
           aggregated_llm_response.grounding_metadata = grounding_metadata
@@ -4279,6 +4285,9 @@ class LiteLlm(BaseLlm):
       if aggregated_llm_response_with_tool_call:
         if usage_metadata:
           aggregated_llm_response_with_tool_call.usage_metadata = usage_metadata
+          aggregated_llm_response_with_tool_call.cache_creation_token_count = (
+              cache_creation_token_count
+          )
         if grounding_metadata:
           aggregated_llm_response_with_tool_call.grounding_metadata = (
               grounding_metadata
