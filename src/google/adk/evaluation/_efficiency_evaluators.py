@@ -199,6 +199,8 @@ class _InferenceCallCountV1Evaluator(Evaluator):
     self._eval_metric = eval_metric
 
   def _compute_value(self, invocation: Invocation) -> Optional[float]:
+    if invocation.inference_call_count is not None:
+      return float(invocation.inference_call_count)
     if not isinstance(invocation.intermediate_data, InvocationEvents):
       return None
     model_events = [

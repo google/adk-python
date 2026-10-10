@@ -280,6 +280,7 @@ class GeminiLlmConnection(BaseLlmConnection):
         grounding_metadata=grounding_metadata,
         interrupted=interrupted,
         partial=False,
+        model_version=self._model_version,
         live_session_id=self._gemini_session.session_id,
     )
 
