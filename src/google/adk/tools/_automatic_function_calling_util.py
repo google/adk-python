@@ -272,7 +272,14 @@ def build_function_declaration(
   )
   setattr(new_func, '__signature__', new_sig)
   new_func.__doc__ = original.__doc__
-  new_func.__annotations__ = original.__annotations__
+  # Drop the ignored params' annotations too: get_type_hints resolves every
+  # annotation, so a context param typed with a TYPE_CHECKING-only import
+  # would otherwise raise NameError although it never reaches the schema.
+  new_func.__annotations__ = {
+      name: annotation
+      for name, annotation in original.__annotations__.items()
+      if name not in ignore_params
+  }
   return from_function_with_options(new_func, variant)
 
 
