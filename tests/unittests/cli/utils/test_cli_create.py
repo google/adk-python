@@ -256,17 +256,10 @@ def test_run_cmd_invalid_app_name(
     )
 
 
-@pytest.mark.parametrize(
-    "invalid_name",
-    [
-        "my-agent",
-        "class",
-    ],
-)
-def test_run_cmd_rejects_non_identifier_or_keyword_agent_name(
-    invalid_name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_run_cmd_rejects_non_identifier_agent_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-  """Kebab-case and Python keywords should be rejected before any dialogs."""
+  """Kebab-case should be rejected before any dialogs."""
   monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
   model_prompt_called = False
 
@@ -281,7 +274,7 @@ def test_run_cmd_rejects_non_identifier_or_keyword_agent_name(
       click.BadParameter, match="must be a valid Python identifier"
   ):
     cli_create.run_cmd(
-        invalid_name,
+        "my-agent",
         model=None,
         google_api_key=None,
         google_cloud_project=None,
@@ -297,12 +290,13 @@ def test_run_cmd_rejects_non_identifier_or_keyword_agent_name(
         "my_agent",
         "MyAgent",
         "myAgent",
+        "class",
     ],
 )
 def test_run_cmd_accepts_valid_identifier_names(
     valid_name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-  """snake_case, PascalCase, and camelCase should be accepted."""
+  """snake_case, PascalCase, camelCase, and keywords should be accepted."""
   monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
 
   cli_create.run_cmd(
@@ -314,6 +308,29 @@ def test_run_cmd_accepts_valid_identifier_names(
       type="code",
   )
   assert (tmp_path / valid_name / "agent.py").exists()
+
+
+def test_run_cmd_and_load_keyword_agent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  """Creating a keyword-named application succeeds and AgentLoader can load it."""
+  from google.adk.agents.llm_agent import LlmAgent
+  from google.adk.cli.utils.agent_loader import AgentLoader
+
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+
+  cli_create.run_cmd(
+      "class",
+      model="gemini-2.5-flash",
+      google_api_key="offline-placeholder",
+      google_cloud_project=None,
+      google_cloud_region=None,
+      type="code",
+  )
+  loader = AgentLoader(str(tmp_path))
+  agent = loader.load_agent("class")
+  assert isinstance(agent, LlmAgent)
+  assert agent.name == "root_agent"
 
 
 def test_run_cmd_allows_kebab_case_for_config_agents(

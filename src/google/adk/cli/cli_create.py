@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import keyword
 import os
 from typing import Optional
 
@@ -232,13 +231,10 @@ def run_cmd(
     type = _prompt_to_choose_type()
 
   resolved_type = type.lower()
-  if resolved_type == "code" and (
-      not app_name.isidentifier() or keyword.iskeyword(app_name)
-  ):
+  if resolved_type == "code" and not app_name.isidentifier():
     raise click.BadParameter(
         f"Invalid agent name '{app_name}': code-based agents must be a valid"
-        " Python identifier (e.g. 'my_agent', not 'my-agent') and cannot be a"
-        " Python keyword."
+        " Python identifier (e.g. 'my_agent', not 'my-agent')."
     )
 
   agent_folder = os.path.join(os.getcwd(), agent_name)
