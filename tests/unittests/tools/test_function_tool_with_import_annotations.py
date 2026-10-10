@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 from typing import Dict
 from typing import Optional
@@ -23,6 +24,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 import pydantic
+from unittest.mock import patch
 
 
 def test_string_annotation_none_return_vertex():
@@ -284,3 +286,30 @@ def test_preprocess_args_with_optional_list_of_pydantic_models_and_annotations()
   assert all(isinstance(item, ItemModel) for item in processed_args['items'])
   assert processed_args['items'][0].quantity == 10
   assert processed_args['items'][1].quantity == 5
+
+def test_context_param_imported_only_under_type_checking_legacy_path():
+  """A context parameter annotated via TYPE_CHECKING must not break the legacy path.
+
+  build_function_declaration drops the ignored parameters from the signature. When it
+  copied every original annotation onto the new function, typing.get_type_hints() then
+  tried to resolve the removed parameter's annotation too - so a context parameter
+  typed by a TYPE_CHECKING-only import raised NameError even though it is not part of
+  the declaration. This is the legacy-path counterpart of the JSON-schema fix.
+  """
+
+  def test_function(city: str, tool_context: ToolContext) -> str:  # noqa: F821
+    """A test function whose context parameter is imported only for type checking."""
+    return f'Sunny in {city}'
+
+  # The JSON-schema path is on by default; disable it so this exercises the legacy
+  # declaration builder, which is where the bug lived.
+  with patch.dict(os.environ, {'ADK_DISABLE_JSON_SCHEMA_FOR_FUNC_DECL': '1'}):
+    # signature is (func, ignore_params=None, variant=GEMINI_API)
+    declaration = _automatic_function_calling_util.build_function_declaration(
+        test_function,
+        ignore_params=['tool_context'],
+    )
+
+  assert sorted(declaration.parameters.properties) == ['city']
+  assert declaration.parameters.properties['city'].type == 'STRING'
+  assert declaration.parameters.required == ['city']
