@@ -33,6 +33,7 @@ from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_case import InvocationEvent
 from .eval_case import InvocationEvents
+from .eval_rubrics import RubricScore
 from .evaluator import _validate_invocation_lengths
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
@@ -40,6 +41,14 @@ from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
 
 logger = logging.getLogger("google_adk." + __name__)
+
+# `rubric_id` of the RubricScore that carries the judge's overall explanation
+# of a metric, as opposed to its verdict on one specific rubric.
+_EXPLANATION_RUBRIC_ID = "explanation"
+
+# `rubric_id` of the RubricScore that carries the error Vertex reported when it
+# could not score a metric.
+_ERROR_RUBRIC_ID = "error"
 
 _ERROR_MESSAGE_SUFFIX = """
 You should specify both project id and location. This metric uses Vertex Gen AI
@@ -136,6 +145,85 @@ class _VertexAiEvalFacade(Evaluator):
 
     return None
 
+  def _get_rubric_scores(
+      self, eval_result: object
+  ) -> Optional[list[RubricScore]]:
+    """Returns the judge's rubric verdicts and explanation as RubricScores.
+
+    Every call to `_perform_eval` evaluates exactly one metric, so all the
+    metric results found in `eval_result` belong to `self._metric_name`.
+
+    Each rubric verdict (returned by adaptive-rubric metrics such as
+    `multi_turn_task_success_v1`) becomes one RubricScore. The metric's
+    explanation, and its error message when Vertex could not score it, are
+    appended as extra RubricScores that only carry a rationale.
+
+    Returns None when Vertex returned none of these details.
+    """
+    rubric_scores: list[RubricScore] = []
+    for metric_result in _VertexAiEvalFacade._get_metric_results(eval_result):
+      rubric_verdicts = getattr(metric_result, "rubric_verdicts", None) or []
+      for index, rubric_verdict in enumerate(rubric_verdicts):
+        rubric_scores.append(
+            _VertexAiEvalFacade._map_rubric_verdict_to_rubric_score(
+                index, rubric_verdict
+            )
+        )
+
+      explanation = getattr(metric_result, "explanation", None)
+      if explanation:
+        rubric_scores.append(
+            RubricScore(
+                rubric_id=_EXPLANATION_RUBRIC_ID, rationale=str(explanation)
+            )
+        )
+
+      error_message = getattr(metric_result, "error_message", None)
+      if error_message:
+        rubric_scores.append(
+            RubricScore(
+                rubric_id=_ERROR_RUBRIC_ID, rationale=str(error_message)
+            )
+        )
+
+    return rubric_scores or None
+
+  @staticmethod
+  def _get_metric_results(eval_result: object) -> list[object]:
+    """Returns all the per-metric results contained in a Vertex eval result."""
+    metric_results: list[object] = []
+    eval_case_results = getattr(eval_result, "eval_case_results", None) or []
+    for eval_case_result in eval_case_results:
+      candidate_results = (
+          getattr(eval_case_result, "response_candidate_results", None) or []
+      )
+      for candidate_result in candidate_results:
+        results_by_metric = getattr(candidate_result, "metric_results", None)
+        if isinstance(results_by_metric, dict):
+          metric_results.extend(results_by_metric.values())
+
+    return metric_results
+
+  @staticmethod
+  def _map_rubric_verdict_to_rubric_score(
+      index: int, rubric_verdict: object
+  ) -> RubricScore:
+    rubric = getattr(rubric_verdict, "evaluated_rubric", None)
+    rubric_content = getattr(rubric, "content", None)
+    rubric_property = getattr(rubric_content, "property", None)
+    description = getattr(rubric_property, "description", None)
+    rubric_id = (
+        description or getattr(rubric, "rubric_id", None) or f"rubric_{index}"
+    )
+    reasoning = getattr(rubric_verdict, "reasoning", None)
+
+    return RubricScore(
+        rubric_id=str(rubric_id),
+        rationale=str(reasoning) if reasoning else None,
+        # Vertex omits `verdict` when a rubric is not met.
+        score=1.0 if getattr(rubric_verdict, "verdict", None) else 0.0,
+    )
+
   def _get_eval_status(self, score: Optional[float]) -> EvalStatus:
     if score is not None:
       return (
@@ -201,12 +289,16 @@ class _SingleTurnVertexAiEvalFacade(_VertexAiEvalFacade):
           dataset=dataset, metrics=[self._metric_name]
       )
       score = self._get_score(eval_case_result)
+      # Each invocation is judged separately, so its explanation and verdicts
+      # stay on that invocation and are not aggregated into
+      # `overall_rubric_scores`.
       per_invocation_results.append(
           PerInvocationResult(
               actual_invocation=actual,
               expected_invocation=expected,
               score=score,
               eval_status=self._get_eval_status(score),
+              rubric_scores=self._get_rubric_scores(eval_case_result),
           )
       )
 
@@ -277,23 +369,29 @@ class _MultiTurnVertexiAiEvalFacade(_VertexAiEvalFacade):
     )
 
     score = self._get_score(eval_case_result)
+    rubric_scores = self._get_rubric_scores(eval_case_result)
     per_invocation_results.append(
         PerInvocationResult(
             actual_invocation=actual_invocations[-1],
             expected_invocation=resolved_expected[-1],
             score=score,
             eval_status=self._get_eval_status(score),
+            rubric_scores=rubric_scores,
         )
     )
 
-    if score is not None:
-      return EvaluationResult(
-          overall_score=score,
-          overall_eval_status=self._get_eval_status(score),
-          per_invocation_results=per_invocation_results,
-      )
+    if score is None and rubric_scores is None:
+      return EvaluationResult()
 
-    return EvaluationResult()
+    # The whole conversation is judged once, so the verdicts attached to the
+    # last turn are also the overall verdicts. They are kept even without a
+    # score, since they then carry the reason Vertex could not score it.
+    return EvaluationResult(
+        overall_score=score,
+        overall_eval_status=self._get_eval_status(score),
+        per_invocation_results=per_invocation_results,
+        overall_rubric_scores=rubric_scores,
+    )
 
   @staticmethod
   def _get_agent_data(
