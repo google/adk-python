@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
+from ....agents._caller_principal import caller_may_confirm
 from ....agents.invocation_context import InvocationContext
 from ....agents.readonly_context import ReadonlyContext
 from ....events.event import Event
@@ -256,6 +257,35 @@ def _map_confirmation_to_original_fc_ids(
   return mapping
 
 
+def _apply_caller_principal_gate(
+    invocation_context: InvocationContext,
+    confirmations_by_fc_id: dict[str, ToolConfirmation],
+) -> dict[str, ToolConfirmation]:
+  """Decides whether the caller of this invocation may approve a tool call.
+
+  The decision itself is ``caller_may_confirm``, shared with the workflow tool
+  node so that both consumers of a human-in-the-loop answer refuse the same
+  callers. A refusal rewrites each confirmation to ``confirmed=False`` instead
+  of dropping it: dropping it leaves the ``adk_request_confirmation`` call
+  pending with nothing left to resolve it, which is what made an earlier
+  attempt at this guard stall every human-in-the-loop tool.
+
+  Args:
+    invocation_context: Current invocation context.
+    confirmations_by_fc_id: Confirmations parsed from the last user event.
+
+  Returns:
+    The confirmations to act on, with refused ones forced to
+    ``confirmed=False``.
+  """
+  if caller_may_confirm(invocation_context.caller_principal):
+    return confirmations_by_fc_id
+  return {
+      confirmation_fc_id: confirmation.model_copy(update={"confirmed": False})
+      for confirmation_fc_id, confirmation in confirmations_by_fc_id.items()
+  }
+
+
 class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
   """Handles tool confirmation information to build the LLM request."""
 
@@ -353,6 +383,13 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
       if not consumed_in_current_turn and not has_non_confirmation_response:
         invocation_context.end_invocation = True
       return
+
+    # An approval is only worth acting on if it came from the operator this
+    # agent answers to. Everything above this point establishes that a
+    # confirmation was sent; this establishes who sent it.
+    confirmations_by_fc_id = _apply_caller_principal_gate(
+        invocation_context, confirmations_by_fc_id
+    )
 
     # Resolve all canonical tools and build tools_dict. Deliberately after the
     # dedup above so a consumed confirmation does not force a toolset

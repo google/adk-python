@@ -42,6 +42,7 @@ from ._errors import WorkflowInvariantError
 from ._workflow import _LoopState
 
 if TYPE_CHECKING:
+  from ..agents._caller_principal import CallerPrincipal
   from ..runners import Runner
   from ._base_node import BaseNode
 
@@ -61,6 +62,7 @@ async def run_node_async(
     node: BaseNode | None = None,
     session: Optional[Session] = None,
     abort_signal: Optional[asyncio.Event] = None,
+    caller_principal: Optional[CallerPrincipal] = None,
 ) -> AsyncGenerator[Event, None]:
   """Runs a BaseNode or Workflow in async mode."""
   from ..runners import _CALLER_CLOSED_EARLY_MSG
@@ -123,6 +125,12 @@ async def run_node_async(
         # signature subclasses override. Safe at this point because nothing has
         # derived a sub-context from this one yet.
         ic._attach_abort_signal(abort_signal)  # pylint: disable=protected-access
+      if caller_principal is not None:
+        # Set here rather than passed to `_new_invocation_context`, for the
+        # same reason as the abort signal. The serving layer established this
+        # principal from the request it authenticated; nothing on this path
+        # derives one from message content or event authorship.
+        ic.caller_principal = caller_principal
       if node and node is not runner.agent:
         ic.agent = node
         runner._restore_branch_from_history(  # pylint: disable=protected-access

@@ -28,6 +28,7 @@ from unittest.mock import create_autospec
 from unittest.mock import patch
 
 from google.adk import runners
+from google.adk.agents._caller_principal import CallerPrincipal
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context import Context
 from google.adk.agents.context_cache_config import ContextCacheConfig
@@ -6255,3 +6256,42 @@ async def test_multi_invocation_function_response_starts_new_invocation_when_not
 
 if __name__ == "__main__":
   pytest.main([__file__])
+
+
+@pytest.mark.asyncio
+async def test_runner_root_llm_agent_carries_caller_principal_on_node_path():
+  """run_async(caller_principal=...) reaches a root LlmAgent's invocation context.
+
+  A root LlmAgent runs through the node runtime, which builds its own
+  invocation context. The principal a serving layer set has to survive that
+  hop, or the confirmation gate downstream never sees it.
+  """
+  seen = []
+
+  def capture(callback_context):
+    seen.append(callback_context._invocation_context.caller_principal)
+    return None
+
+  session_service = InMemorySessionService()
+  agent = LlmAgent(
+      name="chat_agent",
+      model=testing_utils.MockModel.create(responses=["hi"]),
+      before_agent_callback=capture,
+  )
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  principal = CallerPrincipal(authenticated=False, source="test")
+
+  async for _ in runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hello")]),
+      caller_principal=principal,
+  ):
+    pass
+
+  assert seen == [principal]

@@ -18,6 +18,7 @@ import itertools
 import re
 from typing import Any
 
+from google.adk.agents._caller_principal import CallerPrincipal
 from google.adk.agents.context import Context
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
@@ -664,15 +665,36 @@ class _ConfirmationWorkflow:
         events, REQUEST_INPUT_FUNCTION_CALL_NAME
     )
 
-  async def answer(self, request: Event, response: dict[str, Any]) -> None:
-    """Resumes the workflow with the user's answer to the request."""
+  async def answer(
+      self,
+      request: Event,
+      response: dict[str, Any],
+      *,
+      caller_principal: CallerPrincipal | None = None,
+  ) -> None:
+    """Resumes the workflow with the user's answer to the request.
+
+    `caller_principal` stands in for what a serving layer would set on the
+    invocation that carries the answer; None is an in-process caller.
+    """
     interrupt_id = get_request_input_interrupt_ids(request)[0]
-    await self.runner.run_async(
-        new_message=testing_utils.UserContent(
-            create_request_input_response(interrupt_id, response)
-        ),
-        invocation_id=request.invocation_id,
+    new_message = testing_utils.UserContent(
+        create_request_input_response(interrupt_id, response)
     )
+    if caller_principal is None:
+      await self.runner.run_async(
+          new_message=new_message, invocation_id=request.invocation_id
+      )
+      return
+    session = self.runner.session
+    async for _ in self.runner.runner.run_async(
+        user_id=session.user_id,
+        session_id=session.id,
+        invocation_id=request.invocation_id,
+        new_message=new_message,
+        caller_principal=caller_principal,
+    ):
+      pass
 
 
 @pytest.mark.parametrize("resumable", [False, True])
@@ -745,6 +767,74 @@ async def test_tool_node_before_tool_callback_sees_confirmation_on_resume(
 
   assert plugin.seen == [None, True]
   assert wf.tool_calls == ["prod"]
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_tool_node_confirmation_from_unauthenticated_caller_refused_in_strict_mode(
+    resumable: bool, monkeypatch
+):
+  """An approval the serving layer could not attribute is stored as a rejection.
+
+  Same decision as the agent confirmation flow: with strict mode on, a resume
+  that arrives with an unauthenticated principal must not run the tool, and
+  the node answers with the rejection response rather than hanging.
+  """
+  monkeypatch.setenv("ADK_ENABLE_STRICT_CALLER_PRINCIPAL", "1")
+  wf = _ConfirmationWorkflow(resumable=resumable)
+  request = await wf.start()
+
+  await wf.answer(
+      request,
+      {"confirmed": True},
+      caller_principal=CallerPrincipal(authenticated=False, source="a2a"),
+  )
+
+  assert not wf.tool_calls
+  assert wf.seen_downstream == [{"error": "This tool call is rejected."}]
+
+
+@pytest.mark.asyncio
+async def test_tool_node_confirmation_from_authenticated_caller_runs_tool(
+    monkeypatch,
+):
+  """An approval from a caller the serving layer verified is honored."""
+  monkeypatch.setenv("ADK_ENABLE_STRICT_CALLER_PRINCIPAL", "1")
+  wf = _ConfirmationWorkflow(resumable=False)
+  request = await wf.start()
+
+  await wf.answer(
+      request,
+      {"confirmed": True},
+      caller_principal=CallerPrincipal(
+          authenticated=True, user_name="operator", source="a2a"
+      ),
+  )
+
+  assert wf.tool_calls == ["prod"]
+  assert wf.seen_downstream == [{"deleted": "prod"}]
+
+
+@pytest.mark.asyncio
+async def test_tool_node_confirmation_from_unauthenticated_caller_warns_by_default(
+    caplog,
+):
+  """Without strict mode the approval is honored and logged, as in an agent."""
+  wf = _ConfirmationWorkflow(resumable=False)
+  request = await wf.start()
+
+  with caplog.at_level("WARNING", logger="google_adk"):
+    await wf.answer(
+        request,
+        {"confirmed": True},
+        caller_principal=CallerPrincipal(authenticated=False, source="a2a"),
+    )
+
+  assert wf.tool_calls == ["prod"]
+  assert any(
+      "unauthenticated caller" in record.getMessage()
+      for record in caplog.records
+  )
 
 
 @pytest.mark.asyncio
@@ -851,6 +941,31 @@ async def test_tool_node_requested_confirmation_rejected_lets_tool_decide(
   request = await wf.start()
 
   await wf.answer(request, {"confirmed": False})
+
+  assert not wf.tool_calls
+  assert wf.seen_downstream == [{"status": "declined"}]
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_tool_node_requested_confirmation_from_unauthenticated_caller_refused_in_strict_mode(
+    resumable: bool, monkeypatch
+):
+  """A tool that reads `tool_confirmation` itself sees the refusal too.
+
+  `apply_confirmation_gate` never runs for a tool whose
+  `check_require_confirmation` is False, so the principal decision has to be
+  applied to the stored answer, not only to the gate.
+  """
+  monkeypatch.setenv("ADK_ENABLE_STRICT_CALLER_PRINCIPAL", "1")
+  wf = _RequestedConfirmationWorkflow(resumable=resumable)
+  request = await wf.start()
+
+  await wf.answer(
+      request,
+      {"confirmed": True, "payload": {"limit": 10}},
+      caller_principal=CallerPrincipal(authenticated=False, source="a2a"),
+  )
 
   assert not wf.tool_calls
   assert wf.seen_downstream == [{"status": "declined"}]
