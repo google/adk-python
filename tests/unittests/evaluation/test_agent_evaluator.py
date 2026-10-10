@@ -46,6 +46,7 @@ from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from google.adk.evaluation.simulation.user_simulator_provider import UserSimulatorProvider
 from google.adk.evaluation.trajectory_evaluator import TrajectoryEvaluator
+from google.adk.workflow import Workflow
 from google.genai import types as genai_types
 import pandas as pd
 import pytest
@@ -343,6 +344,61 @@ async def test_evaluate_eval_set_raises_when_no_eval_cases_were_evaluated(
 
 
 @pytest.mark.asyncio
+async def test_evaluate_eval_set_evaluates_app_passed_in(mocker):
+  """An App passed to evaluate_eval_set reaches LocalEvalService unchanged."""
+  root_agent = BaseAgent(name="root_agent")
+  app = App(name="my_app", root_agent=root_agent)
+  mock_local_eval_service_cls = mocker.patch(
+      "google.adk.evaluation.local_eval_service.LocalEvalService"
+  )
+  instance = mock_local_eval_service_cls.return_value
+  instance.perform_inference = _empty_async_gen
+  instance.evaluate = _empty_async_gen
+
+  await AgentEvaluator.evaluate_eval_set(
+      agent_module=app,
+      eval_set=_make_eval_set(),
+      eval_config=EvalConfig(),
+      num_runs=1,
+  )
+
+  service_kwargs = mock_local_eval_service_cls.call_args.kwargs
+  assert service_kwargs["root_agent"] is root_agent
+  assert service_kwargs["app"] is app
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_names_agent_passed_in_on_failure(mocker):
+  """Failures for an agent passed in name the agent, not a module path."""
+  mock_local_eval_service_cls = mocker.patch(
+      "google.adk.evaluation.local_eval_service.LocalEvalService"
+  )
+
+  async def _one_result(*args, **kwargs):
+    yield EvalCaseResult(
+        eval_set_id="test_eval_set",
+        eval_id="case1",
+        final_eval_status=EvalStatus.FAILED,
+        overall_eval_metric_results=[],
+        eval_metric_result_per_invocation=[],
+        session_id="",
+    )
+
+  instance = mock_local_eval_service_cls.return_value
+  instance.perform_inference = _empty_async_gen
+  instance.evaluate = _one_result
+
+  with pytest.raises(AssertionError, match="case1 for my_agent Failed"):
+    await AgentEvaluator.evaluate_eval_set(
+        agent_module=BaseAgent(name="my_agent"),
+        eval_set=_make_eval_set(),
+        eval_config=EvalConfig(),
+        num_runs=1,
+        print_detailed_results=False,
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("num_runs", [0, -1])
 async def test_evaluate_eval_set_raises_when_num_runs_less_than_one(num_runs):
   with pytest.raises(
@@ -370,7 +426,7 @@ class TestGetAgentForEval:
     mocker.patch("importlib.import_module", return_value=fake_module)
 
     resolved_agent, resolved_app = await AgentEvaluator._get_agent_for_eval(
-        module_name="some.module"
+        agent_module="some.module"
     )
 
     assert resolved_agent is root_agent
@@ -384,7 +440,7 @@ class TestGetAgentForEval:
     mocker.patch("importlib.import_module", return_value=fake_module)
 
     resolved_agent, resolved_app = await AgentEvaluator._get_agent_for_eval(
-        module_name="some.module"
+        agent_module="some.module"
     )
 
     assert resolved_agent is root_agent
@@ -400,7 +456,7 @@ class TestGetAgentForEval:
     mocker.patch("importlib.import_module", return_value=fake_module)
 
     resolved_agent, resolved_app = await AgentEvaluator._get_agent_for_eval(
-        module_name="some.module"
+        agent_module="some.module"
     )
 
     assert resolved_agent is root_agent
@@ -418,11 +474,62 @@ class TestGetAgentForEval:
     mocker.patch("importlib.import_module", return_value=fake_module)
 
     resolved_agent, resolved_app = await AgentEvaluator._get_agent_for_eval(
-        module_name="some.module", agent_name="sub_agent"
+        agent_module="some.module", agent_name="sub_agent"
     )
 
     assert resolved_agent is sub_agent
     assert resolved_app is app
+
+  @pytest.mark.asyncio
+  async def test_uses_agent_passed_in_without_importing(self, mocker):
+    """An agent built by the caller is evaluated as is, with no app."""
+    root_agent = BaseAgent(name="root_agent")
+    mock_import = mocker.patch("importlib.import_module")
+
+    resolved_agent, resolved_app = await AgentEvaluator._get_agent_for_eval(
+        agent_module=root_agent
+    )
+
+    assert resolved_agent is root_agent
+    assert resolved_app is None
+    mock_import.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_uses_app_passed_in(self, mocker):
+    """An App built by the caller yields its root agent and the App itself."""
+    root_agent = BaseAgent(name="root_agent")
+    app = App(name="my_app", root_agent=root_agent)
+    mock_import = mocker.patch("importlib.import_module")
+
+    resolved_agent, resolved_app = await AgentEvaluator._get_agent_for_eval(
+        agent_module=app
+    )
+
+    assert resolved_agent is root_agent
+    assert resolved_app is app
+    mock_import.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_selects_sub_agent_of_app_passed_in(self):
+    """`agent_name` selects a sub-agent of a passed App, keeping the App."""
+    sub_agent = BaseAgent(name="sub_agent")
+    root_agent = BaseAgent(name="root_agent", sub_agents=[sub_agent])
+    app = App(name="my_app", root_agent=root_agent)
+
+    resolved_agent, resolved_app = await AgentEvaluator._get_agent_for_eval(
+        agent_module=app, agent_name="sub_agent"
+    )
+
+    assert resolved_agent is sub_agent
+    assert resolved_app is app
+
+  @pytest.mark.asyncio
+  async def test_rejects_app_whose_root_is_not_an_agent(self):
+    """An App rooted at a node that is not a BaseAgent cannot be evaluated."""
+    app = App(name="my_app", root_agent=Workflow(name="my_workflow"))
+
+    with pytest.raises(TypeError, match="can only evaluate a BaseAgent"):
+      await AgentEvaluator._get_agent_for_eval(agent_module=app)
 
 
 class TestGetEvalResultsByEvalId:

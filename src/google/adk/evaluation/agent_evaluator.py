@@ -127,7 +127,7 @@ class AgentEvaluator:
 
   @staticmethod
   async def evaluate_eval_set(
-      agent_module: str,
+      agent_module: Union[str, BaseAgent, App],
       eval_set: EvalSet,
       criteria: Optional[dict[str, float]] = None,
       eval_config: Optional[EvalConfig] = None,
@@ -142,9 +142,12 @@ class AgentEvaluator:
     """Evaluates an agent using the given EvalSet.
 
     Args:
-      agent_module: The path to python module that contains the definition of
-        the agent. There is convention in place here, where the code is going to
-        look for 'root_agent' or `get_agent_async` in the loaded module.
+      agent_module: The agent to evaluate. Either an agent or App built by the
+        caller, or the path to python module that contains the definition of
+        the agent. For a module path, there is convention in place here, where
+        the code is going to look for 'root_agent' or `get_agent_async` in the
+        loaded module. Pass an agent or App when it needs values that are only
+        known at runtime.
       eval_set: The eval set.
       criteria: Evaluation criteria, a dictionary of metric names to their
         respective thresholds. This field is deprecated.
@@ -198,8 +201,9 @@ class AgentEvaluator:
       raise ValueError("`eval_config` is required.")
 
     agent_for_eval, app = await AgentEvaluator._get_agent_for_eval(
-        module_name=agent_module, agent_name=agent_name
+        agent_module=agent_module, agent_name=agent_name
     )
+    agent_label = AgentEvaluator._get_agent_label(agent_module)
     eval_metrics = get_eval_metrics_from_config(eval_config)
 
     user_simulator_provider = UserSimulatorProvider(
@@ -263,7 +267,7 @@ class AgentEvaluator:
       failures_per_eval_case = AgentEvaluator._process_metrics_and_get_failures(
           eval_metric_results=eval_metric_results,
           print_detailed_results=print_detailed_results,
-          agent_module=agent_module,
+          agent_module=agent_label,
       )
 
       failures.extend(failures_per_eval_case)
@@ -271,7 +275,7 @@ class AgentEvaluator:
           AgentEvaluator._get_failures_from_final_eval_status(
               eval_id=eval_id,
               eval_results_per_eval_id=eval_results_per_eval_id,
-              agent_module=agent_module,
+              agent_module=agent_label,
           )
       )
 
@@ -300,7 +304,7 @@ class AgentEvaluator:
 
   @staticmethod
   async def evaluate(
-      agent_module: str,
+      agent_module: Union[str, BaseAgent, App],
       eval_dataset_file_path_or_dir: str,
       num_runs: int = NUM_RUNS,
       agent_name: Optional[str] = None,
@@ -314,9 +318,12 @@ class AgentEvaluator:
     """Evaluates an Agent given eval data.
 
     Args:
-      agent_module: The path to python module that contains the definition of
-        the agent. There is convention in place here, where the code is going to
-        look for 'root_agent' or 'get_agent_async' in the loaded module.
+      agent_module: The agent to evaluate. Either an agent or App built by the
+        caller, or the path to python module that contains the definition of
+        the agent. For a module path, there is convention in place here, where
+        the code is going to look for 'root_agent' or 'get_agent_async' in the
+        loaded module. Pass an agent or App when it needs values that are only
+        known at runtime.
       eval_dataset_file_path_or_dir: The eval data set. This can be either a
         string representing full path to the file containing eval dataset, or a
         directory that is recursively explored for all files that have a
@@ -634,32 +641,70 @@ class AgentEvaluator:
     return "\n".join([str(t) for t in tool_calls])
 
   @staticmethod
-  async def _get_agent_for_eval(
-      module_name: str, agent_name: Optional[str] = None
-  ) -> tuple[BaseAgent, Optional[App]]:
-    """Returns the (agent_for_eval, app) pair for the given module.
+  def _get_agent_label(agent_module: Union[str, BaseAgent, App]) -> str:
+    """Returns the name used for the agent in failure messages."""
+    if isinstance(agent_module, (BaseAgent, App)):
+      return agent_module.name
+    return agent_module
 
-    If the module exposes an `App` instance via `agent.app`, that App is
-    returned alongside the agent to evaluate, so `app.plugins`, context-cache,
-    and resumability configs participate in the eval run. Otherwise `app` is
-    None and only the bare agent is returned. When `agent_name` is provided,
-    the returned agent is the corresponding sub-agent, but the App (if any) is
+  @staticmethod
+  async def _get_agent_for_eval(
+      agent_module: Union[str, BaseAgent, App],
+      agent_name: Optional[str] = None,
+  ) -> tuple[BaseAgent, Optional[App]]:
+    """Returns the (agent_for_eval, app) pair for the given agent or module.
+
+    `agent_module` is either an agent or App built by the caller, or the path
+    of a module to load. An App is returned alongside its root agent, so
+    `app.plugins`, context-cache, and resumability configs participate in the
+    eval run. For a module, the App is the one exposed via `agent.app`, if any.
+    A bare agent comes with a None app. When `agent_name` is provided, the
+    returned agent is the corresponding sub-agent, but the App (if any) is
     still surfaced so its application-wide configuration is honored.
     """
+    if isinstance(agent_module, App):
+      if not isinstance(agent_module.root_agent, BaseAgent):
+        raise TypeError(
+            f"The root_agent of App {agent_module.name!r} is a"
+            f" {type(agent_module.root_agent).__name__}, but AgentEvaluator"
+            " can only evaluate a BaseAgent."
+        )
+      root_agent, app = agent_module.root_agent, agent_module
+    elif isinstance(agent_module, BaseAgent):
+      root_agent, app = agent_module, None
+    else:
+      root_agent, app = await AgentEvaluator._load_agent_from_module(
+          agent_module
+      )
+
+    agent_for_eval = root_agent
+    if agent_name:
+      selected_agent = root_agent.find_agent(agent_name)
+      if selected_agent is None:
+        raise ValueError(f"Sub-Agent {agent_name!r} not found.")
+      agent_for_eval = selected_agent
+
+    return agent_for_eval, app
+
+  @staticmethod
+  async def _load_agent_from_module(
+      module_name: str,
+  ) -> tuple[BaseAgent, Optional[App]]:
+    """Returns the (root_agent, app) pair defined in the given module."""
     module_path = f"{module_name}"
-    agent_module = importlib.import_module(module_path)
+    loaded_module = importlib.import_module(module_path)
 
     # One of the two things should be satisfied, either the module should have
     # an "agent" as a member in it or the module name itself should end with
     # ".agent".
-    if not (hasattr(agent_module, "agent") or module_name.endswith(".agent")):
+    if not (hasattr(loaded_module, "agent") or module_name.endswith(".agent")):
       raise ValueError(
           f"Module {module_name} does not have a member named `agent` or the"
           " name should endwith `.agent`."
       )
 
     agent_module_with_agent: object = getattr(
-        agent_module, "agent", agent_module
+        loaded_module, "agent", loaded_module
     )
     root_candidate: object = getattr(
         agent_module_with_agent, "root_agent", None
@@ -682,14 +727,7 @@ class AgentEvaluator:
     if not isinstance(app, App):
       app = None
 
-    agent_for_eval = root_agent
-    if agent_name:
-      selected_agent = root_agent.find_agent(agent_name)
-      if selected_agent is None:
-        raise ValueError(f"Sub-Agent {agent_name!r} not found.")
-      agent_for_eval = selected_agent
-
-    return agent_for_eval, app
+    return root_agent, app
 
   @staticmethod
   def _get_eval_sets_manager(

@@ -124,6 +124,22 @@ the inner module yourself, as in `"my_agents.home_automation.agent"`, and that
 works too. If your module exposes an async `get_agent_async()` in place of
 `root_agent`, the loader awaits it and takes its first return value.
 
+`agent_module` also takes an agent or an `App` you built yourself, which is the
+way to evaluate an agent that needs values only known at runtime, such as an
+account id from a request:
+
+```python
+await AgentEvaluator.evaluate_eval_set(
+    agent_module=build_agent(account_id="abc-123"),
+    eval_set=eval_set,
+    eval_config=eval_config,
+)
+```
+
+Nothing is imported in that case. An `App` is evaluated with its root agent,
+which has to be a `BaseAgent`; an `App` rooted at a `Workflow` raises
+`TypeError`.
+
 `eval_dataset_file_path_or_dir` is resolved against the process working
 directory, so what you write is relative to wherever you launched `pytest`, not
 to the test file. If you point it at a directory rather than a single file,
@@ -147,7 +163,8 @@ A call to `evaluate` walks through five stages, in this order.
 3.  **Resolve the agent.** The module is imported and `root_agent` located as
     described above. If the module also exposes an `App` instance named `app`,
     that App is picked up too, so its plugins and context-cache configuration
-    take part in the run.
+    take part in the run. An agent or `App` passed in directly is used as is,
+    with the same App handling.
 4.  **Run the agent, for real.** Phase one is live inference: `LocalEvalService`
     actually executes your agent against every user turn in the eval set,
     `num_runs` times over. A model credential is required even when every
@@ -182,7 +199,7 @@ replaces with `eval_set` and `eval_config`.
 
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `agent_module` | `str` | required | Dotted module path to the agent package. |
+| `agent_module` | `str \| BaseAgent \| App` | required | Dotted module path to the agent package, or an agent or `App` built by the caller. |
 | `eval_dataset_file_path_or_dir` | `str` | required | One eval file, or a directory searched recursively for `*.test.json`. |
 | `num_runs` | `int` | `2` | How many times the whole eval set is run before scores are averaged. |
 | `agent_name` | `str \| None` | `None` | Evaluate a named sub-agent instead of the root agent. |
