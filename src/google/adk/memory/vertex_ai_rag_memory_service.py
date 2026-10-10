@@ -394,6 +394,10 @@ class VertexAiRagMemoryService(BaseMemoryService):
       for events in _merge_event_lists(event_lists):
         sorted_events = sorted(events, key=lambda e: e.timestamp)
 
+        # `id` is deliberately left unset. The events above are rebuilt from
+        # chunk text on every search, so `event.id` is a fresh uuid that names
+        # nothing a caller could later address; the durable handle here is the
+        # RAG file behind `source_display_name`, not the event.
         memory_results.extend([
             MemoryEntry(
                 author=event.author,

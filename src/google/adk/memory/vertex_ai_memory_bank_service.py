@@ -578,6 +578,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
           update_time = memory.update_time
           memory_events.append(
               MemoryEntry(
+                  id=_memory_id_from_name(getattr(memory, 'name', None)),
                   author='user',
                   content=types.Content(
                       parts=[types.Part(text=fact)],
@@ -1013,6 +1014,18 @@ def _extract_revision_labels(
   if not revision_labels:
     return None
   return revision_labels
+
+
+def _memory_id_from_name(name: str | None) -> str | None:
+  """The `memory_id` component of a memory resource name.
+
+  `add_memory` forwards `MemoryEntry.id` as the `memory_id` of the created
+  memory, i.e. the last component of the resource name, so search returns that
+  same component rather than the full path.
+  """
+  if not name or not isinstance(name, str):
+    return None
+  return name.rsplit('/', 1)[-1] or None
 
 
 def _is_consolidation_enabled(

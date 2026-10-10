@@ -31,6 +31,7 @@ def mock_firestore_client():
   collection_ref.where.return_value = collection_ref
 
   doc_snapshot = mock.MagicMock()
+  doc_snapshot.id = "doc1"
   doc_snapshot.to_dict.return_value = {}
 
   collection_ref.get = mock.AsyncMock(return_value=[doc_snapshot])
@@ -98,6 +99,7 @@ async def test_search_memory_with_results(mock_firestore_client):
   assert response.memories
   assert len(response.memories) == 1
   assert response.memories[0].author == "user"
+  assert response.memories[0].id == "doc1"
 
   mock_firestore_client.collection.assert_called_with("memories")
   collection_ref = mock_firestore_client.collection.return_value
@@ -145,6 +147,7 @@ async def test_search_memory_deduplication(mock_firestore_client):
   content = types.Content(parts=[types.Part.from_text(text="quick fox jumps")])
 
   doc_snapshot1 = mock.MagicMock()
+  doc_snapshot1.id = "doc_1"
   doc_snapshot1.to_dict.return_value = {
       "appName": app_name,
       "userId": user_id,
@@ -154,6 +157,7 @@ async def test_search_memory_deduplication(mock_firestore_client):
   }
 
   doc_snapshot2 = mock.MagicMock()
+  doc_snapshot2.id = "doc_2"
   doc_snapshot2.to_dict.return_value = {
       "appName": app_name,
       "userId": user_id,
@@ -175,6 +179,7 @@ async def test_search_memory_deduplication(mock_firestore_client):
   assert response.memories
   assert len(response.memories) == 1
   assert response.memories[0].author == "user"
+  assert response.memories[0].id == "doc_1"
 
 
 @pytest.mark.asyncio
