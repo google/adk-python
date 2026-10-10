@@ -32,6 +32,7 @@ from contextlib import ExitStack
 import logging
 import os
 import re
+from typing import Any
 from typing import Final
 from typing import TYPE_CHECKING
 
@@ -209,6 +210,21 @@ def resolve_error_type(error: BaseException) -> str:
   if isinstance(error, genai_errors.APIError):
     return str(error.code)
   return type(error).__name__
+
+
+@contextmanager
+def start_as_current_span(name: str, **kwargs: Any) -> Iterator[Span]:
+  """Opens a span with ``tracer`` that names the error escaping it, if any.
+
+  OpenTelemetry marks such a span ERROR on its own, but only ``error.type``
+  says which error it was, and the metric for the same operation records it.
+  """
+  with tracer.start_as_current_span(name, **kwargs) as span:
+    try:
+      yield span
+    except Exception as e:
+      span.set_attribute(ERROR_TYPE, resolve_error_type(e))
+      raise
 
 
 def trace_agent_invocation(
@@ -1120,7 +1136,7 @@ def _use_native_generate_content_span_stable_semconv(
 ) -> Iterator[GenerateContentSpan]:
   telemetry_config = telemetry_config or TelemetryConfig()
   system_name = _resolve_gen_ai_system_name(llm_request.model)
-  with tracer.start_as_current_span(
+  with start_as_current_span(
       f"generate_content {llm_request.model or ''}".strip()
   ) as span:
     span.set_attribute(GEN_AI_SYSTEM, system_name)
@@ -1174,7 +1190,7 @@ def _use_native_generate_content_span(
       yield gc_span
     return
 
-  with tracer.start_as_current_span(
+  with start_as_current_span(
       f"generate_content {llm_request.model or ''}".strip()
   ) as span:
     _set_common_generate_content_attributes(

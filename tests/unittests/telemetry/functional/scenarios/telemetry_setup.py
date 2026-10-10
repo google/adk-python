@@ -24,7 +24,6 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 from google.adk.telemetry import _metrics
-from google.adk.telemetry import node_tracing
 from google.adk.telemetry import tracing
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
@@ -235,13 +234,12 @@ def install_telemetry(
   tracer_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
   real_tracer = tracer_provider.get_tracer(__name__)
 
-  for module in (tracing, node_tracing):
-    monkeypatch.setattr(
-        module.tracer,
-        "start_as_current_span",
-        real_tracer.start_as_current_span,
-    )
-    monkeypatch.setattr(module.tracer, "start_span", real_tracer.start_span)
+  monkeypatch.setattr(
+      tracing.tracer,
+      "start_as_current_span",
+      real_tracer.start_as_current_span,
+  )
+  monkeypatch.setattr(tracing.tracer, "start_span", real_tracer.start_span)
 
   logger_provider = LoggerProvider()
   logger_provider.add_log_record_processor(
