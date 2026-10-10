@@ -656,6 +656,13 @@ class TestToA2A:
 
     assert result == mock_app
 
+  def test_to_a2a_keeps_configured_adk_log_level(self, caplog):
+    """to_a2a leaves the application's "google_adk" logger level unchanged."""
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
+      to_a2a(self.mock_agent)
+
+      assert logging.getLogger("google_adk").level == logging.WARNING
+
   # ---------------------------------------------------------------------------
   # Behavioral hosting checks (real Starlette; drive lifespan; assert routes).
   # ---------------------------------------------------------------------------

@@ -178,9 +178,7 @@ def to_a2a(
 
       app = to_a2a(agent, task_store=task_store, lifespan=lifespan)
   """
-  # Set up ADK logging to ensure logs are visible when using uvicorn directly
   adk_logger = logging.getLogger("google_adk")
-  adk_logger.setLevel(logging.INFO)
 
   def create_runner() -> Runner:
     """Create a runner for the agent or workflow."""
