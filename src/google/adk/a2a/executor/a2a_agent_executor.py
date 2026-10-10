@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 from typing import Awaitable
 from typing import Callable
 
@@ -46,8 +47,42 @@ from .utils import execute_after_agent_interceptors
 from .utils import execute_after_event_interceptors
 from .utils import execute_before_agent_interceptors
 
-logger = logging.getLogger('google_adk.' + __name__)
+#: Env var that puts exception text back into the failure message sent to the peer.
+#: Off by default, and meant for local debugging only: enabling it on a
+#: network-reachable deployment restores the disclosure the opaque id exists to
+#: prevent.
+_DEBUG_ERRORS_ENV_VAR = 'ADK_DEBUG_ERRORS'
 
+#: Length of the correlation id, matching ``newErrorId()`` in adk-java.
+_ERROR_ID_LENGTH = 12
+
+#: Fixed summary the peer receives. It deliberately carries no throwable text.
+_FAILURE_SUMMARY = 'Agent execution failed.'
+
+def _new_error_id() -> str:
+  """Returns a short opaque id correlating a peer-visible failure with the log."""
+  return platform_uuid.new_uuid().replace('-', '')[:_ERROR_ID_LENGTH]
+
+def _debug_errors_enabled() -> bool:
+  """Whether exception text should be echoed to the peer. Local debugging only."""
+  value = os.environ.get(_DEBUG_ERRORS_ENV_VAR, '')
+  return value.strip().lower() in ('1', 'true', 'yes', 'on')
+
+def failure_text(error: Exception, error_id: str) -> str:
+  """Builds the failure text handed back to the remote peer.
+
+  The peer is not trusted with the throwable: exception text routinely names
+  absolute filesystem paths, module locations, configuration values and echoed
+  request payloads, none of which the caller needs and all of which are useful
+  reconnaissance. Set ``ADK_DEBUG_ERRORS=1`` to restore the old behaviour while
+  debugging locally.
+  """
+  text = f'{_FAILURE_SUMMARY} (error_id: {error_id})'
+  if _debug_errors_enabled():
+    text = f'{text} {error}'
+  return text
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 @a2a_experimental
 class A2aAgentExecutor(AgentExecutor):
@@ -152,7 +187,15 @@ class A2aAgentExecutor(AgentExecutor):
     try:
       await self._handle_request(context, event_queue)
     except Exception as e:
-      logger.error('Error handling A2A request: %s', e, exc_info=True)
+      # Logged in full here, under a short opaque id. The peer receives only that
+      # id, never the throwable text - see failure_text().
+      error_id = _new_error_id()
+      logger.error(
+          'Error handling A2A request [error_id=%s]: %s',
+          error_id,
+          e,
+          exc_info=True,
+      )
       # Publish failure event
       try:
         await event_queue.enqueue_event(
@@ -164,7 +207,7 @@ class A2aAgentExecutor(AgentExecutor):
                     message=Message(
                         message_id=platform_uuid.new_uuid(),
                         role=_compat.ROLE_AGENT,
-                        parts=[_compat.make_text_part(str(e))],
+                        parts=[_compat.make_text_part(failure_text(e, error_id))],
                     ),
                 ),
                 final=True,
