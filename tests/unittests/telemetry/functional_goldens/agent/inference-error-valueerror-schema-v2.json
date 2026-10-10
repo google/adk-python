@@ -4,7 +4,8 @@
     "attributes": {
       "gen_ai.operation.name": "invoke_workflow",
       "gen_ai.conversation.id": "PRESENT",
-      "gen_ai.workflow.name": "some_root_agent"
+      "gen_ai.workflow.name": "some_root_agent",
+      "error.type": "ValueError"
     },
     "status": "ERROR",
     "children": [
@@ -14,13 +15,16 @@
           "gen_ai.operation.name": "invoke_agent",
           "gen_ai.agent.description": "A sample root agent.",
           "gen_ai.agent.name": "some_root_agent",
-          "gen_ai.conversation.id": "PRESENT"
+          "gen_ai.conversation.id": "PRESENT",
+          "error.type": "ValueError"
         },
         "status": "ERROR",
         "children": [
           {
             "name": "call_llm",
-            "attributes": {},
+            "attributes": {
+              "error.type": "ValueError"
+            },
             "status": "ERROR",
             "children": [
               {
@@ -32,7 +36,8 @@
                   "gen_ai.agent.name": "some_root_agent",
                   "gen_ai.conversation.id": "PRESENT",
                   "gcp.vertex.agent.event_id": "PRESENT",
-                  "gcp.vertex.agent.invocation_id": "PRESENT"
+                  "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "error.type": "ValueError"
                 },
                 "status": "ERROR",
                 "children": [],

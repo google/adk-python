@@ -139,18 +139,6 @@ _FACTS_MISSING_FROM_SPANS: dict[str, str] = {
     "gen_ai.response.model": "spans carry the requested model only",
 }
 
-# The cases whose spans are marked ERROR without naming the error.
-_CASES_MISSING_ERROR_TYPE: frozenset[str] = frozenset({
-    "agent-inference-error-resource-exhausted-schema-v1",
-    "agent-inference-error-resource-exhausted-schema-v2",
-    "agent-inference-error-valueerror-schema-v2",
-    "agent-tool-error-valueerror-schema-v2",
-})
-
-_MISSING_ERROR_TYPE_REASON: str = (
-    "the metric for the same operation records error.type; the span does not"
-)
-
 
 def _case_id(case: FunctionalTestCase) -> str:
   """Names a case uniquely: the same test id is reused across scenarios."""
@@ -209,18 +197,7 @@ def _xfail(reason: str | None) -> list[pytest.MarkDecorator]:
 
 @pytest.mark.parametrize(
     "case",
-    [
-        pytest.param(
-            case,
-            id=_case_id(case),
-            marks=_xfail(
-                _MISSING_ERROR_TYPE_REASON
-                if _case_id(case) in _CASES_MISSING_ERROR_TYPE
-                else None
-            ),
-        )
-        for case in _EVERY_CASE
-    ],
+    [pytest.param(case, id=_case_id(case)) for case in _EVERY_CASE],
 )
 def test_error_status_implies_error_type(case: FunctionalTestCase) -> None:
   """A span that ended in an error says which error, as semconv requires."""

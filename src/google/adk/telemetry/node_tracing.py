@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 from opentelemetry import context as context_api
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OPERATION_NAME
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.trace import Span
 from opentelemetry.trace import Status
 from opentelemetry.trace import StatusCode
@@ -37,7 +38,8 @@ from ..agents.context import Context
 from ..workflow._base_node import BaseNode
 from .context import TelemetryConfig
 from .tracing import _telemetry_config_from_invocation_context
-from .tracing import tracer
+from .tracing import resolve_error_type
+from .tracing import start_as_current_span
 
 if TYPE_CHECKING:
   from opentelemetry.util.types import AttributeValue
@@ -153,7 +155,7 @@ def _invoke_node_span(
     context: Context, node: BaseNode
 ) -> Iterator[TelemetryContext]:
   """Opens an `invoke_node` span for a plain node."""
-  with tracer.start_as_current_span(
+  with start_as_current_span(
       f"invoke_node {node.name}",
       attributes={
           GEN_AI_OPERATION_NAME: "invoke_node",
@@ -247,7 +249,7 @@ def _use_invoke_workflow_span(
   recorded_error: BaseException | None = None
   try:
     with (
-        tracer.start_as_current_span(
+        start_as_current_span(
             name=span_name,
             attributes=attributes,
             context=otel_context,
@@ -272,6 +274,7 @@ def _use_invoke_workflow_span(
           recorded_error = get_recorded_error()
           if recorded_error is not None:
             span.record_exception(recorded_error)
+            span.set_attribute(ERROR_TYPE, resolve_error_type(recorded_error))
             span.set_status(Status(StatusCode.ERROR, str(recorded_error)))
   finally:
     _metrics.record_workflow_invocation_duration(

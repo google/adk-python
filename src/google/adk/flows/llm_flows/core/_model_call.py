@@ -33,8 +33,8 @@ from ....live.live_request_queue import LiveRequestQueue
 from ....models.llm_request import LlmRequest
 from ....models.llm_response import LlmResponse
 from ....telemetry import _instrumentation
+from ....telemetry.tracing import start_as_current_span
 from ....telemetry.tracing import trace_call_llm
-from ....telemetry.tracing import tracer
 from ....utils._runner_utils import _with_caller_context
 from ....utils.context_utils import Aclosing
 from ._finalizer import has_meaningful_content
@@ -184,7 +184,7 @@ async def call_llm_async(
   caller_context = otel_context.get_current()
 
   async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
-    with tracer.start_as_current_span('call_llm') as span:
+    with start_as_current_span('call_llm') as span:
       # Runs before_model_callback inside the call_llm span so
       # plugins observe the same span as after/error callbacks.
       if response := await flow._handle_before_model_callback(

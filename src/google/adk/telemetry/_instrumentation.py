@@ -153,7 +153,7 @@ def record_invocation(
     Nothing; the span (if any) is active for the duration of the block.
   """
   if resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED:
-    with tracing.tracer.start_as_current_span("invocation"):
+    with tracing.start_as_current_span("invocation"):
       yield
     return
 
@@ -582,7 +582,7 @@ async def record_agent_invocation(
       context_api.set_value(_AGENT_INVOCATION_SCOPE_KEY, scope)
   )
   try:
-    with tracing.tracer.start_as_current_span(span_name) as s:
+    with tracing.start_as_current_span(span_name) as s:
       span = s
       tracing.trace_agent_invocation(span, agent, ctx)
       yield scope
