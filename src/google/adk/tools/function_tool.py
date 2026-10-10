@@ -505,8 +505,13 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
       return await target(**args_to_call)
     runner = _SYNC_CALLABLE_RUNNER.get()
     if runner is not None:
-      return await runner(target, args_to_call)
-    return target(**args_to_call)
+      result = await runner(target, args_to_call)
+    else:
+      result = target(**args_to_call)
+    # A sync decorator around an async function returns a coroutine.
+    if inspect.isawaitable(result):
+      result = await result
+    return result
 
   def _get_mandatory_args(
       self,
