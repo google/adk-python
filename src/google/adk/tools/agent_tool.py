@@ -44,6 +44,34 @@ from .tool_context import ToolContext
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
+  from ..agents.invocation_context import InvocationContext
+  from ..apps._configs import EventsCompactionConfig
+
+
+def _nested_compaction_config(
+    invocation_context: Optional[InvocationContext],
+) -> Optional[EventsCompactionConfig]:
+  """Returns the caller's token-threshold compaction settings for a nested run.
+
+  Only the token-threshold trigger is inherited. It compacts the nested
+  history before a model call would exceed the context window. Sliding-window
+  compaction runs after an invocation finishes, and the nested session is
+  discarded when the tool returns, so it is left out.
+  """
+  config = (
+      invocation_context.events_compaction_config
+      if invocation_context
+      else None
+  )
+  if (
+      config is None
+      or config.token_threshold is None
+      or config.event_retention_size is None
+  ):
+    return None
+  return config.model_copy(
+      update={'compaction_interval': None, 'overlap_size': None}
+  )
 
 
 def _part_to_text(part: types.Part) -> str:
@@ -224,6 +252,7 @@ class AgentTool(BaseTool):
       args: dict[str, Any],
       tool_context: ToolContext,
   ) -> Any:
+    from ..apps.app import App
     from ..runners import Runner
     from ..sessions.in_memory_session_service import InMemorySessionService
 
@@ -262,14 +291,22 @@ class AgentTool(BaseTool):
         if self.include_plugins
         else None
     )
+    # model_construct, as Runner does for a bare agent: the caller's app name
+    # is reused and need not satisfy App's name validation.
+    nested_app = App.model_construct(
+        name=child_app_name,
+        root_agent=self.agent,
+        plugins=plugins or [],
+        # Without the caller's compaction, a wrapped agent that makes many tool
+        # calls grows its own history until the model rejects the request.
+        events_compaction_config=_nested_compaction_config(invocation_context),
+    )
     runner = Runner(
-        app_name=child_app_name,
-        agent=self.agent,
+        app=nested_app,
         artifact_service=ForwardingArtifactService(tool_context),
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
         credential_service=tool_context._invocation_context.credential_service,
-        plugins=plugins,
     )
     # When plugins are inherited from the parent runner, the parent still owns
     # them; tell the sub-Runner's plugin manager to skip closing them on exit

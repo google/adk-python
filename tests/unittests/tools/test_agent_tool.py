@@ -27,6 +27,9 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.run_config import StreamingMode
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.apps.app import App
+from google.adk.apps.app import EventsCompactionConfig
+from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.features import FeatureName
@@ -111,20 +114,18 @@ async def test_agent_tool_inherits_parent_app_name(monkeypatch):
     def __init__(
         self,
         *,
-        app_name: str,
-        agent: Agent,
+        app: App,
         artifact_service,
         session_service,
         memory_service,
         credential_service,
-        plugins,
     ):
       del artifact_service, memory_service, credential_service
-      captured['runner_app_name'] = app_name
-      self.agent = agent
+      captured['runner_app_name'] = app.name
+      self.agent = app.root_agent
       self.session_service = session_service
-      self.plugin_manager = PluginManager(plugins=plugins)
-      self.app_name = app_name
+      self.plugin_manager = PluginManager(plugins=app.plugins)
+      self.app_name = app.name
 
     def run_async(
         self,
@@ -213,18 +214,16 @@ async def _capture_nested_run_config(
     def __init__(
         self,
         *,
-        app_name: str,
-        agent: Agent,
+        app: App,
         artifact_service,
         session_service,
         memory_service,
         credential_service,
-        plugins,
     ):
-      del app_name, artifact_service, memory_service, credential_service
-      self.agent = agent
+      del artifact_service, memory_service, credential_service
+      self.agent = app.root_agent
       self.session_service = session_service
-      self.plugin_manager = PluginManager(plugins=plugins)
+      self.plugin_manager = PluginManager(plugins=app.plugins)
 
     def run_async(
         self,
@@ -354,18 +353,16 @@ async def test_agent_tool_forwards_parent_abort_signal(monkeypatch):
     def __init__(
         self,
         *,
-        app_name: str,
-        agent: Agent,
+        app: App,
         artifact_service,
         session_service,
         memory_service,
         credential_service,
-        plugins,
     ):
-      del app_name, artifact_service, memory_service, credential_service
-      self.agent = agent
+      del artifact_service, memory_service, credential_service
+      self.agent = app.root_agent
       self.session_service = session_service
-      self.plugin_manager = PluginManager(plugins=plugins)
+      self.plugin_manager = PluginManager(plugins=app.plugins)
 
     def run_async(
         self,
@@ -1825,19 +1822,17 @@ async def test_no_schema_args_handling(monkeypatch, args, expected_text):
     def __init__(
         self,
         *,
-        app_name: str,
-        agent,
+        app: App,
         artifact_service,
         session_service,
         memory_service,
         credential_service,
-        plugins,
     ):
       del artifact_service, memory_service, credential_service
-      self.agent = agent
+      self.agent = app.root_agent
       self.session_service = session_service
-      self.plugin_manager = PluginManager(plugins=plugins)
-      self.app_name = app_name
+      self.plugin_manager = PluginManager(plugins=app.plugins)
+      self.app_name = app.name
 
     def run_async(
         self,
@@ -2032,19 +2027,17 @@ async def _run_agent_tool_and_capture_content(
     def __init__(
         self,
         *,
-        app_name,
-        agent,
+        app: App,
         artifact_service,
         session_service,
         memory_service,
         credential_service,
-        plugins,
     ):
       del artifact_service, memory_service, credential_service
-      self.agent = agent
+      self.agent = app.root_agent
       self.session_service = session_service
-      self.plugin_manager = PluginManager(plugins=plugins)
-      self.app_name = app_name
+      self.plugin_manager = PluginManager(plugins=app.plugins)
+      self.app_name = app.name
 
     def run_async(
         self,
@@ -2210,3 +2203,235 @@ async def test_agent_tool_in_tool_thread_pool_returns_nested_reply():
   )
 
   assert result == 'nested reply'
+
+
+@mark.asyncio
+async def test_agent_tool_compacts_nested_history_at_caller_token_threshold():
+  """An agent tool's own history is compacted at the caller's token threshold.
+
+  Setup: the caller's app compacts at 100 tokens; the wrapped agent reads a
+    large file three times before answering.
+  Act: run the root agent, which calls the agent tool once.
+  Assert: the wrapped agent's last request carries the compaction summary
+    instead of its full tool-call history.
+  """
+
+  def read_large_file() -> str:
+    """Returns a large file body."""
+    return 'lorem ipsum dolor sit amet ' * 80
+
+  read_call = Part.from_function_call(name='read_large_file', args={})
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[read_call, read_call, read_call, 'nested answer']
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, tools=[read_large_file]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[function_call_no_schema, 'root answer']
+      ),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+  app = App(
+      name='parent_app',
+      root_agent=root_agent,
+      events_compaction_config=EventsCompactionConfig(
+          compaction_interval=10_000,
+          overlap_size=0,
+          token_threshold=100,
+          event_retention_size=0,
+          summarizer=LlmEventSummarizer(
+              llm=testing_utils.MockModel.create(
+                  responses=['NESTED SUMMARY'] * 20
+              )
+          ),
+      ),
+  )
+  runner = Runner(app=app, session_service=InMemorySessionService())
+  session = await runner.session_service.create_session(
+      app_name='parent_app', user_id='user'
+  )
+
+  async for _ in runner.run_async(
+      user_id='user',
+      session_id=session.id,
+      new_message=types.Content(role='user', parts=[Part.from_text(text='go')]),
+  ):
+    pass
+
+  last_prompt_text = ' '.join(
+      part.text
+      for content in tool_agent_model.requests[-1].contents
+      for part in content.parts or []
+      if part.text
+  )
+  assert len(tool_agent_model.requests) == 4
+  assert 'NESTED SUMMARY' in last_prompt_text
+
+
+@mark.asyncio
+@mark.parametrize(
+    'events_compaction_config',
+    [
+        None,
+        EventsCompactionConfig(
+            compaction_interval=1,
+            overlap_size=0,
+            summarizer=LlmEventSummarizer(
+                llm=testing_utils.MockModel.create(
+                    responses=['NESTED SUMMARY'] * 20
+                )
+            ),
+        ),
+    ],
+    ids=['no_config', 'sliding_window_only'],
+)
+async def test_agent_tool_keeps_nested_history_without_token_threshold(
+    events_compaction_config,
+):
+  """An agent tool's history is not compacted without a token threshold.
+
+  Setup: the caller's app has no compaction, or only the sliding-window
+    trigger, which runs after an invocation ends; the wrapped agent reads a
+    large file three times before answering.
+  Act: run the root agent, which calls the agent tool once.
+  Assert: the wrapped agent's last request still carries all three tool
+    results and no compaction summary.
+  """
+
+  def read_large_file() -> str:
+    """Returns a large file body."""
+    return 'lorem ipsum dolor sit amet ' * 80
+
+  read_call = Part.from_function_call(name='read_large_file', args={})
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[read_call, read_call, read_call, 'nested answer']
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, tools=[read_large_file]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[function_call_no_schema, 'root answer']
+      ),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+  app = App(
+      name='parent_app',
+      root_agent=root_agent,
+      events_compaction_config=events_compaction_config,
+  )
+  runner = Runner(app=app, session_service=InMemorySessionService())
+  session = await runner.session_service.create_session(
+      app_name='parent_app', user_id='user'
+  )
+
+  async for _ in runner.run_async(
+      user_id='user',
+      session_id=session.id,
+      new_message=types.Content(role='user', parts=[Part.from_text(text='go')]),
+  ):
+    pass
+
+  last_request = tool_agent_model.requests[-1]
+  tool_results = [
+      part
+      for content in last_request.contents
+      for part in content.parts or []
+      if part.function_response
+  ]
+  last_prompt_text = ' '.join(
+      part.text
+      for content in last_request.contents
+      for part in content.parts or []
+      if part.text
+  )
+  assert len(tool_agent_model.requests) == 4
+  assert len(tool_results) == 3
+  assert 'NESTED SUMMARY' not in last_prompt_text
+
+
+@mark.asyncio
+async def test_agent_tool_compacts_each_call_and_keeps_caller_config():
+  """Each agent tool call compacts its own history; the caller's config holds.
+
+  Setup: the caller's app sets both compaction triggers with a 100-token
+    threshold; the root agent calls the agent tool twice, and each call reads
+    a large file three times before answering.
+  Act: run the root agent.
+  Assert: the last request of each nested run carries the compaction summary,
+    the second run starts from a fresh history, and the caller's compaction
+    config is unchanged.
+  """
+
+  def read_large_file() -> str:
+    """Returns a large file body."""
+    return 'lorem ipsum dolor sit amet ' * 80
+
+  read_call = Part.from_function_call(name='read_large_file', args={})
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[read_call, read_call, read_call, 'first answer']
+      + [read_call, read_call, read_call, 'second answer']
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, tools=[read_large_file]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              function_call_no_schema,
+              function_call_no_schema,
+              'root answer',
+          ]
+      ),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+  events_compaction_config = EventsCompactionConfig(
+      compaction_interval=10_000,
+      overlap_size=0,
+      token_threshold=100,
+      event_retention_size=0,
+      summarizer=LlmEventSummarizer(
+          llm=testing_utils.MockModel.create(responses=['NESTED SUMMARY'] * 40)
+      ),
+  )
+  app = App(
+      name='parent_app',
+      root_agent=root_agent,
+      events_compaction_config=events_compaction_config,
+  )
+  runner = Runner(app=app, session_service=InMemorySessionService())
+  session = await runner.session_service.create_session(
+      app_name='parent_app', user_id='user'
+  )
+
+  async for _ in runner.run_async(
+      user_id='user',
+      session_id=session.id,
+      new_message=types.Content(role='user', parts=[Part.from_text(text='go')]),
+  ):
+    pass
+
+  def prompt_text(request) -> str:
+    return ' '.join(
+        part.text
+        for content in request.contents
+        for part in content.parts or []
+        if part.text
+    )
+
+  requests = tool_agent_model.requests
+  assert len(requests) == 8
+  assert 'NESTED SUMMARY' in prompt_text(requests[3])
+  assert 'NESTED SUMMARY' not in prompt_text(requests[4])
+  assert len(requests[4].contents) == 1
+  assert 'NESTED SUMMARY' in prompt_text(requests[7])
+  assert app.events_compaction_config is events_compaction_config
+  assert events_compaction_config.compaction_interval == 10_000
+  assert events_compaction_config.overlap_size == 0
+  assert events_compaction_config.token_threshold == 100
+  assert events_compaction_config.event_retention_size == 0
