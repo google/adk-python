@@ -33,6 +33,7 @@ from . import context_utils
 logger = logging.getLogger("google_adk." + __name__)
 
 _DEFAULT_CALL_DOC = inspect.getdoc(type.__call__)
+_DEFAULT_PARTIAL_DOC = inspect.getdoc(functools.partial)
 
 _METHOD_WRAPPER_TYPES = (
     type((1).__add__),
@@ -109,6 +110,31 @@ def get_type_hints_cached(func: Callable[..., Any]) -> dict[str, Any]:
   return hints
 
 
+def get_callable_doc(func: Callable[..., Any]) -> str:
+  """Returns the cleaned docstring of a callable, or "" if it has none.
+
+  A functools.partial without a docstring of its own resolves to the wrapped
+  callable's docstring, and a callable object without one falls back to its
+  `__call__` docstring. CallableSpec uses this for FunctionTool's description,
+  and `build_function_declaration_with_json_schema` uses it for the
+  declaration sent to the model. That covers only the JSON schema path: with
+  JSON_SCHEMA_FOR_FUNC_DECL off, `from_function_with_options` still reads
+  `func.__doc__` directly, so the two can differ there.
+  """
+  doc = inspect.getdoc(func) or ""
+  if isinstance(func, functools.partial) and doc == _DEFAULT_PARTIAL_DOC:
+    return get_callable_doc(func.func)
+  if not doc and not _is_routine(func) and not isinstance(func, type):
+    call_method = getattr(func, "__call__", None)
+    if call_method is not None:
+      call_doc = inspect.getdoc(call_method) or ""
+      if call_doc and call_doc != _DEFAULT_CALL_DOC:
+        doc = call_doc
+  if doc == _DEFAULT_CALL_DOC:
+    doc = ""
+  return doc
+
+
 class CallableSpec:
   """Unified specification and introspection for a callable.
 
@@ -131,18 +157,8 @@ class CallableSpec:
     self.func = func
     self.unwrapped_func = unwrap_callable(func) if func is not None else None
 
-    # Docstring resolution (prioritize direct func.__doc__, then func.__call__.__doc__)
     if func is not None:
-      doc = inspect.getdoc(func) or ""
-      if not doc and not _is_routine(func) and not isinstance(func, type):
-        call_method = getattr(func, "__call__", None)
-        if call_method is not None:
-          call_doc = inspect.getdoc(call_method) or ""
-          if call_doc and call_doc != _DEFAULT_CALL_DOC:
-            doc = call_doc
-      if doc == _DEFAULT_CALL_DOC:
-        doc = ""
-      self.doc = doc
+      self.doc = get_callable_doc(func)
 
       # Context parameter detection
       self.context_param_name = context_utils.find_context_parameter(func)

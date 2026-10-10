@@ -27,16 +27,14 @@ from ...auth.auth_credential import AuthCredentialTypes as _AuthCredentialTypes
 from ...auth.auth_credential import OAuth2Auth
 from ...events.event import Event
 from ...events.request_input import RequestInput
-from ...flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ...utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
+from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...utils._schema_utils import schema_to_json_schema
 from .._errors import WorkflowDataError
 
 if TYPE_CHECKING:
   from ...auth.auth_tool import AuthConfig
   from ...sessions.state import State
-
-REQUEST_INPUT_FUNCTION_CALL_NAME = 'adk_request_input'
-REQUEST_CREDENTIAL_FUNCTION_CALL_NAME = REQUEST_EUC_FUNCTION_CALL_NAME
 
 
 def create_request_input_event(request_input: RequestInput) -> Event:
@@ -80,8 +78,7 @@ def has_auth_request_function_call(event: Event) -> bool:
   if not (event.content and event.content.parts):
     return False
   return any(
-      p.function_call
-      and p.function_call.name == REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+      p.function_call and p.function_call.name == REQUEST_EUC_FUNCTION_CALL_NAME
       for p in event.content.parts
   )
 
@@ -203,7 +200,7 @@ def create_auth_request_event(
           parts=[
               types.Part(
                   function_call=types.FunctionCall(
-                      name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+                      name=REQUEST_EUC_FUNCTION_CALL_NAME,
                       id=interrupt_id,
                       args=args,
                   )

@@ -438,11 +438,7 @@ class NodeRunner:
       ctx._route_emitted = True
 
   def _flush_deltas(self, event: Event, ctx: Context) -> None:
-    """Move pending state/artifact deltas from ctx onto the event.
-
-    TODO: Handle non-persisted states (e.g. `temp:` prefixed keys)
-    that should flow through ctx but not be written to session events.
-    """
+    """Move pending state/artifact deltas from ctx onto the event."""
     from ..events.event_actions import EventActions
 
     state_delta = ctx.actions.state_delta
@@ -461,7 +457,6 @@ class NodeRunner:
 
   def _enrich_event(self, event: Event, ctx: Context) -> None:
     """Set author, node_info, invocation_id on the event."""
-    # TODO: revisit after we settle Event.author logic for content/message.
     event.author = ctx.event_author or self._node.name
     event.invocation_id = ctx._invocation_context.invocation_id
     event.node_info.path = ctx.node_path

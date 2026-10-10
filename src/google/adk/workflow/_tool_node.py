@@ -27,6 +27,7 @@ from pydantic import Field
 from typing_extensions import override
 
 from ..agents.context import Context
+from ..auth._auth_resume import find_requested_auth_configs
 from ..auth.auth_tool import AuthConfig
 from ..events.event import Event
 from ..events.request_input import RequestInput
@@ -40,7 +41,6 @@ from ._errors import WorkflowDataError
 from ._retry_config import RetryConfig
 from .utils._workflow_hitl_utils import create_auth_request_event
 from .utils._workflow_hitl_utils import process_auth_resume
-from .utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
 
 _TOOL_CONFIRMATION_INTERRUPT_PREFIX = 'wf_tool_confirmation:'
 _TOOL_AUTH_INTERRUPT_PREFIX = 'wf_auth:'
@@ -301,7 +301,13 @@ class _ToolNode(BaseNode):
     auth_response = ctx.resume_inputs.get(interrupt_id)
     if auth_response is None:
       return
-    auth_config = self._resolve_auth_config(ctx, interrupt_id)
+    auth_config = _get_tool_auth_config(self.tool)
+    if auth_config is None:
+      requested = find_requested_auth_configs(
+          ctx.session.events, [interrupt_id]
+      ).get(interrupt_id)
+      if requested is not None:
+        auth_config = requested.auth_config
     if auth_config is None:
       raise WorkflowDataError(
           f'Cannot resume auth for tool node {ctx.node_path}: no AuthConfig'
@@ -310,27 +316,3 @@ class _ToolNode(BaseNode):
     await process_auth_resume(
         auth_response, auth_config, ctx.state, interrupt_id
     )
-
-  def _resolve_auth_config(
-      self, ctx: Context, interrupt_id: str
-  ) -> AuthConfig | None:
-    """Resolves the AuthConfig for this tool node on resume.
-
-    The config comes from the tool or from the credential request this node
-    recorded, never from the client: its `credential_key` picks the state slot
-    the credential is stored in.
-    """
-    auth_config = _get_tool_auth_config(self.tool)
-    if auth_config is not None:
-      return auth_config
-    for event in reversed(ctx.session.events):
-      for fc in event.get_function_calls():
-        if (
-            fc.name == REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
-            and fc.id == interrupt_id
-            and fc.args
-        ):
-          raw_config = fc.args.get('authConfig') or fc.args.get('auth_config')
-          if raw_config:
-            return AuthConfig.model_validate(raw_config)
-    return None

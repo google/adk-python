@@ -2,7 +2,7 @@
 
 ## Overview
 
-This sample demonstrates how an e-commerce order support assistant, `order_support_agent`, pairs routine lookup and action tools, `get_order`, `get_customer_profile`, and `issue_refund`, with `ModelConsultTool` to escalate multi-rule refund policy decisions to a stronger advisor model mid-generation.
+This sample demonstrates how an e-commerce order support assistant, `order_support_agent`, pairs routine lookup and action tools, `get_order`, `get_customer_profile`, and `issue_refund`, with the [Model Consult Tool](https://adk.dev/integrations/model-consult/) to escalate multi-rule refund policy decisions to a stronger advisor model mid-generation. This pattern provides **cost optimization** by keeping routine tool loops on a fast, lightweight executor model, reserving the more expensive frontier model solely for complex policy reconciliation.
 
 The primary agent gathers order and customer details directly and follows the default escalation policy that `ModelConsultTool` adds to its system instruction: it calls `model_consult` before committing to a refund decision and, on longer tasks, again before declaring the task done. The advisor adds the most value when multiple policy exceptions interact, such as late returns, opened electronics restocking fees, defect bulletins, and Gold-tier loyalty exemptions. The agent then executes `issue_refund` based on the advisor's guidance.
 
@@ -20,10 +20,14 @@ The primary agent gathers order and customer details directly and follows the de
 
 ```mermaid
 graph TD
-    Agent[order_support_agent] -->|calls| GetOrder(get_order)
-    Agent -->|calls| GetProfile(get_customer_profile)
-    Agent -->|calls| Consult(model_consult / ModelConsultTool)
-    Agent -->|calls| IssueRefund(issue_refund)
+    User --> Executor[Executor Agent]
+    Executor -->|Routine| Tool1[get_order]
+    Executor -->|Routine| Tool2[get_customer_profile]
+    Executor -->|Complex Policy| Consult[ModelConsultTool]
+    Consult -->|Flattened Context| Advisor[Advisor Model]
+    Advisor -->|Plan| Consult
+    Consult -->|Guidance| Executor
+    Executor -->|Execute Plan| Tool3[issue_refund]
 ```
 
 ## How To
@@ -114,18 +118,27 @@ root_agent = Agent(
 )
 ```
 
-Run the sample interactively from the repository root with the ADK CLI:
+> **Note:** The `max_uses` and `session_max_uses` parameters enforce strict escalation budgets to control costs, ensuring the agent fails gracefully and continues on its own if the consultation limit is reached.
 
-```bash
-adk run contributing/samples/tools/model_consult
-```
+You can run the sample interactively from the repository root in one of two ways:
 
-Or launch the ADK web UI pointed at `contributing/samples/tools` and select `model_consult`:
+- **Run via the ADK CLI:**
+  ```bash
+  adk run contributing/samples/tools/model_consult
+  ```
+- **Launch the ADK Web UI:** Point the UI at `contributing/samples/tools` and select `model_consult`:
+  ```bash
+  adk web contributing/samples/tools
+  ```
 
-```bash
-adk web contributing/samples/tools
-```
+> **Tip: Inspecting the Tool Output:**
+> By default, `adk run` in human-readable mode does not print tool calls or their responses. To inspect `model_consult` calls and verify the advisor's guidance, you can:
+>
+> 1. **Use the ADK Web UI:** Click the `model_consult` event in the chat pane to open the **Events / Trace** inspector. The `functionCall` part shows the question sent, and `functionResponse` shows the returned dictionary, including the advisor's guidance (`guidance`) and remaining budget (`consults.remaining`).
+> 1. **Use the ADK CLI:** Pass `--jsonl` or `--save_session` to stream or save the full event log (e.g., `adk run contributing/samples/tools/model_consult --jsonl`).
+> 1. **Inspect Programmatically:** When running via `Runner.run_async()`, inspect `event.get_function_responses()` for `name == "model_consult"`.
 
 ## Related Guides
 
-- [ModelConsultTool and ModelConsultContextConfig](../../../../docs/guides/tools/model_consult/model_consult_tool/index.md) - Escalating hard decisions mid-generation to a stronger advisor model with per-turn and session budgets.
+- [Model Consult Integration Guide](https://adk.dev/integrations/model-consult/) - The primary documentation for Model Consult, including use cases, setup, and configuration.
+- [ModelConsultTool Unit Guide](../../../../docs/guides/tools/model_consult/model_consult_tool/index.md) - Deep dive into escalating hard decisions mid-generation, custom context budgets, and advisor handoffs.
