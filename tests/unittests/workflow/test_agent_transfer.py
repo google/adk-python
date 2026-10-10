@@ -29,6 +29,7 @@ from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.exit_loop_tool import exit_loop
 from google.adk.tools.tool_context import ToolContext
+from google.genai import errors
 from google.genai.types import Part
 import pytest
 
@@ -1254,3 +1255,50 @@ async def test_llm_agent_transfer_inside_custom_node():
   # Assert
   assert ('inner_agent', transfer_call_part('target_agent')) in simplified
   assert ('target_agent', 'hello from target') in simplified
+
+
+@pytest.mark.parametrize('is_resumable', [True, False])
+async def test_transfer_target_failing_before_first_event_owns_next_turn(
+    is_resumable: bool,
+):
+  """A target that fails before yielding still owns the next turn."""
+  # Arrange
+  root_model = testing_utils.MockModel.create(
+      responses=[transfer_call_part('sub_agent_1')]
+  )
+  sub_model = testing_utils.MockModel.create(responses=['response_sub'])
+  sub_model.error = errors.ServerError(
+      503, {'error': {'code': 503, 'status': 'UNAVAILABLE'}}
+  )
+
+  sub_agent_1 = Agent(name='sub_agent_1', model=sub_model)
+  root_agent = Agent(
+      name='root_agent',
+      model=root_model,
+      sub_agents=[sub_agent_1],
+  )
+  app = App(
+      name='test_app',
+      root_agent=root_agent,
+      resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Act & Assert: Turn 1, the target's first model call fails
+  with pytest.raises(errors.ServerError):
+    await runner.run_async('test1')
+
+  # Turn 2: the model is healthy again and the target answers
+  sub_model.error = None
+  events = await runner.run_async('test2')
+
+  if not is_resumable:
+    assert testing_utils.simplify_events(events) == [
+        ('sub_agent_1', 'response_sub'),
+    ]
+  else:
+    assert testing_utils.simplify_resumable_app_events(events) == [
+        ('sub_agent_1', 'response_sub'),
+        ('sub_agent_1', END_OF_AGENT),
+    ]
+  assert len(root_model.requests) == 1

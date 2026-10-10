@@ -798,3 +798,184 @@ def test_find_agent_to_run_resolves_tool_sub_branch_pause_to_owning_agent(
       _agent_router.find_agent_to_run(session, root, resumability_config)
       == non_transferable
   )
+
+
+def _transfer_events(
+    author: str, target: str, *, call_id: str = "transfer_1"
+) -> list[Event]:
+  """Builds the call/response events persisted by transfer_to_agent."""
+  return [
+      Event(
+          invocation_id="inv1",
+          author=author,
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=call_id,
+                          name="transfer_to_agent",
+                          args={"agent_name": target},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv1",
+          author=author,
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=call_id,
+                          name="transfer_to_agent",
+                          response={"result": None},
+                      )
+                  )
+              ],
+          ),
+          actions=EventActions(transfer_to_agent=target),
+      ),
+  ]
+
+
+def _text_event(author: str, text: str) -> Event:
+  return Event(
+      invocation_id="inv1",
+      author=author,
+      content=types.Content(role="model", parts=[types.Part(text=text)]),
+  )
+
+
+def _node_failure_event(author: str) -> Event:
+  """Builds the content-less error event NodeRunner records on failure."""
+  return Event(
+      invocation_id="inv1",
+      author=author,
+      error_code="UNAVAILABLE",
+      error_message="503 UNAVAILABLE",
+  )
+
+
+def _session_with(events: list[Event]) -> Session:
+  return Session(id="s1", app_name="app", user_id="u1", events=events)
+
+
+def test_find_agent_to_run_routes_to_target_of_unfinished_transfer():
+  """Transfer target that never replied still owns the next turn."""
+  root, sub1, _, _ = _make_agent_tree()
+  session = _session_with(_transfer_events("root_agent", "sub_agent1"))
+
+  assert _agent_router.find_agent_to_run(session, root) == sub1
+
+
+def test_find_agent_to_run_ignores_contentless_error_event_after_transfer():
+  """Error event with an inherited author does not hide the transfer."""
+  root, sub1, _, _ = _make_agent_tree()
+  session = _session_with([
+      *_transfer_events("root_agent", "sub_agent1"),
+      _node_failure_event("root_agent"),
+  ])
+
+  assert _agent_router.find_agent_to_run(session, root) == sub1
+
+
+def test_find_agent_to_run_ignores_contentless_error_event_without_transfer():
+  """Content-less error event does not take over from the last replier."""
+  root, sub1, _, _ = _make_agent_tree()
+  session = _session_with([
+      _text_event("sub_agent1", "Sub response"),
+      _node_failure_event("root_agent"),
+  ])
+
+  assert _agent_router.find_agent_to_run(session, root) == sub1
+
+
+def test_find_agent_to_run_routes_by_author_of_error_event_with_content():
+  """Error event that carries content still counts as a reply."""
+  root, _, _, _ = _make_agent_tree()
+  error_reply = _text_event("root_agent", "Partial root response")
+  error_reply.error_code = "MAX_TOKENS"
+  session = _session_with([
+      _text_event("sub_agent1", "Sub response"),
+      error_reply,
+  ])
+
+  assert _agent_router.find_agent_to_run(session, root) == root
+
+
+def test_find_agent_to_run_routes_to_root_on_unfinished_transfer_to_parent():
+  """Transfer back to the root that never replied routes to the root."""
+  root, _, _, _ = _make_agent_tree()
+  session = _session_with([
+      *_transfer_events("root_agent", "sub_agent1", call_id="transfer_1"),
+      _text_event("sub_agent1", "Sub response"),
+      *_transfer_events("sub_agent1", "root_agent", call_id="transfer_2"),
+      _node_failure_event("sub_agent1"),
+  ])
+
+  assert _agent_router.find_agent_to_run(session, root) == root
+
+
+def test_find_agent_to_run_routes_to_last_target_of_chained_transfer():
+  """In root -> sub1 -> sub2, a failing sub2 still owns the next turn."""
+  root, _, sub2, _ = _make_agent_tree()
+  session = _session_with([
+      *_transfer_events("root_agent", "sub_agent1", call_id="transfer_1"),
+      *_transfer_events("sub_agent1", "sub_agent2", call_id="transfer_2"),
+      _node_failure_event("sub_agent1"),
+  ])
+
+  assert _agent_router.find_agent_to_run(session, root) == sub2
+
+
+def test_find_agent_to_run_prefers_later_reply_over_older_transfer():
+  """A reply authored after a transfer decides routing, not the transfer."""
+  root, sub1, _, _ = _make_agent_tree()
+  session = _session_with([
+      *_transfer_events("root_agent", "sub_agent2"),
+      _text_event("sub_agent1", "Sub1 response"),
+  ])
+
+  assert _agent_router.find_agent_to_run(session, root) == sub1
+
+
+def test_find_agent_to_run_unfinished_transfer_to_non_transferable_target():
+  """Target that cannot own a turn keeps the existing author-based routing."""
+  root, _, _, _ = _make_agent_tree()
+  session = _session_with(_transfer_events("root_agent", "non_transferable"))
+
+  assert _agent_router.find_agent_to_run(session, root) == root
+
+
+def test_find_agent_to_run_ignores_transfer_rejected_by_peer_restriction():
+  """Peer transfer forbidden for the author does not reroute the session."""
+  root, sub1, _, _ = _make_agent_tree()
+  sub1.disallow_transfer_to_peers = True
+  session = _session_with([
+      *_transfer_events("root_agent", "sub_agent1", call_id="transfer_1"),
+      _text_event("sub_agent1", "Sub response"),
+      *_transfer_events("sub_agent1", "sub_agent2", call_id="transfer_2"),
+      _node_failure_event("sub_agent1"),
+  ])
+
+  assert _agent_router.find_agent_to_run(session, root) == sub1
+
+
+def test_find_agent_to_run_ignores_transfer_rejected_by_parent_restriction():
+  """Transfer to the parent forbidden for the author does not reroute."""
+  root, sub1, sub2, _ = _make_agent_tree()
+  child = _MockLlmAgent(
+      "child_agent", disallow_transfer_to_parent=True, parent_agent=sub1
+  )
+  sub1.sub_agents = [child]
+  session = _session_with([
+      _text_event("sub_agent2", "Sub2 response"),
+      *_transfer_events("child_agent", "sub_agent1"),
+  ])
+
+  # child_agent cannot own a turn, so routing falls back to the earlier
+  # sub_agent2 reply instead of honouring the rejected transfer to sub_agent1.
+  assert _agent_router.find_agent_to_run(session, root) == sub2
