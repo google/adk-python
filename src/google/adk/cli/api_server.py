@@ -65,6 +65,7 @@ from pydantic import Field
 from pydantic import ValidationError
 import pydantic_core
 from starlette.types import Lifespan
+from starlette.types import Scope
 from typing_extensions import deprecated
 from typing_extensions import override
 from watchdog.observers import Observer
@@ -456,6 +457,21 @@ def _with_abort_signal_kwarg(
 _current_session_options: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("current_session_options", default=None)
 )
+
+
+class _DevUiStaticFiles(StaticFiles):
+  """Serve dev-UI files when a reverse proxy strips the app root path."""
+
+  def get_path(self, scope: Scope) -> str:
+    app_root_path = scope.get("app_root_path", "")
+    path = scope["path"]
+    if app_root_path and not (
+        path == app_root_path or path.startswith(app_root_path + "/")
+    ):
+      # Mount includes the app root in root_path even when the proxy stripped
+      # it from path. Restore it for StaticFiles' mount-relative lookup only.
+      scope = {**scope, "path": app_root_path + path}
+    return super().get_path(scope)
 
 
 class _OriginCheckMiddleware:
@@ -1476,7 +1492,9 @@ class ApiServer:
 
       app.mount(
           "/dev-ui/",
-          StaticFiles(directory=web_assets_dir, html=True, follow_symlink=True),
+          _DevUiStaticFiles(
+              directory=web_assets_dir, html=True, follow_symlink=True
+          ),
           name="static",
       )
 

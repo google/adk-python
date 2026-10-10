@@ -7392,6 +7392,47 @@ def test_agent_run_sse_deferred_without_streaming_is_allowed(
   assert response.status_code == 200
 
 
+@pytest.mark.parametrize(
+    ("url_prefix", "request_prefix", "mount_prefix"),
+    [
+        (None, "", None),
+        ("/adk", "", None),
+        ("/adk", "/adk", None),
+        ("/adk", "/adk", "/adk"),
+        ("/nested/adk", "", None),
+        ("/dev", "", None),
+        ("https://example.com/adk", "", None),
+    ],
+)
+def test_dev_ui_static_files_with_url_prefix(
+    tmp_path, url_prefix, request_prefix, mount_prefix
+):
+  """Static mounts support both stripped and retained proxy prefixes."""
+  app = get_fast_api_app(
+      agents_dir=str(tmp_path), web=True, url_prefix=url_prefix
+  )
+  server = Starlette(routes=[Mount(mount_prefix, app)]) if mount_prefix else app
+  client = TestClient(server)
+
+  index = client.get(request_prefix + "/dev-ui/")
+  assert index.status_code == 200
+  assert "text/html" in index.headers["content-type"]
+  favicon = client.get(request_prefix + "/dev-ui/adk_favicon.svg")
+  assert favicon.status_code == 200
+  assert "image/svg+xml" in favicon.headers["content-type"]
+  assert client.get(request_prefix + "/dev-ui/missing.js").status_code == 404
+  assert client.get(request_prefix + "/list-apps").status_code == 200
+  config = client.get(
+      request_prefix + "/dev-ui/assets/config/runtime-config.json"
+  )
+  assert config.status_code == 200
+  assert config.json()["backendUrl"] == (url_prefix or "")
+  docs = client.get(request_prefix + "/docs")
+  assert docs.status_code == 200
+  assert (app.root_path + "/openapi.json") in docs.text
+  assert client.get(request_prefix + "/openapi.json").status_code == 200
+
+
 def test_runtime_config_endpoint_shadows_static_file(tmp_path):
   """The in-memory config must win over the file still shipped in the package.
 
