@@ -206,6 +206,19 @@ class SimplePromptOptimizer(
   ) -> OptimizerResult[AgentWithScores]:
     train_example_ids = sampler.get_train_example_ids()
 
+    # An empty training selection is now reachable: LocalEvalSampler used to
+    # treat `[]` as "every case" through a truthiness check, and #7170 makes it
+    # mean what it says. Without this the optimizer runs the whole loop against
+    # nothing and reports a final score of 0.0 — the scoring helpers return 0.0
+    # for an empty result set rather than dividing by zero — so a
+    # misconfiguration looks like a completed run that scored badly.
+    if not train_example_ids:
+      raise ValueError(
+          "No training examples to optimize against: the sampler returned an"
+          " empty training selection. Check the eval set and any explicit"
+          " train example ID list passed to the sampler."
+      )
+
     if self._config.batch_size > len(train_example_ids):
       logger.warning(
           "Batch size (%d) is larger than the number of training examples"
