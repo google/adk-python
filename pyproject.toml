@@ -146,6 +146,7 @@ optional-dependencies.all = [
   "redis>=4.2",
   "rouge-score>=0.1.2",
   "slack-bolt>=1.22",
+  "smolmachines>=1.25.2,<2; sys_platform!='win32'",
   "sqlalchemy[asyncio]>=2,<3",
   "sqlalchemy-spanner>=1.14",
   "tabulate>=0.9",
@@ -313,6 +314,9 @@ optional-dependencies.slack = [
   # why 3.14.2 is excluded.
   "aiohttp!=3.14.2",
   "slack-bolt>=1.22",
+]
+optional-dependencies.smol = [
+  "smolmachines>=1.25.2,<2; sys_platform!='win32'",
 ]
 optional-dependencies.test = [
   "a2a-sdk>=0.3.4,<2",
