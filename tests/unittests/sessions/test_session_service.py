@@ -2028,6 +2028,76 @@ async def test_append_event_same_timestamp_single_writer_not_stale(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'timestamp_increment',
+    [
+        pytest.param(
+            0.0,
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=AssertionError,
+                reason=(
+                    'Issue #7286: a same-timestamp append does not advance the'
+                    ' database stale-writer marker'
+                ),
+            ),
+            id='same_timestamp',
+        ),
+        pytest.param(1.0, id='increasing_timestamp'),
+    ],
+)
+async def test_database_fresh_writer_rejects_stale_session(
+    timestamp_increment: float, tmp_path: Path
+) -> None:
+  """A committed append invalidates another writer's previously read session."""
+  db_url = f'sqlite+aiosqlite:///{tmp_path / "stale_writer.db"}'
+  async with (
+      DatabaseSessionService(db_url) as writer,
+      DatabaseSessionService(db_url) as other_writer,
+  ):
+    session = await writer.create_session(app_name='app', user_id='user')
+    shared_timestamp = 100.0
+    await writer.append_event(
+        session, Event(id='seed', author='user', timestamp=shared_timestamp)
+    )
+    stale_session = await other_writer.get_session(
+        app_name='app', user_id='user', session_id=session.id
+    )
+    assert stale_session is not None
+
+    await writer.append_event(
+        session,
+        Event(
+            id='winner',
+            author='user',
+            timestamp=shared_timestamp + timestamp_increment,
+            actions=EventActions(state_delta={'winner': True}),
+        ),
+    )
+    rejected = False
+    try:
+      await other_writer.append_event(
+          stale_session,
+          Event(
+              id='stale',
+              author='user',
+              timestamp=shared_timestamp + 2.0,
+              actions=EventActions(state_delta={'stale': True}),
+          ),
+      )
+    except StaleSessionError:
+      rejected = True
+
+    reloaded = await writer.get_session(
+        app_name='app', user_id='user', session_id=session.id
+    )
+    assert reloaded is not None
+    assert rejected, 'A committed append must invalidate the stale session'
+    assert {event.id for event in reloaded.events} == {'seed', 'winner'}
+    assert reloaded.state == {'winner': True}
+
+
+@pytest.mark.asyncio
 async def test_sqlite_append_event_uses_typed_stale_session_error(tmp_path):
   """The legacy SQLite backend exposes the shared stale-writer contract."""
   service = get_session_service(SessionServiceType.SQLITE, tmp_path)
@@ -3757,6 +3827,58 @@ async def test_get_session_orders_tied_timestamps_by_id(
     await service.close()
 
   assert [event.id for event in retrieved_session.events] == event_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('append_ids_in_reverse', [False, True])
+@pytest.mark.parametrize('num_recent_events', [None, 0, 1, 5, 100])
+async def test_database_fresh_reader_preserves_tied_timestamp_append_order(
+    append_ids_in_reverse: bool,
+    num_recent_events: int | None,
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+) -> None:
+  """A fresh reader returns the appended timeline, including its recent tail."""
+  if append_ids_in_reverse and num_recent_events != 0:
+    request.node.add_marker(
+        pytest.mark.xfail(
+            strict=True,
+            raises=AssertionError,
+            reason=(
+                'Issue #7286: database timestamp ties use id order instead of'
+                ' append order, including num_recent_events'
+            ),
+        )
+    )
+
+  db_url = f'sqlite+aiosqlite:///{tmp_path / "tied_timestamps.db"}'
+  event_ids = [f'event_{index:02d}' for index in range(40)]
+  append_order = (
+      list(reversed(event_ids)) if append_ids_in_reverse else event_ids
+  )
+  async with DatabaseSessionService(db_url) as writer:
+    session = await writer.create_session(app_name='app', user_id='user')
+    for event_id in append_order:
+      await writer.append_event(
+          session, Event(id=event_id, author='user', timestamp=100.0)
+      )
+
+  async with DatabaseSessionService(db_url) as reader:
+    reloaded = await reader.get_session(
+        app_name='app',
+        user_id='user',
+        session_id=session.id,
+        config=GetSessionConfig(num_recent_events=num_recent_events),
+    )
+
+  assert reloaded is not None
+  if num_recent_events == 0:
+    expected_ids = []
+  elif num_recent_events is None:
+    expected_ids = append_order
+  else:
+    expected_ids = append_order[-num_recent_events:]
+  assert [event.id for event in reloaded.events] == expected_ids
 
 
 @pytest.mark.asyncio
