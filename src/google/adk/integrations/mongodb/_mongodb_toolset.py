@@ -27,8 +27,6 @@ from typing_extensions import override
 from . import _client
 from . import _search_tool
 from ...agents.readonly_context import ReadonlyContext
-from ...features import experimental
-from ...features import FeatureName
 from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
@@ -95,7 +93,6 @@ class _MongoDbTool(FunctionTool):
 DEFAULT_MONGODB_TOOL_NAME_PREFIX = "mongodb"
 
 
-@experimental(FeatureName.MONGODB_TOOLSET)
 class MongoDbToolset(BaseToolset):
   """MongoDB Toolset contains tools for vector search and hybrid search.
 
@@ -119,6 +116,14 @@ class MongoDbToolset(BaseToolset):
       )
       agent = Agent(model="gemini-3.5-flash", tools=[toolset])
       ```
+
+  When constructed with `connection_string`, the toolset is picklable, so the
+  agent can ship to Agent Engine (which packages apps with cloudpickle): the
+  live clients are dropped at pickle time and rebuilt on the runtime — the
+  MongoClient from the connection string, the query-embedding genai client
+  lazily from the ambient environment (`GOOGLE_CLOUD_PROJECT` /
+  `GOOGLE_CLOUD_LOCATION`). A toolset built from a caller-owned `mongo_client`
+  cannot be pickled.
   """
 
   def __init__(
@@ -174,8 +179,33 @@ class MongoDbToolset(BaseToolset):
       raise ValueError(
           "Either `connection_string` or `mongo_client` must be provided."
       )
+    self._connection_string = connection_string
     self._database_name = database_name
     self._genai_client = genai_client
+
+  def __getstate__(self) -> dict[str, Any]:
+    """Drops the unpicklable clients so the toolset can ship to Agent Engine.
+
+    Agent Engine packages the app with cloudpickle; neither a MongoClient
+    (sockets, locks, background threads) nor a genai Client (httpx pools)
+    crosses that boundary. The MongoClient is rebuilt from the connection
+    string on restore, and the genai client is rebuilt lazily from the
+    ambient environment the next time a query is embedded.
+    """
+    state = _client.drop_client_for_pickle(
+        self.__dict__, owns_client=self._owns_client, owner="MongoDbToolset"
+    )
+    state["_genai_client"] = None
+    # Caches hold tool instances that reference the dropped client.
+    state["_cached_invocation_id"] = None
+    state["_cached_prefixed_tools"] = None
+    return state
+
+  def __setstate__(self, state: dict[str, Any]) -> None:
+    self.__dict__.update(state)
+    self._client = _client.get_mongo_client(
+        self._connection_string, timeout_ms=self._settings.timeout_ms
+    )
 
   @override
   async def get_tools(
