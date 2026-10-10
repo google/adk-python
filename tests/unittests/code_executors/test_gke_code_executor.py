@@ -59,6 +59,15 @@ def mock_k8s_clients():
     )
     mock_client_class.BatchV1Api.return_value = mock_batch_v1
     mock_client_class.CoreV1Api.return_value = mock_core_v1
+    # _add_owner_reference copies these four fields into a V1OwnerReference, and
+    # kubernetes 37 validates their types with pydantic. An unconfigured MagicMock
+    # returns a MagicMock for each, which no longer validates as a string, so give
+    # the created Job the string fields a real cluster would return.
+    mock_batch_v1.create_namespaced_job.return_value = client.V1Job(
+        api_version="batch/v1",
+        kind="Job",
+        metadata=client.V1ObjectMeta(name="test-job-name", uid="test-job-uid"),
+    )
     yield {
         "batch_v1": mock_batch_v1,
         "core_v1": mock_core_v1,
