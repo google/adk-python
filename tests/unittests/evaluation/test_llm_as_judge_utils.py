@@ -28,6 +28,7 @@ from google.adk.evaluation.llm_as_judge_utils import get_average_rubric_score
 from google.adk.evaluation.llm_as_judge_utils import get_eval_status
 from google.adk.evaluation.llm_as_judge_utils import get_grounding_metadata_as_json_str
 from google.adk.evaluation.llm_as_judge_utils import get_text_from_content
+from google.adk.evaluation.llm_as_judge_utils import get_text_parts
 from google.adk.evaluation.llm_as_judge_utils import get_tool_calls_and_responses_as_json_str
 from google.adk.evaluation.llm_as_judge_utils import get_tool_declarations_as_json_str
 from google.genai import types as genai_types
@@ -131,6 +132,82 @@ def test_get_text_from_content_with_invocation_include_intermediate_responses_in
       )
       == f"{intermediate_text}\n{final_response_text}"
   )
+
+
+def test_get_text_from_content_excludes_thought_parts():
+  """Tests get_text_from_content excludes parts marked as thoughts."""
+  content = genai_types.Content(
+      parts=[
+          genai_types.Part(text="Let me think about this.", thought=True),
+          genai_types.Part(text="Paris"),
+      ]
+  )
+  assert get_text_from_content(content) == "Paris"
+
+
+def test_get_text_from_content_with_only_thought_parts():
+  """Tests get_text_from_content returns empty string for thought-only content."""
+  content = genai_types.Content(
+      parts=[genai_types.Part(text="Just thinking.", thought=True)]
+  )
+  assert get_text_from_content(content) == ""
+
+
+def test_get_text_from_content_excludes_thoughts_from_intermediate_events():
+  """Tests thought parts are excluded from intermediate responses too."""
+  invocation = Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="user")]),
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="agent",
+                  content=genai_types.Content(
+                      parts=[
+                          genai_types.Part(
+                              text="Considering options.", thought=True
+                          ),
+                          genai_types.Part(text="Let me check."),
+                      ]
+                  ),
+              ),
+          ]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Done.")]
+      ),
+  )
+
+  assert (
+      get_text_from_content(
+          invocation, include_intermediate_responses_in_final=True
+      )
+      == "Let me check.\nDone."
+  )
+
+
+def test_get_text_parts_with_none():
+  """Tests get_text_parts returns an empty list for None."""
+  assert get_text_parts(None) == []
+
+
+def test_get_text_parts_with_no_parts():
+  """Tests get_text_parts returns an empty list when parts is None."""
+  assert get_text_parts(genai_types.Content(parts=None)) == []
+
+
+def test_get_text_parts_excludes_thoughts():
+  """Tests get_text_parts excludes thought parts and non-text parts."""
+  content = genai_types.Content(
+      parts=[
+          genai_types.Part(text="Thinking...", thought=True),
+          genai_types.Part(text="Hello"),
+          genai_types.Part(
+              function_call=genai_types.FunctionCall(name="test_func")
+          ),
+          genai_types.Part(text="World"),
+      ]
+  )
+  assert get_text_parts(content) == ["Hello", "World"]
 
 
 def test_get_text_from_content_with_intermediate_data_full_response():

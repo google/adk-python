@@ -60,6 +60,7 @@ from .eval_set_results_manager import EvalSetResultsManager
 from .eval_sets_manager import EvalSetsManager
 from .evaluator import EvalStatus
 from .in_memory_eval_sets_manager import InMemoryEvalSetsManager
+from .llm_as_judge_utils import get_text_from_content
 from .local_eval_sets_manager import convert_eval_set_to_pydantic_schema
 from .simulation.user_simulator_provider import UserSimulatorProvider
 
@@ -620,10 +621,7 @@ class AgentEvaluator:
 
   @staticmethod
   def _convert_content_to_text(content: Optional[genai_types.Content]) -> str:
-    if content and content.parts:
-      return "\n".join([p.text for p in content.parts if p.text])
-
-    return ""
+    return get_text_from_content(content) or ""
 
   @staticmethod
   def _convert_tool_calls_to_text(

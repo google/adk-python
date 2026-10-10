@@ -59,6 +59,62 @@ def _create_test_invocations(
   )
 
 
+@pytest.mark.parametrize(
+    "actual_parts, expected_parts, score",
+    [
+        (
+            [
+                genai_types.Part(
+                    text="Consider the capital of France.", thought=True
+                ),
+                genai_types.Part(text="Paris"),
+            ],
+            [genai_types.Part(text="Paris")],
+            1.0,
+        ),
+        (
+            [genai_types.Part(text="Paris", thought=False)],
+            [
+                genai_types.Part(
+                    text="Consider the capital of France.", thought=True
+                ),
+                genai_types.Part(text="Paris"),
+            ],
+            1.0,
+        ),
+        (
+            [genai_types.Part(text="Paris", thought=True)],
+            [genai_types.Part(text="Paris")],
+            0.0,
+        ),
+        (
+            [
+                genai_types.Part(text="Paris", thought=True),
+                genai_types.Part(text="London"),
+            ],
+            [genai_types.Part(text="Paris")],
+            0.0,
+        ),
+    ],
+)
+def test_response_match_scores_visible_text_only(
+    actual_parts, expected_parts, score
+):
+  """Thought summaries neither dilute correct answers nor credit wrong ones."""
+  actual, expected = _create_test_invocations("", "")
+  actual.final_response.parts = actual_parts
+  expected.final_response.parts = expected_parts
+  evaluator = _create_test_rouge_evaluator(threshold=0.5)
+
+  result = evaluator.evaluate_invocations([actual], [expected])
+
+  assert result.overall_score == pytest.approx(score)
+  assert result.per_invocation_results[0].score == pytest.approx(score)
+  assert result.overall_eval_status == (
+      EvalStatus.PASSED if score == 1.0 else EvalStatus.FAILED
+  )
+
+
 def test_calculate_rouge_1_scores_empty_candidate_and_reference():
   candidate = ""
   reference = ""
