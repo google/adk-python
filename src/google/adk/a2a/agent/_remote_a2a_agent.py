@@ -78,6 +78,7 @@ from ..converters.part_converter import convert_genai_part_to_a2a_part
 from ..converters.part_converter import GenAIPartToA2APartConverter
 from ..converters.to_adk_event import _create_mock_function_call_for_required_user_input
 from ..converters.to_adk_event import _TASK_RESPONSE_BOUNDARY_STATES
+from ..converters.to_adk_event import _warn_if_peer_metadata_has_state_delta
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from ..experimental import a2a_experimental
@@ -627,6 +628,11 @@ def _build_auth_interceptors(
 @a2a_experimental
 class RemoteA2aAgent(BaseAgent):
   """Agent that communicates with a remote A2A agent via A2A client.
+
+  Session state is local to each side of an A2A boundary. Only event content is
+  included in requests, and state deltas from a remote peer are not applied to
+  the caller's session. Put values needed by the peer in event content and
+  return values needed by the caller as content or task output.
 
   This agent supports multiple ways to specify the remote agent:
   1. Direct AgentCard object
@@ -1385,6 +1391,18 @@ class RemoteA2aAgent(BaseAgent):
           " session history. Workflow path scopes are not supported."
       )
 
+    if events_to_process:
+      last_event = events_to_process[0]
+      has_state_delta = bool(last_event.actions.state_delta)
+      has_content = bool(last_event.content and last_event.content.parts)
+      if has_state_delta and not has_content:
+        logger.warning(
+            "RemoteA2aAgent '%s' cannot forward the preceding state-only"
+            " event across A2A. Session state is local to each agent; include"
+            " the required values in event content instead.",
+            self.name,
+        )
+
     # Collect all FC IDs emitted by this remote agent (in the task scope, when
     # there is one). A function response answering one of these resumes a call
     # the peer itself made; anything else is history that belongs to someone
@@ -1562,6 +1580,13 @@ class RemoteA2aAgent(BaseAgent):
     try:
       if isinstance(a2a_response, tuple):
         task, update = a2a_response
+        # The legacy converters never rebuild EventActions from peer metadata,
+        # so surface a dropped state delta here. Read only this item's own
+        # metadata: the aggregated task keeps metadata merged from earlier
+        # updates and would repeat the warning.
+        _warn_if_peer_metadata_has_state_delta(
+            task if update is None else update
+        )
         if update is None:
           # This is the initial response for a streaming task or the complete
           # response for a non-streaming task, which is the full task state.
@@ -1662,6 +1687,7 @@ class RemoteA2aAgent(BaseAgent):
 
       # Otherwise, it's a regular A2AMessage for non-streaming responses.
       elif isinstance(a2a_response, A2AMessage):
+        _warn_if_peer_metadata_has_state_delta(a2a_response)
         event = convert_a2a_message_to_event(
             a2a_response, self.name, ctx, self._a2a_part_converter
         )

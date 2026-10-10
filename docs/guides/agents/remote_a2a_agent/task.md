@@ -204,3 +204,20 @@ behavior:
     `finish_task` to signal completion.
 -   **No Direct Transfer**: Task agents cannot be targeted via
     `transfer_to_agent`; they must be invoked as sub-agents/tools.
+
+### Session state boundary
+
+The caller and remote agent use separate sessions. Session state and
+`EventActions.state_delta` do not cross the A2A boundary in either direction:
+
+-   `output_key` on the remote agent writes only to the remote server's
+    session.
+-   A caller-side state-only event has no content to include in the A2A
+    request.
+-   A state delta supplied by a remote peer is not applied to the caller's
+    session, because peers are not allowed to mutate caller state.
+
+Pass values required by the remote agent in event content. Return values needed
+by the caller as response content or, in task mode, as `finish_task` output.
+ADK logs a warning when it is about to drop a state-only hand-off or receives a
+non-empty remote state delta.
