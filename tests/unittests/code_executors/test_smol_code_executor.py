@@ -18,10 +18,13 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from google.adk.agents import LlmAgent
 from google.adk.code_executors import SmolCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
 from google.adk.code_executors.code_execution_utils import File
 import pytest
+
+from tests.unittests import testing_utils
 
 
 @pytest.fixture
@@ -70,6 +73,30 @@ def test_local_code_runs_without_guest_egress_and_deletes_vm(vm):
   assert source == 'print(42)'
   assert machine.exec.call_args.args[0] == ['python3', script_path]
   assert machine.exec.call_args.args[1].timeout == 7.0
+  machine.delete.assert_called_once_with()
+
+
+def test_agent_runner_executes_code_and_returns_microvm_output(vm):
+  machine, create = vm
+  model = testing_utils.MockModel.create(
+      responses=['```python\nprint(42)\n```', 'The answer is 42.']
+  )
+  agent = LlmAgent(
+      name='smol_agent', model=model, code_executor=SmolCodeExecutor()
+  )
+
+  events = testing_utils.InMemoryRunner(root_agent=agent).run(
+      'Calculate the answer with Python.'
+  )
+
+  assert any(
+      part.code_execution_result and '42' in str(part.code_execution_result)
+      for event in events
+      if event.content
+      for part in event.content.parts or []
+  )
+  assert events[-1].content.parts[0].text == 'The answer is 42.'
+  create.assert_called_once()
   machine.delete.assert_called_once_with()
 
 
