@@ -2278,6 +2278,167 @@ def test_patch_session_not_found(test_app, test_session_info):
   logger.info("Patch session not found test passed")
 
 
+async def _seed_session_turns(mock_session_service, info):
+  """Append two user/agent turns so rewind and edit have a target."""
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.Content(
+              role="user", parts=[types.Part.from_text(text="first")]
+          ),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="agent",
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="reply-1")]
+          ),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.Content(
+              role="user", parts=[types.Part.from_text(text="second")]
+          ),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="agent",
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="reply-2")]
+          ),
+      ),
+  ]
+  for event in events:
+    await mock_session_service.append_event(session=session, event=event)
+  return session
+
+
+async def test_rewind_session(
+    test_app, create_test_session, mock_session_service
+):
+  """Rewinding a session returns the session with a rewind marker."""
+  info = create_test_session
+  await _seed_session_turns(mock_session_service, info)
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}/rewind"
+  )
+
+  response = test_app.post(url, json={"rewindBeforeInvocationId": "inv2"})
+
+  assert response.status_code == 200
+  data = response.json()
+  rewind_events = [
+      event
+      for event in data.get("events", [])
+      if (event.get("actions") or {}).get("rewindBeforeInvocationId") == "inv2"
+  ]
+  assert len(rewind_events) == 1
+
+
+def test_rewind_session_not_found(test_app, test_session_info):
+  """Rewinding a missing session returns 404."""
+  info = test_session_info
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      "/sessions/nonexistent/rewind"
+  )
+  response = test_app.post(url, json={"rewindBeforeInvocationId": "inv1"})
+  assert response.status_code == 404
+  assert "Session not found" in response.json()["detail"]
+
+
+async def test_rewind_unknown_invocation(
+    test_app, create_test_session, mock_session_service
+):
+  """Rewinding before an unknown invocation returns 404."""
+  info = create_test_session
+  await _seed_session_turns(mock_session_service, info)
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}/rewind"
+  )
+  response = test_app.post(
+      url, json={"rewindBeforeInvocationId": "missing-inv"}
+  )
+  assert response.status_code == 404
+
+
+async def test_edit_agent_message(
+    test_app, create_test_session, mock_session_service
+):
+  """Editing a prior user turn returns regenerated events."""
+  info = create_test_session
+  await _seed_session_turns(mock_session_service, info)
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}/edit"
+  )
+
+  response = test_app.post(
+      url,
+      json={
+          "invocationId": "inv1",
+          "newMessage": {
+              "role": "user",
+              "parts": [{"text": "edited"}],
+          },
+      },
+  )
+
+  assert response.status_code == 200
+  data = response.json()
+  assert isinstance(data, list)
+  assert len(data) == 3
+  assert data[0]["author"] == "dummy agent"
+
+
+def test_edit_agent_message_not_found(test_app, test_session_info):
+  """Editing a missing session returns 404."""
+  info = test_session_info
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      "/sessions/nonexistent/edit"
+  )
+  response = test_app.post(
+      url,
+      json={
+          "invocationId": "inv1",
+          "newMessage": {"role": "user", "parts": [{"text": "edited"}]},
+      },
+  )
+  assert response.status_code == 404
+  assert "Session not found" in response.json()["detail"]
+
+
+async def test_edit_agent_message_rejects_unknown_invocation(
+    test_app, create_test_session, mock_session_service
+):
+  """Editing an invocation with no user message returns 400."""
+  info = create_test_session
+  await _seed_session_turns(mock_session_service, info)
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}/edit"
+  )
+  response = test_app.post(
+      url,
+      json={
+          "invocationId": "missing-inv",
+          "newMessage": {"role": "user", "parts": [{"text": "edited"}]},
+      },
+  )
+  assert response.status_code == 400
+  assert "No user message found" in response.json()["detail"]
+
+
 def test_agent_run(test_app, create_test_session):
   """Test running an agent with a message."""
   info = create_test_session

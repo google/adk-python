@@ -1443,6 +1443,87 @@ class Runner:
         compute_artifact_delta=self._compute_artifact_delta_for_rewind,
     )
 
+  def _find_original_user_content(
+      self, session: Session, invocation_id: str
+  ) -> Optional[types.Content]:
+    """Returns the user-authored content that started ``invocation_id``."""
+    for event in session.events:
+      if (
+          event.invocation_id == invocation_id
+          and event.author == 'user'
+          and event.content is not None
+      ):
+        return event.content
+    return None
+
+  async def edit_message_async(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: str,
+      new_message: types.Content,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+      abort_signal: Optional[asyncio.Event] = None,
+  ) -> AsyncGenerator[Event, None]:
+    """Replaces a previous user prompt and regenerates from that turn.
+
+    Rewinds history to before ``invocation_id``, then runs the agent with
+    ``new_message``. Does not abort a live ``run_async`` on this session —
+    trip that invocation's ``abort_signal`` first so rewind does not race
+    with in-flight events. The API server does this for ``/run_sse``
+    before rewind and edit.
+
+    Args:
+      user_id: The user ID of the session.
+      session_id: The session ID of the session.
+      invocation_id: The user turn to replace (the invocation that user
+        message started).
+      new_message: The edited prompt.
+      state_delta: Optional state changes applied with the new message.
+      run_config: The run config for the regenerated turn.
+      abort_signal: Optional asyncio.Event to cancel the regenerated
+        invocation.
+
+    Yields:
+      Events from the regenerated invocation.
+
+    Raises:
+      SessionNotFoundError: If the session is not found.
+      ValueError: If ``invocation_id`` is not a user turn in the session.
+    """
+    run_config = run_config or RunConfig()
+    session = await self._get_or_create_session(
+        user_id=user_id,
+        session_id=session_id,
+        get_session_config=run_config.get_session_config,
+    )
+    original = self._find_original_user_content(session, invocation_id)
+    if original is None:
+      raise ValueError(
+          f'No user message found for invocation ID: {invocation_id}'
+      )
+
+    await self.rewind_async(
+        user_id=user_id,
+        session_id=session_id,
+        rewind_before_invocation_id=invocation_id,
+        run_config=run_config,
+    )
+    async with aclosing(
+        self.run_async(
+            user_id=user_id,
+            session_id=session_id,
+            new_message=new_message,
+            state_delta=state_delta,
+            run_config=run_config,
+            abort_signal=abort_signal,
+        )
+    ) as agen:
+      async for event in agen:
+        yield event
+
   async def _compute_state_delta_for_rewind(
       self, session: Session, rewind_event_index: int
   ) -> dict[str, Any]:
