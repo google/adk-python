@@ -194,3 +194,67 @@ class TestReadFileTool:
         'status': 'error',
         'error': '`end_line` must be an integer if provided.',
     }
+
+  @pytest.mark.asyncio
+  async def test_read_file_lines_empty_file(self, env: LocalEnvironment):
+    """Test reading from an empty file."""
+    await env.write_file('empty.txt', '')
+
+    tool = ReadFileTool(env)
+    result = await tool.run_async(
+        args={'path': 'empty.txt', 'start_line': 1},
+        tool_context=None,
+    )
+
+    assert result == {
+        'status': 'error',
+        'error': '`start_line` 1 exceeds file length (0 lines).',
+        'total_lines': 0,
+    }
+
+  @pytest.mark.asyncio
+  async def test_read_file_lines_exceeds_total(self, env: LocalEnvironment):
+    """Test start_line exceeding total lines of file."""
+    await env.write_file('sample.txt', 'line1\nline2\n')
+
+    tool = ReadFileTool(env)
+    result = await tool.run_async(
+        args={'path': 'sample.txt', 'start_line': 5},
+        tool_context=None,
+    )
+
+    assert result == {
+        'status': 'error',
+        'error': '`start_line` 5 exceeds file length (2 lines).',
+        'total_lines': 2,
+    }
+
+  @pytest.mark.asyncio
+  async def test_read_file_lines_order_violation(self, env: LocalEnvironment):
+    """Test start_line after end_line error handling."""
+    await env.write_file('sample.txt', 'line1\nline2\n')
+
+    tool = ReadFileTool(env)
+    result = await tool.run_async(
+        args={'path': 'sample.txt', 'start_line': 3, 'end_line': 2},
+        tool_context=None,
+    )
+
+    # Note that start_line is 3, which is also exceeding the file length.
+    # Therefore, the start_line exceeding check is fired first.
+    assert result == {
+        'status': 'error',
+        'error': '`start_line` 3 exceeds file length (2 lines).',
+        'total_lines': 2,
+    }
+
+    # Now let's try with start_line = 2, end_line = 1 (valid lines but out of order)
+    result_out_of_order = await tool.run_async(
+        args={'path': 'sample.txt', 'start_line': 2, 'end_line': 1},
+        tool_context=None,
+    )
+    assert result_out_of_order == {
+        'status': 'error',
+        'error': '`start_line` (2) is after `end_line` (1).',
+        'total_lines': 2,
+    }
