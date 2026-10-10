@@ -29,6 +29,7 @@ import warnings
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import ResumabilityConfig
@@ -169,6 +170,45 @@ async def _create_parent_invocation_context(
       session_service=session_service,
       plugin_manager=PluginManager(plugins=plugins),
   )
+
+
+@pytest.mark.asyncio
+async def test_run_impl_closes_run_async_when_consumer_stops_early():
+  """A consumer that stops early closes run_async before aclose() returns.
+
+  Leaving it to the asyncgen finalizer hook resumes the generator in a
+  different contextvars context, which breaks the OTel span teardown and the
+  after_agent_callback unwinding it is suspended in.
+  """
+  cleaned_up = []
+
+  class _CleanupAgent(BaseAgent):
+
+    @override
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      try:
+        for index in range(3):
+          yield Event(
+              author=self.name,
+              branch=ctx.branch,
+              invocation_id=ctx.invocation_id,
+              content=types.Content(parts=[types.Part(text=f'e{index}')]),
+          )
+      finally:
+        cleaned_up.append(True)
+
+  agent = _CleanupAgent(name='cleanup_agent')
+  parent_ctx = await _create_parent_invocation_context(
+      'test_run_impl_closes_run_async_when_consumer_stops_early', agent
+  )
+
+  agen = agent._run_impl(ctx=Context(parent_ctx), node_input=None)
+  await agen.__anext__()
+  await agen.aclose()
+
+  assert cleaned_up == [True]
 
 
 def test_invalid_agent_name():
