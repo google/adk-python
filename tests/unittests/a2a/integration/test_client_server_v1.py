@@ -787,3 +787,91 @@ async def test_make_stream_normalizer_accumulates_status_history():
   # the latest status is applied to the running task.
   final_task, _ = results[2]
   assert final_task.status.state == pb.TASK_STATE_COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_a2a_task_clarification_and_resumption():
+  """Tests that root task input preservation works across the A2A boundary.
+
+  When a RemoteA2aAgent operates in mode="task", it acts as a sub-agent on the
+  client, but runs as a root agent on the server. The server-side Runner must
+  successfully associate the clarification turn with the paused task's scope
+  and reconstruct the strictly-alternating task history correctly.
+  """
+  from google.adk.agents.llm_agent import LlmAgent
+  from tests.unittests import testing_utils
+
+  model = testing_utils.MockModel.create(
+      responses=[
+          "What is your specific question?",
+          "Task completed.",
+      ]
+  )
+  server_agent = LlmAgent(name="my_task", model=model, mode="task")
+
+  from google.adk.runners import Runner
+  from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
+  from google.adk.a2a import _compat
+  from starlette.applications import Starlette
+  from a2a.server.tasks import InMemoryTaskStore as TaskStore
+
+  server_runner = Runner(
+      app_name="ServerApp",
+      agent=server_agent,
+      session_service=InMemorySessionService(),
+  )
+  executor = A2aAgentExecutor(runner=server_runner)
+  app = Starlette()
+  _compat.attach_a2a_routes_to_app(
+      app,
+      agent_card=agent_card,
+      agent_executor=executor,
+      task_store=TaskStore(),
+  )
+
+  async with app.router.lifespan_context(app):
+    client_agent = create_client(app, streaming=False, mode="task")
+
+    session_service = InMemorySessionService()
+    await session_service.create_session(
+        app_name="ClientApp", user_id="test_user", session_id="test_session"
+    )
+    client_runner = Runner(
+        app_name="ClientApp",
+        agent=client_agent,
+        session_service=session_service,
+    )
+
+    # Turn 1: Initial task request
+    new_message = types.Content(
+        parts=[types.Part(text="Do a task")], role="user"
+    )
+    async for _ in client_runner.run_async(
+        user_id="test_user", session_id="test_session", new_message=new_message
+    ):
+      pass
+
+    # Turn 2: Clarification response
+    new_message2 = types.Content(
+        parts=[types.Part(text="Here is the clarification")], role="user"
+    )
+    async for _ in client_runner.run_async(
+        user_id="test_user", session_id="test_session", new_message=new_message2
+    ):
+      pass
+
+  # Verify server-side model requests to ensure correct history reconstruction
+  assert len(model.requests) == 2
+
+  req1 = model.requests[0]
+  parts1 = [p.text for c in req1.contents if c.role == "user" for p in c.parts]
+  assert "Do a task" in parts1[0]
+  # Check strict alternation on Turn 1
+  assert [c.role for c in req1.contents] == ["user"]
+
+  req2 = model.requests[1]
+  parts2 = [p.text for c in req2.contents if c.role == "user" for p in c.parts]
+  assert "Do a task" in parts2[0]
+  assert "Here is the clarification" in parts2[1]
+  # Check strict alternation on Turn 2
+  assert [c.role for c in req2.contents] == ["user", "model", "user"]

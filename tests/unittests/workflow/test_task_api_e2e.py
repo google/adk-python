@@ -873,3 +873,55 @@ async def test_dynamic_run_node_isolates_peer_task_agents(
       p.text or "" for c in beta_request.contents or [] for p in c.parts or []
   )
   assert "ALPHA_SECRET_CONVERSATION" not in rendered_beta_context
+
+
+@pytest.mark.asyncio
+async def test_root_task_survives_clarification(
+    request: pytest.FixtureRequest,
+):
+  model = testing_utils.MockModel.create(
+      responses=[
+          "What is your specific question?",
+          "Got it."
+      ]
+  )
+  agent = LlmAgent(name="my_task", model=model, mode="task")
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async("Do a task")
+  await runner.run_async("Here is the clarification")
+
+  assert len(model.requests) == 2
+  req = model.requests[1]
+  parts = [p.text for c in req.contents if c.role == "user" for p in c.parts]
+  assert "Do a task" in parts[0]
+  assert "Here is the clarification" in parts[1]
+
+
+@pytest.mark.asyncio
+async def test_separate_root_tasks_same_session_get_separate_scopes(
+    request: pytest.FixtureRequest,
+):
+  model = testing_utils.MockModel.create(
+      responses=[
+          _finish_part({"result": "Done A"}),
+          _finish_part({"result": "Done B"}),
+      ]
+  )
+  agent = LlmAgent(name="my_task", model=model, mode="task")
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async("Run A")
+  await runner.run_async("Run B")
+
+  events = runner.session.events
+  task_events = [e for e in events if e.author == "my_task" and e.output]
+  assert len(task_events) == 2
+  # scopes should be different
+  scope_a = task_events[0].isolation_scope
+  scope_b = task_events[1].isolation_scope
+  assert scope_a != scope_b
+  assert scope_a is not None
+  assert scope_b is not None
