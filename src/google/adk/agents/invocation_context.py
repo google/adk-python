@@ -100,6 +100,12 @@ class _AbortState:
   ``asyncio.Event`` and can only be awaited on ``loop``, so AgentTool does not
   pass it when the tool runs on another event loop (e.g. RunConfig's tool
   thread pool); such a sub-run is not cancelled by a caller abort.
+
+  ``unpersisted_function_responses`` holds the merged response events of
+  parallel tool calls that finished before their batch ended early because a
+  sibling call raised. The batch executor cannot persist them itself, and the
+  error that ends the batch unwinds the agent; keeping them on this shared
+  instance lets the node runner persist them once the agent has stopped.
   """
 
   def __init__(
@@ -111,6 +117,13 @@ class _AbortState:
     self.loop = loop
     self.aborted = False
     self.event_synthesized = False
+    self.unpersisted_function_responses: list[Event] = []
+
+  def pop_unpersisted_function_responses(self) -> list[Event]:
+    """Returns and clears the kept function responses not yet persisted."""
+    responses = self.unpersisted_function_responses
+    self.unpersisted_function_responses = []
+    return responses
 
   def __deepcopy__(self, memo: dict[int, Any] | None) -> _AbortState:
     # Preserve single-instance sharing across deepcopies and avoid traversing
