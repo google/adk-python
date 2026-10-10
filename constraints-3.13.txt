@@ -303,6 +303,10 @@ e2b==2.34.0
     # via
     #   -c constraints-3.13.txt.stable.tmp
     #   google-adk (pyproject.toml)
+elevenlabs==2.66.0
+    # via
+    #   -c constraints-3.13.txt.stable.tmp
+    #   google-adk (pyproject.toml)
 et-xmlfile==2.0.0
     # via
     #   -c constraints-3.13.txt.stable.tmp
@@ -707,6 +711,7 @@ httpx==0.28.1
     #   anthropic
     #   daytona
     #   e2b
+    #   elevenlabs
     #   google-adk
     #   google-adk-community
     #   google-genai
@@ -1351,6 +1356,7 @@ pydantic==2.13.4
     #   daytona-api-client-async
     #   daytona-toolbox-api-client
     #   daytona-toolbox-api-client-async
+    #   elevenlabs
     #   fastapi
     #   google-adk
     #   google-antigravity
@@ -1374,6 +1380,7 @@ pydantic==2.13.4
 pydantic-core==2.46.4
     # via
     #   -c constraints-3.13.txt.stable.tmp
+    #   elevenlabs
     #   pydantic
 pydantic-settings==2.14.2
     # via
@@ -1539,6 +1546,7 @@ requests==2.34.2
     #   -c constraints-3.13.txt.stable.tmp
     #   google-adk (pyproject.toml)
     #   docker
+    #   elevenlabs
     #   flit
     #   google-adk
     #   google-api-core
@@ -1832,6 +1840,7 @@ typing-extensions==4.16.0
     #   daytona-toolbox-api-client
     #   daytona-toolbox-api-client-async
     #   e2b
+    #   elevenlabs
     #   fastapi
     #   google-adk
     #   google-cloud-agentplatform
@@ -1932,6 +1941,7 @@ websockets==15.0.1
     # via
     #   -c constraints-3.13.txt.stable.tmp
     #   google-adk (pyproject.toml)
+    #   elevenlabs
     #   google-adk
     #   google-antigravity
     #   google-genai

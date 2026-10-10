@@ -175,6 +175,46 @@ def test_callable_spec_callable_class_doc():
   assert CallableSpec(UndocCallable()).doc == ""
 
 
+def _wrapped_with_doc(a: int, b: int) -> int:
+  """Wrapped function docstring."""
+  return a + b
+
+
+class _DocCallable:
+
+  def __call__(self, a: int, b: int) -> int:
+    """Call method docstring."""
+    return a + b
+
+
+_documented_partial = functools.partial(_wrapped_with_doc, 1)
+_documented_partial.__doc__ = "Partial docstring."
+
+
+@pytest.mark.parametrize(
+    ("partial_fn", "expected_doc"),
+    [
+        (
+            functools.partial(_wrapped_with_doc, 1),
+            "Wrapped function docstring.",
+        ),
+        (
+            functools.partial(_DocCallable(), 1),
+            "Call method docstring.",
+        ),
+        (
+            _documented_partial,
+            "Partial docstring.",
+        ),
+    ],
+)
+def test_callable_spec_partial_doc(
+    partial_fn: functools.partial[int], expected_doc: str
+) -> None:
+  """A partial resolves doc from the callable it wraps unless it has its own."""
+  assert CallableSpec(partial_fn).doc == expected_doc
+
+
 def test_callable_spec_raises_on_unintrospectable_callable():
   """CallableSpec raises ValueError when signature of unintrospectable callable is accessed."""
   spec = CallableSpec(dir)

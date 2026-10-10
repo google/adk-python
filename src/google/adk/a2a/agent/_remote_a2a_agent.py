@@ -63,12 +63,11 @@ from ...flows.llm_flows.context._fencing import _is_other_agent_reply
 from ...flows.llm_flows.context._fencing import _present_other_agent_message
 from ...flows.llm_flows.context._fencing import quote_untrusted
 from ...flows.llm_flows.tools._functions import find_matching_function_call
-from ...flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ...flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ...flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...sessions.session import Session
 from ...utils._agent_mode import AgentMode
 from ...utils._agent_mode import TaskAgentMode
+from ...utils._function_call_names import CLIENT_FUNCTION_CALL_NAMES
+from ...utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from ...utils.context_utils import Aclosing
 from ..converters.event_converter import convert_a2a_message_to_event
 from ..converters.event_converter import convert_a2a_task_to_event
@@ -119,11 +118,9 @@ _MOCK_FUNCTION_CALL_NAMES = frozenset({
 })
 
 # Pause names answered locally as text when the pause was raised on this side.
-_HUMAN_INPUT_FUNCTION_CALL_NAMES = _MOCK_FUNCTION_CALL_NAMES | {
-    REQUEST_INPUT_FUNCTION_CALL_NAME,
-    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-    REQUEST_EUC_FUNCTION_CALL_NAME,
-}
+_HUMAN_INPUT_FUNCTION_CALL_NAMES = (
+    _MOCK_FUNCTION_CALL_NAMES | CLIENT_FUNCTION_CALL_NAMES
+)
 
 # Function call names whose *response* carries credential material.
 _CREDENTIAL_FUNCTION_CALL_NAMES = frozenset({

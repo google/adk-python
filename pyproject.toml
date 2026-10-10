@@ -75,6 +75,7 @@ optional-dependencies.all = [
   "daytona>=0.191",
   "docker>=7",
   "e2b>=2,<3",
+  "elevenlabs>=2.22.1,<3",
   "gepa>=0.1",
   "google-antigravity>=0.1.7,<0.2",
   "google-api-python-client>=2.157,<3",
@@ -207,6 +208,9 @@ optional-dependencies.docs = [
 ]
 optional-dependencies.e2b = [
   "e2b>=2,<3", # For E2BEnvironment remote sandbox.
+]
+optional-dependencies.elevenlabs = [
+  "elevenlabs>=2.22.1,<3", # 2.22.1 added RealtimeEvents.COMMITTED_TRANSCRIPT.
 ]
 optional-dependencies.eval = [
   "gepa>=0.1",

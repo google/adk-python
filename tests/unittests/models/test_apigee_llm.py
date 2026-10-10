@@ -1209,6 +1209,73 @@ def test_content_conversion_carries_function_response_media() -> None:
   ]
 
 
+def test_content_conversion_keeps_text_alongside_function_response() -> None:
+  """Text sent with a tool result follows the tool message as a user turn."""
+  part = types.Part.from_function_response(
+      name='lookup', response={'status': 'ok'}
+  )
+  assert part.function_response is not None
+  part.function_response.id = 'call_1'
+  content = types.Content(
+      role='user',
+      parts=[part, types.Part.from_text(text='Summarize it in French.')],
+  )
+
+  client = CompletionsHTTPClient(base_url='http://test')
+  messages = client._content_to_messages(content)
+
+  assert messages == [
+      {
+          'role': 'tool',
+          'tool_call_id': 'call_1',
+          'content': '{"status": "ok"}',
+      },
+      {'role': 'user', 'content': 'Summarize it in French.'},
+  ]
+
+
+def test_content_conversion_keeps_text_alongside_function_response_media() -> (
+    None
+):
+  """Tool media and accompanying text share one follow-up user message."""
+  part = types.Part.from_function_response(
+      name='draw_chart',
+      response={'title': 'Revenue'},
+      parts=[
+          types.FunctionResponsePart.from_bytes(
+              data=b'chart', mime_type='image/png'
+          )
+      ],
+  )
+  assert part.function_response is not None
+  part.function_response.id = 'call_1'
+  content = types.Content(
+      role='user',
+      parts=[part, types.Part.from_text(text='Describe the chart.')],
+  )
+
+  client = CompletionsHTTPClient(base_url='http://test')
+  messages = client._content_to_messages(content)
+
+  assert messages == [
+      {
+          'role': 'tool',
+          'tool_call_id': 'call_1',
+          'content': '{"title": "Revenue"}',
+      },
+      {
+          'role': 'user',
+          'content': [
+              {
+                  'type': 'image_url',
+                  'image_url': {'url': 'data:image/png;base64,Y2hhcnQ='},
+              },
+              {'type': 'text', 'text': 'Describe the chart.'},
+          ],
+      },
+  ]
+
+
 def test_content_conversion_without_function_response_media() -> None:
   """A response carrying no media still converts to a lone tool message."""
   part = types.Part.from_function_response(
