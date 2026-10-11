@@ -74,6 +74,12 @@ Confirm the changed files pass `pre-commit run --files {paths}`.
   `src/google/adk/`? A breaking change needs a deprecation cycle first, because
   the package is released under Semantic Versioning and users pin minor
   versions.
+- **Session, Artifact, and Memory service changes**: adding any new field to
+  `Session`, `ArtifactVersion`, `MemoryEntry`, or to `BaseSessionService`,
+  `BaseArtifactService`, `BaseMemoryService` and their schemas is a **breaking
+  change** (even if optional or defaulted), because existing downstream storage
+  subclasses and external backends will not persist or deserialize unknown
+  fields, causing silent state loss upon reload.
 - **Execution and resumption**: changes to workflows, nodes, or state must stay
   compatible with the event execution lifecycle and with session resumption
   (human-in-the-loop steps and checkpoints). See the `adk-architecture` skill.

@@ -18,6 +18,7 @@ import asyncio
 import functools
 import inspect
 import logging
+import threading
 from typing import Any
 from typing import Callable
 from typing import cast
@@ -76,12 +77,55 @@ class ComputerUseToolset(BaseToolset):
     self._excluded_predefined_functions = excluded_predefined_functions
     self._allow_private_network_access = allow_private_network_access
     self._initialized = False
+    self._closed = False
     self._tools: Optional[list[ComputerUseTool]] = None
+    self._init_lock_map: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+    self._lock_map_lock = threading.Lock()
+
+  def _get_init_lock(self) -> asyncio.Lock:
+    # Note: Mutual exclusion for lazy initialization is guaranteed per event
+    # loop; concurrent threads running distinct event loops on a shared toolset
+    # instance each acquire their own loop-local lock.
+    current_loop = asyncio.get_running_loop()
+    with self._lock_map_lock:
+      lock = self._init_lock_map.get(current_loop)
+      if lock is None:
+        for stale_loop in [
+            loop for loop in self._init_lock_map if loop.is_closed()
+        ]:
+          del self._init_lock_map[stale_loop]
+        lock = asyncio.Lock()
+        self._init_lock_map[current_loop] = lock
+      return lock
+
+  def __getstate__(self) -> dict[str, Any]:
+    state = dict(super().__getstate__())
+    state.pop("_lock_map_lock", None)
+    state["_init_lock_map"] = {}
+    state["_initialized"] = False
+    state["_closed"] = False
+    state["_tools"] = None
+    state["_cached_prefixed_tools"] = None
+    state["_cached_invocation_id"] = None
+    return state
+
+  def __setstate__(self, state: dict[str, Any]) -> None:
+    super_setstate = getattr(super(), "__setstate__", None)
+    if super_setstate is not None:
+      super_setstate(state)
+    else:
+      self.__dict__.update(state)
+    self._init_lock_map = {}
+    self._lock_map_lock = threading.Lock()
 
   async def _ensure_initialized(self) -> None:
-    if not self._initialized:
-      await self._computer.initialize()
-      self._initialized = True
+    if self._initialized:
+      return
+    async with self._get_init_lock():
+      if not self._initialized:
+        await self._computer.initialize()
+        self._initialized = True
+        self._closed = False
 
   def _wrap_method_with_state_binding(
       self, method: Callable[..., Any]
@@ -240,61 +284,72 @@ class ComputerUseToolset(BaseToolset):
     if self._tools:
       return self._tools
     await self._ensure_initialized()
-    # Get screen size for tool configuration
-    screen_size = await self._computer.screen_size()
+    async with self._get_init_lock():
+      if self._tools:
+        return self._tools
+      # Get screen size for tool configuration
+      screen_size = await self._computer.screen_size()
 
-    # Get all methods defined in Computer abstract base class, excluding specified methods
-    computer_methods = []
+      # Get all methods defined in Computer abstract base class, excluding specified methods
+      computer_methods = []
 
-    # Get all methods defined in the Computer ABC interface
-    for method_name in dir(BaseComputer):
-      # Skip private methods (starting with underscore)
-      if method_name.startswith("_"):
-        continue
+      # Get all methods defined in the Computer ABC interface
+      for method_name in dir(BaseComputer):
+        # Skip private methods (starting with underscore)
+        if method_name.startswith("_"):
+          continue
 
-      # Skip excluded methods
-      if method_name in EXCLUDED_METHODS:
-        continue
+        # Skip excluded methods
+        if method_name in EXCLUDED_METHODS:
+          continue
 
-      # Skip session_state property
-      if method_name == "session_state":
-        continue
+        # Skip session_state property
+        if method_name == "session_state":
+          continue
 
-      # Skip methods excluded by configuration
-      if (
-          self._excluded_predefined_functions
-          and method_name in self._excluded_predefined_functions
-      ):
-        continue
+        # Skip methods excluded by configuration
+        if (
+            self._excluded_predefined_functions
+            and method_name in self._excluded_predefined_functions
+        ):
+          continue
 
-      # Check if it's a method defined in Computer class
-      attr = getattr(BaseComputer, method_name, None)
-      if attr is not None and callable(attr):
-        # Get the corresponding method from the concrete instance
-        instance_method = getattr(self._computer, method_name)
-        if method_name == "navigate":
-          # Check the url the model supplied before it reaches the browser.
-          instance_method = self._wrap_navigate_with_url_validation(
-              instance_method
+        # Check if it's a method defined in Computer class
+        attr = getattr(BaseComputer, method_name, None)
+        if attr is not None and callable(attr):
+          # Get the corresponding method from the concrete instance
+          instance_method = getattr(self._computer, method_name)
+          if method_name == "navigate":
+            # Check the url the model supplied before it reaches the browser.
+            instance_method = self._wrap_navigate_with_url_validation(
+                instance_method
+            )
+          # Wrap with state binding so session_state is set before each call
+          wrapped_method = self._wrap_method_with_state_binding(instance_method)
+          computer_methods.append(wrapped_method)
+
+      # Create ComputerUseTool instances for each wrapped method
+
+      self._tools = [
+          ComputerUseTool(
+              func=method,
+              screen_size=screen_size,
           )
-        # Wrap with state binding so session_state is set before each call
-        wrapped_method = self._wrap_method_with_state_binding(instance_method)
-        computer_methods.append(wrapped_method)
-
-    # Create ComputerUseTool instances for each wrapped method
-
-    self._tools = [
-        ComputerUseTool(
-            func=method,
-            screen_size=screen_size,
-        )
-        for method in computer_methods
-    ]
-    return self._tools
+          for method in computer_methods
+      ]
+      return self._tools
 
   @override
   async def close(self) -> None:
-    await self._computer.close()
+    async with self._get_init_lock():
+      if not self._closed:
+        await self._computer.close()
+        self._closed = True
+      self._initialized = False
+      self._tools = None
+      self._cached_prefixed_tools = None
+      self._cached_invocation_id = None
+    await super().close()
 
   @override
   async def process_llm_request(

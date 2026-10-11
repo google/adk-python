@@ -460,7 +460,21 @@ class RestApiTool(BaseTool):
     # Construct URL
     base_url = self.endpoint.base_url or ""
     base_url = base_url[:-1] if base_url.endswith("/") else base_url
-    url = f"{base_url}{self.endpoint.path.format(**path_params)}"
+    try:
+      formatted_path = self.endpoint.path.format(**path_params)
+    except KeyError as e:
+      missing_param = e.args[0] if e.args else str(e)
+      for param in parameters:
+        if (
+            param.param_location == "path"
+            and param.original_name == missing_param
+            and param.py_name
+        ):
+          raise InputValidationError(
+              f"Missing required path parameter '{param.py_name}'."
+          ) from e
+      raise
+    url = f"{base_url}{formatted_path}"
 
     # Move query params embedded in the path template itself (now that path
     # parameter values are percent-encoded above, only a spec-authored

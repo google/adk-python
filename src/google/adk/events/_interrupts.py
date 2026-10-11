@@ -30,6 +30,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 import dataclasses
 
+from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
+from ..utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ._branch_path import _BranchPath
 from .event import Event
 
@@ -60,16 +62,12 @@ def extract_event_interrupt_ids(event: Event) -> set[str]:
   `adk_request_input` and `adk_request_credential` function calls for older
   serialized sessions where `long_running_tool_ids` was omitted.
   """
-  # pylint: disable=g-import-not-at-top
-  from ..flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
-  from ..workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-
-  # pylint: enable=g-import-not-at-top
-
   interrupt_ids = set(event.long_running_tool_ids or [])
-  interrupt_ids.update(get_request_input_interrupt_ids(event))
   for fc in event.get_function_calls():
-    if fc.id is not None and fc.name == REQUEST_EUC_FUNCTION_CALL_NAME:
+    if fc.id is not None and fc.name in (
+        REQUEST_INPUT_FUNCTION_CALL_NAME,
+        REQUEST_EUC_FUNCTION_CALL_NAME,
+    ):
       interrupt_ids.add(fc.id)
   return interrupt_ids
 

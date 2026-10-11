@@ -104,6 +104,9 @@ from ..models.llm_response import LlmResponse
 from ..platform.thread import create_thread
 from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
+from ..utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
+from ..utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..utils._telemetry_context import _get_telemetry_surface
 from ..version import __version__
 from .base_plugin import BasePlugin
@@ -136,18 +139,18 @@ class _ClientInfoFactory(Protocol):
 _CLIENT_INFO_FACTORY = cast(_ClientInfoFactory, gapic_client_info.ClientInfo)
 
 _HITL_EVENT_MAP = MappingProxyType({
-    "adk_request_credential": "HITL_CREDENTIAL_REQUEST",
-    "adk_request_confirmation": "HITL_CONFIRMATION_REQUEST",
-    "adk_request_input": "HITL_INPUT_REQUEST",
+    REQUEST_EUC_FUNCTION_CALL_NAME: "HITL_CREDENTIAL_REQUEST",
+    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME: "HITL_CONFIRMATION_REQUEST",
+    REQUEST_INPUT_FUNCTION_CALL_NAME: "HITL_INPUT_REQUEST",
 })
 
 # Reverse of _HITL_EVENT_MAP for the long-running-tool pause_kind
 # discriminator. The id→name lookup routes ``adk_request_credential``
 # → ``hitl_credential`` etc.; everything else is ``tool``.
 _HITL_PAUSE_KIND_MAP = MappingProxyType({
-    "adk_request_credential": "hitl_credential",
-    "adk_request_confirmation": "hitl_confirmation",
-    "adk_request_input": "hitl_input",
+    REQUEST_EUC_FUNCTION_CALL_NAME: "hitl_credential",
+    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME: "hitl_confirmation",
+    REQUEST_INPUT_FUNCTION_CALL_NAME: "hitl_input",
 })
 
 

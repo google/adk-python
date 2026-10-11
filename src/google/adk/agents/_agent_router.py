@@ -145,8 +145,6 @@ def find_agent_to_run(
   - An LlmAgent who replied last and is capable to transfer to any other agent
     in the agent hierarchy.
 
-  TODO: use wait_for_output to decide the agent to run
-
   Args:
       session: The session to find the agent for.
       root_agent: The agent of the runner.

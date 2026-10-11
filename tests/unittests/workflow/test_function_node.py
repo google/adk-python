@@ -1583,7 +1583,7 @@ class TestAuthConfig:
     from google.adk.auth.auth_credential import AuthCredential
     from google.adk.auth.auth_credential import AuthCredentialTypes
     from google.adk.auth.auth_tool import AuthConfig
-    from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+    from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 
     from .workflow_testing_utils import find_function_call_event
     from .workflow_testing_utils import get_auth_request_events
@@ -1642,7 +1642,7 @@ class TestAuthConfig:
     resume_auth_part = types.Part(
         function_response=types.FunctionResponse(
             id=fc.id,
-            name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+            name=REQUEST_EUC_FUNCTION_CALL_NAME,
             response={'result': 'my-secret-api-key'},
         )
     )

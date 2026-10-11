@@ -25,6 +25,7 @@ from google.adk.auth.auth_handler import AuthHandler
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.request_input import RequestInput
+from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.workflow.utils._rehydration_utils import _ChildScanState
 from google.adk.workflow.utils._workflow_hitl_utils import create_auth_request_event
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_event
@@ -33,7 +34,6 @@ from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_int
 from google.adk.workflow.utils._workflow_hitl_utils import has_auth_credential
 from google.adk.workflow.utils._workflow_hitl_utils import has_request_input_function_call
 from google.adk.workflow.utils._workflow_hitl_utils import process_auth_resume
-from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
 from google.genai import types
 import pytest
 
@@ -179,7 +179,7 @@ class TestCreateAuthRequestEvent:
 
     assert event.long_running_tool_ids is not None
     fc = event.content.parts[0].function_call
-    assert fc.name == REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+    assert fc.name == REQUEST_EUC_FUNCTION_CALL_NAME
     assert fc.id == "auth-id-1"
     assert "authConfig" in fc.args
 
