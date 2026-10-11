@@ -17,8 +17,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
-import concurrent.futures
+from collections.abc import Iterator
 import contextvars
 from typing import Any
 from typing import Callable
@@ -29,10 +28,16 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows import functions
 from google.adk.flows.llm_flows.tools import _caller as _tool_caller
+from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.plugins.multimodal_tool_results_plugin import MultimodalToolResultsPlugin
+from google.adk.telemetry import tracing
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 import pytest
 
 from .... import testing_utils
@@ -351,84 +356,198 @@ async def test_awaiting_tool_callbacks_keep_their_state_per_call() -> None:
   assert order.index('tool-start:2') < order.index('tool-end:1')
 
 
-def _run_with_own_loop(
-    coro_fn: Callable[[], Awaitable[None]], *, raise_after: bool
-) -> dict[str, Any]:
-  """Runs coro_fn on a fresh loop; returns that loop and its tool pool.
-
-  Mirrors a server that calls asyncio.run per request. The returned dict keeps
-  the loop referenced after asyncio.run has closed it, standing in for whatever
-  holds it in production -- a traceback on a log record, most often.
-
-  Args:
-    coro_fn: Awaited on the fresh loop, after its tool pool is acquired.
-    raise_after: Whether the coroutine should raise once coro_fn returns, so
-      that the run ends the way a failed request does.
-
-  Returns:
-    A dict with the run's event loop under 'loop' and the tool pool it
-    acquired under 'pool'.
-  """
-  captured: dict[str, Any] = {}
-
-  async def main() -> None:
-    captured['loop'] = asyncio.get_running_loop()
-    captured['pool'] = _tool_caller._get_tool_thread_pool()
-    await coro_fn()
-    if raise_after:
-      raise RuntimeError('request failed')
-
-  try:
-    asyncio.run(main())
-  except RuntimeError:
-    pass
-  return captured
+@pytest.fixture(name='span_exporter')
+def _span_exporter_fixture() -> Iterator[InMemorySpanExporter]:
+  span_exporter = InMemorySpanExporter()
+  tracer_provider = TracerProvider()
+  tracer_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
+  with mock.patch.object(
+      tracing.tracer,
+      'start_as_current_span',
+      tracer_provider.get_tracer(__name__).start_as_current_span,
+  ):
+    yield span_exporter
 
 
-async def _noop() -> None:
-  await asyncio.sleep(0)
+@pytest.fixture(name='experimental_telemetry')
+def _experimental_telemetry_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
+  monkeypatch.setenv('ADK_EXPERIMENTAL_TELEMETRY', 'true')
 
 
-def _is_shut_down(pool: concurrent.futures.ThreadPoolExecutor) -> bool:
-  """Whether the pool refuses new work, via public API rather than _shutdown."""
-  try:
-    pool.submit(bool).cancel()
-  except RuntimeError:
-    return True
-  return False
+def _answer_before_tool(
+    tool: BaseTool, args: dict[str, Any], tool_context: ToolContext
+) -> dict[str, str]:
+  return {'answer': 'from before_tool_callback'}
 
 
-def test_tool_thread_pool_is_released_when_its_loop_closes() -> None:
-  """A closed-but-uncollected loop must not keep its tool threads alive."""
-  # Hold the result -- and so the loop -- for the whole test, the way a
-  # traceback held by a log record would.
-  failed = _run_with_own_loop(_noop, raise_after=True)
-  stranded_loop = failed['loop']
-  stranded_pool = failed['pool']
-
-  assert stranded_loop.is_closed()
-  # The weakref finalizer cannot have fired: the loop is still referenced.
-  assert stranded_loop in _tool_caller._TOOL_THREAD_POOLS
-  assert not _is_shut_down(stranded_pool)
-
-  # A later acquisition sweeps it.
-  _run_with_own_loop(_noop, raise_after=False)
-
-  assert stranded_loop not in _tool_caller._TOOL_THREAD_POOLS
-  assert _is_shut_down(stranded_pool)
+def _answer_on_tool_error(
+    tool: BaseTool,
+    args: dict[str, Any],
+    tool_context: ToolContext,
+    error: Exception,
+) -> dict[str, str]:
+  return {'answer': 'from on_tool_error_callback'}
 
 
-def test_tool_thread_pool_is_reused_within_one_loop() -> None:
-  """Sweeping must not disturb the pool of the loop that is still running."""
+def _replace_after_tool(
+    tool: BaseTool,
+    args: dict[str, Any],
+    tool_context: ToolContext,
+    tool_response: dict[str, Any],
+) -> dict[str, str]:
+  return {'answer': 'from after_tool_callback'}
 
-  async def main() -> None:
-    first = _tool_caller._get_tool_thread_pool()
-    second = _tool_caller._get_tool_thread_pool()
-    assert first is second
-    assert not _is_shut_down(first)
-    # A different max_workers is a different pool on the same loop.
-    assert _tool_caller._get_tool_thread_pool(max_workers=2) is not first
-    # Still live after the acquisition that created the second pool swept.
-    assert not _is_shut_down(first)
 
-  asyncio.run(main())
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('callbacks', 'tool_name', 'expected_source'),
+    [
+        pytest.param({}, 'answer', None, id='tool_answered'),
+        pytest.param(
+            {'before_tool_callback': _answer_before_tool},
+            'answer',
+            'before_tool_callback',
+            id='before_tool_callback_answered',
+        ),
+        pytest.param(
+            {'on_tool_error_callback': _answer_on_tool_error},
+            'fail',
+            'on_tool_error_callback',
+            id='on_tool_error_callback_answered_a_failure',
+        ),
+        pytest.param(
+            {'on_tool_error_callback': _answer_on_tool_error},
+            'missing',
+            'on_tool_error_callback',
+            id='on_tool_error_callback_answered_a_missing_tool',
+        ),
+        pytest.param(
+            {'after_tool_callback': _replace_after_tool},
+            'answer',
+            'after_tool_callback',
+            id='after_tool_callback_replaced_the_tool_result',
+        ),
+        pytest.param(
+            {
+                'before_tool_callback': _answer_before_tool,
+                'after_tool_callback': _replace_after_tool,
+            },
+            'answer',
+            'after_tool_callback',
+            id='after_tool_callback_replaced_a_callback_answer',
+        ),
+    ],
+)
+async def test_execute_tool_span_names_the_callback_that_answered(
+    span_exporter: InMemorySpanExporter,
+    experimental_telemetry: None,
+    callbacks: dict[str, Callable[..., dict[str, str]]],
+    tool_name: str,
+    expected_source: str | None,
+) -> None:
+  def answer() -> dict[str, str]:
+    return {'answer': 'from the tool'}
+
+  def fail() -> dict[str, str]:
+    raise ValueError('tool failed')
+
+  agent = LlmAgent(name='test_agent', **callbacks)
+  invocation_context = await testing_utils.create_invocation_context(agent)
+
+  await functions.handle_function_call_list_async(
+      invocation_context,
+      [types.FunctionCall(name=tool_name, id='call-1')],
+      {'answer': FunctionTool(answer), 'fail': FunctionTool(fail)},
+  )
+
+  (span,) = span_exporter.get_finished_spans()
+  assert span.name == f'execute_tool {tool_name}'
+  attributes = dict(span.attributes or {})
+  assert attributes.get('adk.experimental.response.source') == expected_source
+
+
+class _ReplaceAfterToolPlugin(BasePlugin):
+
+  async def after_tool_callback(
+      self,
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+      result: dict[str, Any],
+  ) -> dict[str, str]:
+    return {'answer': 'from a plugin'}
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_span_names_a_plugin_after_tool_replacement(
+    span_exporter: InMemorySpanExporter,
+    experimental_telemetry: None,
+) -> None:
+  def answer() -> dict[str, str]:
+    return {'answer': 'from the tool'}
+
+  invocation_context = await testing_utils.create_invocation_context(
+      LlmAgent(name='test_agent'),
+      plugins=[_ReplaceAfterToolPlugin(name='replace_after_tool')],
+  )
+
+  await functions.handle_function_call_list_async(
+      invocation_context,
+      [types.FunctionCall(name='answer', id='call-1')],
+      {'answer': FunctionTool(answer)},
+  )
+
+  (span,) = span_exporter.get_finished_spans()
+  attributes = dict(span.attributes or {})
+  assert (
+      attributes.get('adk.experimental.response.source')
+      == 'after_tool_callback'
+  )
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_span_not_marked_when_after_tool_returns_its_input(
+    span_exporter: InMemorySpanExporter,
+    experimental_telemetry: None,
+) -> None:
+  def answer() -> dict[str, str]:
+    return {'answer': 'from the tool'}
+
+  invocation_context = await testing_utils.create_invocation_context(
+      LlmAgent(name='test_agent'), plugins=[MultimodalToolResultsPlugin()]
+  )
+
+  await functions.handle_function_call_list_async(
+      invocation_context,
+      [types.FunctionCall(name='answer', id='call-1')],
+      {'answer': FunctionTool(answer)},
+  )
+
+  (span,) = span_exporter.get_finished_spans()
+  assert 'adk.experimental.response.source' not in dict(span.attributes or {})
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_span_has_no_response_source_by_default(
+    span_exporter: InMemorySpanExporter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.delenv('ADK_EXPERIMENTAL_TELEMETRY', raising=False)
+  monkeypatch.delenv('ADK_EXPERIMENTAL_TELEMETRY_FEATURES', raising=False)
+
+  def answer() -> dict[str, str]:
+    return {'answer': 'from the tool'}
+
+  invocation_context = await testing_utils.create_invocation_context(
+      LlmAgent(name='test_agent', before_tool_callback=_answer_before_tool)
+  )
+
+  await functions.handle_function_call_list_async(
+      invocation_context,
+      [types.FunctionCall(name='answer', id='call-1')],
+      {'answer': FunctionTool(answer)},
+  )
+
+  (span,) = span_exporter.get_finished_spans()
+  assert 'adk.experimental.response.source' not in dict(span.attributes or {})

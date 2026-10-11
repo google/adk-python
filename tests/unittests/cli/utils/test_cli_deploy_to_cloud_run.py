@@ -170,7 +170,8 @@ def test_to_cloud_run_happy_path(
   )
   assert "USER myuser" in dockerfile_content
   assert (
-      'RUN ["pip", "install", "google-adk[a2a]==1.3.0"]' in dockerfile_content
+      'RUN ["pip", "install", "google-adk[a2a,gcp,otel-gcp]==1.3.0"]'
+      in dockerfile_content
   )
   assert "--trace_to_cloud" in cmd_argv
   assert "--otel_to_cloud" in cmd_argv
@@ -212,6 +213,167 @@ def test_to_cloud_run_happy_path(
   assert gcloud_args == expected_gcloud_command
 
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "trace_to_cloud, otel_to_cloud, expected_extras",
+    [
+        (False, False, "a2a"),
+        (True, False, "a2a,gcp,otel-gcp"),
+        (False, True, "a2a,gcp,otel-gcp"),
+        (True, True, "a2a,gcp,otel-gcp"),
+    ],
+)
+def test_to_cloud_run_installs_telemetry_extras(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+    trace_to_cloud: bool,
+    otel_to_cloud: bool,
+    expected_extras: str,
+) -> None:
+  """The container must install the extras the telemetry flags need."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="cloud_run",
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="agent",
+      temp_folder=str(tmp_path),
+      port=8080,
+      trace_to_cloud=trace_to_cloud,
+      otel_to_cloud=otel_to_cloud,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.3.0",
+  )
+
+  dockerfile_content = (tmp_path / "Dockerfile").read_text()
+  assert (
+      f'RUN ["pip", "install", "google-adk[{expected_extras}]==1.3.0"]'
+      in dockerfile_content
+  )
+
+
+def test_to_cloud_run_extra_packages_staged_and_copied_into_image(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """An extra package is staged and copied into the image."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  build_dir = tmp_path / "build"
+  shared_dir = tmp_path / "common"
+  shared_dir.mkdir()
+  (shared_dir / "helper.py").write_text("VALUE = 1\n")
+
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="cloud_run",
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="agent",
+      temp_folder=str(build_dir),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.3.0",
+      extra_packages=[str(shared_dir)],
+  )
+
+  assert (build_dir / "common" / "helper.py").is_file()
+  dockerfile_content = (build_dir / "Dockerfile").read_text()
+  assert (
+      'COPY --chown=myuser:myuser "common/" "/app/common/"'
+      in dockerfile_content
+  )
+  assert 'ENV PYTHONPATH="/app:$PYTHONPATH"' in dockerfile_content
+
+
+def test_to_cloud_run_extra_packages_relative_path_resolves_against_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """A relative extra_packages entry resolves against the current directory."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  build_dir = tmp_path / "build"
+  shared_dir = tmp_path / "common"
+  shared_dir.mkdir()
+  (shared_dir / "helper.py").write_text("VALUE = 1\n")
+
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  monkeypatch.chdir(tmp_path)
+
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="cloud_run",
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="agent",
+      temp_folder=str(build_dir),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.3.0",
+      extra_packages=["common"],
+  )
+
+  assert (build_dir / "common" / "helper.py").is_file()
+
+
+def test_to_cloud_run_extra_packages_dockerfile_name_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """An extra package named Dockerfile would clobber the generated one."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  clashing_file = tmp_path / "outside" / "Dockerfile"
+  clashing_file.parent.mkdir(parents=True)
+  clashing_file.write_text("FROM scratch\n")
+
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.run(
+        agent_folder=str(src_dir),
+        provider="cloud_run",
+        project="proj",
+        region="us-central1",
+        service_name="svc",
+        app_name="agent",
+        temp_folder=str(tmp_path / "build"),
+        port=8080,
+        trace_to_cloud=False,
+        otel_to_cloud=False,
+        with_ui=False,
+        log_level="info",
+        verbosity="info",
+        adk_version="1.3.0",
+        extra_packages=[str(clashing_file)],
+    )
+
+  assert "conflicting name" in str(exc_info.value)
 
 
 def test_to_cloud_run_cleans_temp_dir(

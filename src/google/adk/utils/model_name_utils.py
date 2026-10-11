@@ -196,6 +196,36 @@ def _is_gemini_eap_model(model_string: Optional[str]) -> bool:
   )
 
 
+def _supports_builtin_tools_with_function_calling(
+    model_string: Optional[str],
+) -> bool:
+  """Whether the model accepts built-in tools alongside function declarations.
+
+  Gemini 3 and later accept built-in tools such as ``google_search`` in the
+  same request as function declarations. Earlier Gemini models reject that
+  combination with ``400 INVALID_ARGUMENT: Tool use with function calling is
+  unsupported``. Unknown or non-Gemini names are treated as unsupported.
+
+  Args:
+    model_string: Either a simple model name or path-based model name.
+
+  Returns:
+    True if the model is Gemini 3.0 or later, False otherwise.
+  """
+  if not model_string:
+    return False
+
+  model_name = extract_model_name(model_string)
+  if not model_name.startswith('gemini-'):
+    return False
+
+  version_string = model_name[len('gemini-') :].split('-', 1)[0]
+  try:
+    return Version(version_string).major >= 3
+  except InvalidVersion:
+    return False
+
+
 def _is_gemini_3_x_live(model_string: Optional[str]) -> bool:
   """Check if the model is a Gemini 3.x Live model.
 

@@ -76,6 +76,41 @@ def _warn_probe_unavailable() -> None:
   )
 
 
+_CANCEL_DRAIN_TIMEOUT: float = 5.0
+
+
+async def _cancel_and_drain(
+    task: asyncio.Future[Any],
+    *,
+    timeout: float | None = None,
+) -> None:
+  """Cancels an in-flight call and waits for it to actually stop.
+
+  Returning before the call has unwound would let it keep reading the
+  transport after the caller believes it is finished. A timeout bound
+  prevents a call that does not unwind promptly from turning a
+  cancellation into an indefinite hang.
+  """
+  task.cancel()
+  if timeout is None:
+    timeout = _CANCEL_DRAIN_TIMEOUT
+  try:
+    done, _ = await asyncio.wait([task], timeout=timeout)
+    if task in done:
+      if not task.cancelled():
+        task.exception()
+    else:
+      task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+      logger.warning(
+          'Timed out after %ss waiting for cancelled task to unwind',
+          timeout,
+      )
+  except BaseException:
+    if not task.done():
+      task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+    raise
+
+
 def _read_timeout(seconds: Optional[float]) -> Optional[float | timedelta]:
   """Converts a timeout in seconds to the type ``ClientSession`` expects.
 
@@ -311,10 +346,18 @@ class SessionContext:
 
     coro_task = asyncio.ensure_future(coro)
 
-    done, _ = await asyncio.wait(
-        [coro_task, self._task],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
+    try:
+      done, _ = await asyncio.wait(
+          [coro_task, self._task],
+          return_when=asyncio.FIRST_COMPLETED,
+      )
+    except BaseException:
+      # asyncio.wait does not own what it waits on, so it leaves the call
+      # running when this frame is cancelled. The caller's `finally` then
+      # releases the session back to the pool while that call is still
+      # reading the transport, and the pool is free to evict it underneath.
+      await _cancel_and_drain(coro_task)
+      raise
 
     if coro_task in done:
       # If the coroutine itself raised, the exception propagates as-is
@@ -325,11 +368,7 @@ class SessionContext:
 
     # The background task finished first, indicating a transport crash.
     # Cancel the in-flight tool call and surface the original error.
-    coro_task.cancel()
-    try:
-      await coro_task
-    except BaseException:
-      pass
+    await _cancel_and_drain(coro_task)
 
     exc = self._task.exception() if not self._task.cancelled() else None
     raise ConnectionError(

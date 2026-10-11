@@ -133,7 +133,43 @@ class TestToA2A:
     mock_task_store_class.assert_called_once()
     mock_agent_executor_class.assert_called_once()
     mock_card_builder_class.assert_called_once_with(
-        agent=self.mock_agent, rpc_url="http://localhost:8000/"
+        agent=self.mock_agent,
+        rpc_url="http://localhost:8000/",
+        security_schemes=None,
+        default_skill_security=None,
+    )
+
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
+  def test_to_a2a_with_security_schemes_and_default_skill_security(
+      self,
+      mock_starlette_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_agent_executor_class,
+  ):
+    """security_schemes and default_skill_security are forwarded to AgentCardBuilder."""
+    mock_starlette_class.return_value = Mock(spec=Starlette)
+    mock_agent_executor_class.return_value = Mock(spec=A2aAgentExecutor)
+    mock_card_builder_class.return_value = Mock(spec=AgentCardBuilder)
+    security_schemes = {
+        "api": _compat.make_api_key_scheme(name="X-Api-Key"),
+    }
+    default_skill_security = [{"api": []}]
+
+    to_a2a(
+        self.mock_agent,
+        security_schemes=security_schemes,
+        default_skill_security=default_skill_security,
+    )
+
+    mock_card_builder_class.assert_called_once_with(
+        agent=self.mock_agent,
+        rpc_url="http://localhost:8000/",
+        security_schemes=security_schemes,
+        default_skill_security=default_skill_security,
     )
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
@@ -223,7 +259,10 @@ class TestToA2A:
     to_a2a(self.mock_agent, host="example.com", port=9000)
 
     mock_card_builder_class.assert_called_once_with(
-        agent=self.mock_agent, rpc_url="http://example.com:9000/"
+        agent=self.mock_agent,
+        rpc_url="http://example.com:9000/",
+        security_schemes=None,
+        default_skill_security=None,
     )
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
@@ -245,7 +284,10 @@ class TestToA2A:
     to_a2a(self.mock_agent, rpc_path="/analysis-agent")
 
     mock_card_builder_class.assert_called_once_with(
-        agent=self.mock_agent, rpc_url="http://localhost:8000/analysis-agent/"
+        agent=self.mock_agent,
+        rpc_url="http://localhost:8000/analysis-agent/",
+        security_schemes=None,
+        default_skill_security=None,
     )
 
   @pytest.mark.parametrize(
@@ -271,7 +313,10 @@ class TestToA2A:
     to_a2a(self.mock_agent, rpc_path=rpc_path)
 
     mock_card_builder_class.assert_called_once_with(
-        agent=self.mock_agent, rpc_url="http://localhost:8000/analysis-agent/"
+        agent=self.mock_agent,
+        rpc_url="http://localhost:8000/analysis-agent/",
+        security_schemes=None,
+        default_skill_security=None,
     )
 
   @pytest.mark.parametrize("rpc_path", ["/", "//", "///"])
@@ -295,7 +340,10 @@ class TestToA2A:
     to_a2a(self.mock_agent, rpc_path=rpc_path)
 
     mock_card_builder_class.assert_called_once_with(
-        agent=self.mock_agent, rpc_url="http://localhost:8000/"
+        agent=self.mock_agent,
+        rpc_url="http://localhost:8000/",
+        security_schemes=None,
+        default_skill_security=None,
     )
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
@@ -317,7 +365,10 @@ class TestToA2A:
     to_a2a(self.mock_agent, rpc_path="/team/agent")
 
     mock_card_builder_class.assert_called_once_with(
-        agent=self.mock_agent, rpc_url="http://localhost:8000/team/agent/"
+        agent=self.mock_agent,
+        rpc_url="http://localhost:8000/team/agent/",
+        security_schemes=None,
+        default_skill_security=None,
     )
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
@@ -339,7 +390,10 @@ class TestToA2A:
     to_a2a(self.mock_agent, port=0)
 
     mock_card_builder_class.assert_called_once_with(
-        agent=self.mock_agent, rpc_url="http://localhost:0/"
+        agent=self.mock_agent,
+        rpc_url="http://localhost:0/",
+        security_schemes=None,
+        default_skill_security=None,
     )
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
@@ -361,7 +415,10 @@ class TestToA2A:
     to_a2a(self.mock_agent, host="")
 
     mock_card_builder_class.assert_called_once_with(
-        agent=self.mock_agent, rpc_url="http://:8000/"
+        agent=self.mock_agent,
+        rpc_url="http://:8000/",
+        security_schemes=None,
+        default_skill_security=None,
     )
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
@@ -383,7 +440,10 @@ class TestToA2A:
     to_a2a(self.mock_agent, port=-1)
 
     mock_card_builder_class.assert_called_once_with(
-        agent=self.mock_agent, rpc_url="http://localhost:-1/"
+        agent=self.mock_agent,
+        rpc_url="http://localhost:-1/",
+        security_schemes=None,
+        default_skill_security=None,
     )
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
@@ -405,7 +465,10 @@ class TestToA2A:
     to_a2a(self.mock_agent, port=65535)
 
     mock_card_builder_class.assert_called_once_with(
-        agent=self.mock_agent, rpc_url="http://localhost:65535/"
+        agent=self.mock_agent,
+        rpc_url="http://localhost:65535/",
+        security_schemes=None,
+        default_skill_security=None,
     )
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
@@ -427,7 +490,10 @@ class TestToA2A:
     to_a2a(self.mock_agent, host="test-host.example.com")
 
     mock_card_builder_class.assert_called_once_with(
-        agent=self.mock_agent, rpc_url="http://test-host.example.com:8000/"
+        agent=self.mock_agent,
+        rpc_url="http://test-host.example.com:8000/",
+        security_schemes=None,
+        default_skill_security=None,
     )
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
@@ -449,7 +515,10 @@ class TestToA2A:
     to_a2a(self.mock_agent, host="192.168.1.1")
 
     mock_card_builder_class.assert_called_once_with(
-        agent=self.mock_agent, rpc_url="http://192.168.1.1:8000/"
+        agent=self.mock_agent,
+        rpc_url="http://192.168.1.1:8000/",
+        security_schemes=None,
+        default_skill_security=None,
     )
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
@@ -702,6 +771,96 @@ class TestToA2A:
     assert any(
         "agent_card and rpc_path" in r.message for r in caplog.records
     ), f"expected mismatch warning; got {[r.message for r in caplog.records]}"
+
+  @pytest.mark.parametrize(
+      "security_kwargs",
+      [
+          {
+              "security_schemes": {
+                  "api": _compat.make_api_key_scheme(name="X-Api-Key")
+              }
+          },
+          {"default_skill_security": [{"api": []}]},
+          {"default_skill_security": {"invalid": "shape"}},
+      ],
+  )
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch(
+      "google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder",
+      wraps=AgentCardBuilder,
+  )
+  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
+  def test_to_a2a_warns_when_agent_card_and_security_params_both_set(
+      self,
+      mock_starlette_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_agent_executor_class,
+      security_kwargs,
+      caplog,
+  ):
+    """A provided agent_card plus security params logs a warning and ignores them."""
+    mock_starlette_class.return_value = Mock(spec=Starlette)
+    mock_agent_executor_class.return_value = Mock(spec=A2aAgentExecutor)
+
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
+      to_a2a(
+          self.mock_agent,
+          agent_card=_make_minimal_agent_card(),
+          **security_kwargs,
+      )
+
+    assert any(
+        "security_schemes/default_skill_security" in r.message
+        for r in caplog.records
+    ), (
+        "expected ignored security params warning; got"
+        f" {[r.message for r in caplog.records]}"
+    )
+    mock_card_builder_class.assert_called_once_with(
+        agent=self.mock_agent,
+        rpc_url="http://localhost:8000/",
+        security_schemes=None,
+        default_skill_security=None,
+    )
+
+  async def test_to_a2a_builds_card_with_security_schemes_and_skill_security(
+      self,
+  ):
+    """to_a2a builds an AgentCard carrying security_schemes and default_skill_security."""
+    agent = LlmAgent(
+        name="secured_agent",
+        description="A secured agent",
+        model="gemini-2.0-flash",
+    )
+    security_schemes = {"api": _compat.make_api_key_scheme(name="X-Api-Key")}
+    default_skill_security = [{"api": []}]
+    captured_cards = []
+    original_attach = _compat.attach_a2a_routes_to_app
+
+    def capture_attach(app, *, agent_card, **kwargs):
+      captured_cards.append(agent_card)
+      return original_attach(app, agent_card=agent_card, **kwargs)
+
+    with patch.object(
+        _compat, "attach_a2a_routes_to_app", side_effect=capture_attach
+    ):
+      app = to_a2a(
+          agent,
+          port=8001,
+          security_schemes=security_schemes,
+          default_skill_security=default_skill_security,
+      )
+      async with app.router.lifespan_context(app):
+        pass
+
+    assert len(captured_cards) == 1
+    card = captured_cards[0]
+    assert "api" in card.security_schemes
+    assert [_compat.get_skill_security(skill) for skill in card.skills] == [
+        default_skill_security
+    ]
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
   @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")

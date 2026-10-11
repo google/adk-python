@@ -25,6 +25,7 @@ from a2a.server.tasks import InMemoryTaskStore
 from a2a.server.tasks import PushNotificationConfigStore
 from a2a.server.tasks import TaskStore
 from a2a.types import AgentCard
+from a2a.types import SecurityScheme
 from starlette.applications import Starlette
 
 from .. import _compat
@@ -91,6 +92,8 @@ def to_a2a(
         Callable[[Starlette], AbstractAsyncContextManager[None]] | None
     ) = None,
     agent_executor_factory: Callable[[Runner], A2aAgentExecutor] | None = None,
+    security_schemes: dict[str, SecurityScheme] | None = None,
+    default_skill_security: list[dict[str, list[str]]] | None = None,
 ) -> Starlette:
   """Convert an ADK BaseAgent or Workflow to an A2A Starlette application.
 
@@ -121,6 +124,17 @@ def to_a2a(
       agent_executor_factory: Optional factory function that creates an instance
         of A2aAgentExecutor. If not provided, a default A2aAgentExecutor will be
         created.
+      security_schemes: Optional dictionary of security scheme definitions to
+        include in the generated agent card. Populates metadata on the card only
+        and is not enforced at runtime by the Starlette application; ignored
+        with a warning when ``agent_card`` is supplied.
+      default_skill_security: Optional default security requirements to apply
+        to all generated skills (unless overridden per tool via
+        ``BaseTool.custom_metadata['security']``). Each element is a dict
+        mapping a security scheme name to a list of required scopes. Populates
+        metadata on the card only and is not enforced at runtime by the
+        Starlette application; ignored with a warning when ``agent_card`` is
+        supplied.
 
   Returns:
       A Starlette application that can be run with uvicorn
@@ -141,6 +155,14 @@ def to_a2a(
           await app.state.db.close()
 
       app = to_a2a(agent, lifespan=lifespan)
+
+      # Or with security:
+      from a2a.types import SecurityScheme
+      app = to_a2a(
+          agent,
+          security_schemes={"oauth2": SecurityScheme(...)},
+          default_skill_security=[{"oauth2": ["agent.read"]}],
+      )
 
       # Or with a persistent task store (the caller owns engine disposal):
       from a2a.server.tasks import DatabaseTaskStore
@@ -217,9 +239,22 @@ def to_a2a(
         prefix,
     )
 
+  if provided_agent_card is not None and (
+      security_schemes is not None or default_skill_security is not None
+  ):
+    adk_logger.warning(
+        "Both agent_card and security_schemes/default_skill_security were"
+        " provided; the provided agent_card is used as-is, so"
+        " security_schemes and default_skill_security are ignored."
+    )
+    security_schemes = None
+    default_skill_security = None
+
   card_builder = AgentCardBuilder(
       agent=agent,
       rpc_url=rpc_url,
+      security_schemes=security_schemes,
+      default_skill_security=default_skill_security,
   )
 
   # Build the agent card and configure A2A routes

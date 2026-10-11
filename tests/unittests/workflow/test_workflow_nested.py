@@ -826,10 +826,15 @@ class _InputCapturingNode(BaseNode):
     yield {'received': node_input}
 
 
-async def _run_workflow(wf, message='start'):
+from .._invariants import InvariantPlugin
+
+
+async def _run_workflow(wf, message='start', *, check_invariants: bool = True):
   """Run a Workflow through Runner, return collected events."""
   ss = InMemorySessionService()
   runner = Runner(app_name='test', node=wf, session_service=ss)
+  if check_invariants:
+    runner.plugin_manager.plugins.insert(0, InvariantPlugin())
   session = await ss.create_session(app_name='test', user_id='u')
   msg = types.Content(parts=[types.Part(text=message)], role='user')
   events = []

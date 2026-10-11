@@ -35,7 +35,10 @@ from google.adk.auth.credential_service.in_memory_credential_service import InMe
 import google.adk.cli.cli as cli
 from google.adk.cli.utils.local_storage import PerAgentFileArtifactService
 from google.adk.cli.utils.service_factory import create_artifact_service_from_options
+from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
+from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 import pytest
 
 
@@ -300,6 +303,82 @@ async def test_run_cli_save_session(
 
 
 @pytest.mark.asyncio
+async def test_run_cli_resume_strips_internal_metadata_and_marks_events_restored(
+    fake_agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Events loaded with --resume lose ADK-internal keys and are marked."""
+  from google.adk.events.event import Event
+
+  parent_dir, folder_name = fake_agent
+  saved = Session(id="saved", app_name=folder_name, user_id="u")
+  saved.events.append(
+      Event(
+          author="user",
+          custom_metadata={
+              "keep": 1,
+              INTERNAL_METADATA_PREFIX + "planted": "x",
+              RESTORED_EVENT_KEY: False,
+          },
+      )
+  )
+  saved_path = tmp_path / "saved.session.json"
+  saved_path.write_text(saved.model_dump_json())
+  captured = {}
+
+  async def _capture_session(*args: Any, **kwargs: Any) -> None:
+    captured["session"] = kwargs.get(
+        "session", args[2] if len(args) > 2 else None
+    )
+
+  monkeypatch.setattr(cli, "run_interactively", _capture_session)
+
+  await cli.run_cli(
+      agent_parent_dir=str(parent_dir),
+      agent_folder_name=folder_name,
+      saved_session_file=str(saved_path),
+      save_session=False,
+      in_memory=True,
+  )
+
+  events = captured["session"].events
+  assert len(events) == 1
+  assert events[0].custom_metadata == {"keep": 1, RESTORED_EVENT_KEY: True}
+
+
+@pytest.mark.asyncio
+async def test_run_cli_save_session_omits_internal_metadata(
+    fake_agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A resumed session is saved without the restored marker."""
+  from google.adk.events.event import Event
+
+  parent_dir, folder_name = fake_agent
+  saved = Session(id="saved", app_name=folder_name, user_id="u")
+  saved.events.append(Event(author="user", custom_metadata={"keep": 1}))
+  saved_path = tmp_path / "saved.session.json"
+  saved_path.write_text(saved.model_dump_json())
+
+  async def _no_interaction(*args: Any, **kwargs: Any) -> None:
+    del args, kwargs
+
+  monkeypatch.setattr(cli, "run_interactively", _no_interaction)
+  monkeypatch.setattr("builtins.input", lambda *_a, **_k: "resaved")
+
+  await cli.run_cli(
+      agent_parent_dir=str(parent_dir),
+      agent_folder_name=folder_name,
+      saved_session_file=str(saved_path),
+      save_session=True,
+      in_memory=True,
+  )
+
+  data = json.loads(
+      (Path(parent_dir) / folder_name / "resaved.session.json").read_text()
+  )
+  assert [e.get("customMetadata") for e in data["events"]] == [{"keep": 1}]
+
+
+@pytest.mark.asyncio
 async def test_create_artifact_service_isolates_artifacts_per_agent(
     tmp_path: Path,
 ) -> None:
@@ -525,6 +604,24 @@ async def test_run_interactively_whitespace_and_exit(
 
   # verify: assistant echoed once with 'echo:hello'
   assert any("echo:hello" in m for m in echoed)
+
+
+def test_print_event_omits_internal_metadata_in_jsonl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """_print_event does not print ADK-internal custom_metadata."""
+  from google.adk.events.event import Event
+
+  echoed: list[str] = []
+  monkeypatch.setattr(click, "echo", lambda msg: echoed.append(msg))
+  event = Event.model_validate({
+      "author": "agent",
+      "custom_metadata": {"keep": 1, INTERNAL_METADATA_PREFIX + "stamp": "x"},
+  })
+
+  cli._print_event(event, jsonl=True)
+
+  assert json.loads(echoed[0])["customMetadata"] == {"keep": 1}
 
 
 def test_print_event_preserves_non_ascii_in_jsonl(

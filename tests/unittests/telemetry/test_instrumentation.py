@@ -706,6 +706,36 @@ async def test_record_tool_execution_reported_error_labels_span_and_metric(
   }]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("experimental", "expected_source"),
+    [(False, None), (True, "before_tool_callback")],
+)
+async def test_record_tool_execution_response_source_needs_experimental(
+    telemetry: _Telemetry,
+    monkeypatch: pytest.MonkeyPatch,
+    experimental: bool,
+    expected_source: str | None,
+):
+  """The response source is experimental telemetry, off by default."""
+  if experimental:
+    monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+  tool = _EchoTool(name="echo", description="echoes its input")
+
+  async with _instrumentation.record_tool_execution(
+      tool, agent, {}, ctx
+  ) as tel_ctx:
+    tel_ctx.function_response_event = _function_response_event(
+        "call-1", {"out": "hi"}
+    )
+    tel_ctx.response_source = "before_tool_callback"
+
+  attributes = dict(telemetry.only_span().attributes)
+  assert attributes.get("adk.experimental.response.source") == expected_source
+
+
 # --- skill script execution, on the execute_tool span ----------------------
 #
 # The exit code is only known after the script has run, so the tool fills it
@@ -722,9 +752,11 @@ def _script_tool() -> _EchoTool:
 
 
 def _loaded_skill(uri: str | None = "file:/skills/sample") -> mock.MagicMock:
-  """A stand-in for a loaded skill; only its source URI is read off it."""
+  """A stand-in for a loaded skill: its source URI, description and metadata."""
   skill = mock.MagicMock()
   skill._uri = uri
+  skill.description = "A sample skill."
+  skill.frontmatter.metadata = {}
   return skill
 
 
@@ -749,19 +781,18 @@ async def test_skill_script_execution_stamps_the_span_and_counts_the_run(
 
   span = telemetry.only_span()
   attributes = dict(span.attributes)
-  assert attributes["adk.experimental.skill.name"] == "sample_skill"
-  assert attributes["adk.experimental.skill.script.path"] == "scripts/sample.py"
-  assert attributes["adk.experimental.skill.script.exit_code"] == 0
-  assert (
-      attributes["adk.experimental.skill.source.uri"] == "file:/skills/sample"
-  )
+  assert attributes["gen_ai.skill.name"] == "sample_skill"
+  assert attributes["gen_ai.skill.resource.name"] == "scripts/sample.py"
+  assert attributes["gen_ai.skill.description"] == "A sample skill."
+  assert attributes["process.exit.code"] == 0
+  assert attributes["gen_ai.skill.source.uri"] == "file:/skills/sample"
   assert span.status.status_code is StatusCode.UNSET
   assert "error.type" not in attributes
   assert telemetry.points(_SKILL_SCRIPT_EXECUTIONS) == [(
       {
           "gen_ai.agent.name": "root_agent",
-          "adk.experimental.skill.name": "sample_skill",
-          "adk.experimental.skill.script.path": "scripts/sample.py",
+          "gen_ai.skill.name": "sample_skill",
+          "gen_ai.skill.resource.name": "scripts/sample.py",
           "adk.experimental.skill.script.ended_with_error": False,
       },
       1,
@@ -796,11 +827,11 @@ async def test_skill_script_failure_fails_the_span_and_flags_the_count(
   assert span.status.status_code is StatusCode.ERROR
   assert attributes["error.type"] == "SKILL_SCRIPT_EXECUTION_ERROR"
   # The span keeps the code the metric collapses into a flag.
-  assert attributes["adk.experimental.skill.script.exit_code"] == 3
+  assert attributes["process.exit.code"] == 3
   assert telemetry.point_attributes(_SKILL_SCRIPT_EXECUTIONS) == [{
       "gen_ai.agent.name": "root_agent",
-      "adk.experimental.skill.name": "sample_skill",
-      "adk.experimental.skill.script.path": "scripts/sample.py",
+      "gen_ai.skill.name": "sample_skill",
+      "gen_ai.skill.resource.name": "scripts/sample.py",
       "adk.experimental.skill.script.ended_with_error": True,
   }]
 
@@ -835,45 +866,21 @@ async def test_skill_script_execution_that_never_ran_reports_no_exit_code(
 
   span = telemetry.only_span()
   attributes = dict(span.attributes)
-  assert "adk.experimental.skill.script.exit_code" not in attributes
+  assert "process.exit.code" not in attributes
   assert span.status.status_code is StatusCode.UNSET
   assert "error.type" not in attributes
+  assert "gen_ai.skill.description" not in attributes
+  assert "gen_ai.skill.source.uri" not in attributes
   # The span keeps what the model actually asked for.
-  assert attributes["adk.experimental.skill.name"] == "sample_skill"
-  assert attributes["adk.experimental.skill.script.path"] == "scripts/sample.py"
+  assert attributes["gen_ai.skill.name"] == "sample_skill"
+  assert attributes["gen_ai.skill.resource.name"] == "scripts/sample.py"
   # The attempt still happened, so it is still counted -- just without a
   # verdict on how it ended, and without the unconfirmed names.
   assert telemetry.point_attributes(_SKILL_SCRIPT_EXECUTIONS) == [{
       "gen_ai.agent.name": "root_agent",
-      "adk.experimental.skill.name": "<hallucinated>",
-      "adk.experimental.skill.script.path": "<hallucinated>",
+      "gen_ai.skill.name": "<hallucinated>",
+      "gen_ai.skill.resource.name": "<hallucinated>",
   }]
-
-
-@pytest.mark.asyncio
-async def test_skill_script_execution_is_silent_without_the_experimental_opt_in(
-    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
-):
-  """These attributes are experimental, so nothing is emitted by default."""
-  monkeypatch.delenv("ADK_EXPERIMENTAL_TELEMETRY", raising=False)
-  agent = _agent()
-  ctx = await _invocation_context(agent)
-
-  async with _instrumentation.record_tool_execution(
-      _script_tool(), agent, {}, ctx
-  ):
-    skill_telemetry = _instrumentation.track_skill_script_execution(
-        _hallucination.ConfirmedNotHallucinated("sample_skill"),
-        _hallucination.ConfirmedNotHallucinated("scripts/sample.py"),
-    )
-    skill_telemetry.script_exit_code = 3
-
-  span = telemetry.only_span()
-  assert not [
-      key for key in span.attributes if key.startswith("adk.experimental")
-  ]
-  assert span.status.status_code is StatusCode.UNSET
-  assert telemetry.points(_SKILL_SCRIPT_EXECUTIONS) == []
 
 
 # --- skill loads, on the execute_tool span and per invocation --------------
@@ -916,14 +923,13 @@ async def test_skill_load_stamps_the_span_and_counts_the_load(
     skill_telemetry.skill = _loaded_skill()
 
   attributes = dict(telemetry.only_span().attributes)
-  assert attributes["adk.experimental.skill.name"] == "sample_skill"
-  assert (
-      attributes["adk.experimental.skill.source.uri"] == "file:/skills/sample"
-  )
+  assert attributes["gen_ai.skill.name"] == "sample_skill"
+  assert attributes["gen_ai.skill.description"] == "A sample skill."
+  assert attributes["gen_ai.skill.source.uri"] == "file:/skills/sample"
   assert telemetry.points(_SKILL_LOADS) == [(
       {
           "gen_ai.agent.name": "root_agent",
-          "adk.experimental.skill.name": "sample_skill",
+          "gen_ai.skill.name": "sample_skill",
       },
       1,
   )]
@@ -953,36 +959,12 @@ async def test_skill_load_that_resolved_nothing_is_counted_with_its_error(
 
   # The span keeps what the model actually asked for.
   span_attributes = dict(telemetry.only_span().attributes)
-  assert span_attributes["adk.experimental.skill.name"] == "sample_skill"
+  assert span_attributes["gen_ai.skill.name"] == "sample_skill"
   assert telemetry.point_attributes(_SKILL_LOADS) == [{
       "gen_ai.agent.name": "root_agent",
-      "adk.experimental.skill.name": "<hallucinated>",
+      "gen_ai.skill.name": "<hallucinated>",
       "error.type": "SKILL_NOT_FOUND",
   }]
-
-
-@pytest.mark.asyncio
-async def test_skill_load_is_silent_without_the_experimental_opt_in(
-    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
-):
-  """These attributes are experimental, so nothing is emitted by default."""
-  monkeypatch.delenv("ADK_EXPERIMENTAL_TELEMETRY", raising=False)
-  agent = _agent()
-  ctx = await _invocation_context(agent)
-
-  async with _instrumentation.record_tool_execution(
-      _load_tool(), agent, {}, ctx
-  ):
-    skill_telemetry = _instrumentation.track_skill_load(
-        _hallucination.ConfirmedNotHallucinated("sample_skill")
-    )
-    skill_telemetry.skill = _loaded_skill()
-
-  span = telemetry.only_span()
-  assert not [
-      key for key in span.attributes if key.startswith("adk.experimental")
-  ]
-  assert telemetry.points(_SKILL_LOADS) == []
 
 
 @pytest.mark.asyncio
@@ -1047,15 +1029,15 @@ async def test_invoke_agent_skill_loads_count_the_loads_that_failed_too(
   assert telemetry.point_attributes(_SKILL_LOADS) == [
       {
           "gen_ai.agent.name": "root_agent",
-          "adk.experimental.skill.name": "first_skill",
+          "gen_ai.skill.name": "first_skill",
       },
       {
           "gen_ai.agent.name": "root_agent",
-          "adk.experimental.skill.name": "second_skill",
+          "gen_ai.skill.name": "second_skill",
       },
       {
           "gen_ai.agent.name": "root_agent",
-          "adk.experimental.skill.name": "<hallucinated>",
+          "gen_ai.skill.name": "<hallucinated>",
           "error.type": "SKILL_NOT_FOUND",
       },
   ]
@@ -1091,7 +1073,7 @@ async def test_a_skill_load_that_raised_is_counted_as_a_failed_load(
   # The per-load counter names the exception, the same label the span took.
   assert telemetry.point_attributes(_SKILL_LOADS) == [{
       "gen_ai.agent.name": "root_agent",
-      "adk.experimental.skill.name": "<hallucinated>",
+      "gen_ai.skill.name": "<hallucinated>",
       "error.type": "ValueError",
   }]
 
@@ -1174,7 +1156,9 @@ async def test_invoke_agent_skill_loads_is_not_recorded_without_the_opt_in(
     async with _instrumentation.record_tool_execution(
         _load_tool(), agent, {}, ctx
     ) as tel_ctx:
-      _instrumentation.track_skill_load("nonexistent_skill")
+      _instrumentation.track_skill_load(
+          _hallucination.MaybeHallucinated("nonexistent_skill")
+      )
       tel_ctx.error_type = "SKILL_NOT_FOUND"
 
   assert telemetry.points(_INVOKE_AGENT_SKILL_LOADS) == []

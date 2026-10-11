@@ -34,6 +34,7 @@ from pydantic import ValidationError
 
 from .. import _compat
 from ...agents.invocation_context import InvocationContext
+from ...events._internal_metadata import without_internal_metadata
 from ...events.event import Event
 from ...events.event_actions import EventActions
 from ..experimental import a2a_experimental
@@ -54,6 +55,17 @@ MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT = (
 MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH = (
     "mock_function_call_for_required_user_auth"
 )
+
+# These states finish the current interaction, including a deliberate pause.
+# Unlike progress updates, a bare boundary still needs a persisted response.
+_TASK_RESPONSE_BOUNDARY_STATES = frozenset({
+    _compat.TS_INPUT_REQUIRED,
+    _compat.TS_AUTH_REQUIRED,
+    _compat.TS_COMPLETED,
+    _compat.TS_FAILED,
+    _compat.TS_CANCELED,
+    _compat.TS_REJECTED,
+})
 
 A2AMessageToEventConverter = Callable[
     [
@@ -196,11 +208,14 @@ def _create_event(
     usage_metadata: Any = None,
     error_code: Any = None,
     citation_metadata: Any = None,
+    allow_empty_event: bool = False,
 ) -> Optional[Event]:
   """Creates an ADK event from parts and metadata."""
   event_actions = actions or EventActions()
-  if not output_parts and not event_actions.model_dump(
-      exclude_none=True, exclude_defaults=True
+  if (
+      not allow_empty_event
+      and not output_parts
+      and event_actions == EventActions()
   ):
     return None
 
@@ -449,8 +464,8 @@ def _extract_all_metadata_fields(metadata: Any) -> dict[str, Any]:
       "grounding_metadata": _extract_genai_metadata(
           metadata_dict, "grounding_metadata", genai_types.GroundingMetadata
       ),
-      "custom_metadata": _extract_genai_metadata(
-          metadata_dict, "custom_metadata", dict
+      "custom_metadata": without_internal_metadata(
+          _extract_genai_metadata(metadata_dict, "custom_metadata", dict)
       ),
       "usage_metadata": _extract_genai_metadata(
           metadata_dict,
@@ -497,23 +512,35 @@ def convert_a2a_task_to_event(
     long_running_function_ids: set[str] = set()
     metadata_fields: dict[str, Any] = {}
     status_message = _compat.normalize_message(a2a_task.status.message)
+    has_source_parts = False
+    artifact_parts: list[A2APart] = []
     if a2a_task.artifacts:
       artifact_parts = [
           part for artifact in a2a_task.artifacts for part in artifact.parts
       ]
+      has_source_parts = bool(artifact_parts)
       for artifact in a2a_task.artifacts:
         event_actions = _merge_event_actions(
             event_actions, _extract_event_actions(artifact.metadata)
         )
         if not metadata_fields:
           metadata_fields = _extract_all_metadata_fields(artifact.metadata)
-      output_parts, _ = _convert_a2a_parts_to_adk_parts(
+      output_parts, ids = _convert_a2a_parts_to_adk_parts(
           artifact_parts, part_converter
       )
+      long_running_function_ids.update(ids)
     if status_message and (
-        a2a_task.status.state == _compat.TS_INPUT_REQUIRED
-        or a2a_task.status.state == _compat.TS_AUTH_REQUIRED
+        a2a_task.status.state
+        in (
+            _compat.TS_INPUT_REQUIRED,
+            _compat.TS_AUTH_REQUIRED,
+        )
+        or (
+            not artifact_parts
+            and a2a_task.status.state in _TASK_RESPONSE_BOUNDARY_STATES
+        )
     ):
+      has_source_parts = has_source_parts or bool(status_message.parts)
       event_actions = _merge_event_actions(
           event_actions,
           _extract_event_actions(status_message.metadata),
@@ -550,6 +577,10 @@ def convert_a2a_task_to_event(
         author,
         event_actions,
         long_running_function_ids,
+        allow_empty_event=(
+            not has_source_parts
+            and a2a_task.status.state in _TASK_RESPONSE_BOUNDARY_STATES
+        ),
         **metadata_fields,
     )
 
@@ -586,7 +617,7 @@ def convert_a2a_message_to_event(
     raise ValueError("A2A message cannot be None")
 
   try:
-    output_parts, _ = _convert_a2a_parts_to_adk_parts(
+    output_parts, long_running_function_ids = _convert_a2a_parts_to_adk_parts(
         a2a_message.parts, part_converter
     )
     content_role = _a2a_role_to_content_role(getattr(a2a_message, "role", None))
@@ -596,6 +627,7 @@ def convert_a2a_message_to_event(
         invocation_context,
         author,
         _extract_event_actions(a2a_message.metadata),
+        long_running_function_ids,
         content_role=content_role,
         **metadata_fields,
     )
@@ -655,6 +687,10 @@ def convert_a2a_status_update_to_event(
         author,
         event_actions,
         long_running_function_ids,
+        allow_empty_event=(
+            (status_message is None or not status_message.parts)
+            and a2a_status_update.status.state in _TASK_RESPONSE_BOUNDARY_STATES
+        ),
         **metadata_fields,
     )
   except Exception as e:
@@ -685,7 +721,7 @@ def convert_a2a_artifact_update_to_event(
     raise ValueError("A2A artifact update cannot be None")
 
   try:
-    output_parts, _ = _convert_a2a_parts_to_adk_parts(
+    output_parts, long_running_function_ids = _convert_a2a_parts_to_adk_parts(
         a2a_artifact_update.artifact.parts, part_converter
     )
     metadata_fields = _extract_all_metadata_fields(
@@ -696,6 +732,7 @@ def convert_a2a_artifact_update_to_event(
         invocation_context,
         author,
         _extract_event_actions(a2a_artifact_update.artifact.metadata),
+        long_running_function_ids,
         partial=not a2a_artifact_update.last_chunk,
         **metadata_fields,
     )

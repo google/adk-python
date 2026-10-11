@@ -12,11 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared component-owner map for the adk_team triaging agents.
+"""Component-owner map for adk_pr_triaging_agent.
 
-Single source of truth, imported verbatim as LABEL_TO_OWNER by BOTH
-adk_triaging_agent (issues) and adk_pr_triaging_agent (PRs), so the two can
-never drift. The owner becomes the issue/PR assignee (its shepherd).
+Imported as LABEL_TO_OWNER. The owner becomes the PR assignee (its shepherd).
 
 github login != corp ldap, so these are the login form. Keep this in sync with
 the OWNERS file, which is the authority.

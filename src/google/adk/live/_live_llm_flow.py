@@ -178,7 +178,7 @@ async def send_to_model(
       # Persist user text content to session (similar to non-live mode)
       # Skip function responses - they are already handled separately
       if not is_function_response and not content.role:
-        content.role = 'user'
+        content = content.model_copy(update={'role': 'user'})
       if not is_function_response and not live_request.partial:
         user_content_event = Event(
             id=Event.new_id(),
@@ -209,9 +209,7 @@ async def send_to_model(
         ):
           await invocation_context._enqueue_event(blocked_event)
           continue
-      await llm_connection._send_content(
-          live_request.content, partial=live_request.partial
-      )
+      await llm_connection._send_content(content, partial=live_request.partial)
 
 
 async def receive_from_model(

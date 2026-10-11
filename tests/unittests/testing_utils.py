@@ -48,6 +48,8 @@ from google.genai import types
 from google.genai.types import Part
 from typing_extensions import override
 
+from ._invariants import InvariantPlugin
+
 
 def create_test_agent(name: str = 'test_agent') -> LlmAgent:
   """Create a simple test agent for use in unit tests.
@@ -223,6 +225,18 @@ class TestInMemoryRunner(AfInMemoryRunner):
   app_name is hardcoded as InMemoryRunner in the parent class.
   """
 
+  __test__ = False
+
+  def __init__(
+      self,
+      *args: Any,
+      check_invariants: bool = True,
+      **kwargs: Any,
+  ) -> None:
+    super().__init__(*args, **kwargs)
+    if check_invariants:
+      self.plugin_manager.plugins.insert(0, InvariantPlugin())
+
   async def run_async_with_new_session(
       self,
       new_message: types.ContentUnion,
@@ -266,6 +280,7 @@ class InMemoryRunner:
       plugins: list[BasePlugin] = [],
       app: Optional[App] = None,
       node: Any = None,
+      check_invariants: bool = True,
   ):
     """Initializes the InMemoryRunner.
 
@@ -276,6 +291,7 @@ class InMemoryRunner:
         provided.
       app: The app to use in the runner.
       node: The root node to run.
+      check_invariants: Whether to attach the runtime invariant checker plugin.
     """
     if node:
       self.app_name = node.name
@@ -307,6 +323,8 @@ class InMemoryRunner:
           session_service=InMemorySessionService(),
           memory_service=InMemoryMemoryService(),
       )
+    if check_invariants:
+      self.runner.plugin_manager.plugins.insert(0, InvariantPlugin())
     self.session_id = None
 
   @property
@@ -456,7 +474,7 @@ class MockModel(BaseLlm):
     self.response_index += 1
     self.requests.append(llm_request)
     # yield LlmResponse(content=self.responses[self.response_index])
-    yield self.responses[self.response_index]
+    yield self.responses[self.response_index].model_copy(deep=True)
 
   @override
   async def generate_content_async(
@@ -467,7 +485,7 @@ class MockModel(BaseLlm):
     # Increasement of the index has to happen before the yield.
     self.response_index += 1
     self.requests.append(llm_request)
-    yield self.responses[self.response_index]
+    yield self.responses[self.response_index].model_copy(deep=True)
 
   @contextlib.asynccontextmanager
   async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:
@@ -480,6 +498,8 @@ class MockLlmConnection(BaseLlmConnection):
 
   def __init__(self, llm_responses: list[LlmResponse]):
     self.llm_responses = llm_responses
+    self._replayed = False
+    self._closed = asyncio.Event()
 
   async def send_history(self, history: list[types.Content]):
     pass
@@ -495,12 +515,15 @@ class MockLlmConnection(BaseLlmConnection):
 
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:
     """Yield each of the pre-defined LlmResponses."""
-    for response in self.llm_responses:
-      # Yield control to allow other tasks (like send_task) to run first.
-      # This ensures user content gets persisted before the mock response
-      # is yielded.
-      await asyncio.sleep(0)
-      yield response
+    if not self._replayed:
+      self._replayed = True
+      for response in self.llm_responses:
+        # Yield control to allow other tasks (like send_task) to run first.
+        # This ensures user content gets persisted before the mock response
+        # is yielded.
+        await asyncio.sleep(0)
+        yield response
+    await self._closed.wait()
 
   async def close(self):
-    pass
+    self._closed.set()

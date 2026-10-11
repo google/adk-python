@@ -135,6 +135,10 @@ class AudioCacheManager:
 
     Note: video data is not supported yet.
 
+    A flushed cache is emptied whether or not an artifact was written, so a
+    cache the artifact service could not accept is dropped rather than kept
+    for a later attempt.
+
     Args:
       invocation_context: The invocation context containing audio caches.
       flush_user_audio: Whether to flush the input (user) audio cache.
@@ -145,25 +149,29 @@ class AudioCacheManager:
     """
     flushed_events: list[Event] = []
     if flush_user_audio and invocation_context.input_realtime_cache:
+      # Swap before the await so audio cached during it is kept for the next
+      # flush rather than discarded by the unconditional drop.
+      input_cache = invocation_context.input_realtime_cache
+      invocation_context.input_realtime_cache = []
       audio_event = await self._flush_cache_to_services(
           invocation_context,
-          invocation_context.input_realtime_cache,
+          input_cache,
           'input_audio',
       )
       if audio_event:
         flushed_events.append(audio_event)
-        invocation_context.input_realtime_cache = []
 
     if flush_model_audio and invocation_context.output_realtime_cache:
       logger.debug('Flushed output audio cache')
+      output_cache = invocation_context.output_realtime_cache
+      invocation_context.output_realtime_cache = []
       audio_event = await self._flush_cache_to_services(
           invocation_context,
-          invocation_context.output_realtime_cache,
+          output_cache,
           'output_audio',
       )
       if audio_event:
         flushed_events.append(audio_event)
-        invocation_context.output_realtime_cache = []
 
     return flushed_events
 
@@ -201,7 +209,10 @@ class AudioCacheManager:
 
       # Generate filename with timestamp from first audio chunk (when recording started)
       timestamp = int(audio_cache[0].timestamp * 1000)  # milliseconds
-      filename = f"adk_live_audio_storage_{cache_type}_{timestamp}.{mime_type.split('/')[-1]}"
+      # Drop MIME parameters such as `;rate=24000` so they don't end up in the
+      # file extension. The full MIME type is kept on the saved artifact.
+      extension = mime_type.split(';', 1)[0].strip().split('/')[-1]
+      filename = f'adk_live_audio_storage_{cache_type}_{timestamp}.{extension}'
 
       # Save to artifact service
       combined_audio_part = types.Part(

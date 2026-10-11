@@ -670,8 +670,8 @@ def test_record_skill_script_execution(skill_script_counter):
   assert args[0] == 1
   assert kwargs["attributes"] == {
       "gen_ai.agent.name": "test_agent",
-      "adk.experimental.skill.name": "my_skill",
-      "adk.experimental.skill.script.path": "scripts/run.py",
+      "gen_ai.skill.name": "my_skill",
+      "gen_ai.skill.resource.name": "scripts/run.py",
       "adk.experimental.skill.script.ended_with_error": False,
   }
 
@@ -692,7 +692,7 @@ def test_record_skill_script_execution_collapses_the_exit_code_to_a_flag(
   _, kwargs = skill_script_counter.add.call_args
   attributes = kwargs["attributes"]
   assert attributes["adk.experimental.skill.script.ended_with_error"] is True
-  assert "adk.experimental.skill.script.exit_code" not in attributes
+  assert "process.exit.code" not in attributes
 
 
 def test_record_skill_script_execution_with_unconfirmed_names(
@@ -710,8 +710,8 @@ def test_record_skill_script_execution_with_unconfirmed_names(
   _, kwargs = skill_script_counter.add.call_args
   assert kwargs["attributes"] == {
       "gen_ai.agent.name": "test_agent",
-      "adk.experimental.skill.name": "<hallucinated>",
-      "adk.experimental.skill.script.path": "<hallucinated>",
+      "gen_ai.skill.name": "<hallucinated>",
+      "gen_ai.skill.resource.name": "<hallucinated>",
       "adk.experimental.skill.script.ended_with_error": False,
   }
 
@@ -738,7 +738,7 @@ def test_record_skill_load(skill_loads_counter):
   assert args[0] == 1
   assert kwargs["attributes"] == {
       "gen_ai.agent.name": "test_agent",
-      "adk.experimental.skill.name": "my_skill",
+      "gen_ai.skill.name": "my_skill",
   }
 
 
@@ -755,7 +755,7 @@ def test_record_skill_load_that_resolved_nothing(skill_loads_counter):
   _, kwargs = skill_loads_counter.add.call_args
   assert kwargs["attributes"] == {
       "gen_ai.agent.name": "test_agent",
-      "adk.experimental.skill.name": "<hallucinated>",
+      "gen_ai.skill.name": "<hallucinated>",
       "error.type": "SKILL_NOT_FOUND",
   }
 

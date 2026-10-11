@@ -24,6 +24,7 @@ import traceback
 from typing import Optional
 import uuid
 
+import agentplatform
 from fastapi import FastAPI
 from fastapi import Request
 from fastapi import Response
@@ -41,7 +42,6 @@ from google.cloud.agentidentitycredentials_v1 import FinalizeCredentialsRequest
 from google.genai import types
 from pydantic import BaseModel
 import uvicorn
-import vertexai
 
 # Add agent project directory to path to allow importing local agents
 AGENT_PROJECT_DIR = os.environ.get("AGENT_PROJECT_DIR") or os.path.dirname(
@@ -106,7 +106,7 @@ async def list_local_agents():
 @app.get("/list_agents")
 async def list_remote_agents(project_id: str, location: str):
   try:
-    client = vertexai.Client(project=project_id, location=location)
+    client = agentplatform.Client(project=project_id, location=location)
     return {
         "agents": [
             {
@@ -114,7 +114,7 @@ async def list_remote_agents(project_id: str, location: str):
                 "name": a.api_resource.display_name,
                 "full_name": a.api_resource.name,
             }
-            for a in client.agent_engines.list()
+            for a in client.runtimes.list()
         ]
     }
   except Exception as e:
@@ -194,7 +194,7 @@ async def chat(request: ChatRequest, response: Response):
           traceback.format_exc(),
       )
   else:
-    client = vertexai.Client(
+    client = agentplatform.Client(
         project=request.project_id, location=request.location
     )
     remote_name = (
@@ -202,7 +202,7 @@ async def chat(request: ChatRequest, response: Response):
         f"/reasoningEngines/{request.agent_id}"
     )
     try:
-      current_agent = client.agent_engines.get(name=remote_name)
+      current_agent = client.runtimes.get(name=remote_name)
     except Exception as e:
       return stream_error(
           f"Failed to load remote agent: {e}", traceback.format_exc()
@@ -222,10 +222,10 @@ async def chat(request: ChatRequest, response: Response):
             )
             or session_id
         )
-        client = vertexai.Client(
+        client = agentplatform.Client(
             project=request.project_id, location=request.location
         )
-        current_agent = client.agent_engines.get(name=remote_name)
+        current_agent = client.runtimes.get(name=remote_name)
       except Exception as e:
         return stream_error(
             f"Failed to create session: {e}", traceback.format_exc()

@@ -22,9 +22,9 @@ from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 from typing import TypeVar
 
-from opentelemetry import context
-
 if TYPE_CHECKING:
+  from opentelemetry import context
+
   from ..agents.invocation_context import InvocationContext
   from ..plugins.plugin_manager import PluginManager
 
@@ -38,6 +38,8 @@ async def _with_caller_context(
     caller_ctx: context.Context,
 ) -> AsyncGenerator[_T, None]:
   """Wraps an async generator to attach caller_ctx around each yield."""
+  from opentelemetry import context
+
   async with aclosing(agen) as a:
     async for item in a:
       token = context.attach(caller_ctx)

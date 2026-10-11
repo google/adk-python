@@ -35,6 +35,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.genai import types
 from pydantic import alias_generators
 import pytest
@@ -532,7 +533,7 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
           for part in parts:
             if "functionResponse" in part:
               func_resp = part["functionResponse"]
-              if func_resp.get("name") == "set_model_response":
+              if func_resp.get("name") == SetModelResponseTool.NAME:
                 last_was_set_model_response = True
 
         elif role == "model":

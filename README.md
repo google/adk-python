@@ -5,7 +5,7 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/google-adk.svg)](https://pypi.org/project/google-adk/)
 [![PyPI downloads](https://static.pepy.tech/badge/google-adk/month)](https://pepy.tech/project/google-adk)
 [![Continuous Integration](https://github.com/google/adk-python/actions/workflows/continuous-integration.yml/badge.svg)](https://github.com/google/adk-python/actions/workflows/continuous-integration.yml)
-[![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://google.github.io/adk-docs/)
+[![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://adk.dev/)
 [![r/agentdevelopmentkit](https://img.shields.io/badge/Reddit-r%2Fagentdevelopmentkit-FF4500?style=flat&logo=reddit&logoColor=white)](https://www.reddit.com/r/agentdevelopmentkit/)
 <a href="https://codewiki.google/github.com/google/adk-python"><img src="https://www.gstatic.com/_/boq-sdlc-agents-ui/_/r/Mvosg4klCA4.svg" alt="Ask Code Wiki" height="20"></a>
 
@@ -17,8 +17,8 @@
 </h3>
 <h3 align="center">
   Important Links:
-  <a href="https://google.github.io/adk-docs/">Docs</a>,
-  <a href="https://github.com/google/adk-samples">Samples</a> &
+  <a href="https://adk.dev/">Docs</a>,
+  <a href="https://github.com/google/adk-recipes">Samples</a> &
   <a href="https://github.com/google/adk-web">ADK Web</a>.
 </h3>
 <h3 align="center">
@@ -57,9 +57,9 @@ deployment-agnostic, and compatible with other frameworks.
   directly in Python for ultimate flexibility, testability, and versioning.
 
 - **Agent Config**: Build agents without code. Check out the
-  [Agent Config](https://google.github.io/adk-docs/agents/config/) feature.
+  [Agent Config](https://adk.dev/agents/config/) feature.
 
-- **Tool Confirmation**: A [tool confirmation flow (HITL)](https://google.github.io/adk-docs/tools/confirmation/) that can guard tool execution with explicit confirmation and custom input.
+- **Tool Confirmation**: A [tool confirmation flow (HITL)](https://adk.dev/tools-custom/confirmation/) that can guard tool execution with explicit confirmation and custom input.
 
 - **Deploy Anywhere**: Easily containerize and deploy agents on Cloud Run or
   scale seamlessly with Vertex AI Agent Engine.
@@ -74,18 +74,18 @@ You can install the latest stable version of ADK using `pip`:
 pip install google-adk
 ```
 
-**Requirements:** Python 3.10+.
+**Requirements:** Python 3.11+.
 
 For transitive dependency protection, we recommend to install with our companion
-constraints files (for python 3.10 to 3.14).
+constraints files (for python 3.11 to 3.14).
 
 Choose the constraints file matching your Python version:
 
 ```bash
-# For example, for Python 3.10
-curl -o constraints-3.10.txt https://raw.githubusercontent.com/google/adk-python/main/constraints-3.10.txt
-pip install google-adk -c constraints-3.10.txt
-rm constraints-3.10.txt
+# For example, for Python 3.11
+curl -o constraints-3.11.txt https://raw.githubusercontent.com/google/adk-python/main/constraints-3.11.txt
+pip install google-adk -c constraints-3.11.txt
+rm constraints-3.11.txt
 ```
 
 To install optional integrations, you can use the following command:
@@ -119,7 +119,7 @@ from google.adk import Agent
 
 root_agent = Agent(
     name="greeting_agent",
-    model="gemini-2.5-flash",
+    model="gemini-3.5-flash",
     instruction="You are a helpful assistant. Greet the user warmly.",
 )
 ```
@@ -196,7 +196,7 @@ adk deploy cloud_run --with_ui --env GOOGLE_GENAI_USE_ENTERPRISE=1 <agent-folder
 
 ## 📚 Documentation
 
-- **Getting Started**: https://google.github.io/adk-docs/
+- **Getting Started**: https://adk.dev/
 - **Guides**: See
   [`docs/guides/`](https://github.com/google/adk-python/tree/main/docs/guides)
   for task-oriented walkthroughs of agents, tools, events, plugins, and
@@ -209,7 +209,7 @@ adk deploy cloud_run --with_ui --env GOOGLE_GENAI_USE_ENTERPRISE=1 <agent-folder
 
 We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our:
 
-- [General contribution guideline and flow](https://google.github.io/adk-docs/contributing-guide/).
+- [General contribution guideline and flow](https://adk.dev/community/contributing-guide/).
 - [Code Contributing Guidelines](./CONTRIBUTING.md) to get started.
 
 ## Community Repo
@@ -220,7 +220,7 @@ of the ADK.
 
 ## Vibe Coding
 
-If you want to develop an agent via vibe coding the [llms.txt](./llms.txt) and the [llms-full.txt](./llms-full.txt) can be used as context to an LLM. While the former one is a summarized one and the latter one has the full information in case your LLM has a big enough context window.
+If you want to develop an agent via vibe coding the [llms.txt](https://adk.dev/llms.txt) and the [llms-full.txt](https://adk.dev/llms-full.txt) published on the ADK documentation site can be used as context to an LLM. While the former one is a summarized one and the latter one has the full information in case your LLM has a big enough context window.
 
 ## Community Events
 

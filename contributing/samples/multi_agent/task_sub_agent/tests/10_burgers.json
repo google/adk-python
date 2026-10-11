@@ -201,6 +201,160 @@
       "nodeInfo": {
         "path": "coordinator@1/order_collector@fc-1"
       }
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-3",
+              "name": "adk_request_confirmation",
+              "response": {
+                "confirmed": true
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-10",
+      "invocationId": "i-4",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "order_collector",
+      "branch": "order_collector@fc-1",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "confirmation",
+              "response": {
+                "result": "Proceeding with order."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-11",
+      "invocationId": "i-4",
+      "isolationScope": "fc-1",
+      "nodeInfo": {
+        "path": "coordinator@1/order_collector@fc-1"
+      }
+    },
+    {
+      "author": "order_collector",
+      "branch": "order_collector@fc-1",
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "result": [
+                  {
+                    "name": "Burger",
+                    "quantity": 10
+                  }
+                ]
+              },
+              "id": "fc-4",
+              "name": "finish_task"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-12",
+      "invocationId": "i-4",
+      "isolationScope": "fc-1",
+      "longRunningToolIds": [],
+      "nodeInfo": {
+        "path": "coordinator@1/order_collector@fc-1"
+      }
+    },
+    {
+      "author": "order_collector",
+      "branch": "order_collector@fc-1",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-4",
+              "name": "finish_task",
+              "response": {
+                "result": "Task completed."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-13",
+      "invocationId": "i-4",
+      "isolationScope": "fc-1",
+      "nodeInfo": {
+        "outputFor": [
+          "coordinator@1/order_collector@fc-1"
+        ],
+        "path": "coordinator@1/order_collector@fc-1"
+      },
+      "output": [
+        {
+          "name": "Burger",
+          "quantity": 10
+        }
+      ]
+    },
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "order_collector",
+              "response": {
+                "output": [
+                  {
+                    "name": "Burger",
+                    "quantity": 10
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-14",
+      "invocationId": "i-4",
+      "nodeInfo": {
+        "path": "coordinator@1"
+      }
+    },
+    {
+      "author": "coordinator",
+      "content": {
+        "parts": [
+          {
+            "text": "Your order of 10 burgers is confirmed! Please provide your credit card number and CVV to complete the payment."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-15",
+      "invocationId": "i-4",
+      "nodeInfo": {
+        "path": "coordinator@1"
+      }
     }
   ]
 }

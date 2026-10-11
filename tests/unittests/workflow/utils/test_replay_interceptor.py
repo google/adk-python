@@ -96,12 +96,17 @@ def test_cross_turn_unresolved_interrupts_no_rerun():
   assert result.interrupts == {'fc-2'}
 
 
-def test_cross_turn_unresolved_interrupts_rerun():
-  """Cross-turn unresolved interrupts with rerun resolves progress and reruns."""
-  # Given unresolved interrupts and node with rerun_on_resume
+def test_cross_turn_unresolved_descendant_interrupts_rerun():
+  """A rerun_on_resume node reruns once its own interrupts are all answered.
+
+  The remaining unresolved interrupt belongs to a descendant dynamic node, so
+  the parent reruns to let that child advance.
+  """
+  # Given the node's only direct interrupt resolved and a descendant's pending
   recovered = _ChildScanState(
       run_id='1',
       interrupt_ids={'fc-1', 'fc-2'},
+      direct_interrupt_ids={'fc-1'},
       resolved_ids={'fc-1'},
       resolved_responses={'fc-1': 'ans'},
   )
@@ -116,6 +121,30 @@ def test_cross_turn_unresolved_interrupts_rerun():
   # Then it reruns with partial resolved inputs
   assert result.should_run
   assert result.resume_inputs == {'fc-1': 'ans'}
+
+
+def test_cross_turn_unresolved_direct_interrupts_wait():
+  """A rerun_on_resume node waits while any of its own interrupts is pending."""
+  # Given two direct interrupts of which only one has been answered
+  recovered = _ChildScanState(
+      run_id='1',
+      interrupt_ids={'fc-1', 'fc-2'},
+      direct_interrupt_ids={'fc-1', 'fc-2'},
+      resolved_ids={'fc-1'},
+      resolved_responses={'fc-1': 'ans'},
+  )
+  node = BaseNode(name='node', rerun_on_resume=True)
+
+  # When checked
+  result = check_interception(
+      node=node,
+      recovered=recovered,
+  )
+
+  # Then it keeps waiting on the unanswered one instead of rerunning
+  assert not result.should_run
+  assert result.interrupts == {'fc-2'}
+  assert result.resume_inputs is None
 
 
 def test_cross_turn_completed():
@@ -266,6 +295,42 @@ def test_cross_turn_all_resolved_rerun():
   assert result.resume_inputs == {'fc-1': 'ans'}
 
 
+@pytest.mark.parametrize('finished_after_resume', [False, True])
+def test_cross_turn_no_outcome_static_vs_dynamic_run(
+    finished_after_resume: bool,
+):
+  """Case 6 fast-forwards static runs with no outcome but reruns dynamic runs."""
+  recovered = _ChildScanState(
+      run_id='1', finished_after_resume=finished_after_resume
+  )
+  node = BaseNode(name='node', rerun_on_resume=False, wait_for_output=False)
+
+  static_run = DynamicNodeRun(
+      state=NodeState(run_id='1'),
+      recovered_state=recovered,
+      is_static=True,
+  )
+  dynamic_run = DynamicNodeRun(
+      state=NodeState(run_id='1'),
+      recovered_state=recovered,
+      is_static=False,
+  )
+
+  static_result = check_interception(
+      node=node,
+      recovered=recovered,
+      current_run=static_run,
+  )
+  dynamic_result = check_interception(
+      node=node,
+      recovered=recovered,
+      current_run=dynamic_run,
+  )
+
+  assert not static_result.should_run
+  assert dynamic_result.should_run
+
+
 # --- create_mock_context ---
 
 
@@ -347,3 +412,86 @@ def test_create_mock_context_branch_override_does_not_touch_parent():
 
   assert ctx.branch == 'root.sub'
   assert parent.branch == 'root'
+
+
+@pytest.mark.parametrize('is_dynamic', [False, True])
+def test_cross_turn_tool_node_completed_without_output_fast_forwards(
+    is_dynamic: bool,
+):
+  """A rerun_on_resume node that returned None in a prior turn is not rerun."""
+  # Given a node whose prior turn emitted a direct completion event with no
+  # output, route, or interrupt
+  recovered = _ChildScanState(run_id='1', finished_after_resume=True)
+  node = BaseNode(name='dummy', rerun_on_resume=True)
+  current_run = DynamicNodeRun(state=NodeState()) if is_dynamic else None
+
+  # When checked, as a static node or as one scheduled with ctx.run_node()
+  result = check_interception(
+      node=node,
+      recovered=recovered,
+      current_run=current_run,
+  )
+
+  # Then it is fast-forwarded with no output
+  assert not result.should_run
+  assert result.output is None
+
+
+@pytest.mark.parametrize(
+    ('finished_after_resume', 'expected_should_run'),
+    [(True, False), (False, True)],
+)
+def test_cross_turn_tool_node_resolved_interrupts(
+    finished_after_resume: bool, expected_should_run: bool
+):
+  """A rerun_on_resume node that already reran with its answers is not rerun again."""
+  # Given a node whose interrupt was answered, and which either reran and
+  # returned None or has not rerun yet
+  recovered = _ChildScanState(
+      run_id='1',
+      interrupt_ids={'confirm'},
+      resolved_ids={'confirm'},
+      resolved_responses={'confirm': {'confirmed': True}},
+      finished_after_resume=finished_after_resume,
+  )
+  node = BaseNode(name='dummy', rerun_on_resume=True)
+
+  # When checked
+  result = check_interception(node=node, recovered=recovered)
+
+  # Then it is fast-forwarded only if it already reran
+  assert result.should_run is expected_should_run
+  assert result.output is None
+
+
+def test_cross_turn_function_call_event_still_reruns_node():
+  """A rerun_on_resume node that crashed after a function_call event still reruns."""
+  from google.adk.events.event import Event
+  from google.adk.events.event import NodeInfo
+  from google.adk.workflow.utils._rehydration_utils import _reconstruct_node_states
+  from google.genai import types
+
+  fc_event = Event(
+      node_info=NodeInfo(path='/wf@1/agent@1'),
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id='fc-1', name='my_tool', args={}
+                  )
+              )
+          ],
+      ),
+      invocation_id='inv-1',
+  )
+  states = _reconstruct_node_states(
+      [fc_event], '/wf@1', invocation_id='inv-1', group_by_direct_child=True
+  )
+  recovered = states['agent@1']
+  node = BaseNode(name='agent', rerun_on_resume=True)
+
+  result = check_interception(node=node, recovered=recovered)
+
+  assert result.should_run is True
+  assert result.output is None

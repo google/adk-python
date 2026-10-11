@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from typing import Annotated
 from typing import Optional
 
 from fastapi.openapi.models import OAuth2
@@ -34,6 +35,8 @@ from google.adk.workflow import FunctionNode
 from google.adk.workflow import START
 from google.adk.workflow._workflow import Workflow
 from pydantic import BaseModel
+from pydantic import Field
+from pydantic import WithJsonSchema
 import pytest
 
 from .. import testing_utils
@@ -122,6 +125,88 @@ def test_state_no_schema_allows_all() -> None:
   assert state['anything'] == 'goes'
 
 
+class _ConstrainedSchema(BaseModel):
+  counter: int = Field(ge=1, le=10)
+  name: Annotated[str, Field(min_length=3)]
+  strict_counter: int = Field(strict=True)
+
+
+@pytest.mark.parametrize('operation', ['setitem', 'update', 'setdefault'])
+@pytest.mark.parametrize(
+    ('key', 'value'),
+    [('counter', 0), ('counter', 11), ('name', 'ab'), ('strict_counter', '1')],
+)
+def test_state_rejects_field_constraint_violations(operation, key, value):
+  """Values violating constraints raise and leave value/delta untouched."""
+  values = {'name': 'existing'} if key != 'name' else {'counter': 5}
+  delta = {}
+  original_values = values.copy()
+  state = State(value=values, delta=delta, schema=_ConstrainedSchema)
+
+  with pytest.raises(
+      StateSchemaError,
+      match=rf"Value for '{key}' does not satisfy field '{key}'",
+  ):
+    if operation == 'setitem':
+      state[key] = value
+    elif operation == 'update':
+      # A valid entry before the invalid one must not be partially committed.
+      state.update({'temp:pending': True, key: value})
+    else:
+      state.setdefault(key, value)
+
+  assert values == original_values
+  assert delta == {}
+
+
+def test_state_accepts_field_constraint_boundaries():
+  """Values at Field and Annotated constraint boundaries are accepted."""
+  state = State(value={}, delta={}, schema=_ConstrainedSchema)
+  state['counter'] = 1
+  state.update({'counter': 10, 'name': 'abc'})
+  assert state.setdefault('strict_counter', 1) == 1
+  # Existing keys do not validate an unused default.
+  assert state.setdefault('counter', 0) == 10
+  assert state.to_dict() == {'counter': 10, 'name': 'abc', 'strict_counter': 1}
+
+
+def test_state_constraints_are_scoped_per_schema_field():
+  """Fields with the same bare type enforce their own constraints."""
+
+  class PositiveSchema(BaseModel):
+    counter: int = Field(gt=0)
+    negative: int = Field(lt=0)
+
+  class NegativeSchema(BaseModel):
+    counter: int = Field(lt=0)
+
+  positive = State(value={}, delta={}, schema=PositiveSchema)
+  negative = State(value={}, delta={}, schema=NegativeSchema)
+  positive['counter'] = 1
+  positive['negative'] = -1
+  negative['counter'] = -1
+  with pytest.raises(StateSchemaError, match='counter'):
+    negative['counter'] = 1
+  with pytest.raises(StateSchemaError, match='negative'):
+    positive['negative'] = 1
+
+
+def test_state_accepts_unhashable_field_metadata():
+  """Fields with unhashable metadata like WithJsonSchema are validated."""
+
+  class Schema(BaseModel):
+    counter: Annotated[
+        int, Field(ge=1), WithJsonSchema({'type': 'integer', 'minimum': 1})
+    ]
+
+  state = State(value={}, delta={}, schema=Schema)
+  state['counter'] = 1
+  state['counter'] = 2
+  with pytest.raises(StateSchemaError, match='counter'):
+    state['counter'] = 0
+  assert state['counter'] == 2
+
+
 # ── Startup validation tests ─────────────────────────────────────────
 
 
@@ -206,6 +291,31 @@ def test_workflow_state_schema_defaults_to_none() -> None:
 
 
 # ── Runtime enforcement tests (workflow execution) ───────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('counter', [0, 1, 10, 11])
+async def test_workflow_enforces_state_field_constraints(request, counter):
+  """Workflow execution enforces state_schema field constraints."""
+
+  def write_state(ctx: Context) -> str:
+    ctx.state['counter'] = counter
+    return 'done'
+
+  wf = Workflow(
+      name='wf',
+      edges=[(START, write_state)],
+      state_schema=_ConstrainedSchema,
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=wf)
+  )
+  if counter in (0, 11):
+    with pytest.raises(StateSchemaError, match='counter'):
+      await runner.run_async(testing_utils.get_user_content('start'))
+  else:
+    events = await runner.run_async(testing_utils.get_user_content('start'))
+    assert any(isinstance(e, Event) and e.output == 'done' for e in events)
 
 
 @pytest.mark.asyncio

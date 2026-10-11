@@ -31,10 +31,10 @@ from typing import Union
 from google.genai import types
 
 from ..agents.readonly_context import ReadonlyContext
-from ..auth.auth_tool import AuthConfig
 from .base_tool import BaseTool
 
 if TYPE_CHECKING:
+  from ..auth.auth_tool import AuthConfig
   from ..models.llm_request import LlmRequest
   from .tool_configs import ToolArgsConfig
   from .tool_context import ToolContext

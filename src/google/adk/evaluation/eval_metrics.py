@@ -94,8 +94,8 @@ class PrebuiltMetrics(Enum):
   # "inference call" rather than "LLM call", matching the name ADK telemetry
   # publishes this count under. An eval invocation spans a whole turn -- every
   # sub-agent shares the turn's invocation id -- so the quantity lines up with
-  # telemetry's per-turn `adk.invoke_workflow.inference_calls` rather than its
-  # per-agent counterpart.
+  # telemetry's per-turn `adk.experimental.invoke_workflow.inference_calls`
+  # rather than its per-agent counterpart.
   INFERENCE_CALL_COUNT_V1 = "inference_call_count_v1"
 
   TOKEN_USAGE_V1 = "token_usage_v1"

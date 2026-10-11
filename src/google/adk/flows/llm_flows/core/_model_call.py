@@ -32,6 +32,7 @@ from ....features import is_feature_enabled
 from ....live.live_request_queue import LiveRequestQueue
 from ....models.llm_request import LlmRequest
 from ....models.llm_response import LlmResponse
+from ....telemetry import _instrumentation
 from ....telemetry.tracing import trace_call_llm
 from ....telemetry.tracing import tracer
 from ....utils._runner_utils import _with_caller_context
@@ -198,6 +199,9 @@ async def call_llm_async(
             llm_request,
             response,
             span,
+        )
+        _instrumentation.record_response_source(
+            span, 'before_model_callback', invocation_context
         )
         yield response
         return

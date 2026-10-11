@@ -26,7 +26,6 @@ from typing import Literal
 from typing import Optional
 from typing import Union
 
-from pydantic import ValidationError
 from typing_extensions import override
 
 from . import envs
@@ -36,6 +35,7 @@ from ...apps.app import App
 from ...tools.computer_use.computer_use_toolset import ComputerUseToolset
 from ...utils.feature_decorator import experimental
 from ...workflow import BaseNode
+from .base_agent_loader import _AgentLoadError
 from .base_agent_loader import BaseAgentLoader
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -159,6 +159,8 @@ class AgentLoader(BaseAgentLoader):
         # found
         e.msg = f"Fail to load '{agent_name}' module. " + e.msg
         raise e
+    except ValueError as e:
+      raise _AgentLoadError(f"Fail to load '{agent_name}' module. {e}") from e
     except Exception as e:
       if hasattr(e, "msg"):
         e.msg = f"Fail to load '{agent_name}' module. " + e.msg
@@ -208,6 +210,10 @@ class AgentLoader(BaseAgentLoader):
         # the module imported by {agent_name}.agent module is not found
         e.msg = f"Fail to load '{agent_name}.agent' module. " + e.msg
         raise e
+    except ValueError as e:
+      raise _AgentLoadError(
+          f"Fail to load '{agent_name}.agent' module. {e}"
+      ) from e
     except Exception as e:
       if hasattr(e, "msg"):
         e.msg = f"Fail to load '{agent_name}.agent' module. " + e.msg
@@ -235,9 +241,8 @@ class AgentLoader(BaseAgentLoader):
     except FileNotFoundError:
       logger.debug("Config file %s not found.", config_path)
       return None
-    except ValidationError as e:
-      logger.error("Config file %s is invalid YAML.", config_path)
-      raise e
+    except ValueError as e:
+      raise _AgentLoadError(f"Fail to load '{config_path}' config. {e}") from e
     except Exception as e:
       if hasattr(e, "msg"):
         e.msg = f"Fail to load '{config_path}' config. " + e.msg
@@ -442,7 +447,13 @@ class AgentLoader(BaseAgentLoader):
 
   @override
   def load_agent(self, agent_name: str) -> Union[BaseAgent, App]:
-    """Load an agent module (with caching & .env) and return its root_agent."""
+    """Load an agent module (with caching & .env) and return its root_agent.
+
+    Raises:
+      ValueError: If no agent exists under this name.
+      RuntimeError: If the agent's own module or config raises a ValueError
+        while loading. The original error is its cause.
+    """
     if agent_name in self._agent_cache:
       logger.debug("Returning cached agent for %s (async)", agent_name)
       return self._agent_cache[agent_name]

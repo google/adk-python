@@ -139,7 +139,7 @@ class ReplayManager:
     Interrupt ownership (`_fc_to_parent`) carries across calls: a user response
     indexed now may answer a function call indexed in an earlier batch.
     """
-    from ._workflow_hitl_utils import get_request_input_interrupt_ids
+    from ...events._interrupts import extract_event_interrupt_ids
 
     for event in events:
       if event.author == "user":
@@ -156,9 +156,7 @@ class ReplayManager:
       self._add_event_to_index(parent_path, event)
 
       # Track interrupts to route future user responses
-      interrupt_ids = set(event.long_running_tool_ids or [])
-      interrupt_ids.update(get_request_input_interrupt_ids(event))
-      for fid in interrupt_ids:
+      for fid in extract_event_interrupt_ids(event):
         self._fc_to_parent[fid] = parent_path
 
   def _index_user_event(

@@ -18,10 +18,12 @@ import os
 from unittest import mock
 
 import google.adk
+from google.adk.integrations.bigquery.client import BQ_USER_AGENT
 from google.adk.integrations.bigquery.client import DP_USER_AGENT
 from google.adk.integrations.bigquery.client import get_bigquery_client
 from google.adk.integrations.bigquery.client import get_dataplex_catalog_client
 from google.adk.utils._telemetry_context import _is_visual_builder
+from google.adk.utils._telemetry_context import _telemetry_surface
 from google.api_core.gapic_v1 import client_info as gapic_client_info
 import google.auth
 from google.auth.exceptions import DefaultCredentialsError
@@ -137,12 +139,7 @@ def test_bigquery_client_user_agent_default():
     # Verify that the tracking user agent was set
     client_info_arg = mock_connection.call_args[1].get("client_info")
     assert client_info_arg is not None
-    expected_user_agents = {
-        "adk-bigquery-tool",
-        f"google-adk/{google.adk.__version__}",
-    }
-    actual_user_agents = set(client_info_arg.user_agent.split())
-    assert expected_user_agents.issubset(actual_user_agents)
+    assert client_info_arg.user_agent == BQ_USER_AGENT
 
 
 def test_bigquery_client_user_agent_custom():
@@ -160,13 +157,7 @@ def test_bigquery_client_user_agent_custom():
     # Verify that the tracking user agent was set
     client_info_arg = mock_connection.call_args[1].get("client_info")
     assert client_info_arg is not None
-    expected_user_agents = {
-        "adk-bigquery-tool",
-        f"google-adk/{google.adk.__version__}",
-        "custom_user_agent",
-    }
-    actual_user_agents = set(client_info_arg.user_agent.split())
-    assert expected_user_agents.issubset(actual_user_agents)
+    assert client_info_arg.user_agent == f"{BQ_USER_AGENT} custom_user_agent"
 
 
 def test_bigquery_client_user_agent_custom_list():
@@ -184,14 +175,10 @@ def test_bigquery_client_user_agent_custom_list():
     # Verify that the tracking user agents were set
     client_info_arg = mock_connection.call_args[1].get("client_info")
     assert client_info_arg is not None
-    expected_user_agents = {
-        "adk-bigquery-tool",
-        f"google-adk/{google.adk.__version__}",
-        "custom_user_agent1",
-        "custom_user_agent2",
-    }
-    actual_user_agents = set(client_info_arg.user_agent.split())
-    assert expected_user_agents.issubset(actual_user_agents)
+    assert (
+        client_info_arg.user_agent
+        == f"{BQ_USER_AGENT} custom_user_agent1 custom_user_agent2"
+    )
 
 
 def test_bigquery_client_user_agent_visual_builder():
@@ -210,15 +197,59 @@ def test_bigquery_client_user_agent_visual_builder():
       # Verify that the tracking user agent was set
       client_info_arg = mock_connection.call_args[1].get("client_info")
       assert client_info_arg is not None
-      expected_user_agents = {
-          "adk-bigquery-tool",
-          f"google-adk/{google.adk.__version__}",
-          "google-adk-visual-builder",
-      }
-      actual_user_agents = set(client_info_arg.user_agent.split())
-      assert expected_user_agents.issubset(actual_user_agents)
+      assert (
+          client_info_arg.user_agent
+          == f"{BQ_USER_AGENT}"
+          f" google-adk-visual-builder/{google.adk.__version__}"
+      )
   finally:
     _is_visual_builder.reset(token)
+
+
+def test_bigquery_client_user_agent_telemetry_surface():
+  """Test BigQuery client user agent when telemetry surface is set."""
+  token = _telemetry_surface.set("my-surface")
+  try:
+    with mock.patch.object(
+        bigquery_client, "Connection", autospec=True
+    ) as mock_connection:
+      get_bigquery_client(
+          project="test-gcp-project",
+          credentials=mock.create_autospec(Credentials, instance=True),
+      )
+
+      client_info_arg = mock_connection.call_args[1].get("client_info")
+      assert client_info_arg is not None
+      assert (
+          client_info_arg.user_agent
+          == f"{BQ_USER_AGENT} google-adk-my-surface/{google.adk.__version__}"
+      )
+  finally:
+    _telemetry_surface.reset(token)
+
+
+def test_bigquery_client_user_agent_telemetry_surface_takes_precedence():
+  """Test _telemetry_surface takes precedence over _is_visual_builder."""
+  vb_token = _is_visual_builder.set(True)
+  surface_token = _telemetry_surface.set("my-surface")
+  try:
+    with mock.patch.object(
+        bigquery_client, "Connection", autospec=True
+    ) as mock_connection:
+      get_bigquery_client(
+          project="test-gcp-project",
+          credentials=mock.create_autospec(Credentials, instance=True),
+      )
+
+      client_info_arg = mock_connection.call_args[1].get("client_info")
+      assert client_info_arg is not None
+      assert (
+          client_info_arg.user_agent
+          == f"{BQ_USER_AGENT} google-adk-my-surface/{google.adk.__version__}"
+      )
+  finally:
+    _telemetry_surface.reset(surface_token)
+    _is_visual_builder.reset(vb_token)
 
 
 def test_bigquery_client_location_custom():
@@ -304,3 +335,66 @@ def test_dataplex_client_custom_user_agent_list_with_none(
   _, kwargs = mock_catalog_service_client.call_args
   client_info = kwargs["client_info"]
   assert client_info.user_agent == expected_ua
+
+
+@mock.patch.object(dataplex_v1, "CatalogServiceClient", autospec=True)
+def test_dataplex_client_user_agent_visual_builder(mock_catalog_service_client):
+  """Test Dataplex client user agent when visual builder flag is set."""
+  mock_creds = mock.create_autospec(Credentials, instance=True)
+  token = _is_visual_builder.set(True)
+  try:
+    get_dataplex_catalog_client(credentials=mock_creds)
+
+    mock_catalog_service_client.assert_called_once()
+    _, kwargs = mock_catalog_service_client.call_args
+    client_info = kwargs["client_info"]
+    assert (
+        client_info.user_agent
+        == f"{DP_USER_AGENT} google-adk-visual-builder/{google.adk.__version__}"
+    )
+  finally:
+    _is_visual_builder.reset(token)
+
+
+@mock.patch.object(dataplex_v1, "CatalogServiceClient", autospec=True)
+def test_dataplex_client_user_agent_telemetry_surface(
+    mock_catalog_service_client,
+):
+  """Test Dataplex client user agent when telemetry surface is set."""
+  mock_creds = mock.create_autospec(Credentials, instance=True)
+  token = _telemetry_surface.set("my-surface")
+  try:
+    get_dataplex_catalog_client(credentials=mock_creds)
+
+    mock_catalog_service_client.assert_called_once()
+    _, kwargs = mock_catalog_service_client.call_args
+    client_info = kwargs["client_info"]
+    assert (
+        client_info.user_agent
+        == f"{DP_USER_AGENT} google-adk-my-surface/{google.adk.__version__}"
+    )
+  finally:
+    _telemetry_surface.reset(token)
+
+
+@mock.patch.object(dataplex_v1, "CatalogServiceClient", autospec=True)
+def test_dataplex_client_user_agent_telemetry_surface_takes_precedence(
+    mock_catalog_service_client,
+):
+  """Test _telemetry_surface takes precedence over _is_visual_builder."""
+  mock_creds = mock.create_autospec(Credentials, instance=True)
+  vb_token = _is_visual_builder.set(True)
+  surface_token = _telemetry_surface.set("my-surface")
+  try:
+    get_dataplex_catalog_client(credentials=mock_creds)
+
+    mock_catalog_service_client.assert_called_once()
+    _, kwargs = mock_catalog_service_client.call_args
+    client_info = kwargs["client_info"]
+    assert (
+        client_info.user_agent
+        == f"{DP_USER_AGENT} google-adk-my-surface/{google.adk.__version__}"
+    )
+  finally:
+    _telemetry_surface.reset(surface_token)
+    _is_visual_builder.reset(vb_token)

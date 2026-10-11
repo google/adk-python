@@ -201,7 +201,7 @@ def to_mcp_server(
 
   Example::
 
-      agent = LlmAgent(name="assistant", model="gemini-2.0-flash", ...)
+      agent = LlmAgent(name="assistant", model="gemini-3.5-flash", ...)
       server = to_mcp_server(agent)
       server.run(transport="stdio")
   """

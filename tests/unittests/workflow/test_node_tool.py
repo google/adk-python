@@ -265,6 +265,18 @@ async def test_workflow_as_tool_hitl_resume_non_resumable_app(
 
   # Verify the tool workflow finished executing, returned the output,
   # and the parent agent LLM produced its final response.
+  tool_responses = [
+      part.function_response.response
+      for event in events2
+      if event.content and event.content.parts
+      for part in event.content.parts
+      if (
+          part.function_response
+          and part.function_response.name == 'collect_user_info_tool'
+      )
+  ]
+  assert tool_responses == [{'result': 'User Alice is 25 years old.'}]
+
   text_responses = [
       event.content.parts[0].text
       for event in events2
@@ -1925,3 +1937,237 @@ async def test_function_node_tool_skip_summarization_returns_output_directly(
   text_parts = [p.text for p in last_event.content.parts if p.text]
   assert text_parts == ['Report for Apollo: Ready']
   assert len(mock_model.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_single_turn_workflow_agent_keeps_tool_response_after_tool_messages(
+    request: pytest.FixtureRequest,
+):
+  """A single_turn agent in a Workflow keeps its turn when a NodeTool publishes messages."""
+
+  @node
+  async def analyze(query: str):
+    yield Event(message=f'Starting {query}...')
+    yield Event(message=f'Finished {query}.')
+    yield {'rows': 42}
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name='analyze', args={'query': 'sales'}
+          ),
+          types.Part.from_text(text='All done.'),
+      ]
+  )
+  worker = LlmAgent(
+      name='worker', model=mock_model, tools=[NodeTool(node=analyze)]
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=Workflow(name='wf', edges=[(START, worker)]),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async(testing_utils.get_user_content('run sales'))
+
+  assert len(mock_model.requests) == 2
+  second_req = mock_model.requests[1].contents
+  parts = [p for c in second_req for p in c.parts or []]
+  assert any(p.text and 'run sales' in p.text for p in parts)
+  assert any(
+      p.function_call and p.function_call.name == 'analyze' for p in parts
+  )
+  assert any(
+      p.function_response and p.function_response.response == {'rows': 42}
+      for p in parts
+  )
+  assert '] said:' not in str(second_req)
+  assert 'Finished sales' not in str(second_req)
+
+
+@pytest.mark.asyncio
+async def test_root_agent_excludes_fan_out_messages_from_node_tool_workflow(
+    request: pytest.FixtureRequest,
+):
+  """Messages from fan-out branches inside a NodeTool workflow stay out of the caller's next turn."""
+
+  @node
+  async def branch_a():
+    yield Event(message='Branch A progress')
+    yield {'a': 1}
+
+  @node
+  async def branch_b():
+    yield Event(message='Branch B progress')
+    yield {'b': 2}
+
+  def combine(node_input: dict[str, Any]):
+    yield Event(
+        output=node_input['branch_a']['a'] + node_input['branch_b']['b']
+    )
+
+  join = JoinNode(name='join')
+  sub_wf = Workflow(
+      name='sub_wf',
+      edges=[
+          (START, branch_a),
+          (START, branch_b),
+          (branch_a, join),
+          (branch_b, join),
+          (join, combine),
+      ],
+  )
+  sub_wf.input_schema = DummyRequest
+  fan_out_tool = NodeTool(
+      node=sub_wf, name='fan_out_tool', description='Runs two branches.'
+  )
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name='fan_out_tool', args={}),
+          types.Part.from_text(text='Done.'),
+          types.Part.from_text(text='Still done.'),
+      ]
+  )
+  parent = LlmAgent(name='parent', model=mock_model, tools=[fan_out_tool])
+  app = App(name=request.function.__name__, root_agent=parent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content('run it'))
+
+  nested_leaves = {
+      e.branch.split('.')[-1] for e in events if e.branch and '.' in e.branch
+  }
+  assert {'branch_a@1', 'branch_b@1'} <= nested_leaves
+
+  await runner.run_async(testing_utils.get_user_content('and now?'))
+
+  assert len(mock_model.requests) == 3
+  next_turn_req = str(mock_model.requests[2].contents)
+  assert 'Branch A progress' not in next_turn_req
+  assert 'Branch B progress' not in next_turn_req
+  parts = [p for c in mock_model.requests[2].contents for p in c.parts or []]
+  assert any(
+      p.function_response and p.function_response.response == {'result': 3}
+      for p in parts
+  )
+
+
+@pytest.mark.asyncio
+async def test_agent_inside_node_tool_keeps_its_own_tool_history(
+    request: pytest.FixtureRequest,
+):
+  """An agent running on a NodeTool's branch still sees its own function calls."""
+
+  def add(a: int, b: int) -> int:
+    """Adds two numbers."""
+    return a + b
+
+  inner_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name='add', args={'a': 1, 'b': 2}),
+          types.Part.from_text(text='The sum is 3.'),
+      ]
+  )
+  inner = LlmAgent(name='inner', model=inner_model, tools=[add])
+  sub_wf = Workflow(name='sub_wf', edges=[(START, inner)])
+  sub_wf.input_schema = DummyRequest
+  sub_wf_tool = NodeTool(
+      node=sub_wf, name='sub_wf_tool', description='Adds numbers.'
+  )
+  parent = LlmAgent(
+      name='parent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='sub_wf_tool', args={'request': 'add 1 and 2'}
+              ),
+              types.Part.from_text(text='Done.'),
+          ]
+      ),
+      tools=[sub_wf_tool],
+  )
+  app = App(name=request.function.__name__, root_agent=parent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async(testing_utils.get_user_content('add 1 and 2'))
+
+  assert len(inner_model.requests) == 2
+  first_content = inner_model.requests[0].contents[0]
+  assert first_content.role == 'user'
+  assert 'add 1 and 2' in str(first_content)
+  assert '] said:' not in str(first_content)
+  second_parts = [
+      p for c in inner_model.requests[1].contents for p in c.parts or []
+  ]
+  assert any(
+      p.function_call and p.function_call.name == 'add' for p in second_parts
+  )
+  assert any(
+      p.function_response and p.function_response.response == {'result': 3}
+      for p in second_parts
+  )
+
+
+@pytest.mark.asyncio
+async def test_node_tool_repeated_calls_do_not_share_resume_input(
+    request: pytest.FixtureRequest,
+):
+  """A second call of the same NodeTool pauses for its own input instead of reusing the first call's resume input."""
+
+  async def ask_and_analyze(ctx: Context, query: str):
+    clarification = ctx.resume_inputs.get('clarify_region')
+    if clarification is None:
+      yield RequestInput(
+          interrupt_id='clarify_region', message=f'Which region for {query}?'
+      )
+      return
+    yield {'query': query, 'region': clarification['text']}
+
+  tool = NodeTool(FunctionNode(func=ask_and_analyze, name='ask_and_analyze'))
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='ask_and_analyze', args={'query': 'sales'}
+              ),
+              types.Part.from_function_call(
+                  name='ask_and_analyze', args={'query': 'marketing'}
+              ),
+              types.Part.from_text(text='Both analyzed.'),
+          ]
+      ),
+      tools=[tool],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('start'))
+  req1 = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(
+              get_request_input_interrupt_ids(req1)[0], {'text': 'APAC'}
+          )
+      ),
+      invocation_id=req1.invocation_id,
+  )
+  req2 = workflow_testing_utils.find_function_call_event(
+      events2, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+
+  assert req2 is not None
+  assert req1.node_info.path != req2.node_info.path
+  responses2 = [
+      p.function_response.response
+      for e in events2
+      for p in (e.content.parts if e.content and e.content.parts else [])
+      if p.function_response and p.function_response.name == 'ask_and_analyze'
+  ]
+  assert responses2 == [{'query': 'sales', 'region': 'APAC'}]

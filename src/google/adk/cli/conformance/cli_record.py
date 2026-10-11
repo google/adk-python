@@ -149,7 +149,7 @@ async def _create_conformance_test_files(
 async def run_conformance_record(
     paths: list[Path], streaming_mode: StreamingMode
 ) -> None:
-  """Generate conformance tests from TestCaseInput files.
+  """Generate conformance tests from spec.yaml files (TestSpec).
 
   Args:
     paths: list of directories containing test cases input files (spec.yaml).

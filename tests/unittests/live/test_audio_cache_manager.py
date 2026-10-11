@@ -244,8 +244,8 @@ class TestAudioCacheManager:
     mock_artifact_service.save_artifact.assert_not_called()
 
   @pytest.mark.asyncio
-  async def test_flush_without_artifact_service(self):
-    """Test flushing when no artifact service is available."""
+  async def test_flush_without_artifact_service_still_clears_cache(self):
+    """Audio that cannot be saved is dropped rather than accumulated."""
     invocation_context = await testing_utils.create_invocation_context(
         testing_utils.create_test_agent()
     )
@@ -255,13 +255,81 @@ class TestAudioCacheManager:
 
     # Cache some audio
     input_blob = types.Blob(data=b'input_data', mime_type='audio/pcm')
+    output_blob = types.Blob(data=b'output_data', mime_type='audio/wav')
     self.manager.cache_audio(invocation_context, input_blob, 'input')
+    self.manager.cache_audio(invocation_context, output_blob, 'output')
 
-    # Flush should not error but should not clear cache either
+    # Flush should not error.
+    events = await self.manager.flush_caches(invocation_context)
+
+    # There is nowhere to write the audio, so no event is produced, but both
+    # caches are emptied. Retaining them would grow for the whole session.
+    assert not events
+    assert not invocation_context.input_realtime_cache
+    assert not invocation_context.output_realtime_cache
+
+  @pytest.mark.asyncio
+  async def test_flush_after_failure_does_not_repeat_earlier_audio(self):
+    """A failed flush must not leave its audio in the next artifact."""
+    invocation_context = await testing_utils.create_invocation_context(
+        testing_utils.create_test_agent()
+    )
+
+    mock_artifact_service = AsyncMock()
+    mock_artifact_service.save_artifact.side_effect = [
+        Exception('Artifact service error'),
+        123,
+    ]
+    invocation_context.artifact_service = mock_artifact_service
+
+    self.manager.cache_audio(
+        invocation_context,
+        types.Blob(data=b'first_turn', mime_type='audio/pcm'),
+        'input',
+    )
     await self.manager.flush_caches(invocation_context)
 
-    # Cache should remain (no actual flushing happened)
-    assert len(invocation_context.input_realtime_cache) == 1
+    self.manager.cache_audio(
+        invocation_context,
+        types.Blob(data=b'second_turn', mime_type='audio/pcm'),
+        'input',
+    )
+    await self.manager.flush_caches(invocation_context)
+
+    saved = mock_artifact_service.save_artifact.call_args.kwargs['artifact']
+    assert saved.inline_data.data == b'second_turn'
+
+  @pytest.mark.asyncio
+  async def test_flush_keeps_audio_cached_while_saving(self):
+    """Audio arriving during the save belongs to the next flush."""
+    invocation_context = await testing_utils.create_invocation_context(
+        testing_utils.create_test_agent()
+    )
+
+    def cache_while_saving(**kwargs):
+      self.manager.cache_audio(
+          invocation_context,
+          types.Blob(data=b'mid_flush', mime_type='audio/pcm'),
+          'input',
+      )
+      return 123
+
+    mock_artifact_service = AsyncMock()
+    mock_artifact_service.save_artifact.side_effect = cache_while_saving
+    invocation_context.artifact_service = mock_artifact_service
+
+    self.manager.cache_audio(
+        invocation_context,
+        types.Blob(data=b'first_turn', mime_type='audio/pcm'),
+        'input',
+    )
+    await self.manager.flush_caches(invocation_context)
+
+    saved = mock_artifact_service.save_artifact.call_args.kwargs['artifact']
+    assert saved.inline_data.data == b'first_turn'
+    assert [
+        entry.data.data for entry in invocation_context.input_realtime_cache
+    ] == [b'mid_flush']
 
   @pytest.mark.asyncio
   async def test_flush_artifact_creation(self):
@@ -362,11 +430,34 @@ class TestAudioCacheManager:
     audio_blob = types.Blob(data=b'test_data', mime_type='audio/pcm')
     self.manager.cache_audio(invocation_context, audio_blob, 'input')
 
-    # Flush should not raise exception but should log error and retain cache
+    # Flush should log the error rather than raise.
+    events = await self.manager.flush_caches(invocation_context)
+
+    # The save failed, so no event is produced, but the cache is still
+    # emptied. A retry would fail the same way and the audio would pile up.
+    assert not events
+    assert not invocation_context.input_realtime_cache
+
+  @pytest.mark.asyncio
+  async def test_filename_drops_mime_type_parameters(self):
+    """MIME parameters like `;rate=24000` stay out of the file extension."""
+    invocation_context = await testing_utils.create_invocation_context(
+        testing_utils.create_test_agent()
+    )
+    mock_artifact_service = AsyncMock()
+    mock_artifact_service.save_artifact.return_value = 0
+    invocation_context.artifact_service = mock_artifact_service
+    audio_blob = types.Blob(data=b'audio', mime_type='audio/pcm;rate=24000')
+    self.manager.cache_audio(invocation_context, audio_blob, 'output')
+
     await self.manager.flush_caches(invocation_context)
 
-    # Cache should remain since flush failed
-    assert len(invocation_context.input_realtime_cache) == 1
+    call_args = mock_artifact_service.save_artifact.call_args
+    assert call_args.kwargs['filename'].endswith('.pcm')
+    assert (
+        call_args.kwargs['artifact'].inline_data.mime_type
+        == 'audio/pcm;rate=24000'
+    )
 
   @pytest.mark.asyncio
   async def test_filename_uses_first_chunk_timestamp(self):

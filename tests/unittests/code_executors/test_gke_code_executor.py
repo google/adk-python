@@ -52,6 +52,11 @@ def mock_k8s_clients():
   ) as mock_client_class:
     mock_batch_v1 = MagicMock(spec=client.BatchV1Api)
     mock_core_v1 = MagicMock(spec=client.CoreV1Api)
+    mock_batch_v1.create_namespaced_job.return_value = client.V1Job(
+        api_version="batch/v1",
+        kind="Job",
+        metadata=client.V1ObjectMeta(name="test-job", uid="test-job-uid"),
+    )
     mock_client_class.BatchV1Api.return_value = mock_batch_v1
     mock_client_class.CoreV1Api.return_value = mock_core_v1
     yield {
@@ -196,6 +201,33 @@ class TestGkeCodeExecutor:
     ].create_namespaced_config_map.assert_called_once()
     mock_k8s_clients["batch_v1"].create_namespaced_job.assert_called_once()
     mock_k8s_clients["core_v1"].patch_namespaced_config_map.assert_called_once()
+    body = mock_k8s_clients[
+        "core_v1"
+    ].patch_namespaced_config_map.call_args.kwargs["body"]
+    assert body == {
+        "metadata": {
+            "ownerReferences": [
+                client.V1OwnerReference(
+                    api_version="batch/v1",
+                    kind="Job",
+                    name="test-job",
+                    uid="test-job-uid",
+                    controller=True,
+                )
+            ]
+        }
+    }
+    assert client.ApiClient().sanitize_for_serialization(body) == {
+        "metadata": {
+            "ownerReferences": [{
+                "apiVersion": "batch/v1",
+                "controller": True,
+                "kind": "Job",
+                "name": "test-job",
+                "uid": "test-job-uid",
+            }]
+        }
+    }
     mock_k8s_clients["core_v1"].read_namespaced_pod_log.assert_called_once()
 
   @patch("google.adk.code_executors.gke_code_executor.Watch")

@@ -19,7 +19,6 @@ from typing import Sequence
 from google.adk.events.event import Event
 from google.adk.tools.model_consult._context import build_advisor_contents
 from google.adk.tools.model_consult._context import ModelConsultContextConfig
-from google.adk.tools.model_consult._context import render_transcript
 from google.genai import types
 from pydantic import ValidationError
 import pytest
@@ -79,17 +78,27 @@ def _chars(contents: Sequence[types.Content]) -> int:
   return sum(len(text) for text in _texts(contents))
 
 
-def test_session_is_replayed_as_multi_turn_contents():
-  """Events reach the advisor in order, with their roles preserved."""
+def test_session_is_replayed_in_a_single_user_content():
+  """Events reach the advisor in order inside a single user content."""
   events = [
       _user_event('Investigate the paging alert.'),
       _agent_event([types.Part(text='Checking logs.')]),
+      Event(
+          author='',
+          content=types.Content(
+              role='model', parts=[types.Part(text='Unnamed agent note.')]
+          ),
+      ),
   ]
 
   contents = build_advisor_contents(events)
 
-  assert [content.role for content in contents] == ['user', 'model']
-  assert _texts(contents) == ['Investigate the paging alert.', 'Checking logs.']
+  assert [content.role for content in contents] == ['user']
+  assert _texts(contents) == [
+      '[user] Investigate the paging alert.',
+      '[agent:root_agent] Checking logs.',
+      '[agent] Unnamed agent note.',
+  ]
 
 
 def test_executor_thoughts_are_withheld_by_default():
@@ -103,7 +112,7 @@ def test_executor_thoughts_are_withheld_by_default():
 
   contents = build_advisor_contents(events)
 
-  assert _texts(contents) == ['visible answer']
+  assert _texts(contents) == ['[agent:root_agent] visible answer']
 
 
 def test_included_thoughts_are_labelled_as_thoughts():
@@ -119,7 +128,10 @@ def test_included_thoughts_are_labelled_as_thoughts():
       events, config=ModelConsultContextConfig(include_thoughts=True)
   )
 
-  assert _texts(contents) == ['[thought] internal musing', 'visible answer']
+  assert _texts(contents) == [
+      '[thought] internal musing',
+      '[agent:root_agent] visible answer',
+  ]
 
 
 def test_tool_calls_and_results_are_flattened_into_text():
@@ -141,9 +153,7 @@ def test_tool_calls_and_results_are_flattened_into_text():
 
   contents = build_advisor_contents(events)
 
-  # The tool result is authored by the agent, so it lands in the same model
-  # turn as the call that produced it.
-  assert [content.role for content in contents] == ['model']
+  assert [content.role for content in contents] == ['user']
   assert _texts(contents) == [
       '[tool_call] query_logs({"service": "checkout"})',
       '[tool_result] query_logs -> {"errors": 42}',
@@ -191,11 +201,8 @@ def test_in_flight_consult_result_is_left_out_of_the_handover():
   assert not contents
 
 
-def test_consecutive_same_role_turns_are_merged():
-  """Adjacent same-role turns collapse into one content.
-
-  Advisor models reached through LiteLlm require strict role alternation.
-  """
+def test_multiple_events_are_combined_into_one_user_content():
+  """All kept events collapse into a single role='user' content."""
   events = [
       _agent_event([types.Part(text='one')]),
       _agent_event([types.Part(text='two')]),
@@ -204,7 +211,11 @@ def test_consecutive_same_role_turns_are_merged():
   contents = build_advisor_contents(events)
 
   assert len(contents) == 1
-  assert _texts(contents) == ['one', 'two']
+  assert contents[0].role == 'user'
+  assert _texts(contents) == [
+      '[agent:root_agent] one',
+      '[agent:root_agent] two',
+  ]
 
 
 def test_partial_streaming_events_are_ignored():
@@ -214,7 +225,7 @@ def test_partial_streaming_events_are_ignored():
 
   contents = build_advisor_contents([streaming, _user_event('done')])
 
-  assert _texts(contents) == ['done']
+  assert _texts(contents) == ['[user] done']
 
 
 def test_max_events_keeps_only_the_most_recent_turns():
@@ -225,7 +236,11 @@ def test_max_events_keeps_only_the_most_recent_turns():
       events, config=ModelConsultContextConfig(max_events=3)
   )
 
-  assert _texts(contents) == ['turn 7', 'turn 8', 'turn 9']
+  assert _texts(contents) == [
+      '[user] turn 7',
+      '[user] turn 8',
+      '[user] turn 9',
+  ]
 
 
 def test_character_budget_drops_the_middle_and_marks_the_gap():
@@ -241,8 +256,8 @@ def test_character_budget_drops_the_middle_and_marks_the_gap():
 
   texts = _texts(contents)
   assert any('omitted to fit the context budget' in text for text in texts)
-  assert texts[0].startswith('user 0')
-  assert texts[-1].startswith('model 19')
+  assert texts[0].startswith('[user] user 0')
+  assert texts[-1].startswith('[agent:root_agent] model 19')
   assert _chars(contents) <= 4000
 
 
@@ -265,7 +280,7 @@ def test_budget_survives_one_turn_larger_than_the_whole_budget():
 def test_budget_holds_when_the_newest_turn_is_media(max_chars: int):
   """Media and its omission placeholder both count against the budget."""
   events = [
-      _user_event('small task'),
+      _user_event('go'),
       _agent_event([
           types.Part(
               inline_data=types.Blob(mime_type='image/png', data=b'x' * 40_000)
@@ -317,11 +332,11 @@ def test_rewound_invocations_are_not_handed_over():
 
   contents = build_advisor_contents([discarded, rewind, live])
 
-  assert _texts(contents) == ['real task']
+  assert _texts(contents) == ['[user] real task']
 
 
-def test_trimming_keeps_the_roles_alternating():
-  """The omission marker must not re-introduce adjacent same-role turns."""
+def test_trimming_emits_a_single_user_content():
+  """Trimming and omission markers stay inside one role='user' content."""
   events = []
   for i in range(20):
     events.append(_user_event(f'user {i} ' + 'x' * 500))
@@ -331,8 +346,7 @@ def test_trimming_keeps_the_roles_alternating():
       events, config=ModelConsultContextConfig(max_chars=4000)
   )
 
-  roles = [content.role for content in contents]
-  assert all(before != after for before, after in zip(roles, roles[1:]))
+  assert [content.role for content in contents] == ['user']
 
 
 def test_oversized_tool_results_are_truncated_per_part():
@@ -362,7 +376,7 @@ def test_plain_text_gets_more_room_than_a_tool_result():
   )
 
   texts = _texts(contents)
-  assert texts[0] == prose
+  assert texts[0] == f'[agent:root_agent] {prose}'
   assert 'characters truncated' in texts[1]
 
 
@@ -433,41 +447,36 @@ def test_session_can_be_withheld_entirely():
   assert not contents
 
 
-def test_transcript_rendering_labels_each_role():
-  """Transcript mode renders contents as a labelled plain-text block."""
-  events = [_user_event('question'), _agent_event([types.Part(text='answer')])]
-
-  transcript = render_transcript(build_advisor_contents(events))
-
-  assert transcript == 'USER: question\n\nAGENT: answer'
-
-
-def test_transcript_rendering_names_media_it_cannot_write_out():
-  """Media survives as a marker so the transcript is not silently lossy."""
-  media = types.Part(
-      inline_data=types.Blob(mime_type='image/png', data=b'\x89PNG fake')
-  )
-
-  transcript = render_transcript(
-      build_advisor_contents([_agent_event([media])])
-  )
-
-  assert transcript == 'AGENT: [media: image/png]'
-
-
-def test_transcript_rendering_names_file_parts():
-  """A file part carries no text and no bytes, so it is the easiest to lose."""
+def test_file_parts_reach_the_advisor_by_default():
+  """File parts are passed through untouched when include_media is True."""
   file_part = types.Part(
       file_data=types.FileData(
           file_uri='gs://bucket/spec.pdf', mime_type='application/pdf'
       )
   )
 
-  transcript = render_transcript(
-      build_advisor_contents([_agent_event([file_part])])
+  contents = build_advisor_contents([_agent_event([file_part])])
+
+  assert len(contents) == 1
+  assert contents[0].role == 'user'
+  assert contents[0].parts[0].file_data is not None
+  assert contents[0].parts[0].file_data.file_uri == 'gs://bucket/spec.pdf'
+
+
+def test_file_parts_are_described_in_text_for_text_only_advisors():
+  """With include_media off, file parts become a text placeholder."""
+  file_part = types.Part(
+      file_data=types.FileData(
+          file_uri='gs://bucket/spec.pdf', mime_type='application/pdf'
+      )
   )
 
-  assert transcript == 'AGENT: [file: gs://bucket/spec.pdf]'
+  contents = build_advisor_contents(
+      [_agent_event([file_part])],
+      config=ModelConsultContextConfig(include_media=False),
+  )
+
+  assert _texts(contents) == ['[file omitted: gs://bucket/spec.pdf]']
 
 
 def test_config_rejects_unknown_fields():

@@ -306,6 +306,121 @@ async def test_save_load_delete(service_type, artifact_service_factory):
   )
 
 
+@pytest.mark.parametrize("filename", ["report.txt", "user:report.txt"])
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(
+    "invalid_artifact, error_message",
+    [
+        (types.Part(), "Not supported artifact type"),
+        (
+            types.Part.from_uri(
+                file_uri="artifact://invalid", mime_type="text/plain"
+            ),
+            "Invalid artifact reference URI",
+        ),
+        (
+            types.Part.from_uri(
+                file_uri=(
+                    "artifact://apps/other/users/user0/artifacts/"
+                    "target/versions/0"
+                ),
+                mime_type="text/plain",
+            ),
+            "same app and user scope",
+        ),
+    ],
+)
+async def test_in_memory_rejected_save_preserves_artifact_catalog(
+    filename: str,
+    existing: bool,
+    invalid_artifact: types.Part,
+    error_message: str,
+) -> None:
+  """Rejected saves leave filenames and versions unchanged, allowing a retry.
+
+  Setup: Start with either no artifact or one valid version in each scope.
+  Act: Reject invalid content or a reference, then retry with valid content.
+  Assert: The rejected save preserves the catalog and existing versions;
+    the retry gets the next version and is loadable.
+  """
+  artifact_service = InMemoryArtifactService()
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  previous = types.Part.from_text(text="previous")
+  if existing:
+    assert (
+        await artifact_service.save_artifact(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=filename,
+            artifact=previous,
+        )
+        == 0
+    )
+
+  with pytest.raises(InputValidationError, match=error_message):
+    await artifact_service.save_artifact(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=filename,
+        artifact=invalid_artifact,
+    )
+
+  assert await artifact_service.list_artifact_keys(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  ) == ([filename] if existing else [])
+  assert await artifact_service.list_versions(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  ) == ([0] if existing else [])
+  assert await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  ) == (previous if existing else None)
+
+  replacement = types.Part.from_text(text="replacement")
+  assert await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      artifact=replacement,
+  ) == (1 if existing else 0)
+  assert (
+      await artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=filename,
+      )
+      == replacement
+  )
+  assert await artifact_service.list_versions(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  ) == ([0, 1] if existing else [0])
+  if existing:
+    assert (
+        await artifact_service.load_artifact(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=filename,
+            version=0,
+        )
+        == previous
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "service_type",
@@ -1079,6 +1194,83 @@ async def test_get_artifact_version_out_of_index(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_load_and_get_artifact_version_reject_negative_version(
+    service_type, artifact_service_factory
+):
+  """Negative version numbers return None instead of indexing backward."""
+  artifact_service = artifact_service_factory(service_type)
+  scope = {
+      "app_name": "app0",
+      "user_id": "user0",
+      "session_id": "123",
+      "filename": "filename",
+  }
+  await artifact_service.save_artifact(
+      **scope, artifact=types.Part.from_text(text="v0")
+  )
+  await artifact_service.save_artifact(
+      **scope, artifact=types.Part.from_text(text="v1")
+  )
+
+  assert await artifact_service.load_artifact(**scope, version=-1) is None
+  assert (
+      await artifact_service.get_artifact_version(**scope, version=-1) is None
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_artifact_service_isolates_stored_data_from_caller_mutation(
+    service_type, artifact_service_factory
+):
+  """Mutating passed or returned Parts and metadata does not corrupt storage."""
+  artifact_service = artifact_service_factory(service_type)
+  scope = {
+      "app_name": "app0",
+      "user_id": "user0",
+      "session_id": "123",
+      "filename": "img.png",
+  }
+  part = types.Part.from_bytes(data=b"original", mime_type="image/png")
+  metadata = {"source": "upload"}
+
+  await artifact_service.save_artifact(
+      **scope, artifact=part, custom_metadata=metadata
+  )
+  part.inline_data = None
+  metadata["source"] = "tampered"
+
+  loaded = await artifact_service.load_artifact(**scope)
+  assert loaded is not None and loaded.inline_data is not None
+  assert loaded.inline_data.data == b"original"
+
+  # Mutating the loaded Part must not erase or alter the persisted version.
+  loaded.inline_data = None
+  reloaded = await artifact_service.load_artifact(**scope)
+  assert reloaded is not None and reloaded.inline_data is not None
+  assert reloaded.inline_data.data == b"original"
+
+  version_info = await artifact_service.get_artifact_version(**scope)
+  assert version_info is not None
+  assert version_info.custom_metadata["source"] == "upload"
+
+
+@pytest.mark.asyncio
 async def test_gcs_save_and_load_empty_text_artifact(
     artifact_service_factory,
 ):
@@ -1343,6 +1535,137 @@ async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
   canonical_path = Path(url2pathname(parsed_canonical.path))
   assert canonical_path.name == "report.txt"
   assert canonical_path.read_bytes() == b"binary-content"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_artifact_version_metadata_holds_only_caller_keys(
+    service_type, artifact_service_factory
+):
+  """A version reports the metadata the caller saved and nothing else.
+
+  A text artifact makes GCS write its own adkIsText marker next to the
+  caller's keys, so it must not come back as custom_metadata.
+  """
+  artifact_service = artifact_service_factory(service_type)
+  custom_metadata = {"origin": "unit-test"}
+  await artifact_service.save_artifact(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="note.txt",
+      artifact=types.Part(text="hello"),
+      custom_metadata=custom_metadata,
+  )
+
+  fetched = await artifact_service.get_artifact_version(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="note.txt",
+  )
+  assert fetched is not None
+  assert fetched.custom_metadata == custom_metadata
+
+  versions = await artifact_service.list_artifact_versions(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="note.txt",
+  )
+  assert [v.custom_metadata for v in versions] == [custom_metadata]
+
+
+@pytest.mark.asyncio
+async def test_gcs_artifact_version_suppresses_legacy_file_uri_metadata(
+    artifact_service_factory,
+):
+  """A version suppresses the legacy file_uri key from custom_metadata."""
+  service = artifact_service_factory(ArtifactServiceType.GCS)
+  custom_metadata = {"origin": "unit-test"}
+  await service.save_artifact(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="note.txt",
+      artifact=types.Part(text="hello"),
+      custom_metadata=custom_metadata,
+  )
+  blob_name = service._get_blob_name(
+      "myapp", "user123", "note.txt", 0, "sess789"
+  )
+  blob = service.bucket.get_blob(blob_name)
+  assert blob is not None
+  blob.metadata["file_uri"] = "gs://legacy-bucket/note.txt"
+
+  fetched = await service.get_artifact_version(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="note.txt",
+  )
+  assert fetched is not None
+  assert fetched.custom_metadata == custom_metadata
+
+  versions = await service.list_artifact_versions(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="note.txt",
+  )
+  assert [v.custom_metadata for v in versions] == [custom_metadata]
+
+
+@pytest.mark.asyncio
+async def test_gcs_save_artifact_ignores_internal_metadata_keys(
+    artifact_service_factory,
+):
+  """Saving with internal bookkeeping keys in custom_metadata does not corrupt loads."""
+  service = artifact_service_factory(ArtifactServiceType.GCS)
+  part = types.Part.from_bytes(
+      data=b"REAL BYTES", mime_type="application/octet-stream"
+  )
+  custom_metadata = {
+      "file_uri": "gs://attacker/other.bin",
+      "adkIsText": "true",
+      "origin": "unit-test",
+  }
+  await service.save_artifact(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="data.bin",
+      artifact=part,
+      custom_metadata=custom_metadata,
+  )
+
+  loaded = await service.load_artifact(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="data.bin",
+  )
+  assert loaded is not None
+  assert loaded.inline_data is not None
+  assert loaded.inline_data.data == b"REAL BYTES"
+  assert loaded.text is None
+  assert loaded.file_data is None
+
+  fetched = await service.get_artifact_version(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="data.bin",
+  )
+  assert fetched is not None
+  assert fetched.custom_metadata == {"origin": "unit-test"}
 
 
 @pytest.mark.asyncio

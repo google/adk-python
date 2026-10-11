@@ -20,7 +20,7 @@ every dependency extra, pre-commit hooks, and a green unit-test run.
 
 ## Prerequisites
 
-1. **Python.** ADK supports 3.10 through 3.14 (`requires-python = ">=3.10"` in
+1. **Python.** ADK supports 3.11 through 3.14 (`requires-python = ">=3.11"` in
    `pyproject.toml`). These steps use 3.11, the version the repo's own tooling
    defaults to.
 

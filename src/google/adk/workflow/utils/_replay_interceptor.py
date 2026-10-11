@@ -66,7 +66,7 @@ def check_interception(
   # Case 1: Same-turn completed or waiting interception (dynamic nodes only).
   # If a node already successfully executed or is currently blocked in the
   # current turn, bypass execution and return its current turn results.
-  if current_run:
+  if current_run and not current_run.is_static:
     if current_run.state.status == NodeStatus.COMPLETED:
       return InterceptionResult(
           should_run=False,
@@ -90,6 +90,7 @@ def check_interception(
     )
 
   unresolved = recovered.interrupt_ids - recovered.resolved_ids
+  direct_unresolved = recovered.direct_interrupt_ids - recovered.resolved_ids
 
   should_run = False
   output = None
@@ -99,9 +100,15 @@ def check_interception(
 
   if unresolved:
     # Case 2: Cross-turn unresolved interrupts remain.
-    # Rerun natively with resolved inputs if the node supports rerun and some
-    # progress was made; otherwise remain waiting and bubble unresolved interrupts.
-    if node.rerun_on_resume and recovered.resolved_ids:
+    # A node with unresolved direct interrupts of its own must wait until all of
+    # them are answered before rerunning. A parent node whose unresolved
+    # interrupts belong only to descendant dynamic nodes reruns when progress was
+    # made so the unblocked child can advance.
+    if (
+        not direct_unresolved
+        and node.rerun_on_resume
+        and recovered.resolved_ids
+    ):
       should_run = True
       resume_inputs = recovered.resolved_responses
     else:
@@ -127,28 +134,41 @@ def check_interception(
   elif recovered.interrupt_ids:
     # Case 5: Cross-turn all prior interrupts are resolved, but no output yet.
     # Extract responses directly if the node does not support rerun; otherwise
-    # rerun natively with resolved responses to produce output.
+    # rerun natively with resolved responses to produce output, unless the node
+    # already reran with them and finished without output.
     if not node.rerun_on_resume:
       child_resume_inputs = recovered.resolved_responses
       if len(child_resume_inputs) == 1:
         output = list(child_resume_inputs.values())[0]
       else:
         output = dict(child_resume_inputs)
+    elif recovered.finished_after_resume and not node.wait_for_output:
+      # The node already reran after its interrupts were resolved and finished
+      # with None output. Fast-forward it so its side effects do not run again.
+      should_run = False
     else:
       should_run = True
       resume_inputs = recovered.resolved_responses
 
   else:
     # Case 6: Cross-turn no events, or events contain no output, route, or interrupts.
-    # Rerun wait_for_output nodes and rerun_on_resume nodes with no prior output
-    # so they can guide nested children or resume execution; otherwise fall through.
-    if node.wait_for_output or node.rerun_on_resume:
+    if node.wait_for_output:
       should_run = True
       resume_inputs = recovered.resolved_responses
+    elif node.rerun_on_resume:
+      if recovered.finished_after_resume:
+        # The node already emitted a direct completion event in a prior turn and
+        # returned None. Fast-forward it so its side effects do not run again.
+        should_run = False
+      else:
+        # Rerun rerun_on_resume nodes that have not yet emitted a direct
+        # completion event so they can guide nested children or resume execution.
+        should_run = True
+        resume_inputs = recovered.resolved_responses
     else:
       # Allow fresh execution for crashed/timeout dynamic nodes;
       # static nodes with no outcome (e.g. return None) should be fast-forwarded.
-      should_run = current_run is not None
+      should_run = current_run is not None and not current_run.is_static
 
   return InterceptionResult(
       should_run=should_run,

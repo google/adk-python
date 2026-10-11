@@ -25,6 +25,7 @@ from ....agents.invocation_context import InvocationContext
 from ....events.event import Event
 from ....models.llm_request import LlmRequest
 from ....tools.set_model_response_tool import SetModelResponseTool
+from ....utils._agent_mode import AgentMode
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..core._utils import as_llm_agent
 from ..core._utils import require_agent_name
@@ -48,7 +49,7 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
         not agent.output_schema
         or not agent.tools
         or agent.canonical_model.capabilities.output_schema_and_tools
-        or getattr(agent, 'mode', None) == 'task'
+        or getattr(agent, 'mode', None) == AgentMode.TASK
     ):
       return
 
@@ -112,7 +113,7 @@ def get_structured_model_response(function_response_event: Event) -> str | None:
     return None
 
   for func_response in function_response_event.get_function_responses():
-    if func_response.name == 'set_model_response':
+    if func_response.name == SetModelResponseTool.NAME:
       response = function_response_event.actions.set_model_response
       if response is None:
         return None

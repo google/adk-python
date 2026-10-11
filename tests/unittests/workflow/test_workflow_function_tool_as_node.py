@@ -15,7 +15,6 @@
 """Tests for FunctionTool nodes in a Workflow."""
 
 from google.adk.events.event import Event
-from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.workflow import START
@@ -23,6 +22,7 @@ from google.adk.workflow._workflow import Workflow
 from google.genai import types
 import pytest
 
+from .workflow_testing_utils import create_runner
 from .workflow_testing_utils import simplify_events_with_node
 
 
@@ -53,7 +53,7 @@ async def test_run_async_with_function_tools():
       ],
   )
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   msg = types.Content(parts=[types.Part(text='start')], role='user')

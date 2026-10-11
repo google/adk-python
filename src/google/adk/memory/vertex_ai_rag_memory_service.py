@@ -112,7 +112,9 @@ async def _scoped_rag_resources(
   Returns None when a corpus cannot be listed within the page budget, in which
   case the caller retrieves without narrowing the resources.
   """
-  from agentplatform import types as agentplatform_types
+  from ..dependencies._agentplatform import agentplatform
+
+  agentplatform_types = agentplatform.types
 
   scoped_resources: list[types.VertexRagStoreRagResource] = []
   for rag_resource in rag_resources:
@@ -192,11 +194,11 @@ class VertexAiRagMemoryService(BaseMemoryService):
           used.
     """
     try:
-      import agentplatform  # noqa: F401
+      from ..dependencies._agentplatform import agentplatform  # noqa: F401
     except ImportError as e:
       from ..utils._dependency import missing_extra
 
-      raise missing_extra("google-cloud-aiplatform", "gcp") from e
+      raise missing_extra("google-cloud-agentplatform", "gcp") from e
 
     self._project = project or os.environ.get("GOOGLE_CLOUD_PROJECT")
     self._location = location or os.environ.get("GOOGLE_CLOUD_LOCATION")
@@ -249,7 +251,7 @@ class VertexAiRagMemoryService(BaseMemoryService):
         )
     output_string = "\n".join(output_lines)
 
-    import agentplatform
+    from ..dependencies._agentplatform import agentplatform
 
     temp_file_path: str | None = None
     try:
@@ -299,10 +301,10 @@ class VertexAiRagMemoryService(BaseMemoryService):
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
     """Searches for sessions that match the query using rag.retrieval_query."""
-    import agentplatform
-    from agentplatform import types as agentplatform_types
-
+    from ..dependencies._agentplatform import agentplatform
     from ..events.event import Event
+
+    agentplatform_types = agentplatform.types
 
     rag_resources = self._vertex_rag_store.rag_resources
     if not rag_resources:
