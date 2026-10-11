@@ -45,12 +45,31 @@ from .testing_utils import END_OF_AGENT
 from .testing_utils import simplify_content
 
 
+def create_runner(
+    *, check_invariants: bool = True, **runner_kwargs: Any
+) -> Runner:
+  """Builds a ``Runner`` with the ``InvariantPlugin`` installed first.
+
+  Use this instead of a bare ``Runner(...)`` in tests that need to own the
+  session service or pass an ``App``; ``testing_utils.TestInMemoryRunner``
+  covers the in-memory case. Pass ``check_invariants=False`` with an
+  ``# invariants: off because ...`` comment to opt out.
+  """
+  runner = Runner(**runner_kwargs)
+  if check_invariants:
+    runner.plugin_manager.plugins.insert(0, InvariantPlugin())
+  return runner
+
+
 async def run_workflow(wf, message='start', *, check_invariants: bool = True):
   """Run a Workflow through Runner, return collected events."""
   ss = InMemorySessionService()
-  runner = Runner(app_name=wf.name, node=wf, session_service=ss)
-  if check_invariants:
-    runner.plugin_manager.plugins.insert(0, InvariantPlugin())
+  runner = create_runner(
+      app_name=wf.name,
+      node=wf,
+      session_service=ss,
+      check_invariants=check_invariants,
+  )
   session = await ss.create_session(app_name=wf.name, user_id='u')
   msg = types.Content(parts=[types.Part(text=message)], role='user')
   events = []

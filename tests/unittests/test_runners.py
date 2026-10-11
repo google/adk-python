@@ -2853,6 +2853,34 @@ async def test_run_debug_passes_get_session_config():
   assert events[0].author == "test_agent"
 
 
+@pytest.mark.parametrize("verbose", [False, True])
+async def test_run_debug_hides_thoughts_unless_verbose(capsys, verbose):
+  """Console verbosity does not remove thoughts from the returned events."""
+
+  class ThoughtAgent(BaseAgent):
+
+    async def _run_async_impl(self, ctx):
+      yield Event(
+          invocation_id=ctx.invocation_id,
+          author=self.name,
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(text="thinking ", thought=True),
+                  types.Part(text="answer"),
+              ],
+          ),
+      )
+
+  runner = runners.InMemoryRunner(agent=ThoughtAgent(name="test_agent"))
+
+  events = await runner.run_debug("hello", verbose=verbose)
+
+  expected = "thinking answer" if verbose else "answer"
+  assert capsys.readouterr().out == f"test_agent > {expected}\n"
+  assert events[0].content.parts[0].thought is True
+
+
 @pytest.mark.asyncio
 async def test_get_session_config_limits_events():
   """Verify that num_recent_events actually limits loaded events."""

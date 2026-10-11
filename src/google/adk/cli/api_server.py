@@ -87,9 +87,6 @@ from ..events._internal_metadata import public_event
 from ..events._internal_metadata import public_session
 from ..events.event import Event
 from ..events.event_actions import EventActions
-from ..flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ..flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ..flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..live.live_request_queue import LiveRequest
 from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
@@ -98,6 +95,7 @@ from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..utils._function_call_names import CLIENT_FUNCTION_CALL_NAMES as _CLIENT_FUNCTION_CALL_NAMES
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils.agent_info import AgentInfo
 from ..utils.agent_info import get_agents_dict
@@ -651,11 +649,7 @@ class CreateSessionRequest(common.BaseModel):
 
 
 # Function calls ADK generates itself to drive human-in-the-loop flows.
-_ADK_RESERVED_FUNCTION_NAMES = frozenset({
-    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-    REQUEST_EUC_FUNCTION_CALL_NAME,
-    REQUEST_INPUT_FUNCTION_CALL_NAME,
-})
+_ADK_RESERVED_FUNCTION_NAMES = _CLIENT_FUNCTION_CALL_NAMES
 
 
 def _is_adk_reserved_function_name(name: Optional[str]) -> bool:
@@ -1003,6 +997,15 @@ class ApiServer:
     self.auto_create_session = auto_create_session
     self.trigger_sources = trigger_sources
     if (
+        trigger_sources
+        and not trigger_oidc_audience
+        and not trigger_auth_verifier
+    ):
+      raise ValueError(
+          "trigger_sources requires trigger_oidc_audience or"
+          " trigger_auth_verifier to be set."
+      )
+    if (
         trigger_oidc_service_accounts
         and not trigger_oidc_audience
         and not trigger_auth_verifier
@@ -1010,6 +1013,18 @@ class ApiServer:
       raise ValueError(
           "trigger_oidc_service_accounts requires trigger_oidc_audience to be"
           " set."
+      )
+    if (
+        trigger_sources
+        and trigger_oidc_audience
+        and not trigger_oidc_service_accounts
+        and not trigger_auth_verifier
+    ):
+      logger.warning(
+          "trigger_oidc_audience is set without"
+          " trigger_oidc_service_accounts; any Google account can obtain a"
+          " token for this audience. Set trigger_oidc_service_accounts to"
+          " restrict caller identity."
       )
     self.trigger_oidc_audience = trigger_oidc_audience
     self.trigger_oidc_service_accounts = trigger_oidc_service_accounts

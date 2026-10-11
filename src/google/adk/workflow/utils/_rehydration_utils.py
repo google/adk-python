@@ -30,8 +30,8 @@ from pydantic import ValidationError
 from ...events._branch_path import _BranchPath
 from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
+from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from .._errors import WorkflowDataError
-from ._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
   from .._base_node import BaseNode
@@ -76,7 +76,10 @@ class _ChildScanState:
   """The agent the child asked to transfer to, or None if it asked for none."""
 
   interrupt_ids: set[str] = field(default_factory=set)
-  """Every interrupt the child raised."""
+  """Every interrupt the child (or its descendants) raised."""
+
+  direct_interrupt_ids: set[str] = field(default_factory=set)
+  """Interrupts raised directly by the child node itself."""
 
   resolved_ids: set[str] = field(default_factory=set)
   """The subset of ``interrupt_ids`` a user response has come back for."""
@@ -425,6 +428,8 @@ def _reconstruct_node_states(
     if interrupt_ids_to_process:
       for interrupt_id in interrupt_ids_to_process:
         child.interrupt_ids.add(interrupt_id)
+        if is_direct:
+          child.direct_interrupt_ids.add(interrupt_id)
         interrupt_owner[interrupt_id] = owner_key
 
         schema_json = _extract_schema_from_event(event, interrupt_id)

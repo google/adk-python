@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import pickle
 import socket
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -740,3 +742,74 @@ class TestNavigateUrlSafety:
     assert mock_computer.navigate_calls == ["https://example.com"]
     assert result["url"] == "https://example.com"
     resolver.assert_called_once()
+
+
+class _AsyncCountingComputer(MockComputer):
+  """Computer that yields to the event loop during initialize/screen_size."""
+
+  def __init__(self) -> None:
+    super().__init__()
+    self.init_count = 0
+    self.screen_size_count = 0
+    self.close_count = 0
+
+  async def initialize(self) -> None:
+    await asyncio.sleep(0)
+    self.init_count += 1
+    await super().initialize()
+
+  async def close(self) -> None:
+    await asyncio.sleep(0)
+    self.close_count += 1
+    await super().close()
+
+  async def screen_size(self) -> tuple[int, int]:
+    await asyncio.sleep(0)
+    self.screen_size_count += 1
+    return await super().screen_size()
+
+
+@pytest.mark.asyncio
+async def test_computer_use_toolset_concurrent_initialization():
+  """Concurrent initialization and get_tools initialize computer once."""
+  computer = _AsyncCountingComputer()
+  toolset = ComputerUseToolset(computer=computer)
+
+  await asyncio.gather(*(toolset._ensure_initialized() for _ in range(16)))
+  assert computer.init_count == 1
+
+  results = await asyncio.gather(*(toolset.get_tools() for _ in range(16)))
+  assert computer.init_count == 1
+  assert computer.screen_size_count == 1
+  for tools in results:
+    assert tools is results[0]
+
+
+@pytest.mark.asyncio
+async def test_computer_use_toolset_pickle_roundtrip():
+  """Pickled toolset unpickles cleanly and re-initializes via public calls."""
+  computer = _AsyncCountingComputer()
+  toolset = ComputerUseToolset(computer=computer)
+  tools = await toolset.get_tools_with_prefix()
+  assert computer.init_count == 1
+
+  restored = pickle.loads(pickle.dumps(toolset))
+  restored_tools = await restored.get_tools_with_prefix()
+  assert len(restored_tools) == len(tools)
+  assert restored._computer.init_count == 2
+
+
+@pytest.mark.asyncio
+async def test_computer_use_toolset_close_resets_and_allows_reinitialization():
+  """close() cleans up tools and resets initialization for subsequent calls."""
+  computer = _AsyncCountingComputer()
+  toolset = ComputerUseToolset(computer=computer)
+  tools = await toolset.get_tools_with_prefix()
+  assert computer.init_count == 1
+
+  await asyncio.gather(*(toolset.close() for _ in range(8)))
+  assert computer.close_count == 1
+
+  new_tools = await toolset.get_tools_with_prefix()
+  assert len(new_tools) == len(tools)
+  assert computer.init_count == 2

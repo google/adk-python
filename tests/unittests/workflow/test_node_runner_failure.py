@@ -24,7 +24,6 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
-from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.workflow import BaseNode
@@ -45,28 +44,13 @@ from pydantic import Field
 import pytest
 from typing_extensions import override
 
-from .._invariants import InvariantPlugin
 from .workflow_testing_utils import _FlakyNode
+from .workflow_testing_utils import create_runner
 from .workflow_testing_utils import CustomNonRetryableError
 from .workflow_testing_utils import CustomRetryableError
+from .workflow_testing_utils import run_workflow as _run_workflow
 from .workflow_testing_utils import simplify_events_with_node
 from .workflow_testing_utils import TestingNode
-
-
-async def _run_workflow(wf, message='start', *, check_invariants: bool = True):
-  """Run a Workflow through Runner, return collected events."""
-  ss = InMemorySessionService()
-  runner = Runner(app_name=wf.name, node=wf, session_service=ss)
-  if check_invariants:
-    runner.plugin_manager.plugins.insert(0, InvariantPlugin())
-  session = await ss.create_session(app_name=wf.name, user_id='u')
-  msg = types.Content(parts=[types.Part(text=message)], role='user')
-  events = []
-  async for event in runner.run_async(
-      user_id='u', session_id=session.id, new_message=msg
-  ):
-    events.append(event)
-  return events, ss, session
 
 
 @pytest.mark.asyncio
@@ -170,7 +154,7 @@ async def test_node_fails_immediately_on_unmatched_exception_string(
   )
 
   ss = InMemorySessionService()
-  runner = Runner(app_name=agent.name, node=agent, session_service=ss)
+  runner = create_runner(app_name=agent.name, node=agent, session_service=ss)
   session = await ss.create_session(app_name=agent.name, user_id='u')
   msg = types.Content(parts=[types.Part(text='start')], role='user')
   events = []
@@ -364,7 +348,7 @@ async def test_node_stops_retrying_after_max_attempts(
   )
 
   ss = InMemorySessionService()
-  runner = Runner(app_name=agent.name, node=agent, session_service=ss)
+  runner = create_runner(app_name=agent.name, node=agent, session_service=ss)
   session = await ss.create_session(app_name=agent.name, user_id='u')
   msg = types.Content(parts=[types.Part(text='start')], role='user')
   events = []
@@ -435,7 +419,7 @@ async def test_node_fails_immediately_without_retry_config(
   )
 
   ss = InMemorySessionService()
-  runner = Runner(app_name=agent.name, node=agent, session_service=ss)
+  runner = create_runner(app_name=agent.name, node=agent, session_service=ss)
   session = await ss.create_session(app_name=agent.name, user_id='u')
   msg = types.Content(parts=[types.Part(text='start')], role='user')
   events = []
@@ -563,7 +547,7 @@ async def test_node_waits_for_initial_delay_before_retry(
   )
 
   ss = InMemorySessionService()
-  runner = Runner(app_name=agent.name, node=agent, session_service=ss)
+  runner = create_runner(app_name=agent.name, node=agent, session_service=ss)
   session = await ss.create_session(app_name=agent.name, user_id='u')
   msg = types.Content(parts=[types.Part(text='start')], role='user')
 
@@ -639,7 +623,7 @@ async def test_retry_applies_backoff_strategy(request: pytest.FixtureRequest):
   )
 
   ss = InMemorySessionService()
-  runner = Runner(app_name=agent.name, node=agent, session_service=ss)
+  runner = create_runner(app_name=agent.name, node=agent, session_service=ss)
   session = await ss.create_session(app_name=agent.name, user_id='u')
   msg = types.Content(parts=[types.Part(text='start')], role='user')
 
@@ -718,7 +702,7 @@ async def test_retry_applies_random_jitter(request: pytest.FixtureRequest):
   )
 
   ss = InMemorySessionService()
-  runner = Runner(app_name=agent.name, node=agent, session_service=ss)
+  runner = create_runner(app_name=agent.name, node=agent, session_service=ss)
   session = await ss.create_session(app_name=agent.name, user_id='u')
   msg = types.Content(parts=[types.Part(text='start')], role='user')
 
@@ -926,7 +910,7 @@ async def test_node_fails_immediately_on_unmatched_exception_class(
   )
 
   ss = InMemorySessionService()
-  runner = Runner(app_name=agent.name, node=agent, session_service=ss)
+  runner = create_runner(app_name=agent.name, node=agent, session_service=ss)
   session = await ss.create_session(app_name=agent.name, user_id='u')
   msg = types.Content(parts=[types.Part(text='start')], role='user')
   events = []
@@ -995,7 +979,7 @@ async def test_error_event_emitted_on_failure(
   )
 
   ss = InMemorySessionService()
-  runner = Runner(app_name=agent.name, node=agent, session_service=ss)
+  runner = create_runner(app_name=agent.name, node=agent, session_service=ss)
   session = await ss.create_session(app_name=agent.name, user_id='u')
   msg = types.Content(parts=[types.Part(text='start')], role='user')
   events = []
@@ -1047,7 +1031,7 @@ async def test_error_event_emitted_on_each_retry(
   )
 
   ss = InMemorySessionService()
-  runner = Runner(app_name=agent.name, node=agent, session_service=ss)
+  runner = create_runner(app_name=agent.name, node=agent, session_service=ss)
   session = await ss.create_session(app_name=agent.name, user_id='u')
   msg = types.Content(parts=[types.Part(text='start')], role='user')
   events = []

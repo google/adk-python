@@ -35,6 +35,20 @@ from google.cloud import firestore
 import pytest
 
 
+def _where_filter(where_mock):
+  """Returns (field, op, value) of the FieldFilter passed as `filter=`."""
+  field_filter = where_mock.call_args.kwargs["filter"]
+  return field_filter.field_path, field_filter.op_string, field_filter.value
+
+
+def _stored_snapshot(data):
+  """Returns a snapshot of an existing document holding `data`."""
+  snapshot = mock.MagicMock()
+  snapshot.exists = True
+  snapshot.to_dict.return_value = data
+  return snapshot
+
+
 @pytest.fixture
 def mock_firestore_client():
   client = mock.MagicMock()
@@ -80,6 +94,15 @@ def mock_firestore_client():
   batch.commit = mock.AsyncMock()
 
   return client
+
+
+def test_session_service_is_importable_from_package():
+  """FirestoreSessionService can be imported from the integration package."""
+  from google.adk.integrations import firestore as firestore_integration
+
+  assert (
+      firestore_integration.FirestoreSessionService is FirestoreSessionService
+  )
 
 
 @pytest.mark.asyncio
@@ -272,6 +295,37 @@ async def test_append_event(mock_firestore_client):
   assert args[1]["revision"] == 1
   assert args[1]["updateTime"] == firestore.SERVER_TIMESTAMP
   assert session.last_update_time == event.timestamp
+
+
+@pytest.mark.asyncio
+async def test_append_event_stores_the_event_timestamp(mock_firestore_client):
+  """The stored event time is Event.timestamp, not the Firestore write time."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  session = Session(id="test_session", app_name="test_app", user_id="test_user")
+  event = Event(
+      invocation_id="test_inv", author="user", timestamp=1700000000.123456
+  )
+
+  root_coll = mock_firestore_client.collection.return_value
+  user_ref = (
+      root_coll.document.return_value.collection.return_value.document.return_value
+  )
+  session_doc_ref = user_ref.collection.return_value.document.return_value
+  session_doc_ref.get = mock.AsyncMock(
+      return_value=_stored_snapshot({"revision": 0})
+  )
+  event_ref = session_doc_ref.collection.return_value.document.return_value
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    await service.append_event(session, event)
+
+  transaction = mock_firestore_client.transaction.return_value
+  writes = {
+      call.args[0]: call.args[1] for call in transaction.set.call_args_list
+  }
+  assert writes[event_ref]["timestamp"] == datetime.fromtimestamp(
+      1700000000.123456, tz=timezone.utc
+  )
 
 
 @pytest.mark.asyncio
@@ -491,6 +545,84 @@ async def test_create_session_keeps_app_and_user_state_native(
   session_doc_ref = sessions_ref.document.return_value
   persisted_state = json.loads(written[session_doc_ref]["state"])
   assert isinstance(persisted_state["session_key"], str)
+
+
+@pytest.mark.asyncio
+async def test_append_event_replaces_nested_app_and_user_state(
+    mock_firestore_client,
+):
+  """A dict-valued app/user delta replaces the stored dict, dropping old keys."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  session = Session(id="test_session", app_name="test_app", user_id="test_user")
+  old_value = {"name": "alice", "role": "admin"}
+  new_value = {"name": "bob"}
+
+  root_coll = mock_firestore_client.collection.return_value
+  app_ref = root_coll.document.return_value
+  users_coll = app_ref.collection.return_value
+  user_ref = users_coll.document.return_value
+  session_doc_ref = user_ref.collection.return_value.document.return_value
+  session_doc_ref.get = mock.AsyncMock(
+      return_value=_stored_snapshot({"revision": 0})
+  )
+  app_ref.get = mock.AsyncMock(
+      return_value=_stored_snapshot({"cfg": old_value})
+  )
+  user_ref.get = mock.AsyncMock(
+      return_value=_stored_snapshot({"cfg": old_value})
+  )
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    await service.append_event(
+        session,
+        Event(
+            invocation_id="test_inv",
+            author="user",
+            actions=EventActions(
+                state_delta={"app:cfg": new_value, "user:cfg": new_value}
+            ),
+        ),
+    )
+
+  transaction = mock_firestore_client.transaction.return_value
+  writes = {call.args[0]: call for call in transaction.set.call_args_list}
+  for ref in (app_ref, user_ref):
+    assert writes[ref].args[1] == {"cfg": new_value}
+    assert not writes[ref].kwargs.get("merge")
+
+
+@pytest.mark.asyncio
+async def test_create_session_replaces_nested_app_and_user_state(
+    mock_firestore_client,
+):
+  """Initial app and user state replace stored dict values instead of merging."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  old_value = {"name": "alice", "role": "admin"}
+
+  root_coll = mock_firestore_client.collection.return_value
+  app_ref = root_coll.document.return_value
+  user_ref = app_ref.collection.return_value.document.return_value
+  app_ref.get = mock.AsyncMock(
+      return_value=_stored_snapshot({"cfg": old_value})
+  )
+  user_ref.get = mock.AsyncMock(
+      return_value=_stored_snapshot({"cfg": old_value})
+  )
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    session = await service.create_session(
+        app_name="test_app",
+        user_id="test_user",
+        state={"app:cfg": {"name": "bob"}, "user:cfg": {"name": "bob"}},
+    )
+
+  transaction = mock_firestore_client.transaction.return_value
+  writes = {call.args[0]: call for call in transaction.set.call_args_list}
+  for ref in (app_ref, user_ref):
+    assert writes[ref].args[1] == {"cfg": {"name": "bob"}}
+    assert not writes[ref].kwargs.get("merge")
+  assert session.state["app:cfg"] == {"name": "bob"}
+  assert session.state["user:cfg"] == {"name": "bob"}
 
 
 @pytest.mark.asyncio
@@ -760,9 +892,9 @@ async def test_list_sessions_without_user_id(mock_firestore_client):
   assert session.last_update_time == 1234567890.0
 
   mock_firestore_client.collection_group.assert_called_once_with("sessions")
-  mock_firestore_client.collection_group.return_value.where.assert_called_once_with(
-      "appName", "==", app_name
-  )
+  where = mock_firestore_client.collection_group.return_value.where
+  where.assert_called_once()
+  assert _where_filter(where) == ("appName", "==", app_name)
 
 
 @pytest.mark.asyncio
@@ -824,9 +956,39 @@ async def test_list_sessions_filters_other_apps(mock_firestore_client):
   assert response.sessions[0].app_name == app_name
 
   mock_firestore_client.collection_group.assert_called_once_with("sessions")
-  mock_firestore_client.collection_group.return_value.where.assert_called_once_with(
-      "appName", "==", app_name
+  where = mock_firestore_client.collection_group.return_value.where
+  where.assert_called_once()
+  assert _where_filter(where) == ("appName", "==", app_name)
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_returns_stored_user_state(mock_firestore_client):
+  """get_user_state returns the user_states document for the app and user."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  root_coll = mock_firestore_client.collection.return_value
+  users_coll = root_coll.document.return_value.collection.return_value
+  users_coll.document.return_value.get = mock.AsyncMock(
+      return_value=_stored_snapshot({"theme": "dark"})
   )
+
+  state = await service.get_user_state(app_name="test_app", user_id="alice")
+
+  assert state == {"theme": "dark"}
+  mock_firestore_client.collection.assert_called_with("user_states")
+  root_coll.document.assert_called_with("test_app")
+  users_coll.document.assert_called_with("alice")
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_is_empty_when_nothing_is_stored(
+    mock_firestore_client,
+):
+  """get_user_state returns an empty dict for a user without stored state."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  state = await service.get_user_state(app_name="test_app", user_id="alice")
+
+  assert state == {}
 
 
 @pytest.mark.asyncio
@@ -965,7 +1127,7 @@ async def test_get_session_after_timestamp_cursor_is_utc_aware(
 ):
   """The after_timestamp cursor must be an aware UTC datetime.
 
-  Events are written with an aware UTC server timestamp, so a naive local
+  Events are written with an aware UTC timestamp, so a naive local
   cursor is compared against them shifted by the host's UTC offset: it
   replays events west of UTC and silently drops them east of it.
   """
@@ -999,7 +1161,7 @@ async def test_get_session_after_timestamp_cursor_is_utc_aware(
     )
 
   events_collection_ref.where.assert_called_once()
-  field, operator, cursor = events_collection_ref.where.call_args.args
+  field, operator, cursor = _where_filter(events_collection_ref.where)
   assert (field, operator) == ("timestamp", ">=")
   assert cursor.utcoffset() == timedelta(0), f"cursor is not UTC: {cursor!r}"
   assert _wire_epoch(cursor) == after_timestamp

@@ -1140,6 +1140,9 @@ class FunctionChunk(BaseModel):
   name: Optional[str]
   args: Optional[str]
   index: Optional[int] = 0
+  # Gemini signs only some calls (the first of a parallel batch), so most
+  # chunks carry none.
+  thought_signature: bytes | None = None
 
 
 class TextChunk(BaseModel):
@@ -1722,11 +1725,13 @@ async def _content_to_message_param(
         else None
     )
     if final_content and isinstance(final_content, list):
-      # when the content is a single text object, we can use it directly.
-      # this is needed for ollama_chat provider which fails if content is a list
-      first_content = final_content[0]
-      if first_content["type"] == "text":
-        final_content = first_content["text"]
+      # Send the text as a plain string: ollama_chat fails if content is a
+      # list, and OpenAI-style APIs accept only text in assistant content.
+      text_blocks = [
+          block["text"] for block in final_content if block["type"] == "text"
+      ]
+      if text_blocks:
+        final_content = _NEW_LINE.join(text_blocks)
 
     # For Anthropic models, rebuild thinking_blocks with signatures so that
     # thinking is preserved across tool call boundaries. Without this,
@@ -2852,6 +2857,9 @@ def _model_response_to_chunk(
               name=func_name,
               args=func_args,
               index=func_index,
+              thought_signature=_extract_thought_signature_from_tool_call(
+                  tool_call
+              ),
           ), finish_reason
 
     if finish_reason and not (message_content or tool_calls or reasoning_parts):
@@ -3934,7 +3942,7 @@ class LiteLlm(BaseLlm):
       # Track function calls by index
       function_calls: dict[int, dict[str, Any]] = (
           {}
-      )  # index -> {name, args_parts, id}
+      )  # index -> {name, args_parts, id, thought_signature}
       tool_call_trackers: Dict[int, _BraceDepthTracker] = {}
       completion_args["stream"] = True
       completion_args["stream_options"] = {"include_usage": True}
@@ -3967,24 +3975,32 @@ class LiteLlm(BaseLlm):
             except json.JSONDecodeError:
               has_incomplete_tool_call_args = True
               continue
-            tool_calls.append(
-                ChatCompletionMessageToolCall(
-                    type="function",
-                    id=func_data["id"],
-                    function=ChatCompletionToolCallFunctionChunk(
-                        name=func_data["name"],
-                        # Serialise a repaired dict to strict JSON so the
-                        # downstream parse finds valid JSON and logs no second
-                        # repair. A non-dict must stay the original string.
-                        arguments=(
-                            json.dumps(tool_call_arguments)
-                            if isinstance(tool_call_arguments, dict)
-                            else args
-                        ),
+            tool_call = ChatCompletionMessageToolCall(
+                type="function",
+                id=func_data["id"],
+                function=ChatCompletionToolCallFunctionChunk(
+                    name=func_data["name"],
+                    # Serialise a repaired dict to strict JSON so the
+                    # downstream parse finds valid JSON and logs no second
+                    # repair. A non-dict must stay the original string.
+                    arguments=(
+                        json.dumps(tool_call_arguments)
+                        if isinstance(tool_call_arguments, dict)
+                        else args
                     ),
-                    index=index,
-                )
+                ),
+                index=index,
             )
+            # Put the signature back where a non-streamed tool call carries
+            # it, so the conversion below restores it onto the part. Gemini 3
+            # rejects the next request when a call in the current turn has
+            # lost its signature.
+            signature = func_data["thought_signature"]
+            if signature:
+              tool_call["extra_content"] = {
+                  "google": {"thought_signature": signature}
+              }
+            tool_calls.append(tool_call)
 
         if has_incomplete_tool_call_args:
           if finish_reason == "length":
@@ -4093,10 +4109,19 @@ class LiteLlm(BaseLlm):
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index
             if index not in function_calls:
-              function_calls[index] = {"name": "", "args_parts": [], "id": None}
+              function_calls[index] = {
+                  "name": "",
+                  "args_parts": [],
+                  "id": None,
+                  "thought_signature": None,
+              }
 
             if chunk.name:
               function_calls[index]["name"] += chunk.name
+            if chunk.thought_signature:
+              function_calls[index][
+                  "thought_signature"
+              ] = chunk.thought_signature
             if chunk.args:
               args_parts = function_calls[index]["args_parts"]
               args_parts.append(chunk.args)

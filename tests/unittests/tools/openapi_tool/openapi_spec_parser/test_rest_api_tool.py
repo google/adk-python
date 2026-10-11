@@ -1492,6 +1492,93 @@ class TestRestApiTool:
     assert call_kwargs["url"] == "https://example.com/users/me/messages"
     assert result == {"result": "success"}
 
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
+  async def test_call_missing_required_path_param_returns_error(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    """A required path param with no default and no value must not crash."""
+    mock_operation = Operation(
+        operationId="test_op",
+        parameters=[
+            OpenAPIParameter(**{
+                "name": "userId",
+                "in": "path",
+                "required": True,
+                "schema": OpenAPISchema(type="string"),
+            })
+        ],
+    )
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=OperationEndpoint(
+            base_url="https://example.com",
+            path="/users/{userId}/messages",
+            method="GET",
+        ),
+        operation=mock_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    # Call without providing userId and without a default to fall back on.
+    result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert not mock_request.called
+    assert "error" in result
+    assert "user_id" in result["error"]
+    assert "userId" not in result["error"]
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
+  async def test_call_unmatched_path_placeholder_raises_key_error(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    """An undeclared path placeholder must raise KeyError."""
+    mock_operation = Operation(
+        operationId="test_op",
+        parameters=[
+            OpenAPIParameter(**{
+                "name": "query",
+                "in": "query",
+                "required": True,
+                "schema": OpenAPISchema(type="string"),
+            })
+        ],
+    )
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=OperationEndpoint(
+            base_url="https://example.com",
+            path="/search?q={query}",
+            method="GET",
+        ),
+        operation=mock_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    with pytest.raises(KeyError, match="query"):
+      await tool.call(args={"query": "hello"}, tool_context=mock_tool_context)
+
+    assert not mock_request.called
+
   def test_prepare_request_params_query_body(
       self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):

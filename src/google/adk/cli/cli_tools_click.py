@@ -3004,6 +3004,18 @@ def cli_migrate_session(
         " `build_config.worker_pool` in `.agent_engine_config.json`."
     ),
 )
+@click.option(
+    "--service_account",
+    type=str,
+    default=None,
+    help=(
+        "Optional. Google Cloud service account email used as the Agent Engine"
+        " runtime identity (e.g. my-agent@my-project.iam.gserviceaccount.com)."
+        " Overrides GOOGLE_CLOUD_SERVICE_ACCOUNT in the .env file and"
+        " service_account in .agent_engine_config.json. When omitted, Agent"
+        " Engine uses its default service agent."
+    ),
+)
 @adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
@@ -3041,6 +3053,7 @@ def cli_deploy_agent_engine(
     worker_pool: str | None = None,
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: str | None = None,
+    service_account: str | None = None,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -3059,6 +3072,12 @@ def cli_deploy_agent_engine(
     # With a private Cloud Build worker pool (VPC-SC / private network)
     adk deploy agent_engine --project=[project] --region=[region]
       --worker_pool=projects/[project]/locations/[region]/workerPools/[pool]
+      my_agent
+
+    \b
+    # With a custom runtime service account
+    adk deploy agent_engine --project=[project] --region=[region]
+      --service_account=my-agent@[project].iam.gserviceaccount.com
       my_agent
   """
   # The deploy path logs progress on both `agentplatform_genai.runtimes` and
@@ -3099,6 +3118,7 @@ def cli_deploy_agent_engine(
         adk_version=adk_version,
         extra_packages=list(extra_packages),
         worker_pool=worker_pool,
+        service_account=service_account,
     )
   except (click.ClickException, click.Abort):
     raise

@@ -13,16 +13,8 @@ This release adds graceful cancellation and tool confirmation to workflows, a to
 * **SQLite memory service**: Keep agent memory in a local SQLite database, selected with a `sqlite://` memory service URI. ([9625b06](https://github.com/google/adk-python/commit/9625b06c9a1be6b9ecd85225657690ae5c0e9d3e))
 * **MCP SDK 2.x**: Connect to MCP servers over the modern protocol through a new opt-in path. ([e738c26](https://github.com/google/adk-python/commit/e738c26fe5abcecffe2fbeba31f8d837086aad8a))
 
-#### Breaking changes
-
-* **Dev UI runtime config is served by the server**: The web server now serves `/dev-ui/assets/config/runtime-config.json` per request and no longer writes `runtime-config.json` into the installed package. If you edited or read that file, set the logo with `--logo-text` and `--logo-image-url` and fetch the config from the server instead. ([3722746](https://github.com/google/adk-python/commit/3722746568a33226d54ba51876801c5948479eb5))
-
 <details>
 <summary>All changes</summary>
-
-### ⚠ BREAKING CHANGES
-
-* serve the dev UI runtime config from the server instead of a file
 
 ### Features
 
@@ -93,6 +85,7 @@ This release adds graceful cancellation and tool confirmation to workflows, a to
 * run BigQuery tools off the event loop via BigQueryToolset async adapter ([497b65b](https://github.com/google/adk-python/commit/497b65b14b3337a0450e7452c215cf1204d3bb7b)), closes [#7160](https://github.com/google/adk-python/issues/7160)
 * **runner:** collect and close toolsets from Workflow graph nodes in Runner.close() ([6fbb22b](https://github.com/google/adk-python/commit/6fbb22b14e80c8cb2733f83611094e52df847a98))
 * **runners:** safely skip non-BaseNode instances in _collect_toolset ([018c41c](https://github.com/google/adk-python/commit/018c41c8dddac3fcd2b4ca53feec128498b3b823))
+* serve the dev UI runtime config from the server instead of a file ([3722746](https://github.com/google/adk-python/commit/3722746568a33226d54ba51876801c5948479eb5))
 * **sessions:** disable pool reset on return for StaticPool in DatabaseSessionService ([74bb82b](https://github.com/google/adk-python/commit/74bb82bc9989dc8213e15aedd7279a5b1a7549bd))
 * **sessions:** let any colon-prefixed key bypass state_schema validation again ([6e1ec09](https://github.com/google/adk-python/commit/6e1ec0931ec7a7d37c402d69cfeae5883897396f))
 * stamp Redis sessions with the event timestamp ([def458b](https://github.com/google/adk-python/commit/def458b609c2811d137b0332b2fc7b201dddd5c0)), closes [#7292](https://github.com/google/adk-python/issues/7292)
@@ -377,27 +370,14 @@ This release focuses on agent resilience and ecosystem integration by introducin
 * **Workflows**: Simplify graph workflow management by authoring and loading ADK 2.0 graphs directly from declarative YAML configurations. ([2a9461b](https://github.com/google/adk-python/commit/2a9461b1da1c3f7bf732cb37ac43a865f907c6a4))
 * **MCP**: Upgrade to MCP SDK 2.x capabilities seamlessly while retaining full backward compatibility with 1.x servers. ([856acf2](https://github.com/google/adk-python/commit/856acf21e3155d2145f9af0709434dd46843539c))
 
-#### Breaking changes
+#### Behavior changes
 
-* **Workflow node resumption**: A node that failed now runs again when the workflow resumes, where before it replayed as though it had completed. Make node bodies idempotent: a node that performs an external side effect and then fails will perform that side effect again on every resume.
-* **GCS tool local paths**: The GCS tools now read and write local files only inside the directory named by `local_file_root`, and refuse local file access entirely when that setting is absent. Paths may be absolute or relative, and are judged by where they resolve.
-* **In-memory sessions only**: `InMemorySessionService` now raises `SessionNotFoundError` when an event is appended to a session it does not hold, instead of accepting the event and discarding it. The database-backed services already behaved this way, so this affects in-memory sessions alone.
-
-Two further changes are marked breaking in the commit log but do not affect a
-default installation. Nested workflow retry changes behavior only for a node
-that already sets `retry_config`. The MCP SDK 2.x field handling applies only if
-you install MCP 2.x deliberately, which this release does not resolve to.
+* **Workflow node resumption**: A node that failed now runs again when the workflow resumes, where before it replayed as though it had completed. Make node bodies idempotent: a node that performs an external side effect and then fails will perform that side effect again on every resume. ([91573eb](https://github.com/google/adk-python/commit/91573eb9f40aaef0b43b15c828557cc69249ef9a))
+* **GCS tool local paths**: The GCS tools now read and write local files only inside the directory named by `local_file_root`, and refuse local file access entirely when that setting is absent. Paths may be absolute or relative, and are judged by where they resolve. ([c569796](https://github.com/google/adk-python/commit/c5697961f883be9eed4b923a41793fa907822178))
+* **In-memory sessions only**: `InMemorySessionService` now raises `SessionNotFoundError` when an event is appended to a session it does not hold, instead of accepting the event and discarding it. The database-backed services already behaved this way, so this affects in-memory sessions alone. ([15b1392](https://github.com/google/adk-python/commit/15b13922d0efeb4882efae06dc0f9fd19cf892f8))
 
 <details>
 <summary>All changes</summary>
-
-### ⚠ BREAKING CHANGES
-
-* retry a nested workflow when a node inside it fails
-* confine GCS tool local file paths to a configured root
-* rerun a failed node on resume instead of replaying it as complete
-* raise SessionNotFoundError when appending to an unknown session
-* **mcp:** under MCP SDK 2.x, fields a server sends that the SDK does not declare no longer reach the caller. 2.x closed its models, so an unknown key on a `CallToolResult`, or on a tool declaration read via `raw_mcp_tool`, is discarded during validation before ADK sees it. `_meta` is unaffected: it is a declared field and still arrives. Nothing in ADK can restore the others; a server that relies on vendor extensions should move them under `_meta`. On 1.x they still arrive as before.
 
 ### Features
 
@@ -438,6 +418,7 @@ you install MCP 2.x deliberately, which this release does not resolve to.
 * close a task-mode delegation when the remote agent finishes ([4cd8aa4](https://github.com/google/adk-python/commit/4cd8aa4043277b7c40aabad77ebb7c8bd11c6ca0))
 * coerce an integral float back to int for an int-typed tool parameter ([adbee3c](https://github.com/google/adk-python/commit/adbee3cd86256dda90cfd3235a1b89b4720d3e80))
 * coerce callable AgentInfo.instruction for app-info ([ada8652](https://github.com/google/adk-python/commit/ada8652cdf68e855a9754888a304916e66d770a4)), closes [#6909](https://github.com/google/adk-python/issues/6909)
+* confine GCS tool local file paths to a configured root ([c569796](https://github.com/google/adk-python/commit/c5697961f883be9eed4b923a41793fa907822178))
 * default AgentCardBuilder capabilities to streaming=True ([b018062](https://github.com/google/adk-python/commit/b0180620f4c2f4f4467a89c37a30f75bf849700b)), closes [#6672](https://github.com/google/adk-python/issues/6672)
 * defer local state/event mutation until Vertex append succeeds ([903f37f](https://github.com/google/adk-python/commit/903f37fda5f6624cdaf2c28f6e072c3b6ba8472a)), closes [#6998](https://github.com/google/adk-python/issues/6998)
 * end a live session when the client closes the request queue, instead of reconnecting or busy-waiting ([07b1173](https://github.com/google/adk-python/commit/07b1173e6a694e05d40554daaba74cc21e2e75cd))
@@ -480,6 +461,7 @@ you install MCP 2.x deliberately, which this release does not resolve to.
 * preserve Gemini 3 thought signatures in interaction history ([51f21e7](https://github.com/google/adk-python/commit/51f21e724b036cb17f23514fb2e054a0bdbc7d48))
 * raise a sub-agent's own error from ParallelAgent, not a group ([3ecd3d7](https://github.com/google/adk-python/commit/3ecd3d719b8bebeb5a331338365e7a7b9b8bde2e))
 * raise AlreadyExistsError on concurrent create_session races ([cbccae6](https://github.com/google/adk-python/commit/cbccae64b3dc1a1e1de29aad674f2c13fba7f5bd))
+* raise SessionNotFoundError when appending to an unknown session ([15b1392](https://github.com/google/adk-python/commit/15b13922d0efeb4882efae06dc0f9fd19cf892f8))
 * read an MCP tool's schema under either spelling in telemetry ([40c8333](https://github.com/google/adk-python/commit/40c8333460c6337fdf05f1e33964110bd8567f5a))
 * rebind an agent's own callback methods when cloning ([f449bb7](https://github.com/google/adk-python/commit/f449bb70c3b87854cb84aecf6276d39c00cdc835))
 * **redis:** match app_name and user_id literally when listing sessions ([4b26bba](https://github.com/google/adk-python/commit/4b26bba94dc3698478ce049a8d6a308be731262f))
@@ -489,9 +471,11 @@ you install MCP 2.x deliberately, which this release does not resolve to.
 * report a metric that never ran as not evaluated, not as failed ([9c9b81a](https://github.com/google/adk-python/commit/9c9b81a17295333e396c7826050d186c30ffadcb))
 * report an unknown tool name to the model instead of raising ([f337793](https://github.com/google/adk-python/commit/f33779378c58ff0cf7bacad62c25ef194b5fa24e))
 * report the real finish reason from a LiteLlm stream ([eaed0aa](https://github.com/google/adk-python/commit/eaed0aa8b25220b63890c72746f3b314686f2812))
+* rerun a failed node on resume instead of replaying it as complete ([91573eb](https://github.com/google/adk-python/commit/91573eb9f40aaef0b43b15c828557cc69249ef9a))
 * rerun a paused workflow node after the user answers it ([2fb877c](https://github.com/google/adk-python/commit/2fb877cd0ea5f866d2b66153b00749ebb61bdce4))
 * resolve every Claude model id rather than enumerated generations ([01919b3](https://github.com/google/adk-python/commit/01919b3794f3cd8d5bbfb2b7c319e626e0edeb8f))
 * resolve scheduler leakage and use node.clone() in DynamicNodeScheduler ([64b5b9c](https://github.com/google/adk-python/commit/64b5b9c04f358c01fb3a0d5efa4beffb18a1b444))
+* retry a nested workflow when a node inside it fails ([2dc8b8d](https://github.com/google/adk-python/commit/2dc8b8d3ce997d195461b50bc7ac852b57863718))
 * retry once on 429 in VertexAiSessionService ([cc5985a](https://github.com/google/adk-python/commit/cc5985a1b021e5818d5c0fe0593690792d835ab8))
 * return custom_metadata from VertexAiMemoryBankService.search_memory ([3a37d7a](https://github.com/google/adk-python/commit/3a37d7ac2abc7a9e73e922b87ef7116f654b3957)), closes [#6946](https://github.com/google/adk-python/issues/6946)
 * route interleaved interactions function-call deltas by step index ([f73bb37](https://github.com/google/adk-python/commit/f73bb37c559dcf7cd2f50a19f329be4bc31323de)), closes [#6832](https://github.com/google/adk-python/issues/6832)

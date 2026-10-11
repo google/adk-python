@@ -1089,7 +1089,7 @@ async def test_tool_node_authenticated_function_tool_pause_and_resume(
   from google.adk.auth.auth_credential import AuthCredentialTypes
   from google.adk.auth.auth_tool import AuthConfig
   from google.adk.tools.authenticated_function_tool import AuthenticatedFunctionTool
-  from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+  from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 
   auth_config = AuthConfig(
       auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Api-Key"}),
@@ -1139,7 +1139,7 @@ async def test_tool_node_authenticated_function_tool_pause_and_resume(
   auth_events = workflow_testing_utils.get_auth_request_events(events1)
   assert len(auth_events) == 1
   fc = auth_events[0].content.parts[0].function_call
-  assert fc.name == REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+  assert fc.name == REQUEST_EUC_FUNCTION_CALL_NAME
   assert fc.id == "wf_auth:tool_node_auth_wf@1/fetch_data@1"
   assert not seen_credentials
   assert not seen_downstream
@@ -1157,7 +1157,7 @@ async def test_tool_node_authenticated_function_tool_pause_and_resume(
   resume_part = types.Part(
       function_response=types.FunctionResponse(
           id=fc.id,
-          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          name=REQUEST_EUC_FUNCTION_CALL_NAME,
           response=auth_response.model_dump(exclude_none=True, by_alias=True),
       )
   )
@@ -1186,7 +1186,7 @@ async def test_tool_node_dynamic_request_credential_pause_and_resume(
   from google.adk.auth.auth_credential import AuthCredential
   from google.adk.auth.auth_credential import AuthCredentialTypes
   from google.adk.auth.auth_tool import AuthConfig
-  from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+  from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 
   auth_config = AuthConfig(
       auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Api-Key"}),
@@ -1253,7 +1253,7 @@ async def test_tool_node_dynamic_request_credential_pause_and_resume(
   resume_part = types.Part(
       function_response=types.FunctionResponse(
           id=fc.id,
-          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          name=REQUEST_EUC_FUNCTION_CALL_NAME,
           response=auth_response.model_dump(exclude_none=True, by_alias=True),
       )
   )
@@ -1279,7 +1279,7 @@ async def test_tool_node_malformed_auth_response_is_not_a_tool_error():
   from google.adk.auth.auth_credential import AuthCredential
   from google.adk.auth.auth_tool import AuthConfig
   from google.adk.tools.authenticated_function_tool import AuthenticatedFunctionTool
-  from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+  from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 
   auth_config = AuthConfig(
       auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Api-Key"}),
@@ -1317,7 +1317,7 @@ async def test_tool_node_malformed_auth_response_is_not_a_tool_error():
   resume_part = types.Part(
       function_response=types.FunctionResponse(
           id=fc.id,
-          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          name=REQUEST_EUC_FUNCTION_CALL_NAME,
           response={"result": "not a credential"},
       )
   )
