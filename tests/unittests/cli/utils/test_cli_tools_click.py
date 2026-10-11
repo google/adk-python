@@ -43,6 +43,7 @@ from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from google.adk.evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from google.adk.events.event import Event
+from google.genai import types
 from pydantic import BaseModel
 import pytest
 
@@ -900,6 +901,25 @@ def test_cli_run_auto_resume_with_query(
   assert part.function_response.response == {"result": "approve"}
 
 
+def _confirmation_request_event() -> Event:
+  """Returns an agent event paused on confirmation request interrupt_123."""
+  return Event(
+      invocation_id="invocation_123",
+      author="agent",
+      long_running_tool_ids={"interrupt_123"},
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="interrupt_123", name="adk_request_confirmation"
+                  )
+              )
+          ],
+      ),
+  )
+
+
 def test_cli_run_auto_resume_with_query_confirmation_yes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -916,18 +936,7 @@ def test_cli_run_auto_resume_with_query_confirmation_yes(
   mock_session.user_id = "u123"
   mock_session.app_name = "agent_resume_confirm_yes"
 
-  # Create a mock event with long_running_tool_ids
-  mock_event = mock.Mock()
-  mock_event.long_running_tool_ids = ["interrupt_123"]
-  mock_event.invocation_id = "invocation_123"
-
-  # Mock get_function_calls to return adk_request_confirmation
-  fc = mock.Mock()
-  fc.id = "interrupt_123"
-  fc.name = "adk_request_confirmation"
-  mock_event.get_function_calls.return_value = [fc]
-
-  mock_session.events = [mock_event]
+  mock_session.events = [_confirmation_request_event()]
 
   mock_session_service = mock.AsyncMock()
   mock_session_service.get_session.return_value = mock_session
@@ -1020,17 +1029,7 @@ def test_cli_run_auto_resume_with_query_confirmation_no(
   mock_session.user_id = "u123"
   mock_session.app_name = "agent_resume_confirm_no"
 
-  # Create a mock event with long_running_tool_ids
-  mock_event = mock.Mock()
-  mock_event.long_running_tool_ids = ["interrupt_123"]
-
-  # Mock get_function_calls to return adk_request_confirmation
-  fc = mock.Mock()
-  fc.id = "interrupt_123"
-  fc.name = "adk_request_confirmation"
-  mock_event.get_function_calls.return_value = [fc]
-
-  mock_session.events = [mock_event]
+  mock_session.events = [_confirmation_request_event()]
 
   mock_session_service = mock.AsyncMock()
   mock_session_service.get_session.return_value = mock_session
@@ -1122,17 +1121,7 @@ def test_cli_run_auto_resume_with_query_confirmation_json(
   mock_session.user_id = "u123"
   mock_session.app_name = "agent_resume_confirm_json"
 
-  # Create a mock event with long_running_tool_ids
-  mock_event = mock.Mock()
-  mock_event.long_running_tool_ids = ["interrupt_123"]
-
-  # Mock get_function_calls to return adk_request_confirmation
-  fc = mock.Mock()
-  fc.id = "interrupt_123"
-  fc.name = "adk_request_confirmation"
-  mock_event.get_function_calls.return_value = [fc]
-
-  mock_session.events = [mock_event]
+  mock_session.events = [_confirmation_request_event()]
 
   mock_session_service = mock.AsyncMock()
   mock_session_service.get_session.return_value = mock_session
@@ -1210,6 +1199,105 @@ def test_cli_run_auto_resume_with_query_confirmation_json(
       "confirmed": True,
       "payload": {"amount": 100},
   }
+
+
+def test_cli_run_with_query_after_answered_interrupt_sends_user_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A query after an answered interrupt reaches the agent as a user message.
+
+  Setup: the session paused on a tool confirmation, a later run answered it,
+    and the agent finished its reply.
+  Act: run `adk run` with a new query and the same --session_id.
+  Assert: the query is sent as a new text message, not as another response
+    to the confirmation that was already answered.
+  """
+  agent_dir = tmp_path / "agent_resume_answered"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  mock_session = mock.Mock()
+  mock_session.id = "s123"
+  mock_session.user_id = "u123"
+  mock_session.app_name = "agent_resume_answered"
+  mock_session.events = [
+      _confirmation_request_event(),
+      Event(
+          invocation_id="invocation_123",
+          author="user",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="interrupt_123",
+                          name="adk_request_confirmation",
+                          response={"confirmed": True},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="invocation_123",
+          author="agent",
+          content=types.Content(
+              role="model", parts=[types.Part(text="File deleted.")]
+          ),
+      ),
+  ]
+
+  mock_session_service = mock.AsyncMock()
+  mock_session_service.get_session.return_value = mock_session
+  monkeypatch.setattr(
+      "google.adk.cli.cli.create_session_service_from_options",
+      mock.Mock(return_value=mock_session_service),
+  )
+
+  mock_agent_loader = mock.Mock()
+  mock_agent_loader.load_agent.return_value = mock.Mock(
+      name="agent_resume_answered"
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli.AgentLoader",
+      mock.Mock(return_value=mock_agent_loader),
+  )
+
+  mock_runner_instance = mock.Mock()
+
+  async def mock_run_async(*args, **kwargs):
+    ev = mock.Mock()
+    ev.author = "agent"
+    ev.node_info = mock.Mock(path="node")
+    ev.content = None
+    ev.long_running_tool_ids = []
+    ev.model_dump.return_value = {"author": "agent", "node_path": "node"}
+    yield ev
+
+  mock_runner_instance.run_async.side_effect = mock_run_async
+  mock_runner_instance.close = mock.AsyncMock()
+  monkeypatch.setattr(
+      "google.adk.cli.cli.Runner",
+      mock.Mock(return_value=mock_runner_instance),
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli._to_app",
+      mock.Mock(return_value=mock.Mock(name="agent_resume_answered")),
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["run", str(agent_dir), "what time is it?", "--session_id", "s123"],
+  )
+
+  assert result.exit_code == 0
+  kwargs = mock_runner_instance.run_async.call_args.kwargs
+  assert kwargs["invocation_id"] is None
+  assert kwargs["new_message"] == types.Content(
+      role="user", parts=[types.Part(text="what time is it?")]
+  )
+  assert "Auto-resuming" not in result.output
 
 
 def test_cli_run_all_options_with_query(
