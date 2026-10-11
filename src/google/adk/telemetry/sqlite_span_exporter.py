@@ -30,6 +30,7 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter
 from opentelemetry.sdk.trace.export import SpanExportResult
 from opentelemetry.trace import SpanContext
+from opentelemetry.trace import SpanKind
 from opentelemetry.trace import TraceFlags
 from opentelemetry.trace import TraceState
 from opentelemetry.util.types import AttributeValue
@@ -46,7 +47,8 @@ CREATE TABLE IF NOT EXISTS spans (
   end_time_unix_nano INTEGER,
   session_id TEXT,
   invocation_id TEXT,
-  attributes_json TEXT
+  attributes_json TEXT,
+  kind TEXT NOT NULL DEFAULT 'INTERNAL'
 );
 """
 
@@ -68,8 +70,9 @@ INSERT OR REPLACE INTO spans (
   end_time_unix_nano,
   session_id,
   invocation_id,
-  attributes_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+  attributes_json,
+  kind
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 """
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -80,6 +83,9 @@ class SqliteSpanExporter(SpanExporter):
 
   This is intended for local development (e.g. `adk web`) to allow reloading
   traces for older sessions after process restart.
+
+  Span kinds survive export and reload. Existing databases are upgraded in
+  place; spans saved before kind persistence retain the INTERNAL default.
   """
 
   def __init__(self, *, db_path: str):
@@ -101,10 +107,19 @@ class SqliteSpanExporter(SpanExporter):
   def _ensure_schema(self) -> None:
     with self._lock:
       conn = self._get_connection()
-      conn.execute(_CREATE_SPANS_TABLE)
-      conn.execute(_CREATE_SESSION_INDEX)
-      conn.execute(_CREATE_TRACE_INDEX)
-      conn.commit()
+      with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(_CREATE_SPANS_TABLE)
+        if not any(
+            row["name"] == "kind"
+            for row in conn.execute("PRAGMA table_info(spans)")
+        ):
+          conn.execute(
+              "ALTER TABLE spans ADD COLUMN kind TEXT NOT NULL"
+              " DEFAULT 'INTERNAL'"
+          )
+        conn.execute(_CREATE_SESSION_INDEX)
+        conn.execute(_CREATE_TRACE_INDEX)
 
   def _serialize_attributes(
       self, attributes: Mapping[str, AttributeValue]
@@ -167,6 +182,7 @@ class SqliteSpanExporter(SpanExporter):
               session_id,
               invocation_id,
               self._serialize_attributes(attributes),
+              span.kind.name,
           ))
         conn.executemany(_INSERT_SPAN, rows)
         conn.commit()
@@ -221,6 +237,7 @@ class SqliteSpanExporter(SpanExporter):
         name=row["name"] or "",
         context=context,
         parent=parent,
+        kind=SpanKind[row["kind"]],
         attributes=attributes,
         start_time=row["start_time_unix_nano"],
         end_time=row["end_time_unix_nano"],
