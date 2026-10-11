@@ -2605,10 +2605,11 @@ async def test_streaming_sets_model_version():
   assert final_response.model_version == "claude-sonnet-4-20250514"
 
 
-def test_part_to_message_block_thinking_roundtrip():
+@pytest.mark.parametrize("thinking_text", ["My reasoning steps.", ""])
+def test_part_to_message_block_thinking_roundtrip(thinking_text):
   """Part with thought=True and signature creates ThinkingBlockParam."""
   part = Part(
-      text="My reasoning steps.",
+      text=thinking_text,
       thought=True,
       thought_signature=b"roundtrip_sig",
   )
@@ -2617,7 +2618,7 @@ def test_part_to_message_block_thinking_roundtrip():
 
   assert isinstance(result, dict)
   assert result["type"] == "thinking"
-  assert result["thinking"] == "My reasoning steps."
+  assert result["thinking"] == thinking_text
   assert result["signature"] == "roundtrip_sig"
 
 
@@ -2919,7 +2920,8 @@ async def test_streaming_reports_thinking_tokens_disjoint_from_candidates():
 
 
 @pytest.mark.asyncio
-async def test_streaming_thinking_captures_signature_delta():
+@pytest.mark.parametrize("thinking_deltas", [["Reason."], []])
+async def test_streaming_thinking_captures_signature_delta(thinking_deltas):
   """A streamed signature_delta must land on the final thinking Part.
 
   Without this the aggregated thinking Part has no ``thought_signature`` and
@@ -2943,13 +2945,16 @@ async def test_streaming_thinking_captures_signature_delta():
               thinking="", signature="", type="thinking"
           ),
       ),
-      MagicMock(
-          type="content_block_delta",
-          index=0,
-          delta=anthropic_types.ThinkingDelta(
-              thinking="Reason.", type="thinking_delta"
-          ),
-      ),
+      *[
+          MagicMock(
+              type="content_block_delta",
+              index=0,
+              delta=anthropic_types.ThinkingDelta(
+                  thinking=text, type="thinking_delta"
+              ),
+          )
+          for text in thinking_deltas
+      ],
       MagicMock(
           type="content_block_delta",
           index=0,
@@ -2987,14 +2992,14 @@ async def test_streaming_thinking_captures_signature_delta():
   assert not final.partial
   thinking_part = final.content.parts[0]
   assert thinking_part.thought
-  assert thinking_part.text == "Reason."
+  assert thinking_part.text == "".join(thinking_deltas)
   assert thinking_part.thought_signature == b"sig_stream_123"
 
-  # The aggregated Part must round-trip back to a valid Anthropic thinking
-  # block -- this is exactly what fails today (missing signature) on a
-  # tool-call turn.
+  # Preserve the thinking block on the follow-up request, including when
+  # the stream contains a signature without any thinking text deltas.
   block = part_to_message_block(thinking_part)
   assert block["type"] == "thinking"
+  assert block["thinking"] == "".join(thinking_deltas)
   assert block["signature"] == "sig_stream_123"
 
 

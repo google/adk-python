@@ -501,7 +501,7 @@ def _part_to_message_block(
     part: types.Part,
     sanitizer: _ToolUseIdSanitizer,
 ) -> _MessageBlockParam:
-  if part.thought and part.text:
+  if part.thought and part.text is not None:
     signature = ""
     if part.thought_signature:
       signature = part.thought_signature.decode("utf-8")
