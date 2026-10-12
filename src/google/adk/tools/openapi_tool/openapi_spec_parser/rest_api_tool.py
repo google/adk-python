@@ -76,6 +76,35 @@ def snake_to_lower_camel(snake_case_string: str):
   ])
 
 
+def _to_param_string(value: object) -> str:
+  """Serializes a path, header, or cookie parameter value for httpx.
+
+  httpx serializes query values itself but rejects anything other than a string
+  for a header or cookie, so an integer or boolean parameter declared by the
+  spec would fail the whole tool call. Path parameters also use this helper so
+  booleans, arrays, and objects follow OpenAPI's default `simple` style instead
+  of Python's `str(v)`. Numbers are stringified, booleans use their JSON
+  spelling, and arrays and objects are comma-joined (omitting `None` entries).
+
+  Args:
+    value: Raw parameter value from the tool call.
+
+  Returns:
+    The serialized parameter value.
+  """
+  if isinstance(value, bool):
+    return "true" if value else "false"
+  if isinstance(value, (list, tuple)):
+    return ",".join(
+        _to_param_string(item) for item in value if item is not None
+    )
+  if isinstance(value, dict):
+    return ",".join(
+        f"{k},{_to_param_string(v)}" for k, v in value.items() if v is not None
+    )
+  return str(value)
+
+
 HttpxClientFactory = Callable[[], httpx.AsyncClient]
 """Type alias for a zero-argument factory returning an ``httpx.AsyncClient``.
 
@@ -409,8 +438,8 @@ class RestApiTool(BaseTool):
 
     path_params: Dict[str, Any] = {}
     query_params: Dict[str, Any] = {}
-    header_params: Dict[str, Any] = {}
-    cookie_params: Dict[str, Any] = {}
+    header_params: dict[str, str] = {}
+    cookie_params: dict[str, str] = {}
 
     from ....version import __version__ as adk_version
 
@@ -447,15 +476,17 @@ class RestApiTool(BaseTool):
         # Reserved characters ('/', '?', '#') are still escaped so a
         # value cannot introduce a query string or fragment.
         path_params[original_k] = _encode_path_param(
-            name=original_k, value=str(v)
+            name=original_k, value=_to_param_string(v)
         )
       elif param_location == "query":
         if v is not None:
           query_params[original_k] = v
       elif param_location == "header":
-        header_params[original_k] = v
+        if v is not None:
+          header_params[original_k] = _to_param_string(v)
       elif param_location == "cookie":
-        cookie_params[original_k] = v
+        if v is not None:
+          cookie_params[original_k] = _to_param_string(v)
 
     # Construct URL
     base_url = self.endpoint.base_url or ""

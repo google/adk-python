@@ -658,13 +658,16 @@ class FileArtifactService(BaseArtifactService):
             "Binary artifact %s missing at %s", filename, content_path
         )
         return None
-      return types.Part(
+      artifact = types.Part(
           inline_data=types.Blob(
               mime_type=mime_type,
               data=data,
               display_name=metadata.display_name if metadata else None,
           )
       )
+      if artifact_util._is_rewind_tombstone(artifact):
+        return None
+      return artifact
 
     text = _read_text_if_present(content_path)
     if text is None:
