@@ -1,8 +1,9 @@
 # MongoDB Integration for ADK
 
 This integration connects the Google Agent Development Kit (ADK) to MongoDB.
-It provides search tools agents can call against collections on MongoDB Atlas
-or self-managed MongoDB 8.0+ deployments.
+It provides search tools agents can call, plus MongoDB-backed session
+persistence. It works with MongoDB Atlas and self-managed MongoDB 8.0+
+deployments.
 
 ## Features
 
@@ -12,6 +13,13 @@ or self-managed MongoDB 8.0+ deployments.
 - **Hybrid Search Tool (`mongodb_hybrid_search`):** Combines full-text search
   and vector search with reciprocal rank fusion (`$rankFusion`), with tunable
   vector/text weights.
+- **Session Persistence (`MongoDbSessionService`):** Stores sessions, events,
+  and `app:` / `user:` / session-scoped state in MongoDB. Multi-document
+  writes run in a transaction (replica set, sharded cluster, or Atlas
+  required) so concurrent writers cannot lose each other's state updates;
+  on deployments without transaction support (standalone mongod) the
+  service falls back to sequential writes with optimistic concurrency
+  control on the session document.
 - **Flexible Connection Options:** Pass a connection string and let the
   integration create/own the PyMongo client, or bring your own pre-configured
   `pymongo.MongoClient`.
@@ -36,6 +44,7 @@ pip install "pymongo>=4.9,<5"
 | :--- | :--- |
 | `mongodb_vector_search` | A **vector search index** on the collection (MongoDB Atlas or MongoDB 8.0+). |
 | `mongodb_hybrid_search` | A **vector search index** and a **full-text search index** on the collection, and a deployment that supports `$rankFusion` (MongoDB Atlas or MongoDB 8.0+). |
+| `MongoDbSessionService` | Any MongoDB deployment reachable by PyMongo (no search indexes needed). |
 
 ## Quick Start: Search Tools
 
@@ -111,20 +120,120 @@ Automated Embedding is an Atlas
 [Preview feature](https://www.mongodb.com/docs/preview-features/) and is not
 available on self-managed deployments.
 
+## Quick Start: Session Service
+
+```python
+from google.adk.integrations.mongodb import MongoDbSessionService
+from google.adk.runners import Runner
+
+session_service = MongoDbSessionService(
+    connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
+    database_name="my_app",
+)
+
+runner = Runner(
+    agent=agent,
+    app_name="my_app",
+    session_service=session_service,
+)
+```
+
+### Document Layout
+
+`MongoDbSessionService` stores data in four collections (names configurable):
+
+| Collection | Document key | Contents |
+| :--- | :--- | :--- |
+| `sessions` | `<app_name>/<user_id>/<session_id>` | Session-scoped state (JSON-encoded), timestamps, and an optimistic-concurrency `revision`. |
+| `events` | `<app_name>/<user_id>/<session_id>/<event_id>` | Full serialized event under `event_data`. |
+| `app_states` | `<app_name>` | App-scoped state (`app:` prefixed keys). |
+| `user_states` | `<app_name>/<user_id>` | User-scoped state (`user:` prefixed keys). |
+
+State buckets are stored JSON-encoded so state keys containing characters
+MongoDB forbids in document fields (e.g. `.`, `$`) round-trip safely.
+
+### Concurrency model and deployment targets
+
+The service targets two deployment shapes:
+
+- **Replica set, sharded cluster, or Atlas:** every multi-document write
+  (state buckets, the session revision bump, and the event insert) runs in a
+  multi-document transaction, so it commits or aborts atomically.
+- **Standalone mongod (or any deployment without transactions):** the first
+  write attempts a transaction, the failure verdict is cached, and later
+  writes run sequentially with an optimistic-concurrency revision check on
+  the session document.
+
+Within one process, a per-session `asyncio.Lock` serializes `append_event`
+calls for the same session. That lock is intentionally **in-process only**:
+when several runner replicas write to the same session, the revision check
+on the session document is the cross-process guard — the losing writer gets
+a `StaleSessionError`, reloads the session, and retries. Do not rely on the
+in-process lock for correctness across replicas.
+
+## Secondary indexes (`ensure_indexes`)
+
+The service never creates indexes on its own: every write and most reads
+are keyed by `_id`, which MongoDB indexes implicitly. One read pattern is
+not an `_id` lookup, though, and becomes a collection scan as data grows:
+`get_session` reads `events` by `(app_name, user_id, session_id)` sorted by
+`timestamp`.
+
+Pass `ensure_indexes=True` to have the service create the recommended
+indexes on first use:
+
+```python
+session_service = MongoDbSessionService(
+    connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
+    database_name="my_app",
+    ensure_indexes=True,
+)
+```
+
+This creates:
+
+| Collection | Index | Keys |
+| :--- | :--- | :--- |
+| `events` | `app_user_session_ts` | `(app_name, user_id, session_id, timestamp DESC)` |
+| `sessions` | `app_user` | `(app_name, user_id)` |
+
+Index creation is idempotent — re-running with the same spec is a no-op — so
+the flag is safe to leave on. It requires the MongoDB user to hold the
+`createIndex` privilege on the database, and it runs outside the write
+transactions (`createIndexes` is not allowed inside one). At small scale the
+flag changes nothing measurably; enable it before the `events` collection
+grows large.
+
 ## Required permissions (least-privilege setup)
 
-Do not hand the integration an admin user. The search tools only read, so the
-database user needs nothing more than `find` on each collection the agent may
-search:
+Do not hand the integration an admin user. The components need very little,
+and two separate database users keep the privileges separated:
+
+| Database user | Used by | Minimum privileges |
+| :--- | :--- | :--- |
+| **Search user** (read-only) | `MongoDbToolset` | `find` on each collection the agent may search. |
+| **State user** (read-write) | `MongoDbSessionService` | `find`, `insert`, `update`, `remove` on `sessions` and `events` (session deletion); `find`, `insert`, `update` on `app_states` and `user_states` (upserts only, never deletes). Add `createIndex` on those collections only if you enable `ensure_indexes`. |
 
 ```javascript
-// mongosh, as an admin user.
+// mongosh, as an admin user: one read-only role for the search tools, one
+// read-write role scoped to the state collections for the service.
 use admin;
 db.createRole({
   role: "adk_search_reader",
   privileges: [
     { resource: { db: "products_db", collection: "products" }, actions: ["find"] },
   ],
+  roles: [],
+});
+db.createRole({
+  role: "adk_state_writer",
+  privileges: ["sessions", "events"].map((c) => ({
+    resource: { db: "my_app", collection: c },
+    actions: ["find", "insert", "update", "remove"],
+  })).concat(["app_states", "user_states"].map((c) => ({
+    resource: { db: "my_app", collection: c },
+    actions: ["find", "insert", "update"],
+  }))),
   roles: [],
 });
 ```
