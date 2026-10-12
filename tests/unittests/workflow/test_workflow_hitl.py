@@ -32,6 +32,8 @@ from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
 from google.adk.workflow import node
@@ -41,8 +43,6 @@ from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._rehydration_utils import _wrap_response
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
 from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
-from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -1053,23 +1053,7 @@ async def test_rerun_with_multiple_hitl_and_outputs(
   assert node_b.received_inputs == ['final_output']
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        False,
-        pytest.param(
-            True,
-            marks=pytest.mark.xfail(
-                reason=(
-                    'A rerun_on_resume node is re-run as soon as one interrupt'
-                    ' resolves instead of waiting for all pending interrupts;'
-                    ' fixing this needs a change to the shared replay'
-                    ' interception logic.'
-                )
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_rerun_on_resume_waits_for_all_interrupts(
     request: pytest.FixtureRequest,
@@ -1182,14 +1166,10 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
     )
     assert final_state2['nodes']['NodeA']['interrupts'] == ['req2']
 
-  # The node should NOT have produced any RequestInput or data output in resumable mode.
-  # In non-resumable mode, it re-yields the pending interrupt 'req2'.
+  # The node should NOT have produced any RequestInput or data output since it
+  # did not rerun while req2 was still pending.
   req_events2 = workflow_testing_utils.get_request_input_events(events2)
-  if resumable:
-    assert len(req_events2) == 0
-  else:
-    assert len(req_events2) == 1
-    assert get_request_input_interrupt_ids(req_events2[0]) == ['req2']
+  assert len(req_events2) == 0
 
   # Run 3: provide req2 — now all interrupts resolved, node should rerun.
   events3 = await runner.run_async(
@@ -1477,7 +1457,7 @@ async def test_function_node_auth_config(
   resume_part = types.Part(
       function_response=types.FunctionResponse(
           id=auth_fc_id,
-          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          name=REQUEST_EUC_FUNCTION_CALL_NAME,
           response=auth_response.model_dump(exclude_none=True, by_alias=True),
       )
   )
@@ -1543,7 +1523,7 @@ async def test_auth_credential_is_not_copied_into_checkpoint(
   resume_part = types.Part(
       function_response=types.FunctionResponse(
           id=auth_fc_id,
-          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          name=REQUEST_EUC_FUNCTION_CALL_NAME,
           response=auth_response.model_dump(exclude_none=True, by_alias=True),
       )
   )
@@ -1632,7 +1612,7 @@ async def test_second_auth_node_skips_auth_when_credential_exists(
   resume_part = types.Part(
       function_response=types.FunctionResponse(
           id=auth_fc_id,
-          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          name=REQUEST_EUC_FUNCTION_CALL_NAME,
           response=auth_response.model_dump(exclude_none=True, by_alias=True),
       )
   )

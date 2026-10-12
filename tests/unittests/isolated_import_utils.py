@@ -56,7 +56,11 @@ def run_isolated(source: str) -> subprocess.CompletedProcess[str]:
 
 
 def loaded_top_level_packages(source: str) -> frozenset[str]:
-  """Returns the third-party top-level packages source leaves imported.
+  """Returns third-party top-level packages introduced by source.
+
+  Interpreter startup hooks can import packages before source runs. Those
+  modules are not costs introduced by source. Snapshot full module names so a
+  newly imported submodule still counts even when its parent was preloaded.
 
   Standard-library modules, private modules and the pseudo-modules the
   interpreter injects carry no install or startup cost of their own, so they
@@ -70,12 +74,14 @@ def loaded_top_level_packages(source: str) -> frozenset[str]:
   result = run_isolated(f"""
 import json
 import sys
+modules_before = set(sys.modules)
 {source}
 
 names = {{
     name.partition('.')[0]
     for name, module in sys.modules.items()
-    if getattr(module, '__spec__', None) is not None
+    if name not in modules_before
+    and getattr(module, '__spec__', None) is not None
     and module.__spec__.origin is not None
 }}
 print(json.dumps(sorted(

@@ -29,10 +29,10 @@ from ....models.llm_request import LlmRequest
 from ....tools.base_tool import BaseTool
 from ....tools.tool_confirmation import ToolConfirmation
 from ....tools.tool_context import ToolContext
+from ....utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..agent_transfer import _build_transfer_tool
 from ..agent_transfer import _get_transfer_targets
-from ._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
   from ....agents.llm_agent import LlmAgent

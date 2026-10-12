@@ -3889,7 +3889,7 @@ def test_list_sessions_sync_unknown_app_or_user_returns_empty_response():
 
 
 # ---------------------------------------------------------------------------
-# Regression tests for duplicate-event deduplication (issue #5723)
+# append_event idempotency for re-delivered events
 # ---------------------------------------------------------------------------
 
 
@@ -3902,8 +3902,9 @@ def test_list_sessions_sync_unknown_app_or_user_returns_empty_response():
 async def test_append_event_is_idempotent_for_same_event_id(session_service):
   """Re-delivering an event must not duplicate entries or double-apply state.
 
-  A broadcast can re-deliver the same event either as the same object or as
-  an equal copy, so both must be deduplicated.
+  A caller that retries ``append_event`` (e.g. a write buffer behind an RPC)
+  can re-deliver the same event either as the same object or as an equal
+  copy, so both must be deduplicated.
   """
   app_name = 'test_app'
   user_id = 'user_dup'
@@ -3917,8 +3918,8 @@ async def test_append_event_is_idempotent_for_same_event_id(session_service):
       actions=EventActions(state_delta={'session:counter': 1}),
   )
 
-  # Re-deliver as the same object and again as an equal copy (a broadcast
-  # to several concurrent session references can produce either).
+  # Re-deliver as the same object and again as an equal copy (a retried
+  # call can produce either).
   await session_service.append_event(session=session, event=event)
   await session_service.append_event(session=session, event=event)
   await session_service.append_event(
