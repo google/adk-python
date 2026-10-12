@@ -18,6 +18,7 @@ Verifies that the toolset exposes prefixed, filterable search tools and
 injects the bound client, database and settings at run time.
 """
 
+import pickle
 from unittest import mock
 
 from google.adk.integrations.mongodb import MongoDbToolset
@@ -241,3 +242,55 @@ async def test_mongodb_tool_injects_the_genai_client(monkeypatch):
   )
 
   assert embed_query.await_args.kwargs["genai_client"] is genai_client
+
+
+def test_toolset_pickles_when_client_comes_from_connection_string(monkeypatch):
+  """A connection-string toolset drops and rebuilds its clients on pickle."""
+  get_mongo_client = mock.MagicMock(
+      side_effect=lambda *args, **kwargs: mock.MagicMock()
+  )
+  monkeypatch.setattr(
+      "google.adk.integrations.mongodb._client.get_mongo_client",
+      get_mongo_client,
+  )
+  toolset = MongoDbToolset(
+      database_name="test_db",
+      connection_string="mongodb://localhost:27017",
+      genai_client=mock.MagicMock(),
+      settings=MongoDbToolSettings(timeout_ms=7000),
+  )
+
+  restored = pickle.loads(pickle.dumps(toolset))
+
+  assert get_mongo_client.call_count == 2  # constructor + restore
+  assert get_mongo_client.call_args.args == ("mongodb://localhost:27017",)
+  assert get_mongo_client.call_args.kwargs["timeout_ms"] == 7000
+  assert restored._database_name == "test_db"
+  assert restored._owns_client is True
+  # The genai client is not carried across: it is rebuilt lazily from the
+  # ambient environment on the destination the next time a query is embedded.
+  assert restored._genai_client is None
+
+
+async def test_toolset_pickle_drops_cached_tools(monkeypatch):
+  """Cached tool instances referencing the old client do not get pickled."""
+  monkeypatch.setattr(
+      "google.adk.integrations.mongodb._client.get_mongo_client",
+      lambda *args, **kwargs: mock.MagicMock(),
+  )
+  toolset = MongoDbToolset(
+      database_name="test_db", connection_string="mongodb://localhost:27017"
+  )
+  await toolset.get_tools_with_prefix()
+  assert toolset._cached_prefixed_tools is not None
+
+  restored = pickle.loads(pickle.dumps(toolset))
+
+  assert restored._cached_invocation_id is None
+  assert restored._cached_prefixed_tools is None
+
+
+def test_toolset_with_caller_owned_client_cannot_be_pickled():
+  """A caller-owned client cannot be rebuilt on the destination."""
+  with pytest.raises(TypeError, match="connection_string"):
+    pickle.dumps(_make_toolset())
