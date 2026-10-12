@@ -1,8 +1,8 @@
 # MongoDB Integration for ADK
 
 This integration connects the Google Agent Development Kit (ADK) to MongoDB.
-It provides search tools agents can call, plus MongoDB-backed session
-persistence. It works with MongoDB Atlas and self-managed MongoDB 8.0+
+It provides search tools agents can call, plus MongoDB-backed session and
+memory services. It works with MongoDB Atlas and self-managed MongoDB 8.0+
 deployments.
 
 ## Features
@@ -20,6 +20,8 @@ deployments.
   on deployments without transaction support (standalone mongod) the
   service falls back to sequential writes with optimistic concurrency
   control on the session document.
+- **Long-term Memory (`MongoDbMemoryService`):** Ingests session events into a
+  memory collection and recalls them by keyword matching.
 - **Flexible Connection Options:** Pass a connection string and let the
   integration create/own the PyMongo client, or bring your own pre-configured
   `pymongo.MongoClient`.
@@ -45,6 +47,7 @@ pip install "pymongo>=4.9,<5"
 | `mongodb_vector_search` | A **vector search index** on the collection (MongoDB Atlas or MongoDB 8.0+). |
 | `mongodb_hybrid_search` | A **vector search index** and a **full-text search index** on the collection, and a deployment that supports `$rankFusion` (MongoDB Atlas or MongoDB 8.0+). |
 | `MongoDbSessionService` | Any MongoDB deployment reachable by PyMongo (no search indexes needed). |
+| `MongoDbMemoryService` | Any MongoDB deployment reachable by PyMongo (no search indexes needed). |
 
 ## Quick Start: Search Tools
 
@@ -171,19 +174,58 @@ on the session document is the cross-process guard — the losing writer gets
 a `StaleSessionError`, reloads the session, and retries. Do not rely on the
 in-process lock for correctness across replicas.
 
+## Quick Start: Memory Service
+
+```python
+from google.adk.integrations.mongodb import MongoDbMemoryService
+from google.adk.runners import Runner
+
+memory_service = MongoDbMemoryService(
+    connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
+    database_name="my_app",
+)
+
+runner = Runner(
+    agent=agent,
+    app_name="my_app",
+    memory_service=memory_service,
+)
+```
+
+Events ingested via `add_session_to_memory` are stored as memory documents
+(one per event) keyed by `<app_name>/<user_id>/<session_id>/<event_id>`, each
+carrying the lowercase keywords extracted from its text content (a compact
+English stop-word list is ignored; pass `stop_words` to customize).
+`search_memory` returns entries whose keyword array intersects the query's
+keywords. Ingestion is idempotent — re-adding a session overwrites its
+memories rather than duplicating them.
+
+Retrieval is intentionally keyword-only: it needs no embedding model, no
+Google credentials, and no vector index, so it works on any MongoDB
+deployment (not just Atlas) at zero per-query cost. Vector recall is a
+possible follow-up that can build on this integration's own search tools.
+
 ## Secondary indexes (`ensure_indexes`)
 
-The service never creates indexes on its own: every write and most reads
-are keyed by `_id`, which MongoDB indexes implicitly. One read pattern is
-not an `_id` lookup, though, and becomes a collection scan as data grows:
-`get_session` reads `events` by `(app_name, user_id, session_id)` sorted by
-`timestamp`.
+The services never create indexes on their own: every write and most reads
+are keyed by `_id`, which MongoDB indexes implicitly. Two read patterns are
+not `_id` lookups, though, and become collection scans as data grows:
 
-Pass `ensure_indexes=True` to have the service create the recommended
+- `get_session` reads `events` by `(app_name, user_id, session_id)` sorted
+  by `timestamp`.
+- `search_memory` reads `memories` by `(app_name, user_id)` with a `$in`
+  match on the `keywords` array.
+
+Pass `ensure_indexes=True` to have the services create the recommended
 indexes on first use:
 
 ```python
 session_service = MongoDbSessionService(
+    connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
+    database_name="my_app",
+    ensure_indexes=True,
+)
+memory_service = MongoDbMemoryService(
     connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
     database_name="my_app",
     ensure_indexes=True,
@@ -196,13 +238,14 @@ This creates:
 | :--- | :--- | :--- |
 | `events` | `app_user_session_ts` | `(app_name, user_id, session_id, timestamp DESC)` |
 | `sessions` | `app_user` | `(app_name, user_id)` |
+| `memories` | `app_user_keywords` | `(app_name, user_id, keywords)` (multikey) |
 
 Index creation is idempotent — re-running with the same spec is a no-op — so
 the flag is safe to leave on. It requires the MongoDB user to hold the
 `createIndex` privilege on the database, and it runs outside the write
 transactions (`createIndexes` is not allowed inside one). At small scale the
-flag changes nothing measurably; enable it before the `events` collection
-grows large.
+flag changes nothing measurably; enable it before the `events` and
+`memories` collections grow large.
 
 ## Required permissions (least-privilege setup)
 
@@ -212,7 +255,7 @@ and two separate database users keep the privileges separated:
 | Database user | Used by | Minimum privileges |
 | :--- | :--- | :--- |
 | **Search user** (read-only) | `MongoDbToolset` | `find` on each collection the agent may search. |
-| **State user** (read-write) | `MongoDbSessionService` | `find`, `insert`, `update`, `remove` on `sessions` and `events` (session deletion); `find`, `insert`, `update` on `app_states` and `user_states` (upserts only, never deletes). Add `createIndex` on those collections only if you enable `ensure_indexes`. |
+| **State user** (read-write) | `MongoDbSessionService`, `MongoDbMemoryService` | `find`, `insert`, `update`, `remove` on `sessions` and `events` (session deletion); `find`, `insert`, `update` on `app_states`, `user_states` and `memories` (upserts only, never deletes). Add `createIndex` on those collections only if you enable `ensure_indexes`. |
 
 ```javascript
 // mongosh, as an admin user: one read-only role for the search tools, one
@@ -230,7 +273,7 @@ db.createRole({
   privileges: ["sessions", "events"].map((c) => ({
     resource: { db: "my_app", collection: c },
     actions: ["find", "insert", "update", "remove"],
-  })).concat(["app_states", "user_states"].map((c) => ({
+  })).concat(["app_states", "user_states", "memories"].map((c) => ({
     resource: { db: "my_app", collection: c },
     actions: ["find", "insert", "update"],
   }))),
