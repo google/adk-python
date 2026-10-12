@@ -233,19 +233,11 @@ async def run_node_async(
                 author="model",
                 content=early_exit_result,
             )
-            # Ensure the early-exit event also passes through on_event callbacks and metadata enrichment.
-            output_event = await runner._process_event_with_plugin_callbacks(  # pylint: disable=protected-access
-                invocation_context=ic,
+            yield await runner._process_and_append_event(  # pylint: disable=protected-access
                 event=early_exit_event,
+                invocation_context=ic,
+                is_live_call=False,
             )
-            if runner._should_append_event(  # pylint: disable=protected-access
-                early_exit_event, is_live_call=False
-            ):
-              await runner.session_service.append_event(
-                  session=ic.session,
-                  event=output_event,
-              )
-            yield output_event
           else:
             # 3. Start root node in background
             root_ctx = Context(ic)

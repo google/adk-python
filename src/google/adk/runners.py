@@ -335,14 +335,10 @@ class Runner:
         plugins=app.plugins, close_timeout=plugin_close_timeout
     )
     self.auto_create_session = auto_create_session
-    if self.agent is not None:
-      (
-          self._agent_origin_app_name,
-          self._agent_origin_dir,
-      ) = self._infer_agent_origin(cast(BaseAgent, self.agent))
-    else:
-      self._agent_origin_app_name = None
-      self._agent_origin_dir = None
+    (
+        self._agent_origin_app_name,
+        self._agent_origin_dir,
+    ) = self._infer_agent_origin(cast(BaseAgent, self.agent))
     self._app_name_alignment_hint: Optional[str] = None
     self._enforce_app_name_alignment()
     self._warn_uncached_agent_transfer()
@@ -839,31 +835,18 @@ class Runner:
               'Unexpected node event queue item:'
               f' {type(event_or_done).__name__}'
           )
-        event = event_or_done
-
-        async def _process_and_clear(invocation_context, ev_arg):
-          nonlocal event
-          ev = await self._process_event_with_plugin_callbacks(
-              invocation_context=invocation_context,
-              event=ev_arg,
-          )
-          if not ev.partial:
-            if (
-                ev.node_info
-                and ev.node_info.message_as_output
-                and ev.content is not None
-            ):
-              ev = ev.model_copy()
-              ev.output = None
-          event = ev
-          return ev
-
-        output_event = await _process_and_clear(
+        output_event = await self._process_event_with_plugin_callbacks(
             invocation_context=ic,
-            ev_arg=event,
+            event=event_or_done,
         )
-
-        if not event.partial:
+        if not output_event.partial:
+          if (
+              output_event.node_info
+              and output_event.node_info.message_as_output
+              and output_event.content is not None
+          ):
+            output_event = output_event.model_copy()
+            output_event.output = None
           await self.session_service.append_event(
               session=ic.session, event=output_event
           )
@@ -1299,15 +1282,12 @@ class Runner:
         is_resumable = (
             self.resumability_config and self.resumability_config.is_resumable
         )
-        if not is_resumable and new_message is None:
-          raise ValueError(
-              'Running an agent requires a new_message or a resumable app. '
-              f'Session: {session_id}, User: {user_id}'
-          )
-
         if not is_resumable:
           if new_message is None:
-            raise ValueError('A new message is required for a new invocation.')
+            raise ValueError(
+                'Running an agent requires a new_message or a resumable app. '
+                f'Session: {session_id}, User: {user_id}'
+            )
           resolved_invocation_id = self._resolve_invocation_id_from_fr(
               session, new_message, strict=False
           )
@@ -1602,17 +1582,11 @@ class Runner:
             author='model',
             content=early_exit_result,
         )
-        # Ensure the early-exit event also passes through on_event callbacks and metadata enrichment.
-        output_event = await self._process_event_with_plugin_callbacks(
-            invocation_context=invocation_context,
+        yield await self._process_and_append_event(
             event=early_exit_event,
+            invocation_context=invocation_context,
+            is_live_call=is_live_call,
         )
-        if self._should_append_event(output_event, is_live_call):
-          await self.session_service.append_event(
-              session=invocation_context.session,
-              event=output_event,
-          )
-        yield output_event
       else:
         # Step 2: Otherwise continue with normal execution
         async with aclosing(execute_fn(invocation_context)) as agen:
