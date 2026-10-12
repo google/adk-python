@@ -4341,6 +4341,24 @@ def test_split_message_content_keeps_tool_call_json_quoted_in_text():
   assert content == text
 
 
+@pytest.mark.parametrize("language", ["json", "JSON", "JsOn"])
+def test_split_message_content_keeps_fenced_tool_call_quoted_in_text(
+    language: str,
+) -> None:
+  """A fenced call after prose remains text regardless of the JSON label case."""
+  text = (
+      f"The README shows this example request:\n```{language}\n"
+      '{"name": "alpha", "arguments": {"value": 1}}\n'
+      "```\nIt is only an example."
+  )
+  message = {"role": "assistant", "content": text}
+
+  content, tool_calls = _split_message_content_and_tool_calls(message)
+
+  assert tool_calls == []
+  assert content == text
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -4350,8 +4368,16 @@ def test_split_message_content_keeps_tool_call_json_quoted_in_text():
             " 1}}\n</tool_call>"
         ),
         '```json\n{"name": "alpha", "arguments": {"value": 1}}\n```',
+        '```JSON\n{"name": "alpha", "arguments": {"value": 1}}\n```',
+        '```JsOn\n{"name": "alpha", "arguments": {"value": 1}}\n```',
     ],
-    ids=["bare", "tool_call_tags", "code_fence"],
+    ids=[
+        "bare",
+        "tool_call_tags",
+        "code_fence",
+        "code_fence_uppercase",
+        "code_fence_mixed_case",
+    ],
 )
 def test_split_message_content_parses_text_that_is_a_tool_call(text):
   """A message whose text is a tool call becomes that tool call."""
@@ -6311,14 +6337,26 @@ async def test_streaming_text_quoting_a_tool_call_is_not_a_call(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prefix", "suffix"),
+    [
+        ("", ""),
+        ("```json\n", "\n```"),
+        ("```JSON\n", "\n```"),
+        ("```JsOn\n", "\n```"),
+    ],
+    ids=["bare", "code_fence", "code_fence_uppercase", "code_fence_mixed_case"],
+)
 async def test_streaming_text_that_is_a_tool_call_becomes_a_call(
-    mock_completion, lite_llm_instance
+    mock_completion, lite_llm_instance, prefix, suffix
 ):
   """A streamed message whose text is a tool call ends as that call."""
   mock_completion.return_value = iter(
       _text_stream(
+          prefix,
           '{"name": "test_function", ',
           '"arguments": {"test_arg": "x"}}',
+          suffix,
       )
   )
 
@@ -6329,6 +6367,13 @@ async def test_streaming_text_that_is_a_tool_call_becomes_a_call(
       )
   ]
 
+  assert not [
+      part
+      for response in responses[:-1]
+      for part in response.content.parts
+      if part.function_call
+  ]
+  assert len(responses[-1].content.parts) == 1
   function_call = responses[-1].content.parts[0].function_call
   assert function_call.name == "test_function"
   assert function_call.args == {"test_arg": "x"}

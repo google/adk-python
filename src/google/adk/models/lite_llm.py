@@ -2064,7 +2064,7 @@ def _parse_deepseek_tool_calls_from_text(
   return tool_calls, remainder or None
 
 
-_INLINE_CALL_OPEN_RE = re.compile(r"\s*(?:<tool_call>|```(?:json)?)?\s*")
+_INLINE_CALL_OPEN_RE = re.compile(r"\s*(?:<tool_call>|```(?i:json)?)?\s*")
 _INLINE_CALL_CLOSE_RE = re.compile(r"\s*(?:</tool_call>|```)?\s*")
 
 
