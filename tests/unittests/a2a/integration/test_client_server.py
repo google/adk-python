@@ -774,6 +774,64 @@ async def test_task_mode_follow_up_after_the_task_completes():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("force_new_version", "use_legacy"),
+    [
+        pytest.param(True, True, id="forced_new_server_default_client"),
+        pytest.param(False, False, id="default_server_non_legacy_client"),
+    ],
+)
+async def test_peer_state_delta_is_logged_and_not_applied(
+    caplog, streaming, force_new_version, use_legacy
+):
+  """A remote output_key never reaches caller state, and the drop is logged.
+
+  The new executor marks its responses for ``_handle_a2a_response_v2``, which
+  reads actions from the nested message and artifact metadata, even when the
+  client did not request the new integration. The legacy executor cannot run on
+  this harness's mocked artifact service, so the legacy response path is
+  covered by the 1.x client-server tests and the RemoteA2aAgent unit tests.
+  """
+
+  async def mock_run_async(**kwargs):
+    # What a remote LlmAgent(output_key="findings") emits as its final event.
+    yield Event(
+        author="FakeAgent",
+        content=types.Content(parts=[types.Part(text="the findings")]),
+        actions=EventActions(state_delta={"findings": "the findings"}),
+    )
+
+  app = create_server_app(mock_run_async, force_new_version=force_new_version)
+  agent = create_client(app, streaming=streaming, use_legacy=use_legacy)
+
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+  client_runner = Runner(
+      app_name="ClientApp", agent=agent, session_service=session_service
+  )
+
+  texts = []
+  with caplog.at_level("WARNING"):
+    async for event in client_runner.run_async(
+        user_id="test_user",
+        session_id="test_session",
+        new_message=types.Content(parts=[types.Part(text="Hi")], role="user"),
+    ):
+      if event.content and event.content.parts:
+        texts.extend(part.text for part in event.content.parts if part.text)
+
+  session = await session_service.get_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+  assert "the findings" in texts
+  assert "findings" not in session.state
+  assert "Ignoring a session state delta from a remote A2A peer" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_include_artifacts_in_a2a_event():
   """Test that artifacts are included in A2A events when the interceptor is enabled."""
 
