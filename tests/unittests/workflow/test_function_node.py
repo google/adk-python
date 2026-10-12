@@ -1418,6 +1418,59 @@ async def test_input_schema_validates_dict(request: pytest.FixtureRequest):
   assert received == [_OutputModel(name='test', value=42)]
 
 
+@pytest.mark.parametrize(
+    'kind', ['str', 'str_or_content', 'str_or_model', 'model']
+)
+async def test_typed_function_receives_answer_without_thoughts(kind):
+  """A workflow passes the answer, not thoughts, into typed functions."""
+  received = []
+
+  def process_text(node_input: str) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  def process_union(node_input: str | types.Content) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  def process_str_or_model(node_input: str | _OutputModel) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  def process_model(node_input: _OutputModel) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  is_model = kind in ('model', 'str_or_model')
+  answer = '{"name": "test", "value": 42}' if is_model else 'hello'
+
+  def produce() -> Event:
+    return Event(
+        output=types.Content(
+            role='model',
+            parts=[
+                types.Part(text='Let me think first.', thought=True),
+                types.Part(text=answer),
+            ],
+        )
+    )
+
+  process = {
+      'str': process_text,
+      'str_or_content': process_union,
+      'str_or_model': process_str_or_model,
+      'model': process_model,
+  }[kind]
+  agent = Workflow(
+      name='typed_answer', edges=[(START, produce), (produce, process)]
+  )
+  await run_workflow(agent)
+
+  assert received == (
+      [_OutputModel(name='test', value=42)] if is_model else ['hello']
+  )
+
+
 @pytest.mark.asyncio
 async def test_input_schema_rejects_invalid_dict(
     request: pytest.FixtureRequest,

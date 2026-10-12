@@ -21,7 +21,6 @@ from collections.abc import Callable
 from collections.abc import Mapping
 import contextvars
 import inspect
-import json
 import logging
 import threading
 import typing
@@ -41,7 +40,7 @@ from ..events.event import Event
 from ..events.request_input import RequestInput
 from ..platform.thread import create_thread
 from ..utils._callable_utils import CallableSpec
-from ..utils._schema_utils import annotation_accepts_content
+from ..utils._schema_utils import _unwrap_content_payload
 from ..utils._schema_utils import annotation_expects_str
 from ..utils._sync_runner import _SYNC_CALLABLE_RUNNER
 from ..utils.context_utils import Aclosing
@@ -202,15 +201,14 @@ _GENERATOR_ORIGINS = (
 )
 
 
-def _content_to_str(
+def _warn_on_non_text_parts(
     content: types.Content, func_name: str, param_name: str
-) -> str:
-  """Extracts text from a Content object, warning on non-text parts."""
-  texts = []
+) -> None:
+  """Logs a warning when Content contains non-text parts."""
   for part in content.parts or []:
-    if part.text is not None:
-      texts.append(part.text)
-    elif part.inline_data or part.file_data or part.executable_code:
+    if part.text is None and (
+        part.inline_data or part.file_data or part.executable_code
+    ):
       logger.warning(
           'Parameter "%s" of function "%s" expects str but received'
           " Content with non-text parts (e.g. inline_data, file_data)."
@@ -218,11 +216,6 @@ def _content_to_str(
           param_name,
           func_name,
       )
-  return "".join(texts)
-
-
-_expects_str = annotation_expects_str
-_expects_content = annotation_accepts_content
 
 
 class FunctionNode(BaseNode):
@@ -580,15 +573,9 @@ class FunctionNode(BaseNode):
     """
     # Content → str / JSON auto-conversion (e.g. user content from START node).
     if isinstance(value, types.Content):
-      if _expects_str(annotated_type):
-        return _content_to_str(value, self.name, param_name)
-      if not _expects_content(annotated_type):
-        if value.parts and all(p.text is not None for p in value.parts):
-          text_str = _content_to_str(value, self.name, param_name)
-          try:
-            value = json.loads(text_str)
-          except json.JSONDecodeError:
-            value = text_str
+      if annotation_expects_str(annotated_type):
+        _warn_on_non_text_parts(value, self.name, param_name)
+      value = _unwrap_content_payload(value, annotated_type)
     adapter = self._type_adapters.get(param_name)
     if adapter is None:
       adapter = TypeAdapter(annotated_type)

@@ -91,6 +91,9 @@ async def compute_artifact_delta_for_rewind(
   if not artifact_service:
     return {}
 
+  # Imported here so that importing sessions does not load artifacts.
+  from ..artifacts import artifact_util
+
   versions_at_rewind_point: dict[str, int] = {}
   for i in range(rewind_event_index):
     event = session.events[i]
@@ -115,9 +118,7 @@ async def compute_artifact_delta_for_rewind(
     artifact: types.Part
     if vt is None:
       # Artifact did not exist at rewind point. Mark it as inaccessible.
-      artifact = types.Part(
-          inline_data=types.Blob(mime_type="application/octet-stream", data=b"")
-      )
+      artifact = artifact_util._new_rewind_tombstone()
     else:
       # Artifact version changed after rewind point. Restore to version at
       # rewind point by loading the actual data via the artifact service.
@@ -136,11 +137,7 @@ async def compute_artifact_delta_for_rewind(
             vt,
             session.id,
         )
-        artifact = types.Part(
-            inline_data=types.Blob(
-                mime_type="application/octet-stream", data=b""
-            )
-        )
+        artifact = artifact_util._new_rewind_tombstone()
       else:
         artifact = loaded_artifact
     await artifact_service.save_artifact(
