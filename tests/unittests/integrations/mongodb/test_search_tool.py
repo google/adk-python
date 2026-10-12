@@ -82,6 +82,73 @@ def _assert_projections_are_valid(pipeline):
     ), f"$project mixes exclusion with inclusion or a computed field: {spec}"
 
 
+async def test_vector_search_auto_embedding_sends_query_text(mock_embed_query):
+  """Auto-embedding mode sends raw text and never calls the Google model."""
+  client = _make_client()
+
+  result = await _search_tool.vector_search(
+      collection_name="test_coll",
+      query=_QUERY,
+      client=client,
+      database_name="test_db",
+      settings=MongoDbToolSettings(use_mongodb_auto_embedding=True),
+  )
+
+  assert result["status"] == "SUCCESS"
+  mock_embed_query.assert_not_called()
+  stage = _aggregate_pipeline(client)[0]["$vectorSearch"]
+  assert stage["query"] == {"text": _QUERY}
+  assert "queryVector" not in stage
+  # No model override: the index's own embedding model is used.
+  assert "model" not in stage
+
+
+async def test_vector_search_auto_embedding_with_model(mock_embed_query):
+  """The optional Voyage AI model override reaches the $vectorSearch stage."""
+  client = _make_client()
+
+  await _search_tool.vector_search(
+      collection_name="test_coll",
+      query=_QUERY,
+      client=client,
+      database_name="test_db",
+      settings=MongoDbToolSettings(
+          use_mongodb_auto_embedding=True,
+          mongodb_auto_embedding_model="voyage-4",
+      ),
+  )
+
+  mock_embed_query.assert_not_called()
+  stage = _aggregate_pipeline(client)[0]["$vectorSearch"]
+  assert stage["query"] == {"text": _QUERY}
+  assert stage["model"] == "voyage-4"
+
+
+async def test_hybrid_search_auto_embedding_vector_arm(mock_embed_query):
+  """Hybrid search's vector arm uses query.text in auto-embedding mode."""
+  client = _make_client()
+
+  result = await _search_tool.hybrid_search(
+      collection_name="test_coll",
+      query=_QUERY,
+      text_search_field="description",
+      client=client,
+      database_name="test_db",
+      settings=MongoDbToolSettings(use_mongodb_auto_embedding=True),
+  )
+
+  assert result["status"] == "SUCCESS"
+  mock_embed_query.assert_not_called()
+  pipeline = _aggregate_pipeline(client)
+  vector_arm = pipeline[0]["$rankFusion"]["input"]["pipelines"]["vector"]
+  stage = vector_arm[0]["$vectorSearch"]
+  assert stage["query"] == {"text": _QUERY}
+  assert "queryVector" not in stage
+  # The full-text arm is unaffected by the embedding mode.
+  full_text_arm = pipeline[0]["$rankFusion"]["input"]["pipelines"]["full_text"]
+  assert full_text_arm[0]["$search"]["text"]["query"] == _QUERY
+
+
 async def test_vector_search_uses_settings_defaults(mock_embed_query):
   """Vector search queries the collection with index, field and limits from settings."""
   client = _make_client()
