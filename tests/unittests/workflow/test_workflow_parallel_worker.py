@@ -1512,3 +1512,62 @@ async def test_parallel_worker_multimodal_content_preserved_untouched(
   assert _outputs_for(events, 'multimodal_wf@1/raw_worker@1') == [
       [{'is_content': True}]
   ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('structured', [False, True])
+async def test_parallel_worker_fans_out_json_list_without_thoughts(
+    request: pytest.FixtureRequest,
+    structured: bool,
+) -> None:
+  """ParallelWorker unwraps a JSON list from Content without thoughts."""
+
+  class _OutputModel(BaseModel):
+    name: str
+    value: int
+
+  received: list[Any] = []
+
+  def process_text(node_input: str) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  def process_model(node_input: _OutputModel) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  answer = (
+      '[{"name": "first", "value": 1}, {"name": "second", "value": 2}]'
+      if structured
+      else '["first", "second"]'
+  )
+
+  def produce() -> Event:
+    return Event(
+        output=types.Content(
+            role='model',
+            parts=[
+                types.Part(text='Let me think first.', thought=True),
+                types.Part(text=answer),
+            ],
+        )
+    )
+
+  worker = node(
+      process_model if structured else process_text, parallel_worker=True
+  )
+  agent = Workflow(
+      name='parallel_answer', edges=[(START, produce), (produce, worker)]
+  )
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+  await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert received == (
+      [
+          _OutputModel(name='first', value=1),
+          _OutputModel(name='second', value=2),
+      ]
+      if structured
+      else ['first', 'second']
+  )

@@ -39,10 +39,11 @@ from ..utils.content_utils import extract_text_from_content
 from ._base_node import BaseNode
 from ._errors import WorkflowDataError
 from ._retry_config import RetryConfig
+from .utils._workflow_hitl_utils import confirmation_interrupt_id
 from .utils._workflow_hitl_utils import create_auth_request_event
+from .utils._workflow_hitl_utils import parse_tool_confirmation
 from .utils._workflow_hitl_utils import process_auth_resume
 
-_TOOL_CONFIRMATION_INTERRUPT_PREFIX = 'wf_tool_confirmation:'
 _TOOL_AUTH_INTERRUPT_PREFIX = 'wf_auth:'
 
 
@@ -56,30 +57,6 @@ def _get_tool_auth_config(tool: BaseTool) -> AuthConfig | None:
   if isinstance(cm_auth_config, AuthConfig):
     return cm_auth_config
   return None
-
-
-def _parse_tool_confirmation(response: Any) -> ToolConfirmation:
-  """Parses the user's answer to a tool confirmation request.
-
-  Resume validation against the `ToolConfirmation` schema yields a dict in
-  which the fields the user left out are None, so those are dropped to fall
-  back to the model defaults.
-  """
-  if isinstance(response, ToolConfirmation):
-    return response
-  if not isinstance(response, dict):
-    raise WorkflowDataError(
-        'A tool confirmation response must be a ToolConfirmation payload, but'
-        f' got {type(response).__name__}.'
-    )
-  try:
-    return ToolConfirmation.from_response_dict(
-        {k: v for k, v in response.items() if v is not None}
-    )
-  except ValueError as e:
-    raise WorkflowDataError(
-        f'Invalid tool confirmation response: {response!r}'
-    ) from e
 
 
 class _AuthPending:
@@ -260,9 +237,9 @@ class _ToolNode(BaseNode):
     The answer is set on `ctx.tool_confirmation`, so the confirmation gate and
     the tool see it the same way they do inside an agent.
     """
-    response = ctx.resume_inputs.get(self._confirmation_interrupt_id(ctx))
+    response = ctx.resume_inputs.get(confirmation_interrupt_id(ctx.node_path))
     if response is not None:
-      ctx.tool_confirmation = _parse_tool_confirmation(response)
+      ctx.tool_confirmation = parse_tool_confirmation(response)
 
   def _take_requested_confirmation(
       self, *, ctx: Context, args: dict[str, Any]
@@ -284,16 +261,12 @@ class _ToolNode(BaseNode):
     if requested.payload is not None:
       payload['confirmation_payload'] = requested.payload
     return RequestInput(
-        interrupt_id=self._confirmation_interrupt_id(ctx),
+        interrupt_id=confirmation_interrupt_id(ctx.node_path),
         message=requested.hint
         or f'Please approve or reject the tool call {self.tool.name}().',
         payload=payload,
         response_schema=ToolConfirmation,
     )
-
-  def _confirmation_interrupt_id(self, ctx: Context) -> str:
-    """Returns the interrupt id of this node run's confirmation request."""
-    return f'{_TOOL_CONFIRMATION_INTERRUPT_PREFIX}{ctx.node_path}'
 
   async def _apply_auth_resume(self, *, ctx: Context) -> None:
     """Processes a resumed auth credential response before running the tool."""
