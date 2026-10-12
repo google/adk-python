@@ -335,7 +335,7 @@ def _build_task_input_user_content(
           parts.append(types.Part(text=_SINGLE_TURN_NUDGE))
         return types.Content(role='user', parts=parts)
 
-  if '@' in isolation_scope:
+  if '@' in isolation_scope and '/' not in isolation_scope:
     invocation_id = isolation_scope.rpartition('@')[2]
     for event in all_events:
       if (
