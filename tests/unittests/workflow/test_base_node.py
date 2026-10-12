@@ -18,7 +18,9 @@ from __future__ import annotations
 
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import find_static_node_path
+import pydantic
 from pydantic import Field
+import pytest
 
 
 class _Parent(BaseNode):
@@ -68,3 +70,24 @@ def test_find_static_node_path_returns_none_for_unreachable_node():
   """A node outside the tree has no path."""
   root, _, _ = _build_tree()
   assert find_static_node_path(root, BaseNode(name='orphan')) is None
+
+
+def test_find_static_node_path_traverses_dict_fields():
+  """find_static_node_path discovers child nodes stored inside a dict field."""
+
+  class _DictParent(BaseNode):
+    branches: dict[str, BaseNode] = Field(default_factory=dict)
+
+  leaf = BaseNode(name='leaf_worker')
+  mid = _DictParent(name='router', branches={'primary': leaf})
+  root = _DictParent(name='root', branches={'entry': mid})
+
+  assert find_static_node_path(root, leaf) == 'root/router/leaf_worker'
+
+
+def test_base_node_rejects_non_identifier_name():
+  """BaseNode raises ValidationError when name is not a Python identifier."""
+  with pytest.raises(
+      pydantic.ValidationError, match='must be a valid Python identifier'
+  ):
+    BaseNode(name='invalid-node-name')

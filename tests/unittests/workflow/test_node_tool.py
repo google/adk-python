@@ -21,12 +21,14 @@ from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.tools._node_tool import NodeTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.adk.workflow import JoinNode
 from google.adk.workflow import node
 from google.adk.workflow import START
@@ -35,8 +37,6 @@ from google.adk.workflow._function_node import FunctionNode
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
@@ -153,7 +153,7 @@ async def test_workflow_as_tool_hitl_resume(request: pytest.FixtureRequest):
   args = request_input_event.content.parts[0].function_call.args
   assert args['message'] == 'What is your name and age?'
 
-  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  [interrupt_id] = extract_event_interrupt_ids(request_input_event)
   invocation_id = request_input_event.invocation_id
 
   # Turn 2: Resume with the user input resolving the interrupt.
@@ -251,7 +251,7 @@ async def test_workflow_as_tool_hitl_resume_non_resumable_app(
   args = request_input_event.content.parts[0].function_call.args
   assert args['message'] == 'What is your name and age?'
 
-  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  [interrupt_id] = extract_event_interrupt_ids(request_input_event)
   invocation_id = request_input_event.invocation_id
 
   # Turn 2: Resume with the user input resolving the interrupt.
@@ -643,7 +643,7 @@ async def test_workflow_tool_with_dynamic_node_hitl_resume(
       events1, REQUEST_INPUT_FUNCTION_CALL_NAME
   )
   assert request_input_event is not None
-  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  [interrupt_id] = extract_event_interrupt_ids(request_input_event)
   invocation_id = request_input_event.invocation_id
 
   # Turn 2: Resume with the user input response.
@@ -759,7 +759,7 @@ async def test_workflow_as_tool_nested_hitl(request: pytest.FixtureRequest):
   args = request_input_event.content.parts[0].function_call.args
   assert args['message'] == 'Give me some input:'
 
-  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  [interrupt_id] = extract_event_interrupt_ids(request_input_event)
   invocation_id = request_input_event.invocation_id
 
   # Turn 2: Resume
@@ -880,7 +880,7 @@ async def test_workflow_as_tool_nested_multi_hitl(
       events1, REQUEST_INPUT_FUNCTION_CALL_NAME
   )
   assert request_input_event1 is not None
-  interrupt_id1 = get_request_input_interrupt_ids(request_input_event1)[0]
+  [interrupt_id1] = extract_event_interrupt_ids(request_input_event1)
   invocation_id = request_input_event1.invocation_id
 
   # Turn 2: Resume first HITL -> triggers second HITL
@@ -894,7 +894,7 @@ async def test_workflow_as_tool_nested_multi_hitl(
       events2, REQUEST_INPUT_FUNCTION_CALL_NAME
   )
   assert request_input_event2 is not None
-  interrupt_id2 = get_request_input_interrupt_ids(request_input_event2)[0]
+  [interrupt_id2] = extract_event_interrupt_ids(request_input_event2)
   assert interrupt_id1 != interrupt_id2
 
   # Turn 3: Resume second HITL -> finishes
@@ -2150,11 +2150,10 @@ async def test_node_tool_repeated_calls_do_not_share_resume_input(
   req1 = workflow_testing_utils.find_function_call_event(
       events1, REQUEST_INPUT_FUNCTION_CALL_NAME
   )
+  [req1_interrupt_id] = extract_event_interrupt_ids(req1)
   events2 = await runner.run_async(
       new_message=testing_utils.UserContent(
-          create_request_input_response(
-              get_request_input_interrupt_ids(req1)[0], {'text': 'APAC'}
-          )
+          create_request_input_response(req1_interrupt_id, {'text': 'APAC'})
       ),
       invocation_id=req1.invocation_id,
   )

@@ -92,27 +92,6 @@ def create_request_input_event(request_input: RequestInput) -> Event:
   )
 
 
-def has_request_input_function_call(event: Event) -> bool:
-  """Checks if an event contains a `request_input` function call."""
-  if not (event.content and event.content.parts):
-    return False
-  return any(
-      p.function_call
-      and p.function_call.name == REQUEST_INPUT_FUNCTION_CALL_NAME
-      for p in event.content.parts
-  )
-
-
-def has_auth_request_function_call(event: Event) -> bool:
-  """Checks if an event contains an `adk_request_credential` function call."""
-  if not (event.content and event.content.parts):
-    return False
-  return any(
-      p.function_call and p.function_call.name == REQUEST_EUC_FUNCTION_CALL_NAME
-      for p in event.content.parts
-  )
-
-
 def create_request_input_response(
     interrupt_id: str,
     response: Mapping[str, Any],
@@ -134,23 +113,6 @@ def create_request_input_response(
           response=response,
       )
   )
-
-
-def get_request_input_interrupt_ids(event: Event) -> list[str]:
-  """Extracts interrupt_ids from an event containing `request_input` function
-  calls.
-  """
-  interrupt_ids: list[str] = []
-  if not event.content or not event.content.parts:
-    return interrupt_ids
-  for part in event.content.parts:
-    if (
-        part.function_call
-        and part.function_call.name == REQUEST_INPUT_FUNCTION_CALL_NAME
-        and part.function_call.id is not None
-    ):
-      interrupt_ids.append(part.function_call.id)
-  return interrupt_ids
 
 
 # ---------------------------------------------------------------------------

@@ -102,6 +102,44 @@ MOCK_SESSION = Session(
     ],
 )
 
+CREDENTIAL_TOKEN = 'test-access-token'
+
+CREDENTIAL_EXCHANGE_EVENTS = [
+    Event(
+        id='777',
+        invocation_id='789',
+        author='agent',
+        timestamp=34567,
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name='adk_request_credential',
+                        args={'authConfig': {'authScheme': {'type': 'oauth2'}}},
+                    )
+                )
+            ]
+        ),
+    ),
+    Event(
+        id='888',
+        invocation_id='789',
+        author='user',
+        timestamp=34568,
+        content=types.Content(
+            role='user',
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        name='adk_request_credential',
+                        response={'access_token': CREDENTIAL_TOKEN},
+                    )
+                )
+            ],
+        ),
+    ),
+]
+
 MOCK_SESSION_WITH_EMPTY_EVENTS = Session(
     app_name=MOCK_APP_NAME,
     user_id=MOCK_USER_ID,
@@ -420,6 +458,59 @@ async def test_add_session_to_memory(mock_agentplatform_client):
   )
   assert source.events[1].event_id == '666'
   assert source.events[1].content.parts[0].function_call.name == 'test_function'
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_credential_events(
+    mock_agentplatform_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='333',
+      last_update_time=22333,
+      events=[MOCK_SESSION.events[0]] + CREDENTIAL_EXCHANGE_EVENTS,
+  )
+
+  await memory_service.add_session_to_memory(session)
+
+  # Allow the fire-and-forget task to complete.
+  await asyncio.sleep(0)
+
+  call_kwargs = (
+      mock_agentplatform_client.memory_banks.ingest_events.call_args.kwargs
+  )
+  source = call_kwargs['direct_contents_source']
+  assert [event.event_id for event in source.events] == ['444']
+  assert CREDENTIAL_TOKEN not in str(call_kwargs)
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_via_generate_skips_credential_events(
+    mock_agentplatform_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with mock.patch.object(
+      memory_service_module,
+      '_supports_generate_memories_metadata',
+      return_value=False,
+  ):
+    await memory_service.add_events_to_memory(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+        events=[MOCK_SESSION.events[0]] + CREDENTIAL_EXCHANGE_EVENTS,
+        custom_metadata={'ttl': '6000s'},
+    )
+
+  call_kwargs = (
+      mock_agentplatform_client.memory_banks.memories.generate.call_args.kwargs
+  )
+  source = call_kwargs['direct_contents_source']
+  assert len(source.events) == 1
+  assert source.events[0].content.parts[0].text == 'test_content'
+  assert CREDENTIAL_TOKEN not in str(call_kwargs)
 
 
 @pytest.mark.asyncio

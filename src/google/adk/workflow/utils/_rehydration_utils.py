@@ -28,6 +28,8 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError
 
 from ...events._branch_path import _BranchPath
+from ...events._interrupts import extract_event_interrupt_ids
+from ...events._interrupts import is_interrupt_event
 from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
 from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
@@ -418,8 +420,6 @@ def _reconstruct_node_states(
         child.error_code = event.error_code
 
     # 6. Extract interrupts and their schemas
-    from ...events._interrupts import extract_event_interrupt_ids
-
     interrupt_ids_to_process = extract_event_interrupt_ids(event)
 
     if interrupt_ids_to_process:
@@ -455,17 +455,9 @@ def is_terminal_event(event: Event) -> bool:
     return True
   if event.actions and event.actions.route is not None:
     return True
-  if event.long_running_tool_ids:
-    return True
   if event.error_code is not None:
     return True
-
-  from ._workflow_hitl_utils import has_auth_request_function_call
-  from ._workflow_hitl_utils import has_request_input_function_call
-
-  if has_request_input_function_call(event) or has_auth_request_function_call(
-      event
-  ):
+  if is_interrupt_event(event):
     return True
 
   return False

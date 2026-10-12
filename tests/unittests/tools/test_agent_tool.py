@@ -1444,6 +1444,38 @@ async def test_run_async_preserves_error_when_only_thought_parts():
   assert result == 'A2A request failed: 503'
 
 
+@mark.asyncio
+async def test_run_async_returns_empty_string_when_only_thought_parts():
+  """All-thought final content with no error_message returns ''."""
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='thinking', thought=True)],
+          ),
+      ),
+  ])
+  assert result == ''
+
+
+@mark.asyncio
+@mark.parametrize(
+    'empty_part',
+    [
+        types.Part(executable_code=types.ExecutableCode(code='')),
+        types.Part(code_execution_result=types.CodeExecutionResult(output='')),
+        types.Part(),
+    ],
+)
+async def test_run_async_skips_parts_without_text(empty_part: types.Part):
+  """A part with no text, code or output adds nothing to the result."""
+  result = await _run_agent_tool_with_parts(
+      [empty_part, types.Part(text='after')]
+  )
+  assert result == 'after'
+
+
 class TestAgentToolWithCompositeAgents:
   """Tests for AgentTool wrapping composite agents (SequentialAgent, etc.)."""
 

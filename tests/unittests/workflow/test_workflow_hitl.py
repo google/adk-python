@@ -26,6 +26,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
@@ -42,7 +43,6 @@ from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._rehydration_utils import _wrap_response
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -420,7 +420,7 @@ async def test_workflow_request_input_resume(
       'title': 'UserDetails',
       'type': 'object',
   }
-  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  [interrupt_id] = extract_event_interrupt_ids(request_input_event)
   invocation_id = request_input_event.invocation_id
 
   simplified_events1 = (
@@ -664,7 +664,7 @@ async def test_workflow_rerun_on_resume(
   )
   req_events = workflow_testing_utils.get_request_input_events(events1)
   assert len(req_events) == 1
-  interrupt_id1 = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id1] = extract_event_interrupt_ids(req_events[0])
   invocation_id = events1[0].invocation_id
 
   if resumable:
@@ -798,7 +798,7 @@ async def test_workflow_rerun_with_multiple_inputs(
   )
   req_events1 = workflow_testing_utils.get_request_input_events(events1)
   assert len(req_events1) == 1
-  interrupt_id1 = get_request_input_interrupt_ids(req_events1[0])[0]
+  [interrupt_id1] = extract_event_interrupt_ids(req_events1[0])
   assert interrupt_id1 == 'req1'
   invocation_id = events1[0].invocation_id
   if resumable:
@@ -831,7 +831,7 @@ async def test_workflow_rerun_with_multiple_inputs(
   )
   req_events2 = workflow_testing_utils.get_request_input_events(events2)
   assert len(req_events2) == 1
-  interrupt_id2 = get_request_input_interrupt_ids(req_events2[0])[0]
+  [interrupt_id2] = extract_event_interrupt_ids(req_events2[0])
   assert interrupt_id2 == 'req2'
 
   expected_events2 = [
@@ -1020,7 +1020,7 @@ async def test_rerun_with_multiple_hitl_and_outputs(
   )
   req_events1 = workflow_testing_utils.get_request_input_events(events1)
   assert len(req_events1) == 1
-  assert get_request_input_interrupt_ids(req_events1[0])[0] == 'req1'
+  assert extract_event_interrupt_ids(req_events1[0]) == {'req1'}
   invocation_id = events1[0].invocation_id
 
   # Run 2: provide input1, node requests input2.
@@ -1036,7 +1036,7 @@ async def test_rerun_with_multiple_hitl_and_outputs(
   )
   req_events2 = workflow_testing_utils.get_request_input_events(events2)
   assert len(req_events2) == 1
-  assert get_request_input_interrupt_ids(req_events2[0])[0] == 'req2'
+  assert extract_event_interrupt_ids(req_events2[0]) == {'req2'}
 
   # Run 3: provide input2, node yields final output and completes.
   await collect_events(
@@ -1146,7 +1146,7 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
   assert len(req_events1) == 2
   interrupt_ids = []
   for e in req_events1:
-    interrupt_ids.extend(get_request_input_interrupt_ids(e))
+    interrupt_ids.extend(extract_event_interrupt_ids(e))
   assert set(interrupt_ids) == {'req1', 'req2'}
   invocation_id = events1[0].invocation_id
 
@@ -1189,7 +1189,7 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
     assert len(req_events2) == 0
   else:
     assert len(req_events2) == 1
-    assert get_request_input_interrupt_ids(req_events2[0]) == ['req2']
+    assert extract_event_interrupt_ids(req_events2[0]) == {'req2'}
 
   # Run 3: provide req2 — now all interrupts resolved, node should rerun.
   events3 = await runner.run_async(
@@ -1261,7 +1261,7 @@ async def test_wrapped_response_unwrapped_for_node(
   events1 = await runner.run_async(testing_utils.get_user_content('go'))
   req_events = workflow_testing_utils.get_request_input_events(events1)
   assert len(req_events) == 1
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
   invocation_id = events1[0].invocation_id
 
   # Resume with a wrapped response (simulates adk web after rewrapping).
@@ -1307,7 +1307,7 @@ async def test_dict_response_not_unwrapped(
   events1 = await runner.run_async(testing_utils.get_user_content('go'))
   req_events = workflow_testing_utils.get_request_input_events(events1)
   assert len(req_events) == 1
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
   invocation_id = events1[0].invocation_id
 
   # Resume with a raw dict (programmatic API or adk web with JSON dict input).
@@ -1701,7 +1701,7 @@ async def test_resume_preserves_node_input(
   invocation_id = events1[0].invocation_id
   req_events = workflow_testing_utils.get_request_input_events(events1)
   assert len(req_events) == 1
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
 
   # First run should have received NodeA's output.
   assert len(node_b.captured_inputs) == 1
@@ -1750,7 +1750,7 @@ async def test_resume_preserves_input_from_start(
   invocation_id = events1[0].invocation_id
   req_events = workflow_testing_utils.get_request_input_events(events1)
   assert len(req_events) == 1
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
 
   # First run: triggered_by should be START.
   assert len(node_a.captured_inputs) == 1
@@ -1806,7 +1806,7 @@ async def test_resume_fan_in_both_predecessors_completed(
   # C should have been triggered twice (once per predecessor).
   req_events = workflow_testing_utils.get_request_input_events(events1)
   assert len(req_events) >= 1
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
 
   # First run: C's input should come from one of its predecessors.
   assert len(node_c.captured_inputs) >= 1
@@ -1883,7 +1883,7 @@ async def test_resume_loop_receives_latest_input(
   invocation_id = events1[0].invocation_id
   req_events = workflow_testing_utils.get_request_input_events(events1)
   assert len(req_events) == 1
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
 
   # First iteration: triggered by START.
   assert len(node_a.captured_inputs) == 1
@@ -2080,9 +2080,7 @@ async def test_parallel_nodes_trigger_same_hitl_node(
   req_events1 = workflow_testing_utils.get_request_input_events(events1)
   assert len(req_events1) == 1
 
-  from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-
-  interrupt_id_1 = get_request_input_interrupt_ids(req_events1[0])[0]
+  [interrupt_id_1] = extract_event_interrupt_ids(req_events1[0])
   # The first trigger for node_c would be from node_a
   assert interrupt_id_1 == 'req_c_from_a'
 
@@ -2100,7 +2098,7 @@ async def test_parallel_nodes_trigger_same_hitl_node(
 
   req_events2 = workflow_testing_utils.get_request_input_events(events2)
   assert len(req_events2) == 1
-  interrupt_id_2 = get_request_input_interrupt_ids(req_events2[0])[0]
+  [interrupt_id_2] = extract_event_interrupt_ids(req_events2[0])
   assert interrupt_id_2 == 'req_c_from_b'
 
   outputs2 = workflow_testing_utils.get_outputs(events2)
@@ -2122,7 +2120,6 @@ async def test_trigger_buffer_insertion_order_deterministic(
     request: pytest.FixtureRequest,
 ):
   """Tests that trigger buffer processes triggers in arrival order."""
-  from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
   from google.genai import types
 
   @node(rerun_on_resume=True)
@@ -2178,7 +2175,7 @@ async def test_trigger_buffer_insertion_order_deterministic(
 
   interrupt_ids = []
   for e in req_events1:
-    interrupt_ids.extend(get_request_input_interrupt_ids(e))
+    interrupt_ids.extend(extract_event_interrupt_ids(e))
 
   id_d = next(id for id in interrupt_ids if 'req_d' in id)
   id_e = next(id for id in interrupt_ids if 'req_e' in id)
@@ -2206,8 +2203,8 @@ async def test_trigger_buffer_insertion_order_deterministic(
   req_events2 = workflow_testing_utils.get_request_input_events(events2)
   # Both interrupts are returned sequentially because yielding an interrupt frees the concurrency slot.
   assert len(req_events2) == 2
-  interrupt_id_2_first = get_request_input_interrupt_ids(req_events2[0])[0]
-  interrupt_id_2_second = get_request_input_interrupt_ids(req_events2[1])[0]
+  [interrupt_id_2_first] = extract_event_interrupt_ids(req_events2[0])
+  [interrupt_id_2_second] = extract_event_interrupt_ids(req_events2[1])
   # We assert that the FIRST trigger (for from_a) was processed FIRST!
   assert interrupt_id_2_first == 'req_d_from_a'
   assert interrupt_id_2_second == 'req_e_from_b'
@@ -2303,7 +2300,7 @@ async def test_request_input_resume_after_earlier_invocation_completed(
       events2, REQUEST_INPUT_FUNCTION_CALL_NAME
   )
   assert request_input_event is not None
-  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  [interrupt_id] = extract_event_interrupt_ids(request_input_event)
   invocation_id = request_input_event.invocation_id
 
   # Resuming must reach the pending node instead of timing out on `finish`.

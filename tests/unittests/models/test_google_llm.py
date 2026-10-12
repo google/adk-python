@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock
 
 from google.adk import version as adk_version
 from google.adk.agents.context_cache_config import ContextCacheConfig
+from google.adk.models import _continuation
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
 from google.adk.models.google_llm import _build_function_declaration_log
@@ -42,6 +43,34 @@ from google.genai.errors import ClientError
 from google.genai.types import Content
 from google.genai.types import Part
 import pytest
+
+from google import genai
+
+_CONTINUATION = types.FinishReason.CONTINUATION
+
+
+def _response(
+    *parts: Part,
+    finish_reason: types.FinishReason | None = None,
+    token: bytes | None = None,
+    usage: types.GenerateContentResponseUsageMetadata | None = None,
+    grounding: types.GroundingMetadata | None = None,
+    citation: types.CitationMetadata | None = None,
+) -> types.GenerateContentResponse:
+  return types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=Content(role="model", parts=list(parts))
+              if parts
+              else None,
+              finish_reason=finish_reason,
+              continuation_token=token,
+              grounding_metadata=grounding,
+              citation_metadata=citation,
+          )
+      ],
+      usage_metadata=usage,
+  )
 
 
 class MockAsyncIterator:
@@ -1002,6 +1031,757 @@ async def test_generate_content_async_stream_preserves_thinking_and_text_parts(
     assert responses[3].content.parts[0].thought is True
     assert responses[3].content.parts[1].text == "Answer."
     mock_client.aio.models.generate_content_stream.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_resumes_paused_generation(
+    gemini_llm, llm_request
+):
+  paused = _response(
+      Part.from_text(text="The answer is"),
+      finish_reason=_CONTINUATION,
+      token=b"\x00state",
+      usage=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=10,
+          candidates_token_count=5,
+          total_token_count=15,
+          cached_content_token_count=4,
+          candidates_tokens_details=[
+              types.ModalityTokenCount(
+                  modality=types.MediaModality.TEXT, token_count=5
+              )
+          ],
+      ),
+  )
+  finished = _response(
+      Part.from_text(text=" 42."),
+      finish_reason=types.FinishReason.STOP,
+      usage=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=15,
+          candidates_token_count=3,
+          total_token_count=18,
+          candidates_tokens_details=[
+              types.ModalityTokenCount(
+                  modality=types.MediaModality.TEXT, token_count=3
+              )
+          ],
+      ),
+  )
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=[paused, finished]
+    )
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  assert len(responses) == 1
+  assert responses[0].content == Content(
+      role="model", parts=[Part.from_text(text="The answer is 42.")]
+  )
+  assert responses[0].finish_reason == types.FinishReason.STOP
+  assert responses[
+      0
+  ].usage_metadata == types.GenerateContentResponseUsageMetadata(
+      # The prompt is resent to resume, so it counts once, not once per request.
+      prompt_token_count=10,
+      candidates_token_count=8,
+      total_token_count=18,
+      cached_content_token_count=4,
+      candidates_tokens_details=[
+          types.ModalityTokenCount(
+              modality=types.MediaModality.TEXT, token_count=8
+          )
+      ],
+  )
+  resumed = mock_client.aio.models.generate_content.call_args_list[1].kwargs
+  assert resumed["contents"] == [
+      *llm_request.contents,
+      Content(role="model", parts=[Part.from_text(text="The answer is")]),
+  ]
+  assert resumed["config"].continuation_token == b"\x00state"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_resumes_paused_generation(
+    gemini_llm, llm_request
+):
+  first_stream = [
+      _response(Part.from_text(text="The answer")),
+      _response(Part.from_text(text=" is")),
+      _response(
+          finish_reason=_CONTINUATION,
+          token=b"state",
+          usage=types.GenerateContentResponseUsageMetadata(
+              candidates_token_count=5
+          ),
+      ),
+  ]
+  second_stream = [
+      _response(
+          Part.from_text(text=" 42."),
+          finish_reason=types.FinishReason.STOP,
+          usage=types.GenerateContentResponseUsageMetadata(
+              candidates_token_count=3
+          ),
+      ),
+  ]
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content_stream = AsyncMock(
+        side_effect=[
+            MockAsyncIterator(first_stream),
+            MockAsyncIterator(second_stream),
+        ]
+    )
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  # The content-less pause chunk is not forwarded, so it yields no response.
+  assert [r.partial for r in responses] == [True, True, True, False]
+  assert all(r.error_code is None for r in responses)
+  assert responses[-1].content.parts[0].text == "The answer is 42."
+  assert responses[-1].finish_reason == types.FinishReason.STOP
+  assert responses[-1].usage_metadata.candidates_token_count == 8
+  resumed = mock_client.aio.models.generate_content_stream.call_args_list[1]
+  assert resumed.kwargs["contents"][-1] == Content(
+      role="model", parts=[Part.from_text(text="The answer is")]
+  )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_pause_keeps_grounding(
+    gemini_llm, llm_request
+):
+  grounding = types.GroundingMetadata(web_search_queries=["the answer"])
+  citation = types.CitationMetadata(
+      citations=[types.Citation(start_index=0, end_index=3)]
+  )
+  first_stream = [
+      _response(Part.from_text(text="The answer is")),
+      _response(
+          finish_reason=_CONTINUATION,
+          token=b"state",
+          grounding=grounding,
+          citation=citation,
+      ),
+  ]
+  second_stream = [
+      _response(
+          Part.from_text(text=" 42."), finish_reason=types.FinishReason.STOP
+      ),
+  ]
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content_stream = AsyncMock(
+        side_effect=[
+            MockAsyncIterator(first_stream),
+            MockAsyncIterator(second_stream),
+        ]
+    )
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  # A pause chunk with no parts still carries metadata worth keeping.
+  assert responses[-1].grounding_metadata == grounding
+  assert responses[-1].citation_metadata == citation
+  assert responses[-1].content.parts == [
+      Part.from_text(text="The answer is 42.")
+  ]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_resumes_pause_without_output(
+    gemini_llm, llm_request
+):
+  paused = _response(finish_reason=_CONTINUATION, token=b"state")
+  finished = _response(
+      Part.from_text(text="Done."), finish_reason=types.FinishReason.STOP
+  )
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=[paused, finished]
+    )
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  assert responses[0].content.parts[0].text == "Done."
+  resumed = mock_client.aio.models.generate_content.call_args_list[1].kwargs
+  assert resumed["contents"] == llm_request.contents
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_continuation_keeps_request_config(
+    gemini_llm, llm_request
+):
+  llm_request.config.http_options = types.HttpOptions(
+      extra_body={"custom": "value"}
+  )
+  paused = _response(
+      Part.from_text(text="a"), finish_reason=_CONTINUATION, token=b"state"
+  )
+  finished = _response(
+      Part.from_text(text="b"), finish_reason=types.FinishReason.STOP
+  )
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=[paused, finished]
+    )
+
+    _ = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  resumed = mock_client.aio.models.generate_content.call_args_list[1].kwargs
+  assert resumed["config"].continuation_token == b"state"
+  assert resumed["config"].http_options.extra_body == {"custom": "value"}
+  assert resumed["config"].temperature == llm_request.config.temperature
+  assert llm_request.config.continuation_token is None
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_continuation_keeps_thought_signatures(
+    gemini_llm, llm_request
+):
+  paused = _response(
+      Part(text="The answer is", thought_signature=b"sig"),
+      finish_reason=_CONTINUATION,
+      token=b"state",
+  )
+  finished = _response(
+      Part.from_text(text=" 42."), finish_reason=types.FinishReason.STOP
+  )
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=[paused, finished]
+    )
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  assert responses[0].content.parts == [
+      Part(text="The answer is 42.", thought_signature=b"sig"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_continuation_keeps_thought_signatures(
+    gemini_llm, llm_request
+):
+  first_stream = [
+      _response(Part(text="The answer", thought_signature=b"sig")),
+      _response(Part.from_text(text=" is")),
+      _response(
+          Part(text="", thought_signature=b"end"),
+          finish_reason=_CONTINUATION,
+          token=b"state",
+      ),
+  ]
+  second_stream = [
+      _response(
+          Part.from_text(text=" 42."), finish_reason=types.FinishReason.STOP
+      ),
+  ]
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content_stream = AsyncMock(
+        side_effect=[
+            MockAsyncIterator(first_stream),
+            MockAsyncIterator(second_stream),
+        ]
+    )
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  resumed = mock_client.aio.models.generate_content_stream.call_args_list[1]
+  # The pause closes its text with a signature on an empty part, which joins
+  # onto that text so the resumed request carries one part, not three.
+  assert resumed.kwargs["contents"][-1] == Content(
+      role="model",
+      parts=[Part(text="The answer is", thought_signature=b"end")],
+  )
+  # The whole turn, not just parts[0]: the pause must not split the text.
+  assert responses[-1].content.parts == [
+      Part(text="The answer is 42.", thought_signature=b"end")
+  ]
+
+
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.asyncio
+async def test_generate_content_async_resume_keeps_newest_signature(
+    gemini_llm, llm_request, stream
+):
+  paused = _response(
+      Part(text="The answer is", thought_signature=b"first"),
+      finish_reason=_CONTINUATION,
+      token=b"state",
+  )
+  finished = _response(
+      Part(text=" 42.", thought_signature=b"last"),
+      finish_reason=types.FinishReason.STOP,
+  )
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=[paused, finished]
+    )
+    mock_client.aio.models.generate_content_stream = AsyncMock(
+        side_effect=[
+            MockAsyncIterator([paused]),
+            MockAsyncIterator([finished]),
+        ]
+    )
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=stream
+        )
+    ]
+
+  assert responses[-1].content.parts == [
+      Part(text="The answer is 42.", thought_signature=b"last")
+  ]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_pause_without_token_returns_output(
+    gemini_llm, llm_request
+):
+  paused = _response(Part.from_text(text="a"), finish_reason=_CONTINUATION)
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content = AsyncMock(return_value=paused)
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  mock_client.aio.models.generate_content.assert_called_once()
+  assert responses[0].content.parts[0].text == "a"
+  assert responses[0].finish_reason == _CONTINUATION
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stops_on_repeated_continuation_token(
+    gemini_llm, llm_request, caplog
+):
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=[
+            _response(
+                Part.from_text(text="a"),
+                finish_reason=_CONTINUATION,
+                token=b"state",
+            ),
+            _response(
+                Part.from_text(text="b"),
+                finish_reason=_CONTINUATION,
+                token=b"state",
+            ),
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING):
+      responses = [
+          resp
+          async for resp in gemini_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+  assert mock_client.aio.models.generate_content.call_count == 2
+  assert responses[0].content.parts[0].text == "ab"
+  assert responses[0].finish_reason == _CONTINUATION
+  assert "same continuation token twice" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_continuation_keeps_earlier_metadata(
+    gemini_llm, llm_request
+):
+  grounding = types.GroundingMetadata(web_search_queries=["the answer"])
+  citation = types.CitationMetadata(
+      citations=[types.Citation(start_index=0, end_index=3)]
+  )
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=[
+            _response(
+                Part.from_text(text="The answer is"),
+                finish_reason=_CONTINUATION,
+                token=b"state",
+                grounding=grounding,
+                citation=citation,
+            ),
+            _response(finish_reason=_CONTINUATION, token=b"state"),
+        ]
+    )
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  assert mock_client.aio.models.generate_content.call_count == 2
+  assert responses[0].content.parts[0].text == "The answer is"
+  assert responses[0].grounding_metadata == grounding
+  assert responses[0].citation_metadata == citation
+  # The first request produced the output, so the last pause is not an error.
+  assert responses[0].error_code is None
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_continuation_keeps_later_error(
+    gemini_llm, llm_request
+):
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=[
+            _response(
+                Part.from_text(text="The answer is"),
+                finish_reason=_CONTINUATION,
+                token=b"state",
+            ),
+            _response(
+                finish_reason=types.FinishReason.SAFETY,
+            ),
+        ]
+    )
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  assert responses[0].content.parts[0].text == "The answer is"
+  assert responses[0].error_code == types.FinishReason.SAFETY
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_continuation_keeps_each_signature(
+    gemini_llm, llm_request
+):
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=[
+            _response(
+                Part(text="The answer is", thought_signature=b"first"),
+                finish_reason=_CONTINUATION,
+                token=b"state",
+            ),
+            _response(
+                Part(text=" 42.", thought_signature=b"second"),
+                Part(text="Anything else?", thought_signature=b"third"),
+                finish_reason=types.FinishReason.STOP,
+            ),
+        ]
+    )
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  # Only the pause split text that belongs together.
+  assert responses[0].content.parts == [
+      Part(text="The answer is 42.", thought_signature=b"second"),
+      Part(text="Anything else?", thought_signature=b"third"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_pause_mid_function_call(
+    gemini_llm, llm_request, caplog
+):
+  partial_call = types.Part(
+      function_call=types.FunctionCall(
+          name="lookup",
+          partial_args=[types.PartialArg(json_path="q", string_value="x")],
+          will_continue=True,
+      )
+  )
+  first_stream = [
+      _response(partial_call),
+      _response(finish_reason=_CONTINUATION, token=b"state"),
+  ]
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content_stream = AsyncMock(
+        side_effect=[MockAsyncIterator(first_stream)]
+    )
+
+    with caplog.at_level(logging.WARNING):
+      responses = [
+          resp
+          async for resp in gemini_llm.generate_content_async(
+              llm_request, stream=True
+          )
+      ]
+
+  # Resending the unfinished call is rejected, so the pause is not resumed.
+  mock_client.aio.models.generate_content_stream.assert_called_once()
+  assert responses[-1].finish_reason == _CONTINUATION
+  assert "middle of a function call" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("max_resumes", "tokens"),
+    [(256, [b"state", b"state"]), (1, [b"first", b"second"])],
+    ids=["repeated_token", "max_resumes"],
+)
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_keeps_pause_it_does_not_resume(
+    gemini_llm, llm_request, max_resumes, tokens
+):
+  streams = [
+      MockAsyncIterator([
+          _response(
+              Part.from_text(text=text),
+              finish_reason=_CONTINUATION,
+              token=token,
+          )
+      ])
+      for text, token in zip(["a", "b"], tokens)
+  ]
+  with mock.patch.object(_continuation, "_MAX_RESUMES", max_resumes):
+    with mock.patch.object(gemini_llm, "api_client") as mock_client:
+      mock_client.aio.models.generate_content_stream = AsyncMock(
+          side_effect=streams
+      )
+
+      responses = [
+          resp
+          async for resp in gemini_llm.generate_content_async(
+              llm_request, stream=True
+          )
+      ]
+
+  assert mock_client.aio.models.generate_content_stream.call_count == 2
+  assert responses[-1].content.parts[0].text == "ab"
+  assert responses[-1].finish_reason == _CONTINUATION
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stops_after_max_resumes(
+    gemini_llm, llm_request, caplog
+):
+  with mock.patch.object(_continuation, "_MAX_RESUMES", 2):
+    with mock.patch.object(gemini_llm, "api_client") as mock_client:
+      mock_client.aio.models.generate_content = AsyncMock(
+          side_effect=[
+              _response(
+                  Part.from_text(text=str(i)),
+                  finish_reason=_CONTINUATION,
+                  token=bytes([i]),
+              )
+              for i in range(3)
+          ]
+      )
+
+      with caplog.at_level(logging.WARNING):
+        responses = [
+            resp
+            async for resp in gemini_llm.generate_content_async(
+                llm_request, stream=False
+            )
+        ]
+
+  assert mock_client.aio.models.generate_content.call_count == 3
+  assert responses[0].content.parts[0].text == "012"
+  assert "paused the generation 2 times" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_resume_omits_client_function_call_ids(
+    gemini_llm, llm_request
+):
+  first_stream = [
+      _response(Part.from_function_call(name="lookup", args={"q": "x"})),
+      _response(finish_reason=_CONTINUATION, token=b"state"),
+  ]
+  second_stream = [
+      _response(
+          Part.from_text(text="Done."), finish_reason=types.FinishReason.STOP
+      ),
+  ]
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content_stream = AsyncMock(
+        side_effect=[
+            MockAsyncIterator(first_stream),
+            MockAsyncIterator(second_stream),
+        ]
+    )
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  function_calls = [
+      part.function_call
+      for part in responses[-1].content.parts
+      if part.function_call
+  ]
+  assert function_calls[0].id.startswith("adk-")
+  resumed = mock_client.aio.models.generate_content_stream.call_args_list[1]
+  assert resumed.kwargs["contents"][-1] == Content(
+      role="model",
+      parts=[Part.from_function_call(name="lookup", args={"q": "x"})],
+  )
+
+
+@pytest.mark.parametrize(
+    "gemini_kwargs",
+    [{}, {"client_kwargs": {"http_options": {"timeout": 1000}}}],
+    ids=["default", "client_kwargs_without_retry_options"],
+)
+@pytest.mark.asyncio
+async def test_generate_content_async_retries_resumed_requests(
+    llm_request, gemini_kwargs
+):
+  gemini_llm = Gemini(model="gemini-2.5-flash", **gemini_kwargs)
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=[
+            _response(
+                Part.from_text(text="a"),
+                finish_reason=_CONTINUATION,
+                token=b"state",
+            ),
+            _response(
+                Part.from_text(text="b"), finish_reason=types.FinishReason.STOP
+            ),
+        ]
+    )
+
+    _ = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  first, resumed = mock_client.aio.models.generate_content.call_args_list
+  assert first.kwargs["config"].http_options.retry_options is None
+  assert resumed.kwargs[
+      "config"
+  ].http_options.retry_options == types.HttpRetryOptions(attempts=8)
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_resume_keeps_request_retry_options(
+    gemini_llm, llm_request
+):
+  retry_options = types.HttpRetryOptions(attempts=2)
+  llm_request.config.http_options = types.HttpOptions(
+      retry_options=retry_options
+  )
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=[
+            _response(
+                Part.from_text(text="a"),
+                finish_reason=_CONTINUATION,
+                token=b"state",
+            ),
+            _response(
+                Part.from_text(text="b"), finish_reason=types.FinishReason.STOP
+            ),
+        ]
+    )
+
+    _ = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  resumed = mock_client.aio.models.generate_content.call_args_list[1].kwargs
+  assert resumed["config"].http_options.retry_options == retry_options
+
+
+@pytest.mark.parametrize(
+    "gemini_kwargs",
+    [
+        {"retry_options": types.HttpRetryOptions(attempts=2)},
+        {
+            "client_kwargs": {
+                "http_options": types.HttpOptions(
+                    retry_options=types.HttpRetryOptions(attempts=2)
+                )
+            }
+        },
+        {"client_kwargs": {"http_options": {"retry_options": {"attempts": 2}}}},
+        {"client": genai.Client(api_key="test-key")},
+    ],
+    ids=["retry_options", "client_kwargs", "client_kwargs_dict", "client"],
+)
+@pytest.mark.asyncio
+async def test_generate_content_async_resume_leaves_client_retries(
+    llm_request, gemini_kwargs
+):
+  gemini_llm = Gemini(model="gemini-2.5-flash", **gemini_kwargs)
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=[
+            _response(
+                Part.from_text(text="a"),
+                finish_reason=_CONTINUATION,
+                token=b"state",
+            ),
+            _response(
+                Part.from_text(text="b"), finish_reason=types.FinishReason.STOP
+            ),
+        ]
+    )
+
+    _ = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  resumed = mock_client.aio.models.generate_content.call_args_list[1].kwargs
+  assert resumed["config"].http_options.retry_options is None
 
 
 @pytest.mark.parametrize("stream", [True, False])

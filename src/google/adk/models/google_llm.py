@@ -40,6 +40,7 @@ from typing_extensions import override
 
 from google import genai
 
+from . import _continuation
 from ..utils._event_loop_cache import PerLoopCachedProperty
 from ..utils._gcp_metadata import get_gcp_client_defaults
 from ..utils._google_client_headers import get_tracking_headers
@@ -294,13 +295,19 @@ class Gemini(BaseLlm):
       if logger.isEnabledFor(logging.DEBUG):
         logger.debug(_build_request_log(llm_request))
 
+      # Loops because the model can pause a long generation and resume it.
+      continuation = _continuation.Continuation(
+          llm_request.contents,
+          llm_request.config,
+          # A request's retry_options replace the client's, so resends get
+          # their own only when the client has none.
+          retry_resends=self.client is None
+          and self._client_retry_options() is None,
+      )
+      next_request: (
+          tuple[list[types.Content], types.GenerateContentConfig] | None
+      ) = (llm_request.contents, llm_request.config)
       if stream:
-        responses = await self.api_client.aio.models.generate_content_stream(
-            model=model,
-            contents=cast(list[types.ContentUnion], llm_request.contents),
-            config=llm_request.config,
-        )
-
         # for sse, similar as bidi (see receive method in
         # gemini_llm_connection.py), we need to mark those text content as
         # partial and after all partial contents are sent, we send an
@@ -309,40 +316,102 @@ class Gemini(BaseLlm):
         # sse depends on finish_reason.
         aggregator = StreamingResponseAggregator()
         multiple_candidates_logged = False
-        last_usage_metadata = None
-        async with Aclosing(responses) as agen:
-          async for response in agen:
-            if logger.isEnabledFor(logging.DEBUG):
-              logger.debug(_build_response_log(response))
-            if response.usage_metadata:
-              last_usage_metadata = response.usage_metadata
-            if (
-                not multiple_candidates_logged
-                and response.candidates
-                and (
-                    len(response.candidates) > 1
-                    or any(c.index for c in response.candidates)
+        paused_grounding: types.GroundingMetadata | None = None
+        paused_citation: types.CitationMetadata | None = None
+        while next_request is not None:
+          contents, config = next_request
+          responses = await self.api_client.aio.models.generate_content_stream(
+              model=model,
+              contents=cast(list[types.ContentUnion], contents),
+              config=config,
+          )
+          last_usage_metadata = None
+          token = None
+          generated_parts: list[types.Part] = []
+          async with Aclosing(responses) as agen:
+            async for response in agen:
+              if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(_build_response_log(response))
+              if response.usage_metadata:
+                last_usage_metadata = response.usage_metadata
+              if (
+                  not multiple_candidates_logged
+                  and response.candidates
+                  and (
+                      len(response.candidates) > 1
+                      or any(c.index for c in response.candidates)
+                  )
+              ):
+                multiple_candidates_logged = True
+                logger.error(
+                    'Multiple candidates found in streaming response but only'
+                    ' the first one will be used.'
                 )
-            ):
-              multiple_candidates_logged = True
-              logger.error(
-                  'Multiple candidates found in streaming response but only the'
-                  ' first one will be used.'
-              )
-            if response.candidates:
-              response.candidates = [
-                  c for c in response.candidates if not c.index
-              ]
-              if not response.candidates:
-                continue
-            async with Aclosing(
-                aggregator.process_response(response)
-            ) as aggregator_gen:
-              async for llm_response in aggregator_gen:
-                yield llm_response
+              if response.candidates:
+                response.candidates = [
+                    c for c in response.candidates if not c.index
+                ]
+                if not response.candidates:
+                  continue
+                if response.candidates[0].content:
+                  # Copied before the aggregator adds client function call ids.
+                  generated_parts.extend(
+                      part.model_copy(deep=True)
+                      for part in response.candidates[0].content.parts or []
+                  )
+                if (
+                    chunk_token := _continuation.continuation_token(response)
+                ) is not None:
+                  token = chunk_token
+                  if continuation.will_resume(
+                      chunk_token
+                  ) and not _continuation.ends_mid_call(generated_parts):
+                    # A pause that is resumed does not end the generation.
+                    response.candidates[0].finish_reason = None
+                    candidate = response.candidates[0]
+                    if not (candidate.content and candidate.content.parts):
+                      # An empty chunk yields a stray partial, and in legacy
+                      # streaming ends the turn outright, so keep what it
+                      # carries and drop it.
+                      paused_grounding = (
+                          candidate.grounding_metadata or paused_grounding
+                      )
+                      paused_citation = (
+                          candidate.citation_metadata or paused_citation
+                      )
+                      continue
+              async with Aclosing(
+                  aggregator.process_response(response)
+              ) as aggregator_gen:
+                async for llm_response in aggregator_gen:
+                  yield llm_response
+          next_request = continuation.advance(
+              token=token,
+              # Chunks split one text run over a part each.
+              parts=_continuation.join_parts(generated_parts),
+              usage=last_usage_metadata,
+          )
+          if next_request is not None:
+            # Lets join_parts pick the signature for text that spans the resume.
+            aggregator._flush_text_buffer_to_sequence()  # pylint: disable=protected-access
         if (close_result := aggregator.close()) is not None:
-          if last_usage_metadata:
-            close_result.usage_metadata = last_usage_metadata
+          if continuation.usage:
+            close_result.usage_metadata = continuation.usage
+          close_result.grounding_metadata = (
+              close_result.grounding_metadata or paused_grounding
+          )
+          close_result.citation_metadata = (
+              close_result.citation_metadata or paused_citation
+          )
+          if continuation.resumed and close_result.content:
+            # Rejoins the text that each resume split, as the unary path does.
+            close_result.content = close_result.content.model_copy(
+                update={
+                    'parts': _continuation.join_parts(
+                        close_result.content.parts or []
+                    )
+                }
+            )
           # Populate cache metadata in the final aggregated response for
           # streaming
           if cache_metadata and cache_manager is not None:
@@ -352,22 +421,53 @@ class Gemini(BaseLlm):
           yield close_result
 
       else:
-        response = await self.api_client.aio.models.generate_content(
-            model=model,
-            contents=cast(list[types.ContentUnion], llm_request.contents),
-            config=llm_request.config,
-        )
-        logger.info('Response received from the model.')
-        if logger.isEnabledFor(logging.DEBUG):
-          logger.debug(_build_response_log(response))
-
-        if response.candidates and len(response.candidates) > 1:
-          logger.error(
-              'Multiple candidates found in response but only the first one'
-              ' will be used.'
+        grounding_metadata: types.GroundingMetadata | None = None
+        citation_metadata: types.CitationMetadata | None = None
+        while next_request is not None:
+          contents, config = next_request
+          response = await self.api_client.aio.models.generate_content(
+              model=model,
+              contents=cast(list[types.ContentUnion], contents),
+              config=config,
           )
+          logger.info('Response received from the model.')
+          if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(_build_response_log(response))
 
-        llm_response = LlmResponse.create(response)
+          if response.candidates and len(response.candidates) > 1:
+            logger.error(
+                'Multiple candidates found in response but only the first one'
+                ' will be used.'
+            )
+
+          llm_response = LlmResponse.create(response)
+          grounding_metadata = (
+              llm_response.grounding_metadata or grounding_metadata
+          )
+          citation_metadata = (
+              llm_response.citation_metadata or citation_metadata
+          )
+          next_request = continuation.advance(
+              token=_continuation.continuation_token(response),
+              parts=llm_response.content.parts
+              if llm_response.content
+              else None,
+              usage=llm_response.usage_metadata,
+          )
+        if continuation.resumed:
+          llm_response.content = continuation.content or llm_response.content
+          llm_response.usage_metadata = continuation.usage
+          # The last request need not repeat what an earlier one grounded.
+          llm_response.grounding_metadata = grounding_metadata
+          llm_response.citation_metadata = citation_metadata
+          if (
+              llm_response.content
+              and llm_response.error_code == types.FinishReason.CONTINUATION
+          ):
+            # An earlier request produced the output, so a pause the last one
+            # gave up on is not an error. Any other error still is.
+            llm_response.error_code = None
+            llm_response.error_message = None
         if cache_metadata and cache_manager is not None:
           cache_manager.populate_cache_metadata_in_response(
               llm_response, cache_metadata
@@ -470,6 +570,15 @@ class Gemini(BaseLlm):
 
   def _tracking_headers(self) -> dict[str, str]:
     return get_tracking_headers()
+
+  def _client_retry_options(self) -> types.HttpRetryOptions | None:
+    """Returns the retry options of the client ``api_client`` builds."""
+    client_kwargs = self.client_kwargs or {}
+    if 'http_options' not in client_kwargs:
+      return self.retry_options
+    return types.HttpOptions.model_validate(
+        client_kwargs['http_options'] or {}
+    ).retry_options
 
   def _configured_api_version(self) -> Optional[str]:
     """Returns the explicitly configured API version, if any.

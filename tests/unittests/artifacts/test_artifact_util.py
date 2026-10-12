@@ -76,6 +76,7 @@ def test_parse_user_scoped_artifact_uri_with_nested_filename():
 @pytest.mark.parametrize(
     "invalid_uri",
     [
+        "",
         "http://example.com",
         "artifact://invalid",
         "artifact://app1/user1/sessions/session1/artifacts/file1",
@@ -131,6 +132,9 @@ def test_is_artifact_ref_true():
             file_data=types.FileData(
                 file_uri="http://example.com", mime_type="text/plain"
             )
+        ),
+        types.Part(
+            file_data=types.FileData(file_uri=None, mime_type="text/plain")
         ),
         types.Part(),
     ],

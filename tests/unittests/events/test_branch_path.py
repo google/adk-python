@@ -245,5 +245,7 @@ def test_is_tool_branch_ignores_ordinary_node_branches():
   """A leaf carrying a run id, or no id at all, is not a tool branch."""
   call_ids = {"fc-1"}
   assert not _BranchPath.is_tool_branch("worker@1", "worker", call_ids)
+  assert not _BranchPath.is_tool_branch("worker.child@1", "worker", call_ids)
+  assert not _BranchPath.is_tool_branch("fc-1", "worker", call_ids)
   assert not _BranchPath.is_tool_branch("worker", "worker", call_ids)
   assert not _BranchPath.is_tool_branch("", "worker", call_ids)
