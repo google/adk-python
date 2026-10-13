@@ -14,7 +14,13 @@
 
 # pylint: disable=protected-access
 
+import asyncio
+import contextlib
+import gc
+import logging
 import time
+from typing import AsyncGenerator
+from typing import Iterator
 from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -33,6 +39,7 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.workflow._workflow import Workflow
 from google.genai import types
+from opentelemetry import context as context_api
 from opentelemetry import trace
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
@@ -394,8 +401,9 @@ async def test_record_agent_invocation_opens_named_invoke_agent_span(
   agent = _agent(description="the root agent")
   ctx = await _invocation_context(agent)
 
-  async with _instrumentation.record_agent_invocation(ctx, agent):
-    pass
+  async with _instrumentation.record_agent_invocation(ctx, agent) as scope:
+    with _instrumentation._using(scope.otel_context):
+      pass
 
   span = telemetry.only_span()
   assert span.name == "invoke_agent root_agent"
@@ -481,8 +489,9 @@ async def test_record_agent_invocation_without_the_opt_in_emits_no_tokens(
   agent = _agent()
   ctx = await _invocation_context(agent)
 
-  async with _instrumentation.record_agent_invocation(ctx, agent):
-    pass
+  async with _instrumentation.record_agent_invocation(ctx, agent) as scope:
+    with _instrumentation._using(scope.otel_context):
+      pass
 
   assert not telemetry.points("adk.experimental.invoke_agent.total_tokens")
   # The call counts are stable, so they report regardless.
@@ -504,8 +513,9 @@ async def test_record_agent_invocation_that_reported_no_usage_emits_no_tokens(
   agent = _agent()
   ctx = await _invocation_context(agent)
 
-  async with _instrumentation.record_agent_invocation(ctx, agent):
-    pass
+  async with _instrumentation.record_agent_invocation(ctx, agent) as scope:
+    with _instrumentation._using(scope.otel_context):
+      pass
 
   assert not telemetry.points("adk.experimental.invoke_agent.total_tokens")
 
@@ -523,9 +533,10 @@ async def test_record_agent_invocation_counts_a_nested_tool_execution(
   ctx = await _invocation_context(agent)
   tool = _EchoTool(name="echo", description="echoes its input")
 
-  async with _instrumentation.record_agent_invocation(ctx, agent):
-    async with _instrumentation.record_tool_execution(tool, agent, {}, ctx):
-      pass
+  async with _instrumentation.record_agent_invocation(ctx, agent) as scope:
+    with _instrumentation._using(scope.otel_context):
+      async with _instrumentation.record_tool_execution(tool, agent, {}, ctx):
+        pass
 
   assert telemetry.points("gen_ai.invoke_agent.tool_calls") == [
       ({"gen_ai.agent.name": "root_agent"}, 1)
@@ -976,15 +987,16 @@ async def test_record_agent_invocation_flushes_the_skill_loads_it_made(
   agent = _agent()
   ctx = await _invocation_context(agent)
 
-  async with _instrumentation.record_agent_invocation(ctx, agent):
-    for _ in range(5):
-      async with _instrumentation.record_tool_execution(
-          _load_tool(), agent, {}, ctx
-      ):
-        tel_ctx = _instrumentation.track_skill_load(
-            _hallucination.ConfirmedNotHallucinated("sample_skill")
-        )
-        tel_ctx.skill = _loaded_skill()
+  async with _instrumentation.record_agent_invocation(ctx, agent) as scope:
+    with _instrumentation._using(scope.otel_context):
+      for _ in range(5):
+        async with _instrumentation.record_tool_execution(
+            _load_tool(), agent, {}, ctx
+        ):
+          tel_ctx = _instrumentation.track_skill_load(
+              _hallucination.ConfirmedNotHallucinated("sample_skill")
+          )
+          tel_ctx.skill = _loaded_skill()
 
   assert telemetry.points(_INVOKE_AGENT_SKILL_LOADS) == [
       ({"gen_ai.agent.name": "root_agent"}, 5)
@@ -1005,22 +1017,23 @@ async def test_invoke_agent_skill_loads_count_the_loads_that_failed_too(
   agent = _agent()
   ctx = await _invocation_context(agent)
 
-  async with _instrumentation.record_agent_invocation(ctx, agent):
-    for name in ("first_skill", "second_skill"):
+  async with _instrumentation.record_agent_invocation(ctx, agent) as scope:
+    with _instrumentation._using(scope.otel_context):
+      for name in ("first_skill", "second_skill"):
+        async with _instrumentation.record_tool_execution(
+            _load_tool(), agent, {}, ctx
+        ):
+          tel_ctx = _instrumentation.track_skill_load(
+              _hallucination.ConfirmedNotHallucinated(name)
+          )
+          tel_ctx.skill = _loaded_skill()
       async with _instrumentation.record_tool_execution(
           _load_tool(), agent, {}, ctx
-      ):
-        tel_ctx = _instrumentation.track_skill_load(
-            _hallucination.ConfirmedNotHallucinated(name)
+      ) as tel_ctx:
+        _instrumentation.track_skill_load(
+            _hallucination.MaybeHallucinated("nonexistent_skill")
         )
-        tel_ctx.skill = _loaded_skill()
-    async with _instrumentation.record_tool_execution(
-        _load_tool(), agent, {}, ctx
-    ) as tel_ctx:
-      _instrumentation.track_skill_load(
-          _hallucination.MaybeHallucinated("nonexistent_skill")
-      )
-      tel_ctx.error_type = "SKILL_NOT_FOUND"
+        tel_ctx.error_type = "SKILL_NOT_FOUND"
 
   assert telemetry.points(_INVOKE_AGENT_SKILL_LOADS) == [
       ({"gen_ai.agent.name": "root_agent"}, 3)
@@ -1057,15 +1070,16 @@ async def test_a_skill_load_that_raised_is_counted_as_a_failed_load(
   agent = _agent()
   ctx = await _invocation_context(agent)
 
-  async with _instrumentation.record_agent_invocation(ctx, agent):
-    with pytest.raises(ValueError):
-      async with _instrumentation.record_tool_execution(
-          _load_tool(), agent, {}, ctx
-      ):
-        _instrumentation.track_skill_load(
-            _hallucination.MaybeHallucinated("sample_skill")
-        )
-        raise ValueError("the skill registry was unreachable")
+  async with _instrumentation.record_agent_invocation(ctx, agent) as scope:
+    with _instrumentation._using(scope.otel_context):
+      with pytest.raises(ValueError):
+        async with _instrumentation.record_tool_execution(
+            _load_tool(), agent, {}, ctx
+        ):
+          _instrumentation.track_skill_load(
+              _hallucination.MaybeHallucinated("sample_skill")
+          )
+          raise ValueError("the skill registry was unreachable")
 
   assert telemetry.points(_INVOKE_AGENT_SKILL_LOADS) == [
       ({"gen_ai.agent.name": "root_agent"}, 1)
@@ -1093,8 +1107,9 @@ async def test_invoke_agent_skill_loads_is_zero_when_no_skill_was_loaded(
   agent = _agent()
   ctx = await _invocation_context(agent)
 
-  async with _instrumentation.record_agent_invocation(ctx, agent):
-    pass
+  async with _instrumentation.record_agent_invocation(ctx, agent) as scope:
+    with _instrumentation._using(scope.otel_context):
+      pass
 
   assert telemetry.points(_INVOKE_AGENT_SKILL_LOADS) == [
       ({"gen_ai.agent.name": "root_agent"}, 0)
@@ -1115,24 +1130,25 @@ async def test_the_other_skill_tools_are_not_counted_as_skill_loads(
   agent = _agent()
   ctx = await _invocation_context(agent)
 
-  async with _instrumentation.record_agent_invocation(ctx, agent):
-    async with _instrumentation.record_tool_execution(
-        _script_tool(), agent, {}, ctx
-    ):
-      skill_telemetry = _instrumentation.track_skill_script_execution(
-          _hallucination.ConfirmedNotHallucinated("sample_skill"),
-          _hallucination.ConfirmedNotHallucinated("scripts/sample.py"),
-      )
-      skill_telemetry.skill = _loaded_skill()
-      skill_telemetry.script_exit_code = 3
-    async with _instrumentation.record_tool_execution(
-        _resource_tool(), agent, {}, ctx
-    ) as tel_ctx:
-      _instrumentation.track_skill_resource_load(
-          _hallucination.MaybeHallucinated("sample_skill"),
-          _hallucination.MaybeHallucinated("refs/none.md"),
-      )
-      tel_ctx.error_type = "SKILL_RESOURCE_NOT_FOUND"
+  async with _instrumentation.record_agent_invocation(ctx, agent) as scope:
+    with _instrumentation._using(scope.otel_context):
+      async with _instrumentation.record_tool_execution(
+          _script_tool(), agent, {}, ctx
+      ):
+        skill_telemetry = _instrumentation.track_skill_script_execution(
+            _hallucination.ConfirmedNotHallucinated("sample_skill"),
+            _hallucination.ConfirmedNotHallucinated("scripts/sample.py"),
+        )
+        skill_telemetry.skill = _loaded_skill()
+        skill_telemetry.script_exit_code = 3
+      async with _instrumentation.record_tool_execution(
+          _resource_tool(), agent, {}, ctx
+      ) as tel_ctx:
+        _instrumentation.track_skill_resource_load(
+            _hallucination.MaybeHallucinated("sample_skill"),
+            _hallucination.MaybeHallucinated("refs/none.md"),
+        )
+        tel_ctx.error_type = "SKILL_RESOURCE_NOT_FOUND"
 
   assert telemetry.points(_INVOKE_AGENT_SKILL_LOADS) == [
       ({"gen_ai.agent.name": "root_agent"}, 0)
@@ -1152,14 +1168,15 @@ async def test_invoke_agent_skill_loads_is_not_recorded_without_the_opt_in(
   agent = _agent()
   ctx = await _invocation_context(agent)
 
-  async with _instrumentation.record_agent_invocation(ctx, agent):
-    async with _instrumentation.record_tool_execution(
-        _load_tool(), agent, {}, ctx
-    ) as tel_ctx:
-      _instrumentation.track_skill_load(
-          _hallucination.MaybeHallucinated("nonexistent_skill")
-      )
-      tel_ctx.error_type = "SKILL_NOT_FOUND"
+  async with _instrumentation.record_agent_invocation(ctx, agent) as scope:
+    with _instrumentation._using(scope.otel_context):
+      async with _instrumentation.record_tool_execution(
+          _load_tool(), agent, {}, ctx
+      ) as tel_ctx:
+        _instrumentation.track_skill_load(
+            _hallucination.MaybeHallucinated("nonexistent_skill")
+        )
+        tel_ctx.error_type = "SKILL_NOT_FOUND"
 
   assert telemetry.points(_INVOKE_AGENT_SKILL_LOADS) == []
   # The stable per-invocation counts are unaffected by the opt-in.
@@ -1182,16 +1199,19 @@ async def test_invoke_workflow_skill_loads_cover_the_whole_workflow(
   agent = _agent()
   ctx = await _invocation_context(agent)
 
-  with node_tracing._use_invoke_workflow_span("my_workflow", "conversation-1"):
-    async with _instrumentation.record_agent_invocation(ctx, agent):
-      for name in ("first_skill", "second_skill"):
-        async with _instrumentation.record_tool_execution(
-            _load_tool(), agent, {}, ctx
-        ):
-          tel_ctx = _instrumentation.track_skill_load(
-              _hallucination.ConfirmedNotHallucinated(name)
-          )
-          tel_ctx.skill = _loaded_skill()
+  with node_tracing._use_invoke_workflow_span(
+      "my_workflow", "conversation-1"
+  ) as (_, workflow_context):
+    with _instrumentation._using(workflow_context):
+      async with _instrumentation.record_agent_invocation(ctx, agent):
+        for name in ("first_skill", "second_skill"):
+          async with _instrumentation.record_tool_execution(
+              _load_tool(), agent, {}, ctx
+          ):
+            tel_ctx = _instrumentation.track_skill_load(
+                _hallucination.ConfirmedNotHallucinated(name)
+            )
+            tel_ctx.skill = _loaded_skill()
 
   assert telemetry.points(_INVOKE_WORKFLOW_SKILL_LOADS) == [(
       {
@@ -1216,23 +1236,30 @@ async def test_invoke_workflow_skill_loads_count_into_every_enclosing_workflow(
   agent = _agent()
   ctx = await _invocation_context(agent)
 
-  with node_tracing._use_invoke_workflow_span("outer", "conversation-1"):
-    async with _instrumentation.record_agent_invocation(ctx, agent):
-      async with _instrumentation.record_tool_execution(
-          _load_tool(), agent, {}, ctx
-      ):
-        tel_ctx = _instrumentation.track_skill_load(
-            _hallucination.ConfirmedNotHallucinated("outer_skill")
-        )
-        tel_ctx.skill = _loaded_skill()
-      with node_tracing._use_invoke_workflow_span("inner", "conversation-1"):
+  with node_tracing._use_invoke_workflow_span("outer", "conversation-1") as (
+      _,
+      outer_context,
+  ):
+    with _instrumentation._using(outer_context):
+      async with _instrumentation.record_agent_invocation(ctx, agent):
         async with _instrumentation.record_tool_execution(
             _load_tool(), agent, {}, ctx
         ):
           tel_ctx = _instrumentation.track_skill_load(
-              _hallucination.ConfirmedNotHallucinated("inner_skill")
+              _hallucination.ConfirmedNotHallucinated("outer_skill")
           )
           tel_ctx.skill = _loaded_skill()
+        with node_tracing._use_invoke_workflow_span(
+            "inner", "conversation-1"
+        ) as (_, inner_context):
+          with _instrumentation._using(inner_context):
+            async with _instrumentation.record_tool_execution(
+                _load_tool(), agent, {}, ctx
+            ):
+              tel_ctx = _instrumentation.track_skill_load(
+                  _hallucination.ConfirmedNotHallucinated("inner_skill")
+              )
+              tel_ctx.skill = _loaded_skill()
 
   assert telemetry.points(_INVOKE_WORKFLOW_SKILL_LOADS) == [
       (
@@ -1260,8 +1287,11 @@ async def test_invoke_workflow_skill_loads_is_zero_when_no_skill_was_loaded(
   """Zero is recorded here for the same reason it is per invocation."""
   monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
 
-  with node_tracing._use_invoke_workflow_span("my_workflow", "conversation-1"):
-    pass
+  with node_tracing._use_invoke_workflow_span(
+      "my_workflow", "conversation-1"
+  ) as (_, workflow_context):
+    with _instrumentation._using(workflow_context):
+      pass
 
   assert telemetry.points(_INVOKE_WORKFLOW_SKILL_LOADS) == [(
       {
@@ -1281,14 +1311,17 @@ async def test_invoke_workflow_skill_loads_is_not_recorded_without_the_opt_in(
   agent = _agent()
   ctx = await _invocation_context(agent)
 
-  with node_tracing._use_invoke_workflow_span("my_workflow", "conversation-1"):
-    async with _instrumentation.record_tool_execution(
-        _load_tool(), agent, {}, ctx
-    ):
-      tel_ctx = _instrumentation.track_skill_load(
-          _hallucination.ConfirmedNotHallucinated("sample_skill")
-      )
-      tel_ctx.skill = _loaded_skill()
+  with node_tracing._use_invoke_workflow_span(
+      "my_workflow", "conversation-1"
+  ) as (_, workflow_context):
+    with _instrumentation._using(workflow_context):
+      async with _instrumentation.record_tool_execution(
+          _load_tool(), agent, {}, ctx
+      ):
+        tel_ctx = _instrumentation.track_skill_load(
+            _hallucination.ConfirmedNotHallucinated("sample_skill")
+        )
+        tel_ctx.skill = _loaded_skill()
 
   assert telemetry.points(_INVOKE_WORKFLOW_SKILL_LOADS) == []
 
@@ -1681,3 +1714,277 @@ async def test_responses_after_the_finish_reason_still_count_for_metrics(
     tel_ctx.record_llm_response(ctx, _llm_response())
 
   assert len(tel_ctx.llm_responses) == 2
+
+
+# --- stream_in_scope (b/485899016) -----------------------------------------
+#
+# An async generator has no context of its own: it is resumed, and finalized,
+# in the context of whoever drives it. A telemetry scope that held an OTel
+# attach token across one of its yields therefore detached a token created in
+# another context whenever the consumer closed the stream from a different
+# task or dropped it for the async-generator finalizer to close.
+# `context_api.detach` swallows that into a "Failed to detach context" log, so
+# the symptom was not an exception but a consumer context left with an ended
+# span attached to it for good.
+
+
+@contextlib.contextmanager
+def _detach_failures() -> Iterator[list[logging.LogRecord]]:
+  """Collects OTel's "Failed to detach context" records."""
+  records: list[logging.LogRecord] = []
+
+  class _Collect(logging.Handler):
+
+    def emit(self, record: logging.LogRecord) -> None:
+      records.append(record)
+
+  handler = _Collect()
+  otel_logger = logging.getLogger("opentelemetry.context")
+  otel_logger.addHandler(handler)
+  try:
+    yield records
+  finally:
+    otel_logger.removeHandler(handler)
+
+
+def _counting_scope() -> tuple[context_api.Context, list[str]]:
+  """A context carrying a marker, plus the sink spans report themselves to."""
+  seen: list[str] = []
+  return context_api.set_value("b485899016_scope", seen), seen
+
+
+async def _emitting_generator(seen: list[str]) -> AsyncGenerator[int, None]:
+  """Reports the scope it sees while running, and once more on teardown."""
+
+  def note(where: str) -> None:
+    value = context_api.get_value("b485899016_scope")
+    seen.append(f"{where}:{'in-scope' if value is not None else 'detached'}")
+
+  try:
+    for i in range(100):
+      await asyncio.sleep(0)
+      note("body")
+      yield i
+  finally:
+    note("teardown")
+
+
+@pytest.mark.asyncio
+async def test_stream_in_scope_survives_a_close_from_another_task():
+  """The failing shape from the bug: produced in one task, closed in another."""
+  scope_context, seen = _counting_scope()
+  agen = _instrumentation.stream_in_scope(
+      scope_context, _emitting_generator(seen)
+  )
+
+  async def pump() -> None:
+    async for i in agen:
+      if i == 2:
+        return
+
+  with _detach_failures() as failures:
+    await asyncio.create_task(pump())
+    await asyncio.create_task(agen.aclose())
+
+  assert not failures, [r.getMessage() for r in failures]
+  assert "teardown:in-scope" in seen
+
+
+@pytest.mark.asyncio
+async def test_stream_in_scope_survives_the_async_generator_finalizer():
+  """Nobody closes the stream; asyncio's finalizer does, on its own task."""
+  scope_context, seen = _counting_scope()
+
+  async def pump() -> None:
+    agen = _instrumentation.stream_in_scope(
+        scope_context, _emitting_generator(seen)
+    )
+    async for i in agen:
+      if i == 2:
+        return
+    # `agen` goes out of scope without being closed.
+
+  with _detach_failures() as failures:
+    await asyncio.create_task(pump())
+    gc.collect()
+    await asyncio.sleep(0.1)
+
+  assert not failures, [r.getMessage() for r in failures]
+
+
+@pytest.mark.asyncio
+async def test_stream_in_scope_leaves_the_consumers_context_alone():
+  """The consumer traces into its own span, not into ADK's."""
+  scope_context, seen = _counting_scope()
+  before = context_api.get_current()
+
+  async with contextlib.aclosing(
+      _instrumentation.stream_in_scope(scope_context, _emitting_generator(seen))
+  ) as agen:
+    async for i in agen:
+      assert context_api.get_value("b485899016_scope") is None
+      if i == 2:
+        break
+
+  assert context_api.get_current() == before
+  # ... while the generator itself ran inside the scope throughout.
+  assert [s for s in seen if s.startswith("body:")] == ["body:in-scope"] * 3
+
+
+@pytest.mark.asyncio
+async def test_stream_in_scope_parents_spans_opened_inside_it(
+    telemetry: _Telemetry,
+):
+  """Both the body's spans and its teardown's belong to the scope's span."""
+  parent = tracing.tracer.start_span("scope")
+  scope_context = trace.set_span_in_context(parent, context_api.get_current())
+
+  async def agen() -> AsyncGenerator[int, None]:
+    try:
+      with tracing.tracer.start_as_current_span("body"):
+        pass
+      yield 1
+      yield 2
+    finally:
+      with tracing.tracer.start_as_current_span("teardown"):
+        pass
+
+  stream = _instrumentation.stream_in_scope(scope_context, agen())
+
+  async def pump() -> None:
+    async for _ in stream:
+      return
+
+  # Closed from another task, the shape that used to orphan the teardown span.
+  await asyncio.create_task(pump())
+  await asyncio.create_task(stream.aclose())
+  parent.end()
+
+  by_name = {span.name: span for span in telemetry.spans()}
+  assert set(by_name) == {"scope", "body", "teardown"}
+  for name in ("body", "teardown"):
+    assert by_name[name].parent is not None, f"{name} span was orphaned"
+    assert (
+        by_name[name].parent.span_id == by_name["scope"].context.span_id
+    ), f"{name} span is not parented to the scope"
+
+
+@pytest.mark.asyncio
+async def test_record_agent_invocation_does_not_attach_its_context(
+    telemetry: _Telemetry,
+):
+  """The scope publishes its context; it must not make it current.
+
+  Attaching here is what made the scope unsafe to wrap an async generator in:
+  the token outlived every yield, so a close driven from another task detached
+  it against the wrong context and left the span attached to the consumer for
+  good (b/485899016).
+  """
+  del telemetry  # Wired up by the fixture; pins the tracer and the env.
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+  before = context_api.get_current()
+
+  async with _instrumentation.record_agent_invocation(ctx, agent) as scope:
+    assert context_api.get_current() == before
+    # ... but the span is there for `stream_in_scope` to attach.
+    assert trace.get_current_span(scope.otel_context) is not trace.INVALID_SPAN
+
+  assert context_api.get_current() == before
+
+
+def test_record_invocation_does_not_attach_its_context(telemetry: _Telemetry):
+  """Same contract for the runner's top-level invocation scope."""
+  del telemetry  # Wired up by the fixture; pins the tracer and the env.
+  before = context_api.get_current()
+
+  with _instrumentation.record_invocation(
+      entrypoint_node=None, conversation_id="conversation-1"
+  ) as invocation_context:
+    assert context_api.get_current() == before
+    assert trace.get_current_span(invocation_context) is not trace.INVALID_SPAN
+
+  assert context_api.get_current() == before
+
+
+@pytest.mark.asyncio
+async def test_stream_in_scope_propagates_an_error_from_the_body():
+  """A failing body is not swallowed by the drive loop."""
+  scope_context, _ = _counting_scope()
+
+  async def failing() -> AsyncGenerator[int, None]:
+    yield 1
+    raise ValueError("boom")
+
+  with pytest.raises(ValueError, match="boom"):
+    async with contextlib.aclosing(
+        _instrumentation.stream_in_scope(scope_context, failing())
+    ) as agen:
+      async for _ in agen:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_stream_in_scope_preserves_inner_streaming_span_across_yields(
+    telemetry: _Telemetry,
+):
+  """Inner span opened inside the generator stays current across yields."""
+  del telemetry
+  with tracing.tracer.start_as_current_span("caller_root") as caller_span:
+    caller_ctx = context_api.get_current()
+    observed_inner_spans: list[trace.Span] = []
+
+    async def inner_stream() -> AsyncGenerator[int, None]:
+      with tracing.tracer.start_as_current_span(
+          "generate_content"
+      ) as inner_span:
+        yield 1
+        observed_inner_spans.append(trace.get_current_span())
+        yield 2
+        observed_inner_spans.append(trace.get_current_span())
+        assert all(s is inner_span for s in observed_inner_spans)
+
+    call_llm_span = tracing.tracer.start_span("call_llm", context=caller_ctx)
+    call_llm_ctx = trace.set_span_in_context(call_llm_span, caller_ctx)
+
+    chunks = []
+    async with contextlib.aclosing(
+        _instrumentation.stream_in_scope(call_llm_ctx, inner_stream())
+    ) as agen:
+      async for chunk in agen:
+        assert trace.get_current_span() is caller_span
+        chunks.append(chunk)
+
+    call_llm_span.end()
+    assert chunks == [1, 2]
+    assert len(observed_inner_spans) == 2
+    assert all(
+        s is not trace.INVALID_SPAN
+        and s is not caller_span
+        and s is not call_llm_span
+        for s in observed_inner_spans
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_in_scope_propagates_cancellation_into_generator():
+  """Consumer-thrown exceptions (like CancelledError) reach the generator body."""
+  scope_context, _ = _counting_scope()
+  cancelled_in_generator = False
+
+  async def cancellable_generator() -> AsyncGenerator[int, None]:
+    nonlocal cancelled_in_generator
+    try:
+      yield 1
+      await asyncio.sleep(10)
+    except asyncio.CancelledError:
+      cancelled_in_generator = True
+      raise
+
+  agen = _instrumentation.stream_in_scope(
+      scope_context, cancellable_generator()
+  )
+  assert await agen.__anext__() == 1
+  with pytest.raises(asyncio.CancelledError):
+    await agen.athrow(asyncio.CancelledError())
+  assert cancelled_in_generator is True

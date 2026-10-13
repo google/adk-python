@@ -68,6 +68,7 @@ def test_get_session_config_rejects_negative_num_recent_events():
   """A negative recent-event limit is rejected at configuration time."""
   with pytest.raises(ValueError, match='greater than or equal to 0'):
     GetSessionConfig(num_recent_events=-1)
+  assert GetSessionConfig(num_recent_events=None).num_recent_events is None
 
 
 class SessionServiceType(enum.Enum):
@@ -2320,6 +2321,13 @@ async def test_get_session_with_config(session_service):
   assert len(events) == num_test_events - after_event_index + 1
   assert events[0].timestamp == after_timestamp
 
+  # The first event's own timestamp keeps every event, the first included.
+  config = GetSessionConfig(after_timestamp=base_timestamp + 1)
+  session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id, config=config
+  )
+  assert len(session.events) == num_test_events
+
   # Expect no events if none are > after_timestamp.
   way_after_timestamp = base_timestamp + num_test_events * 10
   config = GetSessionConfig(after_timestamp=way_after_timestamp)
@@ -2348,8 +2356,9 @@ async def test_partial_events_are_not_persisted(session_service):
       app_name=app_name, user_id=user_id
   )
   event = Event(author='user', partial=True)
-  await session_service.append_event(session, event)
+  returned = await session_service.append_event(session, event)
 
+  assert returned is event
   # Check in-memory session
   assert len(session.events) == 0
   # Check persisted session

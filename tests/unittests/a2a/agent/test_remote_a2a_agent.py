@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+from typing import Literal
 from unittest.mock import AsyncMock
 from unittest.mock import create_autospec
 from unittest.mock import Mock
@@ -4346,6 +4347,8 @@ class TestRemoteA2aAgentExecution:
     # Mock session and context
     self.mock_session = Mock(spec=Session)
     self.mock_session.id = "session-123"
+    self.mock_session.app_name = "test-app"
+    self.mock_session.user_id = "user-a"
     self.mock_session.events = []
     self.mock_session.state = {}
 
@@ -4543,7 +4546,7 @@ class TestRemoteA2aAgentExecution:
       mock_context_id: str | None,
       expected_context_id: str | None,
       *,
-      forward_session_id: bool = False,
+      forward_session_id: bool | Literal["namespaced"] = False,
   ):
     """Helper to test context_id handling in _run_async_impl.
 
@@ -4651,6 +4654,68 @@ class TestRemoteA2aAgentExecution:
     )
 
   @pytest.mark.asyncio
+  async def test_run_async_impl_namespaces_context_id_by_user(self):
+    """Distinct users or apps sharing a session ID must not collide remotely.
+
+    When forward_session_id_as_context_id is "namespaced", the agent derives
+    context_id from a SHA-256 digest of length-prefixed app_name, user_id, and
+    session.id so distinct local users sharing a session ID do not map to the
+    same remote A2A context.
+    """
+    self.mock_session.user_id = "user-a"
+    # SHA-256 of "8:test-app\x1f6:user-a\x1f11:session-123".
+    context_id_for_user_a = (
+        "3c80ba455495cdab0e64abaa3542c7d8f7627bda9a7031508c95562b40bd2328"
+    )
+    await self._run_context_id_test(
+        mock_context_id=None,
+        expected_context_id=context_id_for_user_a,
+        forward_session_id="namespaced",
+    )
+
+    self.mock_session.user_id = "user-b"
+    context_id_for_user_b = remote_a2a_agent._namespaced_session_context_id(
+        self.mock_session
+    )
+    await self._run_context_id_test(
+        mock_context_id=None,
+        expected_context_id=context_id_for_user_b,
+        forward_session_id="namespaced",
+    )
+
+    self.mock_session.app_name = "other-app"
+    context_id_for_other_app = remote_a2a_agent._namespaced_session_context_id(
+        self.mock_session
+    )
+    await self._run_context_id_test(
+        mock_context_id=None,
+        expected_context_id=context_id_for_other_app,
+        forward_session_id="namespaced",
+    )
+
+    assert (
+        len({
+            context_id_for_user_a,
+            context_id_for_user_b,
+            context_id_for_other_app,
+        })
+        == 3
+    )
+
+    # Shifting a separator between user_id and session.id must not collide.
+    self.mock_session.user_id = "user\x1fa"
+    self.mock_session.id = "s1"
+    context_id_sep_in_user = remote_a2a_agent._namespaced_session_context_id(
+        self.mock_session
+    )
+    self.mock_session.user_id = "user"
+    self.mock_session.id = "a\x1fs1"
+    context_id_sep_in_session = remote_a2a_agent._namespaced_session_context_id(
+        self.mock_session
+    )
+    assert context_id_sep_in_user != context_id_sep_in_session
+
+  @pytest.mark.asyncio
   async def test_run_async_impl_preserves_existing_context_id(self):
     """Test that existing context_id is preserved when available.
 
@@ -4668,6 +4733,11 @@ class TestRemoteA2aAgentExecution:
         mock_context_id=existing_context_id,
         expected_context_id=existing_context_id,
         forward_session_id=True,
+    )
+    await self._run_context_id_test(
+        mock_context_id=existing_context_id,
+        expected_context_id=existing_context_id,
+        forward_session_id="namespaced",
     )
 
   @pytest.mark.asyncio

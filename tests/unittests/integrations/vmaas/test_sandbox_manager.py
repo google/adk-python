@@ -14,11 +14,13 @@
 
 """Tests for SandboxManager.
 
-Verifies that the manager resolves one agent engine and reuses one sandbox
-template per container configuration.
+Verifies that the manager resolves one agent engine, reuses one sandbox
+template per container configuration, and creates, pauses, resumes, and
+deletes sandboxes created only from templates or snapshots.
 """
 
 import asyncio
+import enum
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -29,6 +31,9 @@ import pytest
 
 _ENGINE = "projects/p/locations/us-central1/reasoningEngines/1"
 _IMAGE = "us-central1-docker.pkg.dev/p/repo/image:1"
+_OTHER_ENGINE = "projects/p/locations/us-central1/reasoningEngines/9"
+_TEMPLATE = f"{_OTHER_ENGINE}/sandboxEnvironmentTemplates/7"
+_SNAPSHOT = f"{_OTHER_ENGINE}/sandboxEnvironmentSnapshots/8"
 
 
 class _FakeTemplates:
@@ -63,13 +68,57 @@ class _FakeTemplates:
     return SimpleNamespace(response=template, error=None)
 
 
+class _FakeSandboxes:
+  """In-memory stand-in for the sandboxes API."""
+
+  def __init__(self):
+    self.templates = _FakeTemplates()
+    self.sandboxes = {}
+    self.create_calls = []
+    self.pause_calls = []
+    self.resume_calls = []
+    self.delete_calls = []
+
+  def create(self, **kwargs):
+    self.create_calls.append(kwargs)
+    name = f"{kwargs['name']}/sandboxEnvironments/{len(self.sandboxes) + 1}"
+    self.sandboxes[name] = SimpleNamespace(name=name, state="STATE_RUNNING")
+    return SimpleNamespace(response=self.sandboxes[name], error=None)
+
+  def get(self, *, name):
+    return self.sandboxes[name]
+
+  def pause(self, *, name, poll_interval_seconds):
+    self.pause_calls.append(name)
+    self.sandboxes[name].state = "STATE_PAUSED"
+    return SimpleNamespace(error=None)
+
+  def resume(self, *, name, poll_interval_seconds):
+    self.resume_calls.append(name)
+    self.sandboxes[name].state = "STATE_RUNNING"
+    return SimpleNamespace(error=None)
+
+  def delete(self, *, name):
+    self.delete_calls.append(name)
+    del self.sandboxes[name]
+
+
 def _make_client():
   client = MagicMock()
   client.runtimes.create.return_value = SimpleNamespace(
       api_resource=SimpleNamespace(name=_ENGINE)
   )
-  client.sandboxes.templates = _FakeTemplates()
+  client.sandboxes = _FakeSandboxes()
   return client
+
+
+async def _make_sandbox(client, state="STATE_RUNNING"):
+  """Returns the name of a sandbox in the given state."""
+  name = await SandboxManager(client=client).create_sandbox(
+      template_name=_TEMPLATE
+  )
+  client.sandboxes.sandboxes[name].state = state
+  return name
 
 
 async def test_shell_template_uses_shell_container_category():
@@ -315,3 +364,215 @@ async def test_custom_container_without_image_raises():
 
   with pytest.raises(ValueError, match="image_uri"):
     await manager.get_custom_container_template_name(image_uri="")
+
+
+async def test_sandbox_is_created_from_template_under_its_agent_engine():
+  """A sandbox is created from the template, under the template's engine."""
+  client = _make_client()
+
+  name = await SandboxManager(client=client).create_sandbox(
+      template_name=_TEMPLATE, ttl_seconds=600
+  )
+
+  assert client.sandboxes.create_calls == [{
+      "name": _OTHER_ENGINE,
+      "config": {
+          "display_name": "adk-sandbox",
+          "sandbox_environment_template": _TEMPLATE,
+          "ttl": "600s",
+      },
+      "poll_interval_seconds": 0.5,
+  }]
+  assert name == f"{_OTHER_ENGINE}/sandboxEnvironments/1"
+  client.runtimes.create.assert_not_called()
+
+
+async def test_sandbox_is_restored_from_snapshot():
+  """A sandbox created from a snapshot references the snapshot."""
+  client = _make_client()
+
+  await SandboxManager(client=client).create_sandbox(snapshot_name=_SNAPSHOT)
+
+  [call] = client.sandboxes.create_calls
+  assert call["name"] == _OTHER_ENGINE
+  assert call["config"]["sandbox_environment_snapshot"] == _SNAPSHOT
+  assert "spec" not in call
+
+
+@pytest.mark.parametrize(
+    "sources",
+    [
+        {},
+        {"template_name": ""},
+        {"template_name": _TEMPLATE, "snapshot_name": _SNAPSHOT},
+    ],
+)
+async def test_sandbox_requires_exactly_one_template_or_snapshot(sources):
+  """A sandbox is never created from an inline spec or two sources."""
+  client = _make_client()
+
+  with pytest.raises(ValueError, match="Exactly one"):
+    await SandboxManager(client=client).create_sandbox(**sources)
+
+  assert not client.sandboxes.create_calls
+
+
+async def test_sandbox_from_name_outside_an_agent_engine_raises():
+  """A template name that names no agent engine is rejected."""
+  manager = SandboxManager(client=_make_client())
+
+  with pytest.raises(ValueError, match="not an Agent Engine"):
+    await manager.create_sandbox(template_name="templates/7")
+
+
+async def test_terminated_sandbox_after_creation_raises():
+  """A sandbox that terminates while being created raises."""
+  client = _make_client()
+  client.sandboxes.create = MagicMock(
+      return_value=SimpleNamespace(
+          response=SimpleNamespace(name="s", state="STATE_TERMINATED"),
+          error={"message": "boom"},
+      )
+  )
+
+  with pytest.raises(RuntimeError, match="boom"):
+    await SandboxManager(client=client).create_sandbox(template_name=_TEMPLATE)
+
+
+async def test_sandbox_state_is_reported_as_its_value():
+  """The state of a sandbox is reported as the state's string value."""
+
+  class _State(str, enum.Enum):
+    STATE_PAUSED = "STATE_PAUSED"
+
+  client = _make_client()
+  name = await _make_sandbox(client, state=_State.STATE_PAUSED)
+
+  state = await SandboxManager(client=client).get_sandbox_state(name)
+
+  assert state == "STATE_PAUSED"
+  assert type(state) is str
+
+
+async def test_running_sandbox_is_paused():
+  """Pausing a running sandbox pauses it."""
+  client = _make_client()
+  name = await _make_sandbox(client)
+
+  paused = await SandboxManager(client=client).pause_sandbox(name)
+
+  assert paused
+  assert client.sandboxes.pause_calls == [name]
+
+
+async def test_paused_sandbox_is_not_paused_again():
+  """Pausing a paused sandbox leaves it as is."""
+  client = _make_client()
+  name = await _make_sandbox(client, state="STATE_PAUSED")
+
+  paused = await SandboxManager(client=client).pause_sandbox(name)
+
+  assert not paused
+  assert not client.sandboxes.pause_calls
+
+
+@pytest.mark.parametrize(
+    "method", ["pause_sandbox", "resume_sandbox_if_paused"]
+)
+async def test_failed_pause_or_resume_raises(method):
+  """A pause or resume operation that fails raises."""
+  client = _make_client()
+  state = "STATE_RUNNING" if method == "pause_sandbox" else "STATE_PAUSED"
+  name = await _make_sandbox(client, state=state)
+  failed = MagicMock(return_value=SimpleNamespace(error={"message": "boom"}))
+  client.sandboxes.pause = client.sandboxes.resume = failed
+
+  with pytest.raises(RuntimeError, match="boom"):
+    await getattr(SandboxManager(client=client), method)(name)
+
+
+async def test_paused_sandbox_is_resumed():
+  """A paused sandbox is resumed."""
+  client = _make_client()
+  name = await _make_sandbox(client, state="STATE_PAUSED")
+
+  resumed = await SandboxManager(client=client).resume_sandbox_if_paused(name)
+
+  assert resumed
+  assert await SandboxManager(client=client).get_sandbox_state(name) == (
+      "STATE_RUNNING"
+  )
+
+
+async def test_running_sandbox_is_not_resumed():
+  """Resuming a running sandbox does nothing."""
+  client = _make_client()
+  name = await _make_sandbox(client)
+
+  resumed = await SandboxManager(client=client).resume_sandbox_if_paused(name)
+
+  assert not resumed
+  assert not client.sandboxes.resume_calls
+
+
+async def test_concurrent_resumes_resume_sandbox_once():
+  """Concurrent resumes of a paused sandbox resume it only once."""
+  client = _make_client()
+  name = await _make_sandbox(client, state="STATE_PAUSED")
+  manager = SandboxManager(client=client)
+
+  results = await asyncio.gather(
+      *(manager.resume_sandbox_if_paused(name) for _ in range(5))
+  )
+
+  assert sorted(results) == [False, False, False, False, True]
+  assert client.sandboxes.resume_calls == [name]
+
+
+async def test_deletion_waits_for_resume_in_progress():
+  """A sandbox is deleted only after a resume of it in progress finishes.
+
+  Setup: a paused sandbox whose resume blocks until released.
+  Act: start the resume, then delete the sandbox while the resume blocks.
+  Assert: the deletion reaches the API only after the resume.
+  """
+  client = _make_client()
+  name = await _make_sandbox(client, state="STATE_PAUSED")
+  resume, delete = client.sandboxes.resume, client.sandboxes.delete
+  started, release = threading.Event(), threading.Event()
+  calls = []
+
+  def blocking_resume(**kwargs):
+    started.set()
+    release.wait(timeout=10)
+    calls.append("resume")
+    return resume(**kwargs)
+
+  def recording_delete(**kwargs):
+    calls.append("delete")
+    return delete(**kwargs)
+
+  client.sandboxes.resume = blocking_resume
+  client.sandboxes.delete = recording_delete
+  manager = SandboxManager(client=client)
+  resuming = asyncio.create_task(manager.resume_sandbox_if_paused(name))
+  try:
+    await asyncio.to_thread(started.wait, 5)
+    deleting = asyncio.create_task(manager.delete_sandbox(name))
+    # Give the deletion time to reach the API if nothing holds it back.
+    await asyncio.sleep(0.2)
+  finally:
+    release.set()
+  await asyncio.gather(resuming, deleting)
+
+  assert calls == ["resume", "delete"]
+
+
+async def test_sandbox_is_deleted():
+  """Deleting a sandbox deletes it through the API."""
+  client = _make_client()
+  name = await _make_sandbox(client)
+
+  await SandboxManager(client=client).delete_sandbox(name)
+
+  assert client.sandboxes.delete_calls == [name]

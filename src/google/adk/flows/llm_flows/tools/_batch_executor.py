@@ -185,16 +185,28 @@ def _start_execute_task(
   return prepared_call.contextvars_snapshot.run(asyncio.create_task, coro)
 
 
+def _cancel_unfinished_tasks(tasks: list[asyncio.Task[Any]]) -> None:
+  """Cancels tasks that are still running and not already cancelling."""
+  for t in tasks:
+    if not t.done() and not t.cancelling():
+      t.cancel()
+
+
 async def _gather_or_cancel(tasks: list[asyncio.Task[_T]]) -> list[_T]:
-  """Awaits every task, cancelling the rest as soon as one of them fails."""
+  """Awaits every task; cancels and awaits the rest if one fails or the caller is cancelled or closed."""
+  gatherer = asyncio.gather(*tasks)
   try:
-    return list(await asyncio.gather(*tasks))
-  except (Exception, asyncio.CancelledError):
-    # CancelledError is BaseException, so Exception alone would leave
-    # siblings running after a child-originated cancellation.
-    for t in tasks:
-      if not t.done():
-        t.cancel()
+    return list(await gatherer)
+  except GeneratorExit:
+    gatherer.cancel()
+    # Retrieve the exception so the abandoned gather future does not log
+    # "Future exception was never retrieved" at GC.
+    gatherer.add_done_callback(
+        lambda fut: fut.exception() if not fut.cancelled() else None
+    )
+    raise
+  except BaseException:
+    _cancel_unfinished_tasks(tasks)
     await asyncio.gather(*tasks, return_exceptions=True)
     raise
 

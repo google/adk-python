@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 
 from google.genai import types
@@ -45,6 +46,12 @@ class VertexAiExampleStore(BaseExampleProvider):
       from ..utils._dependency import missing_extra
 
       raise missing_extra("google-cloud-agentplatform", "gcp") from e
+    # agentplatform's example store client imports pandas, which gcp omits.
+    if importlib.util.find_spec("pandas") is None:
+      raise ImportError(
+          "The 'pandas' package is required to use VertexAiExampleStore."
+          " Please install it by running: pip install pandas"
+      )
 
     self.examples_store_name = examples_store_name
 

@@ -20,6 +20,7 @@ from typing import Any
 
 from google.adk.agents.context import Context
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
 from google.adk.platform import uuid as platform_uuid
@@ -27,13 +28,14 @@ from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.bash_tool import ExecuteBashTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_confirmation import ToolConfirmation
+from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.adk.workflow import node
 from google.adk.workflow import START
+from google.adk.workflow._errors import WorkflowDataError
 from google.adk.workflow._tool_node import _ToolNode as ToolNode
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -666,7 +668,7 @@ class _ConfirmationWorkflow:
 
   async def answer(self, request: Event, response: dict[str, Any]) -> None:
     """Resumes the workflow with the user's answer to the request."""
-    interrupt_id = get_request_input_interrupt_ids(request)[0]
+    [interrupt_id] = extract_event_interrupt_ids(request)
     await self.runner.run_async(
         new_message=testing_utils.UserContent(
             create_request_input_response(interrupt_id, response)
@@ -887,7 +889,7 @@ async def _answer(
 
   Returns the next input request the workflow paused on, if any.
   """
-  interrupt_id = get_request_input_interrupt_ids(request)[0]
+  [interrupt_id] = extract_event_interrupt_ids(request)
   events = await runner.run_async(
       new_message=testing_utils.UserContent(
           create_request_input_response(interrupt_id, response)
@@ -1436,7 +1438,7 @@ async def test_tool_node_non_function_tool_no_output_fast_forwards_on_resume(
   assert request is not None
 
   # Turn 2: resume pause_node. Tool should fast-forward and NOT re-execute.
-  interrupt_id = get_request_input_interrupt_ids(request)[0]
+  [interrupt_id] = extract_event_interrupt_ids(request)
   await runner.run_async(
       new_message=testing_utils.UserContent(
           create_request_input_response(interrupt_id, {"status": "ok"})
@@ -1505,3 +1507,61 @@ async def test_tool_node_autoboxes_streaming_and_rejects_multi_param():
         "scalar_value",
         tool=MockToolWithDeclaration(param_names=("param_a", "param_b")),
     )
+
+
+def test_tool_node_uses_custom_name():
+  tool_node = ToolNode(
+      name="custom_weather_node", tool=MockToolWithDeclaration()
+  )
+  assert tool_node.name == "custom_weather_node"
+
+
+_CONFIRMATION_INTERRUPT_ID = "wf_tool_confirmation:delete_node@1"
+
+
+async def _resume_delete_node(resume_input: Any) -> tuple[list[Event], Context]:
+  """Resumes a confirmation-gated ToolNode with `resume_input`."""
+  inv_ctx = await testing_utils.create_invocation_context(
+      Workflow(name="host_wf")
+  )
+  tool_node = ToolNode(
+      name="delete_node",
+      tool=FunctionTool(
+          func=lambda name: {"deleted": name}, require_confirmation=True
+      ),
+  )
+  ctx = Context(
+      invocation_context=inv_ctx,
+      node_path="delete_node@1",
+      resume_inputs={_CONFIRMATION_INTERRUPT_ID: resume_input},
+  )
+  events = [e async for e in tool_node.run(ctx=ctx, node_input={"name": "x"})]
+  return events, ctx
+
+
+@pytest.mark.asyncio
+async def test_tool_node_resume_accepts_tool_confirmation_instance():
+  events, ctx = await _resume_delete_node(
+      ToolConfirmation(confirmed=True, payload={"ok": 1})
+  )
+
+  assert events[0].output == {"deleted": "x"}
+  assert ctx.tool_confirmation.payload == {"ok": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resume_input, match",
+    [
+        ("not_a_dict_or_confirmation", "must be a ToolConfirmation payload"),
+        (
+            {"confirmed": "not_a_valid_bool_dict", "extra_bad": object()},
+            "Invalid tool confirmation response",
+        ),
+    ],
+)
+async def test_tool_node_resume_rejects_invalid_confirmation(
+    resume_input, match
+):
+  with pytest.raises(WorkflowDataError, match=match):
+    await _resume_delete_node(resume_input)

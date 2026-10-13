@@ -29,6 +29,7 @@ from unittest import mock
 from google.adk.agents.context import Context
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events._node_path_builder import _NodePathBuilder
 from google.adk.events.event import Event
 from google.adk.events.event import Event as AdkEvent
@@ -42,7 +43,6 @@ from google.adk.workflow._function_node import _sync_to_async_gen
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -476,7 +476,7 @@ async def test_function_node_hitl(request: pytest.FixtureRequest):
   # Then: It should yield a RequestInput event with a valid ID
   req_events = get_request_input_events(events1)
   assert len(req_events) == 1
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
   invocation_id = events1[0].invocation_id
 
   # Verify that the FunctionCall object actually has the id set
@@ -1708,7 +1708,7 @@ class TestAuthConfig:
     assert review_req is not None
 
     # Turn 3: answer review_node -> auth_fn_node must NOT run a second time.
-    review_id = get_request_input_interrupt_ids(review_req)[0]
+    [review_id] = extract_event_interrupt_ids(review_req)
     await runner.run_async(
         new_message=testing_utils.UserContent(
             create_request_input_response(review_id, {'approved': True})

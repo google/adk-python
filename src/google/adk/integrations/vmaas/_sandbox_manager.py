@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Resolves the agent engine and templates Agent Engine sandboxes come from.
+"""Creates and manages Agent Engine sandboxes from reusable templates.
 
 Agent Engine runs sandboxes created from a template as gVisor pods on GKE.
 Creating a sandbox from an inline spec instead makes the client SDK provision
 a new template on every call, so this module finds or creates one template per
-container configuration and reuses it for every sandbox of that configuration.
+container configuration, reuses it for every sandbox of that configuration,
+and creates sandboxes only from a template or a snapshot.
 """
 
 from __future__ import annotations
@@ -42,13 +43,19 @@ _SHELL_TEMPLATE_PREFIX = "adk-shell"
 _CUSTOM_CONTAINER_TEMPLATE_PREFIX = "adk-custom-container"
 _SHELL_CONTAINER_CATEGORY = "DEFAULT_CONTAINER_CATEGORY_SHELL_SANDBOX"
 _TEMPLATE_STATE_ACTIVE = "ACTIVE"
+_SANDBOX_DISPLAY_NAME = "adk-sandbox"
+_SANDBOX_STATE_PAUSED = "STATE_PAUSED"
+_SANDBOX_STATE_PAUSING = "STATE_PAUSING"
+_SANDBOX_STATE_TERMINATED = "STATE_TERMINATED"
 
-# Templates take a while to provision, so poll less often than the SDK default.
+# Templates and sandboxes take a while to provision, so poll less often than
+# the SDK default of every 0.1 seconds.
 _TEMPLATE_POLL_INTERVAL_SECONDS = 1.0
+_SANDBOX_POLL_INTERVAL_SECONDS = 0.5
 
 
 class SandboxManager:
-  """Finds or creates the Agent Engine resources sandboxes are created from.
+  """Creates Agent Engine sandboxes and the resources they are created from.
 
   A manager resolves one agent engine and caches the template it resolves for
   each container configuration. A template's display name encodes a hash of
@@ -61,6 +68,10 @@ class SandboxManager:
   Without an explicit agent engine, the manager creates one on first use.
   Templates are scoped to their agent engine, so pass the same
   ``agent_engine_name`` across processes to reuse templates between them.
+
+  Sandboxes are created under the agent engine that owns their template or
+  snapshot. Pausing and resuming a sandbox through one manager is serialized
+  per sandbox, so concurrent callers resume a paused sandbox only once.
   """
 
   def __init__(
@@ -92,6 +103,9 @@ class SandboxManager:
     # One lock per template display name, so creating the template of one
     # container configuration does not hold up the others.
     self._template_locks: collections.defaultdict[str, asyncio.Lock] = (
+        collections.defaultdict(asyncio.Lock)
+    )
+    self._sandbox_locks: collections.defaultdict[str, asyncio.Lock] = (
         collections.defaultdict(asyncio.Lock)
     )
 
@@ -156,9 +170,125 @@ class SandboxManager:
         config={"custom_container_environment": environment},
     )
 
+  async def create_sandbox(
+      self,
+      *,
+      template_name: str | None = None,
+      snapshot_name: str | None = None,
+      display_name: str = _SANDBOX_DISPLAY_NAME,
+      ttl_seconds: int | None = None,
+  ) -> str:
+    """Creates a sandbox from a template or a snapshot and returns its name.
+
+    Exactly one of ``template_name`` and ``snapshot_name`` must be set. The
+    sandbox is created under the agent engine that owns it.
+
+    Args:
+      template_name: Template to create the sandbox from.
+      snapshot_name: Snapshot to restore the sandbox from.
+      display_name: Display name of the sandbox.
+      ttl_seconds: Time to live of the sandbox. If None, the service default
+        applies.
+    """
+    if template_name and not snapshot_name:
+      source_field, source_name = "sandbox_environment_template", template_name
+    elif snapshot_name and not template_name:
+      source_field, source_name = "sandbox_environment_snapshot", snapshot_name
+    else:
+      raise ValueError(
+          "Exactly one of template_name and snapshot_name must be set."
+      )
+    config: dict[str, Any] = {
+        "display_name": display_name,
+        source_field: source_name,
+    }
+    if ttl_seconds is not None:
+      config["ttl"] = f"{ttl_seconds}s"
+
+    logger.info("Creating sandbox from %s", source_name)
+    operation = await asyncio.to_thread(
+        self._get_client().sandboxes.create,
+        name=_parent_agent_engine_name(source_name),
+        config=config,
+        poll_interval_seconds=_SANDBOX_POLL_INTERVAL_SECONDS,
+    )
+    sandbox = operation.response
+    if sandbox is None or _state(sandbox) == _SANDBOX_STATE_TERMINATED:
+      raise RuntimeError(
+          f"Failed to create a sandbox from {source_name!r}: {operation.error}"
+      )
+    sandbox_name: str = sandbox.name
+    logger.info("Created sandbox: %s", sandbox_name)
+    return sandbox_name
+
+  async def get_sandbox_state(self, sandbox_name: str) -> str:
+    """Returns the state of a sandbox, e.g. ``STATE_RUNNING``."""
+    sandbox = await asyncio.to_thread(
+        self._get_client().sandboxes.get, name=sandbox_name
+    )
+    return _state(sandbox)
+
+  async def pause_sandbox(self, sandbox_name: str) -> bool:
+    """Pauses a sandbox, keeping its filesystem for a later resume.
+
+    Returns:
+      Whether the sandbox was paused by this call. A sandbox that is already
+      paused or pausing is left as is.
+    """
+    async with self._sandbox_locks[sandbox_name]:
+      state = await self.get_sandbox_state(sandbox_name)
+      if state in (_SANDBOX_STATE_PAUSED, _SANDBOX_STATE_PAUSING):
+        return False
+      logger.info("Pausing sandbox: %s", sandbox_name)
+      operation = await asyncio.to_thread(
+          self._get_client().sandboxes.pause,
+          name=sandbox_name,
+          poll_interval_seconds=_SANDBOX_POLL_INTERVAL_SECONDS,
+      )
+      if operation.error:
+        raise RuntimeError(
+            f"Failed to pause sandbox {sandbox_name}: {operation.error}"
+        )
+      return True
+
+  async def resume_sandbox_if_paused(self, sandbox_name: str) -> bool:
+    """Resumes a sandbox if it is paused.
+
+    Returns:
+      Whether the sandbox was resumed by this call.
+    """
+    async with self._sandbox_locks[sandbox_name]:
+      if await self.get_sandbox_state(sandbox_name) != _SANDBOX_STATE_PAUSED:
+        return False
+      logger.info("Resuming sandbox: %s", sandbox_name)
+      operation = await asyncio.to_thread(
+          self._get_client().sandboxes.resume,
+          name=sandbox_name,
+          poll_interval_seconds=_SANDBOX_POLL_INTERVAL_SECONDS,
+      )
+      if operation.error:
+        raise RuntimeError(
+            f"Failed to resume sandbox {sandbox_name}: {operation.error}"
+        )
+      return True
+
+  async def delete_sandbox(self, sandbox_name: str) -> None:
+    """Deletes a sandbox, after any pause or resume of it has finished.
+
+    The service deletes a sandbox in any state but PROVISIONING, including one
+    that is still resuming, so a deletion waits for this manager's own pause or
+    resume of the sandbox to finish first.
+    """
+    async with self._sandbox_locks[sandbox_name]:
+      logger.info("Deleting sandbox: %s", sandbox_name)
+      await asyncio.to_thread(
+          self._get_client().sandboxes.delete, name=sandbox_name
+      )
+    self._sandbox_locks.pop(sandbox_name, None)
+
   def _get_client(self) -> agentplatform.Client:
     if self._client is None:
-      import agentplatform
+      from ...dependencies._agentplatform import agentplatform
 
       self._client = agentplatform.Client(
           project=self._project_id, location=self._location
@@ -215,6 +345,27 @@ def _to_dict(
     resources: Mapping[str, Mapping[str, str]],
 ) -> dict[str, dict[str, str]]:
   return {key: dict(value) for key, value in resources.items()}
+
+
+def _parent_agent_engine_name(resource_name: str) -> str:
+  agent_engine_name, separator, _ = resource_name.partition(
+      "/sandboxEnvironment"
+  )
+  if not separator or "/reasoningEngines/" not in agent_engine_name:
+    raise ValueError(
+        f"{resource_name!r} is not an Agent Engine sandbox template or"
+        " snapshot name."
+    )
+  return agent_engine_name
+
+
+def _state(sandbox: Any) -> str:
+  # The SDK reports states as string-valued enums.
+  state = sandbox.state
+  if state is None:
+    return "STATE_UNSPECIFIED"
+  value: str = getattr(state, "value", state)
+  return value
 
 
 def _find_active_template(

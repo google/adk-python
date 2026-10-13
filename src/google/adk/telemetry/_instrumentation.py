@@ -19,10 +19,13 @@ import dataclasses
 import logging
 import sys
 import time
+from typing import AsyncGenerator
 from typing import AsyncIterator
+from typing import Awaitable
 from typing import Iterator
 from typing import Literal
 from typing import TYPE_CHECKING
+from typing import TypeVar
 
 from opentelemetry import trace
 import opentelemetry.context as context_api
@@ -59,6 +62,127 @@ _TOOL_EXECUTION_TELEMETRY_KEY = context_api.create_key(
 )
 _WORKFLOW_SCOPE_KEY = context_api.create_key("adk_workflow_scope")
 
+_T = TypeVar("_T")
+
+
+@contextlib.contextmanager
+def _using(otel_context: context_api.Context) -> Iterator[None]:
+  """Makes ``otel_context`` current for the duration of the block.
+
+  The block must not suspend on a `yield` that reaches a consumer: attach and
+  detach have to run in one uninterrupted stretch, or the detach lands in a
+  different context than the attach and fails. See `stream_in_scope`.
+  """
+  token = context_api.attach(otel_context)
+  try:
+    yield
+  finally:
+    context_api.detach(token)
+
+
+@contextlib.contextmanager
+def _recording_span(span: trace.Span) -> Iterator[trace.Span]:
+  """`trace.use_span` without the attach.
+
+  Records an escaping exception on ``span`` and ends it, the way
+  `start_as_current_span` would, but leaves the ambient context alone: the
+  span travels by value instead, so it can cross a `yield` safely.
+
+  Catches `Exception` rather than `BaseException`, for the reason upstream
+  `use_span` does: what directly subclasses `BaseException` is not an error
+  the operation made. `GeneratorExit` in particular only says the consumer
+  stopped reading, which is routine for the generators these spans wrap.
+  """
+  try:
+    yield span
+  except Exception as exc:  # pylint: disable=broad-except
+    if span.is_recording():
+      span.record_exception(exc)
+      span.set_status(
+          trace.Status(trace.StatusCode.ERROR, f"{type(exc).__name__}: {exc}")
+      )
+    raise
+  finally:
+    span.end()
+
+
+_R = TypeVar("_R")
+
+
+async def stream_in_scope(
+    otel_context: context_api.Context,
+    agen: AsyncGenerator[_T, None],
+) -> AsyncGenerator[_T, None]:
+  """Drives ``agen`` under ``otel_context``, attached only while it runs.
+
+  ADK's telemetry scopes wrap async generators whose events are yielded all the
+  way out to the caller. Holding an OTel attach token across one of those
+  yields is unsafe: an async generator has no context of its own, so it is
+  resumed -- and finalized -- in the context of whoever drives it. A consumer
+  that closes the stream from another task, or drops it and lets asyncio's
+  async-generator finalizer close it, makes the detach run against a token
+  created somewhere else. `context_api.detach` does not raise on that; it logs
+  "Failed to detach context" and carries on, leaving the scope's span attached
+  to the consumer's context for good, so everything traced there afterwards is
+  parented to a span that has already ended (b/485899016).
+
+  Attaching around each drive keeps every attach/detach pair inside one
+  uninterrupted stretch of this generator's body, where the context cannot
+  shift. It also leaves the consumer's context untouched while it handles an
+  event, so a caller traces into its own span rather than into ADK's.
+
+  Whichever context the generator leaves current is carried into its next
+  resumption, so an inner streaming span opened inside it stays current across
+  yields instead of being reset to the initial context.
+
+  Args:
+    otel_context: The scope's context, carried by value. Whoever built it must
+      not have attached it.
+    agen: The generator to drive. Owned by this function, which closes it.
+
+  Yields:
+    Everything ``agen`` yields, unchanged.
+  """
+  active_ctx = otel_context
+
+  async def _drive(step: Awaitable[_R]) -> _R:
+    nonlocal active_ctx
+    token = context_api.attach(active_ctx)
+    try:
+      return await step
+    finally:
+      active_ctx = context_api.get_current()
+      context_api.detach(token)
+
+  closing = contextlib.aclosing(agen)
+  owned = await closing.__aenter__()
+  pending: BaseException | None = None
+  try:
+    while True:
+      try:
+        if pending is None:
+          item = await _drive(owned.__anext__())
+        else:
+          thrown, pending = pending, None
+          item = await _drive(owned.athrow(thrown))
+      except StopAsyncIteration:
+        return
+      try:
+        yield item
+      except GeneratorExit:
+        raise
+      except BaseException as exc:  # pylint: disable=broad-except
+        # Forwarded on the next drive, so that a consumer cancelling the
+        # stream reaches the generator's own handlers and not just its
+        # `finally` blocks.
+        pending = exc
+  finally:
+    # Closed here, under the scope's context, because teardown inside `agen`
+    # reports telemetry of its own -- a nested scope closing, an
+    # after_agent callback -- and those spans would otherwise start a trace
+    # of their own.
+    await _drive(closing.__aexit__(None, None, None))
+
 
 @dataclasses.dataclass(kw_only=True)
 class _Accumulator:
@@ -89,6 +213,14 @@ class _AgentInvocationScope(_Accumulator):
 
   agent_name: str
   """The agent these totals are exclusive to."""
+
+  otel_context: context_api.Context = dataclasses.field(
+      default_factory=context_api.Context
+  )
+  """The context the invocation runs under, carrying its span and this scope.
+
+  Published by `record_agent_invocation` rather than attached, so a caller
+  streaming events out of the scope can hand it to `stream_in_scope`."""
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -133,7 +265,7 @@ def record_invocation(
     entrypoint_node: BaseNode | None,
     conversation_id: str,
     run_config: RunConfig | None = None,
-) -> Iterator[None]:
+) -> Iterator[context_api.Context]:
   """Top-level invocation span for a runner invocation.
 
   Schema v1 emits the legacy ``invocation`` span. Schema v2 replaces it with an
@@ -150,11 +282,15 @@ def record_invocation(
       experimental opt-in the span's token scope is gated on.
 
   Yields:
-    Nothing; the span (if any) is active for the duration of the block.
+    The context the invocation runs under, carrying the span when there is one.
+    It is handed back by value rather than attached: pass it to
+    `stream_in_scope` to drive the invocation's events under it (b/485899016).
   """
   if resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED:
-    with tracing.tracer.start_as_current_span("invocation"):
-      yield
+    parent_context = context_api.get_current()
+    span = tracing.tracer.start_span("invocation", context=parent_context)
+    with _recording_span(span):
+      yield trace.set_span_in_context(span, parent_context)
     return
 
   from . import node_tracing
@@ -162,7 +298,7 @@ def record_invocation(
 
   if isinstance(entrypoint_node, Workflow):
     # The workflow's own node span is the entrypoint `invoke_workflow` span.
-    yield
+    yield context_api.get_current()
     return
 
   entrypoint_name = entrypoint_node.name if entrypoint_node else ""
@@ -170,8 +306,8 @@ def record_invocation(
       entrypoint_name,
       conversation_id,
       telemetry_config=run_config.telemetry if run_config else None,
-  ):
-    yield
+  ) as (_, workflow_context):
+    yield workflow_context
 
 
 @dataclasses.dataclass
@@ -572,25 +708,32 @@ def _accumulate_tokens(
 async def record_agent_invocation(
     ctx: InvocationContext, agent: BaseAgent
 ) -> AsyncIterator[_AgentInvocationScope]:
-  """Unified context manager for consolidated agent invocation telemetry."""
+  """Unified context manager for consolidated agent invocation telemetry.
+
+  The scope's context is published on ``scope.otel_context`` rather than
+  attached, so a caller streaming events out of this block hands it to
+  `stream_in_scope` instead of holding a token across a yield (b/485899016).
+  """
   start_time = time.monotonic()
   caught_error: Exception | None = None
-  span: trace.Span | None = None
   span_name = f"invoke_agent {agent.name}"
+  parent_context = context_api.get_current()
+  span = tracing.tracer.start_span(span_name, context=parent_context)
   scope = _AgentInvocationScope(agent_name=agent.name)
-  token = context_api.attach(
-      context_api.set_value(_AGENT_INVOCATION_SCOPE_KEY, scope)
+  # Built after the scope exists, because the context carries the scope.
+  scope.otel_context = context_api.set_value(
+      _AGENT_INVOCATION_SCOPE_KEY,
+      scope,
+      trace.set_span_in_context(span, parent_context),
   )
   try:
-    with tracing.tracer.start_as_current_span(span_name) as s:
-      span = s
+    with _recording_span(span):
       tracing.trace_agent_invocation(span, agent, ctx)
       yield scope
   except Exception as e:
     caught_error = e
     raise
   finally:
-    context_api.detach(token)
     _record_agent_metrics(
         agent.name,
         _metrics.get_elapsed_s(span, start_time),

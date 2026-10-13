@@ -994,6 +994,11 @@ async def test_list_keys_preserves_user_prefix(
   expected_keys = ["user:document.pdf", "user:image.png", "session_file.txt"]
   assert sorted(artifact_keys) == sorted(expected_keys)
 
+  user_only_keys = await artifact_service.list_artifact_keys(
+      app_name=app_name, user_id=user_id, session_id=None
+  )
+  assert sorted(user_only_keys) == ["user:document.pdf", "user:image.png"]
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -1192,6 +1197,39 @@ async def test_get_artifact_version_out_of_index(
       session_id=session_id,
       filename=filename,
       version=3,
+  )
+  # The version one past the last is out of range too.
+  assert not await artifact_service.get_artifact_version(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=1,
+  )
+  assert not await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=1,
+  )
+  first_version = await artifact_service.get_artifact_version(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=0,
+  )
+  assert first_version.version == 0
+  assert (
+      await artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=filename,
+          version=0,
+      )
+      == artifact
   )
 
 

@@ -49,7 +49,6 @@ from ..features import FeatureName
 from ..utils._callback_pipeline import _normalize_callbacks
 from ..utils._callback_pipeline import _run_callbacks
 from ..utils._callback_pipeline import _stop_on_truthy
-from ..utils._runner_utils import _with_caller_context
 from ..utils.context_utils import Aclosing
 from ..workflow import BaseNode
 from .base_agent_config import BaseAgentConfig as BaseAgentConfig
@@ -405,58 +404,61 @@ class BaseAgent(BaseNode, abc.ABC):
       impl_fn: Callable[[InvocationContext], AsyncGenerator[Event, None]],
   ) -> AsyncGenerator[Event, None]:
     """Runs an agent implementation generator with full callback and trace lifecycle."""
-    from opentelemetry import context
-
     from ..telemetry import _instrumentation
 
-    caller_ctx = context.get_current()
+    ctx = self._create_invocation_context(parent_context)
 
     async def _run() -> AsyncGenerator[Event, None]:
-      ctx = self._create_invocation_context(parent_context)
-      async with _instrumentation.record_agent_invocation(ctx, self):
-        before_callback_completed = False
-        after_callback_called = False
-        try:
-          event = await self._handle_before_agent_callback(ctx)
-          before_callback_completed = True
-          if event:
+      before_callback_completed = False
+      after_callback_called = False
+      try:
+        event = await self._handle_before_agent_callback(ctx)
+        before_callback_completed = True
+        if event:
+          yield event
+        if ctx.end_invocation:
+          return
+
+        async with Aclosing(impl_fn(ctx)) as agen:
+          async for event in agen:
             yield event
-          if ctx.end_invocation:
-            return
 
-          async with Aclosing(impl_fn(ctx)) as agen:
-            async for event in agen:
-              yield event
+        if ctx.end_invocation:
+          return
 
-          if ctx.end_invocation:
-            return
+        after_callback_called = True
+        if event := await self._handle_after_agent_callback(ctx):
+          yield event
+      except asyncio.CancelledError:
+        if (
+            before_callback_completed
+            and not after_callback_called
+            and not ctx.end_invocation
+        ):
+          try:
+            await self._handle_after_agent_callback(ctx)
+          except asyncio.CancelledError:
+            raise
+          except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                'after_agent_callback raised on cancellation;'
+                ' suppressing so original cancellation propagates.'
+            )
+        raise
+      except Exception as e:
+        await self._handle_agent_error_callback(ctx, e)
+        raise
 
-          after_callback_called = True
-          if event := await self._handle_after_agent_callback(ctx):
-            yield event
-        except asyncio.CancelledError:
-          if (
-              before_callback_completed
-              and not after_callback_called
-              and not ctx.end_invocation
-          ):
-            try:
-              await self._handle_after_agent_callback(ctx)
-            except asyncio.CancelledError:
-              raise
-            except Exception:  # pylint: disable=broad-except
-              logger.exception(
-                  'after_agent_callback raised on cancellation;'
-                  ' suppressing so original cancellation propagates.'
-              )
-          raise
-        except Exception as e:
-          await self._handle_agent_error_callback(ctx, e)
-          raise
-
-    async with Aclosing(_with_caller_context(_run(), caller_ctx)) as agen:
-      async for event in agen:
-        yield event
+    # The scope is entered out here rather than inside `_run`, so that its
+    # span is not opened and closed by whoever happens to drive the generator,
+    # and `stream_in_scope` attaches it only while `_run` is actually running
+    # (b/485899016).
+    async with _instrumentation.record_agent_invocation(ctx, self) as scope:
+      async with Aclosing(
+          _instrumentation.stream_in_scope(scope.otel_context, _run())
+      ) as agen:
+        async for event in agen:
+          yield event
 
   async def _run_async_impl(
       self, ctx: InvocationContext

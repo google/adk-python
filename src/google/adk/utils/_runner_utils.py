@@ -16,37 +16,14 @@
 
 from __future__ import annotations
 
-from contextlib import aclosing
 import logging
-from typing import AsyncGenerator
 from typing import TYPE_CHECKING
-from typing import TypeVar
 
 if TYPE_CHECKING:
-  from opentelemetry import context
-
   from ..agents.invocation_context import InvocationContext
   from ..plugins.plugin_manager import PluginManager
 
 logger = logging.getLogger("google_adk." + __name__)
-
-_T = TypeVar("_T")
-
-
-async def _with_caller_context(
-    agen: AsyncGenerator[_T, None],
-    caller_ctx: context.Context,
-) -> AsyncGenerator[_T, None]:
-  """Wraps an async generator to attach caller_ctx around each yield."""
-  from opentelemetry import context
-
-  async with aclosing(agen) as a:
-    async for item in a:
-      token = context.attach(caller_ctx)
-      try:
-        yield item
-      finally:
-        context.detach(token)
 
 
 async def _notify_run_error(

@@ -1452,6 +1452,11 @@ async def test_load_agent_state_not_resumable():
   state = agent._load_agent_state(ctx, _TestAgentState)
   assert state is None
 
+  # Test case 3: agent_states is None
+  ctx.agent_states = None
+  state = agent._load_agent_state(ctx, _TestAgentState)
+  assert state is None
+
 
 @pytest.mark.asyncio
 async def test_load_agent_state_with_resume():
@@ -1614,3 +1619,28 @@ def test_find_agent_with_duplicate_sub_agent_names_returns_the_first(
   assert first.parent_agent is parent
   assert second.parent_agent is parent
   assert parent.find_agent(duplicate_name) is first
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method_name', ['run_async', 'run_live'])
+async def test_before_agent_callback_bypass_skips_after_callback(
+    request: pytest.FixtureRequest,
+    mocker: pytest_mock.MockerFixture,
+    method_name: str,
+):
+  """A before_agent_callback that returns content skips after_agent_callback."""
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_agent',
+      before_agent_callback=_before_agent_callback_bypass_agent,
+      after_agent_callback=_after_agent_callback_append_agent_reply,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  spy_after = mocker.spy(agent, 'after_agent_callback')
+
+  events = [e async for e in getattr(agent, method_name)(parent_ctx)]
+
+  assert len(events) == 1
+  assert events[0].content.parts[0].text == 'agent run is bypassed.'
+  spy_after.assert_not_called()
