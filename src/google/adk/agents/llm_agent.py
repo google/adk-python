@@ -167,7 +167,7 @@ def _wrap_base_node_as_tool(node: BaseNode) -> BaseTool:
 
 
 async def _convert_tool_union_to_tools(
-    tool_union: Union[ToolUnion, BaseNode],
+    tool_union: ToolUnion,
     ctx: Optional[ReadonlyContext],
     model: Union[str, BaseLlm],
     multiple_tools: bool = False,

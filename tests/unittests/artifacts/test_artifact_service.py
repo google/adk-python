@@ -2061,6 +2061,8 @@ INVALID_PATH_SEGMENT_CASES = (
     (".", "must not contain traversal segments"),
     ("null\x00byte", "must not contain null bytes"),
     ("", "must not be empty"),
+    ("   ", "must not be empty"),
+    ("\t\n", "must not be empty"),
     ("/etc/passwd", "must not be an absolute path or start with a slash"),
     ("/leading/slash", "must not be an absolute path or start with a slash"),
     (

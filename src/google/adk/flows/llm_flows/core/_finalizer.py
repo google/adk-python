@@ -16,8 +16,10 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 from typing import AsyncGenerator
+from typing import Iterator
 from typing import Optional
 
 from opentelemetry import trace
@@ -35,6 +37,25 @@ from ....utils._callback_pipeline import _stop_on_non_none
 from ....utils._callback_pipeline import _stop_on_truthy
 from ....utils.context_utils import Aclosing
 from ._utils import as_llm_agent as _as_llm_agent
+
+
+@contextlib.contextmanager
+def _model_callback_context(
+    invocation_context: InvocationContext, model_response_event: Event
+) -> Iterator[CallbackContext]:
+  """Yields a callback context writing into the model response event's actions.
+
+  Reading ``actions`` on the way out moves a callback's write into a container
+  it read from the state into the delta, which nothing else does before the
+  event is persisted.
+  """
+  callback_context = CallbackContext(
+      invocation_context, event_actions=model_response_event.actions
+  )
+  try:
+    yield callback_context
+  finally:
+    _ = callback_context.actions
 
 
 def finalize_model_response_event(
@@ -143,31 +164,30 @@ async def handle_before_model_callback(
   """
   agent = _as_llm_agent(invocation_context)
 
-  callback_context = CallbackContext(
-      invocation_context, event_actions=model_response_event.actions
-  )
+  with _model_callback_context(
+      invocation_context, model_response_event
+  ) as callback_context:
+    # First run callbacks from the plugins.
+    callback_response = (
+        await invocation_context.plugin_manager.run_before_model_callback(
+            callback_context=callback_context,
+            llm_request=llm_request,
+        )
+    )
+    if callback_response:
+      return callback_response
 
-  # First run callbacks from the plugins.
-  callback_response = (
-      await invocation_context.plugin_manager.run_before_model_callback(
-          callback_context=callback_context,
-          llm_request=llm_request,
-      )
-  )
-  if callback_response:
-    return callback_response
-
-  # If no overrides are provided from the plugins, further run the canonical
-  # callbacks.
-  callback_response = await _run_callbacks(
-      agent.canonical_before_model_callbacks,  # type: ignore[arg-type]
-      _stop_on_truthy,
-      callback_context=callback_context,
-      llm_request=llm_request,
-  )
-  if callback_response:
-    return callback_response
-  return None
+    # If no overrides are provided from the plugins, further run the canonical
+    # callbacks.
+    callback_response = await _run_callbacks(
+        agent.canonical_before_model_callbacks,  # type: ignore[arg-type]
+        _stop_on_truthy,
+        callback_context=callback_context,
+        llm_request=llm_request,
+    )
+    if callback_response:
+      return callback_response
+    return None
 
 
 def _inherit_unset_model_fields(
@@ -266,37 +286,36 @@ async def handle_after_model_callback(
     response.grounding_metadata = ground_metadata
     return response
 
-  callback_context = CallbackContext(
-      invocation_context, event_actions=model_response_event.actions
-  )
-
-  # First run callbacks from the plugins.
-  callback_response = (
-      await invocation_context.plugin_manager.run_after_model_callback(
-          callback_context=callback_context,
-          llm_response=llm_response,
+  with _model_callback_context(
+      invocation_context, model_response_event
+  ) as callback_context:
+    # First run callbacks from the plugins.
+    callback_response = (
+        await invocation_context.plugin_manager.run_after_model_callback(
+            callback_context=callback_context,
+            llm_response=llm_response,
+        )
+    )
+    if callback_response:
+      return _inherit_unset_model_fields(
+          llm_response,
+          await _maybe_add_grounding_metadata(callback_response),
       )
-  )
-  if callback_response:
-    return _inherit_unset_model_fields(
-        llm_response,
-        await _maybe_add_grounding_metadata(callback_response),
-    )
 
-  # If no overrides are provided from the plugins, further run the canonical
-  # callbacks.
-  callback_response = await _run_callbacks(
-      agent.canonical_after_model_callbacks,  # type: ignore[arg-type]
-      _stop_on_truthy,
-      callback_context=callback_context,
-      llm_response=llm_response,
-  )
-  if callback_response:
-    return _inherit_unset_model_fields(
-        llm_response,
-        await _maybe_add_grounding_metadata(callback_response),
+    # If no overrides are provided from the plugins, further run the canonical
+    # callbacks.
+    callback_response = await _run_callbacks(
+        agent.canonical_after_model_callbacks,  # type: ignore[arg-type]
+        _stop_on_truthy,
+        callback_context=callback_context,
+        llm_response=llm_response,
     )
-  return await _maybe_add_grounding_metadata()
+    if callback_response:
+      return _inherit_unset_model_fields(
+          llm_response,
+          await _maybe_add_grounding_metadata(callback_response),
+      )
+    return await _maybe_add_grounding_metadata()
 
 
 async def run_and_handle_error(
@@ -371,22 +390,22 @@ async def run_and_handle_error(
           tel_ctx.record_llm_response(invocation_context, llm_response)
           yield llm_response
   except Exception as model_error:
-    callback_context = CallbackContext(
-        invocation_context, event_actions=model_response_event.actions
-    )
-    if call_llm_span is not None:
-      with trace.use_span(call_llm_span, end_on_exit=False):
+    with _model_callback_context(
+        invocation_context, model_response_event
+    ) as callback_context:
+      if call_llm_span is not None:
+        with trace.use_span(call_llm_span, end_on_exit=False):
+          error_response = await _run_on_model_error_callbacks(
+              callback_context=callback_context,
+              llm_request=llm_request,
+              error=model_error,
+          )
+      else:
         error_response = await _run_on_model_error_callbacks(
             callback_context=callback_context,
             llm_request=llm_request,
             error=model_error,
         )
-    else:
-      error_response = await _run_on_model_error_callbacks(
-          callback_context=callback_context,
-          llm_request=llm_request,
-          error=model_error,
-      )
     if error_response is not None:
       if call_llm_span is not None:
         _instrumentation.record_response_source(

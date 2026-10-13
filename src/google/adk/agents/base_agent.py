@@ -595,7 +595,7 @@ class BaseAgent(BaseNode, abc.ABC):
           author=self.name,
           branch=ctx.branch,
           content=callback_content,
-          actions=callback_context._event_actions,
+          actions=callback_context.actions,
       )
       if end_invocation_on_content:
         ctx.end_invocation = True

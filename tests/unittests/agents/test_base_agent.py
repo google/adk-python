@@ -357,6 +357,31 @@ async def test_run_async_with_async_before_agent_callback_bypass_agent(
   assert events[0].content.parts[0].text == 'agent run is bypassed.'
 
 
+@pytest.mark.asyncio
+async def test_run_async_before_agent_callback_content_carries_nested_write(
+    request: pytest.FixtureRequest,
+):
+  """The event built from returned content carries the write to storage."""
+
+  def callback(callback_context: CallbackContext) -> types.Content:
+    callback_context.state['cfg']['b'] = 2
+    return types.Content(parts=[types.Part(text='agent run is bypassed.')])
+
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_agent',
+      before_agent_callback=callback,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  parent_ctx.session.state['cfg'] = {'a': 1}
+
+  events = [e async for e in agent.run_async(parent_ctx)]
+
+  assert len(events) == 1
+  assert events[0].actions.state_delta == {'cfg': {'a': 1, 'b': 2}}
+
+
 class CallbackType(Enum):
   SYNC = 1
   ASYNC = 2

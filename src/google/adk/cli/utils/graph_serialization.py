@@ -24,6 +24,7 @@ logger = logging.getLogger("google_adk." + __name__)
 from ...agents.base_agent import BaseAgent
 from ...models.base_llm import BaseLlm
 from ...tools.base_toolset import BaseToolset
+from ...workflow._base_node import BaseNode
 
 # Node type mapping for cleaner lookup
 NODE_TYPE_MAP = {
@@ -62,8 +63,9 @@ def serialize_node_like(item: Any) -> Any:
   class_name = type(item).__name__
   if "Agent" in class_name and hasattr(item, "model_fields"):
     return serialize_agent(item)
-  # Handle BaseNode
-  if "Node" in class_name and hasattr(item, "get_name"):
+  # Handle BaseNode. Only real BaseNode instances go through serialize_node,
+  # which reads rerun_on_resume; a name-only lookalike would raise there.
+  if isinstance(item, BaseNode):
     return serialize_node(item)
   # Handle callable
   if callable(item):
