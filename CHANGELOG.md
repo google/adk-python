@@ -11,10 +11,7 @@ This release enhances execution performance in long sessions while introducing f
 * **Tools**: Intercept and filter tool outputs before returning them to the model using `after_tool_callback`. ([fdda17c](https://github.com/google/adk-python/commit/fdda17cbcfec35a1cca1638b028c1af98e893eae))
 * **Workflows**: Require human confirmation before executing workflow nodes via `require_confirmation`. ([988fd1a](https://github.com/google/adk-python/commit/988fd1a73d174f9e3acb6d2e1bec102f9ec02238))
 * **Deployment**: Deploy agents to Agent Engine using dedicated custom service accounts. ([629e119](https://github.com/google/adk-python/commit/629e11996ebb544ea6b0f652e413955b2dfedeb6))
-
-#### Behavior changes
-
-* **Trigger endpoints**: Enabling `trigger_sources` now requires `trigger_oidc_audience` or a custom `trigger_auth_verifier`; without one the server fails at startup and `adk deploy` exits with a usage error. Pass `--trigger_oidc_audience` set to the service URL. ([b3ccb29](https://github.com/google/adk-python/commit/b3ccb295ac09514b7f676ef150a349b36d2c3e41))
+* **Python 3.15**: Install and run ADK on Python 3.15. ([75aef1e](https://github.com/google/adk-python/commit/75aef1ec133c92c9e35f0575392ef5c4e3910b31))
 
 <details>
 <summary>All changes</summary>
