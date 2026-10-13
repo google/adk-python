@@ -68,7 +68,6 @@ from .utils import _lazy
 from .utils._agent_mode import AgentMode as _AgentMode
 from .utils._debug_output import print_event
 from .utils._runner_utils import _notify_run_error
-from .utils._runner_utils import _with_caller_context
 from .workflow._base_node import BaseNode
 
 if TYPE_CHECKING:
@@ -1256,140 +1255,141 @@ class Runner:
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
-      from opentelemetry import context
+      session = await self._get_or_create_session(
+          user_id=user_id,
+          session_id=session_id,
+          get_session_config=run_config.get_session_config,
+      )
 
-      from .telemetry import _instrumentation
-
-      caller_ctx_trace = context.get_current()
-      with _instrumentation.record_invocation(
-          entrypoint_node=root_agent,
-          conversation_id=session_id,
-          run_config=run_config,
-      ):
-        session = await self._get_or_create_session(
-            user_id=user_id,
-            session_id=session_id,
-            get_session_config=run_config.get_session_config,
+      if not invocation_id and new_message is None:
+        raise ValueError(
+            'Running an agent requires either a new_message or an '
+            'invocation_id to resume a previous invocation. '
+            f'Session: {session_id}, User: {user_id}'
         )
 
-        if not invocation_id and new_message is None:
+      is_resumable = (
+          self.resumability_config and self.resumability_config.is_resumable
+      )
+      if not is_resumable:
+        if new_message is None:
           raise ValueError(
-              'Running an agent requires either a new_message or an '
-              'invocation_id to resume a previous invocation. '
+              'Running an agent requires a new_message or a resumable app. '
               f'Session: {session_id}, User: {user_id}'
           )
-
-        is_resumable = (
-            self.resumability_config and self.resumability_config.is_resumable
+        resolved_invocation_id = self._resolve_invocation_id_from_fr(
+            session, new_message, strict=False
         )
-        if not is_resumable:
+        if resolved_invocation_id is not None:
+          if invocation_id and invocation_id != resolved_invocation_id:
+            logger.warning(
+                'Provided invocation_id %s is ignored because new_message'
+                ' has a function response with invocation_id %s.',
+                invocation_id,
+                resolved_invocation_id,
+            )
+          invocation_id = resolved_invocation_id
+        invocation_context = await self._setup_context_for_new_invocation(
+            session=session,
+            new_message=new_message,
+            run_config=run_config,
+            state_delta=state_delta,
+            invocation_id=invocation_id,
+            abort_signal=abort_signal,
+        )
+      else:
+        invocation_id = self._resolve_invocation_id(
+            session, new_message, invocation_id
+        )
+        if not invocation_id:
           if new_message is None:
             raise ValueError(
-                'Running an agent requires a new_message or a resumable app. '
-                f'Session: {session_id}, User: {user_id}'
+                'A new message is required when no invocation can be resumed.'
             )
-          resolved_invocation_id = self._resolve_invocation_id_from_fr(
-              session, new_message, strict=False
-          )
-          if resolved_invocation_id is not None:
-            if invocation_id and invocation_id != resolved_invocation_id:
-              logger.warning(
-                  'Provided invocation_id %s is ignored because new_message'
-                  ' has a function response with invocation_id %s.',
-                  invocation_id,
-                  resolved_invocation_id,
-              )
-            invocation_id = resolved_invocation_id
           invocation_context = await self._setup_context_for_new_invocation(
               session=session,
               new_message=new_message,
               run_config=run_config,
               state_delta=state_delta,
-              invocation_id=invocation_id,
               abort_signal=abort_signal,
           )
         else:
-          invocation_id = self._resolve_invocation_id(
-              session, new_message, invocation_id
+          invocation_context = await self._setup_context_for_resumed_invocation(
+              session=session,
+              new_message=new_message,
+              invocation_id=invocation_id,
+              run_config=run_config,
+              state_delta=state_delta,
+              abort_signal=abort_signal,
           )
-          if not invocation_id:
-            if new_message is None:
-              raise ValueError(
-                  'A new message is required when no invocation can be resumed.'
-              )
-            invocation_context = await self._setup_context_for_new_invocation(
-                session=session,
-                new_message=new_message,
-                run_config=run_config,
-                state_delta=state_delta,
-                abort_signal=abort_signal,
-            )
-          else:
-            invocation_context = (
-                await self._setup_context_for_resumed_invocation(
-                    session=session,
-                    new_message=new_message,
-                    invocation_id=invocation_id,
-                    run_config=run_config,
-                    state_delta=state_delta,
-                    abort_signal=abort_signal,
-                )
-            )
-            active_agent = invocation_context.agent
-            if not isinstance(active_agent, BaseAgent):
-              raise RuntimeError(
-                  'Resumed agent execution has no active BaseAgent.'
-              )
-            if invocation_context.end_of_agents.get(active_agent.name):
-              # Directly return if the current agent in invocation context is
-              # already final.
-              return
-
-        invocation_context._abort_state.loop = asyncio.get_running_loop()  # pylint: disable=protected-access
-
-        async def execute(
-            ctx: InvocationContext,
-        ) -> AsyncGenerator[Event, None]:
-          if ctx.is_aborted:
-            return
-          active_agent = ctx.agent
+          active_agent = invocation_context.agent
           if not isinstance(active_agent, BaseAgent):
-            raise RuntimeError('Agent execution has no active BaseAgent.')
-          async with aclosing(active_agent.run_async(ctx)) as agen:
-            async for event in agen:
-              yield event
-              if ctx.is_aborted:
-                break
-
-        async with aclosing(
-            _with_caller_context(
-                self._exec_with_plugin(
-                    invocation_context=invocation_context,
-                    session=invocation_context.session,
-                    execute_fn=execute,
-                    is_live_call=False,
-                ),
-                caller_ctx_trace,
+            raise RuntimeError(
+                'Resumed agent execution has no active BaseAgent.'
             )
-        ) as agen:
+          if invocation_context.end_of_agents.get(active_agent.name):
+            # Directly return if the current agent in invocation context is
+            # already final.
+            return
+
+      invocation_context._abort_state.loop = asyncio.get_running_loop()  # pylint: disable=protected-access
+
+      async def execute(
+          ctx: InvocationContext,
+      ) -> AsyncGenerator[Event, None]:
+        if ctx.is_aborted:
+          return
+        active_agent = ctx.agent
+        if not isinstance(active_agent, BaseAgent):
+          raise RuntimeError('Agent execution has no active BaseAgent.')
+        async with aclosing(active_agent.run_async(ctx)) as agen:
           async for event in agen:
             yield event
-        if not invocation_context.is_aborted:
-          # Run compaction after all events are yielded from the agent.
-          # (We don't compact in the middle of an invocation, we only compact at
-          # the end of an invocation.)
-          await self._run_post_invocation_compaction(
+            if ctx.is_aborted:
+              break
+
+      async with aclosing(
+          self._exec_with_plugin(
+              invocation_context=invocation_context,
               session=invocation_context.session,
+              execute_fn=execute,
+              is_live_call=False,
           )
+      ) as agen:
+        async for event in agen:
+          yield event
+      if not invocation_context.is_aborted:
+        # Run compaction after all events are yielded from the agent.
+        # (We don't compact in the middle of an invocation, we only compact at
+        # the end of an invocation.)
+        await self._run_post_invocation_compaction(
+            session=invocation_context.session,
+        )
+
+    from .telemetry import _instrumentation
 
     # For BaseAgent root agents running via _run_with_trace, events flow
     # through _run_with_trace which breaks cleanly upon abort.
     # Note that BaseNode/Workflow root targets are routed earlier via
     # _run_node_async, where Workflow and NodeRunner manage task cancellation
     # and queue-draining internally.
-    async with aclosing(_run_with_trace(new_message, invocation_id)) as agen:
-      async for event in agen:
-        yield event
+    # The invocation scope is opened out here rather than inside the generator,
+    # so that its span is not opened and closed by whoever happens to drive the
+    # generator, and `stream_in_scope` attaches it only while the generator is
+    # actually running -- never across a yield (b/485899016).
+    with _instrumentation.record_invocation(
+        entrypoint_node=root_agent,
+        conversation_id=session_id,
+        run_config=run_config,
+    ) as invocation_otel_context:
+      async with aclosing(
+          _instrumentation.stream_in_scope(
+              invocation_otel_context,
+              _run_with_trace(new_message, invocation_id),
+          )
+      ) as agen:
+        async for event in agen:
+          yield event
 
   async def rewind_async(
       self,

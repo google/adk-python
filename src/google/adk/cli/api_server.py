@@ -1567,9 +1567,11 @@ class ApiServer:
       # user_id_validation_state is a proto `bytes` field; the connector delivers
       # it as a url-safe base64 string in the redirect query, so decode it back.
       try:
-        state_bytes = base64.urlsafe_b64decode(
+        state_bytes = base64.b64decode(
             req.user_id_validation_state
-            + "=" * (-len(req.user_id_validation_state) % 4)
+            + "=" * (-len(req.user_id_validation_state) % 4),
+            altchars=b"-_",
+            validate=True,
         )
       except (binascii.Error, ValueError, TypeError) as e:
         raise HTTPException(

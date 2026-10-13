@@ -46,7 +46,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-PYTHON_VERSIONS=("3.11" "3.12" "3.13" "3.14")
+PYTHON_VERSIONS=("3.11" "3.12" "3.13" "3.14" "3.15")
 EXIT_CODE=0
 
 # Calculate 4 days ago date

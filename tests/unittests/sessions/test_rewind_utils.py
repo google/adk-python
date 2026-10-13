@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from unittest import mock
+
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.errors import InvocationNotFoundError
 from google.adk.errors.not_found_error import NotFoundError
@@ -84,6 +86,36 @@ async def test_compute_artifact_delta_returns_empty_when_no_artifact_service():
   session = Session(id="s1", app_name="app", user_id="u1", events=[])
   delta = await _rewind_utils.compute_artifact_delta_for_rewind(session, 0)
   assert delta == {}
+
+
+async def test_compute_artifact_delta_records_version_returned_by_service():
+  """The artifact delta holds the version save_artifact returned."""
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      events=[
+          Event(
+              invocation_id="inv1",
+              actions=EventActions(artifact_delta={"report.txt": 0}),
+          ),
+          Event(
+              invocation_id="inv2",
+              actions=EventActions(artifact_delta={"report.txt": 1}),
+          ),
+      ],
+  )
+  artifact_service = mock.AsyncMock()
+  artifact_service.load_artifact.return_value = types.Part.from_text(
+      text="first"
+  )
+  artifact_service.save_artifact.return_value = 7
+
+  delta = await _rewind_utils.compute_artifact_delta_for_rewind(
+      session, 1, artifact_service=artifact_service, app_name="app"
+  )
+
+  assert delta == {"report.txt": 7}
 
 
 async def test_rewind_session_raises_when_invocation_not_found():
@@ -323,6 +355,6 @@ async def test_compute_artifact_delta_rewinds_only_changed_session_artifacts():
   """Unchanged and user-scoped artifacts are skipped; a missing one tombstones."""
   delta, artifact_service = await _rewind_artifacts()
 
-  assert delta == {"doc.txt": 2, "later.txt": 1, "missing_in_store.txt": 2}
+  assert delta == {"doc.txt": 2, "later.txt": 1, "missing_in_store.txt": 0}
   assert await _load(artifact_service, "missing_in_store.txt") is None
   assert await _load(artifact_service, "unchanged.txt") == _UNCHANGED

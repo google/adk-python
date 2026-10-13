@@ -106,7 +106,7 @@ def _maybe_base64_to_bytes(data: str) -> bytes | None:
     return base64.b64decode(data, validate=True)
   except (binascii.Error, ValueError):
     try:
-      return base64.urlsafe_b64decode(data)
+      return base64.b64decode(data, altchars=b'-_', validate=True)
     except (binascii.Error, ValueError):
       return None
 

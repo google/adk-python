@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import importlib
 import json
@@ -21,6 +22,8 @@ import logging
 import os
 from pathlib import Path
 import sys
+import time
+import types as py_types
 from typing import Any
 from typing import AsyncIterator
 from typing import Iterator
@@ -30,6 +33,7 @@ from google.adk.apps.app import App
 from google.adk.cli.agent_test_runner import test_agent_replay as _test_agent_replay
 from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.events import Event
+from google.adk.tools.computer_use.base_computer import ComputerState
 from google.genai import types
 import pytest
 import requests
@@ -505,3 +509,96 @@ def test_issue_discovery_propagates_page_failure(
     monkeypatch.setattr(utils_module, "get_request", _get_request)
     with pytest.raises(requests.exceptions.ConnectionError):
       getattr(utils_module, discovery_name)("google", "adk-python")
+
+
+async def test_playwright_computer_sleeps_asynchronously(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """PlaywrightComputer must await asyncio.sleep instead of time.sleep."""
+  slept: list[float] = []
+
+  async def _fake_async_sleep(delay: float) -> None:
+    slept.append(delay)
+
+  monkeypatch.setattr(asyncio, "sleep", _fake_async_sleep)
+  monkeypatch.setattr(time, "sleep", lambda _: None)
+
+  class _FakePage:
+    url = "https://example.com"
+
+    def __init__(self) -> None:
+      self.evaluated: list[str] = []
+
+    async def set_viewport_size(self, size: dict[str, int]) -> None:
+      del size
+
+    async def wait_for_load_state(self) -> None:
+      pass
+
+    async def screenshot(self, *, type: str, full_page: bool) -> bytes:
+      assert type == "png"
+      assert not full_page
+      return b"png-bytes"
+
+    async def evaluate(self, script: str) -> None:
+      self.evaluated.append(script)
+
+  page = _FakePage()
+
+  class _FakeContext:
+
+    def __init__(self) -> None:
+      self.pages = [page]
+
+  class _FakeBrowser:
+
+    async def new_context(self) -> _FakeContext:
+      return _FakeContext()
+
+  class _FakeChromium:
+
+    async def launch(self, *, args: list[str], headless: bool) -> _FakeBrowser:
+      del args, headless
+      return _FakeBrowser()
+
+  class _FakePlaywright:
+
+    def __init__(self) -> None:
+      self.chromium = _FakeChromium()
+
+    async def start(self) -> _FakePlaywright:
+      return self
+
+  playwright_pkg = py_types.ModuleType("playwright")
+  async_api_mod = py_types.ModuleType("playwright.async_api")
+  setattr(async_api_mod, "async_playwright", _FakePlaywright)
+  termcolor_mod = py_types.ModuleType("termcolor")
+  setattr(termcolor_mod, "cprint", lambda *_args, **_kwargs: None)
+  monkeypatch.setitem(sys.modules, "playwright", playwright_pkg)
+  monkeypatch.setitem(sys.modules, "playwright.async_api", async_api_mod)
+  monkeypatch.setitem(sys.modules, "termcolor", termcolor_mod)
+
+  with _sample_module(
+      SAMPLES_DIR / "multimodal" / "computer_use", "playwright"
+  ) as playwright_module:
+    computer = playwright_module.PlaywrightComputer(
+        screen_size=(1280, 936), highlight_mouse=False
+    )
+    await computer.initialize()
+    await computer.highlight_mouse(10, 20)
+    assert page.evaluated == []
+    assert slept == []
+
+    state = await computer.current_state()
+    assert state == ComputerState(
+        screenshot=b"png-bytes", url="https://example.com"
+    )
+    assert slept == [0.5]
+
+    highlighted = playwright_module.PlaywrightComputer(
+        screen_size=(1280, 936), highlight_mouse=True
+    )
+    await highlighted.initialize()
+    await highlighted.highlight_mouse(10, 20)
+    assert len(page.evaluated) == 1
+    assert slept == [0.5, 1]

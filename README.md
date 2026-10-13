@@ -77,7 +77,7 @@ pip install google-adk
 **Requirements:** Python 3.11+.
 
 For transitive dependency protection, we recommend to install with our companion
-constraints files (for python 3.11 to 3.14).
+constraints files (for python 3.11 to 3.15).
 
 Choose the constraints file matching your Python version:
 

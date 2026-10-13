@@ -6697,7 +6697,8 @@ def test_finalize_agent_identity_credentials_success(test_app):
     mock_client.finalize_credentials.assert_called_once()
 
 
-def test_finalize_agent_identity_credentials_invalid_base64(test_app):
+@pytest.mark.parametrize("state", ["!!!invalid_base64!!!", "ab!cd"])
+def test_finalize_agent_identity_credentials_invalid_base64(test_app, state):
   """Test error handling when user_id_validation_state is invalid Base64."""
   from google.cloud import iamconnectorcredentials_v1alpha
 
@@ -6711,7 +6712,7 @@ def test_finalize_agent_identity_credentials_invalid_base64(test_app):
         json={
             "connector_name": "projects/p/locations/l/connectors/c",
             "user_id": "user-123",
-            "user_id_validation_state": "!!!invalid_base64!!!",
+            "user_id_validation_state": state,
             "consent_nonce": "nonce-456",
         },
     )
