@@ -35,18 +35,18 @@ class TestSandboxClient(unittest.IsolatedAsyncioTestCase):
 
   def setUp(self):
     """Set up test fixtures."""
-    self.mock_vertexai_client = MagicMock()
+    self.mock_agentplatform_client = MagicMock()
     self.mock_sandbox = MagicMock()
     self.access_token = "test_token_12345"
     self.client = SandboxClient(
-        vertexai_client=self.mock_vertexai_client,
+        vertexai_client=self.mock_agentplatform_client,
         sandbox=self.mock_sandbox,
         access_token=self.access_token,
     )
 
   def test_init(self):
     """Test client initialization."""
-    self.assertEqual(self.client._client, self.mock_vertexai_client)
+    self.assertEqual(self.client._client, self.mock_agentplatform_client)
     self.assertEqual(self.client._sandbox, self.mock_sandbox)
     self.assertEqual(self.client._access_token, self.access_token)
 
@@ -71,7 +71,7 @@ class TestSandboxClient(unittest.IsolatedAsyncioTestCase):
     # First positional arg is the send_command method
     self.assertEqual(
         call_args[0][0],
-        self.mock_vertexai_client.agent_engines.sandboxes.send_command,
+        self.mock_agentplatform_client.sandboxes.send_command,
     )
     # Check keyword args
     self.assertEqual(call_args[1]["http_method"], "POST")

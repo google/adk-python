@@ -22,7 +22,15 @@ _content_to_message_param sets the correct role based on the model name.
 from typing import Any
 
 from google.adk.models.lite_llm import _content_to_message_param
+from google.adk.models.lite_llm import _ensure_tool_results
+from google.adk.models.lite_llm import _get_completion_inputs
+from google.adk.models.lite_llm import LiteLlm
+from google.adk.models.lite_llm import LiteLLMClient
+from google.adk.models.llm_request import LlmRequest
 from google.genai import types
+from litellm.types.utils import Choices
+from litellm.types.utils import Message
+from litellm.types.utils import ModelResponse
 import pytest
 
 
@@ -156,6 +164,122 @@ class TestToolRoleSingleResponse:
           _extract_role(result) == "tool"
       ), f"Model '{model}' should not be affected by the Gemma4 fix."
 
+  @pytest.mark.asyncio
+  async def test_gemma4_hosted_vllm_uses_tool_responses_role(self) -> None:
+    """Gemma 4 served via hosted_vllm must preserve role='tool_responses'."""
+    content = _make_function_response_content()
+
+    result = await _content_to_message_param(
+        content, model="hosted_vllm/google/gemma-4-26B-A4B"
+    )
+
+    assert _extract_role(result) == "tool_responses"
+
+  @pytest.mark.asyncio
+  async def test_gemma4_openai_endpoint_uses_tool_role(self) -> None:
+    """Gemma 4 served via OpenAI-compatible endpoint must use role='tool'."""
+    content = _make_function_response_content()
+
+    result = await _content_to_message_param(
+        content, model="openai/google/gemma-4-e4b"
+    )
+
+    assert _extract_role(result) == "tool"
+
+  @pytest.mark.asyncio
+  async def test_gemma4_explicit_openai_provider_uses_tool_role(self) -> None:
+    """Explicit provider='openai' with Gemma 4 model must use role='tool'."""
+    content = _make_function_response_content()
+
+    result = await _content_to_message_param(
+        content, provider="openai", model="google/gemma-4-e4b"
+    )
+
+    assert _extract_role(result) == "tool"
+
+  @pytest.mark.asyncio
+  async def test_gemma4_azure_endpoint_uses_tool_role(self) -> None:
+    """Gemma 4 served via Azure endpoint must use role='tool'."""
+    content = _make_function_response_content()
+
+    result = await _content_to_message_param(
+        content, model="azure/google/gemma-4-e4b"
+    )
+
+    assert _extract_role(result) == "tool"
+
+  @pytest.mark.asyncio
+  async def test_gemma4_lm_studio_endpoint_uses_tool_role(self) -> None:
+    """Gemma 4 served via LM Studio endpoint must use role='tool'."""
+    content = _make_function_response_content()
+
+    result = await _content_to_message_param(
+        content, model="lm_studio/google/gemma-4-e4b"
+    )
+
+    assert _extract_role(result) == "tool"
+
+  @pytest.mark.asyncio
+  async def test_gemma4_explicit_lm_studio_provider_uses_tool_role(
+      self,
+  ) -> None:
+    """Explicit provider='lm_studio' with Gemma 4 model must use role='tool'."""
+    content = _make_function_response_content()
+
+    result = await _content_to_message_param(
+        content, provider="lm_studio", model="google/gemma-4-e4b"
+    )
+
+    assert _extract_role(result) == "tool"
+
+  @pytest.mark.asyncio
+  async def test_gemma4_custom_llm_provider_lm_studio_uses_tool_role(
+      self,
+  ) -> None:
+    """Explicit custom_llm_provider='lm_studio' with Gemma 4 must use role='tool'."""
+    content = _make_function_response_content()
+
+    result = await _content_to_message_param(
+        content, custom_llm_provider="lm_studio", model="google/gemma-4-e4b"
+    )
+
+    assert _extract_role(result) == "tool"
+
+  @pytest.mark.asyncio
+  async def test_gemma4_custom_llm_provider_openai_uses_tool_role(self) -> None:
+    """Explicit custom_llm_provider='openai' with Gemma 4 must use role='tool'."""
+    content = _make_function_response_content()
+
+    result = await _content_to_message_param(
+        content, custom_llm_provider="openai", model="google/gemma-4-e4b"
+    )
+
+    assert _extract_role(result) == "tool"
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("model", "expected_role"),
+      [
+          ("openai/google/gemma-4-e4b", "tool"),
+          ("hosted_vllm/google/gemma-4-26B-A4B", "tool_responses"),
+      ],
+  )
+  async def test_gemma4_custom_llm_provider_litellm_proxy_falls_through_to_model_prefix(
+      self,
+      model: str,
+      expected_role: str,
+  ) -> None:
+    """custom_llm_provider='litellm_proxy' must fall through to the model prefix."""
+    content = _make_function_response_content()
+
+    result = await _content_to_message_param(
+        content,
+        custom_llm_provider="litellm_proxy",
+        model=model,
+    )
+
+    assert _extract_role(result) == expected_role
+
 
 class TestToolRoleMultipleResponses:
   """_content_to_message_param with multiple function_response parts."""
@@ -189,3 +313,243 @@ class TestToolRoleMultipleResponses:
     assert isinstance(result, list)
     for msg in result:
       assert _extract_role(msg) == "tool"
+
+  @pytest.mark.asyncio
+  async def test_gemma4_openai_multi_response_uses_tool_role(self) -> None:
+    """OpenAI Gemma4 multi-response messages should all have role='tool'."""
+    content = _make_multi_function_response_content(
+        call_ids=["call_a", "call_b"]
+    )
+
+    result = await _content_to_message_param(
+        content, model="openai/google/gemma-4-e4b"
+    )
+
+    assert isinstance(result, list)
+    for msg in result:
+      assert _extract_role(msg) == "tool"
+
+  @pytest.mark.asyncio
+  async def test_gemma4_lm_studio_multi_response_uses_tool_role(self) -> None:
+    """LM Studio Gemma4 multi-response messages should all have role='tool'."""
+    content = _make_multi_function_response_content(
+        call_ids=["call_a", "call_b"]
+    )
+
+    result = await _content_to_message_param(
+        content, model="lm_studio/google/gemma-4-e4b"
+    )
+
+    assert isinstance(result, list)
+    for msg in result:
+      assert _extract_role(msg) == "tool"
+
+
+class TestEnsureToolResults:
+  """_ensure_tool_results tests for Gemma 4 models."""
+
+  @pytest.mark.parametrize(
+      ("model", "custom_llm_provider", "expected_role"),
+      [
+          ("openai/google/gemma-4-e4b", None, "tool"),
+          ("openai/google/gemma-4-e4b", "litellm_proxy", "tool"),
+          (
+              "hosted_vllm/google/gemma-4-26B-A4B",
+              "litellm_proxy",
+              "tool_responses",
+          ),
+          ("ollama/gemma4:e2b", None, "tool_responses"),
+          ("hosted_vllm/google/gemma-4-26B-A4B", None, "tool_responses"),
+          ("lm_studio/google/gemma-4-e4b", None, "tool"),
+          ("google/gemma-4-e4b", "lm_studio", "tool"),
+          ("google/gemma-4-e4b", "openai", "tool"),
+      ],
+  )
+  def test_gemma4_healed_tool_result_role(
+      self,
+      model: str,
+      custom_llm_provider: str | None,
+      expected_role: str,
+  ) -> None:
+    """Healed missing tool results for Gemma 4 must use the expected role."""
+    messages = [
+        {"role": "user", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "f"},
+            }],
+        },
+        {"role": "user", "content": "next"},
+    ]
+
+    healed = _ensure_tool_results(
+        messages,
+        model=model,
+        custom_llm_provider=custom_llm_provider,
+    )
+
+    roles = [_extract_role(m) for m in healed]
+    assert expected_role in roles
+    other_role = "tool_responses" if expected_role == "tool" else "tool"
+    assert other_role not in roles
+
+
+class TestGetCompletionInputs:
+  """_get_completion_inputs role tests for Gemma 4 models."""
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("model", "custom_llm_provider", "expected_role"),
+      [
+          ("openai/google/gemma-4-e4b", None, "tool"),
+          ("openai/google/gemma-4-e4b", "litellm_proxy", "tool"),
+          (
+              "hosted_vllm/google/gemma-4-26B-A4B",
+              "litellm_proxy",
+              "tool_responses",
+          ),
+          ("lm_studio/google/gemma-4-e4b", None, "tool"),
+          ("google/gemma-4-e4b", "lm_studio", "tool"),
+          ("google/gemma-4-e4b", "openai", "tool"),
+          ("hosted_vllm/google/gemma-4-26B-A4B", None, "tool_responses"),
+      ],
+  )
+  async def test_get_completion_inputs_gemma4_tool_role(
+      self,
+      model: str,
+      custom_llm_provider: str | None,
+      expected_role: str,
+  ) -> None:
+    """Completion inputs for Gemma 4 must use the expected tool role."""
+    content = _make_function_response_content()
+    llm_request = LlmRequest(
+        contents=[
+            types.Content(role="user", parts=[types.Part.from_text(text="Hi")]),
+            content,
+        ]
+    )
+
+    messages, _, _, _, _ = await _get_completion_inputs(
+        llm_request,
+        model=model,
+        custom_llm_provider=custom_llm_provider,
+    )
+
+    roles = [_extract_role(m) for m in messages]
+    assert expected_role in roles
+    other_role = "tool_responses" if expected_role == "tool" else "tool"
+    assert other_role not in roles
+
+  @pytest.mark.asyncio
+  async def test_get_completion_inputs_custom_llm_provider_preserves_file_handling(
+      self,
+  ) -> None:
+    """custom_llm_provider must not override provider for file handling."""
+    llm_request = LlmRequest(
+        contents=[
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part(
+                        inline_data=types.Blob(
+                            mime_type="application/pdf",
+                            data=b"%PDF-1.4 test",
+                        )
+                    )
+                ],
+            )
+        ]
+    )
+
+    messages, _, _, _, _ = await _get_completion_inputs(
+        llm_request,
+        model="google/gemma-4-e4b",
+        custom_llm_provider="openai",
+    )
+
+    user_msg = messages[0]
+    content_list = (
+        user_msg["content"] if isinstance(user_msg, dict) else user_msg.content
+    )
+    assert content_list[0]["type"] == "file"
+    assert "file_data" in content_list[0]["file"]
+    assert "file_id" not in content_list[0]["file"]
+
+
+class TestLiteLlmGenerateContent:
+  """generate_content_async tool role tests for Gemma 4 models."""
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("model", "custom_llm_provider", "expected_role"),
+      [
+          ("lm_studio/google/gemma-4-e4b", None, "tool"),
+          ("openai/google/gemma-4-e4b", "litellm_proxy", "tool"),
+          (
+              "hosted_vllm/google/gemma-4-26B-A4B",
+              "litellm_proxy",
+              "tool_responses",
+          ),
+          ("google/gemma-4-e4b", "lm_studio", "tool"),
+          ("google/gemma-4-e4b", "openai", "tool"),
+          ("ollama/gemma4:e2b", None, "tool_responses"),
+          ("hosted_vllm/google/gemma-4-26B-A4B", None, "tool_responses"),
+      ],
+  )
+  async def test_generate_content_gemma4_tool_role(
+      self,
+      model: str,
+      custom_llm_provider: str | None,
+      expected_role: str,
+  ) -> None:
+    """generate_content_async for Gemma 4 must use the expected tool role."""
+    captured: dict[str, Any] = {}
+
+    class _Client(LiteLLMClient):
+
+      async def acompletion(
+          self,
+          model: Any,
+          messages: Any,
+          tools: Any,
+          **kwargs: Any,
+      ) -> ModelResponse:
+        captured["messages"] = messages
+        captured.update(kwargs)
+        return ModelResponse(
+            model=model,
+            choices=[Choices(message=Message(role="assistant", content="ok"))],
+        )
+
+    extra_kwargs = (
+        {"custom_llm_provider": custom_llm_provider}
+        if custom_llm_provider is not None
+        else {}
+    )
+    lite_llm = LiteLlm(
+        model=model,
+        llm_client=_Client(),
+        **extra_kwargs,
+    )
+    llm_request = LlmRequest(
+        contents=[
+            types.Content(role="user", parts=[types.Part.from_text(text="Hi")]),
+            _make_function_response_content(),
+        ]
+    )
+
+    _ = [
+        r
+        async for r in lite_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+    roles = [_extract_role(m) for m in captured["messages"]]
+    assert expected_role in roles
+    other_role = "tool_responses" if expected_role == "tool" else "tool"
+    assert other_role not in roles

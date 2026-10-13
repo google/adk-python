@@ -17,11 +17,14 @@ from __future__ import annotations
 from abc import ABC
 from abc import abstractmethod
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from ...agents.callback_context import CallbackContext
 from ...utils.feature_decorator import experimental
 from ..auth_credential import AuthCredential
-from ..auth_tool import AuthConfig
+
+if TYPE_CHECKING:
+  from ..auth_tool import AuthConfig
 
 
 @experimental

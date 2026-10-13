@@ -99,12 +99,13 @@ def test_supported_models_matches_gemma3():
 
 
 @pytest.mark.asyncio
-async def test_not_gemma_model():
+@pytest.mark.parametrize("bad_model", ["not-a-gemma-model", None])
+async def test_not_gemma_model(bad_model: str | None) -> None:
   llm = Gemma()
   llm_request_bad_model = LlmRequest(
-      model="not-a-gemma-model",
+      model=bad_model,
   )
-  with pytest.raises(AssertionError, match=r".*model.*"):
+  with pytest.raises(ValueError, match=r".*model.*"):
     async for _ in llm.generate_content_async(llm_request_bad_model):
       pass
 

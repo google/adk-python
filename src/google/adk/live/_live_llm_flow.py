@@ -96,7 +96,7 @@ async def send_to_model(
 ) -> None:
   """Sends data to model."""
   run_config = _require_run_config(invocation_context)
-  audio_cache_manager = flow.audio_cache_manager
+  realtime_cache_manager = flow._realtime_cache_manager
   while True:
     live_request_queue = invocation_context.live_request_queue
     assert live_request_queue is not None
@@ -160,7 +160,7 @@ async def send_to_model(
           and live_request.blob.mime_type
           and live_request.blob.mime_type.startswith('audio/')
       ):
-        audio_cache_manager.cache_audio(
+        realtime_cache_manager.cache_audio(
             invocation_context, live_request.blob, cache_type='input'
         )
 
@@ -178,7 +178,7 @@ async def send_to_model(
       # Persist user text content to session (similar to non-live mode)
       # Skip function responses - they are already handled separately
       if not is_function_response and not content.role:
-        content.role = 'user'
+        content = content.model_copy(update={'role': 'user'})
       if not is_function_response and not live_request.partial:
         user_content_event = Event(
             id=Event.new_id(),
@@ -209,9 +209,7 @@ async def send_to_model(
         ):
           await invocation_context._enqueue_event(blocked_event)
           continue
-      await llm_connection._send_content(
-          live_request.content, partial=live_request.partial
-      )
+      await llm_connection._send_content(content, partial=live_request.partial)
 
 
 async def receive_from_model(
@@ -222,7 +220,7 @@ async def receive_from_model(
 ) -> AsyncGenerator[Event, None]:
   """Receive data from model and process events using BaseLlmConnection."""
   run_config = _require_run_config(invocation_context)
-  audio_cache_manager = flow.audio_cache_manager
+  realtime_cache_manager = flow._realtime_cache_manager
 
   def get_author_for_event(llm_response: LlmResponse) -> str:
     """Get the author of the event.
@@ -331,7 +329,7 @@ async def receive_from_model(
                       data=part.inline_data.data,
                       mime_type=part.inline_data.mime_type,
                   )
-                  audio_cache_manager.cache_audio(
+                  realtime_cache_manager.cache_audio(
                       invocation_context, audio_blob, cache_type='output'
                   )
 

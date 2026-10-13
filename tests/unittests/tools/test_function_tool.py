@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from enum import Enum
+import functools
 import inspect
 from typing import Any
 from typing import Optional
@@ -24,6 +25,7 @@ from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.session import Session
 from google.adk.tools.function_tool import _build_declaration_cached
 from google.adk.tools.function_tool import FunctionTool
@@ -165,6 +167,56 @@ async def test_run_async_with_tool_context_async_callable():
   assert result == "test_value_1"
   assert tool.name == "AsyncCallableWith1ArgAndToolContext"
   assert tool.description == "Async call doc"
+
+
+def test_callable_declaration_uses_call_docstring():
+  """The declaration carries the same __call__ docstring as tool.description."""
+  tool = FunctionTool(AsyncCallableWith1ArgAndToolContext())
+
+  llm_request = LlmRequest()
+  llm_request.append_tools([tool])
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.description == "Async call doc"
+
+
+def test_partial_tools_do_not_shadow_each_other():
+  """Partials of different functions keep their own names and docstrings."""
+
+  def get_weather(api_key: str, city: str) -> str:
+    """Returns the current weather for a city."""
+    return city
+
+  def get_forecast(api_key: str, city: str, days: int = 3) -> str:
+    """Returns a forecast for a city."""
+    return city
+
+  llm_request = LlmRequest()
+  llm_request.append_tools([
+      FunctionTool(functools.partial(get_weather, "key")),
+      FunctionTool(functools.partial(get_forecast, "key")),
+  ])
+
+  declarations = llm_request.config.tools[0].function_declarations
+  assert [d.name for d in declarations] == ["get_weather", "get_forecast"]
+  assert [d.description for d in declarations] == [
+      "Returns the current weather for a city.",
+      "Returns a forecast for a city.",
+  ]
+  assert list(llm_request.tools_dict) == ["get_weather", "get_forecast"]
+
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False):
+    legacy_request = LlmRequest()
+    legacy_request.append_tools([
+        FunctionTool(functools.partial(get_weather, "key")),
+        FunctionTool(functools.partial(get_forecast, "key")),
+    ])
+    legacy_declarations = legacy_request.config.tools[0].function_declarations
+    assert [d.name for d in legacy_declarations] == [
+        "get_weather",
+        "get_forecast",
+    ]
+    assert list(legacy_request.tools_dict) == ["get_weather", "get_forecast"]
 
 
 @pytest.mark.asyncio
@@ -408,6 +460,7 @@ async def test_run_async_with_require_confirmation():
   assert result == {
       "error": "This tool call requires confirmation, please approve or reject."
   }
+  assert tool_context_mock.actions.skip_summarization is True
   assert tool_context_mock._event_actions.requested_tool_confirmations[
       "test_function_call_id"
   ].hint == (
@@ -575,6 +628,7 @@ def test_get_declaration_is_cached_and_returns_independent_copies():
 @pytest.mark.asyncio
 async def test_run_async_with_async_generator_streaming_tool(mock_tool_context):
   """Test that run_async returns an AsyncGenerator when wrapped function is an async generator."""
+  mock_tool_context._invocation_context.live_request_queue = mock.MagicMock()
 
   async def streaming_tool(val: int, tool_context: Context):
     yield f"item_{val}"
@@ -625,6 +679,7 @@ async def test_run_async_with_streaming_tool_require_confirmation(
     mock_tool_context,
 ):
   """Test e2e confirmation lifecycle for a streaming tool in run_async."""
+  mock_tool_context._invocation_context.live_request_queue = mock.MagicMock()
 
   async def streaming_tool_conf(val: int):
     yield f"confirmed_{val}"
@@ -1333,3 +1388,661 @@ async def test_run_async_leaves_untyped_list_param_alone(mock_tool_context):
       tool_context=mock_tool_context,
   )
   assert result == {"types": ["float"]}
+
+
+@pytest.mark.asyncio
+async def test_async_generator_tool_emits_intermediate_events_and_returns_final_output():
+  """An async generator tool emits intermediate events on a sub-branch and returns its final output to the model."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def analyze(query: str):
+    yield Event(message=f"Starting {query}...")
+    yield Event(message=f"Finished {query}.")
+    yield {"rows": 42}
+
+  fc = types.Part.from_function_call(name="analyze", args={"query": "sales"})
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="All done.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[analyze])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  events = await runner.run_async("run sales")
+
+  intermediate = [
+      e
+      for e in events
+      if e.author == "analyze"
+      and e.content
+      and e.content.parts
+      and e.content.parts[0].text in ("Starting sales...", "Finished sales.")
+  ]
+  assert len(intermediate) == 2
+  assert all(
+      e.branch is not None and e.branch.startswith("analyze@")
+      for e in intermediate
+  )
+  assert len(mock_model.requests) == 2
+  second_req_responses = [
+      p.function_response.response
+      for c in mock_model.requests[1].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert {"rows": 42} in second_req_responses
+  assert not [
+      c
+      for c in mock_model.requests[1].contents
+      if "Starting sales..." in str(c)
+  ]
+
+
+@pytest.mark.asyncio
+async def test_generator_tool_intermediate_events_stay_out_of_next_turn_context():
+  """A root agent does not see a generator tool's intermediate events in a later turn."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def analyze(query: str):
+    yield Event(message=f"Starting {query}...")
+    yield Event(message=f"Finished {query}.")
+    yield {"rows": 42}
+
+  fc = types.Part.from_function_call(name="analyze", args={"query": "sales"})
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="All done.")]
+          )
+      ),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="42 rows.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[analyze])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  await runner.run_async("run sales")
+  await runner.run_async("what happened?")
+
+  assert len(mock_model.requests) == 3
+  third_req = str(mock_model.requests[2].contents)
+  assert "Starting sales" not in third_req
+  assert "Finished sales" not in third_req
+  assert "] said:" not in third_req
+  third_req_responses = [
+      p.function_response.response
+      for c in mock_model.requests[2].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert {"rows": 42} in third_req_responses
+
+
+@pytest.mark.asyncio
+async def test_sync_generator_tool_emits_events_and_persists_state():
+  """A sync generator tool emits intermediate events, persists state deltas, and returns its final output."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.events.event_actions import EventActions
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  def sync_analyze(query: str, tool_context: ToolContext):
+    tool_context.state["last_query"] = query
+    yield Event(
+        message=f"Sync step for {query}",
+        actions=EventActions(state_delta={"step_count": 1}),
+    )
+    yield {"status": "ok", "query": query}
+
+  fc = types.Part.from_function_call(
+      name="sync_analyze", args={"query": "revenue"}
+  )
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="Completed.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[sync_analyze])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  events = await runner.run_async("check revenue")
+
+  texts = [
+      p.text
+      for e in events
+      for p in (e.content.parts if e.content and e.content.parts else [])
+      if p.text
+  ]
+  assert "Sync step for revenue" in texts
+  assert runner.session.state.get("last_query") == "revenue"
+  assert runner.session.state.get("step_count") == 1
+
+
+@pytest.mark.asyncio
+async def test_generator_tool_stamps_tool_author_and_propagates_actions():
+  """A generator tool stamps the tool name as event author and propagates EventActions to the tool response."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def summarize_and_skip(query: str, tool_context: ToolContext):
+    tool_context.actions.skip_summarization = True
+    yield Event(author="custom_reporter", message=f"Progress on {query}")
+    yield {"done": query}
+
+  fc = types.Part.from_function_call(
+      name="summarize_and_skip", args={"query": "report"}
+  )
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[summarize_and_skip])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  events = await runner.run_async("generate report")
+
+  tool_events = [e for e in events if e.author == "summarize_and_skip"]
+  assert len(tool_events) == 2
+  assert not any(e.author == "custom_reporter" for e in events)
+  fn_response_events = [e for e in events if e.get_function_responses()]
+  assert len(fn_response_events) == 1
+  assert fn_response_events[0].actions.skip_summarization is True
+  assert len(mock_model.requests) == 1
+
+
+@pytest.mark.parametrize("is_async", [True, False])
+@pytest.mark.asyncio
+async def test_generator_tool_rejects_multiple_outputs(is_async: bool):
+  """A generator tool that yields more than one non-Event output raises ValueError and deterministically closes the generator."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  closed = False
+
+  async def async_analyze(query: str):
+    nonlocal closed
+    del query
+    try:
+      yield {"rows": 1}
+      yield {"rows": 2}
+    finally:
+      closed = True
+
+  def sync_analyze(query: str):
+    nonlocal closed
+    del query
+    try:
+      yield {"rows": 1}
+      yield {"rows": 2}
+    finally:
+      closed = True
+
+  tool_fn = async_analyze if is_async else sync_analyze
+  fc = types.Part.from_function_call(
+      name=tool_fn.__name__, args={"query": "sales"}
+  )
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[tool_fn])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  with pytest.raises(
+      ValueError, match="Output already set. A node can produce at most one"
+  ):
+    await runner.run_async("run sales")
+
+  assert closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resumable", [False, True])
+async def test_generator_tool_pauses_on_request_input_and_resumes(
+    resumable: bool,
+):
+  """A generator tool yielding RequestInput pauses the invocation and resumes with user input.
+
+  Setup: App (resumable or non-resumable) with an Agent whose async generator
+  tool yields RequestInput on first run.
+  Act: Run the invocation until paused, then resume with
+  create_request_input_response.
+  Assert: The tool receives the resume input via tool_context.resume_inputs and
+  completes the turn.
+  """
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.apps.app import App
+  from google.adk.apps.app import ResumabilityConfig
+  from google.adk.events._interrupts import extract_event_interrupt_ids
+  from google.adk.events.event import Event
+  from google.adk.events.request_input import RequestInput
+  from google.adk.models.llm_response import LlmResponse
+  from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+  from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def ask_and_analyze(query: str, tool_context: ToolContext):
+    clarification = tool_context.resume_inputs.get("clarify_region")
+    if clarification is None:
+      yield Event(message=f"Preparing {query}, need region...")
+      yield RequestInput(
+          interrupt_id="clarify_region",
+          message="Which region should I analyze?",
+      )
+      return
+    region = (
+        clarification.get("text")
+        if isinstance(clarification, dict)
+        else clarification
+    )
+    yield Event(message=f"Analyzing {query} for {region}...")
+    yield {"query": query, "region": region}
+
+  fc = types.Part.from_function_call(
+      name="ask_and_analyze", args={"query": "sales"}
+  )
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[types.Part.from_text(text="Region analyzed.")],
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[ask_and_analyze])
+  app = App(
+      name="test_app",
+      root_agent=agent,
+      resumability_config=ResumabilityConfig(is_resumable=resumable),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async("start")
+  req_events = [
+      e
+      for e in events1
+      if any(
+          p.function_call
+          and p.function_call.name == REQUEST_INPUT_FUNCTION_CALL_NAME
+          for p in (e.content.parts if e.content and e.content.parts else [])
+      )
+  ]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
+  invocation_id = req_events[0].invocation_id
+  resume_part = create_request_input_response(interrupt_id, {"text": "APAC"})
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(resume_part),
+      invocation_id=invocation_id,
+  )
+
+  texts2 = [
+      p.text
+      for e in events2
+      for p in (e.content.parts if e.content and e.content.parts else [])
+      if p.text
+  ]
+  assert "Analyzing sales for APAC..." in texts2
+  assert "Region analyzed." in texts2
+
+
+@pytest.mark.asyncio
+async def test_generator_tool_preserves_non_context_ctx_parameter():
+  """A generator tool with a non-Context parameter named 'ctx' receives the LLM argument rather than a Context object."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def search_in_scope(ctx: str, query: str):
+    yield Event(message=f"Searching {query} in {ctx}")
+    yield {"ctx": ctx, "query": query, "ctx_type": type(ctx).__name__}
+
+  fc = types.Part.from_function_call(
+      name="search_in_scope", args={"ctx": "billing_domain", "query": "invoice"}
+  )
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="Done.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[search_in_scope])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  await runner.run_async("search invoice")
+
+  second_req_responses = [
+      p.function_response.response
+      for c in mock_model.requests[1].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert {
+      "ctx": "billing_domain",
+      "query": "invoice",
+      "ctx_type": "str",
+  } in second_req_responses
+
+
+def test_generator_tool_caches_function_node_across_invocations():
+  """_get_generator_node reuses the cached FunctionNode unless tool metadata changes."""
+
+  async def gen_tool(query: str):
+    yield query
+
+  tool = FunctionTool(gen_tool)
+
+  node1 = tool._get_generator_node()
+  node2 = tool._get_generator_node()
+  tool.name = "renamed_gen_tool"
+  node3 = tool._get_generator_node()
+
+  assert node1 is node2
+  assert node3 is not node1
+  assert node3.name == "renamed_gen_tool"
+
+
+@pytest.mark.asyncio
+async def test_generator_tool_repeated_calls_isolate_node_path_and_hitl_state():
+  """Repeated calls to the same generator tool in one invocation get distinct node_info.path values and do not leak resume_inputs."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.apps.app import App
+  from google.adk.apps.app import ResumabilityConfig
+  from google.adk.events._interrupts import extract_event_interrupt_ids
+  from google.adk.events.event import Event
+  from google.adk.events.request_input import RequestInput
+  from google.adk.models.llm_response import LlmResponse
+  from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+  from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def ask_and_analyze(query: str, tool_context: ToolContext):
+    clarification = tool_context.resume_inputs.get("clarify_region")
+    if clarification is None:
+      yield Event(message=f"Need region for {query}")
+      yield RequestInput(
+          interrupt_id="clarify_region",
+          message=f"Which region for {query}?",
+      )
+      return
+    region = (
+        clarification.get("text")
+        if isinstance(clarification, dict)
+        else clarification
+    )
+    yield Event(message=f"Analyzed {query} in {region}")
+    yield {"query": query, "region": region}
+
+  fc1 = types.Part.from_function_call(
+      name="ask_and_analyze", args={"query": "sales"}
+  )
+  fc2 = types.Part.from_function_call(
+      name="ask_and_analyze", args={"query": "marketing"}
+  )
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc1])),
+      LlmResponse(content=types.Content(role="model", parts=[fc2])),
+      LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[types.Part.from_text(text="Both analyzed.")],
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[ask_and_analyze])
+  app = App(
+      name="test_app",
+      root_agent=agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Step 1: First call ("sales") pauses for input.
+  events1 = await runner.run_async("start")
+  req_event1 = next(
+      e
+      for e in events1
+      if any(
+          p.function_call
+          and p.function_call.name == REQUEST_INPUT_FUNCTION_CALL_NAME
+          for p in (e.content.parts if e.content and e.content.parts else [])
+      )
+  )
+  [interrupt_id1] = extract_event_interrupt_ids(req_event1)
+  invocation_id = req_event1.invocation_id
+
+  # Step 2: Resume first call ("APAC"); model then calls ask_and_analyze("marketing"),
+  # which must pause for its own input rather than reusing "APAC".
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id1, {"text": "APAC"})
+      ),
+      invocation_id=invocation_id,
+  )
+  req_event2 = next(
+      e
+      for e in events2
+      if any(
+          p.function_call
+          and p.function_call.name == REQUEST_INPUT_FUNCTION_CALL_NAME
+          for p in (e.content.parts if e.content and e.content.parts else [])
+      )
+  )
+  [interrupt_id2] = extract_event_interrupt_ids(req_event2)
+
+  # Step 3: Resume second call ("EMEA") and complete.
+  events3 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id2, {"text": "EMEA"})
+      ),
+      invocation_id=invocation_id,
+  )
+
+  texts3 = [
+      p.text
+      for e in events3
+      for p in (e.content.parts if e.content and e.content.parts else [])
+      if p.text
+  ]
+  assert req_event1.branch != req_event2.branch
+  assert req_event1.node_info is not None and req_event2.node_info is not None
+  assert req_event1.node_info.path != req_event2.node_info.path
+  assert "Analyzed marketing in EMEA" in texts3
+  assert "Both analyzed." in texts3
+
+
+@pytest.mark.parametrize(
+    "llm_args",
+    [{"query": "sales"}, {"query": "sales", "tag": None}],
+    ids=["omitted", "explicit_none"],
+)
+@pytest.mark.asyncio
+async def test_generator_tool_binds_none_default_without_revalidation(
+    llm_args: dict[str, Any],
+):
+  """A generator tool passes a `str = None` parameter through as-is instead of re-validating it against `str`."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def tagged_search(query: str, tag: str = None):
+    yield {"query": query, "tag": tag}
+
+  fc = types.Part.from_function_call(name="tagged_search", args=llm_args)
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="Done.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[tagged_search])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  await runner.run_async("search sales")
+
+  second_req_responses = [
+      p.function_response.response
+      for c in mock_model.requests[1].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert second_req_responses == [{"query": "sales", "tag": None}]
+
+
+def _mixed_params_func(
+    required_num: int,
+    untyped_val,
+    none_val: None,
+    tool_context: ToolContext,
+    optional_num: int = 10,
+) -> dict[str, Any]:
+  return {
+      "required_num": required_num,
+      "untyped_val": untyped_val,
+      "none_val": none_val,
+      "tool_context": tool_context,
+      "optional_num": optional_num,
+  }
+
+
+async def _run_mixed_params_tool(
+    args: dict[str, Any], tool_context: ToolContext
+) -> Any:
+  with temporary_feature_override(
+      FeatureName.FUNCTION_TOOL_ARG_VALIDATION, True
+  ):
+    return await FunctionTool(_mixed_params_func).run_async(
+        args=args, tool_context=tool_context
+    )
+
+
+@pytest.mark.asyncio
+async def test_arg_validation_skips_omitted_optional_param(mock_tool_context):
+  """An omitted parameter with a default is not validated."""
+  result = await _run_mixed_params_tool(
+      {"required_num": 1, "untyped_val": "x", "none_val": None},
+      mock_tool_context,
+  )
+  assert result["optional_num"] == 10
+
+
+@pytest.mark.asyncio
+async def test_arg_validation_passes_untyped_value_through(mock_tool_context):
+  """A parameter without an annotation receives the raw value."""
+  result = await _run_mixed_params_tool(
+      {"required_num": 1, "untyped_val": {"anything": 1}, "none_val": None},
+      mock_tool_context,
+  )
+  assert result["untyped_val"] == {"anything": 1}
+
+
+@pytest.mark.asyncio
+async def test_arg_validation_rejects_value_for_none_annotation(
+    mock_tool_context,
+):
+  """A parameter annotated None rejects a non-None value."""
+  result = await _run_mixed_params_tool(
+      {"required_num": 1, "untyped_val": "x", "none_val": "not_none"},
+      mock_tool_context,
+  )
+  assert "none_val" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_arg_validation_ignores_tool_context_in_args(mock_tool_context):
+  """A model-supplied tool_context arg is replaced by the real context."""
+  result = await _run_mixed_params_tool(
+      {
+          "required_num": 1,
+          "untyped_val": "x",
+          "none_val": None,
+          "tool_context": "ignored_override",
+      },
+      mock_tool_context,
+  )
+  assert result["tool_context"] is mock_tool_context
+
+
+class _SignaturelessCallable:
+  __name__ = "sigless_tool"
+
+  @property
+  def __signature__(self):
+    raise ValueError("no signature available")
+
+  def __call__(self, required_arg: str) -> str:
+    if required_arg == "trigger_internal_type_error":
+      raise TypeError("internal failure")
+    return f"ok:{required_arg}"
+
+
+@pytest.mark.asyncio
+async def test_signatureless_callable_returns_error_on_bad_args(
+    mock_tool_context,
+):
+  """A signature-less callable called with bad args returns an error dict."""
+  tool = FunctionTool(_SignaturelessCallable())
+
+  result = await tool.run_async(
+      args={"unexpected_kwarg": "val"},
+      tool_context=mock_tool_context,
+  )
+
+  assert "Invoking `sigless_tool()` failed" in result["error"]
+  assert "unexpected_kwarg" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_signatureless_callable_reraises_internal_type_error(
+    mock_tool_context,
+):
+  """A TypeError raised inside a signature-less callable propagates."""
+  tool = FunctionTool(_SignaturelessCallable())
+
+  with pytest.raises(TypeError, match="internal failure"):
+    await tool.run_async(
+        args={"required_arg": "trigger_internal_type_error"},
+        tool_context=mock_tool_context,
+    )

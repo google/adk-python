@@ -14,8 +14,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+import functools
+import inspect
 from typing import Any
+from typing import get_type_hints
 from typing import List
 from typing import Optional
 from typing import Union
@@ -33,6 +37,22 @@ from ...tools.base_toolset import ToolPredicate
 from ._bigquery_tool import BigQueryTool
 from .bigquery_credentials import BigQueryCredentialsConfig
 from .config import BigQueryToolConfig
+
+
+@functools.lru_cache(maxsize=None)
+def _wrap_async(func: Callable[..., Any]) -> Callable[..., Any]:
+  """Wraps a sync tool function in an async adapter running it in a thread."""
+  if inspect.iscoroutinefunction(func):
+    return func
+
+  @functools.wraps(func)
+  async def async_adapter(*args: Any, **kwargs: Any) -> Any:
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+  # Resolve string annotations in func's globals before FunctionType copies
+  # drop __wrapped__.
+  async_adapter.__annotations__ = get_type_hints(func)
+  return async_adapter
 
 
 class BigQueryToolset(BaseToolset):
@@ -85,7 +105,7 @@ class BigQueryToolset(BaseToolset):
     ]
     all_tools = [
         BigQueryTool(
-            func=func,
+            func=_wrap_async(func),
             credentials_config=self._credentials_config,
             tool_settings=self._tool_settings,
         )

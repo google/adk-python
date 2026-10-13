@@ -96,59 +96,6 @@ def test_merge_parallel_function_response_events_multiple() -> None:
   assert merged.actions.state_delta == {'key1': 'val1', 'key2': 'val2'}
 
 
-def test_is_non_blocking_tool() -> None:
-  assert not _batch_tool_executor._is_non_blocking_tool(None)
-
-  tool_without_scheduling = BaseTool(name='t1', description='desc')
-  assert not _batch_tool_executor._is_non_blocking_tool(tool_without_scheduling)
-
-  tool_with_scheduling = BaseTool(
-      name='t2',
-      description='desc',
-      response_scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
-  )
-  assert _batch_tool_executor._is_non_blocking_tool(tool_with_scheduling)
-
-  tool_with_behavior_non_blocking = BaseTool(
-      name='t3',
-      description='desc',
-      behavior=types.Behavior.NON_BLOCKING,
-  )
-  assert _batch_tool_executor._is_non_blocking_tool(
-      tool_with_behavior_non_blocking
-  )
-
-  tool_with_behavior_blocking = BaseTool(
-      name='t4',
-      description='desc',
-      behavior=types.Behavior.BLOCKING,
-  )
-  assert not _batch_tool_executor._is_non_blocking_tool(
-      tool_with_behavior_blocking
-  )
-
-  # Explicit behavior overrides response_scheduling
-  tool_blocking_with_scheduling = BaseTool(
-      name='t5',
-      description='desc',
-      behavior=types.Behavior.BLOCKING,
-      response_scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
-  )
-  assert not _batch_tool_executor._is_non_blocking_tool(
-      tool_blocking_with_scheduling
-  )
-
-  tool_non_blocking_with_scheduling = BaseTool(
-      name='t6',
-      description='desc',
-      behavior=types.Behavior.NON_BLOCKING,
-      response_scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
-  )
-  assert _batch_tool_executor._is_non_blocking_tool(
-      tool_non_blocking_with_scheduling
-  )
-
-
 @pytest.mark.asyncio
 async def test_gather_or_cancel_success() -> None:
   async def worker(n: int) -> int:
@@ -183,6 +130,127 @@ async def test_gather_or_cancel_cancels_siblings_on_failure() -> None:
     await _batch_tool_executor._gather_or_cancel(tasks)
 
   assert cancelled
+
+
+@pytest.mark.asyncio
+async def test_gather_or_cancel_cancels_siblings_on_cancelled_error() -> None:
+  """A child-raised CancelledError cancels unfinished sibling tasks."""
+  started = asyncio.Event()
+  sibling_cancelled = False
+  sibling_finished = False
+
+  async def failing_worker() -> None:
+    await started.wait()
+    raise asyncio.CancelledError()
+
+  async def slow_worker() -> None:
+    nonlocal sibling_cancelled, sibling_finished
+    started.set()
+    try:
+      await asyncio.sleep(10)
+      sibling_finished = True
+    except asyncio.CancelledError:
+      sibling_cancelled = True
+      raise
+
+  tasks = [
+      asyncio.create_task(failing_worker()),
+      asyncio.create_task(slow_worker()),
+  ]
+  with pytest.raises(asyncio.CancelledError):
+    await _batch_tool_executor._gather_or_cancel(tasks)
+
+  assert sibling_cancelled
+  assert not sibling_finished
+  assert all(t.done() for t in tasks)
+
+
+@pytest.mark.asyncio
+async def test_gather_or_cancel_cancels_siblings_on_self_cancel() -> None:
+  """A child that cancels its own task still tears down unfinished siblings."""
+  started = asyncio.Event()
+  sibling_cancelled = False
+  sibling_finished = False
+
+  async def self_cancelling_worker() -> None:
+    await started.wait()
+    task = asyncio.current_task()
+    assert task is not None
+    task.cancel()
+    await asyncio.sleep(0)
+
+  async def slow_worker() -> None:
+    nonlocal sibling_cancelled, sibling_finished
+    started.set()
+    try:
+      await asyncio.sleep(10)
+      sibling_finished = True
+    except asyncio.CancelledError:
+      sibling_cancelled = True
+      raise
+
+  tasks = [
+      asyncio.create_task(self_cancelling_worker()),
+      asyncio.create_task(slow_worker()),
+  ]
+  with pytest.raises(asyncio.CancelledError):
+    await _batch_tool_executor._gather_or_cancel(tasks)
+
+  assert sibling_cancelled
+  assert not sibling_finished
+  assert all(t.done() for t in tasks)
+
+
+@pytest.mark.asyncio
+async def test_gather_or_cancel_cancels_and_awaits_tasks_on_cancelled_error() -> (
+    None
+):
+  """Cancelling the gather task cancels and awaits unfinished child tasks."""
+  started = asyncio.Event()
+  cleanup_finished = False
+
+  async def fast_cancel_worker() -> None:
+    await asyncio.sleep(10)
+
+  async def slow_cleanup_worker() -> None:
+    nonlocal cleanup_finished
+    started.set()
+    try:
+      await asyncio.sleep(10)
+    finally:
+      await asyncio.sleep(0.02)
+      cleanup_finished = True
+
+  fast_task = asyncio.create_task(fast_cancel_worker())
+  slow_task = asyncio.create_task(slow_cleanup_worker())
+  gather_task = asyncio.create_task(
+      _batch_tool_executor._gather_or_cancel([fast_task, slow_task])
+  )
+  await started.wait()
+
+  gather_task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await gather_task
+
+  assert fast_task.cancelled()
+  assert slow_task.cancelled()
+  assert cleanup_finished
+
+
+@pytest.mark.asyncio
+async def test_gather_or_cancel_cancels_tasks_on_generator_exit() -> None:
+  """Closing the coroutine mid-await (GeneratorExit) still cancels the child tasks."""
+
+  async def slow_worker() -> None:
+    await asyncio.sleep(10)
+
+  task = asyncio.create_task(slow_worker())
+  coro = _batch_tool_executor._gather_or_cancel([task])
+  coro.send(None)
+  coro.close()
+  await asyncio.sleep(0)
+
+  assert task.cancelled()
 
 
 _probe: contextvars.ContextVar[str] = contextvars.ContextVar(
@@ -242,62 +310,62 @@ async def test_start_execute_task_keeps_parallel_calls_isolated() -> None:
   assert results == ['call-0', 'call-1', 'call-2']
 
 
-@pytest.mark.parametrize(
-    'has_event_queue,expect_enqueue,expect_session_append',
-    [
-        (True, True, False),
-        (False, False, True),
-    ],
-)
 @pytest.mark.asyncio
-async def test_launch_non_blocking_call_live(
-    has_event_queue: bool,
-    expect_enqueue: bool,
-    expect_session_append: bool,
-) -> None:
-  function_call = types.FunctionCall(name='my_tool', id='call_123')
-  tool = BaseTool(name='my_tool', description='')
-  event = Event(invocation_id='inv-1', content=types.Content())
+async def test_execute_prepared_function_calls_sets_live_session_id_and_merges() -> (
+    None
+):
+  mock_ic = mock.MagicMock()
+  mock_ic.session.state = {}
+  prepared_1 = _prepared_call_with_snapshot('call-1')
+  prepared_2 = _prepared_call_with_snapshot('call-2')
 
-  mock_session = mock.MagicMock()
-  mock_session_service = mock.MagicMock(append_event=mock.AsyncMock())
-  mock_ic = mock.MagicMock(
-      _event_queue=asyncio.Queue() if has_event_queue else None,
-      session=mock_session,
-      session_service=mock_session_service,
-      active_non_blocking_tool_tasks={},
-      _enqueue_event=mock.AsyncMock(),
+  ev1 = Event(
+      invocation_id='inv-1',
+      author='agent',
+      content=types.Content(
+          role='user', parts=[types.Part.from_text(text='r1')]
+      ),
+  )
+  ev2 = Event(
+      invocation_id='inv-1',
+      author='agent',
+      content=types.Content(
+          role='user', parts=[types.Part.from_text(text='r2')]
+      ),
+  )
+  call_executor = mock.AsyncMock(side_effect=[ev1, ev2])
+
+  merged = await _batch_tool_executor._execute_prepared_function_calls(
+      mock_ic,
+      [prepared_1, prepared_2],
+      call_executor=call_executor,
+      live_session_id='live-sess-1',
   )
 
-  with (
-      mock.patch.object(
-          _batch_tool_executor, '_prepare_single', new_callable=mock.AsyncMock
-      ),
-      mock.patch.object(
-          _batch_tool_executor,
-          '_execute_single_prepared_call_live',
-          new_callable=mock.AsyncMock,
-          return_value=event,
-      ),
-  ):
-    await _batch_tool_executor._launch_non_blocking_call_live(
-        invocation_context=mock_ic,
-        function_call=function_call,
-        tool=tool,
-        tools_dict={'my_tool': tool},
-        agent=mock.MagicMock(),
-        active_tools_lock=asyncio.Lock(),
-        live_session_id='live_session_123',
+  assert merged is not None
+  assert merged.live_session_id == 'live-sess-1'
+  assert merged.content is not None
+  assert [p.text for p in merged.content.parts] == ['r1', 'r2']
+
+
+@pytest.mark.asyncio
+async def test_handle_function_calls_live_compat_wrapper() -> None:
+  mock_context = mock.MagicMock()
+  mock_event = mock.MagicMock()
+  mock_tools = {'tool': mock.MagicMock()}
+  mock_result = mock.MagicMock()
+
+  with mock.patch(
+      'google.adk.flows.llm_flows.tools._live_caller.handle_function_calls_live',
+      new_callable=mock.AsyncMock,
+      return_value=mock_result,
+  ) as mock_handle:
+    res = await _batch_tool_executor.handle_function_calls_live(
+        mock_context, mock_event, mock_tools
     )
-
-    task_key = 'my_tool_call_123'
-    assert task_key in mock_ic.active_non_blocking_tool_tasks
-    await mock_ic.active_non_blocking_tool_tasks[task_key]
-
-  assert event.live_session_id == 'live_session_123'
-  assert mock_ic._enqueue_event.await_count == (1 if expect_enqueue else 0)
-  assert mock_session_service.append_event.await_count == (
-      1 if expect_session_append else 0
-  )
-  mock_ic.live_request_queue.send_content.assert_called_once_with(event.content)
-  assert task_key not in mock_ic.active_non_blocking_tool_tasks
+    assert res is mock_result
+    mock_handle.assert_awaited_once_with(
+        invocation_context=mock_context,
+        function_call_event=mock_event,
+        tools_dict=mock_tools,
+    )

@@ -76,6 +76,35 @@ def snake_to_lower_camel(snake_case_string: str):
   ])
 
 
+def _to_param_string(value: object) -> str:
+  """Serializes a path, header, or cookie parameter value for httpx.
+
+  httpx serializes query values itself but rejects anything other than a string
+  for a header or cookie, so an integer or boolean parameter declared by the
+  spec would fail the whole tool call. Path parameters also use this helper so
+  booleans, arrays, and objects follow OpenAPI's default `simple` style instead
+  of Python's `str(v)`. Numbers are stringified, booleans use their JSON
+  spelling, and arrays and objects are comma-joined (omitting `None` entries).
+
+  Args:
+    value: Raw parameter value from the tool call.
+
+  Returns:
+    The serialized parameter value.
+  """
+  if isinstance(value, bool):
+    return "true" if value else "false"
+  if isinstance(value, (list, tuple)):
+    return ",".join(
+        _to_param_string(item) for item in value if item is not None
+    )
+  if isinstance(value, dict):
+    return ",".join(
+        f"{k},{_to_param_string(v)}" for k, v in value.items() if v is not None
+    )
+  return str(value)
+
+
 HttpxClientFactory = Callable[[], httpx.AsyncClient]
 """Type alias for a zero-argument factory returning an ``httpx.AsyncClient``.
 
@@ -409,8 +438,8 @@ class RestApiTool(BaseTool):
 
     path_params: Dict[str, Any] = {}
     query_params: Dict[str, Any] = {}
-    header_params: Dict[str, Any] = {}
-    cookie_params: Dict[str, Any] = {}
+    header_params: dict[str, str] = {}
+    cookie_params: dict[str, str] = {}
 
     from ....version import __version__ as adk_version
 
@@ -447,20 +476,36 @@ class RestApiTool(BaseTool):
         # Reserved characters ('/', '?', '#') are still escaped so a
         # value cannot introduce a query string or fragment.
         path_params[original_k] = _encode_path_param(
-            name=original_k, value=str(v)
+            name=original_k, value=_to_param_string(v)
         )
       elif param_location == "query":
         if v is not None:
           query_params[original_k] = v
       elif param_location == "header":
-        header_params[original_k] = v
+        if v is not None:
+          header_params[original_k] = _to_param_string(v)
       elif param_location == "cookie":
-        cookie_params[original_k] = v
+        if v is not None:
+          cookie_params[original_k] = _to_param_string(v)
 
     # Construct URL
     base_url = self.endpoint.base_url or ""
     base_url = base_url[:-1] if base_url.endswith("/") else base_url
-    url = f"{base_url}{self.endpoint.path.format(**path_params)}"
+    try:
+      formatted_path = self.endpoint.path.format(**path_params)
+    except KeyError as e:
+      missing_param = e.args[0] if e.args else str(e)
+      for param in parameters:
+        if (
+            param.param_location == "path"
+            and param.original_name == missing_param
+            and param.py_name
+        ):
+          raise InputValidationError(
+              f"Missing required path parameter '{param.py_name}'."
+          ) from e
+      raise
+    url = f"{base_url}{formatted_path}"
 
     # Move query params embedded in the path template itself (now that path
     # parameter values are percent-encoded above, only a spec-authored
@@ -491,15 +536,11 @@ class RestApiTool(BaseTool):
             if param.param_location == "body" and param.py_name in kwargs:
               body_data[param.original_name] = kwargs[param.py_name]
 
-        elif schema.type == "array":
+        else:
+          # Exactly one body parameter reaches this branch, and its name
+          # is not stable: _dedupe_param_names can rewrite py_name.
           for param in parameters:
-            if param.param_location == "body" and param.py_name == "array":
-              body_data = kwargs.get("array")
-              break
-        else:  # like string
-          for param in parameters:
-            # original_name = '' indicating this param applies to the full body.
-            if param.param_location == "body" and not param.original_name:
+            if param.param_location == "body":
               body_data = (
                   kwargs.get(param.py_name) if param.py_name in kwargs else None
               )
@@ -584,8 +625,11 @@ class RestApiTool(BaseTool):
           "message": "Needs your authorization to access your data.",
       }
 
-    # Attach parameters from auth into main parameters list
-    api_params, api_args = self._operation_parser.get_parameters().copy(), args
+    # Work on a copy of args: the caller's dict is also handed to after-tool
+    # callbacks and recorded on the tool span, so the defaults and auth
+    # parameters added below must not land in it.
+    api_params = self._operation_parser.get_parameters().copy()
+    api_args = args.copy()
 
     # Add any required arguments that are missing and have defaults:
     for api_param in api_params:
@@ -674,7 +718,7 @@ class RestApiTool(BaseTool):
       response.raise_for_status()  # Raise HTTPStatusError for bad responses
       return response.json()  # Try to decode JSON
     except httpx.HTTPStatusError:
-      error_details = response.content.decode("utf-8")
+      error_details = response.text
       self._logger.warning(
           "API call failed for tool %s: Status %d - %s",
           self.name,

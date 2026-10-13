@@ -1332,6 +1332,29 @@ class TestBuildGenerationConfig:
     yield
     interactions_utils._WARNED_SAMPLING_PARAMS.clear()
 
+  @pytest.fixture
+  def client_without_sampling_fields(self, monkeypatch):
+    """A google-genai release that declares none of the sampling knobs."""
+    monkeypatch.setattr(interactions_utils, '_DECLARED_SAMPLING_PARAMS', ())
+    monkeypatch.setattr(
+        interactions_utils,
+        '_UNDECLARED_SAMPLING_PARAMS',
+        ('temperature', 'top_p', 'top_k'),
+    )
+
+  @pytest.fixture
+  def client_with_temperature_and_top_p(self, monkeypatch):
+    """A google-genai release that declares temperature and top_p, as 2.26."""
+    monkeypatch.setattr(
+        interactions_utils,
+        '_DECLARED_SAMPLING_PARAMS',
+        ('temperature', 'top_p'),
+    )
+    monkeypatch.setattr(
+        interactions_utils, '_UNDECLARED_SAMPLING_PARAMS', ('top_k',)
+    )
+
+  @pytest.mark.usefixtures('client_without_sampling_fields')
   def test_all_parameters(self):
     """Test that only parameters that reach the interactions API are sent."""
     config = types.GenerateContentConfig(
@@ -1351,6 +1374,41 @@ class TestBuildGenerationConfig:
         'seed': 7,
     }
 
+  @pytest.mark.usefixtures('client_with_temperature_and_top_p')
+  def test_sampling_parameters_the_client_declares_are_sent(self, caplog):
+    """A knob the installed client declares reaches the API, unwarned."""
+    config = types.GenerateContentConfig(
+        temperature=0.7, top_p=0.9, top_k=40, max_output_tokens=100
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      result = interactions_utils.build_generation_config(config)
+
+    assert result == {
+        'temperature': 0.7,
+        'top_p': 0.9,
+        'max_output_tokens': 100,
+    }
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert 'top_k' in warnings[0]
+    assert 'temperature' not in warnings[0]
+    assert 'top_p' not in warnings[0]
+
+  @pytest.mark.usefixtures('client_with_temperature_and_top_p')
+  def test_zero_valued_sampling_parameters_are_sent(self):
+    """A knob set to zero is a choice to send, not an unset one to skip."""
+    config = types.GenerateContentConfig(temperature=0.0, top_p=0.0)
+
+    result = interactions_utils.build_generation_config(config)
+
+    assert result == {'temperature': 0.0, 'top_p': 0.0}
+
+  @pytest.mark.usefixtures('client_without_sampling_fields')
   def test_partial_parameters(self):
     """Test building config with partial parameters."""
     config = types.GenerateContentConfig(
@@ -1367,7 +1425,11 @@ class TestBuildGenerationConfig:
     assert result == {}
 
   def test_every_key_is_a_real_generation_config_field(self):
-    """Keys absent from GenerationConfigParam are dropped before the wire."""
+    """Against the installed client, exactly its declared keys are sent.
+
+    Runs on the real google-genai rather than a stand-in, so it checks the
+    split between sent and dropped knobs that this release actually produces.
+    """
     config = types.GenerateContentConfig(
         temperature=0.7,
         top_p=0.9,
@@ -1380,7 +1442,10 @@ class TestBuildGenerationConfig:
     )
     result = interactions_utils.build_generation_config(config)
     supported = set(typing.get_type_hints(interactions.GenerationConfigParam))
-    assert set(result) == {'max_output_tokens', 'stop_sequences', 'seed'}
+    sampling = {'temperature', 'top_p', 'top_k'}
+    assert set(result) == {'max_output_tokens', 'stop_sequences', 'seed'} | (
+        sampling & supported
+    )
     assert set(result) <= supported
 
   def test_dropped_parameters_are_the_ones_the_request_cannot_carry(self):
@@ -1391,6 +1456,7 @@ class TestBuildGenerationConfig:
     supported = set(typing.get_type_hints(interactions.GenerationConfigParam))
     assert dropped.isdisjoint(supported)
 
+  @pytest.mark.usefixtures('client_without_sampling_fields')
   def test_undeclared_parameters_point_at_the_client(self, caplog):
     """A parameter the API applies but the client cannot send blames genai."""
     config = types.GenerateContentConfig(temperature=0.7, top_p=0.9, top_k=40)
@@ -1429,6 +1495,7 @@ class TestBuildGenerationConfig:
     assert 'frequency_penalty' in warnings[0]
     assert 'use_interactions_api' in warnings[0]
 
+  @pytest.mark.usefixtures('client_without_sampling_fields')
   def test_the_two_causes_are_reported_separately(self, caplog):
     """Test that one cause is not folded into the other's remedy."""
     config = types.GenerateContentConfig(temperature=0.7, presence_penalty=0.5)
@@ -1446,6 +1513,7 @@ class TestBuildGenerationConfig:
     assert 'temperature' in client and 'presence_penalty' not in client
     assert 'presence_penalty' in api and 'temperature' not in api
 
+  @pytest.mark.usefixtures('client_without_sampling_fields')
   def test_dropped_parameters_are_logged_once(self, caplog):
     """Test that a parameter is reported once, not on every model turn."""
     config = types.GenerateContentConfig(temperature=0.7)

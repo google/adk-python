@@ -34,14 +34,13 @@ from google.adk.sessions.state import State
 from google.adk.tools import model_consult as model_consult_pkg
 from google.adk.tools import ModelConsultContextConfig as TopLevelContextConfig
 from google.adk.tools import ModelConsultTool as TopLevelModelConsultTool
-from google.adk.tools.model_consult import ADVISOR_SYSTEM_INSTRUCTION
-from google.adk.tools.model_consult import ContextMode
-from google.adk.tools.model_consult import DEFAULT_ADVISOR_MODEL
-from google.adk.tools.model_consult import DEFAULT_TOOL_NAME
-from google.adk.tools.model_consult import EXECUTOR_INSTRUCTION
 from google.adk.tools.model_consult import ModelConsultContextConfig
 from google.adk.tools.model_consult import ModelConsultTool
-from google.adk.tools.model_consult import TOOL_DESCRIPTION
+from google.adk.tools.model_consult._model_consult_tool import DEFAULT_ADVISOR_MODEL
+from google.adk.tools.model_consult._model_consult_tool import DEFAULT_TOOL_NAME
+from google.adk.tools.model_consult._prompts import ADVISOR_SYSTEM_INSTRUCTION
+from google.adk.tools.model_consult._prompts import EXECUTOR_INSTRUCTION
+from google.adk.tools.model_consult._prompts import TOOL_DESCRIPTION
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 from pydantic import BaseModel
@@ -194,17 +193,18 @@ def test_public_exports_and_prompt_constants():
   assert TopLevelModelConsultTool is ModelConsultTool
   assert TopLevelContextConfig is ModelConsultContextConfig
   expected_all = {
+      'ModelConsultContextConfig',
+      'ModelConsultTool',
+  }
+  assert set(model_consult_pkg.__all__) == expected_all
+  for private_name in (
       'ADVISOR_SYSTEM_INSTRUCTION',
-      'ContextMode',
       'DEFAULT_ADVISOR_MODEL',
       'DEFAULT_TOOL_NAME',
       'EXECUTOR_INSTRUCTION',
-      'ModelConsultContextConfig',
-      'ModelConsultTool',
       'TOOL_DESCRIPTION',
-  }
-  assert set(model_consult_pkg.__all__) == expected_all
-  assert ContextMode is not None
+  ):
+    assert not hasattr(model_consult_pkg, private_name)
   assert DEFAULT_TOOL_NAME == 'model_consult'
   assert DEFAULT_ADVISOR_MODEL == 'gemini-3.1-pro-preview'
   assert 'advisor' in TOOL_DESCRIPTION.lower()
@@ -337,7 +337,7 @@ async def test_advisor_sees_session_and_question():
 
   request = llm.requests[0]
   texts = _extract_texts(request.contents)
-  assert 'Investigate the paging alert.' in texts
+  assert '[user] Investigate the paging alert.' in texts
   assert any('[tool_call] query_logs' in text for text in texts)
   assert any(
       '[tool_result] query_logs -> {"errors": 42}' in text for text in texts
@@ -362,8 +362,8 @@ def _extract_texts(contents: list[types.Content]) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_contents_never_repeat_a_role():
-  """Verifies adjacent turns in advisor contents strictly alternate roles."""
+async def test_advisor_request_has_single_user_content():
+  """Verifies advisor request always sends a single role='user' Content."""
   llm = _FakeAdvisorLlm()
   tool = ModelConsultTool(model=llm)
   ctx = _make_tool_context([
@@ -374,13 +374,13 @@ async def test_contents_never_repeat_a_role():
 
   await _run(tool, ctx, question='Next?')
 
-  roles = [content.role for content in llm.requests[0].contents]
-  assert all(left != right for left, right in zip(roles, roles[1:]))
+  assert len(llm.requests[0].contents) == 1
+  assert llm.requests[0].contents[0].role == 'user'
 
 
 @pytest.mark.asyncio
 async def test_executor_instruction_is_forwarded_to_advisor():
-  """Verifies executor instruction reaches advisor without escalation rules."""
+  """Verifies executor instruction reaches advisor prompt without escalation."""
   llm = _FakeAdvisorLlm()
   tool = ModelConsultTool(model=llm, include_agent_instruction=True)
   ctx = _make_tool_context(
@@ -393,10 +393,14 @@ async def test_executor_instruction_is_forwarded_to_advisor():
   await _run(tool, ctx, question='Can I restart the DB?')
 
   system_inst = llm.requests[0].config.system_instruction
-  assert isinstance(system_inst, str)
-  assert 'senior technical advisor' in system_inst
-  assert 'Never restart production databases.' in system_inst
-  assert EXECUTOR_INSTRUCTION not in system_inst
+  assert system_inst == ADVISOR_SYSTEM_INSTRUCTION
+  texts = _extract_texts(llm.requests[0].contents)
+  assert any(
+      '--- EXECUTOR AGENT INSTRUCTION (executor) ---' in text
+      and 'Never restart production databases.' in text
+      for text in texts
+  )
+  assert not any(EXECUTOR_INSTRUCTION in text for text in texts)
 
 
 @pytest.mark.asyncio
@@ -410,10 +414,12 @@ async def test_executor_instruction_withheld_when_disabled():
 
   await _run(tool, ctx, question='Can I restart the DB?')
 
-  assert (
-      'Never restart production databases.'
-      not in llm.requests[0].config.system_instruction
+  assert llm.requests[0].config.system_instruction == ADVISOR_SYSTEM_INSTRUCTION
+  texts = _extract_texts(llm.requests[0].contents)
+  assert not any(
+      'Never restart production databases.' in text for text in texts
   )
+  assert not any('EXECUTOR AGENT INSTRUCTION' in text for text in texts)
 
 
 @pytest.mark.asyncio
@@ -439,9 +445,9 @@ async def test_executor_instruction_injects_state_and_static_instruction():
 
   await _run(tool, ctx, question='Which cluster?')
 
-  system_inst = llm.requests[0].config.system_instruction
-  assert 'Global policy: read-only mode.' in system_inst
-  assert 'Only inspect cluster prod-eu-west.' in system_inst
+  prompt_1 = '\n'.join(_extract_texts(llm.requests[0].contents))
+  assert 'Global policy: read-only mode.' in prompt_1
+  assert 'Only inspect cluster prod-eu-west.' in prompt_1
 
   # Verify string static_instruction and fallback when an unset {placeholder}
   # coexists with a populated {target_env} state key.
@@ -452,9 +458,9 @@ async def test_executor_instruction_injects_state_and_static_instruction():
       invocation_id='inv-2',
   )
   await _run(tool, ctx_fallback, question='Fallback check?')
-  system_inst_2 = llm.requests[1].config.system_instruction
-  assert 'String static instruction.' in system_inst_2
-  assert 'Cluster prod-eu-west with {unset_var}.' in system_inst_2
+  prompt_2 = '\n'.join(_extract_texts(llm.requests[1].contents))
+  assert 'String static instruction.' in prompt_2
+  assert 'Cluster prod-eu-west with {unset_var}.' in prompt_2
 
   # Verify callable instruction provider (bypass_state_injection=True)
   ctx_provider = _make_tool_context(
@@ -463,8 +469,8 @@ async def test_executor_instruction_injects_state_and_static_instruction():
       invocation_id='inv-3',
   )
   await _run(tool, ctx_provider, question='Provider check?')
-  system_inst_3 = llm.requests[2].config.system_instruction
-  assert 'Callable provider {target_env} literal.' in system_inst_3
+  prompt_3 = '\n'.join(_extract_texts(llm.requests[2].contents))
+  assert 'Callable provider {target_env} literal.' in prompt_3
 
   # Verify Part and list ContentUnion forms of static_instruction.
   ctx_part = _make_tool_context(
@@ -474,8 +480,8 @@ async def test_executor_instruction_injects_state_and_static_instruction():
       invocation_id='inv-4',
   )
   await _run(tool, ctx_part, question='Part static check?')
-  system_inst_4 = llm.requests[3].config.system_instruction
-  assert 'Part static instruction.' in system_inst_4
+  prompt_4 = '\n'.join(_extract_texts(llm.requests[3].contents))
+  assert 'Part static instruction.' in prompt_4
 
   ctx_list = _make_tool_context(
       session=session,
@@ -490,10 +496,10 @@ async def test_executor_instruction_injects_state_and_static_instruction():
       invocation_id='inv-5',
   )
   await _run(tool, ctx_list, question='List static check?')
-  system_inst_5 = llm.requests[4].config.system_instruction
+  prompt_5 = '\n'.join(_extract_texts(llm.requests[4].contents))
   assert (
       'List static part 1.\nList static part 2.\nDict static part 3.'
-      in system_inst_5
+      in prompt_5
   )
 
 
@@ -566,67 +572,38 @@ async def test_pending_model_consult_call_is_not_duplicated():
 
 
 @pytest.mark.asyncio
-async def test_transcript_mode_folds_session_into_one_turn():
-  """Verifies transcript mode collapses session into a single user Content."""
+async def test_single_user_content_orders_all_sections():
+  """Verifies prompt sections land in one user Content in canonical order."""
+
+  def query_logs(service: str) -> dict[str, str]:
+    """Queries service logs."""
+    return {'service': service}
+
   llm = _FakeAdvisorLlm()
-  tool = ModelConsultTool(
-      model=llm,
-      context_config=ModelConsultContextConfig(mode='transcript'),
+  tool = ModelConsultTool(model=llm)
+  ctx = _make_tool_context(
+      [
+          _user_event('go'),
+          _agent_event([types.Part(text='checking logs')]),
+      ],
+      instruction='Follow production safety rules.',
+      tools=[query_logs, tool],
   )
-  ctx = _make_tool_context([
-      _user_event('go'),
-      _agent_event([types.Part(text='checking logs')]),
-  ])
 
   await _run(tool, ctx, question='Next?')
 
   contents = llm.requests[0].contents
   assert len(contents) == 1
   assert contents[0].role == 'user'
-  assert len(contents[0].parts) == 2
-  assert 'EXECUTOR SESSION TRANSCRIPT' in (contents[0].parts[0].text or '')
-  assert 'USER: go' in (contents[0].parts[0].text or '')
-  assert 'AGENT: checking logs' in (contents[0].parts[0].text or '')
-  assert (contents[0].parts[-1].text or '').startswith(
-      '--- END OF EXECUTOR SESSION ---'
-  )
-
-
-@pytest.mark.asyncio
-async def test_transcript_mode_does_not_charge_media_bytes_against_max_chars():
-  """Verifies transcript mode converts media to text before char budgeting."""
-  llm = _FakeAdvisorLlm()
-  tool = ModelConsultTool(
-      model=llm,
-      context_config=ModelConsultContextConfig(
-          mode='transcript', max_chars=500, include_media=True
-      ),
-  )
-  ctx = _make_tool_context([
-      _user_event('Initial root cause clue'),
-      _agent_event([types.Part(text='Middle investigation note')]),
-      Event(
-          invocation_id='inv-1',
-          author='user',
-          content=types.Content(
-              role='user',
-              parts=[
-                  types.Part(text='Screenshot attached'),
-                  types.Part(
-                      inline_data=types.Blob(
-                          mime_type='image/png', data=b'x' * 10_000
-                      )
-                  ),
-              ],
-          ),
-      ),
-  ])
-
-  await _run(tool, ctx, question='Next?')
-
-  transcript_part = llm.requests[0].contents[0].parts[0].text or ''
-  assert 'Middle investigation note' in transcript_part
-  assert '[media: image/png' in transcript_part
+  part_texts = [p.text or '' for p in contents[0].parts]
+  assert len(part_texts) == 5
+  assert part_texts[0].startswith('--- EXECUTOR AGENT INSTRUCTION (executor)')
+  assert 'Follow production safety rules.' in part_texts[0]
+  assert part_texts[1].startswith('--- TOOLS AVAILABLE TO THE EXECUTOR ---')
+  assert '- query_logs: Queries service logs.' in part_texts[1]
+  assert part_texts[2] == '[user] go'
+  assert part_texts[3] == '[agent:executor] checking logs'
+  assert part_texts[4].startswith('--- END OF EXECUTOR SESSION ---')
 
 
 @pytest.mark.parametrize(
@@ -1236,10 +1213,10 @@ async def test_advisor_receives_executor_tool_inventory():
 
   assert ctx._invocation_context.canonical_tools_cache is not None
   system = llm.requests[0].config.system_instruction
-  assert isinstance(system, str)
-  assert system.startswith('Custom advisor system prompt.')
-  assert 'TOOLS AVAILABLE TO THE EXECUTOR' in system
-  inventory_section = system.split('TOOLS AVAILABLE TO THE EXECUTOR')[1]
+  assert system == 'Custom advisor system prompt.'
+  prompt_1 = '\n'.join(_extract_texts(llm.requests[0].contents))
+  assert 'TOOLS AVAILABLE TO THE EXECUTOR' in prompt_1
+  inventory_section = prompt_1.split('TOOLS AVAILABLE TO THE EXECUTOR')[1]
   assert (
       '- list_deploys: Lists recent deploys for a service.' in inventory_section
   )
@@ -1257,8 +1234,8 @@ async def test_advisor_receives_executor_tool_inventory():
       ctx._invocation_context.agent, 'canonical_tools', _fail_if_called
   )
   await _run(tool, ctx, question='Second check?')
-  system_2 = llm.requests[1].config.system_instruction
-  assert '- list_deploys: Lists recent deploys for a service.' in system_2
+  prompt_2 = '\n'.join(_extract_texts(llm.requests[1].contents))
+  assert '- list_deploys: Lists recent deploys for a service.' in prompt_2
 
 
 @pytest.mark.asyncio
@@ -1275,10 +1252,9 @@ async def test_tool_inventory_withheld_when_disabled():
 
   await _run(tool, ctx, question='What next?')
 
-  assert (
-      'TOOLS AVAILABLE TO THE EXECUTOR'
-      not in llm.requests[0].config.system_instruction
-  )
+  assert llm.requests[0].config.system_instruction == ADVISOR_SYSTEM_INSTRUCTION
+  prompt = '\n'.join(_extract_texts(llm.requests[0].contents))
+  assert 'TOOLS AVAILABLE TO THE EXECUTOR' not in prompt
 
 
 @pytest.mark.asyncio
@@ -1299,7 +1275,7 @@ async def test_corrupt_state_and_broken_agent_callbacks_degrade_gracefully(
 
   res0 = await _run(tool, ctx, question='Non-str agent name check?')
   assert res0['status'] == 'ok'
-  assert '(the executor)' in llm.requests[0].config.system_instruction
+  assert '(the executor)' in '\n'.join(_extract_texts(llm.requests[0].contents))
   assert tool._turn_uses_state_key(ctx).endswith(':unknown:uses')
 
   ctx._invocation_context.agent.name = 'unknown'

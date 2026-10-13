@@ -390,6 +390,11 @@ class _CallLlmSpanRecorder:
         'start_as_current_span',
         self._tracer.start_as_current_span,
     )
+    monkeypatch.setattr(
+        tracing.tracer,
+        'start_span',
+        self._tracer.start_span,
+    )
     real_trace_call_llm = _model_call.trace_call_llm
 
     def _recording_trace_call_llm(

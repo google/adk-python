@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+from ...utils._agent_mode import AgentMode
 from .._base_node import BaseNode
 from .._base_node import START
 from .._errors import GraphValidationError
@@ -196,7 +197,7 @@ def _validate_chat_agent_wiring(edges: list[Edge]) -> None:
     to_node = edge.to_node
     if (
         isinstance(to_node, LlmAgent)
-        and getattr(to_node, "mode", None) == "chat"
+        and getattr(to_node, "mode", None) == AgentMode.CHAT
     ):
       if edge.from_node.name != START.name:
         raise GraphValidationError(

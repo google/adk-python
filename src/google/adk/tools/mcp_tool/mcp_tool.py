@@ -48,9 +48,9 @@ from ...features import is_feature_enabled
 from ...flows.llm_flows.context._fencing import fence_schema_descriptions
 from ...flows.llm_flows.context._fencing import fence_tool_description
 from ...flows.llm_flows.context._fencing import TOOL_DESCRIPTION_PREAMBLE
-from ...flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ...flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ...flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ...utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ...utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
+from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...utils.context_utils import find_context_parameter
 # `is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)` gates the
 # error-boundary and transport-crash-detection behavior added in this module.
@@ -60,6 +60,7 @@ from ...utils.context_utils import find_context_parameter
 # part of the ADK public API; consumers flip the env var, not the symbol.
 from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
+from ..set_model_response_tool import SetModelResponseTool
 from ..tool_context import ToolContext
 from ..transfer_to_agent_tool import transfer_to_agent
 from .mcp_session_manager import _http_debug_var
@@ -81,6 +82,7 @@ _RESERVED_TOOL_NAMES = frozenset({
     REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
     REQUEST_INPUT_FUNCTION_CALL_NAME,
     transfer_to_agent.__name__,
+    SetModelResponseTool.NAME,
 })
 
 _UNSET = object()

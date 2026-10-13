@@ -29,11 +29,11 @@ class StateSchemaError(TypeError):
 
 
 @functools.lru_cache(maxsize=256)
-def _get_type_adapter(annotation: Any) -> TypeAdapter[Any]:
-  """Returns a cached Pydantic TypeAdapter for the given type annotation."""
+def _get_type_adapter(schema: type[BaseModel], key: str) -> TypeAdapter[Any]:
+  """Returns a cached adapter preserving a field's annotation and metadata."""
   from pydantic import TypeAdapter
 
-  return TypeAdapter(annotation)
+  return TypeAdapter(schema.model_fields[key].rebuild_annotation())
 
 
 def _validate_state_entry(
@@ -44,9 +44,9 @@ def _validate_state_entry(
   """Validates a single state key-value pair against a Pydantic schema.
 
   Raises StateSchemaError if the key is not in the schema or the value
-  does not match the field's type annotation. Prefixed keys (any key
-  containing ``:``) bypass validation: besides the app:, user: and temp:
-  scopes, ADK keeps its own state under ``<owner>:<key>`` names.
+  does not match the field's type annotation or constraints. Prefixed keys
+  (any key containing ``:``) bypass validation: besides the app:, user: and
+  temp: scopes, ADK keeps its own state under ``<owner>:<key>`` names.
   """
   if ":" in key:
     return
@@ -61,11 +61,11 @@ def _validate_state_entry(
   from pydantic import ValidationError as PydanticValidationError
 
   try:
-    _get_type_adapter(fields[key].annotation).validate_python(value)
+    _get_type_adapter(schema, key).validate_python(value)
   except PydanticValidationError as e:
     raise StateSchemaError(
-        f"Value for '{key}' does not match type "
-        f"'{fields[key].annotation}' in '{schema.__name__}': {e}"
+        f"Value for '{key}' does not satisfy field '{key}' "
+        f"({fields[key].rebuild_annotation()}) in '{schema.__name__}': {e}"
     ) from e
 
 

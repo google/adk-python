@@ -20,6 +20,7 @@ import logging
 
 from ...agents.context import Context
 from ...events._branch_path import _BranchPath
+from ...events._interrupts import is_interrupt_event
 from ...events._node_path_builder import _NodePathBuilder
 from ...events._rewind_events import _apply_rewinds
 from ...events.event import Event
@@ -27,19 +28,8 @@ from ._rehydration_utils import _ChildScanState
 from ._rehydration_utils import _reconstruct_node_states
 from ._rehydration_utils import is_terminal_event
 from ._replay_sequence_barrier import ReplaySequenceBarrier
-from ._workflow_hitl_utils import has_auth_request_function_call
-from ._workflow_hitl_utils import has_request_input_function_call
 
 logger = logging.getLogger("google_adk." + __name__)
-
-
-def _is_interrupt_event(event: Event) -> bool:
-  """Determines if an event represents an interrupt."""
-  if event.long_running_tool_ids:
-    return True
-  return has_request_input_function_call(
-      event
-  ) or has_auth_request_function_call(event)
 
 
 class ReplayManager:
@@ -139,7 +129,7 @@ class ReplayManager:
     Interrupt ownership (`_fc_to_parent`) carries across calls: a user response
     indexed now may answer a function call indexed in an earlier batch.
     """
-    from ._workflow_hitl_utils import get_request_input_interrupt_ids
+    from ...events._interrupts import extract_event_interrupt_ids
 
     for event in events:
       if event.author == "user":
@@ -156,9 +146,7 @@ class ReplayManager:
       self._add_event_to_index(parent_path, event)
 
       # Track interrupts to route future user responses
-      interrupt_ids = set(event.long_running_tool_ids or [])
-      interrupt_ids.update(get_request_input_interrupt_ids(event))
-      for fid in interrupt_ids:
+      for fid in extract_event_interrupt_ids(event):
         self._fc_to_parent[fid] = parent_path
 
   def _index_user_event(
@@ -296,7 +284,7 @@ class ReplayManager:
               and event.node_info.output_for
               and str(child_path) in event.node_info.output_for
           )
-          or _is_interrupt_event(event)
+          or is_interrupt_event(event)
       )
       if not is_child_event:
         continue
@@ -311,7 +299,7 @@ class ReplayManager:
           sequence.remove(segment)
         sequence.append(segment)
         # Only non-interrupt terminal outcomes mark the child completed.
-        if not _is_interrupt_event(event) and (
+        if not is_interrupt_event(event) and (
             event.output is not None
             or (
                 event.node_info

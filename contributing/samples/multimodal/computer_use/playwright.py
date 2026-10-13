@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
-import time
 from typing import Literal
 from typing import Optional
 
@@ -313,7 +312,7 @@ class PlaywrightComputer(BaseComputer):
     await self._page.wait_for_load_state()
     # Even if Playwright reports the page as loaded, it may not be so.
     # Add a manual sleep to make sure the page has finished rendering.
-    time.sleep(0.5)
+    await asyncio.sleep(0.5)
     screenshot_bytes = await self._page.screenshot(type="png", full_page=False)
     return ComputerState(screenshot=screenshot_bytes, url=self._page.url)
 
@@ -347,4 +346,4 @@ class PlaywrightComputer(BaseComputer):
         }}
     """)
     # Wait a bit for the user to see the cursor.
-    time.sleep(1)
+    await asyncio.sleep(1)

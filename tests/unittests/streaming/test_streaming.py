@@ -989,7 +989,7 @@ def test_input_streaming_tool_registered_lazily_with_stream():
 
   # Capture the invocation context to inspect registration state.
   captured_context = None
-  original_method = runner.runner._new_invocation_context_for_live
+  original_method = runner.runner._new_invocation_context
 
   def capturing_method(*args, **kwargs) -> Any:
     nonlocal captured_context
@@ -997,7 +997,7 @@ def test_input_streaming_tool_registered_lazily_with_stream():
     captured_context = ctx
     return ctx
 
-  runner.runner._new_invocation_context_for_live = capturing_method
+  runner.runner._new_invocation_context = capturing_method
 
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
@@ -1092,7 +1092,7 @@ def test_stop_streaming_resets_stream_to_none():
 
   # Capture the child invocation context (created by _create_invocation_context
   # inside base_agent.run_live) to inspect active_streaming_tools.
-  # We cannot use the parent context from _new_invocation_context_for_live
+  # We cannot use the parent context from new_invocation_context_for_live
   # because model_copy creates a separate child object.
   captured_child_context = None
   original_create = root_agent._create_invocation_context
@@ -1340,7 +1340,8 @@ def test_input_streaming_tool_stream_recreated_after_stop():
       blob=types.Blob(data=b"test", mime_type="audio/pcm")
   )
 
-  res_events = runner.run_live(live_request_queue, max_responses=8)
+  # Three calls, a response event for each, and the closing turn_complete.
+  res_events = runner.run_live(live_request_queue, max_responses=7)
 
   # monitor_video should appear at least twice in function calls
   # (start + restart). Function response events may add extra

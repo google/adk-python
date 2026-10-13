@@ -253,7 +253,8 @@ class GEPARootAgentPromptOptimizer(
     _logger.info("Setting up the GEPA optimizer...")
 
     try:
-      import gepa  # lazy import as gepa is not in core ADK package
+      # lazy import as gepa is not in core ADK package
+      from gepa.api import optimize as gepa_optimize
 
       adapter_class = _create_agent_gepa_adapter_class()
     except ImportError as e:
@@ -294,7 +295,7 @@ class GEPARootAgentPromptOptimizer(
     initial_instruction = require_static_instruction(initial_agent)
 
     def run_gepa() -> GEPAResult[dict[str, Any], int]:
-      return gepa.optimize(
+      return gepa_optimize(
           seed_candidate={_AGENT_PROMPT_NAME: initial_instruction},
           trainset=train_ids,
           valset=val_ids,

@@ -31,23 +31,45 @@ from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.adk.workflow import BaseNode
 from google.adk.workflow._graph import RouteValue
-from google.adk.workflow.utils._workflow_hitl_utils import has_auth_request_function_call
-from google.adk.workflow.utils._workflow_hitl_utils import has_request_input_function_call
 from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
 from typing_extensions import override
 
+from .._invariants import InvariantPlugin
 from .testing_utils import END_OF_AGENT
 from .testing_utils import simplify_content
 
 
-async def run_workflow(wf, message='start'):
+def create_runner(
+    *, check_invariants: bool = True, **runner_kwargs: Any
+) -> Runner:
+  """Builds a ``Runner`` with the ``InvariantPlugin`` installed first.
+
+  Use this instead of a bare ``Runner(...)`` in tests that need to own the
+  session service or pass an ``App``; ``testing_utils.TestInMemoryRunner``
+  covers the in-memory case. Pass ``check_invariants=False`` with an
+  ``# invariants: off because ...`` comment to opt out.
+  """
+  runner = Runner(**runner_kwargs)
+  if check_invariants:
+    runner.plugin_manager.plugins.insert(0, InvariantPlugin())
+  return runner
+
+
+async def run_workflow(wf, message='start', *, check_invariants: bool = True):
   """Run a Workflow through Runner, return collected events."""
   ss = InMemorySessionService()
-  runner = Runner(app_name=wf.name, node=wf, session_service=ss)
+  runner = create_runner(
+      app_name=wf.name,
+      node=wf,
+      session_service=ss,
+      check_invariants=check_invariants,
+  )
   session = await ss.create_session(app_name=wf.name, user_id='u')
   msg = types.Content(parts=[types.Part(text=message)], role='user')
   events = []
@@ -304,12 +326,28 @@ def simplify_events_with_node_and_agent_state(
 
 def get_request_input_events(events: list[Any]) -> list[Any]:
   """Returns a list of request input events from the given list of events."""
-  return [e for e in events if has_request_input_function_call(e)]
+  return [
+      e
+      for e in events
+      if isinstance(e, Event)
+      and any(
+          fc.name == REQUEST_INPUT_FUNCTION_CALL_NAME
+          for fc in e.get_function_calls()
+      )
+  ]
 
 
 def get_auth_request_events(events: list[Any]) -> list[Any]:
   """Returns a list of auth credential request events from the given list."""
-  return [e for e in events if has_auth_request_function_call(e)]
+  return [
+      e
+      for e in events
+      if isinstance(e, Event)
+      and any(
+          fc.name == REQUEST_EUC_FUNCTION_CALL_NAME
+          for fc in e.get_function_calls()
+      )
+  ]
 
 
 def get_output_events(events: list[Any], output: Any = None) -> list[Any]:

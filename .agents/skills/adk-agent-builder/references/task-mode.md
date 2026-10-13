@@ -59,7 +59,7 @@ researcher = Agent(
 
 root_agent = Agent(
     name='coordinator',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     sub_agents=[researcher],
     instruction=(
         'When the user asks for research, call the researcher tool. Summarize'
@@ -95,7 +95,7 @@ summarizer = Agent(
 
 root_agent = Agent(
     name='coordinator',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     sub_agents=[summarizer],
     instruction='Delegate summarization to the summarizer tool.',
 )
@@ -160,7 +160,7 @@ weather_checker = Agent(
 
 root_agent = Agent(
     name='travel_planner',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     sub_agents=[flight_searcher, weather_checker],
     instruction=(
         'Plan trips. Use weather_checker for weather and flight_searcher for'

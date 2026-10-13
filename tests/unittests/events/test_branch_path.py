@@ -72,6 +72,13 @@ def test_run_ids_extracts_all_run_ids_from_path():
   assert path_mixed.run_ids == {"1", "3"}
 
 
+def test_ordered_run_ids_preserves_segment_order():
+  """ordered_run_ids extracts run IDs in outer-to-inner segment order."""
+  path = _BranchPath.from_string("outer@fc-2.middle.inner@fc-1.leaf@")
+
+  assert path.ordered_run_ids == ("fc-2", "fc-1")
+
+
 def test_parent_returns_parent_path_or_none_for_root():
   """parent returns a new _BranchPath excluding the leaf segment, or None."""
   path = _BranchPath.from_string("parent.child.node")
@@ -238,5 +245,7 @@ def test_is_tool_branch_ignores_ordinary_node_branches():
   """A leaf carrying a run id, or no id at all, is not a tool branch."""
   call_ids = {"fc-1"}
   assert not _BranchPath.is_tool_branch("worker@1", "worker", call_ids)
+  assert not _BranchPath.is_tool_branch("worker.child@1", "worker", call_ids)
+  assert not _BranchPath.is_tool_branch("fc-1", "worker", call_ids)
   assert not _BranchPath.is_tool_branch("worker", "worker", call_ids)
   assert not _BranchPath.is_tool_branch("", "worker", call_ids)

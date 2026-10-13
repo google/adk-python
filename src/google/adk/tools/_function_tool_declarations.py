@@ -48,6 +48,9 @@ from pydantic import create_model
 from pydantic import fields as pydantic_fields
 from typing_extensions import Annotated
 
+from ..events.event import Event
+from ..events.request_input import RequestInput
+from ..utils._callable_utils import get_callable_doc
 from ..utils.variant_utils import get_google_llm_variant
 from ..utils.variant_utils import GoogleLLMVariant
 
@@ -65,6 +68,51 @@ def _is_optional_type(tp: Any) -> bool:
   if _is_union_type(origin):
     return type(None) in get_args(tp)
   return tp is type(None)
+
+
+def _is_streamed_control_type(tp: Any) -> bool:
+  """Returns True if a generator tool streams tp instead of returning it."""
+  return inspect.isclass(tp) and issubclass(tp, (Event, RequestInput))
+
+
+def _get_generator_output_annotation(annotation: Any) -> Any:
+  """Returns the annotation of a generator tool's output.
+
+  A generator tool streams the `Event` and `RequestInput` items it yields to
+  the caller, and its output is the one other value it yields. The output of
+  `Generator[Y, ...]` or `AsyncGenerator[Y, ...]` is therefore `Y` without
+  those types, so `AsyncGenerator[Event | dict[str, Any], None]` declares a
+  `dict[str, Any]` output.
+
+  Args:
+    annotation: A resolved return annotation.
+
+  Returns:
+    The output annotation for a generator annotation, `Any` if its yield type
+    names only streamed types, or `annotation` unchanged otherwise.
+  """
+  if get_origin(annotation) not in (
+      collections.abc.Generator,
+      collections.abc.AsyncGenerator,
+  ):
+    return annotation
+  type_args = get_args(annotation)
+  if not type_args:
+    return annotation
+  yield_type = type_args[0]
+  members = (
+      get_args(yield_type)
+      if _is_union_type(get_origin(yield_type))
+      else (yield_type,)
+  )
+  outputs = [m for m in members if not _is_streamed_control_type(m)]
+  if not outputs:
+    return Any
+  if len(outputs) == len(members):
+    return yield_type
+  if len(outputs) == 1:
+    return outputs[0]
+  return Union[tuple(outputs)]
 
 
 def _collapse_redundant_outer_optional(tp: Any) -> Any:
@@ -284,6 +332,8 @@ def get_callable_name(func: Callable[..., Any]) -> str:
   """Returns the name a callable is advertised and registered under.
 
   Callable objects carry no `__name__`, so they fall back to their class name.
+  A functools.partial without a `__name__` of its own takes the name of the
+  callable it wraps, so two partials of different functions do not collide.
   This is the single source of truth for both the declaration sent to the model
   and the key the tool is registered under: if the two disagree, the model is
   told about a tool it cannot invoke.
@@ -294,6 +344,8 @@ def get_callable_name(func: Callable[..., Any]) -> str:
   Returns:
     The name to use for the callable.
   """
+  if isinstance(func, functools.partial) and not hasattr(func, '__name__'):
+    return get_callable_name(func.func)
   return getattr(func, '__name__', None) or func.__class__.__name__
 
 
@@ -425,18 +477,7 @@ def _build_response_json_schema(
   if _is_unresolvable(return_annotation):
     return None
 
-  # Handle AsyncGenerator and Generator return types (streaming tools)
-  # AsyncGenerator[YieldType, SendType] -> use YieldType as response schema
-  # Generator[YieldType, SendType, ReturnType] -> use YieldType as response schema
-  origin = get_origin(return_annotation)
-  if origin is not None and (
-      origin is collections.abc.AsyncGenerator
-      or origin is collections.abc.Generator
-  ):
-    type_args = get_args(return_annotation)
-    if type_args:
-      # First type argument is the yield type
-      return_annotation = type_args[0]
+  return_annotation = _get_generator_output_annotation(return_annotation)
 
   try:
     try:
@@ -450,7 +491,7 @@ def _build_response_json_schema(
       logging.debug(
           'Failed to build schema with config, retrying without config for'
           ' %s: %s',
-          func.__name__,
+          get_callable_name(func),
           e,
       )
       adapter = pydantic.TypeAdapter(return_annotation)
@@ -458,7 +499,7 @@ def _build_response_json_schema(
   except Exception:
     logging.warning(
         'Failed to build response JSON schema for %s',
-        func.__name__,
+        get_callable_name(func),
         exc_info=True,
     )
     # Fall back to untyped response
@@ -520,7 +561,7 @@ def build_function_declaration_with_json_schema(
     )
 
   # Handle Callable functions
-  description = inspect.cleandoc(func.__doc__) if func.__doc__ else None
+  description = get_callable_doc(func) or None
   func_name = get_callable_name(func)
   declaration = types.FunctionDeclaration(
       name=func_name,

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import AsyncGenerator
 from typing import Optional
 
@@ -169,24 +170,33 @@ async def handle_before_model_callback(
   return None
 
 
-def _inherit_unset_streaming_fields(
+def _inherit_unset_model_fields(
     original: LlmResponse, replacement: Optional[LlmResponse]
 ) -> Optional[LlmResponse]:
-  """Carries streaming-control fields from a replaced response.
+  """Carries model-owned fields from a replaced response.
 
   A callback replacement that leaves ``partial``/``turn_complete`` unset must
   not change the streaming semantics of the response it replaces. Otherwise
   every streamed delta looks final downstream: SSE clients render N final
   responses, ``Runner`` persists each delta as a separate session event, and
-  the live path can close its request queue early. An explicitly set value on
-  the replacement is always respected.
+  the live path can close its request queue early.
+
+  ``usage_metadata`` is carried the same way. It measures the model call
+  (prompt, candidate and cached token counts as billed by the provider), not
+  the content of the response, so replacing the content does not change it.
+  A replacement that leaves it unset would otherwise erase the call from
+  token accounting: the finalized ``Event`` copies only non-None fields, so
+  the persisted session event, the BigQuery analytics plugin and A2A
+  converters all see no usage for that call.
+
+  An explicitly set value on the replacement is always respected.
 
   Args:
     original: The response being replaced.
     replacement: The callback-provided response, if there is one.
 
   Returns:
-    The replacement, with unset streaming-control fields filled in, or None
+    The replacement, with unset model-owned fields filled in, or None
     when there is no replacement. A copy is returned only when a field
     actually needs filling, so explicitly complete replacements keep their
     identity.
@@ -198,11 +208,13 @@ def _inherit_unset_streaming_fields(
       replacement, LlmResponse
   ):
     return replacement
-  updates = {}
+  updates: dict[str, Any] = {}
   if replacement.partial is None and original.partial is not None:
     updates['partial'] = original.partial
   if replacement.turn_complete is None and original.turn_complete is not None:
     updates['turn_complete'] = original.turn_complete
+  if replacement.usage_metadata is None and original.usage_metadata is not None:
+    updates['usage_metadata'] = original.usage_metadata
   if updates:
     return replacement.model_copy(update=updates)
   return replacement
@@ -266,7 +278,7 @@ async def handle_after_model_callback(
       )
   )
   if callback_response:
-    return _inherit_unset_streaming_fields(
+    return _inherit_unset_model_fields(
         llm_response,
         await _maybe_add_grounding_metadata(callback_response),
     )
@@ -280,7 +292,7 @@ async def handle_after_model_callback(
       llm_response=llm_response,
   )
   if callback_response:
-    return _inherit_unset_streaming_fields(
+    return _inherit_unset_model_fields(
         llm_response,
         await _maybe_add_grounding_metadata(callback_response),
     )

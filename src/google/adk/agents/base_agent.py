@@ -33,7 +33,6 @@ from typing import TypeVar
 from typing import Union
 
 from google.genai import types
-from opentelemetry import context
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -42,15 +41,14 @@ from typing_extensions import deprecated
 from typing_extensions import override
 from typing_extensions import TypeAlias
 
+from ..events._node_path_builder import _NodePathBuilder
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..features import experimental
 from ..features import FeatureName
-from ..telemetry import _instrumentation
 from ..utils._callback_pipeline import _normalize_callbacks
 from ..utils._callback_pipeline import _run_callbacks
 from ..utils._callback_pipeline import _stop_on_truthy
-from ..utils._runner_utils import _with_caller_context
 from ..utils.context_utils import Aclosing
 from ..workflow import BaseNode
 from .base_agent_config import BaseAgentConfig as BaseAgentConfig
@@ -92,6 +90,18 @@ class BaseAgentState(BaseModel):
 
 
 AgentState = TypeVar('AgentState', bound=BaseAgentState)
+
+
+def _agent_state_key(ctx: Any, agent_name: str) -> str:
+  """Returns the key used to store agent state for `agent_name`."""
+  node_path = getattr(ctx, 'node_path', None)
+  if (
+      isinstance(node_path, str)
+      and node_path
+      and _NodePathBuilder.from_string(node_path).node_name == agent_name
+  ):
+    return node_path
+  return agent_name
 
 
 # TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
@@ -204,10 +214,20 @@ class BaseAgent(BaseNode, abc.ABC):
     Returns:
         The current state if exists; otherwise, None.
     """
-    if ctx.agent_states is None or self.name not in ctx.agent_states:
+    if ctx.agent_states is None:
       return None
-    else:
-      return state_type.model_validate(ctx.agent_states.get(self.name))
+    key = _agent_state_key(ctx, self.name)
+    raw_state = ctx.agent_states.get(key) if key in ctx.agent_states else None
+    if (
+        raw_state is None
+        and key != self.name
+        and key not in ctx.end_of_agents
+        and self.name in ctx.agent_states
+    ):
+      raw_state = ctx.agent_states.get(self.name)
+    if raw_state is None:
+      return None
+    return state_type.model_validate(raw_state)
 
   def _create_agent_state_event(
       self,
@@ -222,9 +242,20 @@ class BaseAgent(BaseNode, abc.ABC):
       An event with the current agent state set in the invocation context.
     """
     event_actions = EventActions()
-    if (agent_state := ctx.agent_states.get(self.name)) is not None:
+    key = _agent_state_key(ctx, self.name)
+    agent_state = ctx.agent_states.get(key)
+    if (
+        agent_state is None
+        and key != self.name
+        and key not in ctx.end_of_agents
+    ):
+      agent_state = ctx.agent_states.get(self.name)
+    if agent_state is not None:
       event_actions.agent_state = agent_state
-    if ctx.end_of_agents.get(self.name):
+    end_of_agent = ctx.end_of_agents.get(key)
+    if end_of_agent is None and key != self.name:
+      end_of_agent = ctx.end_of_agents.get(self.name)
+    if end_of_agent:
       event_actions.end_of_agent = True
     return Event(
         invocation_id=ctx.invocation_id,
@@ -373,54 +404,61 @@ class BaseAgent(BaseNode, abc.ABC):
       impl_fn: Callable[[InvocationContext], AsyncGenerator[Event, None]],
   ) -> AsyncGenerator[Event, None]:
     """Runs an agent implementation generator with full callback and trace lifecycle."""
-    caller_ctx = context.get_current()
+    from ..telemetry import _instrumentation
+
+    ctx = self._create_invocation_context(parent_context)
 
     async def _run() -> AsyncGenerator[Event, None]:
-      ctx = self._create_invocation_context(parent_context)
-      async with _instrumentation.record_agent_invocation(ctx, self):
-        before_callback_completed = False
-        after_callback_called = False
-        try:
-          event = await self._handle_before_agent_callback(ctx)
-          before_callback_completed = True
-          if event:
+      before_callback_completed = False
+      after_callback_called = False
+      try:
+        event = await self._handle_before_agent_callback(ctx)
+        before_callback_completed = True
+        if event:
+          yield event
+        if ctx.end_invocation:
+          return
+
+        async with Aclosing(impl_fn(ctx)) as agen:
+          async for event in agen:
             yield event
-          if ctx.end_invocation:
-            return
 
-          async with Aclosing(impl_fn(ctx)) as agen:
-            async for event in agen:
-              yield event
+        if ctx.end_invocation:
+          return
 
-          if ctx.end_invocation:
-            return
+        after_callback_called = True
+        if event := await self._handle_after_agent_callback(ctx):
+          yield event
+      except asyncio.CancelledError:
+        if (
+            before_callback_completed
+            and not after_callback_called
+            and not ctx.end_invocation
+        ):
+          try:
+            await self._handle_after_agent_callback(ctx)
+          except asyncio.CancelledError:
+            raise
+          except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                'after_agent_callback raised on cancellation;'
+                ' suppressing so original cancellation propagates.'
+            )
+        raise
+      except Exception as e:
+        await self._handle_agent_error_callback(ctx, e)
+        raise
 
-          after_callback_called = True
-          if event := await self._handle_after_agent_callback(ctx):
-            yield event
-        except asyncio.CancelledError:
-          if (
-              before_callback_completed
-              and not after_callback_called
-              and not ctx.end_invocation
-          ):
-            try:
-              await self._handle_after_agent_callback(ctx)
-            except asyncio.CancelledError:
-              raise
-            except Exception:  # pylint: disable=broad-except
-              logger.exception(
-                  'after_agent_callback raised on cancellation;'
-                  ' suppressing so original cancellation propagates.'
-              )
-          raise
-        except Exception as e:
-          await self._handle_agent_error_callback(ctx, e)
-          raise
-
-    async with Aclosing(_with_caller_context(_run(), caller_ctx)) as agen:
-      async for event in agen:
-        yield event
+    # The scope is entered out here rather than inside `_run`, so that its
+    # span is not opened and closed by whoever happens to drive the generator,
+    # and `stream_in_scope` attaches it only while `_run` is actually running
+    # (b/485899016).
+    async with _instrumentation.record_agent_invocation(ctx, self) as scope:
+      async with Aclosing(
+          _instrumentation.stream_in_scope(scope.otel_context, _run())
+      ) as agen:
+        async for event in agen:
+          yield event
 
   async def _run_async_impl(
       self, ctx: InvocationContext

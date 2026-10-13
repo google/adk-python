@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 import dataclasses
 from enum import Enum
+import functools
 import os
 from typing import Annotated
 from typing import Any
@@ -35,6 +36,8 @@ from typing import Optional
 from unittest import mock
 
 from absl.testing import parameterized
+from google.adk.events.event import Event
+from google.adk.events.request_input import RequestInput
 from google.adk.tools._function_tool_declarations import _resolve_annotation
 from google.adk.tools._function_tool_declarations import build_function_declaration_with_json_schema
 from google.adk.tools.tool_context import ToolContext
@@ -1218,6 +1221,38 @@ class TestSpecialCases(parameterized.TestCase):
         },
     )
 
+  def test_callable_object_docstring_on_call(self):
+    """Test callable object documented only on __call__."""
+
+    class OrderLookup:
+
+      def __call__(self, order_id: str) -> str:
+        """Looks up an order by its id."""
+        return order_id
+
+    decl = build_function_declaration_with_json_schema(OrderLookup())
+
+    self.assertEqual(decl.name, "OrderLookup")
+    self.assertEqual(decl.description, "Looks up an order by its id.")
+
+  def test_partial_uses_wrapped_name_and_docstring(self):
+    """Test functools.partial is declared as the function it wraps."""
+
+    def get_weather(api_key: str, city: str) -> Address:
+      """Returns the current weather for a city."""
+      return Address(street=api_key, city=city, zip_code="12345")
+
+    decl = build_function_declaration_with_json_schema(
+        functools.partial(get_weather, "key")
+    )
+
+    self.assertEqual(decl.name, "get_weather")
+    self.assertEqual(
+        decl.description, "Returns the current weather for a city."
+    )
+    self.assertEqual(list(decl.parameters_json_schema["properties"]), ["city"])
+    self.assertEqual(decl.response_json_schema["title"], "Address")
+
 
 class TestComplexFunction(parameterized.TestCase):
   """Test the complex function from the user's prototype."""
@@ -1464,3 +1499,56 @@ class TestStreamingReturnTypes(parameterized.TestCase):
     self.assertEqual(decl.name, "sync_counter")
     # Should extract int from Generator[int, None, None]
     self.assertEqual(decl.response_json_schema, {"type": "integer"})
+
+  def test_async_generator_event_yield_is_left_out_of_response(self):
+    """Streamed Event items are not part of the declared tool output."""
+
+    async def report(
+        topic: str,
+    ) -> AsyncGenerator[Event | dict[str, str], None]:
+      """Streams progress, then yields the report."""
+      yield Event(message=topic)
+      yield {"topic": topic}
+
+    decl = build_function_declaration_with_json_schema(report)
+
+    self.assertEqual(
+        decl.response_json_schema,
+        {"additionalProperties": {"type": "string"}, "type": "object"},
+    )
+
+  def test_generator_request_input_yield_is_left_out_of_response(self):
+    """Streamed Event and RequestInput items leave only the output type."""
+
+    def book(city: str) -> Generator[Event | RequestInput | int, None, None]:
+      """Asks for a seat, then yields the booking number."""
+      yield 1
+
+    decl = build_function_declaration_with_json_schema(book)
+
+    self.assertEqual(decl.response_json_schema, {"type": "integer"})
+
+  def test_async_generator_event_yield_keeps_remaining_union(self):
+    """Several output types stay a union once Event is left out."""
+
+    async def lookup(key: str) -> AsyncGenerator[Event | int | str, None]:
+      """Yields an int or a str."""
+      yield key
+
+    decl = build_function_declaration_with_json_schema(lookup)
+
+    self.assertEqual(
+        decl.response_json_schema,
+        {"anyOf": [{"type": "integer"}, {"type": "string"}]},
+    )
+
+  def test_async_generator_only_event_yield_has_untyped_response(self):
+    """A generator that names only Event declares an untyped output."""
+
+    async def progress(step: str) -> AsyncGenerator[Event, None]:
+      """Streams progress only."""
+      yield Event(message=step)
+
+    decl = build_function_declaration_with_json_schema(progress)
+
+    self.assertIsNone(decl.response_json_schema)

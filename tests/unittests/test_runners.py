@@ -55,6 +55,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.base_toolset import BaseToolset
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.workflow import BaseNode
 from google.adk.workflow import START
 from google.adk.workflow._workflow import Workflow
@@ -2852,6 +2853,34 @@ async def test_run_debug_passes_get_session_config():
   assert events[0].author == "test_agent"
 
 
+@pytest.mark.parametrize("verbose", [False, True])
+async def test_run_debug_hides_thoughts_unless_verbose(capsys, verbose):
+  """Console verbosity does not remove thoughts from the returned events."""
+
+  class ThoughtAgent(BaseAgent):
+
+    async def _run_async_impl(self, ctx):
+      yield Event(
+          invocation_id=ctx.invocation_id,
+          author=self.name,
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(text="thinking ", thought=True),
+                  types.Part(text="answer"),
+              ],
+          ),
+      )
+
+  runner = runners.InMemoryRunner(agent=ThoughtAgent(name="test_agent"))
+
+  events = await runner.run_debug("hello", verbose=verbose)
+
+  expected = "thinking answer" if verbose else "answer"
+  assert capsys.readouterr().out == f"test_agent > {expected}\n"
+  assert events[0].content.parts[0].thought is True
+
+
 @pytest.mark.asyncio
 async def test_get_session_config_limits_events():
   """Verify that num_recent_events actually limits loaded events."""
@@ -2925,6 +2954,95 @@ async def test_run_async_rejects_user_function_call():
     async with aclosing(agen) as a:
       async for _ in a:
         pass
+
+
+def _llm_runner(mock_model: testing_utils.MockModel) -> Runner:
+  return Runner(
+      app_name=TEST_APP_ID,
+      agent=LlmAgent(name="root_agent", model=mock_model),
+      session_service=InMemorySessionService(),
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+
+async def _stored_user_event_roles(runner: Runner) -> list[Optional[str]]:
+  session = await runner.session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  return [
+      event.content.role for event in session.events if event.author == "user"
+  ]
+
+
+@pytest.mark.parametrize("role", [None, "model", "system"])
+async def test_run_async_stores_new_message_as_user_turn(role):
+  """new_message is persisted as a user turn whatever role the caller set."""
+  runner = _llm_runner(testing_utils.MockModel.create(responses=["ok"]))
+
+  await _drain_events(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(role=role, parts=[types.Part(text="hi")]),
+      )
+  )
+
+  assert await _stored_user_event_roles(runner) == ["user"]
+
+
+@pytest.mark.parametrize("role", ["model", "system"])
+async def test_run_async_sends_new_message_to_model_as_user_turn(role):
+  """The model receives new_message as a user turn, not as its own output."""
+  mock_model = testing_utils.MockModel.create(responses=["ok"])
+  runner = _llm_runner(mock_model)
+
+  await _drain_events(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(role=role, parts=[types.Part(text="hi")]),
+      )
+  )
+
+  assert [content.role for content in mock_model.requests[0].contents] == [
+      "user"
+  ]
+
+
+@pytest.mark.parametrize("role", [None, "model"])
+async def test_run_async_leaves_caller_new_message_unchanged(role):
+  """Canonicalizing new_message leaves the caller's Content unchanged."""
+  runner = _llm_runner(testing_utils.MockModel.create(responses=["ok"]))
+  new_message = types.Content(role=role, parts=[types.Part(text="hi")])
+
+  await _drain_events(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=new_message,
+      )
+  )
+
+  assert new_message.role == role
+
+
+async def test_run_async_accepts_user_content_new_message():
+  """A types.UserContent new_message, whose role is frozen, runs normally."""
+  runner = _llm_runner(testing_utils.MockModel.create(responses=["ok"]))
+
+  events = [
+      event
+      async for event in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.UserContent(parts=[types.Part(text="hi")]),
+      )
+  ]
+
+  assert [part.text for event in events for part in event.content.parts] == [
+      "ok"
+  ]
 
 
 def test_runner_agent_is_a_class_attribute():
@@ -3961,6 +4079,9 @@ async def test_resolve_invocation_id_rejects_responses_from_two_invocations():
   )
   with pytest.raises(ValueError, match="resolve to multiple invocations"):
     runner._resolve_invocation_id(session, both, None)
+  assert (
+      runner._resolve_invocation_id_from_fr(session, both, strict=False) is None
+  )
 
 
 @pytest.mark.asyncio
@@ -5427,6 +5548,60 @@ async def test_run_async_aborted_then_closed_seal_failure_is_logged(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_agent", [_legacy_tool_agent, _llm_tool_agent], ids=["legacy", "llm"]
+)
+async def test_run_async_aborted_and_cancelled_executes_after_run_plugin(
+    make_agent,
+):
+  """Cancelling an aborted run seals dangling calls and runs after_run."""
+  after_run_calls = []
+
+  class _AfterRunPlugin(BasePlugin):
+
+    async def after_run_callback(self, *, invocation_context):
+      after_run_calls.append(invocation_context.invocation_id)
+
+  runner = _abort_runner(
+      make_agent(),
+      plugins=[_AfterRunPlugin(name="after_run")],
+  )
+  abort_signal = asyncio.Event()
+  tool_started = asyncio.Event()
+
+  async def _consume():
+    async with aclosing(
+        runner.run_async(
+            user_id=TEST_USER_ID,
+            session_id="s",
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="Run")]
+            ),
+            abort_signal=abort_signal,
+        )
+    ) as agen:
+      async for event in agen:
+        if _has_fc(event):
+          tool_started.set()
+
+  task = asyncio.create_task(_consume())
+  await tool_started.wait()
+  abort_signal.set()
+  task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await task
+
+  session = await runner.session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id="s"
+  )
+  sealed = _abort_events(session.events)
+  assert [fr.name for e in sealed for fr in e.get_function_responses()] == [
+      "_slow_tool"
+  ]
+  assert len(after_run_calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_run_async_aborted_task_sub_agent_does_not_capture_next_turn():
   """Aborting inside a task sub-agent seals both scopes; the next turn reaches the coordinator."""
   worker = LlmAgent(
@@ -5600,6 +5775,482 @@ async def test_run_async_aborted_then_resumed_does_not_replay_tool():
       if p.function_response
   ]
   assert responses == [{"error": "Invocation was aborted by client."}]
+
+
+async def test_run_async_routes_user_function_response_to_subagent_when_not_resumable():
+  """User FunctionResponse routes to sub-agent without resumability."""
+
+  def _pending_lro() -> None:
+    """Starts a long-running operation."""
+    return None
+
+  sub_agent = LlmAgent(
+      name="sub_agent",
+      disallow_transfer_to_parent=True,
+      disallow_transfer_to_peers=True,
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name="_pending_lro", args={}),
+              "Subagent finished LRO",
+          ]
+      ),
+      tools=[LongRunningFunctionTool(func=_pending_lro)],
+  )
+  root_agent = LlmAgent(
+      name="root_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name="transfer_to_agent", args={"agent_name": "sub_agent"}
+              ),
+              "Root handled next turn",
+          ]
+      ),
+      sub_agents=[sub_agent],
+  )
+  runner = testing_utils.InMemoryRunner(root_agent)
+
+  # Turn 1: Root transfers to sub_agent, which emits LRO FunctionCall.
+  turn1_events = await runner.run_async("Start LRO")
+  lro_calls = [
+      fc
+      for e in turn1_events
+      if e.author == "sub_agent"
+      for fc in e.get_function_calls()
+      if fc.name == "_pending_lro"
+  ]
+  assert len(lro_calls) == 1
+  lro_fc = lro_calls[0]
+
+  # Turn 2: User supplies FunctionResponse for the LRO without resumability.
+  fr_part = types.Part.from_function_response(
+      name="_pending_lro", response={"status": "completed"}
+  )
+  fr_part.function_response.id = lro_fc.id
+  turn2_events = await runner.run_async(types.UserContent(parts=[fr_part]))
+  assert [e.author for e in turn2_events] == ["sub_agent"]
+  assert _texts([e.content for e in turn2_events]) == ["Subagent finished LRO"]
+
+  # Turn 3: Plain text message returns to root_agent since sub_agent is non-transferable.
+  turn3_events = await runner.run_async("Next turn")
+  assert [e.author for e in turn3_events] == ["root_agent"]
+  assert _texts([e.content for e in turn3_events]) == ["Root handled next turn"]
+
+
+async def test_run_async_does_not_hide_prior_agent_function_response_when_resumable():
+  """Plain user message does not hide prior agent FunctionResponse."""
+  sub_agent = LlmAgent(
+      name="sub_agent",
+      disallow_transfer_to_parent=True,
+      disallow_transfer_to_peers=True,
+      model=testing_utils.MockModel.create(
+          responses=["Subagent resumed after agent FR"]
+      ),
+  )
+  root_agent = LlmAgent(
+      name="root_agent",
+      model=testing_utils.MockModel.create(responses=["Root response"]),
+      sub_agents=[sub_agent],
+  )
+  app = App(
+      name=TEST_APP_ID,
+      root_agent=root_agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  session_service = InMemorySessionService()
+  runner = Runner(app=app, session_service=session_service)
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id="inv_1",
+          author="sub_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id="fc_1", name="tool_fn", args={}
+                      )
+                  )
+              ],
+          ),
+      ),
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id="inv_1",
+          author="sub_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="fc_1", name="tool_fn", response={"ok": True}
+                      )
+                  )
+              ],
+          ),
+      ),
+  )
+
+  events = [
+      e
+      async for e in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.UserContent(parts=[types.Part(text="Continue")]),
+      )
+  ]
+
+  assert {e.author for e in events} == {"sub_agent"}
+  assert _texts([e.content for e in events]) == [
+      "Subagent resumed after agent FR"
+  ]
+
+
+async def test_run_async_reroutes_when_on_user_message_callback_replaces_message():
+  """Routing uses the post-callback message when on_user_message_callback replaces new_message."""
+  sub_agent = LlmAgent(
+      name="sub_agent",
+      disallow_transfer_to_parent=True,
+      disallow_transfer_to_peers=True,
+      model=testing_utils.MockModel.create(
+          responses=["Subagent handled callback FR"]
+      ),
+  )
+  root_agent = LlmAgent(
+      name="root_agent",
+      model=testing_utils.MockModel.create(responses=["Root response"]),
+      sub_agents=[sub_agent],
+  )
+
+  class ReplaceWithFunctionResponsePlugin(BasePlugin):
+
+    def __init__(self):
+      super().__init__(name="replace_with_fr")
+
+    async def on_user_message_callback(
+        self,
+        *,
+        invocation_context: InvocationContext,
+        user_message: types.Content,
+    ) -> Optional[types.Content]:
+      del invocation_context, user_message
+      fr_part = types.Part.from_function_response(
+          name="lro_tool", response={"status": "done"}
+      )
+      fr_part.function_response.id = "fc_lro"
+      return types.UserContent(parts=[fr_part])
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=root_agent,
+      session_service=session_service,
+      plugins=[ReplaceWithFunctionResponsePlugin()],
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id="inv_1",
+          author="user",
+          content=types.UserContent(parts=[types.Part(text="Start")]),
+      ),
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id="inv_1",
+          author="sub_agent",
+          long_running_tool_ids={"fc_lro"},
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id="fc_lro", name="lro_tool", args={}
+                      )
+                  )
+              ],
+          ),
+      ),
+  )
+
+  events = [
+      e
+      async for e in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.UserContent(parts=[types.Part(text="approve")]),
+      )
+  ]
+
+  assert [e.author for e in events] == ["sub_agent"]
+  assert _texts([e.content for e in events]) == ["Subagent handled callback FR"]
+
+
+@pytest.mark.asyncio
+async def test_function_response_resumes_sub_agent_on_its_branch_when_not_resumable():
+  """A user FunctionResponse to a sub-agent's LRO call reuses the call's invocation and branch in a non-resumable app."""
+  from google.adk.agents.parallel_agent import ParallelAgent
+  from google.adk.tools.long_running_tool import LongRunningFunctionTool
+
+  def _pending_lro() -> None:
+    """Starts a long-running operation."""
+    return None
+
+  sub_agent = LlmAgent(
+      name="sub_agent",
+      disallow_transfer_to_parent=True,
+      disallow_transfer_to_peers=True,
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name="_pending_lro", args={}),
+              "Subagent finished LRO",
+          ]
+      ),
+      tools=[LongRunningFunctionTool(func=_pending_lro)],
+  )
+  root_agent = ParallelAgent(name="root_agent", sub_agents=[sub_agent])
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=root_agent,
+      session_service=session_service,
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  # Turn 1: ParallelAgent runs sub_agent on branch "root_agent.sub_agent",
+  # which emits an LRO FunctionCall.
+  turn1_events = [
+      e
+      async for e in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.UserContent(parts=[types.Part(text="Start LRO")]),
+      )
+  ]
+  fc_events = [
+      e
+      for e in turn1_events
+      if e.author == "sub_agent" and e.get_function_calls()
+  ]
+  assert len(fc_events) == 1
+  fc_event = fc_events[0]
+  lro_fc = fc_event.get_function_calls()[0]
+  assert fc_event.branch == "root_agent.sub_agent"
+
+  # Append a later event from another invocation on a different branch to verify
+  # _setup_context_for_new_invocation scopes branch restoration to the resolved
+  # invocation_id when new_message is a FunctionResponse.
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id="inv_other",
+          author="sub_agent",
+          branch="root_agent.sub_agent.stale",
+          content=types.Content(
+              role="model", parts=[types.Part(text="Other invocation")]
+          ),
+      ),
+  )
+
+  # Turn 2: User supplies FunctionResponse without passing invocation_id in a
+  # non-resumable app.
+  fr_part = types.Part.from_function_response(
+      name="_pending_lro", response={"status": "completed"}
+  )
+  fr_part.function_response.id = lro_fc.id
+  turn2_events = [
+      e
+      async for e in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.UserContent(parts=[fr_part]),
+      )
+  ]
+
+  assert [e.author for e in turn2_events] == ["sub_agent"]
+  assert _texts([e.content for e in turn2_events]) == ["Subagent finished LRO"]
+  assert turn2_events[0].invocation_id == fc_event.invocation_id
+  assert turn2_events[0].branch == "root_agent.sub_agent"
+
+  updated_session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  user_fr_events = [
+      e
+      for e in updated_session.events
+      if e.author == "user" and e.get_function_responses()
+  ]
+  assert len(user_fr_events) == 1
+  assert user_fr_events[0].invocation_id == fc_event.invocation_id
+  assert user_fr_events[0].branch == "root_agent.sub_agent"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fr_id", [None, "unmatched_fc_id"])
+async def test_unmatched_or_idless_function_response_starts_new_invocation_when_not_resumable(
+    fr_id: Optional[str],
+):
+  """An id-less or unmatched FunctionResponse starts a new invocation and restores the active sub-agent's branch from history when not resumable."""
+
+  class _TransferableRootAgent(BaseAgent):
+    disallow_transfer_to_parent: bool = False
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[types.Part(text="root")]),
+      )
+
+  sub_agent = LlmAgent(
+      name="sub_agent",
+      model=testing_utils.MockModel.create(responses=["Subagent new turn"]),
+  )
+  root_agent = _TransferableRootAgent(name="root_agent", sub_agents=[sub_agent])
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=root_agent,
+      session_service=session_service,
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id="inv_1",
+          author="sub_agent",
+          branch="root_agent.sub_agent",
+          content=types.Content(
+              role="model", parts=[types.Part(text="Prior sub-agent turn")]
+          ),
+      ),
+  )
+
+  fr_part = types.Part.from_function_response(
+      name="some_tool", response={"status": "ok"}
+  )
+  fr_part.function_response.id = fr_id
+  events = [
+      e
+      async for e in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.UserContent(parts=[fr_part]),
+      )
+  ]
+
+  assert [e.author for e in events] == ["sub_agent"]
+  assert events[0].invocation_id != "inv_1"
+  assert events[0].branch == "root_agent.sub_agent"
+
+
+@pytest.mark.asyncio
+async def test_multi_invocation_function_response_starts_new_invocation_when_not_resumable():
+  """A message with FunctionResponses spanning multiple invocations starts a new invocation when not resumable."""
+
+  class _TransferableRootAgent(BaseAgent):
+    disallow_transfer_to_parent: bool = False
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[types.Part(text="root")]),
+      )
+
+  sub_agent = LlmAgent(
+      name="sub_agent",
+      model=testing_utils.MockModel.create(responses=["Subagent new turn"]),
+  )
+  root_agent = _TransferableRootAgent(name="root_agent", sub_agents=[sub_agent])
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=root_agent,
+      session_service=session_service,
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id="inv_1",
+          author="sub_agent",
+          branch="root_agent.sub_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name="tool_a", id="fc_1", args={}
+                      )
+                  )
+              ],
+          ),
+      ),
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id="inv_2",
+          author="sub_agent",
+          branch="root_agent.sub_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name="tool_b", id="fc_2", args={}
+                      )
+                  )
+              ],
+          ),
+      ),
+  )
+
+  fr_part1 = types.Part.from_function_response(
+      name="tool_a", response={"status": "ok"}
+  )
+  fr_part1.function_response.id = "fc_1"
+  fr_part2 = types.Part.from_function_response(
+      name="tool_b", response={"status": "ok"}
+  )
+  fr_part2.function_response.id = "fc_2"
+
+  events = [
+      e
+      async for e in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.UserContent(parts=[fr_part1, fr_part2]),
+      )
+  ]
+
+  assert [e.author for e in events] == ["sub_agent"]
+  assert events[0].invocation_id not in ("inv_1", "inv_2")
+  assert events[0].branch == "root_agent.sub_agent"
 
 
 if __name__ == "__main__":

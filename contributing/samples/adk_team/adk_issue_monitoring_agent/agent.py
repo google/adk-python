@@ -27,6 +27,8 @@ from adk_issue_monitoring_agent.utils import get_issue_comments
 from adk_issue_monitoring_agent.utils import get_issue_details
 from adk_issue_monitoring_agent.utils import post_request
 from google.adk.agents.llm_agent import Agent
+from google.adk.models.google_llm import Gemini
+from google.genai import types
 from requests.exceptions import RequestException
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -107,7 +109,10 @@ def flag_issue_as_spam(
 
 
 root_agent = Agent(
-    model=LLM_MODEL_NAME,
+    model=Gemini(
+        model=LLM_MODEL_NAME,
+        retry_options=types.HttpRetryOptions(attempts=5, initial_delay=2),
+    ),
     name="spam_auditor_agent",
     description="Audits issue comments for spam.",
     instruction=PROMPT_TEMPLATE.format(

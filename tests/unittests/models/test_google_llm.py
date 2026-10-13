@@ -1004,6 +1004,51 @@ async def test_generate_content_async_stream_preserves_thinking_and_text_parts(
     mock_client.aio.models.generate_content_stream.assert_called_once()
 
 
+@pytest.mark.parametrize("automatic_continuation", [None, False])
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.asyncio
+async def test_generate_content_async_leaves_continuation_to_sdk(
+    stream, automatic_continuation, gemini_llm, llm_request
+):
+  llm_request.config.automatic_continuation = automatic_continuation
+  paused = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=Content(
+                  role="model", parts=[Part.from_text(text="The answer is")]
+              ),
+              finish_reason=types.FinishReason.CONTINUATION,
+              continuation_token=b"state",
+          )
+      ]
+  )
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_client.aio.models.generate_content = AsyncMock(return_value=paused)
+    mock_client.aio.models.generate_content_stream = AsyncMock(
+        return_value=MockAsyncIterator([paused])
+    )
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=stream
+        )
+    ]
+
+  sdk_call = (
+      mock_client.aio.models.generate_content_stream
+      if stream
+      else mock_client.aio.models.generate_content
+  )
+  sdk_call.assert_called_once()
+  assert (
+      sdk_call.call_args.kwargs["config"].automatic_continuation
+      is automatic_continuation
+  )
+  assert responses[-1].content.parts[0].text == "The answer is"
+  assert responses[-1].finish_reason == types.FinishReason.CONTINUATION
+
+
 @pytest.mark.parametrize("stream", [True, False])
 @pytest.mark.asyncio
 async def test_generate_content_async_resource_exhausted_error(

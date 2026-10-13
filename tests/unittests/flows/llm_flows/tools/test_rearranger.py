@@ -19,6 +19,8 @@ from __future__ import annotations
 from typing import Any
 
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.events.event_actions import EventCompaction
 from google.adk.flows.llm_flows.tools import _rearranger as _tool_call_rearranger
 from google.adk.flows.llm_flows.tools._rearranger import drop_orphaned_function_calls
 from google.adk.flows.llm_flows.tools._rearranger import drop_orphaned_function_responses
@@ -26,12 +28,16 @@ from google.adk.flows.llm_flows.tools._rearranger import merge_function_response
 from google.adk.flows.llm_flows.tools._rearranger import rearrange_events_for_async_function_responses_in_history
 from google.adk.flows.llm_flows.tools._rearranger import rearrange_events_for_latest_function_response
 from google.adk.models.anthropic_llm import content_to_message_param
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.genai import types
 import pytest
 
 
-def _call_event(call_id: str, name: str = "tool") -> Event:
+def _call_event(
+    call_id: str, name: str = "tool", invocation_id: str = "inv1"
+) -> Event:
   return Event(
+      invocation_id=invocation_id,
       author="test_agent",
       content=types.Content(
           role="model",
@@ -47,11 +53,16 @@ def _call_event(call_id: str, name: str = "tool") -> Event:
 
 
 def _resp_event(
-    call_id: str | None, name: str = "tool", result: Any = "ok"
+    call_id: str | None,
+    name: str = "tool",
+    result: Any = "ok",
+    invocation_id: str = "inv1",
+    author: str = "test_agent",
 ) -> Event:
   resp = result if isinstance(result, dict) else {"result": result}
   return Event(
-      author="user",
+      invocation_id=invocation_id,
+      author=author,
       content=types.Content(
           role="user",
           parts=[
@@ -62,6 +73,14 @@ def _resp_event(
               )
           ],
       ),
+  )
+
+
+def _model_text_event(text: str, invocation_id: str = "inv1") -> Event:
+  return Event(
+      invocation_id=invocation_id,
+      author="test_agent",
+      content=types.ModelContent(text),
   )
 
 
@@ -894,3 +913,251 @@ def test_rearrange_latest_response_preserves_call_event_carrying_consumed_respon
   assert [(r.id, r.response) for r in result[3].get_function_responses()] == [
       ("c_fast", {"fast": True})
   ]
+
+
+def test_rearrange_history_drops_stale_model_reply():
+  """A model reply to a superseded tool update must not remain in history."""
+  events = [
+      _call_event("call_1", "watch", invocation_id="inv1"),
+      _resp_event("call_1", "watch", "progress", invocation_id="inv1"),
+      _model_text_event("Still working.", invocation_id="inv1"),
+      _resp_event("call_1", "watch", "done", invocation_id="inv1"),
+      _model_text_event("Finished.", invocation_id="inv1"),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.UserContent("What happened?"),
+      ),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 4
+  assert result[0].get_function_calls()[0].name == "watch"
+  assert result[1].get_function_responses()[0].response == {"result": "done"}
+  assert result[2].content.parts[0].text == "Finished."
+  assert result[3].content.parts[0].text == "What happened?"
+
+
+def test_rearrange_history_preserves_reply_across_different_invocations():
+  """A model reply to a tool response must be preserved when the next response is in a new invocation."""
+  events = [
+      _call_event("call_1", "watch", invocation_id="inv1"),
+      _resp_event("call_1", "watch", "progress", invocation_id="inv1"),
+      _model_text_event("Still working.", invocation_id="inv1"),
+      _resp_event("call_1", "watch", "done", invocation_id="inv2"),
+      _model_text_event("Finished.", invocation_id="inv2"),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("What happened?"),
+      ),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 5
+  assert result[0].get_function_calls()[0].name == "watch"
+  assert result[1].get_function_responses()[0].response == {"result": "done"}
+  assert result[2].content.parts[0].text == "Still working."
+  assert result[3].content.parts[0].text == "Finished."
+  assert result[4].content.parts[0].text == "What happened?"
+
+
+def test_rearrange_history_parallel_calls_positional_pruning():
+  """A model reply positioned directly after a superseded response is dropped.
+
+  The pruning heuristic is positional and cannot attribute text replies to
+  specific parallel calls, so a reply about a non-superseded call that appears
+  between another call's superseded and final responses is dropped.
+  """
+  events = [
+      _call_event("call_1", "tool_a"),
+      _call_event("call_2", "tool_b"),
+      _resp_event("call_1", "tool_a", "progress_a"),
+      _model_text_event("tool_b finished: here you go"),
+      _resp_event("call_1", "tool_a", "done_a"),
+      _model_text_event("All finished."),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 4
+  assert result[0].get_function_calls()[0].name == "tool_a"
+  assert result[1].get_function_responses()[0].response == {"result": "done_a"}
+  assert result[2].get_function_calls()[0].name == "tool_b"
+  assert result[3].content.parts[0].text == "All finished."
+
+
+def test_rearrange_history_preserves_reply_when_user_intervenes():
+  """A model question answered by the user must survive rearrangement."""
+  events = [
+      _call_event("call_1", "watch", invocation_id="inv1"),
+      _resp_event("call_1", "watch", "progress", invocation_id="inv1"),
+      _model_text_event("halfway, continue?", invocation_id="inv1"),
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("yes"),
+      ),
+      _resp_event("call_1", "watch", "done", invocation_id="inv1"),
+      _model_text_event("all done", invocation_id="inv1"),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 5
+  assert result[0].get_function_calls()[0].name == "watch"
+  assert result[1].get_function_responses()[0].response == {"result": "done"}
+  assert result[2].content.parts[0].text == "halfway, continue?"
+  assert result[3].content.parts[0].text == "yes"
+  assert result[4].content.parts[0].text == "all done"
+
+
+def test_rearrange_history_preserves_compaction_summary():
+  """A materialized compaction summary must not be dropped as a stale reply."""
+  compaction_event = Event(
+      invocation_id="inv1",
+      author="test_agent",
+      content=types.ModelContent("Summary of earlier conversation"),
+      actions=EventActions(
+          compaction=EventCompaction(
+              start_timestamp=1.0,
+              end_timestamp=2.0,
+              compacted_content=types.ModelContent(
+                  "Summary of earlier conversation"
+              ),
+          )
+      ),
+  )
+  events = [
+      _call_event("call_1", "watch", invocation_id="inv1"),
+      _resp_event("call_1", "watch", "progress", invocation_id="inv1"),
+      compaction_event,
+      _resp_event("call_1", "watch", "done", invocation_id="inv1"),
+      _model_text_event("Finished.", invocation_id="inv1"),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 4
+  assert result[0].get_function_calls()[0].name == "watch"
+  assert result[1].get_function_responses()[0].response == {"result": "done"}
+  assert result[2] is compaction_event
+  assert result[3].content.parts[0].text == "Finished."
+
+
+def test_rearrange_history_preserves_pending_approval_reply():
+  """A pending approval model reply is preserved when resumed with same invocation id."""
+  events = [
+      _call_event("call_1", "transfer", invocation_id="inv1"),
+      _resp_event(
+          "call_1",
+          "transfer",
+          {"status": "pending_approval"},
+          invocation_id="inv1",
+          author="test_agent",
+      ),
+      _model_text_event(
+          "Pending approval for transfer.",
+          invocation_id="inv1",
+      ),
+      _resp_event(
+          "call_1",
+          "transfer",
+          {"result": "transferred"},
+          invocation_id="inv1",
+          author="user",
+      ),
+      _model_text_event("Transfer completed.", invocation_id="inv1"),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 4
+  assert result[0].get_function_calls()[0].name == "transfer"
+  assert result[1].get_function_responses()[0].response == {
+      "result": "transferred"
+  }
+  assert result[2].content.parts[0].text == "Pending approval for transfer."
+  assert result[3].content.parts[0].text == "Transfer completed."
+
+
+def test_rearrange_history_preserves_tool_confirmation_reply():
+  """A model confirmation request is preserved when tool requested confirmation."""
+  confirmation_event = _resp_event(
+      "call_1",
+      "delete_file",
+      {"result": "Confirmation required."},
+      invocation_id="inv1",
+      author="test_agent",
+  )
+  confirmation_event.actions = EventActions(
+      requested_tool_confirmations={
+          "call_1": ToolConfirmation(hint="Confirm delete?")
+      }
+  )
+
+  events = [
+      _call_event("call_1", "delete_file", invocation_id="inv1"),
+      confirmation_event,
+      _model_text_event(
+          "Are you sure you want to delete the file?",
+          invocation_id="inv1",
+      ),
+      _resp_event(
+          "call_1",
+          "delete_file",
+          {"result": "deleted"},
+          invocation_id="inv1",
+          author="test_agent",
+      ),
+      _model_text_event("File deleted.", invocation_id="inv1"),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 4
+  assert result[0].get_function_calls()[0].name == "delete_file"
+  assert result[1].get_function_responses()[0].response == {"result": "deleted"}
+  assert (
+      result[2].content.parts[0].text
+      == "Are you sure you want to delete the file?"
+  )
+  assert result[3].content.parts[0].text == "File deleted."
+
+
+def test_rearrange_history_prunes_stale_reply_between_user_authored_tool_updates():
+  """Intermediate model replies between user-authored tool responses must be pruned."""
+  events = [
+      _call_event("call_1", "client_tool", invocation_id="inv1"),
+      _resp_event(
+          "call_1",
+          "client_tool",
+          "progress",
+          invocation_id="inv1",
+          author="user",
+      ),
+      _model_text_event("Still working.", invocation_id="inv1"),
+      _resp_event(
+          "call_1",
+          "client_tool",
+          "done",
+          invocation_id="inv1",
+          author="user",
+      ),
+      _model_text_event("Finished.", invocation_id="inv1"),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.UserContent("What happened?"),
+      ),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 4
+  assert result[0].get_function_calls()[0].name == "client_tool"
+  assert result[1].get_function_responses()[0].response == {"result": "done"}
+  assert result[2].content.parts[0].text == "Finished."
+  assert result[3].content.parts[0].text == "What happened?"

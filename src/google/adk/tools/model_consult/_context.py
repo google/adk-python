@@ -26,7 +26,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 import json
 from typing import Any
-from typing import Literal
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -39,9 +38,6 @@ from ...events._rewind_events import _apply_rewinds
 if TYPE_CHECKING:
   from ...events.event import Event
 
-ContextMode = Literal['events', 'transcript']
-
-_ROLE_LABELS = {'user': 'USER', 'model': 'AGENT'}
 # How much more room plain text gets than a rendered tool payload. Documented
 # on ModelConsultContextConfig.max_part_chars.
 _TEXT_CHARS_MULTIPLIER = 8
@@ -55,19 +51,12 @@ class ModelConsultContextConfig(BaseModel):
 
   model_config = ConfigDict(extra='forbid', use_attribute_docstrings=True)
 
-  mode: ContextMode = 'events'
-  """How the session is shaped for the advisor.
-
-  `'events'` hands over multi-turn `types.Content` objects; `'transcript'`
-  collapses the session into one labelled plain-text block inside the final
-  user message.
-  """
-
   include_session: bool = True
-  """Whether to send the session at all.
+  """Whether to send the session event history to the advisor.
 
-  When False, the advisor only sees the question and context that the executor
-  passed as tool arguments.
+  When False, prior session events are omitted and the advisor only sees the
+  enabled agent metadata (instruction and tool inventory) and the question and
+  context passed as tool arguments.
   """
 
   max_events: int | None = Field(default=None, ge=1)
@@ -86,12 +75,11 @@ class ModelConsultContextConfig(BaseModel):
   """
 
   max_part_chars: int = Field(default=4_000, ge=1)
-  """Per-part cap on rendered tool calls and tool results.
+  """Per-part cap on rendered tool calls, tool results, and code blocks.
 
-  These are the usual source of runaway context. Plain model text gets
-  `_TEXT_CHARS_MULTIPLIER` times this allowance, since prose is rarely what
-  blows a session up and cutting an answer mid-sentence costs the advisor
-  more than it saves.
+  These are the usual source of runaway context. Plain text and thought parts
+  get 8x this allowance, since prose is rarely what blows a session up and
+  cutting an answer mid-sentence costs the advisor more than it saves.
   """
 
   include_media: bool = True
@@ -163,6 +151,8 @@ def _convert_part(
     part: types.Part,
     config: ModelConsultContextConfig,
     skip_function_call_ids: frozenset[str],
+    *,
+    author: str | None = None,
 ) -> types.Part | None:
   """Normalizes one part into something any advisor model can read.
 
@@ -174,6 +164,7 @@ def _convert_part(
     part: The part to convert.
     config: The handover configuration.
     skip_function_call_ids: Function call ids to drop entirely.
+    author: The author of the enclosing session event.
 
   Returns:
     The converted part, or None when the part carries nothing worth sending.
@@ -204,14 +195,19 @@ def _convert_part(
       # is being asked to doubt exactly this reasoning: it has to be able to
       # tell it apart from what the executor actually concluded.
       text = f'[thought] {text}'
+    else:
+      speaker = (
+          'user'
+          if author == 'user'
+          else (f'agent:{author}' if author else 'agent')
+      )
+      text = f'[{speaker}] {text}'
     return types.Part(text=text)
 
   if part.inline_data is not None or part.file_data is not None:
-    if config.include_media and config.mode != 'transcript':
+    if config.include_media:
       return part
-    reason = '' if config.include_media else 'omitted'
-    description = _describe_media_part(part, reason=reason)
-    return None if description is None else types.Part(text=description)
+    return types.Part(text=_describe_media_part(part, reason='omitted'))
 
   if part.executable_code is not None:
     code = _truncate(part.executable_code.code or '', config.max_part_chars)
@@ -239,31 +235,6 @@ def _part_chars(part: types.Part) -> int:
 def _content_chars(content: types.Content) -> int:
   """Estimates how much of the character budget one content consumes."""
   return sum(_part_chars(part) for part in content.parts or [])
-
-
-def _merge_adjacent(contents: Sequence[types.Content]) -> list[types.Content]:
-  """Collapses consecutive same-role contents into one.
-
-  Gemini tolerates consecutive user turns, but several third-party advisor
-  models reached through LiteLlm require strict role alternation, so the
-  handover is normalized before it leaves.
-
-  Args:
-    contents: The contents to normalize, in order.
-
-  Returns:
-    The contents with adjacent same-role entries merged.
-  """
-  merged: list[types.Content] = []
-  for content in contents:
-    if merged and merged[-1].role == content.role:
-      merged[-1] = types.Content(
-          role=content.role,
-          parts=list(merged[-1].parts or []) + list(content.parts or []),
-      )
-    else:
-      merged.append(content)
-  return merged
 
 
 def _truncate_content(content: types.Content, limit: int) -> types.Content:
@@ -294,38 +265,36 @@ def _truncate_content(content: types.Content, limit: int) -> types.Content:
       parts.append(part)
       used += cost
       continue
-    placeholder = _describe_media_part(
-        part, reason='omitted to fit the context budget'
+    placeholder = _truncate(
+        _describe_media_part(part, reason='omitted to fit the context budget'),
+        limit - used,
     )
-    if placeholder is not None:
-      placeholder = _truncate(placeholder, limit - used)
-      if placeholder:
-        parts.append(types.Part(text=placeholder))
-        used += len(placeholder)
+    if placeholder:
+      parts.append(types.Part(text=placeholder))
+      used += len(placeholder)
   return types.Content(role=content.role, parts=parts)
 
 
-def _describe_media_part(part: types.Part, *, reason: str = '') -> str | None:
+def _describe_media_part(part: types.Part, *, reason: str) -> str:
   """Names a non-text part in plain text, so its absence stays visible.
 
-  One describer for every renderer: the transcript, the text-only conversion
-  and the budget trim all name a part the same way, and a part kind that is
-  handled here cannot be silently dropped by one of them.
+  One describer for both the text-only conversion and the budget trim so they
+  name a part the same way, and a part kind handled here cannot be silently
+  dropped by either path.
 
   Args:
-    part: The part to name.
-    reason: Why the part is named instead of carried, when it was dropped.
+    part: The media or file part to name.
+    reason: Why the part is named instead of carried.
 
   Returns:
-    A bracketed description, or None when the part carries no media.
+    A bracketed description of the omitted media or file part.
   """
-  suffix = f' {reason}' if reason else ''
-  if part.inline_data is not None:
-    mime_type = part.inline_data.mime_type or 'unknown'
-    return f'[media{suffix}: {mime_type}]'
   if part.file_data is not None:
-    return f'[file{suffix}: {part.file_data.file_uri}]'
-  return None
+    return f'[file {reason}: {part.file_data.file_uri}]'
+  mime_type = (
+      part.inline_data.mime_type if part.inline_data is not None else None
+  ) or 'unknown'
+  return f'[media {reason}: {mime_type}]'
 
 
 def _apply_char_budget(
@@ -415,7 +384,7 @@ def build_advisor_contents(
     config: ModelConsultContextConfig | None = None,
     skip_function_call_ids: Sequence[str] = (),
 ) -> list[types.Content]:
-  """Converts session events into contents for the advisor request.
+  """Converts session events into a user content block for the advisor.
 
   Args:
     events: The session's event log, oldest first.
@@ -424,7 +393,9 @@ def build_advisor_contents(
       consult itself, which the handoff message restates anyway.
 
   Returns:
-    Normalized, budget-bounded contents. Empty when there is nothing to send.
+    A single-element list containing a `role='user'` `types.Content` with the
+    normalized, budget-bounded session parts, or an empty list when there is
+    nothing to send.
   """
   config = config or ModelConsultContextConfig()
   if not config.include_session:
@@ -439,7 +410,7 @@ def build_advisor_contents(
   if config.max_events is not None:
     kept = kept[-config.max_events :]
 
-  contents: list[types.Content] = []
+  turns: list[types.Content] = []
   for event in kept:
     content = event.content
     if content is None or not content.parts:
@@ -447,41 +418,19 @@ def build_advisor_contents(
     parts = [
         converted
         for part in content.parts
-        if (converted := _convert_part(part, config, skipped)) is not None
+        if (
+            converted := _convert_part(
+                part, config, skipped, author=event.author
+            )
+        )
+        is not None
     ]
     if not parts:
       continue
-    author = event.author or content.role or 'model'
-    role = 'user' if author == 'user' else 'model'
-    contents.append(types.Content(role=role, parts=parts))
+    turns.append(types.Content(role='user', parts=parts))
 
-  # Merged twice on purpose: the budget pass can splice an omission marker
-  # between two turns of the same role, which is exactly what the first merge
-  # was there to rule out.
-  trimmed = _apply_char_budget(_merge_adjacent(contents), config.max_chars)
-  return _merge_adjacent(trimmed)
-
-
-def render_transcript(contents: Sequence[types.Content]) -> str:
-  """Renders contents as a labelled plain-text transcript.
-
-  Args:
-    contents: The contents to render, in order.
-
-  Returns:
-    The rendered transcript, with one labelled block per content.
-  """
-  lines: list[str] = []
-  for content in contents:
-    label = _ROLE_LABELS.get(content.role or 'model', 'AGENT')
-    chunks: list[str] = []
-    for part in content.parts or []:
-      if part.text:
-        chunks.append(part.text)
-        continue
-      description = _describe_media_part(part)
-      if description is not None:
-        chunks.append(description)
-    if chunks:
-      lines.append(f'{label}: ' + '\n'.join(chunks))
-  return '\n\n'.join(lines)
+  trimmed = _apply_char_budget(turns, config.max_chars)
+  merged_parts = [part for content in trimmed for part in content.parts or []]
+  if not merged_parts:
+    return []
+  return [types.Content(role='user', parts=merged_parts)]

@@ -485,7 +485,12 @@ class TestMCPSessionManager:
       pass
 
     manager = MCPSessionManager(self.mock_stdio_connection_params)
-    with caplog.at_level(logging.DEBUG):
+    # Set on the module's logger, not the root: CLI tests that run earlier in
+    # the same worker leave the `google_adk` logger at INFO, and the module
+    # logger would inherit that and never create this debug record.
+    with caplog.at_level(
+        logging.DEBUG, logger=mcp_session_manager_module.logger.name
+    ):
       assert not manager._is_session_disconnected(SessionWithoutStreams())
     assert any(
         "SessionWithoutStreams" in record.getMessage()
@@ -1794,7 +1799,8 @@ class TestMCPSessionManager:
         "GET", "https://example.com/api", headers={"x-test": "value"}
     )
 
-    response = await transport.handle_async_request(request)
+    with patch.dict("os.environ", {}, clear=True):
+      response = await transport.handle_async_request(request)
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
@@ -1805,6 +1811,79 @@ class TestMCPSessionManager:
         data=None,
         headers={"x-test": "value", "host": "example.com"},
         timeout=30.0,
+        proxy=None,
+        proxy_auth=None,
+    )
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_google_auth_async_transport_forwards_env_proxy(self):
+    """Test that _GoogleAuthAsyncTransport resolves HTTPS_PROXY and passes proxy and proxy_auth per request."""
+    import aiohttp
+    from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncTransport
+    import yarl
+
+    mock_session = AsyncMock()
+    mock_auth_response = AsyncMock()
+    mock_auth_response.status_code = 200
+    mock_auth_response.headers = {"content-type": "application/json"}
+    mock_auth_response.content = AsyncMock()
+    mock_session.request.return_value = mock_auth_response
+
+    transport = _GoogleAuthAsyncTransport(mock_session)
+    request = httpx.Request("GET", "https://example.com/api")
+
+    with patch.dict(
+        "os.environ",
+        {"HTTPS_PROXY": "http://user:pass@proxy.example.com:8080"},
+        clear=True,
+    ):
+      await transport.handle_async_request(request)
+
+    mock_session.request.assert_called_once_with(
+        method="GET",
+        url="https://example.com/api",
+        data=None,
+        headers={"host": "example.com"},
+        timeout=30.0,
+        proxy=yarl.URL("http://proxy.example.com:8080"),
+        proxy_auth=aiohttp.BasicAuth("user", "pass"),
+    )
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_google_auth_async_transport_respects_no_proxy(self):
+    """Test that _GoogleAuthAsyncTransport passes proxy=None when host matches NO_PROXY."""
+    from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncTransport
+
+    mock_session = AsyncMock()
+    mock_auth_response = AsyncMock()
+    mock_auth_response.status_code = 200
+    mock_auth_response.headers = {"content-type": "application/json"}
+    mock_auth_response.content = AsyncMock()
+    mock_session.request.return_value = mock_auth_response
+
+    transport = _GoogleAuthAsyncTransport(mock_session)
+    request = httpx.Request("GET", "https://example.com/api")
+
+    with patch.dict(
+        "os.environ",
+        {
+            "HTTPS_PROXY": "http://proxy.example.com:8080",
+            "NO_PROXY": "example.com",
+        },
+        clear=True,
+    ):
+      await transport.handle_async_request(request)
+
+    mock_session.request.assert_called_once_with(
+        method="GET",
+        url="https://example.com/api",
+        data=None,
+        headers={"host": "example.com"},
+        timeout=30.0,
+        proxy=None,
+        proxy_auth=None,
     )
 
 

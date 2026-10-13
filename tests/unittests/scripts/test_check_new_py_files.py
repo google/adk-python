@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import os
 import pathlib
 import shutil
@@ -168,6 +169,7 @@ def test_no_waiver_ignores_a_tag_the_caller_did_not_mean(
   the directory it runs in.
   """
   added = _tree_with_added_file(tmp_path, 'agents/_agent.py')
+  _export_from_package(tmp_path, 'agents/_agent.py')
   argv = ['--new-dir', str(tmp_path), '--no-prefix-check', str(added)]
 
   monkeypatch.setenv('NO_UNIT_GUIDE', 'stray')
@@ -182,6 +184,7 @@ def test_no_waiver_ignores_a_tag_the_caller_did_not_mean(
 
 def test_check_files_prefix_violation(tmp_path: pathlib.Path) -> None:
   # Missing '_' prefix
+  _export_from_package(tmp_path, 'agents/agent.py')
   files = [('src/google/adk/agents/agent.py', 'agents/agent.py', 'agent.py')]
   prefix_errs, guide_errs = check_new_py_files.check_files(
       files,
@@ -198,6 +201,7 @@ def test_check_files_prefix_violation(tmp_path: pathlib.Path) -> None:
 
 def test_check_files_guide_violation(tmp_path: pathlib.Path) -> None:
   # Proper '_' prefix, but missing unit guide
+  _export_from_package(tmp_path, 'agents/_agent.py')
   files = [('src/google/adk/agents/_agent.py', 'agents/_agent.py', '_agent.py')]
   prefix_errs, guide_errs = check_new_py_files.check_files(
       files,
@@ -213,6 +217,7 @@ def test_check_files_guide_found(tmp_path: pathlib.Path) -> None:
   guide_file = tmp_path / 'docs' / 'guides' / 'agents' / 'agent.md'
   guide_file.parent.mkdir(parents=True, exist_ok=True)
   guide_file.write_text('# Agent Guide', encoding='utf-8')
+  _export_from_package(tmp_path, 'agents/_agent.py')
 
   files = [('src/google/adk/agents/_agent.py', 'agents/_agent.py', '_agent.py')]
   prefix_errs, guide_errs = check_new_py_files.check_files(
@@ -222,6 +227,127 @@ def test_check_files_guide_found(tmp_path: pathlib.Path) -> None:
   )
   assert len(prefix_errs) == 0
   assert len(guide_errs) == 0
+
+
+def test_a_module_no_package_init_imports_needs_no_guide(
+    tmp_path: pathlib.Path,
+) -> None:
+  """An internal module has no public interface for a guide to describe."""
+  init = tmp_path / 'src' / 'google' / 'adk' / 'flows' / '__init__.py'
+  init.parent.mkdir(parents=True)
+  init.write_text('from ._flow_utils import run\n', encoding='utf-8')
+
+  files = [(
+      'src/google/adk/flows/_flow.py',
+      'flows/_flow.py',
+      '_flow.py',
+  )]
+  prefix_errs, guide_errs = check_new_py_files.check_files(
+      files,
+      repo_root=str(tmp_path),
+      commit_msg='clean commit',
+  )
+  assert not prefix_errs
+  assert not guide_errs
+
+
+@pytest.mark.parametrize(
+    ('init_dir', 'init_source'),
+    [
+        ('models', 'from ._llm import Llm\n'),
+        ('models', 'from . import _llm\n'),
+        ('models', 'from google.adk.models._llm import Llm\n'),
+        (
+            'models',
+            (
+                'from typing import TYPE_CHECKING\n'
+                'if TYPE_CHECKING:\n'
+                '  from ._llm import Llm\n'
+            ),
+        ),
+        (
+            'models',
+            'def __getattr__(name):\n  from ._llm import Llm\n  return Llm\n',
+        ),
+        ('models', "_lazy_imports = {'Llm': '._llm'}\n"),
+        ('models', "_LAZY_MEMBERS = {'Llm': '_llm'}\n"),
+        ('', 'from .models._llm import Llm\n'),
+        ('tools', "_LAZY_MAPPING = {'Llm': ('..models._llm', 'Llm')}\n"),
+    ],
+)
+def test_a_module_any_package_init_imports_or_names_needs_a_guide(
+    tmp_path: pathlib.Path, init_dir: str, init_source: str
+) -> None:
+  """Every way ADK re-exports a module counts, lazy ones included."""
+  init = tmp_path / 'src' / 'google' / 'adk' / init_dir / '__init__.py'
+  init.parent.mkdir(parents=True, exist_ok=True)
+  init.write_text(init_source, encoding='utf-8')
+
+  files = [('src/google/adk/models/_llm.py', 'models/_llm.py', '_llm.py')]
+  _, guide_errs = check_new_py_files.check_files(
+      files,
+      repo_root=str(tmp_path),
+      commit_msg='clean commit',
+  )
+  assert len(guide_errs) == 1
+
+
+def test_an_unparseable_init_holds_every_module_to_the_guide_rule(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+  """What a broken __init__.py exports is unknown, so nothing is internal."""
+  init = tmp_path / 'src' / 'google' / 'adk' / 'flows' / '__init__.py'
+  init.parent.mkdir(parents=True)
+  init.write_text('from . import (\n', encoding='utf-8')
+
+  files = [('src/google/adk/flows/_flow.py', 'flows/_flow.py', '_flow.py')]
+  _, guide_errs = check_new_py_files.check_files(
+      files,
+      repo_root=str(tmp_path),
+      commit_msg='clean commit',
+  )
+  assert len(guide_errs) == 1
+  assert 'cannot all be read' in capsys.readouterr().err
+
+
+def test_an_unreadable_package_directory_holds_every_module_to_the_rule(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A directory the walk cannot list may hold the __init__.py that exports."""
+  _export_from_package(tmp_path, 'agents/_agent.py')
+  real_scandir = os.scandir
+
+  def scandir(path: str) -> Iterator[os.DirEntry[str]]:
+    if os.path.basename(path) == 'agents':
+      raise PermissionError(13, 'Permission denied', path)
+    return real_scandir(path)
+
+  monkeypatch.setattr(os, 'scandir', scandir)
+
+  files = [('src/google/adk/agents/_agent.py', 'agents/_agent.py', '_agent.py')]
+  _, guide_errs = check_new_py_files.check_files(
+      files,
+      repo_root=str(tmp_path),
+      commit_msg='clean commit',
+  )
+  assert len(guide_errs) == 1
+
+
+def test_an_absolute_import_of_a_root_module_counts(
+    tmp_path: pathlib.Path,
+) -> None:
+  """`from google.adk import _mod` names the module, as `from . import` does."""
+  init = tmp_path / 'src' / 'google' / 'adk' / '__init__.py'
+  init.parent.mkdir(parents=True)
+  init.write_text('from google.adk import _version\n', encoding='utf-8')
+
+  files = [('src/google/adk/_version.py', '_version.py', '_version.py')]
+  _, guide_errs = check_new_py_files.check_files(
+      files,
+      repo_root=str(tmp_path),
+      commit_msg='clean commit',
+  )
+  assert len(guide_errs) == 1
 
 
 def test_guide_name_strips_only_one_underscore(tmp_path: pathlib.Path) -> None:
@@ -234,6 +360,7 @@ def test_guide_name_strips_only_one_underscore(tmp_path: pathlib.Path) -> None:
   guide_file = tmp_path / 'docs' / 'guides' / 'agents' / '_thing.md'
   guide_file.parent.mkdir(parents=True, exist_ok=True)
   guide_file.write_text('# Guide', encoding='utf-8')
+  _export_from_package(tmp_path, 'agents/__thing.py')
 
   files = [(
       'src/google/adk/agents/__thing.py',
@@ -326,6 +453,7 @@ def test_main_baseline_dir_violations(
   (new_dir / 'src' / 'google' / 'adk' / 'agents' / 'agent.py').write_text(
       '', encoding='utf-8'
   )
+  _export_from_package(new_dir, 'agents/agent.py')
 
   exit_code = check_new_py_files.main([
       '--baseline-dir',
@@ -358,6 +486,7 @@ def test_main_baseline_dir_clean(
   (new_dir / 'src' / 'google' / 'adk' / 'agents' / '_agent.py').write_text(
       '', encoding='utf-8'
   )
+  _export_from_package(new_dir, 'agents/_agent.py')
   (new_dir / 'docs' / 'guides' / 'agents' / 'agent.md').write_text(
       '# Guide', encoding='utf-8'
   )
@@ -394,6 +523,7 @@ def test_main_baseline_dir_with_commit_msg_tag(
   (new_dir / 'src' / 'google' / 'adk' / 'agents' / '_agent.py').write_text(
       '', encoding='utf-8'
   )
+  _export_from_package(new_dir, 'agents/_agent.py')
 
   # Mock get_commit_message to return NO_UNIT_GUIDE tag
   monkeypatch.setattr(
@@ -438,6 +568,7 @@ def test_main_baseline_dir_env_tag_waives_without_a_commit_message(
   (new_dir / 'src' / 'google' / 'adk' / 'agents' / '_agent.py').write_text(
       '', encoding='utf-8'
   )
+  _export_from_package(new_dir, 'agents/_agent.py')
 
   # No VCS to read a commit message from.
   monkeypatch.setattr(check_new_py_files, 'get_commit_message', lambda root: '')
@@ -466,6 +597,23 @@ def _tree_with_added_file(root: pathlib.Path, rel: str) -> pathlib.Path:
   return path
 
 
+def _export_from_package(root: pathlib.Path, rel: str) -> None:
+  """Has the package __init__.py import the module at `rel`, making it public.
+
+  The unit guide rule covers only a module some package __init__.py imports.
+
+  Args:
+    root: The checkout holding `src/google/adk`.
+    rel: The module's path relative to the package root, e.g.
+      `agents/_agent.py`.
+  """
+  module = pathlib.PurePosixPath(rel)
+  init = root / 'src' / 'google' / 'adk' / module.parent / '__init__.py'
+  init.parent.mkdir(parents=True, exist_ok=True)
+  with init.open('a', encoding='utf-8') as f:
+    f.write(f'from .{module.stem} import *\n')
+
+
 def test_main_reads_the_added_file_list_from_a_file(
     tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -475,6 +623,7 @@ def test_main_reads_the_added_file_list_from_a_file(
   would silently shrink what gets checked.
   """
   added = _tree_with_added_file(tmp_path, 'agents/_agent.py')
+  _export_from_package(tmp_path, 'agents/_agent.py')
   _tree_with_added_file(tmp_path, 'agents/_untouched.py')
 
   listing = tmp_path / 'added.txt'
@@ -524,6 +673,7 @@ def test_main_checks_a_file_in_a_subpackage_with_no_symlink_yet(
   new_pkg = adk_src / 'brandnewpkg'
   new_pkg.mkdir()
   (new_pkg / '_thing.py').write_text('', encoding='utf-8')
+  _export_from_package(checkout, 'brandnewpkg/_thing.py')
 
   listing = tmp_path / 'added.txt'
   listing.write_text('src/google/adk/brandnewpkg/_thing.py\n', encoding='utf-8')
@@ -591,6 +741,7 @@ def test_main_no_prefix_check_leaves_the_unit_guide_rule_enforced(
   waiver take the un-waivable rule with it.
   """
   added = _tree_with_added_file(tmp_path, 'agents/agent.py')
+  _export_from_package(tmp_path, 'agents/agent.py')
 
   exit_code = check_new_py_files.main([
       '--new-dir',
@@ -608,6 +759,7 @@ def test_main_no_prefix_check_and_no_unit_guide_check_nothing(
     tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
   added = _tree_with_added_file(tmp_path, 'agents/agent.py')
+  _export_from_package(tmp_path, 'agents/agent.py')
 
   exit_code = check_new_py_files.main([
       '--new-dir',
@@ -1022,6 +1174,9 @@ def test_a_renamed_subpackage_keeps_its_source_tree_name(
   (package_root / '__init__.py').write_text('', encoding='utf-8')
   added = package_root / 'dependencies_impl' / '_thing.py'
   added.write_text('', encoding='utf-8')
+  (package_root / 'dependencies_impl' / '__init__.py').write_text(
+      'from ._thing import *\n', encoding='utf-8'
+  )
 
   checkout = package_root / 'checkout'
   adk_src = checkout / 'src' / 'google' / 'adk'
@@ -1313,6 +1468,7 @@ def _stage_an_unguided_module(repo: pathlib.Path) -> None:
   (repo / 'src' / 'google' / 'adk' / 'agents' / '_brand_new.py').write_text(
       '', encoding='utf-8'
   )
+  _export_from_package(repo, 'agents/_brand_new.py')
   _git(repo, 'add', '-A')
 
 
