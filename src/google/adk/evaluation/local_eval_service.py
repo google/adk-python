@@ -87,6 +87,19 @@ def _parallelism_semaphore(parallelism: int) -> asyncio.Semaphore:
   return asyncio.Semaphore(value=parallelism)
 
 
+def _without_pinned_session_id(eval_case: EvalCase) -> EvalCase:
+  """Returns `eval_case` with any pinned `session_input.session_id` cleared."""
+  if eval_case.session_input is None or not eval_case.session_input.session_id:
+    return eval_case
+  return eval_case.model_copy(
+      update={
+          "session_input": eval_case.session_input.model_copy(
+              update={"session_id": None}
+          )
+      }
+  )
+
+
 def _add_rubrics_to_invocation(
     invocation: Invocation, rubrics_to_add: list[Rubric]
 ) -> None:
@@ -218,7 +231,20 @@ class LocalEvalService(BaseEvalService):
             live_timeout_seconds=inference_request.inference_config.live_timeout_seconds,
         )
 
-    inference_results = [run_inference(eval_case) for eval_case in eval_cases]
+    # Each eval case is inferenced `num_runs` times. Running the repeats here
+    # (rather than in the caller) lets the parallelism semaphore above cover the
+    # repeated runs as well.
+    num_runs = inference_request.inference_config.num_runs
+    if num_runs > 1:
+      # A pinned session id would make every repeat after the first reuse the
+      # session left behind by an earlier run, skipping `initial_session.state`.
+      # Drop the pin so each repeat starts from a fresh session.
+      eval_cases = [_without_pinned_session_id(c) for c in eval_cases]
+    inference_results = [
+        run_inference(eval_case)
+        for eval_case in eval_cases
+        for _ in range(num_runs)
+    ]
     for inference_result in asyncio.as_completed(inference_results):
       yield await inference_result
 
