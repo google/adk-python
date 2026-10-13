@@ -12,20 +12,12 @@ This release enhances execution performance in long sessions while introducing f
 * **Workflows**: Require human confirmation before executing workflow nodes via `require_confirmation`. ([988fd1a](https://github.com/google/adk-python/commit/988fd1a73d174f9e3acb6d2e1bec102f9ec02238))
 * **Deployment**: Deploy agents to Agent Engine using dedicated custom service accounts. ([629e119](https://github.com/google/adk-python/commit/629e11996ebb544ea6b0f652e413955b2dfedeb6))
 
-#### Breaking changes
+#### Behavior changes
 
-* **Trigger endpoints**: Pass `--trigger_oidc_audience` or provide a custom `trigger_auth_verifier` when enabling trigger sources.
-* **User identification**: Supply authenticated principals in requests to ensure user IDs are properly recognized.
-* **Proxied file uploads**: Explicitly set `api_base` or `LITELLM_PROXY_API_BASE` when uploading files with proxied models instead of relying on the fallback to public OpenAI endpoints.
+* **Trigger endpoints**: Enabling `trigger_sources` now requires `trigger_oidc_audience` or a custom `trigger_auth_verifier`; without one the server fails at startup and `adk deploy` exits with a usage error. Pass `--trigger_oidc_audience` set to the service URL. ([b3ccb29](https://github.com/google/adk-python/commit/b3ccb295ac09514b7f676ef150a349b36d2c3e41))
 
 <details>
 <summary>All changes</summary>
-
-### ⚠ BREAKING CHANGES
-
-* enabling `trigger_sources` / `--trigger_sources` without `trigger_oidc_audience` (`--trigger_oidc_audience`) or `trigger_auth_verifier` now raises `ValueError` at server startup and `click.UsageError` at deploy time (`adk deploy cloud_run`, `agent_engine`, and `gke`), with no CLI opt-out. Deployments that previously relied solely on platform-level IAM (such as Cloud Run behind IAM) without `--trigger_oidc_audience` must now pass `--trigger_oidc_audience` set to the service URL (and `--trigger_oidc_service_accounts` to restrict caller identity at the application layer), or provide a custom `trigger_auth_verifier` in Python (e.g. `trigger_auth_verifier=lambda request: None` when caller authentication is enforced by the platform).
-* take the ADK user id only from an authenticated principal
-* file uploads for proxied models (e.g. `litellm_proxy/...` or `USE_LITELLM_PROXY=true`) where no proxy endpoint (`api_base` or `LITELLM_PROXY_API_BASE`) is configured now raise a `ValueError` instead of silently falling back to `api.openai.com` with `OPENAI_API_KEY`. Callers relying on the previous fallback to public OpenAI must now configure `api_base` / `LITELLM_PROXY_API_BASE` (and `api_key` / `LITELLM_PROXY_API_KEY`) pointing to their proxy or direct endpoint. Direct models with an explicit `api_base` (e.g. custom or local gateways) now route file uploads to that endpoint instead of the provider default.
 
 ### Features
 
@@ -182,6 +174,7 @@ This release enhances execution performance in long sessions while introducing f
 * stop to_a2a from overriding the application's log level ([7a50a85](https://github.com/google/adk-python/commit/7a50a8591b057b73ee6a572cb06ba4380360ef1d)), closes [#7462](https://github.com/google/adk-python/issues/7462)
 * stringify enum values in legacy schema declarations ([014f987](https://github.com/google/adk-python/commit/014f987d7e4abbe12033b0fa2cc7c203091252e6)), closes [#6978](https://github.com/google/adk-python/issues/6978)
 * strip embedded thought signature from LiteLLM tool call ids ([be42798](https://github.com/google/adk-python/commit/be4279876299d7831f192f27061a3fbcff3596c4)), closes [#6742](https://github.com/google/adk-python/issues/6742)
+* take the ADK user id only from an authenticated principal ([d0c4060](https://github.com/google/adk-python/commit/d0c40600fc4f4028d7b4fb86ce0f1b2163f8e28e))
 * **telemetry:** stop holding OTel context across async generator yields ([10c694f](https://github.com/google/adk-python/commit/10c694f5c3f186cc5d335291743352c7869c8f3a))
 * tolerate trailing slash on discovered OAuth2 issuer ([c220fca](https://github.com/google/adk-python/commit/c220fca16a7e7f7620bde799c50b240f2451ef79)), closes [#7265](https://github.com/google/adk-python/issues/7265)
 * **tools:** guard concurrent lazy initialization in ComputerUseToolset and EnvironmentToolset ([15486db](https://github.com/google/adk-python/commit/15486dbb2ac26284f4384857acc0d4002f4e4fc4))
