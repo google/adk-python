@@ -429,7 +429,14 @@ async def test_load_artifacts_keeps_supported_mime_types():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     'mime_type',
-    ['image/svg+xml', 'image/svg', 'application/svg+xml', 'image/xml'],
+    [
+        'image/svg+xml',
+        'image/svg',
+        'application/svg+xml',
+        'image/xml',
+        'Image/SVG+XML; charset=UTF-8',
+        'APPLICATION/SVG+XML',
+    ],
 )
 async def test_load_artifacts_converts_svg_to_text(mime_type):
   """SVG/XML image variants are rejected by Gemini with 400 INVALID_ARGUMENT,

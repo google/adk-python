@@ -85,7 +85,7 @@ def _normalize_mime_type(mime_type: str | None) -> str | None:
   """Returns the normalized MIME type, without parameters like charset."""
   if not mime_type:
     return None
-  return mime_type.split(';', 1)[0].strip()
+  return mime_type.split(';', 1)[0].strip().lower()
 
 
 def _is_inline_mime_type_supported(mime_type: str | None) -> bool:
