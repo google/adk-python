@@ -579,6 +579,29 @@ def _remote_identity(agent_card: Union[AgentCard, str]) -> str:
   return _compat.agent_card_url(agent_card) or agent_card.name or ""
 
 
+def _namespaced_session_context_id(session: Optional[Session]) -> Optional[str]:
+  """Derives a remote context ID that namespaces the session by app/user.
+
+  ``session.id`` alone is not globally unique: two distinct local users (or
+  two apps) can reuse the same session ID, and forwarding the raw ID would
+  let their conversations collide on a remote A2A server that keys state off
+  the context ID.
+  """
+  session_id = getattr(session, "id", None)
+  if not isinstance(session_id, str) or not session_id:
+    return None
+  app_name = getattr(session, "app_name", None)
+  if not isinstance(app_name, str):
+    app_name = ""
+  user_id = getattr(session, "user_id", None)
+  if not isinstance(user_id, str):
+    user_id = ""
+  digest_input = "\x1f".join(
+      f"{len(part)}:{part}" for part in (app_name, user_id, session_id)
+  )
+  return hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
+
+
 def _names_its_own_credential_key(
     auth_scheme: AuthScheme, auth_credential: Optional[AuthCredential]
 ) -> bool:
@@ -1860,13 +1883,13 @@ class RemoteA2aAgent(BaseAgent):
               branch=ctx.branch,
           )
           return
-        session_id = (
-            getattr(ctx.session, "id", None)
-            if self._config.forward_session_id_as_context_id
-            and ctx
-            and getattr(ctx, "session", None)
-            else None
-        )
+        session = getattr(ctx, "session", None)
+        if self._config.forward_session_id_as_context_id == "namespaced":
+          session_id = _namespaced_session_context_id(session)
+        elif self._config.forward_session_id_as_context_id:
+          session_id = getattr(session, "id", None)
+        else:
+          session_id = None
         a2a_request = A2AMessage(
             message_id=platform_uuid.new_uuid(),
             parts=message_parts,

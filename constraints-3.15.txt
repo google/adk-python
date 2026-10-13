@@ -1376,7 +1376,7 @@ pycparser==3.0
     # via
     #   -c constraints-3.15.txt.stable.tmp
     #   cffi
-pydantic==2.13.5
+pydantic==2.14.0
     # via
     #   -c constraints-3.15.txt.stable.tmp
     #   google-adk (pyproject.toml)
@@ -1413,7 +1413,7 @@ pydantic==2.13.5
     #   opensandbox
     #   pydantic-settings
     #   toolbox-core
-pydantic-core==2.46.5
+pydantic-core==2.50.0
     # via
     #   -c constraints-3.15.txt.stable.tmp
     #   elevenlabs
