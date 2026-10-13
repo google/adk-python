@@ -33,6 +33,8 @@ from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
+from google.adk.workflow import FunctionNode
+from google.adk.workflow import JoinNode
 from google.adk.workflow import START
 from google.adk.workflow._errors import NodeTimeoutError
 from google.adk.workflow._graph import Graph
@@ -1723,3 +1725,70 @@ async def test_failed_node_in_nested_workflow_reruns_on_resume(
   assert inner_flaky_runs == 2
   assert inner_downstream_inputs == ['inner output']
   assert outer_upstream_runs == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_replays_sibling_with_pending_event_persist():
+  """A retried workflow does not re-run a sibling whose output event is still
+  being persisted when the failed attempt returns.
+
+  The sibling's task completes its body but can still be blocked in
+  _enqueue_event waiting for the runner to append its output event (slow
+  plugin callbacks or a session service with awaited I/O). The retry's
+  rescan must wait for those queued appends, otherwise the sibling is not
+  recovered and its side effect happens twice.
+  """
+  sibling_attempts = 0
+  flaky_attempts = 0
+
+  class SlowAppendPlugin(BasePlugin):
+    """Simulates slow event persistence (plugin callbacks or DB I/O)."""
+
+    @override
+    async def on_event_callback(self, *, invocation_context, event):
+      await asyncio.sleep(0.05)
+      return None
+
+  def sibling_node(ctx: Context):
+    nonlocal sibling_attempts
+    sibling_attempts += 1
+    yield 'side effect done'
+
+  def flaky_node(ctx: Context):
+    nonlocal flaky_attempts
+    flaky_attempts += 1
+    if flaky_attempts == 1:
+      raise CustomRetryableError('Node failed')
+    yield 'recovered'
+
+  sibling = FunctionNode(func=sibling_node, name='sibling')
+  flaky = FunctionNode(func=flaky_node, name='flaky')
+  join = JoinNode(name='join')
+  wf = Workflow(
+      name='body',
+      edges=[
+          (START, (flaky, sibling)),
+          (flaky, join),
+          (sibling, join),
+      ],
+      retry_config=RetryConfig(
+          max_attempts=2,
+          initial_delay=0.0,
+          jitter=0.0,
+          exceptions=[CustomRetryableError],
+      ),
+  )
+
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner.plugin_manager.plugins.insert(0, InvariantPlugin())
+  runner.plugin_manager.plugins.append(SlowAppendPlugin(name='slow_append'))
+  session = await ss.create_session(app_name='test', user_id='u')
+  msg = types.Content(parts=[types.Part(text='start')], role='user')
+  async for _ in runner.run_async(
+      user_id='u', session_id=session.id, new_message=msg
+  ):
+    pass
+
+  assert flaky_attempts == 2
+  assert sibling_attempts == 1

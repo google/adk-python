@@ -185,6 +185,35 @@ class NodeRunner:
           self._node.name,
       )
       attempt_count += 1
+      await self._wait_for_enqueued_events(ctx)
+
+  async def _wait_for_enqueued_events(self, ctx: Context) -> None:
+    """Waits until every event enqueued so far has been appended to the session.
+
+    A retried node rebuilds its state from session events. Sibling tasks that
+    finished around the failure may still have their final events sitting in
+    the runner's event queue: the task blocks in ``_enqueue_event`` until the
+    main loop appends the event, and a task cancelled there leaves its queued
+    event to be appended later. A rescan that reads ``ic.session.events``
+    before those appends complete misses the siblings' outputs and the retry
+    re-executes work that already happened.
+
+    A partial sentinel event is never appended to the session, but the runner
+    still sets its processed signal after handling everything queued ahead of
+    it, which is exactly the barrier the retry needs. The sentinel flows to
+    the runner's consumer as a bare partial event, as any other streamed
+    partial event would.
+    """
+    event_queue = ctx._invocation_context._event_queue  # pylint: disable=protected-access
+    if event_queue is None:
+      return
+    from ..events.event import Event
+
+    processed = asyncio.Event()
+    sentinel = Event(partial=True)
+    self._enrich_event(sentinel, ctx)
+    await event_queue.put((sentinel, processed))
+    await processed.wait()
 
   def _reset_dynamic_children_for_retry(self, ctx: Context) -> None:
     """Resets dynamic child run counters under ctx before retrying the node."""
