@@ -24,6 +24,7 @@ logger = logging.getLogger("google_adk." + __name__)
 from ...agents.base_agent import BaseAgent
 from ...models.base_llm import BaseLlm
 from ...tools.base_toolset import BaseToolset
+from ...workflow._base_node import BaseNode
 
 # Node type mapping for cleaner lookup
 NODE_TYPE_MAP = {
@@ -63,7 +64,7 @@ def serialize_node_like(item: Any) -> Any:
   if "Agent" in class_name and hasattr(item, "model_fields"):
     return serialize_agent(item)
   # Handle BaseNode
-  if "Node" in class_name and hasattr(item, "get_name"):
+  if isinstance(item, BaseNode):
     return serialize_node(item)
   # Handle callable
   if callable(item):

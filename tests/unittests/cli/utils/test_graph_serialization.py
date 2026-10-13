@@ -206,10 +206,6 @@ def test_serialize_node_like_falls_back_to_str_for_unknown_objects() -> None:
   assert serialize_node_like(_Opaque()) == 'opaque-repr'
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason='BaseNode has no get_name(), so the BaseNode branch never fires',
-)
 def test_serialize_node_like_serializes_base_nodes_as_dicts() -> None:
   from google.adk.workflow import BaseNode
 
