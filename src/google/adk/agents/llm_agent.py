@@ -167,7 +167,7 @@ def _wrap_base_node_as_tool(node: BaseNode) -> BaseTool:
 
 
 async def _convert_tool_union_to_tools(
-    tool_union: ToolUnion,
+    tool_union: Union[ToolUnion, BaseNode],
     ctx: Optional[ReadonlyContext],
     model: Union[str, BaseLlm],
     multiple_tools: bool = False,
@@ -210,7 +210,6 @@ async def _convert_tool_union_to_tools(
               max_results=vais_tool.max_results,
           )
       ]
-  from ..workflow._base_node import BaseNode
 
   if isinstance(tool_union, BaseNode):
     return [_wrap_base_node_as_tool(tool_union)]
@@ -1265,8 +1264,6 @@ class LlmAgent(BaseAgent, abc.ABC):
   @classmethod
   def _pre_validate_tools(cls, data: Any) -> Any:
     if isinstance(data, dict) and 'tools' in data and data['tools']:
-      from google.adk.workflow._base_node import BaseNode
-
       data['tools'] = [
           _wrap_base_node_as_tool(t) if isinstance(t, BaseNode) else t
           for t in data['tools']
