@@ -297,6 +297,7 @@ class Context(ReadonlyContext):
   @property
   def actions(self) -> EventActions:
     """The event actions for the current context."""
+    self._state._record_nested_writes()  # pylint: disable=protected-access
     return self._event_actions
 
   @property

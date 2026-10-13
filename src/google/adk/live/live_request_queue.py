@@ -43,14 +43,25 @@ class LiveRequest(BaseModel):
   """If set, send the blob to the model in realtime mode."""
 
   activity_start: Optional[types.ActivityStart] = None
-  """If set, signal the start of user activity to the model."""
+  """If set, signal the start of user activity to the model.
+
+  Only used when server-side Voice Activity Detection is disabled, i.e. when
+  the client performs its own (client-side) VAD.
+  """
 
   activity_end: Optional[types.ActivityEnd] = None
-  """If set, signal the end of user activity to the model."""
+  """If set, signal the end of user activity to the model.
+
+  Only used when server-side Voice Activity Detection is disabled, i.e. when
+  the client performs its own (client-side) VAD.
+  """
 
   audio_stream_end: bool = False
   """If set, signal the end of the audio stream to the model. This is only used
   when Voice Activity Detection is enabled.
+
+  For example, when the user mutes the microphone, send this signal so the
+  server flushes any cached audio instead of waiting for more input.
   """
 
   close: bool = False
@@ -91,15 +102,28 @@ class LiveRequestQueue:
     self._queue.put_nowait(LiveRequest(blob=blob))
 
   def send_activity_start(self) -> None:
-    """Sends an activity start signal to mark the beginning of user input."""
+    """Sends an activity start signal to mark the beginning of user input.
+
+    Only use this when server-side Voice Activity Detection is disabled, i.e.
+    when the client performs its own (client-side) VAD.
+    """
     self._queue.put_nowait(LiveRequest(activity_start=types.ActivityStart()))
 
   def send_activity_end(self) -> None:
-    """Sends an activity end signal to mark the end of user input."""
+    """Sends an activity end signal to mark the end of user input.
+
+    Only use this when server-side Voice Activity Detection is disabled, i.e.
+    when the client performs its own (client-side) VAD.
+    """
     self._queue.put_nowait(LiveRequest(activity_end=types.ActivityEnd()))
 
   def send_audio_stream_end(self) -> None:
-    """Sends an audio stream end signal to force flush audio."""
+    """Sends an audio stream end signal to force flush audio.
+
+    For example, when the user mutes the microphone or the audio stream pauses
+    for more than a second, call this so the server flushes any cached audio
+    instead of waiting for more input.
+    """
     self._queue.put_nowait(LiveRequest(audio_stream_end=True))
 
   def send(self, req: LiveRequest) -> None:
