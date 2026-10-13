@@ -3,11 +3,29 @@
 ## [2.12.0](https://github.com/google/adk-python/compare/v2.11.0...v2.12.0) (2026-10-13)
 
 
+### Highlights
+
+This release enhances execution performance in long sessions while introducing finer control over tool execution, workflow approvals, and deployment security.
+
+* **Performance**: Cut time to first model request by 40% in long sessions. ([1754b3e](https://github.com/google/adk-python/commit/1754b3eeb6cdb2c16e3b30619a12066623df132e))
+* **Tools**: Intercept and filter tool outputs before returning them to the model using `after_tool_callback`. ([fdda17c](https://github.com/google/adk-python/commit/fdda17cbcfec35a1cca1638b028c1af98e893eae))
+* **Workflows**: Require human confirmation before executing workflow nodes via `require_confirmation`. ([988fd1a](https://github.com/google/adk-python/commit/988fd1a73d174f9e3acb6d2e1bec102f9ec02238))
+* **Deployment**: Deploy agents to Agent Engine using dedicated custom service accounts. ([629e119](https://github.com/google/adk-python/commit/629e11996ebb544ea6b0f652e413955b2dfedeb6))
+
+#### Breaking changes
+
+* **Trigger endpoints**: Pass `--trigger_oidc_audience` or provide a custom `trigger_auth_verifier` when enabling trigger sources.
+* **User identification**: Supply authenticated principals in requests to ensure user IDs are properly recognized.
+* **Proxied file uploads**: Explicitly set `api_base` or `LITELLM_PROXY_API_BASE` when uploading files with proxied models instead of relying on the fallback to public OpenAI endpoints.
+
+<details>
+<summary>All changes</summary>
+
 ### ⚠ BREAKING CHANGES
 
-* Enabling `trigger_sources` / `--trigger_sources` without `trigger_oidc_audience` (`--trigger_oidc_audience`) or `trigger_auth_verifier` now raises `ValueError` at server startup and `click.UsageError` at deploy time (`adk deploy cloud_run`, `agent_engine`, and `gke`), with no CLI opt-out. Deployments that previously relied solely on platform-level IAM (such as Cloud Run behind IAM) without `--trigger_oidc_audience` must now pass `--trigger_oidc_audience` set to the service URL (and `--trigger_oidc_service_accounts` to restrict caller identity at the application layer), or provide a custom `trigger_auth_verifier` in Python (e.g. `trigger_auth_verifier=lambda request: None` when caller authentication is enforced by the platform).
+* enabling `trigger_sources` / `--trigger_sources` without `trigger_oidc_audience` (`--trigger_oidc_audience`) or `trigger_auth_verifier` now raises `ValueError` at server startup and `click.UsageError` at deploy time (`adk deploy cloud_run`, `agent_engine`, and `gke`), with no CLI opt-out. Deployments that previously relied solely on platform-level IAM (such as Cloud Run behind IAM) without `--trigger_oidc_audience` must now pass `--trigger_oidc_audience` set to the service URL (and `--trigger_oidc_service_accounts` to restrict caller identity at the application layer), or provide a custom `trigger_auth_verifier` in Python (e.g. `trigger_auth_verifier=lambda request: None` when caller authentication is enforced by the platform).
 * take the ADK user id only from an authenticated principal
-* File uploads for proxied models (e.g. `litellm_proxy/...` or `USE_LITELLM_PROXY=true`) where no proxy endpoint (`api_base` or `LITELLM_PROXY_API_BASE`) is configured now raise a `ValueError` instead of silently falling back to `api.openai.com` with `OPENAI_API_KEY`. Callers relying on the previous fallback to public OpenAI must now configure `api_base` / `LITELLM_PROXY_API_BASE` (and `api_key` / `LITELLM_PROXY_API_KEY`) pointing to their proxy or direct endpoint. Direct models with an explicit `api_base` (e.g. custom or local gateways) now route file uploads to that endpoint instead of the provider default.
+* file uploads for proxied models (e.g. `litellm_proxy/...` or `USE_LITELLM_PROXY=true`) where no proxy endpoint (`api_base` or `LITELLM_PROXY_API_BASE`) is configured now raise a `ValueError` instead of silently falling back to `api.openai.com` with `OPENAI_API_KEY`. Callers relying on the previous fallback to public OpenAI must now configure `api_base` / `LITELLM_PROXY_API_BASE` (and `api_key` / `LITELLM_PROXY_API_KEY`) pointing to their proxy or direct endpoint. Direct models with an explicit `api_base` (e.g. custom or local gateways) now route file uploads to that endpoint instead of the provider default.
 
 ### Features
 
@@ -20,11 +38,11 @@
 * continue with de-identified text when only SDP matched ([315c3dd](https://github.com/google/adk-python/commit/315c3dd2cd2710b3ccc2fbb88c22125938d89adf)), closes [#7369](https://github.com/google/adk-python/issues/7369)
 * encrypt google credential in session ([42a17a9](https://github.com/google/adk-python/commit/42a17a9fd2f14d466f8903f2ba776c90e871455f))
 * **eval:** report the efficiency metrics for evals run from the Dev UI ([49bf291](https://github.com/google/adk-python/commit/49bf291ce63c4756a45dce2f9070053e7ac212ff))
-* Install lightweight Gemini Enterprise (Agent Platform) SDK without the GAPIC stack ([d92735d](https://github.com/google/adk-python/commit/d92735dc71700905a4e72a8d2e5c5ae8ce054a04))
+* install lightweight Gemini Enterprise (Agent Platform) SDK without the GAPIC stack ([d92735d](https://github.com/google/adk-python/commit/d92735dc71700905a4e72a8d2e5c5ae8ce054a04))
 * **live:** add an internal model for Live background tool calls ([3f25ab5](https://github.com/google/adk-python/commit/3f25ab50227104338f79df3bab6390b0f597e478))
-* **live:** Implement CascadeLive model & sample ([128faab](https://github.com/google/adk-python/commit/128faabb6dddacf26e029aa8c28c903c3a7a6b61))
-* Migrate ADK to google-cloud-aiplatform v2.2 (agentplatform) ([77d4dcd](https://github.com/google/adk-python/commit/77d4dcd0aa8c7ff841160f3c0db3754c347dfc1f))
-* Migrate VertexAiExampleStore and VertexAiRagRetrieval away from vertexai.preview ([9e411be](https://github.com/google/adk-python/commit/9e411be81c5ad9e28ea892362c2ec4f76982f680))
+* **live:** implement CascadeLive model & sample ([128faab](https://github.com/google/adk-python/commit/128faabb6dddacf26e029aa8c28c903c3a7a6b61))
+* migrate ADK to google-cloud-aiplatform v2.2 (agentplatform) ([77d4dcd](https://github.com/google/adk-python/commit/77d4dcd0aa8c7ff841160f3c0db3754c347dfc1f))
+* migrate VertexAiExampleStore and VertexAiRagRetrieval away from vertexai.preview ([9e411be](https://github.com/google/adk-python/commit/9e411be81c5ad9e28ea892362c2ec4f76982f680))
 * persist skill-script outputs as artifacts ([beaef0d](https://github.com/google/adk-python/commit/beaef0d807e6759489afd72995451486c0a4cca3)), closes [#5579](https://github.com/google/adk-python/issues/5579)
 * **plugins:** add on_schema_error and on_schema_ready callback hooks to BigQueryLoggerConfig ([4d31fa9](https://github.com/google/adk-python/commit/4d31fa98b03efa2cabfaa05d20039e286db06f86))
 * **plugins:** enrich AGENT_STARTING metadata in BigQueryAgentAnalyticsPlugin ([c32ad3b](https://github.com/google/adk-python/commit/c32ad3bdb4b6f928d764999654ce012187a81faf))
@@ -40,7 +58,7 @@
 * **vmaas:** add sandbox lifecycle helpers to the sandbox manager ([46dff4b](https://github.com/google/adk-python/commit/46dff4b904a387100c64760edf09bc69da8cbba2))
 * **vmaas:** find or create sandbox templates per container config ([650394f](https://github.com/google/adk-python/commit/650394f06817acf04a1ee7572da18c57d5d8abc5))
 * **workflow:** run a sync generator FunctionNode's steps on the tool thread pool ([8112f4a](https://github.com/google/adk-python/commit/8112f4a885f441f1f4b32e5f7d33fb13a75188ae))
-* **workflow:** support require_confirmation in [@node](https://github.com/node) and FunctionNode ([988fd1a](https://github.com/google/adk-python/commit/988fd1a73d174f9e3acb6d2e1bec102f9ec02238))
+* **workflow:** support require_confirmation in `@node` and FunctionNode ([988fd1a](https://github.com/google/adk-python/commit/988fd1a73d174f9e3acb6d2e1bec102f9ec02238))
 * **workflow:** support scalar auto-boxing for ToolNode input ([873eed5](https://github.com/google/adk-python/commit/873eed5f102003c80368e19a3c46637d4075f04d))
 * **workflow:** support task sub-agent delegation and resume in task-mode wrapper ([8d71635](https://github.com/google/adk-python/commit/8d716351ec9ec5fb7a51e4c62cac19458906560d))
 * **workflow:** support tool authentication requests and credential resume in _ToolNode ([c001a6c](https://github.com/google/adk-python/commit/c001a6cd817bd2ada095a3698642a98ab9aa79ba))
@@ -52,7 +70,6 @@
 * add JSON-tolerant LiteLLM tool call argument parsing ([a01b226](https://github.com/google/adk-python/commit/a01b226845b3343f788a7df10e337cad412f544b))
 * add namespaced mode for forwarded A2A session context_id ([c213adf](https://github.com/google/adk-python/commit/c213adf02d491726037b9dcceecbc4106dbd2aa6)), closes [#7305](https://github.com/google/adk-python/issues/7305)
 * agent engine memory service with A2A endpoint activated ([d919ec0](https://github.com/google/adk-python/commit/d919ec040f7f7fd462b3239b5907158965a6eceb)), closes [#3458](https://github.com/google/adk-python/issues/3458)
-* agent engine memory service with A2A endpoint activated ([246a4c2](https://github.com/google/adk-python/commit/246a4c251e36a248248fe8c9b4bebc36d7f5c164)), closes [#3458](https://github.com/google/adk-python/issues/3458)
 * **agents:** centralize resume routing decision and fix sub-branch/callback/abort routing ([8a43244](https://github.com/google/adk-python/commit/8a43244db72815d593f5803e5c275f645b0500e3))
 * **agents:** route user FunctionResponses to sub-agents when is_resumable is False ([86a47f6](https://github.com/google/adk-python/commit/86a47f6974bae349a5c9ea15a74a4b450614ae42))
 * allow built-in search tools with sub-agents on Gemini 3+ ([6d52a23](https://github.com/google/adk-python/commit/6d52a23b842f912bae7d6c331d8b453cd72d44ad))
@@ -72,7 +89,7 @@
 * decode error bodies with the declared charset ([962fe9b](https://github.com/google/adk-python/commit/962fe9bdad6f8d91c03d53ff928de7c409c7251a)), closes [#7206](https://github.com/google/adk-python/issues/7206)
 * decode url-safe base64 strictly so malformed input is rejected ([c2ddeef](https://github.com/google/adk-python/commit/c2ddeef5d3dc4b42766dcd034e1447b0f5d1b632))
 * default RubricContent.text_property to None so rubrics save ([7d8c950](https://github.com/google/adk-python/commit/7d8c9502f924ed5e7a1ab00dc1f5a603e858abc3))
-* **docs:** Fix broken code example rendering in the BaseLlm.generate_content_async docs ([ccd868a](https://github.com/google/adk-python/commit/ccd868a3986a9bbc8683640eb33f2d9f1d58ff7a))
+* **docs:** fix broken code example rendering in the BaseLlm.generate_content_async docs ([ccd868a](https://github.com/google/adk-python/commit/ccd868a3986a9bbc8683640eb33f2d9f1d58ff7a))
 * don't forward the caller's abort signal to AgentTool runs on another event loop ([6bbef14](https://github.com/google/adk-python/commit/6bbef14ffa3beadfb812cc57bf83e1eb68800152))
 * drop a flushed live audio cache that could not be written ([1da622c](https://github.com/google/adk-python/commit/1da622c859f058fc57d4d765636bd796ccd14d3a))
 * drop MIME parameters from saved live audio filenames ([8c513c9](https://github.com/google/adk-python/commit/8c513c9fdf58a047042cc75c4e38f87cf91729cc))
@@ -109,7 +126,7 @@
 * **live:** invoke before_run and after_run plugin callbacks in run_node_live ([8a93ce9](https://github.com/google/adk-python/commit/8a93ce90fda3ed330fe8499db98f2dea04067c1b))
 * load artifacts removed by a rewind as None in file and GCS services ([a116c22](https://github.com/google/adk-python/commit/a116c22580c42a3240739dbba995d9b49bf30f07)), closes [#7482](https://github.com/google/adk-python/issues/7482)
 * load custom services from the agent folder in single agent mode ([f5b6b08](https://github.com/google/adk-python/commit/f5b6b0893338f2e1c025cb37792185656719cb1e))
-* Make `adk eval --print_detailed_results` invocation details readable ([69c58ea](https://github.com/google/adk-python/commit/69c58ea73adfcbe26cc1d17a5270a700c9ca20fb))
+* make `adk eval --print_detailed_results` invocation details readable ([69c58ea](https://github.com/google/adk-python/commit/69c58ea73adfcbe26cc1d17a5270a700c9ca20fb))
 * make the firestore session and memory services usable ([b0ffa24](https://github.com/google/adk-python/commit/b0ffa24abfc63c4f291535fb449258aa28be49d5)), closes [#7192](https://github.com/google/adk-python/issues/7192)
 * match ExecuteBashTool allowlist on whole shell tokens ([2a2364f](https://github.com/google/adk-python/commit/2a2364fd71faeaa64bd5216e1cf593ede3654c25))
 * **mcp:** respect proxy environment variables in mTLS transport ([3d11f9f](https://github.com/google/adk-python/commit/3d11f9fe7990b909db8f954923af3a5537797aba))
@@ -160,14 +177,11 @@
 * stop dropping temperature and top_p on the interactions API ([8e89a64](https://github.com/google/adk-python/commit/8e89a64c397472fd5cb85dac2b87bd6298dbb7b6))
 * stop OAuth2 secrets from leaking over /run, /run_sse, /run_live, dev_server, and session endpoints ([63aed55](https://github.com/google/adk-python/commit/63aed55113d4fe78245d3d6667b6e87569888bf5))
 * stop orphaned function_call from permanently blocking compaction ([3f34675](https://github.com/google/adk-python/commit/3f34675a196717d872376fe9e5085f94da36aebe)), closes [#7236](https://github.com/google/adk-python/issues/7236)
-* stop orphaned function_call from permanently blocking compaction ([e697990](https://github.com/google/adk-python/commit/e6979909ab88342cf7f845ae6e8428f31a45aed6)), closes [#7236](https://github.com/google/adk-python/issues/7236)
-* stop orphaned function_call from permanently blocking compaction ([73ad447](https://github.com/google/adk-python/commit/73ad4472e5dd68fcef83f6fff2d34f875e138996)), closes [#7236](https://github.com/google/adk-python/issues/7236)
 * stop partial tools colliding and send the __call__ docstring ([6a60d6a](https://github.com/google/adk-python/commit/6a60d6a2e8414479466bc397d7d1d905131eeb3b)), closes [#7190](https://github.com/google/adk-python/issues/7190)
 * stop run_llm_agent_as_node mutating the shared node agent ([60c4081](https://github.com/google/adk-python/commit/60c40816d8d9c83680c60ca23b440760382d6d44))
 * stop to_a2a from overriding the application's log level ([7a50a85](https://github.com/google/adk-python/commit/7a50a8591b057b73ee6a572cb06ba4380360ef1d)), closes [#7462](https://github.com/google/adk-python/issues/7462)
 * stringify enum values in legacy schema declarations ([014f987](https://github.com/google/adk-python/commit/014f987d7e4abbe12033b0fa2cc7c203091252e6)), closes [#6978](https://github.com/google/adk-python/issues/6978)
 * strip embedded thought signature from LiteLLM tool call ids ([be42798](https://github.com/google/adk-python/commit/be4279876299d7831f192f27061a3fbcff3596c4)), closes [#6742](https://github.com/google/adk-python/issues/6742)
-* take the ADK user id only from an authenticated principal ([d0c4060](https://github.com/google/adk-python/commit/d0c40600fc4f4028d7b4fb86ce0f1b2163f8e28e))
 * **telemetry:** stop holding OTel context across async generator yields ([10c694f](https://github.com/google/adk-python/commit/10c694f5c3f186cc5d335291743352c7869c8f3a))
 * tolerate trailing slash on discovered OAuth2 issuer ([c220fca](https://github.com/google/adk-python/commit/c220fca16a7e7f7620bde799c50b240f2451ef79)), closes [#7265](https://github.com/google/adk-python/issues/7265)
 * **tools:** guard concurrent lazy initialization in ComputerUseToolset and EnvironmentToolset ([15486db](https://github.com/google/adk-python/commit/15486dbb2ac26284f4384857acc0d4002f4e4fc4))
@@ -214,6 +228,8 @@
 ### Miscellaneous Chores
 
 * release as 2.12.0 ([cfc5854](https://github.com/google/adk-python/commit/cfc5854ef4bd77301d1219e29da5182d7bbffc42))
+
+</details>
 
 ## [2.11.0](https://github.com/google/adk-python/compare/v2.10.0...v2.11.0) (2026-10-01)
 
