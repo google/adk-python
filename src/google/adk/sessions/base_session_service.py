@@ -33,8 +33,8 @@ class GetSessionConfig(BaseModel):
   Attributes:
     num_recent_events: The limit of recent events to get for the session.
       Optional: if None, the filter is not applied; if greater than 0, returns
-        at most given number of recent events; if 0, no events are returned;
-        if negative, a ValueError is raised.
+        at most given number of recent events; if 0, no events are returned; if
+        negative, a ValueError is raised.
     after_timestamp: The earliest timestamp of events to get for the session.
       Optional: if None, the filter is not applied; otherwise, returns events
         with timestamp >= the given time.
@@ -204,6 +204,14 @@ class BaseSessionService(abc.ABC):
     for key, value in event.actions.state_delta.items():
       if key.startswith(State.TEMP_PREFIX):
         session.state[key] = value
+        bare_key = key[len(State.TEMP_PREFIX) :]
+        if bare_key:
+          existing = session.state.get(bare_key)
+          if existing is None or (
+              isinstance(existing, str)
+              and existing.startswith('[REDACTED_SECRET:')
+          ):
+            session.state[bare_key] = value
 
   def _trim_temp_delta_state(self, event: Event) -> Event:
     """Removes temporary state delta keys from the event.
