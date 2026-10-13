@@ -42,6 +42,7 @@ class FeatureName(str, Enum):
   DAYTONA_ENVIRONMENT = "DAYTONA_ENVIRONMENT"
   E2B_ENVIRONMENT = "E2B_ENVIRONMENT"
   ELEVEN_LABS = "ELEVEN_LABS"
+  OPENSANDBOX_ENVIRONMENT = "OPENSANDBOX_ENVIRONMENT"
   ENVIRONMENT_SIMULATION = "ENVIRONMENT_SIMULATION"
   EVENTARC_TOOL_CONFIG = "EVENTARC_TOOL_CONFIG"
   EVENTARC_TOOLSET = "EVENTARC_TOOLSET"
@@ -158,6 +159,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.ELEVEN_LABS: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.OPENSANDBOX_ENVIRONMENT: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.ENVIRONMENT_SIMULATION: FeatureConfig(

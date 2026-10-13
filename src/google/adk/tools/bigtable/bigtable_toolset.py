@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from typing import Any
 from typing import Callable
 from typing import List
@@ -35,6 +36,38 @@ from ...tools.google_tool import GoogleTool
 from ..tool_context import ToolContext
 from .bigtable_credentials import BigtableCredentialsConfig
 from .settings import BigtableToolSettings
+
+logger = logging.getLogger("google_adk." + __name__)
+
+
+class _BigtableQueryTool(GoogleTool):
+  """Plain execute_sql tool that keeps _view_parameters away from the model."""
+
+  def __init__(
+      self,
+      *,
+      credentials_config: BigtableCredentialsConfig | None = None,
+      tool_settings: BigtableToolSettings | None = None,
+  ):
+    super().__init__(
+        func=query_tool.execute_sql,
+        credentials_config=credentials_config,
+        tool_settings=tool_settings,
+    )
+    self._ignore_params.append("_view_parameters")
+
+  @override
+  async def _run_async_with_credential(
+      self,
+      credentials: Credentials | None,
+      tool_settings: BaseModel | None,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+  ) -> Any:
+    args = {k: v for k, v in args.items() if k != "_view_parameters"}
+    return await super()._run_async_with_credential(
+        credentials, tool_settings, args, tool_context
+    )
 
 
 class BigtableParameterizedViewTool(GoogleTool):
@@ -129,6 +162,10 @@ class BigtableToolset(BaseToolset):
     - bigtable_list_clusters
     - bigtable_get_cluster_info
     - bigtable_execute_sql
+
+  When view_parameter_names is configured, bigtable_execute_sql is replaced by
+  bigtable_execute_sql_parameterized, which fills the view parameters in from
+  the tool context.
   """
 
   def __init__(
@@ -165,6 +202,19 @@ class BigtableToolset(BaseToolset):
 
     return False
 
+  def _warn_on_filtered_out_query_tool(self) -> None:
+    if not self.view_parameter_names or not isinstance(self.tool_filter, list):
+      return
+    if (
+        "execute_sql" in self.tool_filter
+        and "execute_sql_parameterized" not in self.tool_filter
+    ):
+      logger.warning(
+          "tool_filter names execute_sql, which view_parameter_names replaces"
+          " with execute_sql_parameterized, so no query tool is returned. Add"
+          " execute_sql_parameterized to tool_filter."
+      )
+
   @override
   async def get_tools(
       self, readonly_context: ReadonlyContext | None = None
@@ -177,7 +227,6 @@ class BigtableToolset(BaseToolset):
         metadata_tool.get_table_info,
         metadata_tool.list_clusters,
         metadata_tool.get_cluster_info,
-        query_tool.execute_sql,
     )
     all_tools = [
         GoogleTool(
@@ -187,6 +236,7 @@ class BigtableToolset(BaseToolset):
         )
         for func in tool_functions
     ]
+    # Registering both would let the model pick its own view parameters.
     if self.view_parameter_names:
       all_tools.append(
           BigtableParameterizedViewTool(
@@ -196,6 +246,14 @@ class BigtableToolset(BaseToolset):
               view_parameter_names=self.view_parameter_names,
           )
       )
+    else:
+      all_tools.append(
+          _BigtableQueryTool(
+              credentials_config=self._credentials_config,
+              tool_settings=self._tool_settings,
+          )
+      )
+    self._warn_on_filtered_out_query_tool()
     return [
         tool
         for tool in all_tools
