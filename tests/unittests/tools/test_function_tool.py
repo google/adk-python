@@ -655,9 +655,10 @@ async def test_run_async_with_streaming_tool_and_input_stream(
   mock_stream = mock.MagicMock()
   mock_stream.read.return_value = "stream_data"
 
+  mock_tool_context.function_call_id = "call_1"
   mock_tool_context._invocation_context = mock.MagicMock()
-  mock_tool_context._invocation_context.active_streaming_tools = {
-      "streaming_tool_input": mock.MagicMock(stream=mock_stream)
+  mock_tool_context._invocation_context._active_background_tools = {
+      "call_1": mock.MagicMock(input_stream=mock_stream)
   }
 
   async def streaming_tool_input(val: int, input_stream: Any):

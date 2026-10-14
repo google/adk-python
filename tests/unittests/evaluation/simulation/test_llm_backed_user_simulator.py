@@ -14,7 +14,10 @@
 
 from __future__ import annotations
 
+import json
+
 from google.adk.evaluation import conversation_scenarios
+from google.adk.evaluation.simulation import user_simulator
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulator
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
 from google.adk.evaluation.simulation.user_simulator import Status
@@ -24,6 +27,8 @@ from google.adk.events.event import Event
 from google.genai import types
 from pydantic import ValidationError
 import pytest
+
+from ... import testing_utils
 
 _INPUT_EVENTS = [
     Event(
@@ -105,6 +110,74 @@ def test_llm_backed_user_simulator_config_validation():
     LlmBackedUserSimulatorConfig(custom_instructions=invalid_instructions)
 
 
+def test_llm_backed_user_simulator_config_rejects_invalid_model_type():
+  """Non-string, non-BaseLlm models raise ValidationError."""
+  with pytest.raises(ValidationError):
+    LlmBackedUserSimulatorConfig.model_validate_json(
+        '{"model": {"model": "x"}}'
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "config_cls",
+    [LlmBackedUserSimulatorConfig, user_simulator.BaseUserSimulatorConfig],
+)
+async def test_llm_backed_user_simulator_generates_message_with_basellm(
+    config_cls,
+):
+  """LlmBackedUserSimulator sends generation requests to a BaseLlm model."""
+  mock_model = testing_utils.MockModel.create(responses=["Simulated response"])
+  mock_model.model = "gemini-2.5-flash"
+  config = config_cls(type="llm_backed", model=mock_model)
+  simulator = LlmBackedUserSimulator(
+      config=config,
+      conversation_scenario=conversation_scenarios.ConversationScenario(
+          starting_prompt="Hello",
+          conversation_plan="test plan",
+      ),
+  )
+
+  await simulator.get_next_user_message(events=[])
+  result = await simulator.get_next_user_message(events=_INPUT_EVENTS)
+
+  assert result.status == Status.SUCCESS
+  assert result.user_message.parts[0].text == "Simulated response"
+  assert len(mock_model.requests) == 1
+  assert mock_model.requests[0].model == "gemini-2.5-flash"
+
+
+@pytest.mark.asyncio
+async def test_llm_backed_user_simulator_does_not_mutate_caller_config():
+  """Running the simulator does not mutate the caller's model_configuration."""
+  mock_model = testing_utils.MockModel.create(responses=["Simulated response"])
+  config = LlmBackedUserSimulatorConfig(model=mock_model)
+  simulator = LlmBackedUserSimulator(
+      config=config,
+      conversation_scenario=conversation_scenarios.ConversationScenario(
+          starting_prompt="Hello",
+          conversation_plan="test plan",
+      ),
+  )
+
+  await simulator.get_next_user_message(events=[])
+  await simulator.get_next_user_message(events=_INPUT_EVENTS)
+
+  assert config.model_configuration.http_options is None
+
+
+def test_llm_backed_user_simulator_config_serializes_basellm_to_model_name():
+  """Serializing LlmBackedUserSimulatorConfig persists only the model name."""
+  mock_model = testing_utils.MockModel(model="mock-model", responses=[])
+  config = LlmBackedUserSimulatorConfig(model=mock_model)
+
+  dumped_json = config.model_dump_json()
+  loaded = LlmBackedUserSimulatorConfig.model_validate_json(dumped_json)
+
+  assert json.loads(dumped_json)["model"] == "mock-model"
+  assert loaded.model == "mock-model"
+
+
 class TestHelperMethods:
   """Test cases for LlmBackedUserSimulator helper methods."""
 
@@ -142,7 +215,7 @@ async def to_async_iter(items):
 def mock_llm_agent(mocker):
   """Provides a mock LLM agent."""
   mock_llm_registry_cls = mocker.patch(
-      "google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry",
+      "google.adk.evaluation.llm_as_judge_utils.LLMRegistry",
       autospec=True,
   )
   mock_llm_registry = mocker.MagicMock()

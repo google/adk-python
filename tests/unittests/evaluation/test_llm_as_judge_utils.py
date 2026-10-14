@@ -27,10 +27,14 @@ from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.llm_as_judge_utils import get_average_rubric_score
 from google.adk.evaluation.llm_as_judge_utils import get_eval_status
 from google.adk.evaluation.llm_as_judge_utils import get_grounding_metadata_as_json_str
+from google.adk.evaluation.llm_as_judge_utils import get_model_name
 from google.adk.evaluation.llm_as_judge_utils import get_text_from_content
 from google.adk.evaluation.llm_as_judge_utils import get_tool_calls_and_responses_as_json_str
 from google.adk.evaluation.llm_as_judge_utils import get_tool_declarations_as_json_str
+from google.adk.evaluation.llm_as_judge_utils import resolve_llm
 from google.genai import types as genai_types
+
+from .. import testing_utils
 
 
 def test_get_text_from_content_with_none():
@@ -395,4 +399,42 @@ def test_get_grounding_metadata_as_json_str_without_metadata():
   assert (
       get_grounding_metadata_as_json_str(InvocationEvents())
       == "No grounding metadata was provided."
+  )
+
+
+def test_get_model_name_returns_string_unchanged():
+  """get_model_name returns a model name string as-is."""
+  assert get_model_name("gemini-2.5-flash") == "gemini-2.5-flash"
+
+
+def test_get_model_name_extracts_name_from_basellm():
+  """get_model_name returns the model attribute of a BaseLlm instance."""
+  mock_llm = testing_utils.MockModel(model="custom-model", responses=[])
+
+  assert get_model_name(mock_llm) == "custom-model"
+
+
+def test_resolve_llm_returns_basellm_instance_directly():
+  """resolve_llm returns a BaseLlm instance without consulting LLMRegistry."""
+  mock_llm = testing_utils.MockModel(model="custom-model", responses=[])
+
+  assert resolve_llm(mock_llm) is mock_llm
+
+
+def test_resolve_llm_resolves_model_name_via_registry(mocker):
+  """resolve_llm resolves a model name string through LLMRegistry."""
+  mock_registry_cls = mocker.patch(
+      "google.adk.evaluation.llm_as_judge_utils.LLMRegistry",
+      autospec=True,
+  )
+  resolved_instance = mocker.MagicMock()
+  mock_registry_cls.return_value.resolve.return_value.return_value = (
+      resolved_instance
+  )
+
+  result = resolve_llm("gemini-2.5-flash")
+
+  assert result is resolved_instance
+  mock_registry_cls.return_value.resolve.assert_called_once_with(
+      "gemini-2.5-flash"
   )

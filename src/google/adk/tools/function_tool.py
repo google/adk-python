@@ -270,17 +270,15 @@ class FunctionTool(BaseTool):
 
     # In live mode (bidirectional streaming), tools may accept an 'input_stream'
     # parameter (e.g., LiveRequestQueue) to receive real-time streaming data.
-    # When registered in _process_function_live_helper, the framework attaches
-    # the dedicated stream to invocation_context.active_streaming_tools[name].
-    # If the tool signature expects 'input_stream', we inject that active stream.
-    if "input_stream" in valid_params:
-      active_tools = tool_context._invocation_context.active_streaming_tools
-      if (
-          active_tools is not None
-          and self.name in active_tools
-          and active_tools[self.name].stream is not None
-      ):
-        args_to_call["input_stream"] = active_tools[self.name].stream
+    # _process_function_live_helper registers each call with its own stream,
+    # keyed by function call id; inject the stream of this call.
+    if "input_stream" in valid_params and tool_context.function_call_id:
+      active_tools = (
+          tool_context._invocation_context._active_background_tools or {}
+      )
+      active = active_tools.get(tool_context.function_call_id)
+      if active is not None and active.input_stream is not None:
+        args_to_call["input_stream"] = active.input_stream
     return {k: v for k, v in args_to_call.items() if k in valid_params}
 
   @override

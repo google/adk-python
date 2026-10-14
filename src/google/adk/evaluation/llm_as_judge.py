@@ -31,7 +31,6 @@ from typing_extensions import override
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
-from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
 from ._retry_options_utils import add_default_retry_options_if_not_present
@@ -50,6 +49,8 @@ from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
 from .llm_as_judge_utils import build_judge_request_config
 from .llm_as_judge_utils import get_eval_status
+from .llm_as_judge_utils import get_model_name
+from .llm_as_judge_utils import resolve_llm
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -101,8 +102,10 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
       if self._eval_metric.criterion is None:
         raise expected_criterion_type_error
 
+      # Use dict() instead of model_dump() so the field serializer does not
+      # convert a BaseLlm judge into its name string.
       self._criterion: _CriterionT = criterion_type.model_validate(
-          self._eval_metric.criterion.model_dump()
+          dict(self._eval_metric.criterion)
       )
     except ValidationError as e:
       raise expected_criterion_type_error from e
@@ -219,7 +222,7 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
     ):
       auto_rater_prompt = self.format_auto_rater_prompt(actual, expected)
       llm_request = LlmRequest(
-          model=self._judge_model_options.judge_model,
+          model=get_model_name(self._judge_model_options.judge_model),
           contents=[
               genai_types.Content(
                   parts=[genai_types.Part(text=auto_rater_prompt)],
@@ -282,7 +285,4 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
     return EvaluationResult()
 
   def _setup_auto_rater(self) -> BaseLlm:
-    model_id = self._judge_model_options.judge_model
-    llm_registry = LLMRegistry()
-    llm_class = llm_registry.resolve(model_id)
-    return llm_class(model=model_id)
+    return resolve_llm(self._judge_model_options.judge_model)

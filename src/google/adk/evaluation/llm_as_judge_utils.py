@@ -22,6 +22,8 @@ from typing import Union
 
 from google.genai import types as genai_types
 
+from ..models.base_llm import BaseLlm
+from ..models.registry import LLMRegistry
 from .app_details import AppDetails
 from .common import EvalBaseModel
 from .eval_case import get_all_tool_calls_with_responses
@@ -31,6 +33,20 @@ from .eval_case import Invocation
 from .eval_case import InvocationEvents
 from .eval_metrics import RubricScore
 from .evaluator import EvalStatus
+
+
+def get_model_name(model: Union[str, BaseLlm]) -> str:
+  """Returns the model name string from a model name or BaseLlm instance."""
+  return model if isinstance(model, str) else model.model
+
+
+def resolve_llm(model: Union[str, BaseLlm]) -> BaseLlm:
+  """Returns the BaseLlm instance or resolves a model name via LLMRegistry."""
+  if isinstance(model, BaseLlm):
+    return model
+  llm_registry = LLMRegistry()
+  llm_class = llm_registry.resolve(model)
+  return llm_class(model=model)
 
 
 @enum.unique

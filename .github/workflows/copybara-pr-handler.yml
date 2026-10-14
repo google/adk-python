@@ -158,6 +158,55 @@ jobs:
                 }
 
                 console.log(`Marked PR #${prNumber} as merged (was ${pr.data.state})`);
+
+                // Auto-close issues linked via closing keywords in PR body
+                const prBody = pr.data.body || '';
+                const escapedOwner = context.repo.owner.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const escapedRepo = context.repo.repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const issueClosingRegex = new RegExp(
+                  `\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s*:?\\s*(?:https:\\/\\/github\\.com\\/${escapedOwner}\\/${escapedRepo}\\/issues\\/|(?:${escapedOwner}\\/${escapedRepo})?#)(\\d+)`,
+                  'gi'
+                );
+                const linkedIssues = new Set();
+                let match;
+                while ((match = issueClosingRegex.exec(prBody)) !== null) {
+                  linkedIssues.add(parseInt(match[1], 10));
+                }
+
+                for (const issueNumber of linkedIssues) {
+                  try {
+                    const issue = await github.rest.issues.get({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issueNumber
+                    });
+
+                    if (issue.data.pull_request) {
+                      continue;
+                    }
+
+                    if (issue.data.state === 'open') {
+                      await github.rest.issues.createComment({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: issueNumber,
+                        body: `Resolved by #${prNumber} (imported and merged in commit ${commitSha}). Closing issue.`
+                      });
+
+                      await github.rest.issues.update({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: issueNumber,
+                        state: 'closed',
+                        state_reason: 'completed'
+                      });
+
+                      console.log(`Automatically closed linked issue #${issueNumber}`);
+                    }
+                  } catch (issueError) {
+                    console.log(`Could not process linked issue #${issueNumber}:`, issueError.message);
+                  }
+                }
               } catch (error) {
                 console.log(`Error marking PR #${prNumber} as merged:`, error.message);
               }

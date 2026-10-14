@@ -19,8 +19,12 @@ from google.adk.evaluation.custom_metric_evaluator import _get_metric_function
 from google.adk.evaluation.eval_case import ConversationScenario
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
+from google.adk.evaluation.eval_metrics import JudgeModelOptions
+from google.adk.evaluation.eval_metrics import LlmAsAJudgeCriterion
 from google.adk.evaluation.evaluator import EvaluationResult
 import pytest
+
+from .. import testing_utils
 
 
 def my_sync_metric_function(
@@ -108,3 +112,80 @@ async def test_custom_metric_evaluator_async_function(mock_get_metric_function):
   )
   result = await evaluator.evaluate_invocations([], None)
   assert result.overall_score == 0.5
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_shares_basellm_judge_across_deep_copy():
+  """evaluate_invocations shares a BaseLlm judge across deep copy."""
+  judge_model = testing_utils.MockModel.create(responses=[])
+  eval_metric = EvalMetric(
+      metric_name="custom_metric",
+      threshold=0.8,
+      criterion=LlmAsAJudgeCriterion(
+          threshold=0.5,
+          judge_model_options=JudgeModelOptions(judge_model=judge_model),
+      ),
+  )
+  captured_metrics: list[EvalMetric] = []
+
+  def custom_fn(metric, actual_invocations, expected_invocations, scenario):
+    del actual_invocations, expected_invocations, scenario
+    captured_metrics.append(metric)
+    return EvaluationResult(overall_score=1.0)
+
+  with mock.patch(
+      "google.adk.evaluation.custom_metric_evaluator._get_metric_function",
+      return_value=custom_fn,
+  ):
+    evaluator = _CustomMetricEvaluator(
+        eval_metric=eval_metric,
+        custom_function_path="module.custom_fn",
+    )
+    result = await evaluator.evaluate_invocations([])
+
+  assert result.overall_score == 1.0
+  assert len(captured_metrics) == 1
+  assert captured_metrics[0].threshold is None
+  assert (
+      captured_metrics[0].criterion.judge_model_options.judge_model
+      is judge_model
+  )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_isolates_caller_criterion_from_mutation():
+  """Mutating metric.criterion in a custom metric does not affect the caller."""
+  judge_model = testing_utils.MockModel.create(responses=[])
+  eval_metric = EvalMetric(
+      metric_name="custom_metric",
+      threshold=0.8,
+      criterion=LlmAsAJudgeCriterion(
+          threshold=0.5,
+          judge_model_options=JudgeModelOptions(
+              judge_model=judge_model,
+              num_samples=5,
+          ),
+      ),
+  )
+
+  def mutating_custom_fn(
+      metric, actual_invocations, expected_invocations, scenario
+  ):
+    del actual_invocations, expected_invocations, scenario
+    metric.criterion.threshold = 0.0
+    metric.criterion.judge_model_options.num_samples = 1
+    return EvaluationResult(overall_score=1.0)
+
+  with mock.patch(
+      "google.adk.evaluation.custom_metric_evaluator._get_metric_function",
+      return_value=mutating_custom_fn,
+  ):
+    evaluator = _CustomMetricEvaluator(
+        eval_metric=eval_metric,
+        custom_function_path="module.mutating_custom_fn",
+    )
+    await evaluator.evaluate_invocations([])
+
+  assert eval_metric.threshold == 0.8
+  assert eval_metric.criterion.threshold == 0.5
+  assert eval_metric.criterion.judge_model_options.num_samples == 5

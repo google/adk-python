@@ -25,7 +25,6 @@ from typing_extensions import override
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
-from ...models.registry import LLMRegistry
 from ...utils.context_utils import Aclosing
 from ...utils.feature_decorator import experimental
 from .._retry_options_utils import add_default_retry_options_if_not_present
@@ -40,8 +39,10 @@ from ..evaluator import PerInvocationResult
 from ..llm_as_judge import AutoRaterScore
 from ..llm_as_judge_utils import build_judge_request_config
 from ..llm_as_judge_utils import get_eval_status
+from ..llm_as_judge_utils import get_model_name
 from ..llm_as_judge_utils import get_text_from_content
 from ..llm_as_judge_utils import Label
+from ..llm_as_judge_utils import resolve_llm
 from .per_turn_user_simulator_quality_prompts import get_per_turn_user_simulator_quality_prompt
 
 
@@ -154,8 +155,10 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
       if self._eval_metric.criterion is None:
         raise expected_criterion_type_error
 
+      # Use dict() instead of model_dump() so the field serializer does not
+      # convert a BaseLlm judge into its name string.
       return self.criterion_type.model_validate(
-          self._eval_metric.criterion.model_dump()
+          dict(self._eval_metric.criterion)
       )
     except ValidationError as e:
       raise expected_criterion_type_error from e
@@ -206,10 +209,7 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     return self._aggregate_conversation_results(results)
 
   def _setup_llm(self) -> BaseLlm:
-    model_id = self._llm_options.judge_model
-    llm_registry = LLMRegistry()
-    llm_class = llm_registry.resolve(model_id)
-    return llm_class(model=model_id)
+    return resolve_llm(self._llm_options.judge_model)
 
   def _format_llm_prompt(
       self,
@@ -342,7 +342,7 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     )
 
     llm_request = LlmRequest(
-        model=self._llm_options.judge_model,
+        model=get_model_name(self._llm_options.judge_model),
         contents=[
             genai_types.Content(
                 parts=[genai_types.Part(text=auto_rater_prompt)],

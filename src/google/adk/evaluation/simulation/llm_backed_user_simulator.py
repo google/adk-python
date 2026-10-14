@@ -17,21 +17,26 @@ from __future__ import annotations
 import logging
 from typing import cast
 from typing import ClassVar
+from typing import Union
 
 from google.genai import types as genai_types
 from pydantic import Field
+from pydantic import field_serializer
 from pydantic import field_validator
+from pydantic.json_schema import SkipJsonSchema
 from typing_extensions import Literal
 from typing_extensions import override
 
 from ...events.event import Event
+from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
-from ...models.registry import LLMRegistry
 from ...utils.context_utils import Aclosing
 from ...utils.feature_decorator import experimental
 from .._retry_options_utils import add_default_retry_options_if_not_present
 from ..conversation_scenarios import ConversationScenario
 from ..evaluator import Evaluator
+from ..llm_as_judge_utils import get_model_name
+from ..llm_as_judge_utils import resolve_llm
 from .llm_backed_user_simulator_prompts import get_llm_backed_user_simulator_prompt
 from .llm_backed_user_simulator_prompts import is_valid_user_simulator_template
 from .user_simulator import BaseUserSimulatorConfig
@@ -56,9 +61,18 @@ class LlmBackedUserSimulatorConfig(BaseUserSimulatorConfig):
       ),
   )
 
-  model: str = Field(
+  model: Union[str, SkipJsonSchema[BaseLlm]] = Field(
       default="gemini-2.5-flash",
-      description="The model to use for user simulation.",
+      description=(
+          "The model to use for user simulation. It can be a model name or a"
+          " BaseLlm instance. A BaseLlm instance is only supported when"
+          " constructing the config programmatically, not via CLI/JSON eval"
+          " configs. On serialization only BaseLlm.model (the name) is"
+          " persisted, so a saved/reloaded config resolves the name through"
+          " LLMRegistry, which may produce a differently configured model or"
+          " fail. The same instance is shared across simulator runs and may be"
+          " called concurrently."
+      ),
   )
 
   model_configuration: genai_types.GenerateContentConfig = Field(
@@ -101,6 +115,17 @@ instructions must contain the following formatting placeholders following Jinja 
 conversation history prompt provided to the user simulator.""",
   )
 
+  @field_validator("model", mode="before")
+  @classmethod
+  def _validate_model(cls, value: object) -> object:
+    if isinstance(value, (str, BaseLlm)):
+      return value
+    raise ValueError("model must be a model name or a BaseLlm instance.")
+
+  @field_serializer("model")
+  def _serialize_model(self, value: Union[str, BaseLlm]) -> str:
+    return get_model_name(value)
+
   @field_validator("custom_instructions")
   @classmethod
   def validate_custom_instructions(cls, value: str | None) -> str | None:
@@ -139,9 +164,7 @@ class LlmBackedUserSimulator(UserSimulator):
     super().__init__(config, config_type=LlmBackedUserSimulator.config_type)
     self._conversation_scenario = conversation_scenario
     self._invocation_count = 0
-    llm_registry = LLMRegistry()
-    llm_class = llm_registry.resolve(self._llm_config.model)
-    self._llm = llm_class(model=self._llm_config.model)
+    self._llm = resolve_llm(self._llm_config.model)
     self._user_persona = self._conversation_scenario.user_persona
 
   @property
@@ -204,7 +227,7 @@ class LlmBackedUserSimulator(UserSimulator):
     )
 
     llm_request = LlmRequest(
-        model=self._llm_config.model,
+        model=get_model_name(self._llm_config.model),
         config=self._llm_config.model_configuration,
         contents=[
             genai_types.Content(

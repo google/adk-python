@@ -82,7 +82,7 @@ class TestUserSimulatorProvider:
         autospec=True,
     )
     mock_text_registry = mocker.patch(
-        "google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry",
+        "google.adk.evaluation.llm_as_judge_utils.LLMRegistry",
         autospec=True,
     )
     mock_text_registry.return_value.resolve.return_value = mocker.Mock()
@@ -108,7 +108,7 @@ class TestUserSimulatorProvider:
   def test_provide_llm_backed_user_simulator(self, mocker):
     """Tests the case when a LlmBackedUserSimulator should be provided."""
     mock_llm_registry = mocker.patch(
-        "google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry",
+        "google.adk.evaluation.llm_as_judge_utils.LLMRegistry",
         autospec=True,
     )
     mock_llm_registry.return_value.resolve.return_value = mocker.Mock()
@@ -242,7 +242,7 @@ class TestUserSimulatorProvider:
     provide() must raise a clear error naming the offending type.
     """
     mocker.patch(
-        "google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry",
+        "google.adk.evaluation.llm_as_judge_utils.LLMRegistry",
         autospec=True,
     )
 
