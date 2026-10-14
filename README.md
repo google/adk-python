@@ -220,7 +220,7 @@ of the ADK.
 
 ## Vibe Coding
 
-If you want to develop an agent via vibe coding, the [llms.txt](https://adk.dev/llms.txt) and  [llms-full.txt](https://adk.dev/llms-full.txt) files published on the ADK documentation site can be used as context for an LLM. The former is a summarized version, while the latter contains the full documentation for LLMs with a large context window.
+If you want to develop an agent via vibe coding, the [llms.txt](https://adk.dev/llms.txt) and [llms-full.txt](https://adk.dev/llms-full.txt) files published on the ADK documentation site can be used as context for an LLM. The former is a summarized version, while the latter contains the full documentation for LLMs with a large context window.
 
 ## Community Events
 
