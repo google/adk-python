@@ -2151,6 +2151,82 @@ async def test_parallel_single_turn_nodes_only_see_own_node_input(
   assert not any('SECRET_FOR_A' in t for t in texts_b)
 
 
+@pytest.mark.parametrize('include_contents', ['none', 'default'])
+async def test_parallel_single_turn_nodes_with_sub_branch_see_own_node_input(
+    request: pytest.FixtureRequest,
+    include_contents: str,
+):
+  """use_sub_branch=True keeps each parallel single_turn node's own node_input.
+
+  Main already isolates unbranched parallel single_turn nodes by node path
+  (097ae1ea3). This covers the branched workaround: with use_sub_branch=True,
+  worker_b must still see INPUT_B under include_contents 'none' and 'default'.
+  On 2.11.0 without the sub-branch, worker_b lost INPUT_B and only saw
+  worker_a's reply when A finished first.
+  """
+  a_finished = _asyncio.Event()
+
+  async def wait_for_a(callback_context: Context) -> None:
+    del callback_context
+    await a_finished.wait()
+
+  async def mark_a_finished(callback_context: Context) -> None:
+    del callback_context
+    a_finished.set()
+
+  model_a = _testing_utils.MockModel.create(responses=['out-a'])
+  model_b = _testing_utils.MockModel.create(responses=['out-b'])
+  worker_a = LlmAgent(
+      name='worker_a',
+      model=model_a,
+      instruction='Worker A.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents=include_contents,
+      after_agent_callback=mark_a_finished,
+  )
+  worker_b = LlmAgent(
+      name='worker_b',
+      model=model_b,
+      instruction='Worker B.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents=include_contents,
+      before_agent_callback=wait_for_a,
+  )
+
+  @node(rerun_on_resume=True)
+  async def fanout(ctx: Context) -> dict[str, Any]:
+    res_a, res_b = await _asyncio.gather(
+        ctx.run_node(
+            worker_a, node_input='INPUT_A', run_id='a', use_sub_branch=True
+        ),
+        ctx.run_node(
+            worker_b, node_input='INPUT_B', run_id='b', use_sub_branch=True
+        ),
+    )
+    return {'a': res_a, 'b': res_b}
+
+  wf = Workflow(name='parallel_sub_branch_wf', edges=[(START, fanout)])
+  runner = _new_workflow_runner(wf, request.function.__name__)
+  await runner.run_async(_testing_utils.get_user_content('start'))
+
+  assert len(model_a.requests) == 1
+  texts_a = [
+      p.text for p in _request_parts(model_a.requests[0]) if p.text
+  ]
+  assert any('INPUT_A' in t for t in texts_a)
+  assert not any('INPUT_B' in t for t in texts_a)
+  assert not any('out-b' in t for t in texts_a)
+
+  assert len(model_b.requests) == 1
+  texts_b = [
+      p.text for p in _request_parts(model_b.requests[0]) if p.text
+  ]
+  # Primary regression: worker_b must keep its own node_input.
+  assert any('INPUT_B' in t for t in texts_b)
+  assert not any('INPUT_A' in t for t in texts_b)
+  assert not any('out-a' in t for t in texts_b)
+
+
 def _request_parts(request_obj: Any) -> list[types.Part]:
   parts: list[types.Part] = []
   for content in request_obj.contents:
