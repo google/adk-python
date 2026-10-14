@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
+from collections.abc import MutableMapping
 from typing import Any
 
 from google.adk.platform import uuid as platform_uuid
@@ -22,6 +24,8 @@ from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
+from pydantic import ModelWrapValidatorHandler
 from pydantic import PrivateAttr
 from typing_extensions import override
 
@@ -35,6 +39,7 @@ from ..events._internal_metadata import without_internal_metadata
 from ..events._interrupts import extract_event_interrupt_ids
 from ..events._node_path_builder import _NodePathBuilder
 from ..events.event import Event
+from ..live import _active_background_tool
 from ..live._active_streaming_tool import ActiveStreamingTool
 from ..live._realtime_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
 from ..live._transcription_entry import TranscriptionEntry
@@ -226,12 +231,6 @@ class InvocationContext(BaseModel):
   live_request_queue: LiveRequestQueue | None = None
   """The queue to receive live requests."""
 
-  active_streaming_tools: dict[str, ActiveStreamingTool] | None = None
-  """The running streaming tools of this invocation."""
-
-  active_non_blocking_tool_tasks: dict[str, asyncio.Task[Any]] | None = None
-  """The running non-blocking tool tasks of this invocation (Live only)."""
-
   transcription_cache: list[TranscriptionEntry] | None = None
   """Caches necessary data, audio or contents, that are needed by transcription."""
 
@@ -301,6 +300,90 @@ class InvocationContext(BaseModel):
 
   _abort_state: _AbortState = PrivateAttr(default_factory=_AbortState)
   """Captured abort state (signal, loop, and aborted flag) shared across copies."""
+
+  _active_background_tools: (
+      dict[str, _active_background_tool.ActiveBackgroundTool] | None
+  ) = PrivateAttr(default=None)
+  """The tool calls running in the background of this live run.
+
+  Holds both streaming tools and non-blocking tools, keyed by function call
+  id. Created on first registration, so contexts copied before then don't
+  share it. Readers treat ``None`` as empty.
+  """
+
+  def _add_background_tool(
+      self, entry: _active_background_tool.ActiveBackgroundTool
+  ) -> None:
+    """Registers a tool call running in the background of this live run."""
+    self._registry_for_write()[entry.function_call_id] = entry
+
+  @model_validator(mode="wrap")
+  @classmethod
+  def _apply_deprecated_background_tool_fields(
+      cls, data: Any, handler: ModelWrapValidatorHandler[InvocationContext]
+  ) -> InvocationContext:
+    """Accepts the deprecated background tool fields in the constructor."""
+    data, deprecated = _active_background_tool.pop_deprecated_fields(data)
+    ctx = handler(data)
+    if deprecated:
+      _active_background_tool.apply_deprecated_fields(
+          ctx._registry_for_write(), deprecated
+      )
+    return ctx
+
+  @property
+  def active_streaming_tools(
+      self,
+  ) -> MutableMapping[str, ActiveStreamingTool] | None:
+    """Deprecated: the running streaming tools, keyed by tool name.
+
+    A live view of the background tool registry, which is what the framework
+    reads; ``None`` until the first background tool call. Reading a tool
+    returns its most recent call, and setting ``task`` or ``stream`` on it
+    updates that call. Assigning a tool replaces all of its calls, and deleting
+    one stops tracking them without cancelling their tasks.
+    """
+    return _active_background_tool.get_active_streaming_tools(
+        self._active_background_tools
+    )
+
+  @active_streaming_tools.setter
+  def active_streaming_tools(
+      self, value: Mapping[str, ActiveStreamingTool] | None
+  ) -> None:
+    _active_background_tool.set_active_streaming_tools(
+        self._registry_for_write(), value
+    )
+
+  @property
+  def active_non_blocking_tool_tasks(
+      self,
+  ) -> MutableMapping[str, asyncio.Task[Any]] | None:
+    """Deprecated: the running non-blocking tool tasks.
+
+    Keyed by ``f'{tool_name}_{function_call_id}'``. A live view of the
+    background tool registry, which is what the framework reads; ``None``
+    until the first background tool call. Deleting a key stops tracking the
+    task without cancelling it.
+    """
+    return _active_background_tool.get_active_non_blocking_tool_tasks(
+        self._active_background_tools
+    )
+
+  @active_non_blocking_tool_tasks.setter
+  def active_non_blocking_tool_tasks(
+      self, value: Mapping[str, asyncio.Task[Any]] | None
+  ) -> None:
+    _active_background_tool.set_active_non_blocking_tool_tasks(
+        self._registry_for_write(), value
+    )
+
+  def _registry_for_write(
+      self,
+  ) -> dict[str, _active_background_tool.ActiveBackgroundTool]:
+    if self._active_background_tools is None:
+      self._active_background_tools = {}
+    return self._active_background_tools
 
   @override
   def model_post_init(self, __context: Any) -> None:

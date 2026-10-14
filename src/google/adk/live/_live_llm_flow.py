@@ -102,17 +102,20 @@ async def send_to_model(
     assert live_request_queue is not None
     live_request = await live_request_queue.get()
     # duplicate the live_request to all the active streams
+    active_streams = [
+        active.input_stream
+        for active in (
+            invocation_context._active_background_tools or {}
+        ).values()
+        if active.input_stream is not None
+    ]
     logger.debug(
-        'Sending live request %s to active streams: %s',
+        'Sending live request %s to %d active stream(s)',
         live_request,
-        invocation_context.active_streaming_tools,
+        len(active_streams),
     )
-    if invocation_context.active_streaming_tools:
-      for active_streaming_tool in (
-          invocation_context.active_streaming_tools
-      ).values():
-        if active_streaming_tool.stream:
-          active_streaming_tool.stream.send(live_request)
+    for stream in active_streams:
+      stream.send(live_request)
     # Yield to event loop for cooperative multitasking
     await asyncio.sleep(0)
 

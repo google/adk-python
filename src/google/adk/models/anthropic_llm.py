@@ -55,6 +55,7 @@ from ..utils import _json_utils
 from ..utils import streaming_utils
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._schema_utils import lowercase_schema_types
+from ..utils._schema_utils import schema_to_json_schema
 from .base_llm import BaseLlm
 from .interactions_utils import extract_system_instruction
 from .llm_response import LlmResponse
@@ -108,6 +109,14 @@ _RATE_LIMIT_POSSIBLE_FIX_MESSAGE = (
 
 # Claude rejects a cache breakpoint on a reasoning block.
 _UNCACHEABLE_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
+
+# The tool a requested response schema is delivered as; see _OutputSchemaTool.
+_OUTPUT_SCHEMA_TOOL_NAME = "structured_output"
+_OUTPUT_SCHEMA_TOOL_DESCRIPTION = (
+    "Provide your final answer. Call this tool exactly once, with your whole "
+    "answer in the structure its input describes."
+)
+_OUTPUT_SCHEMA_VALUE_KEY = "response"
 
 
 # anthropic is an optional dependency, so mypy resolves the base class to Any.
@@ -213,6 +222,20 @@ def _build_anthropic_thinking_param(
       type="enabled",
       budget_tokens=thinking_budget,
   )
+
+
+def _thinking_is_enabled(
+    thinking: Union[
+        anthropic_types.ThinkingConfigEnabledParam,
+        anthropic_types.ThinkingConfigDisabledParam,
+        anthropic_types.ThinkingConfigAdaptiveParam,
+        NotGiven,
+    ],
+) -> bool:
+  """Whether the mapped thinking parameter asks Claude to reason."""
+  if not isinstance(thinking, dict):
+    return False
+  return thinking.get("type") in ("enabled", "adaptive")
 
 
 class AnthropicGenerateContentConfig(types.GenerateContentConfig):
@@ -874,6 +897,103 @@ def function_declaration_to_tool_param(
   )
 
 
+@dataclasses.dataclass(frozen=True)
+class _OutputSchemaTool:
+  """A response schema delivered as the one tool Claude is asked to call.
+
+  Claude takes a schema natively only through ``output_config.format`` on its
+  newest models, so a request that asks for structured output and declares no
+  tools of its own carries the schema as a tool definition instead. The call
+  Claude makes is turned back into the response text the rest of the framework
+  already expects.
+  """
+
+  param: anthropic_types.ToolParam
+  nests_value: bool
+  """Whether the schema had to be nested to make the tool input an object."""
+
+  @classmethod
+  def for_schema(cls, response_schema: types.SchemaUnion) -> _OutputSchemaTool:
+    """Builds the tool that carries ``response_schema``."""
+    if isinstance(response_schema, types.Schema):
+      input_schema = response_schema.model_dump(
+          by_alias=True, exclude_none=True, mode="json"
+      )
+    else:
+      input_schema = copy.deepcopy(schema_to_json_schema(response_schema))
+    lowercase_schema_types(input_schema)
+
+    # A tool's input schema must be an object, so a list or a scalar schema
+    # becomes the single property of one.
+    nests_value = input_schema.get("type") != "object"
+    if nests_value:
+      # A $ref is resolved from the document root, so the $defs it points at
+      # have to stay there rather than move under the new property.
+      defs = input_schema.pop("$defs", None)
+      input_schema = {
+          "type": "object",
+          "properties": {_OUTPUT_SCHEMA_VALUE_KEY: input_schema},
+          "required": [_OUTPUT_SCHEMA_VALUE_KEY],
+      }
+      if defs:
+        input_schema["$defs"] = defs
+
+    return cls(
+        param=anthropic_types.ToolParam(
+            name=_OUTPUT_SCHEMA_TOOL_NAME,
+            description=_OUTPUT_SCHEMA_TOOL_DESCRIPTION,
+            input_schema=input_schema,
+        ),
+        nests_value=nests_value,
+    )
+
+  def choice(
+      self, *, thinking_enabled: bool
+  ) -> anthropic_types.ToolChoiceParam:
+    """The tool choice that asks for exactly one call to this tool.
+
+    Claude rejects forced tool use outright while extended thinking is on, so
+    a thinking request offers the tool and takes back whatever text it gets.
+    """
+    if thinking_enabled:
+      return anthropic_types.ToolChoiceAutoParam(
+          type="auto",
+          disable_parallel_tool_use=True,
+      )
+    return anthropic_types.ToolChoiceToolParam(
+        type="tool",
+        name=_OUTPUT_SCHEMA_TOOL_NAME,
+        disable_parallel_tool_use=True,
+    )
+
+  def to_text(self, args: dict[str, Any]) -> str:
+    """Returns the structured response a call to this tool carries."""
+    value = args.get(_OUTPUT_SCHEMA_VALUE_KEY) if self.nests_value else args
+    return json.dumps(value, ensure_ascii=False)
+
+  def unwrap(self, response: LlmResponse) -> LlmResponse:
+    """Replaces the tool call, in place, with the response it carries."""
+    if not response.content or not response.content.parts:
+      return response
+    call = next(
+        (
+            part.function_call
+            for part in response.content.parts
+            if part.function_call is not None
+            and part.function_call.name == _OUTPUT_SCHEMA_TOOL_NAME
+        ),
+        None,
+    )
+    if call is None:
+      return response
+    # Offered rather than forced, Claude may narrate before it calls the tool,
+    # and that prose would be read as part of the structured answer.
+    parts = [part for part in response.content.parts if part.thought]
+    parts.append(types.Part.from_text(text=self.to_text(call.args or {})))
+    response.content.parts = parts
+    return response
+
+
 def _to_cache_control(
     cache_config: ContextCacheConfig,
 ) -> anthropic_types.CacheControlEphemeralParam:
@@ -1063,13 +1183,7 @@ class AnthropicLlm(BaseLlm):
     if effort:
       kwargs["output_config"] = {"effort": effort}
 
-    # Determine if thinking is enabled to avoid parameter conflicts.
-    thinking_enabled = False
-    if thinking is not NOT_GIVEN and thinking is not None:
-      if isinstance(thinking, dict):
-        thinking_enabled = thinking.get("type") in ["enabled", "adaptive"]
-
-    exclude_sampling = thinking_enabled or (effort is not None)
+    exclude_sampling = _thinking_is_enabled(thinking) or (effort is not None)
 
     if llm_request.config:
       # Models released after Claude Opus 4.6 do not support setting
@@ -1136,12 +1250,27 @@ class AnthropicLlm(BaseLlm):
           function_declaration_to_tool_param(tool)
           for tool in function_declarations
       ]
-    tool_choice = (
+    tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven] = (
         anthropic_types.ToolChoiceAutoParam(type="auto")
         if llm_request.tools_dict
         else NOT_GIVEN
     )
     thinking = _build_anthropic_thinking_param(llm_request.config)
+    # A requested schema rides along as a tool, since forcing a call on a
+    # request that already declares tools would cut that turn short.
+    output_schema_tool: Optional[_OutputSchemaTool] = None
+    if (
+        llm_request.config
+        and llm_request.config.response_schema
+        and not function_declarations
+    ):
+      output_schema_tool = _OutputSchemaTool.for_schema(
+          llm_request.config.response_schema
+      )
+      tools = [output_schema_tool.param]
+      tool_choice = output_schema_tool.choice(
+          thinking_enabled=_thinking_is_enabled(thinking)
+      )
 
     try:
       client = await self._get_anthropic_client()
@@ -1150,10 +1279,18 @@ class AnthropicLlm(BaseLlm):
             llm_request, messages, tools, tool_choice, thinking
         )
         message = await client.messages.create(**kwargs)
-        yield message_to_generate_content_response(message)
+        response = message_to_generate_content_response(message)
+        if output_schema_tool is not None:
+          response = output_schema_tool.unwrap(response)
+        yield response
       else:
         async for response in self._generate_content_streaming(
-            llm_request, messages, tools, tool_choice, thinking
+            llm_request,
+            messages,
+            tools,
+            tool_choice,
+            thinking,
+            output_schema_tool=output_schema_tool,
         ):
           yield response
     except RateLimitError as rate_limit_error:
@@ -1171,6 +1308,8 @@ class AnthropicLlm(BaseLlm):
           anthropic_types.ThinkingConfigAdaptiveParam,
           NotGiven,
       ] = NOT_GIVEN,
+      *,
+      output_schema_tool: Optional[_OutputSchemaTool] = None,
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming responses from Anthropic models.
 
@@ -1180,6 +1319,8 @@ class AnthropicLlm(BaseLlm):
       tools: Optional tool configurations.
       tool_choice: Optional tool choice setting.
       thinking: Optional thinking details.
+      output_schema_tool: The tool carrying a requested response schema, whose
+        call is streamed as the response text rather than as a function call.
 
     Yields:
       Partial LlmResponse objects as content arrives, followed by
@@ -1237,6 +1378,10 @@ class AnthropicLlm(BaseLlm):
               name=block.name,
               args_json="",
           )
+          if output_schema_tool is not None and (
+              block.name == _OUTPUT_SCHEMA_TOOL_NAME
+          ):
+            continue
           yield LlmResponse(
               partial=True,
               content=types.Content(
@@ -1299,6 +1444,21 @@ class AnthropicLlm(BaseLlm):
           if event.index in tool_use_blocks:
             tool_use_blocks[event.index].args_json += delta.partial_json
             accumulator = tool_use_blocks[event.index]
+            if output_schema_tool is not None and (
+                accumulator.name == _OUTPUT_SCHEMA_TOOL_NAME
+            ):
+              # The streamed tool input is the structured answer itself, except
+              # where the schema had to be nested to become an object.
+              if delta.partial_json and not output_schema_tool.nests_value:
+                yield LlmResponse(
+                    content=types.Content(
+                        role="model",
+                        parts=[types.Part.from_text(text=delta.partial_json)],
+                    ),
+                    model_version=model_version,
+                    partial=True,
+                )
+              continue
             partial_args = None
             if delta.partial_json:
               if accumulator.tracker is None:
@@ -1386,13 +1546,16 @@ class AnthropicLlm(BaseLlm):
           usage_metadata, "cache_creation_input_tokens", cache_creation_tokens
       )
 
-    yield LlmResponse(
+    final_response = LlmResponse(
         content=types.Content(role="model", parts=all_parts),
         usage_metadata=usage_metadata,
         finish_reason=to_google_genai_finish_reason(stop_reason),
         model_version=model_version,
         partial=False,
     )
+    if output_schema_tool is not None:
+      final_response = output_schema_tool.unwrap(final_response)
+    yield final_response
 
   async def _get_anthropic_client(
       self,
