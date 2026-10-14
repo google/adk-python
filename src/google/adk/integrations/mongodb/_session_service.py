@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 import copy
 import json
 import logging
+import threading
 import time
 from typing import Any
 from typing import AsyncGenerator
@@ -203,6 +204,10 @@ class MongoDbSessionService(BaseSessionService):
     self._session_lock_ref_count: dict[_SessionLockKey, int] = {}
     self._session_locks_guard = asyncio.Lock()
 
+    # Serializes first-use index creation across the worker threads that
+    # `asyncio.to_thread` runs `_ensure_indexes_once` on.
+    self._index_lock = threading.Lock()
+
     # Set to False after the deployment proves it cannot run multi-document
     # transactions (standalone mongod, mongomock), so later writes skip the
     # transaction attempt instead of paying for a failure each time.
@@ -229,13 +234,17 @@ class MongoDbSessionService(BaseSessionService):
     """
     if not self._ensure_indexes or self._indexes_ensured:
       return
-    self._events().create_index(
-        _EVENTS_HISTORY_INDEX_KEYS, name=_EVENTS_HISTORY_INDEX_NAME
-    )
-    self._sessions().create_index(
-        _SESSIONS_LIST_INDEX_KEYS, name=_SESSIONS_LIST_INDEX_NAME
-    )
-    self._indexes_ensured = True
+    with self._index_lock:
+      # Re-check under the lock: a concurrent first call may have done it.
+      if self._indexes_ensured:
+        return
+      self._events().create_index(
+          _EVENTS_HISTORY_INDEX_KEYS, name=_EVENTS_HISTORY_INDEX_NAME
+      )
+      self._sessions().create_index(
+          _SESSIONS_LIST_INDEX_KEYS, name=_SESSIONS_LIST_INDEX_NAME
+      )
+      self._indexes_ensured = True
 
   @staticmethod
   def _session_key(app_name: str, user_id: str, session_id: str) -> str:
@@ -522,9 +531,14 @@ class MongoDbSessionService(BaseSessionService):
       docs = list(self._sessions().find(query))
 
       app_state = self._read_app_state(app_name)
-      user_ids = {doc["user_id"] for doc in docs}
+      # One query for every user present, not one query per user (N+1).
+      user_keys = [
+          self._user_key(app_name, uid)
+          for uid in {doc["user_id"] for doc in docs}
+      ]
       user_states = {
-          uid: self._read_user_state(app_name, uid) for uid in user_ids
+          doc["_id"]: _loads_state(doc.get("state"))
+          for doc in self._user_states().find({"_id": {"$in": user_keys}})
       }
 
       sessions = [
@@ -532,7 +546,7 @@ class MongoDbSessionService(BaseSessionService):
               doc,
               self._merge_state(
                   app_state,
-                  user_states.get(doc["user_id"], {}),
+                  user_states.get(self._user_key(app_name, doc["user_id"]), {}),
                   _loads_state(doc.get("state")),
               ),
               [],
