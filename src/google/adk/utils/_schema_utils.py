@@ -172,6 +172,7 @@ def lowercase_schema_types(value: object) -> None:
         lowercase_schema_types(child_value)
 
   for single_key in (
+      "additionalItems",
       "additionalProperties",
       "additional_properties",
       "contains",
@@ -181,6 +182,7 @@ def lowercase_schema_types(value: object) -> None:
       "not",
       "propertyNames",
       "then",
+      "unevaluatedItems",
       "unevaluatedProperties",
   ):
     child_value = value.get(single_key)
