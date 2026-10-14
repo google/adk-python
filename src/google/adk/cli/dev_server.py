@@ -49,8 +49,10 @@ import subprocess
 import sys
 import time
 from typing import Any
+from typing import cast
 from typing import Iterator
 from typing import Optional
+from typing import TYPE_CHECKING
 
 import anyio
 from fastapi import Depends
@@ -99,6 +101,9 @@ from .utils import evals
 from .utils.graph_serialization import serialize_app_info
 from .utils.graph_visualization import plot_workflow_graph
 from .utils.state import create_empty_state
+
+if TYPE_CHECKING:
+  from opentelemetry.util.types import AttributeValue
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -155,7 +160,7 @@ def _require_local_agent_builder_client(request: FastAPIRequest) -> None:
 
 
 class CreateTestRequest(common.BaseModel):
-  session_data: dict
+  session_data: dict[Any, Any]
 
 
 class AddSessionToEvalSetRequest(common.BaseModel):
@@ -574,10 +579,10 @@ class DevServer(ApiServer):
   def _register_dev_endpoints(
       self,
       app: FastAPI,
-      trace_dict: dict,
+      trace_dict: dict[str, dict[str, AttributeValue]],
       memory_exporter: Any,
       web_assets_dir: Optional[str] = None,
-  ):
+  ) -> None:
     """Register all development-only endpoints.
 
     This includes debug, evaluation, graph visualization, and telemetry consent
@@ -863,6 +868,7 @@ class DevServer(ApiServer):
 
     @app.get(
         "/dev/apps/{app_name}/builder",
+        response_model=None,
         response_model_exclude_none=True,
         response_class=PlainTextResponse,
         dependencies=[Depends(_require_local_agent_builder_client)],
@@ -871,7 +877,7 @@ class DevServer(ApiServer):
         app_name: str,
         file_path: Optional[str] = None,
         tmp: Optional[bool] = False,
-    ):
+    ) -> str | FileResponse:
       try:
         app_root = _get_app_root(app_name)
       except ValueError as exc:
@@ -1102,7 +1108,8 @@ class DevServer(ApiServer):
         raise HTTPException(status_code=404, detail="Test file not found")
 
       with open(test_file_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        # A test file is a serialized JSON object.
+        return cast(dict[str, Any], json.load(f))
 
     # ========== EVALUATION ENDPOINTS ==========
 
@@ -1129,6 +1136,7 @@ class DevServer(ApiServer):
     # TODO - remove after migration
     @app.post(
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}",
+        response_model=None,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
         dependencies=[Depends(_require_local_agent_builder_client)],
@@ -1140,7 +1148,7 @@ class DevServer(ApiServer):
     async def create_eval_set_legacy(
         app_name: str,
         eval_set_id: str,
-    ):
+    ) -> None:
       """Creates an eval set, given the id."""
       await create_eval_set(
           app_name=app_name,
@@ -1243,19 +1251,21 @@ class DevServer(ApiServer):
 
     @app.post(
         "/dev/apps/{app_name}/eval-sets/{eval_set_id}/add-session",
+        response_model=None,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
         dependencies=[Depends(_require_local_agent_builder_client)],
     )
     @app.post(
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}/add_session",
+        response_model=None,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
         dependencies=[Depends(_require_local_agent_builder_client)],
     )
     async def add_session_to_eval_set(
         app_name: str, eval_set_id: str, req: AddSessionToEvalSetRequest
-    ):
+    ) -> None:
       # Get the session
       session = await self.session_service.get_session(
           app_name=app_name, user_id=req.user_id, session_id=req.session_id
@@ -1345,12 +1355,14 @@ class DevServer(ApiServer):
 
     @app.put(
         "/dev/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
+        response_model=None,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
         dependencies=[Depends(_require_local_agent_builder_client)],
     )
     @app.put(
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
+        response_model=None,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
         dependencies=[Depends(_require_local_agent_builder_client)],
@@ -1360,7 +1372,7 @@ class DevServer(ApiServer):
         eval_set_id: str,
         eval_case_id: str,
         updated_eval_case: EvalCase,
-    ):
+    ) -> None:
       if (
           updated_eval_case.eval_id
           and updated_eval_case.eval_id != eval_case_id
@@ -1583,7 +1595,7 @@ class DevServer(ApiServer):
     )
     async def get_app_graph_dot(
         app_name: str, dark_mode: bool = False
-    ) -> GetEventGraphResult | dict:
+    ) -> GetEventGraphResult | dict[Any, Any]:
       """Returns the base agent graph in DOT format without any highlights.
 
       This endpoint allows the frontend to fetch the graph structure once
@@ -1609,12 +1621,13 @@ class DevServer(ApiServer):
     # TODO: This endpoint can be removed once we update adk web to stop consuming it
     @app.get(
         "/dev/apps/{app_name}/users/{user_id}/sessions/{session_id}/events/{event_id}/graph",
+        response_model=None,
         response_model_exclude_none=True,
         tags=[TAG_DEBUG],
     )
     async def get_event_graph(
         app_name: str, user_id: str, session_id: str, event_id: str
-    ):
+    ) -> GetEventGraphResult | dict[str, object]:
       session = await self.session_service.get_session(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
@@ -1631,8 +1644,8 @@ class DevServer(ApiServer):
       if function_calls:
         function_call_highlights = []
         for function_call in function_calls:
-          from_name = event.author
-          to_name = function_call.name
+          from_name: str | None = event.author
+          to_name: str | None = function_call.name
           function_call_highlights.append((from_name, to_name))
           dot_graph = await agent_graph.get_agent_graph(
               root_agent, function_call_highlights
@@ -1663,7 +1676,9 @@ class DevServer(ApiServer):
         dependencies=[Depends(_require_local_agent_builder_client)],
     )
 
-  def _navigate_to_node(self, app_info: dict, node_path: str) -> dict | None:
+  def _navigate_to_node(
+      self, app_info: dict[str, Any], node_path: str
+  ) -> dict[str, Any] | None:
     """Navigate to a specific node in the agent hierarchy.
 
     Args:
@@ -1678,7 +1693,8 @@ class DevServer(ApiServer):
 
     # Strip leading/trailing slashes and split, filter out empty strings
     path_parts = [p for p in node_path.strip("/").split("/") if p]
-    current = app_info.get("root_agent")
+    # serialize_app_info emits every agent node as a dict.
+    current: dict[str, Any] | None = app_info.get("root_agent")
 
     if not current:
       return None
@@ -1689,7 +1705,7 @@ class DevServer(ApiServer):
       start_idx = 1
 
     for part in path_parts[start_idx:]:
-      found = None
+      found: dict[str, Any] | None = None
       # Check potential containers in order of preference
       containers = []
       if current.get("graph") and current["graph"].get("nodes"):
@@ -1714,8 +1730,8 @@ class DevServer(ApiServer):
     return current
 
   def _get_all_sub_workflows(
-      self, app_info: dict, current_path: str = ""
-  ) -> dict[str, dict]:
+      self, app_info: dict[str, Any], current_path: str = ""
+  ) -> dict[str, dict[str, Any]]:
     """Recursively discover all sub-workflows within the given app info.
 
     Args:
@@ -1725,7 +1741,7 @@ class DevServer(ApiServer):
     Returns:
       A dictionary mapping the node path to the corresponding agent info dict.
     """
-    workflows = {}
+    workflows: dict[str, dict[str, Any]] = {}
 
     agent_info = app_info.get("root_agent", app_info)
     if agent_info.get("graph"):
@@ -1750,7 +1766,8 @@ class DevServer(ApiServer):
 
     return workflows
 
-  def get_fast_api_app(self, **kwargs):
+  # Takes keyword arguments only, unlike ApiServer.get_fast_api_app.
+  def get_fast_api_app(self, **kwargs: Any) -> FastAPI:  # type: ignore[override]
     """Override to add dev endpoints after production endpoints.
 
     Calls parent's get_fast_api_app() to get the base app with production

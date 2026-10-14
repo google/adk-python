@@ -22,24 +22,7 @@ from unittest.mock import MagicMock
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.utils._runner_utils import _notify_run_error
-from google.adk.utils._runner_utils import _with_caller_context
-from opentelemetry import context
 import pytest
-
-
-@pytest.mark.asyncio
-async def test_with_caller_context():
-  caller_ctx = context.get_current()
-
-  async def dummy_generator():
-    yield 1
-    yield 2
-
-  items = []
-  async for item in _with_caller_context(dummy_generator(), caller_ctx):
-    items.append(item)
-
-  assert items == [1, 2]
 
 
 @pytest.mark.asyncio

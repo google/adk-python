@@ -28,6 +28,8 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError
 
 from ...events._branch_path import _BranchPath
+from ...events._interrupts import extract_event_interrupt_ids
+from ...events._interrupts import is_interrupt_event
 from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
 from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
@@ -76,10 +78,7 @@ class _ChildScanState:
   """The agent the child asked to transfer to, or None if it asked for none."""
 
   interrupt_ids: set[str] = field(default_factory=set)
-  """Every interrupt the child (or its descendants) raised."""
-
-  direct_interrupt_ids: set[str] = field(default_factory=set)
-  """Interrupts raised directly by the child node itself."""
+  """Every interrupt the child raised."""
 
   resolved_ids: set[str] = field(default_factory=set)
   """The subset of ``interrupt_ids`` a user response has come back for."""
@@ -421,15 +420,11 @@ def _reconstruct_node_states(
         child.error_code = event.error_code
 
     # 6. Extract interrupts and their schemas
-    from ...events._interrupts import extract_event_interrupt_ids
-
     interrupt_ids_to_process = extract_event_interrupt_ids(event)
 
     if interrupt_ids_to_process:
       for interrupt_id in interrupt_ids_to_process:
         child.interrupt_ids.add(interrupt_id)
-        if is_direct:
-          child.direct_interrupt_ids.add(interrupt_id)
         interrupt_owner[interrupt_id] = owner_key
 
         schema_json = _extract_schema_from_event(event, interrupt_id)
@@ -460,17 +455,9 @@ def is_terminal_event(event: Event) -> bool:
     return True
   if event.actions and event.actions.route is not None:
     return True
-  if event.long_running_tool_ids:
-    return True
   if event.error_code is not None:
     return True
-
-  from ._workflow_hitl_utils import has_auth_request_function_call
-  from ._workflow_hitl_utils import has_request_input_function_call
-
-  if has_request_input_function_call(event) or has_auth_request_function_call(
-      event
-  ):
+  if is_interrupt_event(event):
     return True
 
   return False

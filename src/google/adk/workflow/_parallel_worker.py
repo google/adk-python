@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-import json
 import logging
 from typing import Any
 
@@ -29,8 +28,7 @@ from pydantic import PrivateAttr
 from typing_extensions import override
 
 from ..agents.context import Context
-from ..utils._schema_utils import annotation_accepts_content
-from ..utils._schema_utils import annotation_expects_str
+from ..utils._schema_utils import _unwrap_content_payload
 from ._base_node import BaseNode
 from ._errors import NodeInterruptedError
 from ._errors import WorkflowConfigurationError
@@ -58,22 +56,11 @@ def _unwrap_content_input(
     node_input: types.Content, inner_node: BaseNode
 ) -> Any:
   """Unwraps text/JSON payload from types.Content for parallel fan-out."""
-  if not node_input.parts or any(p.text is None for p in node_input.parts):
-    return node_input
-  hint = _get_node_input_annotation(inner_node)
-  if hint not in (None, Any, object) and annotation_accepts_content(hint):
-    return node_input
-
-  text_str = ''.join(p.text for p in node_input.parts if p.text is not None)
-  try:
-    parsed = json.loads(text_str)
-    if isinstance(parsed, list):
-      return parsed
-    if annotation_expects_str(hint):
-      return text_str
-    return parsed
-  except json.JSONDecodeError:
-    return text_str
+  return _unwrap_content_payload(
+      node_input,
+      _get_node_input_annotation(inner_node),
+      fan_out_list=True,
+  )
 
 
 class _ParallelWorker(BaseNode):

@@ -93,7 +93,7 @@ class ReplayPlugin(BasePlugin):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> Optional[dict]:
+  ) -> Optional[dict]:  # type: ignore[type-arg]
     """Replay tool response from recordings instead of executing tool."""
     if not self._is_replay_mode_on(tool_context):
       return None
@@ -121,6 +121,11 @@ class ReplayPlugin(BasePlugin):
         agent_name,
         tool.name,
     )
+
+    if recording.tool_response is None:
+      raise ValueError(
+          f"Tool recording for agent '{agent_name}' has no tool_response."
+      )
 
     # Return the recorded response
     return recording.tool_response.response
@@ -263,6 +268,11 @@ class ReplayPlugin(BasePlugin):
     expected_recording = self._get_next_tool_recording_for_agent(
         state, agent_name
     )
+
+    if expected_recording.tool_call is None:
+      raise ValueError(
+          f"Tool recording for agent '{agent_name}' has no tool_call."
+      )
 
     # Strict verification of tool call
     self._verify_tool_call_match(

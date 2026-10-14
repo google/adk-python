@@ -130,6 +130,19 @@ def is_transferable_across_agent_tree(agent_to_run: BaseAgent) -> bool:
   return True
 
 
+def _resolve_task_delegator(
+    agent: BaseAgent, root_agent: BaseAgent
+) -> BaseAgent:
+  """Maps an agent inside a task delegation to the agent that delegated it."""
+  delegator = agent
+  current = agent
+  while current is not root_agent and current.parent_agent is not None:
+    if getattr(current, "mode", None) == "task":
+      delegator = current.parent_agent
+    current = current.parent_agent
+  return delegator
+
+
 def find_agent_to_run(
     session: Session,
     root_agent: BaseAgent,
@@ -144,6 +157,8 @@ def find_agent_to_run(
   - The root agent.
   - An LlmAgent who replied last and is capable to transfer to any other agent
     in the agent hierarchy.
+
+  An agent inside a task delegation is replaced by the agent that delegated it.
 
   Args:
       session: The session to find the agent for.
@@ -202,7 +217,7 @@ def find_agent_to_run(
               root_agent, event, filtered_events
           )
       ) is not None:
-        return resumed_agent
+        return _resolve_task_delegator(resumed_agent, root_agent)
 
   def _event_filter(event: Event) -> bool:
     """Filters out user, abort-sealing and agent state change events."""
@@ -226,7 +241,7 @@ def find_agent_to_run(
       continue
     transferable = is_transferable_across_agent_tree(agent)
     if transferable:
-      return agent
+      return _resolve_task_delegator(agent, root_agent)
   # Falls back to root agent if no suitable agents are found in the session.
   return root_agent
 

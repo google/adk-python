@@ -37,6 +37,7 @@ from ....auth.auth_tool import AuthConfig
 from ...base_toolset import BaseToolset
 from ...base_toolset import ToolPredicate
 from .openapi_spec_parser import OpenApiSpecParser
+from .operation_parser import _MAX_TOOL_NAME_LENGTH
 from .rest_api_tool import HttpxClientFactory
 from .rest_api_tool import RestApiTool
 
@@ -255,16 +256,30 @@ class OpenAPIToolset(BaseToolset):
     )
     operations = parser.parse(openapi_spec_dict)
 
-    tools: List[RestApiTool] = []
-    for o in operations:
-      tool = RestApiTool.from_parsed_operation(
-          o,
-          ssl_verify=self._ssl_verify,
-          header_provider=self._header_provider,
-          httpx_client_factory=self._httpx_client_factory,
-      )
+    # operationIds that share a long common prefix collapse to the same
+    # truncated name (RestApiTool.__init__ caps it at _MAX_TOOL_NAME_LENGTH
+    # chars); disambiguate so each operation still gets its own callable tool.
+    tools = [
+        RestApiTool.from_parsed_operation(
+            o,
+            ssl_verify=self._ssl_verify,
+            header_provider=self._header_provider,
+            httpx_client_factory=self._httpx_client_factory,
+        )
+        for o in operations
+    ]
+    reserved_names = {t.name for t in tools}
+    assigned_names: set[str] = set()
+    for tool in tools:
+      if tool.name in assigned_names:
+        base_name = tool.name
+        n = 2
+        while tool.name in assigned_names or tool.name in reserved_names:
+          suffix = f"_{n}"
+          tool.name = base_name[: _MAX_TOOL_NAME_LENGTH - len(suffix)] + suffix
+          n += 1
+      assigned_names.add(tool.name)
       logger.info("Parsed tool: %s", tool.name)
-      tools.append(tool)
     return tools
 
   @override

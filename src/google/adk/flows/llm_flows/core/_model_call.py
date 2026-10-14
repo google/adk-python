@@ -35,7 +35,6 @@ from ....models.llm_response import LlmResponse
 from ....telemetry import _instrumentation
 from ....telemetry.tracing import trace_call_llm
 from ....telemetry.tracing import tracer
-from ....utils._runner_utils import _with_caller_context
 from ....utils.context_utils import Aclosing
 from ._finalizer import has_meaningful_content
 from ._utils import as_llm_agent as _as_llm_agent
@@ -182,129 +181,146 @@ async def call_llm_async(
   # caller's post-processing -- tool calls, agent transfers -- is traced as
   # a child of the model call instead of a sibling of it.
   caller_context = otel_context.get_current()
+  # The span is opened here and made current by `stream_in_scope` around
+  # each drive of the generator below, rather than by a `with` block inside
+  # it: a token attached inside a generator and held across its `yield` is
+  # detached by whoever closes the stream, in a context that never attached it.
+  span = tracer.start_span('call_llm', context=caller_context)
+  model_call_context = trace.set_span_in_context(span, caller_context)
 
   async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
-    with tracer.start_as_current_span('call_llm') as span:
-      # Runs before_model_callback inside the call_llm span so
-      # plugins observe the same span as after/error callbacks.
-      if response := await flow._handle_before_model_callback(
-          invocation_context, llm_request, model_response_event
-      ):
-        # The model was never called, but the span still has to carry its
-        # attributes: trace consumers key off the event id attribute and
-        # drop spans that lack it.
-        trace_call_llm(
-            invocation_context,
-            model_response_event.id,
-            llm_request,
-            response,
-            span,
-        )
-        _instrumentation.record_response_source(
-            span, 'before_model_callback', invocation_context
-        )
-        yield response
-        return
+    # Runs before_model_callback inside the call_llm span so
+    # plugins observe the same span as after/error callbacks.
+    if response := await flow._handle_before_model_callback(
+        invocation_context, llm_request, model_response_event
+    ):
+      # The model was never called, but the span still has to carry its
+      # attributes: trace consumers key off the event id attribute and
+      # drop spans that lack it.
+      trace_call_llm(
+          invocation_context,
+          model_response_event.id,
+          llm_request,
+          response,
+          span,
+      )
+      _instrumentation.record_response_source(
+          span, 'before_model_callback', invocation_context
+      )
+      yield response
+      return
 
-      llm_request.config = llm_request.config or types.GenerateContentConfig()
-      llm_request.config.labels = llm_request.config.labels or {}
+    llm_request.config = llm_request.config or types.GenerateContentConfig()
+    llm_request.config.labels = llm_request.config.labels or {}
 
-      # Add agent name as a label to the llm_request. This will help
-      # with slicing billing reports on a per-agent basis.
-      if ADK_AGENT_NAME_LABEL_KEY not in llm_request.config.labels:
-        llm_request.config.labels[ADK_AGENT_NAME_LABEL_KEY] = agent.name
+    # Add agent name as a label to the llm_request. This will help
+    # with slicing billing reports on a per-agent basis.
+    if ADK_AGENT_NAME_LABEL_KEY not in llm_request.config.labels:
+      llm_request.config.labels[ADK_AGENT_NAME_LABEL_KEY] = agent.name
 
-      # Calls the LLM.
-      llm = await flow._get_llm(invocation_context)
+    # Calls the LLM.
+    llm = await flow._get_llm(invocation_context)
 
-      # Check if we can make this llm call or not. If the current
-      # call pushes the counter beyond the max set value, then the
-      # execution is stopped right here, and exception is thrown.
-      invocation_context.increment_llm_call_count()
+    # Check if we can make this llm call or not. If the current
+    # call pushes the counter beyond the max set value, then the
+    # execution is stopped right here, and exception is thrown.
+    invocation_context.increment_llm_call_count()
 
-      if run_config.support_cfc:
-        if invocation_context.live_request_queue is None:
-          invocation_context.live_request_queue = LiveRequestQueue()
-        async with Aclosing(
-            flow._run_and_handle_error(
-                flow.run_live(invocation_context),
+    if run_config.support_cfc:
+      if invocation_context.live_request_queue is None:
+        invocation_context.live_request_queue = LiveRequestQueue()
+      async with Aclosing(
+          flow._run_and_handle_error(
+              flow.run_live(invocation_context),
+              invocation_context,
+              llm_request,
+              model_response_event,
+              call_llm_span=span,
+          )
+      ) as agen:
+        async for event in agen:
+          # Rebind to call_llm span for after_model_callback.
+          with trace.use_span(span, end_on_exit=False):
+            if altered := await flow._handle_after_model_callback(
                 invocation_context,
-                llm_request,
+                event,
                 model_response_event,
-                call_llm_span=span,
-            )
-        ) as agen:
-          async for event in agen:
+            ):
+              event = altered
+          # only yield partial response in SSE streaming mode
+          if (
+              run_config.streaming_mode == StreamingMode.SSE
+              or not event.partial
+          ):
+            yield event
+          if event.turn_complete:
+            queue = invocation_context.live_request_queue
+            assert queue is not None
+            queue.close()
+    else:
+      responses_generator = llm.generate_content_async(
+          llm_request,
+          stream=run_config.streaming_mode == StreamingMode.SSE,
+      )
+      async with Aclosing(
+          flow._run_and_handle_error(
+              responses_generator,
+              invocation_context,
+              llm_request,
+              model_response_event,
+              call_llm_span=span,
+          )
+      ) as agen:
+        # Partials overwrite each other on the span; trace only the last one.
+        deferred_partial: tuple[str, LlmResponse] | None = None
+        try:
+          async for llm_response in agen:
+            if llm_response.partial:
+              deferred_partial = (model_response_event.id, llm_response)
+            else:
+              deferred_partial = None
+              trace_call_llm(
+                  invocation_context,
+                  model_response_event.id,
+                  llm_request,
+                  llm_response,
+                  span,
+              )
             # Rebind to call_llm span for after_model_callback.
             with trace.use_span(span, end_on_exit=False):
               if altered := await flow._handle_after_model_callback(
                   invocation_context,
-                  event,
+                  llm_response,
                   model_response_event,
               ):
-                event = altered
-            # only yield partial response in SSE streaming mode
-            if (
-                run_config.streaming_mode == StreamingMode.SSE
-                or not event.partial
-            ):
-              yield event
-            if event.turn_complete:
-              queue = invocation_context.live_request_queue
-              assert queue is not None
-              queue.close()
-      else:
-        responses_generator = llm.generate_content_async(
-            llm_request,
-            stream=run_config.streaming_mode == StreamingMode.SSE,
-        )
-        async with Aclosing(
-            flow._run_and_handle_error(
-                responses_generator,
+                llm_response = altered
+
+            yield llm_response
+        finally:
+          if deferred_partial is not None:
+            deferred_event_id, partial_response = deferred_partial
+            trace_call_llm(
                 invocation_context,
+                deferred_event_id,
                 llm_request,
-                model_response_event,
-                call_llm_span=span,
+                partial_response,
+                span,
             )
-        ) as agen:
-          # Partials overwrite each other on the span; trace only the last one.
-          deferred_partial: tuple[str, LlmResponse] | None = None
-          try:
-            async for llm_response in agen:
-              if llm_response.partial:
-                deferred_partial = (model_response_event.id, llm_response)
-              else:
-                deferred_partial = None
-                trace_call_llm(
-                    invocation_context,
-                    model_response_event.id,
-                    llm_request,
-                    llm_response,
-                    span,
-                )
-              # Rebind to call_llm span for after_model_callback.
-              with trace.use_span(span, end_on_exit=False):
-                if altered := await flow._handle_after_model_callback(
-                    invocation_context,
-                    llm_response,
-                    model_response_event,
-                ):
-                  llm_response = altered
 
-              yield llm_response
-          finally:
-            if deferred_partial is not None:
-              deferred_event_id, partial_response = deferred_partial
-              trace_call_llm(
-                  invocation_context,
-                  deferred_event_id,
-                  llm_request,
-                  partial_response,
-                  span,
-              )
-
-  async with Aclosing(
-      _with_caller_context(_call_llm_with_tracing(), caller_context)
-  ) as agen:
-    async for event in agen:
-      yield event
+  try:
+    async with Aclosing(
+        _instrumentation.stream_in_scope(
+            model_call_context, _call_llm_with_tracing()
+        )
+    ) as agen:
+      async for event in agen:
+        yield event
+  except Exception as e:  # pylint: disable=broad-except
+    if span.is_recording():
+      span.record_exception(e)
+      span.set_status(
+          trace.Status(trace.StatusCode.ERROR, f'{type(e).__name__}: {e}')
+      )
+    raise
+  finally:
+    span.end()

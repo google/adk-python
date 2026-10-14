@@ -358,11 +358,20 @@ class BasePlugin(ABC):
     This callback provides an opportunity to handle tool errors gracefully,
     potentially providing alternative responses or recovery mechanisms.
 
+    It is also called with an `asyncio.CancelledError` when the tool call is
+    cancelled, for example because a parallel tool call failed or the
+    invocation was cancelled, so that resources acquired in
+    `before_tool_callback` can be released. A cancelled call is never
+    recovered: the cancellation propagates even if a dictionary is returned,
+    and an exception raised by this callback is logged instead of replacing
+    the cancellation.
+
     Args:
       tool: The tool instance that encountered an error.
       tool_args: The arguments that were passed to the tool.
       tool_context: The context specific to the tool execution.
-      error: The exception that was raised during tool execution.
+      error: The exception that was raised during tool execution, or the
+        `asyncio.CancelledError` if the tool call was cancelled.
 
     Returns:
       An optional dictionary. If a dictionary is returned, it will be used as

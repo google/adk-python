@@ -77,6 +77,86 @@ def noop_callback(**kwargs) -> Optional[LlmResponse]:
   pass
 
 
+def _write_into_a_nested_state_dict(
+    callback_context: CallbackContext, **kwargs
+) -> None:
+  callback_context.state['cfg']['b'] = 2
+
+
+@pytest.mark.parametrize(
+    'callback_field', ['before_model_callback', 'after_model_callback']
+)
+@pytest.mark.asyncio
+async def test_a_model_callback_write_into_a_nested_state_dict_is_persisted(
+    callback_field: str,
+):
+  """The event the runner persists carries the write, not just the session."""
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=['model_response']),
+      **{callback_field: _write_into_a_nested_state_dict},
+  )
+  runner = testing_utils.TestInMemoryRunner(agent)
+  session = await runner.session_service.create_session(
+      app_name='InMemoryRunner', user_id='test_user', state={'cfg': {'a': 1}}
+  )
+
+  events = [
+      event
+      async for event in runner.run_async(
+          user_id=session.user_id,
+          session_id=session.id,
+          new_message=testing_utils.get_user_content('test'),
+      )
+  ]
+
+  assert [
+      event.actions.state_delta
+      for event in events
+      if event.author == 'root_agent'
+  ] == [{'cfg': {'a': 1, 'b': 2}}]
+
+
+@pytest.mark.asyncio
+async def test_an_on_model_error_callback_nested_state_write_is_persisted():
+  """The recovery event carries the write the error callback made."""
+
+  def recover(callback_context: CallbackContext, **kwargs) -> LlmResponse:
+    callback_context.state['cfg']['b'] = 2
+    return LlmResponse(
+        content=testing_utils.ModelContent(
+            [types.Part.from_text(text='recovered_model_response')]
+        )
+    )
+
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[], error=SystemError('error')
+      ),
+      on_model_error_callback=recover,
+  )
+  runner = testing_utils.TestInMemoryRunner(agent)
+  session = await runner.session_service.create_session(
+      app_name='InMemoryRunner', user_id='test_user', state={'cfg': {'a': 1}}
+  )
+
+  events = [
+      event
+      async for event in runner.run_async(
+          user_id=session.user_id,
+          session_id=session.id,
+          new_message=testing_utils.get_user_content('test'),
+      )
+  ]
+
+  assert [
+      event.actions.state_delta
+      for event in events
+      if event.author == 'root_agent'
+  ] == [{'cfg': {'a': 1, 'b': 2}}]
+
+
 def test_before_model_callback():
   responses = ['model_response']
   mock_model = testing_utils.MockModel.create(responses=responses)

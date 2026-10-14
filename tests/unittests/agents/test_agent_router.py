@@ -798,3 +798,52 @@ def test_find_agent_to_run_resolves_tool_sub_branch_pause_to_owning_agent(
       _agent_router.find_agent_to_run(session, root, resumability_config)
       == non_transferable
   )
+
+
+@pytest.mark.parametrize("user_answers_call", [False, True])
+def test_find_agent_to_run_routes_task_agent_to_its_delegator(
+    user_answers_call: bool,
+):
+  """A turn left by a task-mode agent routes to the agent that delegated it."""
+  root = _MockLlmAgent("root_agent")
+  helper = _MockLlmAgent("helper", parent_agent=root)
+  task_worker = _MockLlmAgent("task_worker", parent_agent=helper)
+  task_worker.mode = "task"
+  root.sub_agents = [helper]
+  helper.sub_agents = [task_worker]
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="task_worker",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id="fc_1", name="confirm", args={}
+                      )
+                  )
+              ],
+          ),
+      )
+  ]
+  if user_answers_call:
+    events.append(
+        Event(
+            invocation_id="inv2",
+            author="user",
+            content=types.Content(
+                role="user",
+                parts=[
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            id="fc_1", name="confirm", response={}
+                        )
+                    )
+                ],
+            ),
+        )
+    )
+  session = Session(id="s1", app_name="app", user_id="u1", events=events)
+
+  assert _agent_router.find_agent_to_run(session, root) == helper

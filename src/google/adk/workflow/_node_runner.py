@@ -151,39 +151,48 @@ class NodeRunner:
         raise
       except Exception as e:
         if isinstance(e, DynamicNodeFailError):
-          # TODO: consider to retry upon dynamic node failures later. This may
-          # require thorough design to consider a workflow dynamic node and a
-          # normal node.
-          ctx._error = e.error
-          ctx._error_node_path = e.error_node_path
-          logger.debug("node %s end.", ctx.node_path)
-          return ctx
+          if not await self._attempt_retry(e.error, attempt_count):
+            ctx._error = e.error
+            ctx._error_node_path = e.error_node_path
+            logger.debug("node %s end.", ctx.node_path)
+            return ctx
+          self._reset_dynamic_children_for_retry(ctx)
+        else:
+          from ..events.event import Event
 
-        from ..events.event import Event
+          logger.exception("Node execution failed with exception")
+          # Prefer the API's own canonical status (e.g. "PERMISSION_DENIED") over
+          # the Python class name so structured error codes reach clients. The
+          # isinstance guard matters: aiohttp's `.status`, for one, is an int
+          # while Event.error_code is Optional[str].
+          status = getattr(e, "status", None)
+          error_event = Event(
+              error_code=status
+              if isinstance(status, str)
+              else type(e).__name__,
+              error_message=str(e),
+          )
+          await self._enqueue_event(error_event, ctx)
 
-        logger.exception("Node execution failed with exception")
-        # Prefer the API's own canonical status (e.g. "PERMISSION_DENIED") over
-        # the Python class name so structured error codes reach clients. The
-        # isinstance guard matters: aiohttp's `.status`, for one, is an int
-        # while Event.error_code is Optional[str].
-        status = getattr(e, "status", None)
-        error_event = Event(
-            error_code=status if isinstance(status, str) else type(e).__name__,
-            error_message=str(e),
-        )
-        await self._enqueue_event(error_event, ctx)
-
-        if not await self._attempt_retry(e, attempt_count):
-          ctx._error = e
-          ctx._error_node_path = ctx.node_path
-          logger.debug("node %s end.", ctx.node_path)
-          return ctx
+          if not await self._attempt_retry(e, attempt_count):
+            ctx._error = e
+            ctx._error_node_path = ctx.node_path
+            logger.debug("node %s end.", ctx.node_path)
+            return ctx
       logger.warning(
           "Node %s failed and is being retried locally. Note: retry count is"
           " not persisted across resuming.",
           self._node.name,
       )
       attempt_count += 1
+
+  def _reset_dynamic_children_for_retry(self, ctx: Context) -> None:
+    """Resets dynamic child run counters under ctx before retrying the node."""
+    from ._dynamic_node_scheduler import DynamicNodeScheduler
+
+    scheduler = ctx._workflow_scheduler
+    if isinstance(scheduler, DynamicNodeScheduler):
+      scheduler._state.reset_for_retry(ctx.node_path)
 
   async def _attempt_retry(self, e: Exception, attempt_count: int) -> bool:
     """Checks if node should retry and sleeps if so."""

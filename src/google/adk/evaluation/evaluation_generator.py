@@ -55,6 +55,7 @@ from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
+from ..telemetry import _instrumentation
 from ..utils.context_utils import Aclosing
 from ..workflow import BaseNode
 from ._retry_options_utils import EnsureRetryOptionsPlugin
@@ -931,6 +932,8 @@ class EvaluationGenerator:
     ) as runner:
       events: list[Event] = []
       durations_by_invocation_id: dict[str, float] = {}
+      model_durations_by_invocation_id: dict[str, float] = {}
+      tool_durations_by_invocation_id: dict[str, float] = {}
       while True:
         next_user_message = await user_simulator.get_next_user_message(
             copy.deepcopy(events)
@@ -944,19 +947,30 @@ class EvaluationGenerator:
           # Times the agent's work; the simulator's turnaround stays outside.
           started_at = time.monotonic()
           invocation_id = None
-          async for (
-              event
-          ) in EvaluationGenerator._generate_inferences_for_single_user_invocation(
-              runner, user_id, session_id, user_message
-          ):
-            events.append(event)
-            if invocation_id is None:
-              invocation_id = event.invocation_id
+          # Splits that total into the part spent awaiting a model, the part
+          # spent inside tools, and the remainder that is the framework's own.
+          # The collector reaches the tasks the run spawns, so a turn whose
+          # sub-agents run concurrently is covered too.
+          with _instrumentation.collect_busy_intervals() as busy:
+            async for (
+                event
+            ) in EvaluationGenerator._generate_inferences_for_single_user_invocation(
+                runner, user_id, session_id, user_message
+            ):
+              events.append(event)
+              if invocation_id is None:
+                invocation_id = event.invocation_id
           if invocation_id is not None:
             # Rounded to milliseconds: the measurement is not meaningful below
             # that, and a full float would read as false precision.
             durations_by_invocation_id[invocation_id] = round(
                 time.monotonic() - started_at, 3
+            )
+            model_durations_by_invocation_id[invocation_id] = round(
+                busy.model_seconds(), 3
+            )
+            tool_durations_by_invocation_id[invocation_id] = round(
+                busy.tool_seconds(), 3
             )
         else:  # no message generated
           break
@@ -967,7 +981,11 @@ class EvaluationGenerator:
           )
       )
       return EvaluationGenerator.convert_events_to_eval_invocations(
-          events, app_details_by_invocation_id, durations_by_invocation_id
+          events,
+          app_details_by_invocation_id,
+          durations_by_invocation_id,
+          model_durations_per_invocation=model_durations_by_invocation_id,
+          tool_durations_per_invocation=tool_durations_by_invocation_id,
       )
 
   @staticmethod
@@ -975,6 +993,9 @@ class EvaluationGenerator:
       events: list[Event],
       app_details_per_invocation: Optional[dict[str, AppDetails]] = None,
       durations_per_invocation: Optional[dict[str, float]] = None,
+      *,
+      model_durations_per_invocation: Optional[dict[str, float]] = None,
+      tool_durations_per_invocation: Optional[dict[str, float]] = None,
   ) -> list[Invocation]:
     """Converts a list of events to eval invocations.
 
@@ -986,6 +1007,12 @@ class EvaluationGenerator:
         measured while the agent runs and cannot be recovered from the events
         afterwards -- so a caller converting stored events leaves this unset and
         the invocations carry no timing.
+      model_durations_per_invocation: Of each invocation's duration, the seconds
+        awaiting a model, keyed by invocation id. Supplied under the same
+        conditions as `durations_per_invocation`.
+      tool_durations_per_invocation: Of each invocation's duration, the seconds
+        inside a tool but not awaiting a model, keyed by invocation id. Supplied
+        under the same conditions as `durations_per_invocation`.
     """
     events_by_invocation_id = (
         EvaluationGenerator._collect_events_by_invocation_id(events)
@@ -1072,6 +1099,12 @@ class EvaluationGenerator:
               ),
               creation_timestamp=invocation_timestamp,
               duration=(durations_per_invocation or {}).get(invocation_id),
+              model_duration=(model_durations_per_invocation or {}).get(
+                  invocation_id
+              ),
+              tool_duration=(tool_durations_per_invocation or {}).get(
+                  invocation_id
+              ),
               app_details=app_details,
           )
       )

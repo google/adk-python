@@ -27,6 +27,7 @@ class FeatureName(str, Enum):
   """Feature names."""
 
   AGENT_CONFIG = "AGENT_CONFIG"
+  AGENT_ENGINE_SANDBOX_ENVIRONMENT = "AGENT_ENGINE_SANDBOX_ENVIRONMENT"
   AGENT_STATE = "AGENT_STATE"
   AUTHENTICATED_FUNCTION_TOOL = "AUTHENTICATED_FUNCTION_TOOL"
   BASE_AUTHENTICATED_TOOL = "BASE_AUTHENTICATED_TOOL"
@@ -42,6 +43,7 @@ class FeatureName(str, Enum):
   DAYTONA_ENVIRONMENT = "DAYTONA_ENVIRONMENT"
   E2B_ENVIRONMENT = "E2B_ENVIRONMENT"
   ELEVEN_LABS = "ELEVEN_LABS"
+  OPENSANDBOX_ENVIRONMENT = "OPENSANDBOX_ENVIRONMENT"
   ENVIRONMENT_SIMULATION = "ENVIRONMENT_SIMULATION"
   EVENTARC_TOOL_CONFIG = "EVENTARC_TOOL_CONFIG"
   EVENTARC_TOOLSET = "EVENTARC_TOOLSET"
@@ -115,6 +117,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.AGENT_CONFIG: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
+    FeatureName.AGENT_ENGINE_SANDBOX_ENVIRONMENT: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.AGENT_STATE: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -158,6 +163,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.ELEVEN_LABS: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.OPENSANDBOX_ENVIRONMENT: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.ENVIRONMENT_SIMULATION: FeatureConfig(

@@ -85,7 +85,7 @@ class ComputerUseTool(FunctionTool):
       raise ValueError("virtual_screen_size dimensions must be positive")
 
   def _normalize_x(self, x: int) -> int:
-    """Normalize x coordinate from virtual screen space to actual screen width."""
+    """Normalizes x coordinate from virtual space to actual screen width."""
     if not isinstance(x, (int, float)):
       raise ValueError(f"x coordinate must be numeric, got {type(x)}")
 
@@ -94,7 +94,7 @@ class ComputerUseTool(FunctionTool):
     return max(0, min(normalized, self._screen_size[0] - 1))
 
   def _normalize_y(self, y: int) -> int:
-    """Normalize y coordinate from virtual screen space to actual screen height."""
+    """Normalizes y coordinate from virtual space to actual screen height."""
     if not isinstance(y, (int, float)):
       raise ValueError(f"y coordinate must be numeric, got {type(y)}")
 
@@ -132,35 +132,44 @@ class ComputerUseTool(FunctionTool):
       return {"error": "This tool call is rejected."}
 
     try:
-      # Normalize coordinates if present
-      if "x" in args:
-        original_x = args["x"]
-        args["x"] = self._normalize_x(args["x"])
-        logger.debug("Normalized x: %s -> %s", original_x, args["x"])
+      # Normalize coordinates if present. Legacy actions use x/y and
+      # destination_x/destination_y; Gemini 3.x drag_and_drop uses
+      # start_x/start_y and end_x/end_y.
+      for x_field_name in ("x", "destination_x", "start_x", "end_x"):
+        if x_field_name in args:
+          original_x = args[x_field_name]
+          args[x_field_name] = self._normalize_x(original_x)
+          logger.debug(
+              "Normalized %s: %s -> %s",
+              x_field_name,
+              original_x,
+              args[x_field_name],
+          )
 
-      if "y" in args:
-        original_y = args["y"]
-        args["y"] = self._normalize_y(args["y"])
-        logger.debug("Normalized y: %s -> %s", original_y, args["y"])
+      for y_field_name in ("y", "destination_y", "start_y", "end_y"):
+        if y_field_name in args:
+          original_y = args[y_field_name]
+          args[y_field_name] = self._normalize_y(original_y)
+          logger.debug(
+              "Normalized %s: %s -> %s",
+              y_field_name,
+              original_y,
+              args[y_field_name],
+          )
 
-      # Handle destination coordinates for drag and drop
-      if "destination_x" in args:
-        original_dest_x = args["destination_x"]
-        args["destination_x"] = self._normalize_x(args["destination_x"])
-        logger.debug(
-            "Normalized destination_x: %s -> %s",
-            original_dest_x,
-            args["destination_x"],
-        )
-
-      if "destination_y" in args:
-        original_dest_y = args["destination_y"]
-        args["destination_y"] = self._normalize_y(args["destination_y"])
-        logger.debug(
-            "Normalized destination_y: %s -> %s",
-            original_dest_y,
-            args["destination_y"],
-        )
+      accepts_start_coords = (
+          self._spec.has_signature
+          and "start_x" in self._spec.signature.parameters
+      )
+      if not accepts_start_coords:
+        if "start_x" in args and "x" not in args:
+          args["x"] = args.pop("start_x")
+        if "start_y" in args and "y" not in args:
+          args["y"] = args.pop("start_y")
+        if "end_x" in args and "destination_x" not in args:
+          args["destination_x"] = args.pop("end_x")
+        if "end_y" in args and "destination_y" not in args:
+          args["destination_y"] = args.pop("end_y")
 
       # Execute the actual computer control function
       result = await super().run_async(args=args, tool_context=tool_context)
@@ -194,5 +203,10 @@ class ComputerUseTool(FunctionTool):
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
-    """ComputerUseToolset will add this tool to the LLM request and add computer use configuration to the LLM request."""
+    """Configures no tools directly; handled by ComputerUseToolset.
+
+    Keep this as a no-op so FunctionTool declarations for both legacy and modern
+    computer use aliases are registered in tools_dict/canonical_tools without
+    being serialized into llm_request.config.tools.
+    """
     pass

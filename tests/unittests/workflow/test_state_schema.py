@@ -207,6 +207,62 @@ def test_state_accepts_unhashable_field_metadata():
   assert state['counter'] == 2
 
 
+@pytest.mark.parametrize(
+    'key, expected',
+    [('in_value', True), ('in_delta', True), ('missing', False)],
+)
+def test_state_contains_checks_both_value_and_delta(key, expected) -> None:
+  """A key is in the state when it is in either value or delta."""
+  state = State(value={'in_value': 1}, delta={'in_delta': 2})
+  assert (key in state) is expected
+
+
+@pytest.mark.parametrize(
+    'value, delta, args, expected',
+    [
+        ({'a': 1}, {}, ('a',), 1),
+        ({}, {}, ('missing', 'fallback'), 'fallback'),
+        ({'b': 2}, {'b': 20}, ('b',), 20),
+    ],
+)
+def test_state_get_reads_delta_over_value(value, delta, args, expected) -> None:
+  assert State(value=value, delta=delta).get(*args) == expected
+
+
+def test_state_to_dict_merges_delta_over_value() -> None:
+  state = State(value={'a': 1, 'b': 2}, delta={'b': 20, 'c': 3})
+  assert state.to_dict() == {'a': 1, 'b': 20, 'c': 3}
+
+
+def test_state_update_writes_every_key() -> None:
+  state = State(value={'a': 1, 'b': 2}, delta={})
+  state.update({'a': 10})
+  assert state['a'] == 10
+  assert state.to_dict() == {'a': 10, 'b': 2}
+
+
+@pytest.mark.parametrize(
+    'value, key, default, expected, wrote',
+    [
+        ({'counter': 10}, 'counter', 99, 10, False),
+        ({}, 'name', 'default_name', 'default_name', True),
+    ],
+)
+def test_state_setdefault_only_writes_a_missing_key(
+    value, key, default, expected, wrote
+) -> None:
+  state = State(value=value, delta={}, schema=_PipelineSchema)
+  assert state.setdefault(key, default) == expected
+  assert state[key] == expected
+  assert state.has_delta() is wrote
+
+
+def test_state_setdefault_validates_key_against_schema() -> None:
+  state = State(value={}, delta={}, schema=_PipelineSchema)
+  with pytest.raises(StateSchemaError, match='unknown_key'):
+    state.setdefault('unknown_key', 'val')
+
+
 # ── Startup validation tests ─────────────────────────────────────────
 
 
