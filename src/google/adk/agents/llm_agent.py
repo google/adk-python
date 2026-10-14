@@ -210,7 +210,6 @@ async def _convert_tool_union_to_tools(
               max_results=vais_tool.max_results,
           )
       ]
-  from ..workflow._base_node import BaseNode
 
   if isinstance(tool_union, BaseNode):
     return [_wrap_base_node_as_tool(tool_union)]
@@ -586,11 +585,20 @@ class LlmAgent(BaseAgent, abc.ABC):
   When a list of callbacks is provided, the callbacks will be called in the
   order they are listed until a callback does not return None.
 
+  The callbacks are also called with an `asyncio.CancelledError` when the tool
+  call is cancelled, for example because a parallel tool call failed or the
+  invocation was cancelled, so that resources acquired in a before-tool
+  callback can be released. A cancelled call is never recovered: all callbacks
+  in the list are called, any returned responses are ignored, the cancellation
+  propagates, and an exception raised by a callback is logged instead of
+  replacing the cancellation.
+
   Args:
     tool: The tool to be called.
     args: The arguments to the tool.
     tool_context: ToolContext,
-    error: The error from the tool call.
+    error: The error from the tool call, or the `asyncio.CancelledError` if the
+      tool call was cancelled.
 
   Returns:
     Optional[dict[str, Any]]: A recovery response to use instead of propagating
@@ -1265,8 +1273,6 @@ class LlmAgent(BaseAgent, abc.ABC):
   @classmethod
   def _pre_validate_tools(cls, data: Any) -> Any:
     if isinstance(data, dict) and 'tools' in data and data['tools']:
-      from google.adk.workflow._base_node import BaseNode
-
       data['tools'] = [
           _wrap_base_node_as_tool(t) if isinstance(t, BaseNode) else t
           for t in data['tools']

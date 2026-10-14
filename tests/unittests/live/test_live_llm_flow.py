@@ -181,7 +181,7 @@ async def test_handle_control_event_flush_on_interrupted():
   response = LlmResponse(interrupted=True)
 
   with mock.patch.object(
-      flow.audio_cache_manager, 'flush_caches', new_callable=mock.AsyncMock
+      flow._realtime_cache_manager, 'flush_caches', new_callable=mock.AsyncMock
   ) as mock_flush:
     mock_flush.return_value = [Event(id='flushed-event')]
     events = await _live_llm_flow.handle_control_event_flush(
@@ -201,7 +201,7 @@ async def test_handle_control_event_flush_on_turn_complete():
   response = LlmResponse(turn_complete=True)
 
   with mock.patch.object(
-      flow.audio_cache_manager, 'flush_caches', new_callable=mock.AsyncMock
+      flow._realtime_cache_manager, 'flush_caches', new_callable=mock.AsyncMock
   ) as mock_flush:
     mock_flush.return_value = [Event(id='flushed-event')]
     events = await _live_llm_flow.handle_control_event_flush(
@@ -308,10 +308,10 @@ async def test_handle_control_event_flush_logs_stats_when_enabled():
   with (
       mock.patch.object(_flow_utils, 'DEFAULT_ENABLE_CACHE_STATISTICS', True),
       mock.patch.object(
-          flow.audio_cache_manager, 'get_cache_stats'
+          flow._realtime_cache_manager, 'get_cache_stats'
       ) as mock_get_stats,
       mock.patch.object(
-          flow.audio_cache_manager, 'flush_caches', return_value=[]
+          flow._realtime_cache_manager, 'flush_caches', return_value=[]
       ),
   ):
     await _live_llm_flow.handle_control_event_flush(flow, context, response)
@@ -319,8 +319,8 @@ async def test_handle_control_event_flush_logs_stats_when_enabled():
   mock_get_stats.assert_called_once_with(context)
 
 
-async def test_send_to_model_uses_flow_audio_cache_manager():
-  """send_to_model accesses the audio cache manager directly from the flow instance."""
+async def test_send_to_model_uses_flow_realtime_cache_manager():
+  """send_to_model accesses the realtime cache manager directly from the flow instance."""
   flow = _TestBaseLlmFlow()
   queue = LiveRequestQueue()
   queue.send_realtime(types.Blob(mime_type='audio/pcm', data=b'audio_bytes'))
@@ -330,7 +330,7 @@ async def test_send_to_model_uses_flow_audio_cache_manager():
   mock_connection = mock.AsyncMock()
 
   with mock.patch.object(
-      flow.audio_cache_manager, 'cache_audio'
+      flow._realtime_cache_manager, 'cache_audio'
   ) as mock_cache_audio:
     # Run send_to_model briefly and cancel it after processing the queued item
     send_task = asyncio.create_task(
@@ -398,3 +398,52 @@ async def test_send_to_model_does_not_mutate_caller_content_role():
   assert content.role is None
   sent_content = mock_connection._send_content.await_args.args[0]
   assert sent_content.role == 'user'
+
+
+async def test_receive_from_model_caches_only_audio_blobs():
+  """Model audio blobs are cached; other inline blobs are not."""
+  flow = _TestBaseLlmFlow()
+  context = _create_test_context(run_config=RunConfig(save_live_blob=True))
+  calls = 0
+
+  async def _receive():
+    nonlocal calls
+    calls += 1
+    if calls == 1:
+      yield LlmResponse(
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      inline_data=types.Blob(
+                          mime_type='image/png', data=b'model_image'
+                      )
+                  ),
+                  types.Part(
+                      inline_data=types.Blob(
+                          mime_type='audio/pcm', data=b'model_audio'
+                      )
+                  ),
+              ],
+          )
+      )
+
+  connection = mock.MagicMock(receive=_receive)
+  events = [
+      event
+      async for event in _live_llm_flow.receive_from_model(
+          flow, connection, context, LlmRequest()
+      )
+  ]
+
+  assert len(events) == 1
+  assert [entry.data.data for entry in context.output_realtime_cache] == [
+      b'model_audio'
+  ]
+
+
+def test_audio_cache_manager_alias_points_to_realtime_cache_manager():
+  """`flow.audio_cache_manager` is kept as an alias of the flow's manager."""
+  flow = _TestBaseLlmFlow()
+
+  assert flow.audio_cache_manager is flow._realtime_cache_manager

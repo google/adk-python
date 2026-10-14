@@ -167,7 +167,7 @@ class RecordingsPlugin(BasePlugin):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> Optional[dict]:
+  ) -> Optional[dict]:  # type: ignore[type-arg]
     """Create pending tool recording for the invocation specified in session state."""
     if not self._is_record_mode_on(tool_context):
       return None
@@ -216,8 +216,8 @@ class RecordingsPlugin(BasePlugin):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-      result: dict,
-  ) -> Optional[dict]:
+      result: dict,  # type: ignore[type-arg]
+  ) -> Optional[dict]:  # type: ignore[type-arg]
     """Complete pending tool recording for the invocation specified in session state."""
     if not self._is_record_mode_on(tool_context):
       return None
@@ -267,7 +267,7 @@ class RecordingsPlugin(BasePlugin):
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       error: Exception,
-  ) -> Optional[dict]:
+  ) -> Optional[dict]:  # type: ignore[type-arg]
     """Handle tool error callback with state guard.
 
     Recording schema does not yet capture errors; we only validate state.

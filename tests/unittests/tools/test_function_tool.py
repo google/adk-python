@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from enum import Enum
+import functools
 import inspect
 from typing import Any
 from typing import Optional
@@ -24,6 +25,7 @@ from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.session import Session
 from google.adk.tools.function_tool import _build_declaration_cached
 from google.adk.tools.function_tool import FunctionTool
@@ -165,6 +167,56 @@ async def test_run_async_with_tool_context_async_callable():
   assert result == "test_value_1"
   assert tool.name == "AsyncCallableWith1ArgAndToolContext"
   assert tool.description == "Async call doc"
+
+
+def test_callable_declaration_uses_call_docstring():
+  """The declaration carries the same __call__ docstring as tool.description."""
+  tool = FunctionTool(AsyncCallableWith1ArgAndToolContext())
+
+  llm_request = LlmRequest()
+  llm_request.append_tools([tool])
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.description == "Async call doc"
+
+
+def test_partial_tools_do_not_shadow_each_other():
+  """Partials of different functions keep their own names and docstrings."""
+
+  def get_weather(api_key: str, city: str) -> str:
+    """Returns the current weather for a city."""
+    return city
+
+  def get_forecast(api_key: str, city: str, days: int = 3) -> str:
+    """Returns a forecast for a city."""
+    return city
+
+  llm_request = LlmRequest()
+  llm_request.append_tools([
+      FunctionTool(functools.partial(get_weather, "key")),
+      FunctionTool(functools.partial(get_forecast, "key")),
+  ])
+
+  declarations = llm_request.config.tools[0].function_declarations
+  assert [d.name for d in declarations] == ["get_weather", "get_forecast"]
+  assert [d.description for d in declarations] == [
+      "Returns the current weather for a city.",
+      "Returns a forecast for a city.",
+  ]
+  assert list(llm_request.tools_dict) == ["get_weather", "get_forecast"]
+
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False):
+    legacy_request = LlmRequest()
+    legacy_request.append_tools([
+        FunctionTool(functools.partial(get_weather, "key")),
+        FunctionTool(functools.partial(get_forecast, "key")),
+    ])
+    legacy_declarations = legacy_request.config.tools[0].function_declarations
+    assert [d.name for d in legacy_declarations] == [
+        "get_weather",
+        "get_forecast",
+    ]
+    assert list(legacy_request.tools_dict) == ["get_weather", "get_forecast"]
 
 
 @pytest.mark.asyncio
@@ -408,6 +460,7 @@ async def test_run_async_with_require_confirmation():
   assert result == {
       "error": "This tool call requires confirmation, please approve or reject."
   }
+  assert tool_context_mock.actions.skip_summarization is True
   assert tool_context_mock._event_actions.requested_tool_confirmations[
       "test_function_call_id"
   ].hint == (
@@ -1589,12 +1642,12 @@ async def test_generator_tool_pauses_on_request_input_and_resumes(
   from google.adk.agents.llm_agent import Agent
   from google.adk.apps.app import App
   from google.adk.apps.app import ResumabilityConfig
+  from google.adk.events._interrupts import extract_event_interrupt_ids
   from google.adk.events.event import Event
   from google.adk.events.request_input import RequestInput
   from google.adk.models.llm_response import LlmResponse
+  from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
   from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-  from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-  from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
   from google.genai import types
 
   from .. import testing_utils
@@ -1646,7 +1699,7 @@ async def test_generator_tool_pauses_on_request_input_and_resumes(
           for p in (e.content.parts if e.content and e.content.parts else [])
       )
   ]
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
   invocation_id = req_events[0].invocation_id
   resume_part = create_request_input_response(interrupt_id, {"text": "APAC"})
   events2 = await runner.run_async(
@@ -1731,12 +1784,12 @@ async def test_generator_tool_repeated_calls_isolate_node_path_and_hitl_state():
   from google.adk.agents.llm_agent import Agent
   from google.adk.apps.app import App
   from google.adk.apps.app import ResumabilityConfig
+  from google.adk.events._interrupts import extract_event_interrupt_ids
   from google.adk.events.event import Event
   from google.adk.events.request_input import RequestInput
   from google.adk.models.llm_response import LlmResponse
+  from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
   from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-  from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-  from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
   from google.genai import types
 
   from .. import testing_utils
@@ -1793,7 +1846,7 @@ async def test_generator_tool_repeated_calls_isolate_node_path_and_hitl_state():
           for p in (e.content.parts if e.content and e.content.parts else [])
       )
   )
-  interrupt_id1 = get_request_input_interrupt_ids(req_event1)[0]
+  [interrupt_id1] = extract_event_interrupt_ids(req_event1)
   invocation_id = req_event1.invocation_id
 
   # Step 2: Resume first call ("APAC"); model then calls ask_and_analyze("marketing"),
@@ -1813,7 +1866,7 @@ async def test_generator_tool_repeated_calls_isolate_node_path_and_hitl_state():
           for p in (e.content.parts if e.content and e.content.parts else [])
       )
   )
-  interrupt_id2 = get_request_input_interrupt_ids(req_event2)[0]
+  [interrupt_id2] = extract_event_interrupt_ids(req_event2)
 
   # Step 3: Resume second call ("EMEA") and complete.
   events3 = await runner.run_async(
@@ -1876,3 +1929,120 @@ async def test_generator_tool_binds_none_default_without_revalidation(
       if p.function_response
   ]
   assert second_req_responses == [{"query": "sales", "tag": None}]
+
+
+def _mixed_params_func(
+    required_num: int,
+    untyped_val,
+    none_val: None,
+    tool_context: ToolContext,
+    optional_num: int = 10,
+) -> dict[str, Any]:
+  return {
+      "required_num": required_num,
+      "untyped_val": untyped_val,
+      "none_val": none_val,
+      "tool_context": tool_context,
+      "optional_num": optional_num,
+  }
+
+
+async def _run_mixed_params_tool(
+    args: dict[str, Any], tool_context: ToolContext
+) -> Any:
+  with temporary_feature_override(
+      FeatureName.FUNCTION_TOOL_ARG_VALIDATION, True
+  ):
+    return await FunctionTool(_mixed_params_func).run_async(
+        args=args, tool_context=tool_context
+    )
+
+
+@pytest.mark.asyncio
+async def test_arg_validation_skips_omitted_optional_param(mock_tool_context):
+  """An omitted parameter with a default is not validated."""
+  result = await _run_mixed_params_tool(
+      {"required_num": 1, "untyped_val": "x", "none_val": None},
+      mock_tool_context,
+  )
+  assert result["optional_num"] == 10
+
+
+@pytest.mark.asyncio
+async def test_arg_validation_passes_untyped_value_through(mock_tool_context):
+  """A parameter without an annotation receives the raw value."""
+  result = await _run_mixed_params_tool(
+      {"required_num": 1, "untyped_val": {"anything": 1}, "none_val": None},
+      mock_tool_context,
+  )
+  assert result["untyped_val"] == {"anything": 1}
+
+
+@pytest.mark.asyncio
+async def test_arg_validation_rejects_value_for_none_annotation(
+    mock_tool_context,
+):
+  """A parameter annotated None rejects a non-None value."""
+  result = await _run_mixed_params_tool(
+      {"required_num": 1, "untyped_val": "x", "none_val": "not_none"},
+      mock_tool_context,
+  )
+  assert "none_val" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_arg_validation_ignores_tool_context_in_args(mock_tool_context):
+  """A model-supplied tool_context arg is replaced by the real context."""
+  result = await _run_mixed_params_tool(
+      {
+          "required_num": 1,
+          "untyped_val": "x",
+          "none_val": None,
+          "tool_context": "ignored_override",
+      },
+      mock_tool_context,
+  )
+  assert result["tool_context"] is mock_tool_context
+
+
+class _SignaturelessCallable:
+  __name__ = "sigless_tool"
+
+  @property
+  def __signature__(self):
+    raise ValueError("no signature available")
+
+  def __call__(self, required_arg: str) -> str:
+    if required_arg == "trigger_internal_type_error":
+      raise TypeError("internal failure")
+    return f"ok:{required_arg}"
+
+
+@pytest.mark.asyncio
+async def test_signatureless_callable_returns_error_on_bad_args(
+    mock_tool_context,
+):
+  """A signature-less callable called with bad args returns an error dict."""
+  tool = FunctionTool(_SignaturelessCallable())
+
+  result = await tool.run_async(
+      args={"unexpected_kwarg": "val"},
+      tool_context=mock_tool_context,
+  )
+
+  assert "Invoking `sigless_tool()` failed" in result["error"]
+  assert "unexpected_kwarg" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_signatureless_callable_reraises_internal_type_error(
+    mock_tool_context,
+):
+  """A TypeError raised inside a signature-less callable propagates."""
+  tool = FunctionTool(_SignaturelessCallable())
+
+  with pytest.raises(TypeError, match="internal failure"):
+    await tool.run_async(
+        args={"required_arg": "trigger_internal_type_error"},
+        tool_context=mock_tool_context,
+    )

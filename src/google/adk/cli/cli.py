@@ -43,6 +43,8 @@ from ..memory.base_memory_service import BaseMemoryService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME as _REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME as _REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..utils.context_utils import Aclosing
 from ..utils.env_utils import is_env_enabled
 from .service_registry import load_services_module
@@ -70,7 +72,7 @@ def _to_app(agent_or_app: Union[BaseAgent, App, Any], app_name: str) -> App:
 async def run_input_file(
     app_name: str,
     user_id: str,
-    agent_or_app: Union[LlmAgent, App],
+    agent_or_app: Union[LlmAgent, BaseAgent, App],
     artifact_service: BaseArtifactService,
     session_service: BaseSessionService,
     credential_service: BaseCredentialService,
@@ -107,8 +109,8 @@ async def run_input_file(
   return session
 
 
-_REQUEST_INPUT = 'adk_request_input'
-_REQUEST_CONFIRMATION = 'adk_request_confirmation'
+_REQUEST_INPUT = _REQUEST_INPUT_FUNCTION_CALL_NAME
+_REQUEST_CONFIRMATION = _REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 
 
 def _collect_pending_function_calls(
@@ -188,7 +190,7 @@ def _prompt_for_function_call(
 
 
 async def run_interactively(
-    root_agent_or_app: Union[LlmAgent, App],
+    root_agent_or_app: Union[LlmAgent, BaseAgent, App],
     artifact_service: BaseArtifactService,
     session: Session,
     session_service: BaseSessionService,
@@ -285,7 +287,16 @@ def _setup_runner_context(
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = True,
     default_llm_model: Optional[str] = None,
-):
+) -> tuple[
+    Union[BaseAgent, App],
+    BaseSessionService,
+    BaseArtifactService,
+    BaseMemoryService,
+    InMemoryCredentialService,
+    str,
+    str,
+    Path,
+]:
   """Sets up the agent, services, and environment for running.
 
   Returns a tuple containing the loaded agent/app, services, and other
@@ -527,13 +538,15 @@ async def run_cli(
     session_path = agent_root / f'{session_id}.session.json'
 
     # Fetch the session again to get all the details.
-    session = await session_service.get_session(
+    saved_session = await session_service.get_session(
         app_name=session.app_name,
         user_id=session.user_id,
         session_id=session.id,
     )
+    if saved_session is None:
+      raise ValueError(f'Session {session.id} not found; cannot save it.')
     session_path.write_text(
-        public_session(session).model_dump_json(
+        public_session(saved_session).model_dump_json(
             indent=2, exclude_none=True, by_alias=True
         ),
         encoding='utf-8',
@@ -636,10 +649,12 @@ async def run_once_cli(
     queries = input_file.queries
   else:
     if session_id:
-      session = await session_service.get_session(
+      existing_session = await session_service.get_session(
           app_name=session_app_name, user_id=user_id, session_id=session_id
       )
-      if not session:
+      if existing_session:
+        session = existing_session
+      else:
         session = await session_service.create_session(
             app_name=session_app_name,
             user_id=user_id,
@@ -667,14 +682,16 @@ async def run_once_cli(
     # treating it as a new user message.
     # Find the last event with active interrupts
     interrupt_event = None
+    interrupt_tool_ids: set[str] = set()
     for e in reversed(session.events):
       if e.long_running_tool_ids:
         interrupt_event = e
+        interrupt_tool_ids = e.long_running_tool_ids
         break
 
     if interrupt_event:
       # Assume the first active interrupt is the one we want to answer
-      interrupt_id = list(interrupt_event.long_running_tool_ids)[0]
+      interrupt_id = list(interrupt_tool_ids)[0]
       if not jsonl:
         click.secho(
             f'Auto-resuming interrupt {interrupt_id} with input: {query}',
@@ -696,7 +713,7 @@ async def run_once_cli(
           None,
       )
 
-      if fc and fc.name == 'adk_request_confirmation':
+      if fc and fc.name == _REQUEST_CONFIRMATION_FUNCTION_CALL_NAME:
         # Try to parse as JSON to support passing custom payload or explicit confirmed flag.
         try:
           parsed = json.loads(query)
@@ -713,7 +730,7 @@ async def run_once_cli(
                 types.Part(
                     function_response=types.FunctionResponse(
                         id=interrupt_id,
-                        name='adk_request_confirmation',
+                        name=_REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
                         response=response,
                     )
                 )
@@ -727,7 +744,7 @@ async def run_once_cli(
                 types.Part(
                     function_response=types.FunctionResponse(
                         id=interrupt_id,
-                        name='adk_request_input',
+                        name=_REQUEST_INPUT_FUNCTION_CALL_NAME,
                         response={'result': query},
                     )
                 )

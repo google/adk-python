@@ -30,11 +30,11 @@ from . import functions as functions
 from ...agents.base_agent import BaseAgent
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
-from ...live._audio_cache_manager import AudioCacheManager
 from ...live._flow_utils import DEFAULT_ENABLE_CACHE_STATISTICS as DEFAULT_ENABLE_CACHE_STATISTICS
 from ...live._flow_utils import DEFAULT_MAX_RECONNECT_ATTEMPTS as DEFAULT_MAX_RECONNECT_ATTEMPTS
 from ...live._flow_utils import DEFAULT_TASK_COMPLETION_DELAY as DEFAULT_TASK_COMPLETION_DELAY
 from ...live._flow_utils import DEFAULT_TRANSFER_AGENT_DELAY as DEFAULT_TRANSFER_AGENT_DELAY
+from ...live._realtime_cache_manager import RealtimeCacheManager as _RealtimeCacheManager
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
@@ -125,7 +125,10 @@ class BaseLlmFlow(ABC):
     self.response_processors: list[BaseLlmResponseProcessor] = []
 
     # Initialize configuration and managers
-    self.audio_cache_manager = AudioCacheManager()
+    self._realtime_cache_manager = _RealtimeCacheManager()
+    # Kept for backward compatibility. The flow itself reads
+    # `_realtime_cache_manager`, so reassigning this attribute has no effect.
+    self.audio_cache_manager = self._realtime_cache_manager
 
   def _request_processor_lists(
       self,

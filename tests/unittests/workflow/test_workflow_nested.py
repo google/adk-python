@@ -20,6 +20,7 @@ import uuid
 from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
 from google.adk.runners import Runner
@@ -32,8 +33,6 @@ from google.adk.workflow import Workflow
 from google.adk.workflow._base_node import START
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-from google.adk.workflow.utils._workflow_hitl_utils import has_request_input_function_call
 from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
@@ -42,6 +41,7 @@ from typing_extensions import override
 
 from .. import testing_utils
 from .workflow_testing_utils import find_function_call_event
+from .workflow_testing_utils import get_request_input_events
 from .workflow_testing_utils import InputCapturingNode
 from .workflow_testing_utils import RequestInputNode
 from .workflow_testing_utils import simplify_events_with_node
@@ -422,9 +422,9 @@ async def test_nested_workflow_with_request_input_event_hitl(
   events1 = await runner.run_async(user_event)
 
   # Then: It should yield a RequestInput event
-  req_events = [e for e in events1 if has_request_input_function_call(e)]
+  req_events = get_request_input_events(events1)
   assert req_events
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
   assert interrupt_id == 'request_input'
 
   simplified_events1 = simplify_events_with_node(events1)
@@ -502,9 +502,9 @@ async def test_nested_agent_with_request_input_piped_to_next_node(
   user_event = testing_utils.get_user_content('start workflow')
   events1 = await runner.run_async(user_event)
 
-  req_events = [e for e in events1 if has_request_input_function_call(e)]
+  req_events = get_request_input_events(events1)
   assert req_events
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
   assert interrupt_id
   hitl_response_payload = {'response': 'user input for hitl'}
   hitl_response = types.Content(

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+import copy
 import functools
 from typing import Any
 from typing import TYPE_CHECKING
@@ -70,7 +71,12 @@ def _validate_state_entry(
 
 
 class State:
-  """A state dict that maintains the current value and the pending-commit delta."""
+  """A state dict that maintains the current value and the pending-commit delta.
+
+  A write into a dict or list read from the state reaches the delta unvalidated:
+  only an assignment is checked against the schema, so `state['tags'].append(1)`
+  is recorded even where `tags` is declared `list[str]`.
+  """
 
   APP_PREFIX = "app:"
   USER_PREFIX = "user:"
@@ -92,12 +98,17 @@ class State:
     self._value = value
     self._delta = delta
     self._schema = schema
+    self._snapshots: dict[str, tuple[Any, Any]] = {}
 
   def __getitem__(self, key: str) -> Any:
     """Returns the value of the state dict for the given key."""
     if key in self._delta:
-      return self._delta[key]
-    return self._value[key]
+      value = self._delta[key]
+    else:
+      value = self._value[key]
+    if isinstance(value, (dict, list)) and key not in self._snapshots:
+      self._take_snapshot(key, value)
+    return value
 
   def __setitem__(self, key: str, value: Any) -> None:
     """Sets the value of the state dict for the given key."""
@@ -107,6 +118,55 @@ class State:
     #   updated at the storage commit time.
     self._value[key] = value
     self._delta[key] = value
+    self._snapshots.pop(key, None)
+
+  def _take_snapshot(self, key: str, value: Any) -> None:
+    """Keeps the container a read handed out beside a copy to compare it with.
+
+    A copy that does not compare equal to what it was copied from can never
+    report the container unchanged, so such a key is left untracked rather
+    than recorded by every read.
+    """
+    self._snapshots.pop(key, None)
+    try:
+      snapshot = copy.deepcopy(value)
+      if bool(value != snapshot):
+        return
+    except Exception:  # pylint: disable=broad-exception-caught
+      return
+    self._snapshots[key] = (value, snapshot)
+
+  def _record_nested_writes(self) -> None:
+    """Records each dict or list handed out by a read that has since changed.
+
+    A write into a container read from the state changes the stored object in
+    place without assigning its key, so it is found by comparing the container
+    with the copy taken when it was read. Every container a read handed out is
+    compared on every call, so a caller that reads the delta repeatedly pays
+    that comparison each time.
+    """
+    for key, (handed_out, snapshot) in list(self._snapshots.items()):
+      if key in self._delta:
+        current = self._delta[key]
+      elif key in self._value:
+        current = self._value[key]
+      else:
+        del self._snapshots[key]
+        continue
+      # Another context may have assigned the key since the read, and its
+      # value wins; only the container this state handed out is tracked.
+      if current is not handed_out:
+        del self._snapshots[key]
+        continue
+      try:
+        changed = bool(current != snapshot)
+      except Exception:  # pylint: disable=broad-exception-caught
+        del self._snapshots[key]
+        continue
+      if changed:
+        self._value[key] = current
+        self._delta[key] = current
+        self._take_snapshot(key, current)
 
   def __contains__(self, key: object) -> bool:
     """Whether the state dict contains the given key."""
@@ -125,7 +185,12 @@ class State:
       return default
 
   def has_delta(self) -> bool:
-    """Whether the state has pending delta."""
+    """Whether the state has pending delta.
+
+    Not a pure query: a write made into a dict or list read from the state is
+    recorded into the delta here.
+    """
+    self._record_nested_writes()
     return bool(self._delta)
 
   def get(self, key: str, default: Any = None) -> Any:
@@ -141,6 +206,8 @@ class State:
         _validate_state_entry(self._schema, key, value)
     self._value.update(delta)
     self._delta.update(delta)
+    for key in delta:
+      self._snapshots.pop(key, None)
 
   def to_dict(self) -> dict[str, Any]:
     """Returns the state dict."""
