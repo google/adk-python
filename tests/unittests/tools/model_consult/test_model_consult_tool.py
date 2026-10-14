@@ -1308,8 +1308,8 @@ async def test_corrupt_state_and_broken_agent_callbacks_degrade_gracefully(
   assert '12345' in handoff_text
   assert '67890' in handoff_text
 
-  class _RaisingStateDict(dict):
-    """State mapping that raises RuntimeError on write."""
+  class _RaisingState(State):
+    """State that raises RuntimeError on write."""
 
     def __setitem__(self, key, value):
       raise RuntimeError('storage write failure')
@@ -1318,7 +1318,7 @@ async def test_corrupt_state_and_broken_agent_callbacks_degrade_gracefully(
   ctx._invocation_context.canonical_tools_cache = None
   object.__setattr__(ctx._invocation_context.agent, 'canonical_instruction', 42)
   object.__setattr__(ctx._invocation_context.agent, 'canonical_tools', 42)
-  object.__setattr__(ctx, '_state', _RaisingStateDict())
+  object.__setattr__(ctx, '_state', _RaisingState(value={}, delta={}))
   caplog.clear()
   res2 = await _run(tool, ctx, question='Still works?')
   assert res2['status'] == 'ok'

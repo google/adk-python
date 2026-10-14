@@ -2217,6 +2217,21 @@ def test_cli_add_eval_case_with_session(tmp_path: Path):
   assert eval_case["session_input"]["app_name"] == "test_app_add_2"
 
 
+def test_cli_add_eval_case_requires_session_input_file(tmp_path: Path):
+  """Calling the command without a session input file fails clearly."""
+  scenarios_file = tmp_path / "scenarios.json"
+  scenarios_file.write_text('{"scenarios": []}')
+
+  with pytest.raises(
+      click.ClickException, match="--session_input_file is required"
+  ):
+    cli_tools_click.cli_add_eval_case.callback(
+        agent_module_file_path=str(tmp_path / "app"),
+        eval_set_id="set",
+        scenarios_file=str(scenarios_file),
+    )
+
+
 def test_cli_add_eval_case_skip_existing(tmp_path: Path):
   app_name = "test_app_add_3"
   eval_set_id = "test_eval_set_add_3"
@@ -2835,6 +2850,14 @@ def test_helpful_command_parse_args_defers_to_click_when_complete() -> None:
 
   assert leftover == []
   assert ctx.params == {"target_path": "some/path"}
+
+
+def test_helpful_command_format_missing_arg_error_requires_param() -> None:
+  """A MissingParameter without a parameter raises a clear ValueError."""
+  with pytest.raises(ValueError, match="does not name a parameter"):
+    cli_tools_click.HelpfulCommand._format_missing_arg_error(
+        click.MissingParameter()
+    )
 
 
 # adk_services_options
@@ -3560,6 +3583,47 @@ def test_cli_optimize_rejects_sampler_config_for_a_different_app(
   assert result.exit_code == 1
   assert "my_agent" in result.output
   assert "some_other_agent" in result.output
+
+
+def test_cli_optimize_raises_when_gepa_result_missing(tmp_path: Path) -> None:
+  """A result without gepa_result raises a clear ValueError."""
+  agent_path = tmp_path / "my_agent"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+  sampler_config_file = tmp_path / "sampler.json"
+  sampler_config_file.write_text(
+      json.dumps({
+          "eval_config": {"criteria": {}},
+          "app_name": "my_agent",
+          "train_eval_set": "train_set",
+      })
+  )
+  with (
+      mock.patch("google.adk.cli.cli_eval.get_root_agent", autospec=True),
+      mock.patch(
+          "google.adk.optimization.local_eval_sampler.LocalEvalSampler",
+          autospec=True,
+      ),
+      mock.patch(
+          "google.adk.optimization.gepa_root_agent_prompt_optimizer.GEPARootAgentPromptOptimizer",
+          autospec=True,
+      ) as mock_optimizer_class,
+  ):
+    mock_optimizer_class.return_value.optimize.return_value = SimpleNamespace(
+        gepa_result=None, optimized_agents=[]
+    )
+    result = CliRunner().invoke(
+        cli_tools_click.main,
+        [
+            "optimize",
+            str(agent_path),
+            "--sampler_config_file_path",
+            str(sampler_config_file),
+        ],
+    )
+
+  assert isinstance(result.exception, ValueError)
+  assert "gepa_result" in str(result.exception)
 
 
 # adk migrate session

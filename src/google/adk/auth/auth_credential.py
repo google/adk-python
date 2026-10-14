@@ -28,6 +28,8 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import model_validator
 
+from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME as _REQUEST_EUC_FUNCTION_CALL_NAME
+
 _REDACTED = "<redacted>"
 
 # By-alias (camelCase) and by-name (snake_case) names of every field on a
@@ -400,7 +402,7 @@ def _redact_credential_secrets(value: Any) -> Any:
       ) or isinstance(auth_type, AuthCredentialTypes):
         return _redact_auth_config_secrets(value)
 
-    if value.get("name") == "adk_request_credential":
+    if value.get("name") == _REQUEST_EUC_FUNCTION_CALL_NAME:
       result = {}
       for key, val in value.items():
         if key == "args" and isinstance(val, dict):

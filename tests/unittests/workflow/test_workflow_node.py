@@ -21,6 +21,7 @@ from unittest import mock
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps import App
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.base_tool import BaseTool
@@ -34,6 +35,7 @@ from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow._tool_node import _ToolNode as ToolNode
 from google.adk.workflow._workflow import Workflow
 from google.genai import types
+from pydantic import BaseModel
 import pytest
 
 from .. import testing_utils
@@ -453,3 +455,615 @@ def test_parallel_worker_invalid_max_parallel_workers_less_than_one():
       match="max_parallel_workers must be greater than or equal to 1",
   ):
     ParallelWorker(node=dummy_func, max_parallel_workers=0)
+
+
+def test_node_require_confirmation_configuration():
+  """Tests @node(require_confirmation=...) defaults and configuration validation."""
+  from google.adk.workflow._errors import WorkflowConfigurationError
+
+  @node(require_confirmation=True)
+  def remove_file():
+    return "removed"
+
+  assert isinstance(remove_file, FunctionNode)
+  assert remove_file.require_confirmation is True
+  assert remove_file.rerun_on_resume is True
+
+  def check_fn(path: str) -> bool:
+    return path.startswith("/prod")
+
+  @node(require_confirmation=check_fn)
+  def remove_path(path: str):
+    return path
+
+  assert remove_path.require_confirmation is check_fn
+  assert remove_path.rerun_on_resume is True
+  assert remove_path._as_tool_node().require_confirmation is check_fn
+
+  for fn in (
+      lambda: node(require_confirmation=True, rerun_on_resume=False)(
+          lambda: None
+      ),
+      lambda: FunctionNode(
+          func=lambda: "ok",
+          name="direct_node",
+          require_confirmation=True,
+          rerun_on_resume=False,
+      ),
+      lambda: node(remove_file, rerun_on_resume=False),
+  ):
+    with pytest.raises(
+        ValueError, match="require_confirmation requires rerun_on_resume=True"
+    ):
+      fn()
+
+  agent = LlmAgent(name="test_agent")
+  with pytest.raises(
+      WorkflowConfigurationError,
+      match="require_confirmation is only supported on FunctionNode",
+  ):
+    node(agent, require_confirmation=True)
+  assert node(agent, require_confirmation=False) is not None
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.parametrize("confirmed", [True, False])
+@pytest.mark.asyncio
+async def test_node_require_confirmation_workflow_execution(
+    resumable: bool, confirmed: bool
+):
+  """Tests @node(require_confirmation=True) pauses in Workflow and handles approval/rejection."""
+  from google.adk.apps.app import ResumabilityConfig
+  from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+  from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+
+  from . import workflow_testing_utils
+
+  calls: list[str] = []
+  downstream_seen: list[object] = []
+
+  class RemoveResult(BaseModel):
+    removed: bool
+
+  @node(require_confirmation=True)
+  def remove_file() -> RemoveResult:
+    calls.append("removed")
+    return RemoveResult(removed=True)
+
+  def after_node(node_input):
+    downstream_seen.append(node_input)
+    return node_input
+
+  wf = Workflow(
+      name="confirm_wf",
+      edges=[(START, remove_file), (remove_file, after_node)],
+  )
+  app_instance = App(
+      name="test_confirm_wf",
+      root_agent=wf,
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app_instance)
+
+  events1 = await runner.run_async("start")
+  req_event = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert req_event is not None
+  fc_args = req_event.content.parts[0].function_call.args
+  assert fc_args["payload"] == {"tool_name": "remove_file", "args": {}}
+  assert not calls
+  assert not downstream_seen
+
+  [interrupt_id] = extract_event_interrupt_ids(req_event)
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id, {"confirmed": confirmed})
+      ),
+      invocation_id=req_event.invocation_id,
+  )
+
+  if confirmed:
+    assert calls == ["removed"]
+    assert downstream_seen == [{"removed": True}]
+  else:
+    assert not calls
+    assert downstream_seen == [{"error": "This tool call is rejected."}]
+    assert any(
+        e.output == {"error": "This tool call is rejected."} for e in events2
+    )
+
+
+@pytest.mark.parametrize(
+    "target_path,should_pause", [("/dev/tmp", False), ("/prod/db", True)]
+)
+@pytest.mark.asyncio
+async def test_node_require_confirmation_callable_predicate(
+    target_path: str, should_pause: bool
+):
+  """Tests @node(require_confirmation=callable) evaluates predicate with bound arguments."""
+  from google.adk.agents.context import Context
+  from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+  from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+
+  from . import workflow_testing_utils
+
+  calls: list[str] = []
+  predicate_calls: list[str] = []
+
+  def setup_state(ctx: Context):
+    ctx.state["path"] = target_path
+
+  def check_path(path: str) -> str:
+    predicate_calls.append(path)
+    return path if path.startswith("/prod") else ""
+
+  @node(require_confirmation=check_path)
+  def remove_file(path: str):
+    calls.append(path)
+    return f"deleted:{path}"
+
+  wf = Workflow(
+      name="predicate_wf",
+      edges=[(START, setup_state), (setup_state, remove_file)],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name="test_predicate_wf", root_agent=wf)
+  )
+
+  events1 = await runner.run_async("start")
+  req_event = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+
+  if not should_pause:
+    assert req_event is None
+    assert predicate_calls == [target_path]
+    assert calls == [target_path]
+  else:
+    assert req_event is not None
+    assert req_event.content.parts[0].function_call.args["payload"] == {
+        "tool_name": "remove_file",
+        "args": {"path": target_path},
+    }
+    assert predicate_calls == [target_path]
+    assert not calls
+    [interrupt_id] = extract_event_interrupt_ids(req_event)
+    await runner.run_async(
+        new_message=testing_utils.UserContent(
+            create_request_input_response(interrupt_id, {"confirmed": True})
+        ),
+        invocation_id=req_event.invocation_id,
+    )
+    assert predicate_calls == [target_path]
+    assert calls == [target_path]
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_node_require_confirmation_returning_none_not_rerun_downstream(
+    resumable: bool,
+):
+  """Tests @node(require_confirmation=True) returning None does not rerun on downstream resume."""
+  from google.adk.apps.app import ResumabilityConfig
+  from google.adk.events.request_input import RequestInput
+  from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+  from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+
+  from . import workflow_testing_utils
+
+  call_count = 0
+
+  @node(require_confirmation=True)
+  def remove_file() -> None:
+    nonlocal call_count
+    call_count += 1
+    return None
+
+  def review_step():
+    return RequestInput(interrupt_id="review", message="Review?")
+
+  wf = Workflow(
+      name="confirm_none_wf",
+      edges=[(START, remove_file), (remove_file, review_step)],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name="test_confirm_none_wf",
+          root_agent=wf,
+          resumability_config=(
+              ResumabilityConfig(is_resumable=True) if resumable else None
+          ),
+      )
+  )
+
+  events1 = await runner.run_async("start")
+  req1 = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert req1 is not None
+  assert call_count == 0
+
+  # Approve remove_file -> runs once and pauses on review_step
+  [id1] = extract_event_interrupt_ids(req1)
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(id1, {"confirmed": True})
+      ),
+      invocation_id=req1.invocation_id,
+  )
+  assert call_count == 1
+  req2 = workflow_testing_utils.find_function_call_event(
+      events2, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert req2 is not None
+
+  # Resume review_step -> remove_file must not run again
+  [id2] = extract_event_interrupt_ids(req2)
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(id2, {"ok": True})
+      ),
+      invocation_id=req2.invocation_id,
+  )
+  assert call_count == 1
+
+
+@pytest.mark.parametrize("child_confirmed", [True, False])
+@pytest.mark.asyncio
+async def test_node_require_confirmation_child_run_node_not_skipped(
+    child_confirmed: bool,
+):
+  """Tests child @node(require_confirmation=True) called via ctx.run_node handles approval and rejection."""
+  from google.adk.agents.context import Context
+  from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+  from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+
+  from . import workflow_testing_utils
+
+  calls: list[str] = []
+  child_results: list[Any] = []
+
+  @node(require_confirmation=True)
+  def child_action() -> str:
+    calls.append("child")
+    return "child_done"
+
+  @node(require_confirmation=True)
+  async def parent_action(ctx: Context) -> Any:
+    calls.append("parent")
+    res = await ctx.run_node(child_action)
+    child_results.append(res)
+    return res
+
+  wf = Workflow(name="nested_confirm_wf", edges=[(START, parent_action)])
+  runner = testing_utils.InMemoryRunner(
+      app=App(name="test_nested_confirm_wf", root_agent=wf)
+  )
+
+  # 1. Pauses on parent_action
+  events1 = await runner.run_async("start")
+  req1 = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert req1 is not None
+  assert not calls
+
+  # 2. Approve parent_action -> parent runs and pauses on child_action
+  [id1] = extract_event_interrupt_ids(req1)
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(id1, {"confirmed": True})
+      ),
+      invocation_id=req1.invocation_id,
+  )
+  assert calls == ["parent"]
+  req2 = workflow_testing_utils.find_function_call_event(
+      events2, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert req2 is not None
+
+  # 3. Respond to child_action -> parent reruns to reach ctx.run_node
+  [id2] = extract_event_interrupt_ids(req2)
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(id2, {"confirmed": child_confirmed})
+      ),
+      invocation_id=req2.invocation_id,
+  )
+  if child_confirmed:
+    assert calls == ["parent", "parent", "child"]
+    assert child_results == ["child_done"]
+  else:
+    assert calls == ["parent", "parent"]
+    assert child_results == [{"error": "This tool call is rejected."}]
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_node_require_confirmation_rejected_survives_replay_across_turns(
+    resumable: bool,
+):
+  """Tests that a rejected node's output survives replay when a sibling branch resumes later."""
+  from google.adk.apps.app import ResumabilityConfig
+  from google.adk.events.request_input import RequestInput
+  from google.adk.workflow._join_node import JoinNode
+  from google.adk.workflow.utils._workflow_hitl_utils import confirmation_interrupt_id
+  from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+
+  node_b_calls: list[str] = []
+  downstream_b_calls: list[Any] = []
+  join_calls: list[Any] = []
+
+  @node(rerun_on_resume=False)
+  def node_a():
+    return RequestInput(interrupt_id="ask_a", message="Input for A?")
+
+  @node(require_confirmation=True)
+  def node_b() -> str:
+    node_b_calls.append("ran_b")
+    return "result_b"
+
+  @node
+  def downstream_b(node_input: Any) -> str:
+    downstream_b_calls.append(node_input)
+    return "after_b"
+
+  node_join = JoinNode(name="node_join")
+
+  @node
+  def downstream_join(node_input: Any) -> str:
+    join_calls.append(node_input)
+    return "done"
+
+  wf = Workflow(
+      name="replay_cancel_wf",
+      edges=[
+          (START, node_a),
+          (START, node_b),
+          (node_b, downstream_b),
+          (node_a, node_join),
+          (downstream_b, node_join),
+          (node_join, downstream_join),
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name="test_replay_cancel_wf",
+          root_agent=wf,
+          resumability_config=(
+              ResumabilityConfig(is_resumable=True) if resumable else None
+          ),
+      )
+  )
+
+  # Turn 1: Both node_a and node_b pause for input/confirmation.
+  events1 = await runner.run_async("start")
+  inv_id = events1[0].invocation_id
+  all_interrupts: list[str] = []
+  for ev in events1:
+    all_interrupts.extend(extract_event_interrupt_ids(ev))
+  confirm_id = confirmation_interrupt_id("replay_cancel_wf@1/node_b@1")
+  assert "ask_a" in all_interrupts
+  assert confirm_id in all_interrupts
+
+  # Turn 2: Reject node_b while node_a remains WAITING.
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(confirm_id, {"confirmed": False})
+      ),
+      invocation_id=inv_id,
+  )
+  assert not node_b_calls
+  assert downstream_b_calls == [{"error": "This tool call is rejected."}]
+  assert join_calls == []
+
+  # Turn 3: Resume node_a -> node_b is replayed from history without re-running.
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response("ask_a", {"result": "a_done"})
+      ),
+      invocation_id=inv_id,
+  )
+  assert not node_b_calls
+  assert downstream_b_calls == [{"error": "This tool call is rejected."}]
+  assert join_calls == [{
+      "node_a": "a_done",
+      "downstream_b": "after_b",
+  }]
+
+
+@pytest.mark.parametrize("confirmed", [True, False])
+@pytest.mark.asyncio
+async def test_node_require_confirmation_as_llm_agent_tool(confirmed: bool):
+  """Tests @node(require_confirmation=True) in LlmAgent.tools pauses and resumes via RequestInput."""
+  from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+  from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+
+  from . import workflow_testing_utils
+
+  calls: list[str] = []
+
+  @node(require_confirmation=True)
+  def remove_file(path: str) -> dict[str, str]:
+    """Removes a file."""
+    calls.append(path)
+    return {"removed": path}
+
+  agent = LlmAgent(
+      name="file_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name="remove_file", args={"path": "/tmp/a.txt"}
+              ),
+              types.Part.from_text(text="Done."),
+          ]
+      ),
+      tools=[remove_file],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name="test_node_tool_confirm", root_agent=agent)
+  )
+
+  events1 = await runner.run_async("delete /tmp/a.txt")
+  req_event = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert req_event is not None
+  assert not calls
+
+  [interrupt_id] = extract_event_interrupt_ids(req_event)
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id, {"confirmed": confirmed})
+      ),
+      invocation_id=req_event.invocation_id,
+  )
+
+  tool_responses = [
+      p.function_response.response
+      for e in events2
+      for p in (e.content.parts if e.content and e.content.parts else [])
+      if p.function_response and p.function_response.name == "remove_file"
+  ]
+  if confirmed:
+    assert calls == ["/tmp/a.txt"]
+    assert tool_responses == [{"removed": "/tmp/a.txt"}]
+  else:
+    assert not calls
+    assert tool_responses == [{"error": "This tool call is rejected."}]
+
+
+@pytest.mark.asyncio
+async def test_node_require_confirmation_dumps_nested_models_in_payload():
+  """Tests @node(require_confirmation=True) recursively dumps nested BaseModels in payload args."""
+  from google.adk.agents.context import Context
+  from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+
+  from . import workflow_testing_utils
+
+  class Item(BaseModel):
+    name: str
+
+  def seed_items(ctx: Context):
+    ctx.state["items"] = [{"name": "a"}, {"name": "b"}]
+
+  @node(require_confirmation=True)
+  def batch_delete(items: list[Item]) -> int:
+    return len(items)
+
+  wf = Workflow(
+      name="nested_model_payload_wf",
+      edges=[(START, seed_items), (seed_items, batch_delete)],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name="test_nested_model_payload_wf", root_agent=wf)
+  )
+
+  events = await runner.run_async("start")
+  req_event = workflow_testing_utils.find_function_call_event(
+      events, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert req_event is not None
+  fc_args = req_event.content.parts[0].function_call.args
+  assert fc_args["payload"] == {
+      "tool_name": "batch_delete",
+      "args": {"items": [{"name": "a"}, {"name": "b"}]},
+  }
+
+
+@pytest.mark.parametrize("confirmed", [True, False])
+@pytest.mark.asyncio
+async def test_node_require_confirmation_runs_before_auth_gate(confirmed: bool):
+  """Tests @node(require_confirmation=True, auth_config=...) confirms before collecting credentials."""
+  from fastapi.openapi.models import APIKey
+  from fastapi.openapi.models import APIKeyIn
+  from google.adk.agents.context import Context
+  from google.adk.auth.auth_credential import AuthCredential
+  from google.adk.auth.auth_credential import AuthCredentialTypes
+  from google.adk.auth.auth_tool import AuthConfig
+  from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
+  from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+  from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+
+  from . import workflow_testing_utils
+
+  auth_config = AuthConfig(
+      auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Api-Key"}),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.API_KEY,
+          api_key="placeholder",
+      ),
+      credential_key="test_api_key",
+  )
+
+  calls: list[str] = []
+
+  @node(require_confirmation=True, auth_config=auth_config)
+  def authed_action(ctx: Context) -> str:
+    cred = ctx.get_auth_response(auth_config)
+    calls.append(cred.api_key)
+    return "authed_done"
+
+  wf = Workflow(name="confirm_then_auth_wf", edges=[(START, authed_action)])
+  runner = testing_utils.InMemoryRunner(
+      app=App(name="test_confirm_then_auth_wf", root_agent=wf)
+  )
+
+  # Turn 1: Must pause on confirmation first, NOT auth.
+  events1 = await runner.run_async("start")
+  assert not workflow_testing_utils.get_auth_request_events(events1)
+  req_event = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert req_event is not None
+  [confirm_id] = extract_event_interrupt_ids(req_event)
+
+  # Turn 2: Respond to confirmation.
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(confirm_id, {"confirmed": confirmed})
+      ),
+      invocation_id=req_event.invocation_id,
+  )
+
+  if not confirmed:
+    assert not workflow_testing_utils.get_auth_request_events(events2)
+    assert not calls
+    assert any(
+        e.output == {"error": "This tool call is rejected."} for e in events2
+    )
+    return
+
+  # Approved: now the auth gate requests credentials.
+  auth_events = workflow_testing_utils.get_auth_request_events(events2)
+  assert len(auth_events) == 1
+  assert not calls
+  [auth_id] = extract_event_interrupt_ids(auth_events[0])
+
+  auth_response = AuthConfig(
+      auth_scheme=auth_config.auth_scheme,
+      raw_auth_credential=auth_config.raw_auth_credential,
+      exchanged_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.API_KEY,
+          api_key="secret_key_123",
+      ),
+      credential_key="test_api_key",
+  )
+  events3 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=auth_id,
+                  name=REQUEST_EUC_FUNCTION_CALL_NAME,
+                  response=auth_response.model_dump(mode="json", by_alias=True),
+              )
+          )
+      ),
+      invocation_id=req_event.invocation_id,
+  )
+  assert calls == ["secret_key_123"]
+  assert any(e.output == "authed_done" for e in events3)

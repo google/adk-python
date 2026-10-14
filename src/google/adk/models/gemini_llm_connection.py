@@ -18,7 +18,6 @@ import logging
 from typing import AsyncGenerator
 from typing import cast
 from typing import Final
-from typing import Union
 
 from google.genai import types
 
@@ -27,16 +26,11 @@ from ..utils.content_utils import _filter_media_parts
 from ..utils.context_utils import Aclosing
 from ..utils.variant_utils import GoogleLLMVariant
 from .base_llm_connection import BaseLlmConnection
+from .base_llm_connection import RealtimeInput
 from .llm_response import LlmResponse
 
 logger = logging.getLogger('google_adk.' + __name__)
 
-RealtimeInput = Union[
-    types.Blob,
-    types.ActivityStart,
-    types.ActivityEnd,
-    types.LiveClientRealtimeInput,
-]
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:

@@ -44,11 +44,9 @@ async def slow_background_task(task_description: str) -> Dict[str, Any]:
 # Create a FunctionTool wrapping the long-running async function
 non_blocking_tool = FunctionTool(slow_background_task)
 
-# Configure response_scheduling to indicate non-blocking behavior for Live mode.
-# Options: WHEN_IDLE, SILENT, or INTERRUPT.
-non_blocking_tool.response_scheduling = (
-    types.FunctionResponseScheduling.WHEN_IDLE
-)
+# Mark the tool as non-blocking so the model keeps conversing while it runs in
+# Live mode.
+non_blocking_tool.behavior = types.Behavior.NON_BLOCKING
 
 
 root_agent = Agent(
@@ -61,7 +59,7 @@ root_agent = Agent(
       You are a helpful assistant for testing live mode non-blocking tool execution.
 
       You have access to a tool `slow_background_task` which is configured with
-      NON_BLOCKING response scheduling (WHEN_IDLE).
+      NON_BLOCKING behavior.
 
       When the user asks you to run a long-running or background task, call the `slow_background_task` tool.
       Inform the user that the task has started and continue conversing with them normally while the task runs in the background.

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 from collections.abc import Awaitable
@@ -557,7 +558,9 @@ async def _execute_single_prepared_call(
     # the tool normally. A tool that requires confirmation is answered by the
     # gate instead, so the gate holds for every tool rather than only the ones
     # that check it themselves, and a gate that raises is handled like a tool
-    # that raises.
+    # that raises. A call that is cancelled -- by a failed parallel call, a
+    # node timeout or the caller -- reaches the error callbacks too, so what
+    # a before-tool callback set up can be released, and stays cancelled.
     if function_response is None:
       try:
         function_response = await apply_confirmation_gate(
@@ -569,6 +572,16 @@ async def _execute_single_prepared_call(
           # The pause is not a tool result for the model to summarize; without
           # this the flow re-invokes the model, which calls the tool again.
           tool_context.actions.skip_summarization = True
+      except asyncio.CancelledError as cancelled:
+        await _tool_error_handler.notify_tool_cancelled(
+            invocation_context=invocation_context,
+            agent=agent,
+            tool=tool,
+            tool_args=function_args,
+            tool_context=tool_context,
+            cancelled=cancelled,
+        )
+        raise
       except Exception as tool_error:
         error_response = await _tool_error_handler.run_on_tool_error_callbacks(
             invocation_context=invocation_context,

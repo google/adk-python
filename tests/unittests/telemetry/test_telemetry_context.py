@@ -1054,6 +1054,7 @@ def span_exporter(
       'start_as_current_span',
       real_tracer.start_as_current_span,
   )
+  monkeypatch.setattr(tracing.tracer, 'start_span', real_tracer.start_span)
   return exporter
 
 

@@ -27,6 +27,8 @@ from ...flows.llm_flows.context._fencing import QUOTED_CONTENT_END
 from ...models.google_llm import Gemini
 
 if TYPE_CHECKING:
+  from pydantic.main import IncEx
+
   from ...models.llm_request import LlmRequest
   from ...models.llm_response import LlmResponse
 
@@ -268,20 +270,27 @@ class _ConformanceTestGemini(Gemini):
         self._replay_index,
     )
 
-    if self._replay_index >= len(self._agent_llm_recordings):
+    replay_index = self._replay_index
+    if replay_index is None:
+      raise ValueError(
+          'Replay config is missing current_replay_index for agent'
+          f" '{self._agent_name}'."
+      )
+
+    if replay_index >= len(self._agent_llm_recordings):
       raise ReplayVerificationError(
           'Runtime sent more LLM requests than expected for agent'
           f" '{self._agent_name}' at user_message_index"
           f' {self._user_message_index}. Expected'
           f' {len(self._agent_llm_recordings)}, but got request at index'
-          f' {self._replay_index}'
+          f' {replay_index}'
       )
 
-    recording = self._agent_llm_recordings[self._replay_index]
+    recording = self._agent_llm_recordings[replay_index]
 
     # Verify request matches
     self._verify_llm_request_match(
-        recording.llm_request, llm_request, self._replay_index
+        recording.llm_request, llm_request, replay_index
     )
 
     for response in recording.llm_responses:
@@ -295,7 +304,7 @@ class _ConformanceTestGemini(Gemini):
   ) -> None:
     """Verify that the current LLM request exactly matches the recorded one."""
     # Comprehensive exclude dict for all fields that can differ between runs
-    excluded_fields = {
+    excluded_fields: dict[str, IncEx | bool] = {
         'live_connect_config': True,
         'config': {  # some config fields can vary per run
             'http_options': True,

@@ -14,6 +14,7 @@
 
 """Tests for vertex_ai_example_store."""
 
+import sys
 from types import SimpleNamespace
 
 from google.adk.examples.vertex_ai_example_store import VertexAiExampleStore
@@ -68,6 +69,13 @@ def test_get_examples_searches_the_configured_store(search_examples):
       },
       config={"top_k": 10},
   )
+
+
+def test_init_names_the_missing_pandas_package(mocker: MockerFixture):
+  mocker.patch.dict(sys.modules, {"pandas": None})
+
+  with pytest.raises(ImportError, match="pip install pandas"):
+    VertexAiExampleStore(_STORE_NAME)
 
 
 def test_get_examples_derives_project_and_location_from_the_store_name(

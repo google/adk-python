@@ -27,6 +27,7 @@ from typing import cast
 from typing import Optional
 
 from ...errors.already_exists_error import AlreadyExistsError
+from ...errors.session_not_found_error import SessionNotFoundError
 from ...events.event import Event
 from ...platform import uuid as platform_uuid
 from ...sessions import _session_util
@@ -339,6 +340,12 @@ class RedisSessionService(BaseSessionService):
   async def append_event(self, session: Session, event: Event) -> Event:
     """Appends an event to the session and synchronizes state in Redis."""
     client = self._get_redis()
+    key = self._session_key(session.app_name, session.user_id, session.id)
+    # Check before any write: the app/user state deltas below are stored under
+    # their own keys, and the session write would otherwise create a session
+    # that was never stored instead of failing like the other services.
+    if not await client.exists(key):
+      raise SessionNotFoundError(f"Session {session.id} not found.")
     event = await super().append_event(session, event)
     # Stamp the session with the event's own timestamp, matching
     # InMemorySessionService, SqliteSessionService and DatabaseSessionService.
@@ -387,8 +394,6 @@ class RedisSessionService(BaseSessionService):
         events=session.events,
         last_update_time=session.last_update_time,
     )
-
-    key = self._session_key(session.app_name, session.user_id, session.id)
 
     async def append_to_storage(pipe: Any) -> None:
       raw = await pipe.get(key)
