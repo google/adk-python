@@ -443,6 +443,27 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     self.assertIsInstance(result, ComputerState)
 
   @patch.object(AgentEngineSandboxComputer, "_get_sandbox_client")
+  async def test_type_text(self, mock_get_client):
+    """Test type_text method."""
+    mock_client = AsyncMock()
+    mock_client.type_text = AsyncMock()
+    mock_client.get_screenshot = AsyncMock(return_value=b"png_data")
+    mock_client.get_current_url = AsyncMock(return_value="https://example.com")
+    mock_get_client.return_value = mock_client
+
+    computer = AgentEngineSandboxComputer()
+
+    result = await computer.type_text("hello", press_enter=True)
+
+    mock_client.type_text.assert_called_once_with(
+        text="hello",
+        press_enter=True,
+    )
+    self.assertIsInstance(result, ComputerState)
+    self.assertEqual(result.screenshot, b"png_data")
+    self.assertEqual(result.url, "https://example.com")
+
+  @patch.object(AgentEngineSandboxComputer, "_get_sandbox_client")
   async def test_scroll_document(self, mock_get_client):
     """Test scroll_document method."""
     mock_client = AsyncMock()

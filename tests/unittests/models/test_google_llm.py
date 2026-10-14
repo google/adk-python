@@ -2710,8 +2710,8 @@ async def test_adapt_computer_use_tool_wait():
   # Call the adaptation method (now async)
   await llm._adapt_computer_use_tool(llm_request)
 
-  # Verify wait was removed and wait_5_seconds was added
-  assert "wait" not in llm_request.tools_dict
+  # Verify wait was preserved for Gemini 3.x and wait_5_seconds was added for Gemini 2.5
+  assert "wait" in llm_request.tools_dict
   assert "wait_5_seconds" in llm_request.tools_dict
 
   # Verify the new tool has correct properties

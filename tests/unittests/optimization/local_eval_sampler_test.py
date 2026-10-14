@@ -42,6 +42,7 @@ from google.adk.optimization.local_eval_sampler import LocalEvalSampler
 from google.adk.optimization.local_eval_sampler import LocalEvalSamplerConfig
 from google.genai import types
 import pytest
+from pytest_mock import MockerFixture
 
 
 def test_log_eval_summary(mocker):
@@ -197,6 +198,16 @@ def test_extract_single_invocation_info():
                 "_validation_eval_case_ids": ["v1"],
             },
         ),
+        (
+            {
+                "train_eval_set": "train_set",
+                "validation_eval_case_ids": [],
+            },
+            {
+                "_train_eval_case_ids": ["train_set_1", "train_set_2"],
+                "_validation_eval_case_ids": [],
+            },
+        ),
     ],
 )
 def test_local_eval_service_interface_init(
@@ -221,6 +232,38 @@ def test_local_eval_service_interface_init(
 
   for attr, expected_value in expected_attrs.items():
     assert getattr(interface, attr) == expected_value
+
+
+@pytest.mark.parametrize(
+    "train_eval_case_ids, eval_set_case_ids",
+    [
+        ([], ["train_set_1", "train_set_2"]),
+        (None, []),
+    ],
+)
+def test_init_raises_when_no_train_eval_cases_selected(
+    mocker: MockerFixture,
+    train_eval_case_ids: list[str] | None,
+    eval_set_case_ids: list[str],
+) -> None:
+  mocker.patch.object(
+      LocalEvalSampler,
+      "_get_eval_case_ids",
+      autospec=True,
+      return_value=eval_set_case_ids,
+  )
+  config = LocalEvalSamplerConfig(
+      eval_config=EvalConfig(),
+      app_name="test_app",
+      train_eval_set="train_set",
+      train_eval_case_ids=train_eval_case_ids,
+  )
+
+  with pytest.raises(
+      ValueError,
+      match="No train eval cases selected from eval set `train_set`.",
+  ):
+    LocalEvalSampler(config, mocker.MagicMock(spec=EvalSetsManager))
 
 
 def test_init_registers_custom_metrics(mocker):
@@ -445,3 +488,78 @@ async def test_sample_and_score(mocker):
   assert result.data == {"t1": {}, "t2": {}}
   mock_log_summary.assert_called_once_with(eval_results)
   mock_extract_data.assert_called_once_with("train_set", eval_results)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_agent_empty_eval_case_ids(
+    mocker: MockerFixture,
+) -> None:
+  mock_eval_service_cls = mocker.patch(
+      "google.adk.optimization.local_eval_sampler.LocalEvalService"
+  )
+  config = LocalEvalSamplerConfig(
+      eval_config=EvalConfig(),
+      app_name="test_app",
+      train_eval_set="train_set",
+      train_eval_case_ids=["t1"],
+  )
+  interface = LocalEvalSampler(config, mocker.MagicMock(spec=EvalSetsManager))
+
+  results = await interface._evaluate_agent(
+      mocker.MagicMock(spec=Agent), "train_set", []
+  )
+
+  assert results == []
+  mock_eval_service_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sample_and_score_empty_validation_set(
+    mocker: MockerFixture,
+) -> None:
+  mock_eval_service_cls = mocker.patch(
+      "google.adk.optimization.local_eval_sampler.LocalEvalService"
+  )
+  config = LocalEvalSamplerConfig(
+      eval_config=EvalConfig(),
+      app_name="test_app",
+      train_eval_set="train_set",
+      train_eval_case_ids=["t1", "t2"],
+      validation_eval_case_ids=[],
+  )
+  interface = LocalEvalSampler(config, mocker.MagicMock(spec=EvalSetsManager))
+
+  result = await interface.sample_and_score(
+      mocker.MagicMock(spec=Agent),
+      example_set="validation",
+      capture_full_eval_data=True,
+  )
+
+  assert result.scores == {}
+  assert result.data == {}
+  mock_eval_service_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sample_and_score_empty_batch(mocker: MockerFixture) -> None:
+  mock_eval_service_cls = mocker.patch(
+      "google.adk.optimization.local_eval_sampler.LocalEvalService"
+  )
+  config = LocalEvalSamplerConfig(
+      eval_config=EvalConfig(),
+      app_name="test_app",
+      train_eval_set="train_set",
+      train_eval_case_ids=["t1", "t2"],
+  )
+  interface = LocalEvalSampler(config, mocker.MagicMock(spec=EvalSetsManager))
+
+  result = await interface.sample_and_score(
+      mocker.MagicMock(spec=Agent),
+      example_set="train",
+      batch=[],
+      capture_full_eval_data=True,
+  )
+
+  assert result.scores == {}
+  assert result.data == {}
+  mock_eval_service_cls.assert_not_called()

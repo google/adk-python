@@ -37,6 +37,8 @@ from ..common.common import ApiParameter
 from ..common.common import PydocHelper
 from ..common.common import rename_python_keywords
 
+_MAX_TOOL_NAME_LENGTH = 60
+
 
 def _required_scheme_name(
     security: Optional[List[Dict[str, List[str]]]],
@@ -286,7 +288,7 @@ class OperationParser:
     operation_id = self._operation.operationId
     if not operation_id:
       raise ValueError('Operation ID is missing')
-    return _to_snake_case(operation_id)[:60]
+    return _to_snake_case(operation_id)[:_MAX_TOOL_NAME_LENGTH]
 
   def get_return_type_hint(self) -> str:
     """Returns the return type hint string (like 'str', 'int', etc.)."""

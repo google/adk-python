@@ -330,6 +330,44 @@ async def test_before_tool_args_mismatch_raises_verification_error(tmp_path):
   assert "'sides': 20" in message
 
 
+async def test_before_tool_recording_without_tool_call_raises_value_error(
+    tmp_path,
+):
+  recording = _recording()
+  recording.tool_recording.tool_call = None
+  _write_recordings(tmp_path, [recording])
+  plugin = ReplayPlugin()
+  invocation_context, contexts = await _make_invocation(case_dir=tmp_path)
+
+  await plugin.before_run_callback(invocation_context=invocation_context)
+  with pytest.raises(ValueError, match='no tool_call'):
+    await plugin.before_tool_callback(
+        tool=_SpyTool(),
+        tool_args={'sides': 6},
+        tool_context=contexts['agent_a'],
+    )
+
+
+async def test_before_tool_recording_without_tool_response_raises_value_error(
+    tmp_path,
+):
+  recording = _recording()
+  recording.tool_recording.tool_response = None
+  _write_recordings(tmp_path, [recording])
+  plugin = ReplayPlugin()
+  invocation_context, contexts = await _make_invocation(case_dir=tmp_path)
+  tool = _SpyTool()
+
+  await plugin.before_run_callback(invocation_context=invocation_context)
+  with pytest.raises(ValueError, match='no tool_response'):
+    await plugin.before_tool_callback(
+        tool=tool,
+        tool_args={'sides': 6},
+        tool_context=contexts['agent_a'],
+    )
+  assert tool.live_calls == [{'sides': 6}]
+
+
 async def test_before_tool_beyond_recorded_calls_raises_verification_error(
     tmp_path,
 ):

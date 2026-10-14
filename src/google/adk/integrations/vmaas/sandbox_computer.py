@@ -422,6 +422,19 @@ class AgentEngineSandboxComputer(BaseComputer):
     )
     return await self._get_current_state()
 
+  async def type_text(
+      self,
+      text: str,
+      press_enter: bool = False,
+  ) -> ComputerState:
+    """Types text into the currently focused element."""
+    client = await self._get_sandbox_client()
+    await client.type_text(
+        text=text,
+        press_enter=press_enter,
+    )
+    return await self._get_current_state()
+
   async def scroll_document(
       self,
       direction: Literal["up", "down", "left", "right"],
