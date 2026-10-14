@@ -209,8 +209,9 @@ class TestA2aAgentExecutor:
     ) == {"text": texts[-1]}
     assert events[-1].status.state == _compat.TS_COMPLETED
 
-  async def test_text_before_runner_failure_is_preserved(self):
-    """A failed run still delivers its preceding text before the failure."""
+  @pytest.mark.parametrize("cancelled", [False, True])
+  async def test_text_before_interrupted_run_is_preserved(self, cancelled):
+    """An interrupted run still delivers its preceding text."""
 
     class FailingAgent(BaseAgent):
 
@@ -220,6 +221,8 @@ class TestA2aAgentExecutor:
             invocation_id=ctx.invocation_id,
             content=Content(parts=[Part(text="progress")]),
         )
+        if cancelled:
+          raise asyncio.CancelledError()
         raise ValueError("run failed")
 
     runner = testing_utils.InMemoryRunner(
@@ -229,17 +232,28 @@ class TestA2aAgentExecutor:
     self.mock_context.metadata = None
 
     async with runner:
-      await A2aAgentExecutor(runner=runner).execute(
-          self.mock_context, self.mock_event_queue
-      )
+      executor = A2aAgentExecutor(runner=runner)
+      if cancelled:
+        with pytest.raises(asyncio.CancelledError):
+          await executor.execute(self.mock_context, self.mock_event_queue)
+      else:
+        await executor.execute(self.mock_context, self.mock_event_queue)
 
     events = [
         call.args[0]
         for call in self.mock_event_queue.enqueue_event.call_args_list
     ]
-    assert events[-2].status.state == _compat.TS_WORKING
-    assert _compat.part_text(events[-2].status.message.parts[0]) == "progress"
-    assert events[-1].status.state == _compat.TS_FAILED
+    progress = events[-1] if cancelled else events[-2]
+    assert progress.status.state == _compat.TS_WORKING
+    assert _compat.part_text(progress.status.message.parts[0]) == "progress"
+    if cancelled:
+      assert all(
+          event.status.state != _compat.TS_FAILED
+          for event in events
+          if isinstance(event, TaskStatusUpdateEvent)
+      )
+    else:
+      assert events[-1].status.state == _compat.TS_FAILED
     assert not any(
         isinstance(event, TaskArtifactUpdateEvent) for event in events
     )

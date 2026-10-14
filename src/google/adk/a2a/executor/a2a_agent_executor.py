@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from typing import Awaitable
@@ -262,7 +263,7 @@ class A2aAgentExecutor(AgentExecutor):
                 pending_text_event = e
               else:
                 await event_queue.enqueue_event(e)
-    except Exception:
+    except (Exception, asyncio.CancelledError):
       if pending_text_event is not None:
         await event_queue.enqueue_event(pending_text_event)
       raise
