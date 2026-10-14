@@ -1513,6 +1513,30 @@ async def test_chat_mode_honors_get_session_config():
   assert all(count == 1 for count in seen_event_counts)
 
 
+class _SlowCloseToolset(BaseToolset):
+  """A toolset whose close takes long enough to be cancelled mid-flight."""
+
+  def __init__(self, close_started: Optional[asyncio.Event] = None):
+    super().__init__()
+    # Shared because set order decides which toolset closes first.
+    self.close_started = close_started or asyncio.Event()
+    self.close_finished = asyncio.Event()
+    self.close_cancelled = False
+
+  async def get_tools(self, readonly_context=None):
+    del readonly_context
+    return []
+
+  async def close(self) -> None:
+    self.close_started.set()
+    try:
+      await asyncio.sleep(0.05)
+      self.close_finished.set()
+    except asyncio.CancelledError:
+      self.close_cancelled = True
+      raise
+
+
 class TestRunnerWithPlugins:
   """Tests for Runner with plugins."""
 
@@ -1691,29 +1715,7 @@ class TestRunnerWithPlugins:
   @pytest.mark.asyncio
   async def test_runner_close_does_not_cancel_toolset_cleanup(self):
     """Caller cancellation should not cancel an in-flight toolset close."""
-
-    class SlowCloseToolset(BaseToolset):
-
-      def __init__(self):
-        super().__init__()
-        self.close_started = asyncio.Event()
-        self.close_finished = asyncio.Event()
-        self.close_cancelled = False
-
-      async def get_tools(self, readonly_context=None):
-        del readonly_context
-        return []
-
-      async def close(self) -> None:
-        self.close_started.set()
-        try:
-          await asyncio.sleep(0.05)
-          self.close_finished.set()
-        except asyncio.CancelledError:
-          self.close_cancelled = True
-          raise
-
-    toolset = SlowCloseToolset()
+    toolset = _SlowCloseToolset()
     self.root_agent.tools = [toolset]
     runner = Runner(
         app_name="test_app",
@@ -1729,9 +1731,65 @@ class TestRunnerWithPlugins:
     with pytest.raises(asyncio.CancelledError):
       await close_task
 
-    assert close_task.cancelled() is True
     assert toolset.close_cancelled is False
     assert toolset.close_finished.is_set()
+
+  @pytest.mark.asyncio
+  async def test_runner_close_finishes_cleanup_when_toolset_close_is_cancelled(
+      self,
+  ):
+    """A cancelled close still runs the rest of the cleanup, errors and all."""
+    close_started = asyncio.Event()
+    toolsets = [_SlowCloseToolset(close_started) for _ in range(2)]
+    self.root_agent.tools = toolsets
+    runner = Runner(
+        app_name="test_app",
+        agent=self.root_agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    runner.plugin_manager.close = AsyncMock(side_effect=RuntimeError("plugin"))
+    self.session_service.flush = AsyncMock(side_effect=OSError("flush"))
+
+    close_task = asyncio.create_task(runner.close())
+    await close_started.wait()
+    close_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+      await close_task
+
+    for toolset in toolsets:
+      assert toolset.close_finished.is_set()
+    runner.plugin_manager.close.assert_awaited_once()
+    self.session_service.flush.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_runner_close_flushes_session_when_plugin_close_fails(self):
+    """A plugin close error still flushes the session, then propagates."""
+    self.runner.plugin_manager.close = AsyncMock(
+        side_effect=RuntimeError("plugin")
+    )
+    self.session_service.flush = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="plugin"):
+      await self.runner.close()
+
+    self.session_service.flush.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_runner_close_flushes_session_when_plugin_close_is_cancelled(
+      self,
+  ):
+    """A cancellation while plugins close still flushes the session service."""
+    self.runner.plugin_manager.close = AsyncMock(
+        side_effect=asyncio.CancelledError()
+    )
+    self.session_service.flush = AsyncMock()
+
+    with pytest.raises(asyncio.CancelledError):
+      await self.runner.close()
+
+    self.session_service.flush.assert_awaited_once()
 
   @pytest.mark.asyncio
   async def test_runner_close_closes_toolsets_in_workflow_with_llm_agent(self):

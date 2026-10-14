@@ -44,6 +44,7 @@ from google.adk.cli.api_server import RunAgentRequest
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.cli.utils.base_agent_loader import _AgentLoadError
 from google.adk.errors.input_validation_error import InputValidationError
+from google.adk.errors.not_found_error import NotFoundError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
@@ -492,9 +493,9 @@ def mock_eval_set_results_manager():
 
     def get_eval_set_result(self, app_name, eval_set_result_id):
       if app_name not in eval_set_results:
-        raise ValueError(f"App {app_name} not found.")
+        raise NotFoundError(f"App {app_name} not found.")
       if eval_set_result_id not in eval_set_results[app_name]:
-        raise ValueError(
+        raise NotFoundError(
             f"Eval set result {eval_set_result_id} not found in app {app_name}."
         )
       return eval_set_results[app_name][eval_set_result_id]
@@ -4516,11 +4517,43 @@ def test_list_artifact_versions_metadata(
   assert data[1]["customMetadata"] == {"foo": "bar"}
 
 
-def test_get_eval_set_result_not_found(test_app):
+def test_get_eval_set_result_not_found(test_app, mock_eval_set_results_manager):
   """Test getting an eval set result that doesn't exist."""
-  url = "/apps/test_app_name/eval_results/test_eval_result_id_not_found"
+  mock_eval_set_results_manager.save_eval_set_result(
+      "test_app_name", "test_eval_set_id", []
+  )
+  url = "/dev/apps/test_app_name/eval-results/test_eval_result_id_not_found"
   response = test_app.get(url)
   assert response.status_code == 404
+  assert "test_eval_result_id_not_found" in response.json()["detail"]
+
+
+def test_get_eval_set_result_not_found_legacy_route(
+    test_app, mock_eval_set_results_manager
+):
+  """Test the legacy eval result route reports a missing result as 404."""
+  mock_eval_set_results_manager.save_eval_set_result(
+      "test_app_name", "test_eval_set_id", []
+  )
+  url = "/dev/apps/test_app_name/eval_results/test_eval_result_id_not_found"
+  response = test_app.get(url)
+  assert response.status_code == 404
+  assert "test_eval_result_id_not_found" in response.json()["detail"]
+
+
+def test_add_session_to_eval_set_with_missing_session(test_app):
+  """Test adding a nonexistent session to an eval set reports 404."""
+  url = "/dev/apps/test_app/eval-sets/test_eval_set_id/add-session"
+  response = test_app.post(
+      url,
+      json={
+          "evalId": "test_eval_case_id",
+          "sessionId": "session_that_does_not_exist",
+          "userId": "test_user",
+      },
+  )
+  assert response.status_code == 404
+  assert response.json()["detail"] == "Session not found"
 
 
 def test_list_metrics_info(builder_test_client):
