@@ -16,12 +16,42 @@
 
 from __future__ import annotations
 
+import asyncio
+from unittest import mock
+
 from google.adk.events.event import Event
 from google.adk.integrations.mongodb import MongoDbMemoryService
 from google.adk.sessions.session import Session
 from google.genai import types
 import mongomock
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _mongomock_bulk_write_compat(monkeypatch):
+  """Drops the `sort` key pymongo 4.9+ adds to bulk write operations.
+
+  mongomock's BulkOperationBuilder does not accept `sort` (added to
+  ReplaceOne/UpdateOne in pymongo 4.9), so bulk_write against mongomock
+  raises TypeError without this shim. Real MongoDB accepts the key; this
+  only patches the test double.
+  """
+  from mongomock.collection import BulkOperationBuilder
+
+  real_add_replace = BulkOperationBuilder.add_replace
+  real_add_update = BulkOperationBuilder.add_update
+
+  def add_replace(self, selector, doc, upsert, sort=None, **kwargs):
+    return real_add_replace(self, selector, doc, upsert, **kwargs)
+
+  def add_update(
+      self, selector, doc, multi=False, upsert=False, sort=None, **kwargs
+  ):
+    return real_add_update(self, selector, doc, multi, upsert, **kwargs)
+
+  monkeypatch.setattr(BulkOperationBuilder, "add_replace", add_replace)
+  monkeypatch.setattr(BulkOperationBuilder, "add_update", add_update)
+
 
 APP = "test_app"
 USER = "test_user"
@@ -168,3 +198,62 @@ def test_constructor_validates_client_args():
         mongo_client=mongomock.MongoClient(),
         connection_string="mongodb://localhost:27017",
     )
+
+
+@pytest.mark.asyncio
+async def test_ingest_uses_one_bulk_write(service):
+  """Ingestion issues one bulk_write, not one round-trip per event."""
+  bulk_calls = []
+  replace_calls = []
+  collection = service._memories()
+  real_bulk = collection.bulk_write
+
+  def _counting_bulk(ops, **kwargs):
+    bulk_calls.append(ops)
+    return real_bulk(ops, **kwargs)
+
+  def _forbidden_replace(*args, **kwargs):
+    replace_calls.append(args)
+
+  with (
+      mock.patch.object(collection, "bulk_write", _counting_bulk),
+      mock.patch.object(collection, "replace_one", _forbidden_replace),
+  ):
+    await service.add_session_to_memory(
+        _session_with_texts("first memory", "second memory", "third memory")
+    )
+
+  assert len(bulk_calls) == 1
+  assert len(bulk_calls[0]) == 3  # one ReplaceOne per event
+  assert replace_calls == []
+
+  response = await service.search_memory(
+      app_name=APP, user_id=USER, query="memory"
+  )
+  assert len(response.memories) == 3
+
+
+@pytest.mark.asyncio
+async def test_index_creation_runs_once_under_concurrency():
+  """Concurrent first calls create the recall index exactly once."""
+  client = mongomock.MongoClient()
+  service = MongoDbMemoryService(
+      mongo_client=client, database_name="test_db", ensure_indexes=True
+  )
+  create_calls = []
+  memories = client["test_db"]["memories"]
+  real_create = memories.create_index
+
+  def _counting_create(*args, **kwargs):
+    create_calls.append(kwargs.get("name"))
+    return real_create(*args, **kwargs)
+
+  with mock.patch.object(memories, "create_index", _counting_create):
+    await asyncio.gather(*(
+        service.add_session_to_memory(
+            _session_with_texts(f"memory {i}", session_id=f"s{i}")
+        )
+        for i in range(10)
+    ))
+
+  assert create_calls == ["app_user_keywords"]
