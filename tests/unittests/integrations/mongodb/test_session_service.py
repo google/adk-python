@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest import mock
 
 from google.adk.errors import StaleSessionError
@@ -250,6 +251,69 @@ async def test_list_sessions_sorted_oldest_first(service):
 
   response = await service.list_sessions(app_name=APP)
   assert {s.id for s in response.sessions} == {"s1", "s2", "s3"}
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_batches_user_state_reads(service, client):
+  """User states are fetched in one $in query, not one query per user."""
+  await service.create_session(
+      app_name=APP,
+      user_id=USER,
+      session_id="s1",
+      state={"user:theme": "dark"},
+  )
+  await service.create_session(
+      app_name=APP,
+      user_id=USER_2,
+      session_id="s2",
+      state={"user:theme": "light"},
+  )
+  await service.create_session(app_name=APP, user_id="user_3", session_id="s3")
+
+  find_calls = []
+  user_states = client["test_db"]["user_states"]
+  real_find = user_states.find
+
+  def _counting_find(*args, **kwargs):
+    find_calls.append(args)
+    return real_find(*args, **kwargs)
+
+  with mock.patch.object(user_states, "find", _counting_find):
+    response = await service.list_sessions(app_name=APP)
+
+  assert len(find_calls) == 1  # not one per user
+  assert find_calls[0][0] == {
+      "_id": {"$in": mock.ANY}  # the three <app>/<user> keys
+  }
+  by_id = {s.id: s for s in response.sessions}
+  assert by_id["s1"].state["user:theme"] == "dark"
+  assert by_id["s2"].state["user:theme"] == "light"
+  assert "user:theme" not in by_id["s3"].state
+
+
+@pytest.mark.asyncio
+async def test_index_creation_runs_once_under_concurrency(client):
+  """Concurrent first calls create each index exactly once."""
+  service = MongoDbSessionService(
+      mongo_client=client, database_name="test_db", ensure_indexes=True
+  )
+  create_calls = []
+  events = client["test_db"]["events"]
+  sessions = client["test_db"]["sessions"]
+  real_create = events.create_index
+
+  def _counting_create(*args, **kwargs):
+    create_calls.append(kwargs.get("name"))
+    return real_create(*args, **kwargs)
+
+  with mock.patch.object(events, "create_index", _counting_create):
+    await asyncio.gather(*(
+        service.create_session(app_name=APP, user_id=USER, session_id=f"s{i}")
+        for i in range(10)
+    ))
+
+  assert create_calls == ["app_user_session_ts"]
+  assert "app_user" in sessions.index_information()
 
 
 @pytest.mark.asyncio
