@@ -1181,6 +1181,54 @@ class TestBigQueryAgentAnalyticsPlugin:
       assert "AGENT_RESPONSE" not in event_types
 
   @pytest.mark.asyncio
+  async def test_after_tool_callback_no_agent_response_on_final_tool_error(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Error-bearing final-response tools must not emit AGENT_RESPONSE."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        final_response_tool_names=frozenset({"submit_final_response"})
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      mock_tool = mock.create_autospec(
+          base_tool_lib.BaseTool, instance=True, spec_set=True
+      )
+      type(mock_tool).name = mock.PropertyMock(
+          return_value="submit_final_response"
+      )
+      bigquery_agent_analytics_plugin.TraceManager.push_span(tool_context)
+      await plugin.after_tool_callback(
+          tool=mock_tool,
+          tool_args={"answer": "should not become AGENT_RESPONSE"},
+          tool_context=tool_context,
+          result={"error_details": "MCP request failed with code 403"},
+      )
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      event_types = [r["event_type"] for r in rows]
+      assert "TOOL_ERROR" in event_types
+      assert "TOOL_COMPLETED" not in event_types
+      assert "AGENT_RESPONSE" not in event_types
+      tool_err = next(r for r in rows if r["event_type"] == "TOOL_ERROR")
+      assert tool_err["error_message"] == "MCP request failed with code 403"
+
+  @pytest.mark.asyncio
   async def test_max_content_length_tool_error(
       self,
       mock_write_client,
