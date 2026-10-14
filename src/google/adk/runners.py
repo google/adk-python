@@ -1401,15 +1401,23 @@ class Runner:
   ) -> None:
     """Rewinds the session to before the specified invocation.
 
+    Args:
+      user_id: The user ID of the session.
+      session_id: The session ID of the session.
+      rewind_before_invocation_id: The invocation ID to rewind to before.
+      run_config: Retained for backward compatibility. ``get_session_config``
+        is ignored because rewinds must replay state and artifact deltas from
+        the start of the session history.
+
     Raises:
       InvocationNotFoundError: If rewind_before_invocation_id does not match
         any event in the session.
     """
-    run_config = run_config or RunConfig()
+    if run_config and run_config.get_session_config:
+      logger.warning('rewind_async ignores run_config.get_session_config')
     session = await self._get_or_create_session(
         user_id=user_id,
         session_id=session_id,
-        get_session_config=run_config.get_session_config,
     )
     from .sessions import _rewind_utils
 
@@ -1799,22 +1807,9 @@ class Runner:
     """Returns whether chat-mode root LlmAgent uses the legacy sub-agent picker."""
     from .agents.llm_agent import LlmAgent  # pylint: disable=g-import-not-at-top
 
-    if (
-        not isinstance(self.agent, LlmAgent)
-        or (self.agent.mode or _AgentMode.CHAT) != _AgentMode.CHAT
-    ):
-      return False
-    remote_a2a_agent_class: tuple[Any, ...] = ()
-    try:
-      from .agents.remote_a2a_agent import RemoteA2aAgent  # pylint: disable=g-import-not-at-top
-
-      remote_a2a_agent_class = (RemoteA2aAgent,)
-    except ImportError:
-      pass
-    return not any(
-        isinstance(sa, (LlmAgent,) + remote_a2a_agent_class)
-        and getattr(sa, 'mode', None) == _AgentMode.TASK
-        for sa in self.agent.sub_agents or []
+    return (
+        isinstance(self.agent, LlmAgent)
+        and (self.agent.mode or _AgentMode.CHAT) == _AgentMode.CHAT
     )
 
   def _find_agent_to_run(
@@ -1829,6 +1824,9 @@ class Runner:
     - The root agent.
     - An LlmAgent who replied last and is capable to transfer to any other agent
       in the agent hierarchy.
+
+    An agent inside a task delegation is replaced by the agent that delegated
+    it.
 
     Args:
         session: The session to find the agent for.

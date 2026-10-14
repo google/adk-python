@@ -51,6 +51,7 @@ from ..auth.credential_exchangers.auto_auth_credential_exchanger import AutoAuth
 from ..common.common import ApiParameter
 from .openapi_spec_parser import OperationEndpoint
 from .openapi_spec_parser import ParsedOperation
+from .operation_parser import _MAX_TOOL_NAME_LENGTH
 from .operation_parser import OperationParser
 from .tool_auth_handler import AuthPreparationState as AuthPreparationState
 from .tool_auth_handler import ToolAuthHandler
@@ -242,7 +243,7 @@ class RestApiTool(BaseTool):
           credential caching.
     """
     # Gemini restrict the length of function name to be less than 64 characters
-    self.name = name[:60]
+    self.name = name[:_MAX_TOOL_NAME_LENGTH]
     self.description = description
     self.endpoint = (
         OperationEndpoint.model_validate_json(endpoint)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 """A node that wraps an ADK Tool."""
 
+import asyncio
 from collections.abc import AsyncGenerator
 import json
 from typing import Any
@@ -31,6 +32,7 @@ from ..auth._auth_resume import find_requested_auth_configs
 from ..auth.auth_tool import AuthConfig
 from ..events.event import Event
 from ..events.request_input import RequestInput
+from ..flows.llm_flows.tools import _error_handler as _tool_error_handler
 from ..platform import uuid as platform_uuid
 from ..tools._confirmation_utils import apply_confirmation_gate
 from ..tools.base_tool import BaseTool
@@ -175,9 +177,9 @@ class _ToolNode(BaseNode):
 
     Mirrors the plugin steps of the LlmAgent tool pipeline: a before-tool
     callback may answer the call instead of the tool, an on-tool-error
-    callback may answer a failed call, and an after-tool callback may replace
-    the result. Agent-level tool callbacks do not apply because no agent owns
-    a tool node.
+    callback may answer a failed call (and runs for cleanup when the call is
+    cancelled), and an after-tool callback may replace the result. Agent-level
+    tool callbacks do not apply because no agent owns a tool node.
 
     Like the agent pipeline, the user's answer to a confirmation request is on
     `ctx.tool_confirmation`, and a credential the user supplied is stored in
@@ -212,6 +214,17 @@ class _ToolNode(BaseNode):
               ctx.function_call_id
           )
           return _AuthPending(auth_request)
+      except asyncio.CancelledError as cancelled:
+        ctx.actions.requested_tool_confirmations.pop(ctx.function_call_id, None)
+        ctx.actions.requested_auth_configs.pop(ctx.function_call_id, None)
+        await _tool_error_handler.notify_tool_cancelled(
+            invocation_context=ctx.get_invocation_context(),
+            tool=self.tool,
+            tool_args=args,
+            tool_context=ctx,
+            cancelled=cancelled,
+        )
+        raise
       except Exception as error:
         # The failure is the call's result, so a confirmation or credential
         # the tool asked for before raising is dropped rather than left

@@ -386,9 +386,10 @@ async def run_and_handle_error(
         model_response_event,
     ) as tel_ctx:
       async with Aclosing(response_generator) as agen:
-        async for llm_response in agen:
-          tel_ctx.record_llm_response(invocation_context, llm_response)
-          yield llm_response
+        async with Aclosing(_instrumentation.time_model_awaits(agen)) as timed:
+          async for llm_response in timed:
+            tel_ctx.record_llm_response(invocation_context, llm_response)
+            yield llm_response
   except Exception as model_error:
     with _model_callback_context(
         invocation_context, model_response_event

@@ -2796,36 +2796,6 @@ async def test_run_live_passes_get_session_config():
 
 
 @pytest.mark.asyncio
-async def test_rewind_async_passes_get_session_config():
-  """rewind_async should forward RunConfig.get_session_config to get_session."""
-  from google.adk.sessions.base_session_service import GetSessionConfig
-
-  session_service = InMemorySessionService()
-
-  runner = Runner(
-      app_name=TEST_APP_ID,
-      agent=MockAgent("test_agent"),
-      session_service=session_service,
-      artifact_service=InMemoryArtifactService(),
-      auto_create_session=True,
-  )
-
-  config = RunConfig(
-      get_session_config=GetSessionConfig(num_recent_events=5),
-  )
-
-  # rewind_async on a fresh session will raise because the invocation_id
-  # doesn't exist, but it demonstrates that the config path works.
-  with pytest.raises(ValueError, match=r"Invocation ID not found"):
-    await runner.rewind_async(
-        user_id=TEST_USER_ID,
-        session_id="new_session",
-        rewind_before_invocation_id="inv_missing",
-        run_config=config,
-    )
-
-
-@pytest.mark.asyncio
 async def test_run_debug_passes_get_session_config():
   """run_debug should forward RunConfig.get_session_config to get_session."""
   from google.adk.sessions.base_session_service import GetSessionConfig
@@ -6251,6 +6221,109 @@ async def test_multi_invocation_function_response_starts_new_invocation_when_not
   assert [e.author for e in events] == ["sub_agent"]
   assert events[0].invocation_id not in ("inv_1", "inv_2")
   assert events[0].branch == "root_agent.sub_agent"
+
+
+@pytest.mark.parametrize(
+    "make_task_agent",
+    [
+        lambda: LlmAgent(name="task_worker", mode="task"),
+        lambda: RemoteA2aAgent(
+            name="task_worker",
+            agent_card="https://example.com/rpc",
+            mode="task",
+        ),
+    ],
+    ids=["llm", "remote_a2a"],
+)
+async def test_run_async_keeps_transfer_target_when_peer_is_task_agent(
+    make_task_agent,
+):
+  """A task-mode sub-agent does not route the next turn back to the coordinator."""
+  helper = LlmAgent(
+      name="helper",
+      model=testing_utils.MockModel.create(
+          responses=["Which size?", "Large it is"]
+      ),
+  )
+  coordinator = LlmAgent(
+      name="coordinator",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name="transfer_to_agent", args={"agent_name": "helper"}
+              ),
+              "Coordinator reply",
+          ]
+      ),
+      sub_agents=[helper, make_task_agent()],
+  )
+  runner = testing_utils.InMemoryRunner(coordinator)
+
+  await runner.run_async("Order a pizza")
+  events = await runner.run_async("Large")
+
+  assert [e.author for e in events] == ["helper"]
+  assert _texts([e.content for e in events]) == ["Large it is"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_resumes_paused_task_through_its_delegator():
+  """A task paused under a non-root delegator resumes through that delegator."""
+  task_worker = LlmAgent(
+      name="task_worker",
+      mode="task",
+      model=testing_utils.MockModel.create(
+          responses=[
+              "Which city?",
+              [
+                  types.Part(text="Sunny in Paris"),
+                  types.Part.from_function_call(
+                      name="finish_task", args={"result": "sunny"}
+                  ),
+              ],
+          ]
+      ),
+  )
+  helper = LlmAgent(
+      name="helper",
+      model=testing_utils.MockModel.create(
+          responses=[
+              "How can I help?",
+              types.Part.from_function_call(
+                  name="task_worker", args={"request": "check the weather"}
+              ),
+              "Helper reply",
+          ]
+      ),
+      sub_agents=[task_worker],
+  )
+  root = LlmAgent(
+      name="root_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name="transfer_to_agent", args={"agent_name": "helper"}
+              ),
+              "Root reply",
+          ]
+      ),
+      sub_agents=[helper],
+  )
+  runner = _abort_runner(root)
+
+  await _run_turn(runner, "s", "Hi")
+  events, _ = await _run_turn(runner, "s", "Check the weather")
+  assert _texts([e.content for e in events if e.author == "task_worker"]) == [
+      "Which city?"
+  ]
+
+  events, _ = await _run_turn(runner, "s", "Paris")
+
+  assert _texts([e.content for e in events]) == [
+      "Sunny in Paris",
+      "Helper reply",
+  ]
+  assert "Paris" in _texts(task_worker.model.requests[-1].contents)
 
 
 if __name__ == "__main__":

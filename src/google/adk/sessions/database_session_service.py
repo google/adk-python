@@ -873,6 +873,12 @@ class DatabaseSessionService(BaseSessionService):
     await self.prepare_tables()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
+      delete_events_stmt = delete(schema.StorageEvent).where(
+          schema.StorageEvent.app_name == app_name,
+          schema.StorageEvent.user_id == user_id,
+          schema.StorageEvent.session_id == session_id,
+      )
+      await sql_session.execute(delete_events_stmt)
       stmt = delete(schema.StorageSession).where(
           schema.StorageSession.app_name == app_name,
           schema.StorageSession.user_id == user_id,

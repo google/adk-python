@@ -326,6 +326,22 @@ class TestDecideResume:
     assert decision.action is ResumeAction.REPLAY_CALLS
     assert decision.event is call
 
+  def test_answered_legacy_credential_request_replays_the_call(self):
+    """A credential request without long_running_tool_ids still counts as an
+    interrupt once answered, so the tool call it interrupted is re-run."""
+    call = _call_event('ask', 'c1')
+    legacy_auth_request = _call_event(REQUEST_EUC_FUNCTION_CALL_NAME, 'auth1')
+    events = [
+        call,
+        legacy_auth_request,
+        _response_event(REQUEST_EUC_FUNCTION_CALL_NAME, 'auth1'),
+    ]
+
+    decision = decide_resume(self._ctx(), events, {'ask': object()})
+
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert decision.event is call
+
   def test_parallel_calls_all_answered_continue(self):
     # One event can carry parallel calls. Matching answers against only the
     # first call's name reads the second answer as a foreign name, so a fully

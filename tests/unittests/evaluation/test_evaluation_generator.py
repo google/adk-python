@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+from typing import AsyncGenerator
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.evaluation import evaluation_generator as evaluation_generator_module
 from google.adk.evaluation.app_details import AgentDetails
@@ -33,12 +35,15 @@ from google.adk.evaluation.evaluation_generator import EvaluationGenerator
 from google.adk.evaluation.request_intercepter_plugin import _RequestIntercepterPlugin
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulator
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
+from google.adk.evaluation.simulation.user_simulator import BaseUserSimulatorConfig
 from google.adk.evaluation.simulation.user_simulator import NextUserMessage
 from google.adk.evaluation.simulation.user_simulator import Status as UserSimulatorStatus
 from google.adk.evaluation.simulation.user_simulator import UserSimulator
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
@@ -1046,15 +1051,29 @@ class TestGenerateInferencesFromRootAgent:
     )
 
     durations = mock_convert.call_args.args[2]
-    # One entry per turn, keyed by that turn's invocation id.
-    assert set(durations) == {"inv1", "inv2"}
-    assert all(duration >= 0 for duration in durations.values())
+    model_durations = mock_convert.call_args.kwargs[
+        "model_durations_per_invocation"
+    ]
+    tool_durations = mock_convert.call_args.kwargs[
+        "tool_durations_per_invocation"
+    ]
+    # One entry per turn in each, keyed by that turn's invocation id.
+    for measured in (durations, model_durations, tool_durations):
+      assert set(measured) == {"inv1", "inv2"}
+    values = [
+        value
+        for measured in (durations, model_durations, tool_durations)
+        for value in measured.values()
+    ]
+    assert all(value >= 0 for value in values)
     # Rounded to milliseconds rather than carrying the float's full, and
     # meaningless, precision. A raw `time.monotonic()` difference would keep
     # far more digits than this.
-    assert all(
-        duration == round(duration, 3) for duration in durations.values()
-    )
+    assert all(value == round(value, 3) for value in values)
+    # This run made no model or tool call, so the whole turn was the
+    # framework's own time -- a measured zero, not a missing measurement.
+    assert set(model_durations.values()) == {0.0}
+    assert set(tool_durations.values()) == {0.0}
 
   @pytest.mark.asyncio
   async def test_pinned_session_id_reused_across_runs_no_collision(
@@ -2258,3 +2277,95 @@ def test_convert_events_empty_invocation_events_when_no_agent_events():
 
   assert len(invocations) == 1
   assert invocations[0].intermediate_data.invocation_events == []
+
+
+@pytest.mark.asyncio
+async def test_tool_time_is_not_counted_as_model_time():
+  """A tool the model asked for is the tool's time, not the model's.
+
+  The flow runs that tool while the model's response stream is still open, so
+  timing the enclosing inference block would bill the tool's runtime to the
+  model and leave the tool at zero. Only an end-to-end run catches that -- the
+  interval arithmetic is correct either way -- so the split is asserted here
+  against costs planted in a fake model and a fake tool.
+
+  The bounds are deliberately loose: what is being pinned is which bucket the
+  sleep lands in, not how precisely it is measured.
+  """
+  tool_seconds = 0.2
+
+  async def slow_tool() -> str:
+    await asyncio.sleep(tool_seconds)
+    return "ok"
+
+  class _ToolThenAnswerModel(BaseLlm):
+    """Asks for the tool, then answers. Costs no measurable time itself."""
+
+    model: str = "fake"
+    calls: int = 0
+
+    @classmethod
+    def supported_models(cls) -> list[str]:
+      return ["fake"]
+
+    async def generate_content_async(
+        self, llm_request, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+      self.calls += 1
+      if self.calls == 1:
+        yield LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(
+                        function_call=types.FunctionCall(
+                            name="slow_tool", args={}
+                        )
+                    )
+                ],
+            )
+        )
+      else:
+        yield LlmResponse(
+            content=types.Content(role="model", parts=[types.Part(text="done")])
+        )
+
+  class _OneTurnUser(UserSimulator):
+
+    def __init__(self):
+      super().__init__(
+          config=BaseUserSimulatorConfig(),
+          config_type=BaseUserSimulatorConfig,
+      )
+      self._sent = False
+
+    async def get_next_user_message(self, events) -> NextUserMessage:
+      if self._sent:
+        return NextUserMessage(status=UserSimulatorStatus.STOP_SIGNAL_DETECTED)
+      self._sent = True
+      return NextUserMessage(
+          status=UserSimulatorStatus.SUCCESS,
+          user_message=types.Content(
+              role="user", parts=[types.Part(text="go")]
+          ),
+      )
+
+  invocations = await EvaluationGenerator._generate_inferences_from_root_agent(
+      root_agent=LlmAgent(
+          name="root", model=_ToolThenAnswerModel(), tools=[slow_tool]
+      ),
+      user_simulator=_OneTurnUser(),
+  )
+
+  (invocation,) = invocations
+  assert invocation.tool_duration >= tool_seconds * 0.75
+  # The whole point: the tool's sleep is absent from the model's figure.
+  assert invocation.model_duration < tool_seconds * 0.75
+  # Neither part may exceed the turn they are both drawn from. The three are
+  # rounded to milliseconds independently, so when both parts round up and the
+  # framework remainder is sub-millisecond they can land 1ms over the total;
+  # that tolerance is the same rounding the framework share is clamped for.
+  assert (
+      invocation.model_duration + invocation.tool_duration
+      <= invocation.duration + 0.001
+  )

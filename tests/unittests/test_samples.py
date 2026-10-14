@@ -511,6 +511,58 @@ def test_issue_discovery_propagates_page_failure(
       getattr(utils_module, discovery_name)("google", "adk-python")
 
 
+@pytest.mark.parametrize(
+    "assignable, expected",
+    [
+        ({"alice", "bob"}, ["alice", "bob", "alice", "bob"]),
+        ({"alice"}, ["alice", "alice", "alice", "alice"]),
+    ],
+)
+def test_pr_triage_owners_take_turns_by_pr_number(
+    assignable: set[str], expected: list[str], monkeypatch
+):
+  """A component's owners take turns, passing over any GitHub cannot assign."""
+  for key, value in _DUMMY_ENV.items():
+    monkeypatch.setenv(key, value)
+  assigned: list[str] = []
+
+  def _post_request(url: str, payload: Any) -> dict[str, Any]:
+    del url
+    assigned.extend(payload["assignees"])
+    return {}
+
+  with _sample_module(
+      SAMPLES_DIR / "adk_team" / "adk_pr_triaging_agent", "agent"
+  ) as agent_module:
+    monkeypatch.setitem(agent_module.LABEL_TO_OWNER, "tools", ["alice", "bob"])
+    monkeypatch.setattr(
+        agent_module, "is_assignable", lambda login: login in assignable
+    )
+    monkeypatch.setattr(agent_module, "post_request", _post_request)
+    for pr_number in (10, 11, 12, 13):
+      agent_module.assign_owner_to_pr(pr_number, "tools")
+  assert assigned == expected
+
+
+def test_pr_triage_skips_a_pr_no_owner_can_take(monkeypatch):
+  """A PR none of the component's owners can be assigned is reported skipped."""
+  for key, value in _DUMMY_ENV.items():
+    monkeypatch.setenv(key, value)
+  posted: list[str] = []
+  with _sample_module(
+      SAMPLES_DIR / "adk_team" / "adk_pr_triaging_agent", "agent"
+  ) as agent_module:
+    monkeypatch.setitem(agent_module.LABEL_TO_OWNER, "tools", ["alice", "bob"])
+    monkeypatch.setattr(agent_module, "is_assignable", lambda login: False)
+    monkeypatch.setattr(
+        agent_module, "post_request", lambda url, payload: posted.append(url)
+    )
+    result = agent_module.assign_owner_to_pr(11, "tools")
+  assert result["status"] == "skipped"
+  assert result["owners"] == ["alice", "bob"]
+  assert posted == []
+
+
 async def test_playwright_computer_sleeps_asynchronously(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

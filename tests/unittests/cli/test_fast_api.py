@@ -847,6 +847,78 @@ def test_special_agents_allowed_only_on_loopback_web_server(
     assert "internal special agents" in response.json()["detail"]
 
 
+def test_get_fast_api_app_skips_span_processors_without_add_span_processor(
+    tmp_path,
+    monkeypatch,
+    caplog,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """register_processors only receives a provider that accepts processors."""
+  from opentelemetry import trace
+
+  monkeypatch.setattr(
+      api_server_module, "_setup_telemetry", lambda **kwargs: None
+  )
+  monkeypatch.setattr(trace, "get_tracer_provider", trace.NoOpTracerProvider)
+  register_processors = MagicMock()
+  api_server = api_server_module.ApiServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  with caplog.at_level(logging.WARNING):
+    api_server.get_fast_api_app(register_processors=register_processors)
+
+  register_processors.assert_not_called()
+  assert "Not registering span processors" in caplog.text
+
+
+def test_get_fast_api_app_registers_span_processors_on_non_sdk_provider(
+    tmp_path,
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """A provider with add_span_processor need not be the SDK TracerProvider."""
+  from opentelemetry import trace
+
+  provider = MagicMock(spec=["get_tracer", "add_span_processor"])
+  monkeypatch.setattr(
+      api_server_module, "_setup_telemetry", lambda **kwargs: None
+  )
+  monkeypatch.setattr(trace, "get_tracer_provider", lambda: provider)
+  register_processors = MagicMock()
+  api_server = api_server_module.ApiServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  api_server.get_fast_api_app(register_processors=register_processors)
+
+  register_processors.assert_called_once_with(provider)
+
+
 @pytest.fixture
 def test_app(
     mock_session_service,
@@ -6873,6 +6945,17 @@ def test_api_server_span_exporter_skips_span_without_event_id():
   ])
 
   assert trace_dict == {}
+
+
+def test_api_server_span_exporter_rejects_span_without_context():
+  """A traced span with no span context has no ids to record."""
+  from google.adk.cli.api_server import ApiServerSpanExporter
+  from opentelemetry.sdk.trace import ReadableSpan
+
+  exporter = ApiServerSpanExporter({})
+
+  with pytest.raises(ValueError, match="has no span context"):
+    exporter.export([ReadableSpan(name="call_llm", context=None)])
 
 
 def test_in_memory_exporter_returns_only_spans_of_requested_session():
