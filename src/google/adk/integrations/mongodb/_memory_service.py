@@ -205,7 +205,9 @@ class MongoDbMemoryService(BaseMemoryService):
         self._memories().create_index(
             _MEMORIES_RECALL_INDEX_KEYS, name=_MEMORIES_RECALL_INDEX_NAME
         )
-      except Exception as exc:  # pymongo stays an optional import; match by shape.
+      except (
+          Exception
+      ) as exc:  # pymongo stays an optional import; match by shape.
         if not _client.is_index_privilege_error(exc):
           # Unexpected failure: leave the flag unset so a later operation
           # retries after the deployment recovers.
