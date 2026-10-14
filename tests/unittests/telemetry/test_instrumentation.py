@@ -1988,3 +1988,193 @@ async def test_stream_in_scope_propagates_cancellation_into_generator():
   with pytest.raises(asyncio.CancelledError):
     await agen.athrow(asyncio.CancelledError())
   assert cancelled_in_generator is True
+
+
+# ---------------------------------------------------------------------------
+# Busy interval collection (where a turn's wall-clock time went)
+# ---------------------------------------------------------------------------
+
+# Long enough that scheduling jitter cannot be mistaken for the interval, short
+# enough to keep these tests quick. Assertions allow half of it either way.
+_SLICE = 0.10
+
+
+def _fake_tool_and_agent():
+  """Returns the mocks `record_tool_execution` needs to run a tool."""
+  tool = mock.MagicMock()
+  tool.name = "sample_tool"
+  agent = mock.MagicMock()
+  agent.name = "sample_agent"
+  return tool, agent
+
+
+async def _run_tool(seconds: float = _SLICE) -> None:
+  """Runs a tool that occupies `seconds`, as the flow would."""
+  tool, agent = _fake_tool_and_agent()
+  async with _instrumentation.record_tool_execution(
+      tool=tool,
+      agent=agent,
+      function_args={},
+      invocation_context=mock.MagicMock(),
+  ):
+    await asyncio.sleep(seconds)
+
+
+async def _await_model(seconds: float = _SLICE, chunks: int = 1) -> None:
+  """Consumes a model stream whose every chunk takes `seconds` to arrive."""
+
+  async def responses():
+    for _ in range(chunks):
+      await asyncio.sleep(seconds)
+      yield mock.MagicMock(spec=LlmResponse)
+
+  async for _ in _instrumentation.time_model_awaits(responses()):
+    pass
+
+
+def _about(actual: float, expected: float) -> bool:
+  """Whether a measured duration is the expected one, allowing for jitter."""
+  return abs(actual - expected) < _SLICE / 2
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_does_nothing_reports_no_busy_time():
+  """Nothing in flight is a measured zero, not a missing measurement."""
+  with _instrumentation.collect_busy_intervals() as busy:
+    pass
+
+  assert busy.model_seconds() == 0.0
+  assert busy.tool_seconds() == 0.0
+  assert busy.busy_seconds() == 0.0
+
+
+@pytest.mark.asyncio
+async def test_sequential_tools_add_up():
+  """Tools that do not overlap occupy the sum of their stretches."""
+  with _instrumentation.collect_busy_intervals() as busy:
+    await _run_tool()
+    await _run_tool()
+
+  assert _about(busy.tool_seconds(), 2 * _SLICE)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_tools_count_their_overlap_once():
+  """Two tools in flight together occupy one stretch of wall clock, not two."""
+  with _instrumentation.collect_busy_intervals() as busy:
+    await asyncio.gather(_run_tool(), _run_tool())
+
+  assert _about(busy.tool_seconds(), _SLICE)
+
+
+@pytest.mark.asyncio
+async def test_a_model_awaited_inside_a_tool_is_model_time_not_tool_time():
+  """An `AgentTool` runs model calls inside its own tool interval.
+
+  Counting both in full would attribute the same seconds twice and leave the
+  framework remainder negative, so the nested model time is subtracted from
+  the tool's.
+  """
+  tool, agent = _fake_tool_and_agent()
+
+  with _instrumentation.collect_busy_intervals() as busy:
+    async with _instrumentation.record_tool_execution(
+        tool=tool,
+        agent=agent,
+        function_args={},
+        invocation_context=mock.MagicMock(),
+    ):
+      await _await_model()
+      await asyncio.sleep(_SLICE)
+
+  # The tool spanned both slices; one of them was spent awaiting the model.
+  assert _about(busy.model_seconds(), _SLICE)
+  assert _about(busy.tool_seconds(), _SLICE)
+  # Together they still occupy only the tool's own stretch of wall clock.
+  assert _about(busy.busy_seconds(), 2 * _SLICE)
+
+
+@pytest.mark.asyncio
+async def test_model_and_tool_time_sum_to_the_busy_total():
+  """What makes the framework figure a remainder the three parts partition."""
+  with _instrumentation.collect_busy_intervals() as busy:
+    await _await_model()
+    await _run_tool()
+
+  assert (
+      pytest.approx(busy.model_seconds() + busy.tool_seconds())
+      == busy.busy_seconds()
+  )
+
+
+@pytest.mark.asyncio
+async def test_every_chunk_of_a_streamed_response_is_timed():
+  """Model time is the sum of the waits, not the life of the stream."""
+  with _instrumentation.collect_busy_intervals() as busy:
+    await _await_model(chunks=3)
+
+  # Three chunk waits plus the pull that ends the stream, which waits too.
+  assert _about(busy.model_seconds(), 3 * _SLICE)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_model_call_still_counts_as_model_time():
+  """A call the flow recovers from waited on the model like any other.
+
+  Dropping it would quietly move that wait into the framework remainder.
+  """
+
+  async def responses():
+    await asyncio.sleep(_SLICE)
+    raise ValueError("model exploded")
+    yield  # pylint: disable=unreachable
+
+  with _instrumentation.collect_busy_intervals() as busy:
+    with pytest.raises(ValueError):
+      async for _ in _instrumentation.time_model_awaits(responses()):
+        pass
+
+  assert _about(busy.model_seconds(), _SLICE)
+
+
+@pytest.mark.asyncio
+async def test_work_outside_the_block_is_not_collected():
+  """A collector sees its own turn, not whatever ran before or after it."""
+  await _run_tool()
+
+  with _instrumentation.collect_busy_intervals() as busy:
+    pass
+
+  await _run_tool()
+
+  assert busy.tool_seconds() == 0.0
+
+
+@pytest.mark.asyncio
+async def test_collection_reaches_concurrently_spawned_tasks():
+  """Sub-agents run as tasks; their tool intervals still reach the collector.
+
+  The collector rides the otel context, which a task copies when it is
+  created, so work the turn fans out to is covered without being threaded
+  through by hand.
+  """
+  with _instrumentation.collect_busy_intervals() as busy:
+    await asyncio.gather(
+        asyncio.create_task(_run_tool()),
+        asyncio.create_task(_run_tool()),
+    )
+
+  assert _about(busy.tool_seconds(), _SLICE)
+
+
+@pytest.mark.asyncio
+async def test_a_run_nobody_is_collecting_for_still_works():
+  """The collector is optional; an uninstrumented run just is not measured."""
+  await _run_tool()
+  await _await_model()
+
+  with _instrumentation.collect_busy_intervals() as busy:
+    await _run_tool()
+
+  assert _about(busy.tool_seconds(), _SLICE)
+  assert busy.model_seconds() == 0.0

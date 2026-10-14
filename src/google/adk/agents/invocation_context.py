@@ -32,6 +32,7 @@ from ..auth.auth_credential import AuthCredential
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..events._branch_path import _BranchPath
 from ..events._internal_metadata import without_internal_metadata
+from ..events._interrupts import extract_event_interrupt_ids
 from ..events._node_path_builder import _NodePathBuilder
 from ..events.event import Event
 from ..live._active_streaming_tool import ActiveStreamingTool
@@ -674,7 +675,9 @@ class InvocationContext(BaseModel):
     running.
 
     Should meet all following conditions to pause an invocation:
-      1. The current event has a long running function call.
+      1. The current event has an interrupt function call (either in
+         `long_running_tool_ids` or a legacy HITL `adk_request_input` /
+         `adk_request_credential` call).
 
     Args:
       event: The current event.
@@ -682,12 +685,16 @@ class InvocationContext(BaseModel):
     Returns:
       Whether to pause the invocation right after this event.
     """
-    if not event.long_running_tool_ids or not event.get_function_calls():
+    # Interrupt ids come from the shared extractor so the flow pauses on the
+    # same events the router and workflow rehydration treat as interrupts,
+    # including legacy sessions whose HITL calls lack `long_running_tool_ids`.
+    interrupt_ids = extract_event_interrupt_ids(event)
+    if not interrupt_ids or not event.get_function_calls():
       return False
 
     events = self.session.events if self.session else []
     for fc in event.get_function_calls():
-      if fc.id in event.long_running_tool_ids:
+      if fc.id in interrupt_ids:
         # Check if there is a newer user event in the session that belongs to a sub-branch of this tool call.
         # This indicates the tool call is resuming to process that nested input.
         is_resolving_sub_branch = False

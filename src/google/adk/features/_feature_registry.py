@@ -27,6 +27,7 @@ class FeatureName(str, Enum):
   """Feature names."""
 
   AGENT_CONFIG = "AGENT_CONFIG"
+  AGENT_ENGINE_SANDBOX_ENVIRONMENT = "AGENT_ENGINE_SANDBOX_ENVIRONMENT"
   AGENT_STATE = "AGENT_STATE"
   AUTHENTICATED_FUNCTION_TOOL = "AUTHENTICATED_FUNCTION_TOOL"
   BASE_AUTHENTICATED_TOOL = "BASE_AUTHENTICATED_TOOL"
@@ -114,6 +115,9 @@ class FeatureConfig:
 # Central registry: FeatureName -> FeatureConfig
 _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.AGENT_CONFIG: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.AGENT_ENGINE_SANDBOX_ENVIRONMENT: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.AGENT_STATE: FeatureConfig(
