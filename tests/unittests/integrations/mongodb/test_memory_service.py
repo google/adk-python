@@ -48,12 +48,131 @@ async def test_ensure_indexes_creates_recall_index():
 
 
 @pytest.mark.asyncio
-async def test_index_not_created_by_default(service):
-  """Without ensure_indexes the implicit _id index is the only one present."""
+async def test_index_created_by_default(service):
+  """Indexes are on by default: no opt-in is needed for the recall index."""
+  await service.add_session_to_memory(_session_with_texts("hello world"))
+
+  indexes = service._memories().index_information()
+  assert "app_user_keywords" in indexes
+
+
+@pytest.mark.asyncio
+async def test_ensure_indexes_false_skips_index_creation():
+  """Opting out leaves the implicit _id index as the only one."""
+  service = MongoDbMemoryService(
+      mongo_client=mongomock.MongoClient(),
+      database_name="test_db",
+      ensure_indexes=False,
+  )
   await service.add_session_to_memory(_session_with_texts("hello world"))
 
   indexes = service._memories().index_information()
   assert "app_user_keywords" not in indexes
+
+
+@pytest.mark.asyncio
+async def test_index_privilege_error_falls_back_to_unindexed_reads(
+    caplog, monkeypatch
+):
+  """A denied createIndex warns once and never breaks reads or writes."""
+  from pymongo.errors import OperationFailure
+
+  client = mongomock.MongoClient()
+  service = MongoDbMemoryService(mongo_client=client, database_name="test_db")
+  collection = client["test_db"]["memories"]
+
+  def _denied(*args, **kwargs):
+    raise OperationFailure("not authorized", code=13)
+
+  monkeypatch.setattr(collection, "create_index", _denied)
+
+  with caplog.at_level("WARNING"):
+    await service.add_session_to_memory(_session_with_texts("hello world"))
+    response = await service.search_memory(
+        app_name=APP, user_id=USER, query="hello"
+    )
+
+  assert response.memories
+  warnings = [r for r in caplog.records if "createIndex" in r.message]
+  assert len(warnings) == 1  # warned once, not per operation
+
+
+@pytest.mark.asyncio
+async def test_index_creation_errors_other_than_privilege_propagate(
+    monkeypatch,
+):
+  """Unexpected createIndex failures are not swallowed."""
+  client = mongomock.MongoClient()
+  service = MongoDbMemoryService(mongo_client=client, database_name="test_db")
+  collection = client["test_db"]["memories"]
+
+  def _boom(*args, **kwargs):
+    raise RuntimeError("connection dropped")
+
+  monkeypatch.setattr(collection, "create_index", _boom)
+
+  with pytest.raises(RuntimeError, match="connection dropped"):
+    await service.add_session_to_memory(_session_with_texts("hello world"))
+
+
+@pytest.mark.asyncio
+async def test_search_memory_respects_max_results():
+  """A common keyword returns at most max_results memories."""
+  service = MongoDbMemoryService(
+      mongo_client=mongomock.MongoClient(),
+      database_name="test_db",
+      max_results=2,
+  )
+  await service.add_session_to_memory(
+      _session_with_texts(
+          "coffee one", "coffee two", "coffee three", "coffee four"
+      )
+  )
+
+  response = await service.search_memory(
+      app_name=APP, user_id=USER, query="coffee"
+  )
+
+  assert len(response.memories) == 2
+
+
+@pytest.mark.asyncio
+async def test_search_memory_ranks_by_keyword_overlap_then_recency():
+  """Higher keyword overlap ranks first; recency breaks ties."""
+  service = MongoDbMemoryService(
+      mongo_client=mongomock.MongoClient(), database_name="test_db"
+  )
+  await service.add_session_to_memory(
+      _session_with_texts(
+          "espresso machine",  # overlap 2, oldest
+          "espresso machine with milk frother",  # overlap 3
+          "my espresso machine",  # overlap 2, newest
+      )
+  )
+
+  response = await service.search_memory(
+      app_name=APP, user_id=USER, query="espresso machine frother"
+  )
+
+  texts = [
+      " ".join(part.text for part in m.content.parts if part.text)
+      for m in response.memories
+  ]
+  assert texts == [
+      "espresso machine with milk frother",
+      "my espresso machine",
+      "espresso machine",
+  ]
+
+
+def test_max_results_must_be_positive():
+  """max_results bounds the search; zero or negative is a config error."""
+  with pytest.raises(ValueError, match="max_results"):
+    MongoDbMemoryService(
+        mongo_client=mongomock.MongoClient(),
+        database_name="test_db",
+        max_results=0,
+    )
 
 
 def _session_with_texts(*texts: str, session_id: str = "s1") -> Session:

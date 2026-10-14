@@ -302,14 +302,55 @@ async def test_ensure_indexes_creates_recommended_indexes(client):
 
 
 @pytest.mark.asyncio
-async def test_indexes_not_created_by_default(service, client):
-  """Without ensure_indexes the implicit _id index is the only one present."""
+async def test_indexes_created_by_default(service, client):
+  """Indexes are on by default: no opt-in is needed for the read indexes."""
+  await service.create_session(app_name=APP, user_id=USER, session_id="s1")
+
+  assert "app_user_session_ts" in (
+      client["test_db"]["events"].index_information()
+  )
+  assert "app_user" in (client["test_db"]["sessions"].index_information())
+
+
+@pytest.mark.asyncio
+async def test_ensure_indexes_false_skips_index_creation(client):
+  """Opting out leaves the implicit _id indexes as the only ones present."""
+  service = MongoDbSessionService(
+      mongo_client=client, database_name="test_db", ensure_indexes=False
+  )
   await service.create_session(app_name=APP, user_id=USER, session_id="s1")
 
   assert "app_user_session_ts" not in (
       client["test_db"]["events"].index_information()
   )
   assert "app_user" not in (client["test_db"]["sessions"].index_information())
+
+
+@pytest.mark.asyncio
+async def test_index_privilege_error_falls_back_to_unindexed_reads(
+    client, caplog, monkeypatch
+):
+  """A denied createIndex warns once and never breaks reads or writes."""
+  from pymongo.errors import OperationFailure
+
+  service = MongoDbSessionService(mongo_client=client, database_name="test_db")
+
+  def _denied(*args, **kwargs):
+    raise OperationFailure("not authorized", code=13)
+
+  monkeypatch.setattr(client["test_db"]["events"], "create_index", _denied)
+
+  with caplog.at_level("WARNING"):
+    session = await service.create_session(
+        app_name=APP, user_id=USER, session_id="s1"
+    )
+    fetched = await service.get_session(
+        app_name=APP, user_id=USER, session_id=session.id
+    )
+
+  assert fetched is not None
+  warnings = [r for r in caplog.records if "createIndex" in r.message]
+  assert len(warnings) == 1  # warned once, not per operation
 
 
 @pytest.mark.asyncio

@@ -102,7 +102,10 @@ class MongoDbMemoryService(BaseMemoryService):
   Events ingested from sessions are stored as memory documents (one per
   event) in a single collection, each carrying the lowercase keywords
   extracted from its text content. `search_memory` matches documents whose
-  keyword array intersects the query's keywords.
+  keyword array intersects the query's keywords, ranks them by keyword
+  overlap (most recent first within a tie), and returns at most
+  `max_results` entries — a common keyword in a large memory store can
+  otherwise return everything.
 
   Example:
       ```python
@@ -124,7 +127,8 @@ class MongoDbMemoryService(BaseMemoryService):
       mongo_client: MongoClient | None = None,
       memories_collection: str = DEFAULT_MEMORIES_COLLECTION,
       stop_words: set[str] | None = None,
-      ensure_indexes: bool = False,
+      ensure_indexes: bool = True,
+      max_results: int = 20,
   ):
     """Initializes the MongoDB memory service.
 
@@ -138,12 +142,21 @@ class MongoDbMemoryService(BaseMemoryService):
       memories_collection: Collection name for memory documents.
       stop_words: Words to ignore when extracting keywords. Defaults to a
         standard English stop-word list.
-      ensure_indexes: When True, create the recommended secondary index on
-        first use: `app_user_keywords` on the memories collection (the
+      ensure_indexes: Create the recommended secondary index on first use
+        (default True): `app_user_keywords` on the memories collection (the
         app/user/keywords lookup behind `search_memory`). Index creation is
-        idempotent, so this is safe to leave on, but it requires the
-        `createIndex` privilege.
+        idempotent. Without the `createIndex` privilege a warning is logged
+        once and reads fall back to unindexed scans; pass False to skip the
+        attempt entirely.
+      max_results: Maximum number of memories a search returns, ranked by
+        keyword overlap and recency. Bounds what a query with a common
+        keyword can return.
+
+    Raises:
+      ValueError: If `max_results` is not positive.
     """
+    if max_results < 1:
+      raise ValueError("max_results must be a positive integer.")
     if mongo_client is not None and connection_string is not None:
       raise ValueError(
           "Only one of `connection_string` and `mongo_client` may be provided."
@@ -165,6 +178,7 @@ class MongoDbMemoryService(BaseMemoryService):
     )
     self._ensure_indexes = ensure_indexes
     self._indexes_ensured = False
+    self._max_results = max_results
 
   def _memories(self):
     return self._client[self._database_name][self.memories_collection]
@@ -173,13 +187,30 @@ class MongoDbMemoryService(BaseMemoryService):
     """Creates the recommended secondary index on first use, if enabled.
 
     Index creation is idempotent on the server, and the guard flag only
-    skips work in this process.
+    skips work in this process. A deployment without the `createIndex`
+    privilege (e.g. a least-privilege runtime user) logs a warning once and
+    falls back to unindexed reads rather than failing every operation.
     """
     if not self._ensure_indexes or self._indexes_ensured:
       return
-    self._memories().create_index(
-        _MEMORIES_RECALL_INDEX_KEYS, name=_MEMORIES_RECALL_INDEX_NAME
-    )
+    try:
+      self._memories().create_index(
+          _MEMORIES_RECALL_INDEX_KEYS, name=_MEMORIES_RECALL_INDEX_NAME
+      )
+    except (
+        Exception
+    ) as exc:  # pymongo stays an optional import; match by shape.
+      if not _client.is_index_privilege_error(exc):
+        # Unexpected failure: leave the flag unset so a later operation
+        # retries after the deployment recovers.
+        raise
+      logger.warning(
+          "MongoDbMemoryService could not create the recommended index"
+          " (createIndex privilege missing); reads will fall back to"
+          " unindexed scans. Pass ensure_indexes=False to silence this, or"
+          " grant the privilege. Details: %s",
+          exc,
+      )
     self._indexes_ensured = True
 
   def _extract_keywords(self, text: str) -> set[str]:
@@ -242,12 +273,34 @@ class MongoDbMemoryService(BaseMemoryService):
       return SearchMemoryResponse()
 
     def _search() -> list[dict[str, Any]]:
-      cursor = self._memories().find({
-          "app_name": app_name,
-          "user_id": user_id,
-          "keywords": {"$in": sorted(keywords)},
-      })
-      return list(cursor)
+      # Ranking and the limit run server-side: a common keyword can match a
+      # large share of the memories, and without `$limit` every one of them
+      # crosses the wire.
+      pipeline = [
+          {
+              "$match": {
+                  "app_name": app_name,
+                  "user_id": user_id,
+                  "keywords": {"$in": sorted(keywords)},
+              }
+          },
+          {
+              "$addFields": {
+                  "overlap": {
+                      "$size": {
+                          "$filter": {
+                              "input": "$keywords",
+                              "as": "keyword",
+                              "cond": {"$in": ["$$keyword", sorted(keywords)]},
+                          }
+                      }
+                  }
+              }
+          },
+          {"$sort": {"overlap": -1, "timestamp": -1}},
+          {"$limit": self._max_results},
+      ]
+      return list(self._memories().aggregate(pipeline))
 
     docs = await asyncio.to_thread(_search)
 

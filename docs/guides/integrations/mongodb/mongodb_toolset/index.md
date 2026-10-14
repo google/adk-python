@@ -117,7 +117,7 @@ Note that `$vectorSearch` only filters on fields declared as filter fields in th
 
 ## Configuration options
 
-`MongoDbToolset` takes its connection and its policy separately. `connection_string` or `mongo_client` says where MongoDB is, `database_name` says which database is in bounds, `tool_filter` selects which of the two tools to expose, `genai_client` supplies the client used for embedding, and `settings` carries everything below. Exactly one of `connection_string` and `mongo_client` is required, and passing both raises `ValueError`.
+`MongoDbToolset` takes its connection and its policy separately. `connection_string`, `connection_string_env_var`, or `mongo_client` says where MongoDB is, `database_name` says which database is in bounds, `tool_filter` selects which of the two tools to expose, `genai_client` supplies the client used for embedding, and `settings` carries everything below. Exactly one of the three connection arguments is required, and passing more than one raises `ValueError`. The env-var form resolves the connection string where the client is built, so prefer it for Agent Engine deployments: a literal `connection_string` would be pickled into the deployment package in plaintext, password included.
 
 `MongoDbToolSettings` holds the rest:
 

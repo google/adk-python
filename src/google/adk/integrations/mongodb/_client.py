@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -60,6 +61,38 @@ def get_mongo_client(
       driver=DriverInfo(name="adk-mongodb-tool", version=version.__version__),
       **options,
   )
+
+
+def connection_string_from_env(env_var: str) -> str:
+  """Reads the MongoDB connection string from an environment variable.
+
+  Used with `connection_string_env_var` so the value is resolved where the
+  client is built — on the runtime, not at packaging time — which keeps the
+  database password out of pickled deployment packages (Agent Engine).
+
+  Raises:
+      ValueError: If the environment variable is not set.
+  """
+  value = os.environ.get(env_var)
+  if not value:
+    raise ValueError(
+        f"Environment variable {env_var} is not set: it must hold the"
+        " MongoDB connection string."
+    )
+  return value
+
+
+def is_index_privilege_error(exc: Exception) -> bool:
+  """True when the deployment denied a `createIndex` call.
+
+  Code 13 is MongoDB's Unauthorized error; Atlas also surfaces privilege
+  denials with a "not authorized" message. Index creation is a performance
+  feature, not a correctness one, so services treat this as a warning and
+  fall back to unindexed reads.
+  """
+  if getattr(exc, "code", None) == 13:
+    return True
+  return "not authorized" in str(exc).lower()
 
 
 def drop_client_for_pickle(

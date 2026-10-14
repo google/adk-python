@@ -200,6 +200,11 @@ English stop-word list is ignored; pass `stop_words` to customize).
 keywords. Ingestion is idempotent — re-adding a session overwrites its
 memories rather than duplicating them.
 
+Results are ranked by keyword overlap (most recent first within a tie) and
+capped at `max_results` (default 20) — the ranking and the limit run inside
+MongoDB, so a query carrying a common keyword returns the best few memories
+rather than everything it touched.
+
 Retrieval is intentionally keyword-only: it needs no embedding model, no
 Google credentials, and no vector index, so it works on any MongoDB
 deployment (not just Atlas) at zero per-query cost. Vector recall is a
@@ -207,32 +212,17 @@ possible follow-up that can build on this integration's own search tools.
 
 ## Secondary indexes (`ensure_indexes`)
 
-The services never create indexes on their own: every write and most reads
-are keyed by `_id`, which MongoDB indexes implicitly. Two read patterns are
-not `_id` lookups, though, and become collection scans as data grows:
+Most reads and every write are keyed by `_id`, which MongoDB indexes
+implicitly. Two read patterns are not `_id` lookups, though, and become
+collection scans as data grows:
 
 - `get_session` reads `events` by `(app_name, user_id, session_id)` sorted
   by `timestamp`.
 - `search_memory` reads `memories` by `(app_name, user_id)` with a `$in`
   match on the `keywords` array.
 
-Pass `ensure_indexes=True` to have the services create the recommended
-indexes on first use:
-
-```python
-session_service = MongoDbSessionService(
-    connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
-    database_name="my_app",
-    ensure_indexes=True,
-)
-memory_service = MongoDbMemoryService(
-    connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
-    database_name="my_app",
-    ensure_indexes=True,
-)
-```
-
-This creates:
+The services therefore create the recommended secondary indexes on first use
+by default (`ensure_indexes=True`):
 
 | Collection | Index | Keys |
 | :--- | :--- | :--- |
@@ -240,12 +230,22 @@ This creates:
 | `sessions` | `app_user` | `(app_name, user_id)` |
 | `memories` | `app_user_keywords` | `(app_name, user_id, keywords)` (multikey) |
 
-Index creation is idempotent — re-running with the same spec is a no-op — so
-the flag is safe to leave on. It requires the MongoDB user to hold the
-`createIndex` privilege on the database, and it runs outside the write
-transactions (`createIndexes` is not allowed inside one). At small scale the
-flag changes nothing measurably; enable it before the `events` and
-`memories` collections grow large.
+Index creation is idempotent — re-running with the same spec is a no-op —
+and it runs outside the write transactions (`createIndexes` is not allowed
+inside one). When the runtime user lacks the `createIndex` privilege (see
+[Required permissions](#required-permissions-least-privilege-setup)), the
+services log one warning and fall back to unindexed reads rather than
+failing; unexpected index-creation errors still propagate. Pass
+`ensure_indexes=False` to skip the attempt entirely (and silence the
+warning) on a deliberately least-privileged user:
+
+```python
+session_service = MongoDbSessionService(
+    connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
+    database_name="my_app",
+    ensure_indexes=False,
+)
+```
 
 ## Required permissions (least-privilege setup)
 
@@ -255,7 +255,7 @@ and two separate database users keep the privileges separated:
 | Database user | Used by | Minimum privileges |
 | :--- | :--- | :--- |
 | **Search user** (read-only) | `MongoDbToolset` | `find` on each collection the agent may search. |
-| **State user** (read-write) | `MongoDbSessionService`, `MongoDbMemoryService` | `find`, `insert`, `update`, `remove` on `sessions` and `events` (session deletion); `find`, `insert`, `update` on `app_states`, `user_states` and `memories` (upserts only, never deletes). Add `createIndex` on those collections only if you enable `ensure_indexes`. |
+| **State user** (read-write) | `MongoDbSessionService`, `MongoDbMemoryService` | `find`, `insert`, `update`, `remove` on `sessions` and `events` (session deletion); `find`, `insert`, `update` on `app_states`, `user_states` and `memories` (upserts only, never deletes). Add `createIndex` on those collections so `ensure_indexes` (on by default) can work; without it the services log one warning and fall back to unindexed reads, or pass `ensure_indexes=False` to opt out. |
 
 ```javascript
 // mongosh, as an admin user: one read-only role for the search tools, one
@@ -317,6 +317,60 @@ agent = Agent(
     before_tool_callback=allow_products_only,
 )
 ```
+
+## Deploying to Agent Engine
+
+Agent Engine packages the app object with cloudpickle, and a live
+`pymongo.MongoClient` (sockets, locks, background threads) cannot cross that
+boundary. `MongoDbToolset` is therefore picklable: the client is dropped at
+pickle time and rebuilt on the runtime from the connection string, and a
+`genai_client` passed to the toolset is likewise rebuilt lazily from the
+ambient environment (`GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION`, set
+automatically on Agent Engine; add `GOOGLE_GENAI_USE_VERTEXAI=TRUE` to the
+deployment env vars so the ambient client resolves to Vertex AI). A toolset
+built from a caller-owned `mongo_client` cannot be pickled — pass a
+connection string instead.
+
+### Keep the connection string out of the deployment package
+
+A toolset constructed with `connection_string="mongodb+srv://user:PASSWORD@…"`
+carries the URI — password included — as a plaintext attribute, and pickling
+writes it into the uploaded deployment package. To keep the credential out
+of the package, name an environment variable instead:
+
+```python
+toolset = MongoDbToolset(
+    database_name="products_db",
+    connection_string_env_var="MONGODB_URI",  # only the name is stored
+)
+```
+
+Only the variable's name is stored and pickled; the value is resolved where
+the client is built — locally at construction, or on the Agent Engine
+runtime after unpickling. Map the variable to a Secret Manager secret at
+deploy time so the plaintext value never touches the deployment spec either
+(the Agent Engine service account needs the Secret Manager Secret Accessor
+role on the secret):
+
+```python
+from google.cloud.aiplatform_v1.types import SecretRef
+from vertexai import agent_engines
+
+remote = agent_engines.create(
+    app,
+    requirements=[...],
+    env_vars={
+        "MONGODB_URI": SecretRef(
+            secret="mongodb-uri",
+            version="latest",
+        ),
+    },
+)
+```
+
+The MongoDB session and memory services cannot be deployed to Agent Engine
+yet — wiring them in (including the same pickling and secret handling) is
+planned as a follow-up.
 
 ## Configuration: `MongoDbToolSettings`
 

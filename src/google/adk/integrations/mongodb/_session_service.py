@@ -151,7 +151,7 @@ class MongoDbSessionService(BaseSessionService):
       events_collection: str = DEFAULT_EVENTS_COLLECTION,
       app_state_collection: str = DEFAULT_APP_STATE_COLLECTION,
       user_state_collection: str = DEFAULT_USER_STATE_COLLECTION,
-      ensure_indexes: bool = False,
+      ensure_indexes: bool = True,
   ):
     """Initializes the MongoDB session service.
 
@@ -167,14 +167,15 @@ class MongoDbSessionService(BaseSessionService):
       events_collection: Collection name for event documents.
       app_state_collection: Collection name for app state documents.
       user_state_collection: Collection name for user state documents.
-      ensure_indexes: When True, create the recommended secondary indexes on
-        first use: `app_user_session_ts` on the events collection (the
+      ensure_indexes: Create the recommended secondary indexes on first use
+        (default True): `app_user_session_ts` on the events collection (the
         app/user/session/timestamp lookup behind `get_session`), and
         `app_user` on the sessions collection (the app/user filter behind
-        `list_sessions`). Index creation is idempotent, so this is safe to
-        leave on, but it requires the `createIndex` privilege. All other
-        reads and writes are keyed by `_id`, which MongoDB indexes
-        implicitly.
+        `list_sessions`). Index creation is idempotent. Without the
+        `createIndex` privilege a warning is logged once and reads fall back
+        to `_id`-keyed lookups and scans; pass False to skip the attempt
+        entirely. All other reads and writes are keyed by `_id`, which
+        MongoDB indexes implicitly.
     """
     if mongo_client is not None and connection_string is not None:
       raise ValueError(
@@ -225,16 +226,34 @@ class MongoDbSessionService(BaseSessionService):
 
     Index creation is idempotent on the server, and the guard flag only
     skips work in this process. It must run outside the write transactions:
-    `createIndexes` is not allowed inside a multi-document transaction.
+    `createIndexes` is not allowed inside a multi-document transaction. A
+    deployment without the `createIndex` privilege (e.g. a least-privilege
+    runtime user) logs a warning once and falls back to unindexed reads
+    rather than failing every operation.
     """
     if not self._ensure_indexes or self._indexes_ensured:
       return
-    self._events().create_index(
-        _EVENTS_HISTORY_INDEX_KEYS, name=_EVENTS_HISTORY_INDEX_NAME
-    )
-    self._sessions().create_index(
-        _SESSIONS_LIST_INDEX_KEYS, name=_SESSIONS_LIST_INDEX_NAME
-    )
+    try:
+      self._events().create_index(
+          _EVENTS_HISTORY_INDEX_KEYS, name=_EVENTS_HISTORY_INDEX_NAME
+      )
+      self._sessions().create_index(
+          _SESSIONS_LIST_INDEX_KEYS, name=_SESSIONS_LIST_INDEX_NAME
+      )
+    except (
+        Exception
+    ) as exc:  # pymongo stays an optional import; match by shape.
+      if not _client.is_index_privilege_error(exc):
+        # Unexpected failure: leave the flag unset so a later operation
+        # retries after the deployment recovers.
+        raise
+      logger.warning(
+          "MongoDbSessionService could not create the recommended indexes"
+          " (createIndex privilege missing); reads will fall back to"
+          " unindexed scans. Pass ensure_indexes=False to silence this, or"
+          " grant the privilege. Details: %s",
+          exc,
+      )
     self._indexes_ensured = True
 
   @staticmethod
