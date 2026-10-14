@@ -28,8 +28,8 @@ from component_owners import LABEL_TO_OWNER
 from google.adk import Agent
 import requests
 
-# LABEL_TO_OWNER (component -> owner GitHub login; the owner becomes the PR's
-# assignee) is imported from component_owners. Keep it in sync with OWNERS.
+# LABEL_TO_OWNER (component -> owners' GitHub logins; one of them becomes the
+# PR's assignee) is imported from component_owners.
 # This agent only reads the map to pick an assignee; the component names are
 # never written to the PR as labels.
 
@@ -152,12 +152,14 @@ def get_pull_request_details(pr_number: int) -> dict[str, Any]:
 
 
 def assign_owner_to_pr(pr_number: int, component: str) -> dict[str, Any]:
-  """Assign the component owner (the shepherd) to a PR.
+  """Assign one of the component's owners (the shepherd) to a PR.
 
-  The owner is looked up from `LABEL_TO_OWNER` so the contributor can see who is
-  shepherding their PR. GitHub only allows assigning users with
-  repo write/triage access, so a non-assignable owner is reported as skipped
-  rather than silently dropped.
+  The owners are looked up from `LABEL_TO_OWNER` so the contributor can see who
+  is shepherding their PR. A component with several owners starts at the owner
+  picked by the PR number, so they take turns. GitHub only allows assigning
+  users with repo write/triage access, so a non-assignable owner is passed over,
+  and a PR none of the owners can take is reported as skipped rather than
+  silently dropped.
 
   Args:
     pr_number: the number of the GitHub pull request
@@ -166,18 +168,22 @@ def assign_owner_to_pr(pr_number: int, component: str) -> dict[str, Any]:
   Returns:
     The status of this request, with the assigned owner when successful.
   """
-  owner = LABEL_TO_OWNER.get(component)
-  if not owner:
+  owners = LABEL_TO_OWNER.get(component)
+  if not owners:
     return error_response(
         f"Error: no owner mapped for component '{component}'."
     )
-  print(f"Attempting to assign owner '{owner}' to PR #{pr_number}")
-  if not is_assignable(owner):
+  start = pr_number % len(owners)
+  owner = next(
+      (o for o in owners[start:] + owners[:start] if is_assignable(o)), None
+  )
+  if owner is None:
     return {
         "status": "skipped",
-        "reason": f"'{owner}' is not assignable (needs repo access)",
-        "owner": owner,
+        "reason": f"none of {owners} is assignable (needs repo access)",
+        "owners": owners,
     }
+  print(f"Attempting to assign owner '{owner}' to PR #{pr_number}")
 
   # Pull Request is a special issue in GitHub, so we can use the issue url.
   assignee_url = (

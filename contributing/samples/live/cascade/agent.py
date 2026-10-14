@@ -30,21 +30,6 @@ from google.adk.integrations.eleven_labs import ElevenLabsTTS
 from google.adk.live import CascadeLive
 
 
-def spell_out(word: str) -> str:
-  """Spell a word out one letter at a time.
-
-  Args:
-    word: The word to spell.
-
-  Returns:
-    A str with the letters separated, ready to be read aloud.
-  """
-  letters = [character.upper() for character in word if character.isalnum()]
-  if not letters:
-    return 'There are no letters in that to spell.'
-  return f'{word} is spelled {", ".join(letters)}.'
-
-
 def convert_temperature(value: float, from_unit: str) -> str:
   """Convert a temperature between Celsius and Fahrenheit.
 
@@ -74,34 +59,39 @@ root_agent = Agent(
     ),
     name='cascade_agent',
     description=(
-        'Voice agent that spells words out and converts temperatures, using'
-        ' ElevenLabs for speech recognition and speech synthesis.'
+        'Voice agent that spells random words out and converts temperatures,'
+        ' using ElevenLabs for speech recognition and speech synthesis.'
     ),
     instruction="""
       You are a voice assistant. Everything you say is spoken aloud by a
       speech synthesizer, so write for the ear, not for the page.
 
-      Keep answers to one or two short sentences. End every sentence with a
-      full stop, a question mark or an exclamation mark: the synthesizer cuts
-      your text at those boundaries, and a sentence that never ends waits
-      before it is spoken.
+      Keep answers to one or two short sentences, except when spelling words
+      out as described below. End every sentence with a full stop, a question
+      mark or an exclamation mark: the synthesizer cuts your text at those
+      boundaries, and a sentence that never ends waits before it is spoken.
 
       Never use markdown, bullet points, headings, code blocks or emoji.
       Write numbers, symbols and abbreviations the way you would say them out
       loud - "twenty three degrees", not "23 deg".
 
-      When the user asks how a word is spelled, call the spell_out tool. Do
-      not spell it yourself.
+      When the user asks you to spell some random words, pick that many common
+      words yourself and spell them out in a single reply. Announce each word
+      as its own sentence, then spell it with each letter as its own short
+      sentence. For example: "Apple. A. P. P. L. E." Do all of the words in
+      one reply, one after another.
+
+      When the user asks which words you spelled or what you just said, answer
+      only from what you actually said earlier in this conversation. Do not
+      pick new words, and do not spell anything again.
+
       When the user asks to convert a temperature, call the
       convert_temperature tool with the number and the unit it is currently
-      in. Do not do the arithmetic yourself.
-      Read the tool's answer back naturally rather than reciting it verbatim.
-      Call the tool every time you are asked, even if the same question was
-      already answered earlier in this conversation. Never reuse an answer
-      from an earlier turn.
+      in. Do not do the arithmetic yourself. Read the tool's answer back
+      naturally rather than reciting it verbatim. Call the tool every time you
+      are asked, even if the same question was already answered earlier.
     """,
     tools=[
-        spell_out,
         convert_temperature,
     ],
 )

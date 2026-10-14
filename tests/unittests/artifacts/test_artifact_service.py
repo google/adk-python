@@ -26,6 +26,7 @@ import stat
 import threading
 from types import SimpleNamespace
 from typing import Any
+from typing import Callable
 from typing import Optional
 from typing import Union
 from unittest import mock
@@ -37,6 +38,7 @@ from google.adk.artifacts import artifact_util
 from google.adk.artifacts import file_artifact_service
 from google.adk.artifacts import gcs_artifact_service
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
+from google.adk.artifacts.base_artifact_service import BaseArtifactService
 from google.adk.artifacts.base_artifact_service import ensure_part
 from google.adk.artifacts.file_artifact_service import FileArtifactService
 from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
@@ -992,6 +994,11 @@ async def test_list_keys_preserves_user_prefix(
   expected_keys = ["user:document.pdf", "user:image.png", "session_file.txt"]
   assert sorted(artifact_keys) == sorted(expected_keys)
 
+  user_only_keys = await artifact_service.list_artifact_keys(
+      app_name=app_name, user_id=user_id, session_id=None
+  )
+  assert sorted(user_only_keys) == ["user:document.pdf", "user:image.png"]
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -1190,6 +1197,39 @@ async def test_get_artifact_version_out_of_index(
       session_id=session_id,
       filename=filename,
       version=3,
+  )
+  # The version one past the last is out of range too.
+  assert not await artifact_service.get_artifact_version(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=1,
+  )
+  assert not await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=1,
+  )
+  first_version = await artifact_service.get_artifact_version(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=0,
+  )
+  assert first_version.version == 0
+  assert (
+      await artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=filename,
+          version=0,
+      )
+      == artifact
   )
 
 
@@ -2021,6 +2061,8 @@ INVALID_PATH_SEGMENT_CASES = (
     (".", "must not contain traversal segments"),
     ("null\x00byte", "must not contain null bytes"),
     ("", "must not be empty"),
+    ("   ", "must not be empty"),
+    ("\t\n", "must not be empty"),
     ("/etc/passwd", "must not be an absolute path or start with a slash"),
     ("/leading/slash", "must not be an absolute path or start with a slash"),
     (
@@ -3566,6 +3608,84 @@ async def test_save_load_empty_bytes_artifact(
   assert loaded is not None
   assert loaded.inline_data is not None
   assert loaded.inline_data.data == b""
+
+
+# The part Runner.rewind_async saves to remove an artifact that did not exist
+# at the rewind point. Sessions rewound by earlier releases store this exact
+# part, so it is spelled out here rather than taken from the code under test.
+_REWIND_TOMBSTONE = types.Part(
+    inline_data=types.Blob(mime_type="application/octet-stream", data=b"")
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+@pytest.mark.parametrize("version", [None, 1])
+async def test_artifact_removed_by_rewind_loads_as_none(
+    service_type: ArtifactServiceType,
+    artifact_service_factory: Callable[
+        [ArtifactServiceType], BaseArtifactService
+    ],
+    version: Optional[int],
+) -> None:
+  """A version holding the rewind tombstone loads as absent."""
+  artifact_service = artifact_service_factory(service_type)
+  scope = dict(app_name="app0", user_id="user0", session_id="123")
+  await artifact_service.save_artifact(
+      **scope, filename="report.txt", artifact=types.Part.from_text(text="v0")
+  )
+  await artifact_service.save_artifact(
+      **scope,
+      filename="report.txt",
+      artifact=_REWIND_TOMBSTONE,
+  )
+
+  loaded = await artifact_service.load_artifact(
+      **scope, filename="report.txt", version=version
+  )
+
+  assert loaded is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_version_before_rewind_tombstone_still_loads(
+    service_type: ArtifactServiceType,
+    artifact_service_factory: Callable[
+        [ArtifactServiceType], BaseArtifactService
+    ],
+) -> None:
+  """Versions saved before the rewind tombstone keep their content."""
+  artifact_service = artifact_service_factory(service_type)
+  scope = dict(app_name="app0", user_id="user0", session_id="123")
+  await artifact_service.save_artifact(
+      **scope, filename="report.txt", artifact=types.Part.from_text(text="v0")
+  )
+  await artifact_service.save_artifact(
+      **scope,
+      filename="report.txt",
+      artifact=_REWIND_TOMBSTONE,
+  )
+
+  loaded = await artifact_service.load_artifact(
+      **scope, filename="report.txt", version=0
+  )
+
+  assert loaded == types.Part.from_text(text="v0")
 
 
 def _write_tampered_metadata(

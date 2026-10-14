@@ -37,6 +37,7 @@ from pydantic import TypeAdapter
 from typing_extensions import Annotated
 
 from . import _json_utils
+from .content_utils import extract_text_from_content
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -260,11 +261,17 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
 
 
 def annotation_expects_str(annotated_type: Any) -> bool:
-  """Returns True if the annotation is or contains ``str``."""
+  """Returns True if the annotation expects ``str`` rather than JSON data."""
   if annotated_type is str:
     return True
   if get_origin(annotated_type) in (Union, UnionType):
-    return any(annotation_expects_str(a) for a in get_args(annotated_type))
+    args = get_args(annotated_type)
+    return any(annotation_expects_str(a) for a in args) and all(
+        annotation_expects_str(a)
+        or a is type(None)
+        or (isinstance(a, type) and issubclass(a, types.Content))
+        for a in args
+    )
   return False
 
 
@@ -279,6 +286,40 @@ def annotation_accepts_content(annotated_type: Any) -> bool:
   if get_origin(annotated_type) in (Union, UnionType):
     return any(annotation_accepts_content(a) for a in get_args(annotated_type))
   return False
+
+
+def _unwrap_content_payload(
+    content: types.Content,
+    annotation: Any = None,
+    *,
+    fan_out_list: bool = False,
+) -> Any:
+  """Unwraps non-thought text or parsed JSON from ``types.Content``."""
+  if not fan_out_list and annotation_expects_str(annotation):
+    return extract_text_from_content(content)
+  if not (
+      fan_out_list and annotation in (Any, object)
+  ) and annotation_accepts_content(annotation):
+    return content
+  if fan_out_list and (
+      not content.parts or any(p.text is None for p in content.parts)
+  ):
+    return content
+
+  text_str = extract_text_from_content(content)
+  try:
+    # Kept as json.loads: the surrounding except json.JSONDecodeError
+    # distinguishes decode failure from schema validation failure.
+    parsed = json.loads(text_str)
+  except json.JSONDecodeError:
+    return text_str
+  if (
+      fan_out_list
+      and not isinstance(parsed, list)
+      and annotation_expects_str(annotation)
+  ):
+    return text_str
+  return parsed
 
 
 def validate_node_data(
@@ -307,28 +348,13 @@ def validate_node_data(
     validated: Any = TypeAdapter(schema).validate_python(val)
     return _to_serializable(validated)
 
-  # If schema expects Content, do not unwrap
-  if annotation_accepts_content(schema):
-    return _validate_python_object(data)
-
   if isinstance(data, types.Content):
-    # Extract text part
-    text_parts = [p.text for p in data.parts if p.text] if data.parts else []
-    text_str = "".join(text_parts)
-
-    # Validate the text
-    if schema is str:
-      validated_payload = text_str
-    else:
-      # Try to parse text as JSON first
-      try:
-        # Kept as json.loads: the surrounding except json.JSONDecodeError
-        # distinguishes decode failure from schema validation failure.
-        parsed_json = json.loads(text_str)
-        validated_payload = _validate_python_object(parsed_json)
-      except json.JSONDecodeError:
-        # Fallback to validate raw string
-        validated_payload = _validate_python_object(text_str)
+    payload = _unwrap_content_payload(data, schema)
+    if payload is data:
+      return _validate_python_object(data)
+    validated_payload = (
+        payload if schema is str else _validate_python_object(payload)
+    )
 
     if not preserve_content:
       return validated_payload

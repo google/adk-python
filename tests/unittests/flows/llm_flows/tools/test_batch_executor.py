@@ -132,6 +132,127 @@ async def test_gather_or_cancel_cancels_siblings_on_failure() -> None:
   assert cancelled
 
 
+@pytest.mark.asyncio
+async def test_gather_or_cancel_cancels_siblings_on_cancelled_error() -> None:
+  """A child-raised CancelledError cancels unfinished sibling tasks."""
+  started = asyncio.Event()
+  sibling_cancelled = False
+  sibling_finished = False
+
+  async def failing_worker() -> None:
+    await started.wait()
+    raise asyncio.CancelledError()
+
+  async def slow_worker() -> None:
+    nonlocal sibling_cancelled, sibling_finished
+    started.set()
+    try:
+      await asyncio.sleep(10)
+      sibling_finished = True
+    except asyncio.CancelledError:
+      sibling_cancelled = True
+      raise
+
+  tasks = [
+      asyncio.create_task(failing_worker()),
+      asyncio.create_task(slow_worker()),
+  ]
+  with pytest.raises(asyncio.CancelledError):
+    await _batch_tool_executor._gather_or_cancel(tasks)
+
+  assert sibling_cancelled
+  assert not sibling_finished
+  assert all(t.done() for t in tasks)
+
+
+@pytest.mark.asyncio
+async def test_gather_or_cancel_cancels_siblings_on_self_cancel() -> None:
+  """A child that cancels its own task still tears down unfinished siblings."""
+  started = asyncio.Event()
+  sibling_cancelled = False
+  sibling_finished = False
+
+  async def self_cancelling_worker() -> None:
+    await started.wait()
+    task = asyncio.current_task()
+    assert task is not None
+    task.cancel()
+    await asyncio.sleep(0)
+
+  async def slow_worker() -> None:
+    nonlocal sibling_cancelled, sibling_finished
+    started.set()
+    try:
+      await asyncio.sleep(10)
+      sibling_finished = True
+    except asyncio.CancelledError:
+      sibling_cancelled = True
+      raise
+
+  tasks = [
+      asyncio.create_task(self_cancelling_worker()),
+      asyncio.create_task(slow_worker()),
+  ]
+  with pytest.raises(asyncio.CancelledError):
+    await _batch_tool_executor._gather_or_cancel(tasks)
+
+  assert sibling_cancelled
+  assert not sibling_finished
+  assert all(t.done() for t in tasks)
+
+
+@pytest.mark.asyncio
+async def test_gather_or_cancel_cancels_and_awaits_tasks_on_cancelled_error() -> (
+    None
+):
+  """Cancelling the gather task cancels and awaits unfinished child tasks."""
+  started = asyncio.Event()
+  cleanup_finished = False
+
+  async def fast_cancel_worker() -> None:
+    await asyncio.sleep(10)
+
+  async def slow_cleanup_worker() -> None:
+    nonlocal cleanup_finished
+    started.set()
+    try:
+      await asyncio.sleep(10)
+    finally:
+      await asyncio.sleep(0.02)
+      cleanup_finished = True
+
+  fast_task = asyncio.create_task(fast_cancel_worker())
+  slow_task = asyncio.create_task(slow_cleanup_worker())
+  gather_task = asyncio.create_task(
+      _batch_tool_executor._gather_or_cancel([fast_task, slow_task])
+  )
+  await started.wait()
+
+  gather_task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await gather_task
+
+  assert fast_task.cancelled()
+  assert slow_task.cancelled()
+  assert cleanup_finished
+
+
+@pytest.mark.asyncio
+async def test_gather_or_cancel_cancels_tasks_on_generator_exit() -> None:
+  """Closing the coroutine mid-await (GeneratorExit) still cancels the child tasks."""
+
+  async def slow_worker() -> None:
+    await asyncio.sleep(10)
+
+  task = asyncio.create_task(slow_worker())
+  coro = _batch_tool_executor._gather_or_cancel([task])
+  coro.send(None)
+  coro.close()
+  await asyncio.sleep(0)
+
+  assert task.cancelled()
+
+
 _probe: contextvars.ContextVar[str] = contextvars.ContextVar(
     'probe', default='unset'
 )

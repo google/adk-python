@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from typing import Any
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import Mock
@@ -711,3 +712,20 @@ class TestReflectAndRetryToolPlugin(IsolatedAsyncioTestCase):
         error=error,
     )
     self.assertEqual(next_failure["retry_count"], 2)
+
+  async def test_cancelled_error_ignored(self):
+    """Test that cancelled tool calls do not increment retry count or raise."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=0, throw_exception_if_retry_exceeded=True
+    )
+
+    result = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=asyncio.CancelledError(),
+    )
+    self.assertIsNone(result)

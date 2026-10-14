@@ -19,6 +19,7 @@ from google.adk.cli.cli_eval import _format_tool_call
 from google.adk.cli.cli_eval import pretty_print_eval_result
 from google.adk.evaluation.eval_case import IntermediateData
 from google.adk.evaluation.eval_case import Invocation
+from google.adk.evaluation.eval_metrics import DurationDetails
 from google.adk.evaluation.eval_metrics import EvalMetricResult
 from google.adk.evaluation.eval_metrics import EvalMetricResultDetails
 from google.adk.evaluation.eval_metrics import EvalMetricResultPerInvocation
@@ -183,6 +184,85 @@ def test_format_tool_call_without_args():
   assert _format_tool_call(call) == "list_devices()"
 
 
+def test_pretty_print_eval_result_renders_duration_breakdown(capsys):
+  """Where the seconds went is printed under the invocation duration score."""
+  metric_result = EvalMetricResult(
+      metric_name=PrebuiltMetrics.INVOCATION_DURATION_V1.value,
+      score=7.366,
+      eval_status=EvalStatus.INFORMATIONAL,
+      details=EvalMetricResultDetails(
+          duration_details=DurationDetails(
+              total_seconds=7.366,
+              model_seconds=3.55,
+              tool_seconds=0.003,
+              framework_seconds=3.813,
+          )
+      ),
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="User input here.")]
+      )
+  )
+  eval_result = EvalCaseResult(
+      eval_set_id="eval-set",
+      eval_id="eval-id",
+      final_eval_status=EvalStatus.PASSED,
+      overall_eval_metric_results=[metric_result],
+      eval_metric_result_per_invocation=[
+          EvalMetricResultPerInvocation(
+              actual_invocation=invocation,
+              eval_metric_results=[metric_result],
+          )
+      ],
+      session_id="session-id",
+  )
+
+  pretty_print_eval_result(eval_result)
+
+  captured = capsys.readouterr()
+  # The parts partition the turn rather than nest, so they are indented under
+  # the total only to show that they add back up to it.
+  assert (
+      "Duration breakdown:\n"
+      "  total:            7.366s\n"
+      "    model:          3.55s\n"
+      "    tool:           0.003s\n"
+      "    framework:      3.813s\n"
+  ) in captured.out
+
+
+def test_pretty_print_eval_result_without_duration_breakdown(capsys):
+  """A duration that was never split prints the score and no breakdown."""
+  metric_result = EvalMetricResult(
+      metric_name=PrebuiltMetrics.INVOCATION_DURATION_V1.value,
+      score=7.366,
+      eval_status=EvalStatus.INFORMATIONAL,
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="User input here.")]
+      )
+  )
+  eval_result = EvalCaseResult(
+      eval_set_id="eval-set",
+      eval_id="eval-id",
+      final_eval_status=EvalStatus.PASSED,
+      overall_eval_metric_results=[metric_result],
+      eval_metric_result_per_invocation=[
+          EvalMetricResultPerInvocation(
+              actual_invocation=invocation,
+              eval_metric_results=[metric_result],
+          )
+      ],
+      session_id="session-id",
+  )
+
+  pretty_print_eval_result(eval_result)
+
+  assert "Duration breakdown:" not in capsys.readouterr().out
+
+
 def test_format_metric_cell():
   """Informational cells show the value; pass/fail cells show status (score)."""
   passed = EvalMetricResult(
@@ -200,6 +280,19 @@ def test_format_metric_cell():
       metric_name=PrebuiltMetrics.INVOCATION_DURATION_V1.value,
       score=14.498,
       eval_status=EvalStatus.INFORMATIONAL,
+  )
+  duration_split = EvalMetricResult(
+      metric_name=PrebuiltMetrics.INVOCATION_DURATION_V1.value,
+      score=14.498,
+      eval_status=EvalStatus.INFORMATIONAL,
+      details=EvalMetricResultDetails(
+          duration_details=DurationDetails(
+              total_seconds=14.498,
+              model_seconds=9.2,
+              tool_seconds=0.3,
+              framework_seconds=4.998,
+          )
+      ),
   )
   missing = EvalMetricResult(
       metric_name=PrebuiltMetrics.TOKEN_USAGE_V1.value,
@@ -220,6 +313,9 @@ def test_format_metric_cell():
   assert _format_metric_cell(passed) == "PASSED (1.0)"
   assert _format_metric_cell(count) == "2"
   assert _format_metric_cell(duration) == "14.50s"
+  assert _format_metric_cell(duration_split) == (
+      "14.50s (model 9.2s, tool 0.3s, framework 4.998s)"
+  )
   assert _format_metric_cell(missing) == "n/a"
   assert _format_metric_cell(tokens) == "1008 (in 844, out 164)"
 

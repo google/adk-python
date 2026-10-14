@@ -57,6 +57,9 @@ class FakeRedisAsync:
       return None
     return self._store.get(key)
 
+  async def exists(self, *keys: str) -> int:
+    return sum(not self._is_expired(key) for key in keys)
+
   async def set(
       self,
       key: str,

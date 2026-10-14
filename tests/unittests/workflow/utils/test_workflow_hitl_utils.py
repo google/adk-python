@@ -30,9 +30,7 @@ from google.adk.workflow.utils._rehydration_utils import _ChildScanState
 from google.adk.workflow.utils._workflow_hitl_utils import create_auth_request_event
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_event
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
 from google.adk.workflow.utils._workflow_hitl_utils import has_auth_credential
-from google.adk.workflow.utils._workflow_hitl_utils import has_request_input_function_call
 from google.adk.workflow.utils._workflow_hitl_utils import process_auth_resume
 from google.genai import types
 import pytest
@@ -83,35 +81,6 @@ class TestCreateRequestInputEvent:
     assert schema["properties"]["approved"]["type"] == "boolean"
 
 
-# --- has_request_input_function_call ---
-
-
-class TestHasRequestInputFunctionCall:
-
-  def test_true_for_request_input_event(self):
-    event = create_request_input_event(
-        RequestInput(interrupt_id="id-1", message="test")
-    )
-    assert has_request_input_function_call(event) is True
-
-  def test_false_for_empty_event(self):
-    assert has_request_input_function_call(Event()) is False
-
-  def test_false_for_non_request_input(self):
-    from google.genai import types
-
-    event = Event(
-        content=types.Content(
-            parts=[
-                types.Part(
-                    function_call=types.FunctionCall(name="other_tool", args={})
-                )
-            ]
-        )
-    )
-    assert has_request_input_function_call(event) is False
-
-
 # --- create_request_input_response ---
 
 
@@ -122,37 +91,6 @@ class TestCreateRequestInputResponse:
     assert part.function_response.id == "id-1"
     assert part.function_response.name == "adk_request_input"
     assert part.function_response.response == {"approved": True}
-
-
-# --- get_request_input_interrupt_ids ---
-
-
-class TestGetRequestInputInterruptIds:
-
-  def test_extracts_ids(self):
-    event = create_request_input_event(
-        RequestInput(interrupt_id="id-1", message="test")
-    )
-    assert get_request_input_interrupt_ids(event) == ["id-1"]
-
-  def test_empty_for_no_function_calls(self):
-    assert get_request_input_interrupt_ids(Event()) == []
-
-  def test_empty_for_non_request_input(self):
-    from google.genai import types
-
-    event = Event(
-        content=types.Content(
-            parts=[
-                types.Part(
-                    function_call=types.FunctionCall(
-                        name="other_tool", args={}, id="id-1"
-                    )
-                )
-            ]
-        )
-    )
-    assert get_request_input_interrupt_ids(event) == []
 
 
 # --- create_auth_request_event ---

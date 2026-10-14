@@ -27,6 +27,7 @@ from ...auth.auth_credential import AuthCredentialTypes as _AuthCredentialTypes
 from ...auth.auth_credential import OAuth2Auth
 from ...events.event import Event
 from ...events.request_input import RequestInput
+from ...tools.tool_confirmation import ToolConfirmation
 from ...utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...utils._schema_utils import schema_to_json_schema
@@ -35,6 +36,35 @@ from .._errors import WorkflowDataError
 if TYPE_CHECKING:
   from ...auth.auth_tool import AuthConfig
   from ...sessions.state import State
+
+
+def confirmation_interrupt_id(node_path: str) -> str:
+  """Returns the interrupt id of a node run's confirmation request."""
+  return f'wf_tool_confirmation:{node_path}'
+
+
+def parse_tool_confirmation(response: Any) -> ToolConfirmation:
+  """Parses the user's answer to a tool or node confirmation request.
+
+  Resume validation against the `ToolConfirmation` schema yields a dict in
+  which the fields the user left out are None, so those are dropped to fall
+  back to the model defaults.
+  """
+  if isinstance(response, ToolConfirmation):
+    return response
+  if not isinstance(response, dict):
+    raise WorkflowDataError(
+        'A tool confirmation response must be a ToolConfirmation payload, but'
+        f' got {type(response).__name__}.'
+    )
+  try:
+    return ToolConfirmation.from_response_dict(
+        {k: v for k, v in response.items() if v is not None}
+    )
+  except ValueError as e:
+    raise WorkflowDataError(
+        f'Invalid tool confirmation response: {response!r}'
+    ) from e
 
 
 def create_request_input_event(request_input: RequestInput) -> Event:
@@ -62,27 +92,6 @@ def create_request_input_event(request_input: RequestInput) -> Event:
   )
 
 
-def has_request_input_function_call(event: Event) -> bool:
-  """Checks if an event contains a `request_input` function call."""
-  if not (event.content and event.content.parts):
-    return False
-  return any(
-      p.function_call
-      and p.function_call.name == REQUEST_INPUT_FUNCTION_CALL_NAME
-      for p in event.content.parts
-  )
-
-
-def has_auth_request_function_call(event: Event) -> bool:
-  """Checks if an event contains an `adk_request_credential` function call."""
-  if not (event.content and event.content.parts):
-    return False
-  return any(
-      p.function_call and p.function_call.name == REQUEST_EUC_FUNCTION_CALL_NAME
-      for p in event.content.parts
-  )
-
-
 def create_request_input_response(
     interrupt_id: str,
     response: Mapping[str, Any],
@@ -104,23 +113,6 @@ def create_request_input_response(
           response=response,
       )
   )
-
-
-def get_request_input_interrupt_ids(event: Event) -> list[str]:
-  """Extracts interrupt_ids from an event containing `request_input` function
-  calls.
-  """
-  interrupt_ids: list[str] = []
-  if not event.content or not event.content.parts:
-    return interrupt_ids
-  for part in event.content.parts:
-    if (
-        part.function_call
-        and part.function_call.name == REQUEST_INPUT_FUNCTION_CALL_NAME
-        and part.function_call.id is not None
-    ):
-      interrupt_ids.append(part.function_call.id)
-  return interrupt_ids
 
 
 # ---------------------------------------------------------------------------

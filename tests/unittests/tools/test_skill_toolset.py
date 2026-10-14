@@ -41,6 +41,7 @@ from google.adk.telemetry import _instrumentation
 from google.adk.tools import skill_toolset
 from google.adk.tools import tool_context
 from google.adk.tools.tool_context import ToolContext
+from google.adk.workflow import node
 from google.genai import types
 import pytest
 
@@ -3540,7 +3541,12 @@ async def test_execute_script_binary_content_packaged():
 async def test_skill_toolset_dynamic_tool_resolution(mock_skill1, mock_skill2):
   # Set up skills with additional_tools in metadata
   mock_skill1.frontmatter.metadata = {
-      "adk_additional_tools": ["my_custom_tool", "my_func", "shared_tool"]
+      "adk_additional_tools": [
+          "my_custom_tool",
+          "my_func",
+          "my_node",
+          "shared_tool",
+      ]
   }
   mock_skill1.name = "skill1"
 
@@ -3567,6 +3573,11 @@ async def test_skill_toolset_dynamic_tool_resolution(mock_skill1, mock_skill2):
     """My function description."""
     pass
 
+  @node
+  def my_node(x: int) -> int:
+    """My node description."""
+    return x
+
   # Setup prefixed toolset
   mock_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
   mock_tool.name = "prefixed_mock_tool"
@@ -3580,6 +3591,7 @@ async def test_skill_toolset_dynamic_tool_resolution(mock_skill1, mock_skill2):
           skill2_tool,
           shared_tool,
           my_func,
+          my_node,
           prefixed_set,
       ],
   )
@@ -3610,6 +3622,7 @@ async def test_skill_toolset_dynamic_tool_resolution(mock_skill1, mock_skill2):
   # Skill 1 tools
   assert "my_custom_tool" in tool_names
   assert "my_func" in tool_names
+  assert "my_node" in tool_names
 
   # Skill 2 tools
   assert "skill2_tool" in tool_names

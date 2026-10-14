@@ -972,5 +972,6 @@ class ConnectionsClient:
       response = self._execute_api_call(get_operation_url)
       operation_response = self._response_json(response)
       operation_done = bool(operation_response.get("done", False))
-      time.sleep(1)
+      if not operation_done:
+        time.sleep(1)
     return operation_response

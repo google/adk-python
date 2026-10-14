@@ -72,6 +72,11 @@ def extract_event_interrupt_ids(event: Event) -> set[str]:
   return interrupt_ids
 
 
+def is_interrupt_event(event: Event) -> bool:
+  """Returns True if `event` represents an interrupt pause."""
+  return bool(extract_event_interrupt_ids(event))
+
+
 def index_open_interrupts(events: Sequence[Event]) -> dict[str, OpenInterrupt]:
   """Indexes interrupts in `events` that have not yet been answered.
 

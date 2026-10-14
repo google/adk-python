@@ -21,6 +21,7 @@ from typing import AsyncGenerator
 from google.adk.agents.context import Context
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
 from google.adk.workflow import BaseNode
@@ -29,8 +30,6 @@ from google.adk.workflow._node import node
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._parallel_worker import _ParallelWorker as ParallelWorker
 from google.adk.workflow._workflow import Workflow
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-from google.adk.workflow.utils._workflow_hitl_utils import has_request_input_function_call
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -39,6 +38,7 @@ import pytest
 from typing_extensions import override
 
 from . import testing_utils
+from .workflow_testing_utils import get_request_input_events
 from .workflow_testing_utils import simplify_events_with_node
 
 # Upper bound on any wait between workers that are supposed to be running
@@ -508,9 +508,9 @@ async def test_parallel_worker_pauses_for_human_input(
   events1 = await runner.run_async(testing_utils.get_user_content('start'))
 
   # Then item1 should complete and item2 should interrupt
-  req_events = [e for e in events1 if has_request_input_function_call(e)]
+  req_events = get_request_input_events(events1)
   assert len(req_events) == 1
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
   assert interrupt_id == 'req_item2'
   invocation_id = events1[0].invocation_id
 
@@ -951,9 +951,9 @@ async def test_parallel_worker_hitl_respects_parallel_workers_limits(
   events1 = await run_task
   events.extend(events1)
 
-  req_events = [e for e in events1 if has_request_input_function_call(e)]
+  req_events = get_request_input_events(events1)
   assert len(req_events) == 1
-  interrupt_id_2 = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id_2] = extract_event_interrupt_ids(req_events[0])
   assert interrupt_id_2 == 'req_item2'
   invocation_id_1 = events1[0].invocation_id
 
@@ -999,9 +999,9 @@ async def test_parallel_worker_hitl_respects_parallel_workers_limits(
   events2 = await run_task_2
   events.extend(events2)
 
-  req_events_2 = [e for e in events2 if has_request_input_function_call(e)]
+  req_events_2 = get_request_input_events(events2)
   assert len(req_events_2) == 1
-  interrupt_id_3 = get_request_input_interrupt_ids(req_events_2[0])[0]
+  [interrupt_id_3] = extract_event_interrupt_ids(req_events_2[0])
   assert interrupt_id_3 == 'req_item3'
   invocation_id_2 = events2[0].invocation_id
 
@@ -1512,3 +1512,62 @@ async def test_parallel_worker_multimodal_content_preserved_untouched(
   assert _outputs_for(events, 'multimodal_wf@1/raw_worker@1') == [
       [{'is_content': True}]
   ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('structured', [False, True])
+async def test_parallel_worker_fans_out_json_list_without_thoughts(
+    request: pytest.FixtureRequest,
+    structured: bool,
+) -> None:
+  """ParallelWorker unwraps a JSON list from Content without thoughts."""
+
+  class _OutputModel(BaseModel):
+    name: str
+    value: int
+
+  received: list[Any] = []
+
+  def process_text(node_input: str) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  def process_model(node_input: _OutputModel) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  answer = (
+      '[{"name": "first", "value": 1}, {"name": "second", "value": 2}]'
+      if structured
+      else '["first", "second"]'
+  )
+
+  def produce() -> Event:
+    return Event(
+        output=types.Content(
+            role='model',
+            parts=[
+                types.Part(text='Let me think first.', thought=True),
+                types.Part(text=answer),
+            ],
+        )
+    )
+
+  worker = node(
+      process_model if structured else process_text, parallel_worker=True
+  )
+  agent = Workflow(
+      name='parallel_answer', edges=[(START, produce), (produce, worker)]
+  )
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+  await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert received == (
+      [
+          _OutputModel(name='first', value=1),
+          _OutputModel(name='second', value=2),
+      ]
+      if structured
+      else ['first', 'second']
+  )

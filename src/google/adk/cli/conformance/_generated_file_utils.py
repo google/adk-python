@@ -23,7 +23,7 @@ from typing import Optional
 import click
 import yaml
 
-from ...agents.run_config import StreamingMode
+from ...agents._streaming_mode import StreamingMode
 from ...sessions.session import Session
 from .test_case import TestSpec
 

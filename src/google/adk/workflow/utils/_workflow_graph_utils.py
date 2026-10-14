@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from typing import cast
 from typing import Literal
@@ -49,6 +50,7 @@ def build_node(
     retry_config: RetryConfig | None = None,
     timeout: float | None = None,
     auth_config: Any = None,
+    require_confirmation: bool | Callable[..., bool] | None = None,
     parameter_binding: Literal['state', 'node_input'] = 'state',
     default_llm_mode: DefaultLlmNodeMode = AgentMode.SINGLE_TURN,
 ) -> BaseNode:
@@ -63,6 +65,8 @@ def build_node(
       wrapped node.
     timeout: If provided, overrides the timeout property of the wrapped node.
     auth_config: If provided, passed to FunctionNode for authentication.
+    require_confirmation: If provided, passed to FunctionNode for user
+      confirmation before running.
     parameter_binding: How function parameters are bound. ``'state'`` (default)
       binds parameters from ``ctx.state``. ``'node_input'`` binds parameters
       from ``node_input`` dict and infers ``input_schema`` / ``output_schema``
@@ -105,6 +109,27 @@ def build_node(
       kwargs['retry_config'] = retry_config
     if timeout is not None:
       kwargs['timeout'] = timeout
+    if isinstance(node_like, FunctionNode):
+      effective_confirmation = (
+          require_confirmation
+          if require_confirmation is not None
+          else node_like.require_confirmation
+      )
+      if effective_confirmation and rerun_on_resume is False:
+        raise WorkflowConfigurationError(
+            'FunctionNode with require_confirmation requires'
+            ' rerun_on_resume=True. The node must rerun after confirmation is'
+            ' provided.'
+        )
+      if require_confirmation is not None:
+        kwargs['require_confirmation'] = require_confirmation
+        if require_confirmation and rerun_on_resume is None:
+          kwargs['rerun_on_resume'] = True
+    elif require_confirmation:
+      raise WorkflowConfigurationError(
+          'require_confirmation is only supported on FunctionNode, got'
+          f' {type(node_like).__name__}.'
+      )
 
     is_remote_a2a_task = False
     if _remote_a2a_agent_type is not None:
@@ -162,20 +187,25 @@ def build_node(
     # 1. Unpack NodeTool: directly return the underlying native node, applying any overrides
     if isinstance(node_like, NodeTool):
       target_name = name or node_like.name
-      kwargs = {}
-      if target_name != getattr(node_like.node, 'name', None):
-        kwargs['name'] = target_name
-      if rerun_on_resume is not None:
-        kwargs['rerun_on_resume'] = rerun_on_resume
-      if retry_config is not None:
-        kwargs['retry_config'] = retry_config
-      if timeout is not None:
-        kwargs['timeout'] = timeout
-      if kwargs and hasattr(node_like.node, 'model_copy'):
-        return node_like.node.model_copy(update=kwargs)
-      return node_like.node
+      return build_node(
+          node_like.node,
+          name=(
+              target_name
+              if target_name != getattr(node_like.node, 'name', None)
+              else None
+          ),
+          rerun_on_resume=rerun_on_resume,
+          retry_config=retry_config,
+          timeout=timeout,
+          require_confirmation=require_confirmation,
+      )
 
     # 2. Other generic BaseTools (including FunctionTool) are wrapped in _ToolNode
+    if require_confirmation:
+      raise WorkflowConfigurationError(
+          'require_confirmation is only supported for FunctionNode or callable'
+          f' functions, got {type(node_like).__name__}.'
+      )
     return _ToolNode(
         tool=node_like,
         name=name,
@@ -186,10 +216,17 @@ def build_node(
     return FunctionNode(
         func=node_like,
         name=name,
-        rerun_on_resume=rerun_on_resume or False,
+        rerun_on_resume=(
+            True
+            if (require_confirmation and rerun_on_resume is None)
+            else (rerun_on_resume or False)
+        ),
         retry_config=retry_config,
         timeout=timeout,
         auth_config=auth_config,
+        require_confirmation=(
+            require_confirmation if require_confirmation is not None else False
+        ),
         parameter_binding=parameter_binding,
     )
   else:
