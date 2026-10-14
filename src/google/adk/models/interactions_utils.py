@@ -873,6 +873,83 @@ class _StreamState:
       default_factory=list
   )
   search_entry_point: types.SearchEntryPoint | None = None
+  # Step ``index`` of each part created from a ``TextDelta`` or
+  # ``ThoughtSummaryDelta``, keyed by ``id(part)``. The final response merges
+  # the deltas of one step back into a single part; parts without an entry are
+  # never merged. ``parts`` keeps every keyed part alive, so ids stay unique.
+  text_part_step_index: dict[int, int] = dataclasses.field(default_factory=dict)
+
+
+def _append_text_part(
+    part: types.Part, state: _StreamState, index: int | None
+) -> None:
+  """Appends a streamed text or thought part and records its step index."""
+  state.parts.append(part)
+  if index is not None:
+    state.text_part_step_index[id(part)] = index
+
+
+def _merge_text_block(block: list[types.Part]) -> types.Part:
+  """Joins consecutive text parts of one step into a single part."""
+  if len(block) == 1:
+    return block[0]
+  merged = types.Part(
+      text=''.join(part.text or '' for part in block), thought=block[0].thought
+  )
+  signature = next(
+      (part.thought_signature for part in block if part.thought_signature),
+      None,
+  )
+  if signature:
+    merged.thought_signature = signature
+  return merged
+
+
+def _coalesce_text_parts(state: _StreamState) -> list[types.Part]:
+  """Returns ``state.parts`` with each step's text deltas merged into one part.
+
+  Streaming keeps one part per ``TextDelta`` / ``ThoughtSummaryDelta`` so every
+  delta can be yielded as a partial response. The final response should carry
+  one part per block instead, as the non-streaming conversion does. Adjacent
+  parts are merged only when they come from the same step and are both thought
+  or both regular text. Two parts that each carry a ``thought_signature`` are
+  never merged, so no signature is dropped. Every other part, including a
+  delta that arrived without a step index, is kept as-is.
+
+  The streamed parts were already yielded in partial responses, so they are
+  never mutated; a merged block is always a new part.
+
+  Args:
+    state: The stream state holding the parts collected so far.
+
+  Returns:
+    A new list of parts for the final response.
+  """
+  coalesced: list[types.Part] = []
+  block: list[types.Part] = []
+  block_key: tuple[int, bool] | None = None
+  block_has_signature = False
+  for part in state.parts:
+    step_index = state.text_part_step_index.get(id(part))
+    key = None if step_index is None else (step_index, bool(part.thought))
+    if block and (
+        key != block_key
+        or (block_has_signature and part.thought_signature is not None)
+    ):
+      coalesced.append(_merge_text_block(block))
+      block = []
+      block_has_signature = False
+    if key is None:
+      coalesced.append(part)
+      continue
+    block.append(part)
+    block_key = key
+    block_has_signature = (
+        block_has_signature or part.thought_signature is not None
+    )
+  if block:
+    coalesced.append(_merge_text_block(block))
+  return coalesced
 
 
 def _partial_part_response(
@@ -900,13 +977,16 @@ def _partial_grounding_response(
 
 
 def _handle_text(
-    delta: TextDelta, state: _StreamState, interaction_id: str | None
+    delta: TextDelta,
+    state: _StreamState,
+    interaction_id: str | None,
+    index: int | None = None,
 ) -> LlmResponse | None:
   text = delta.text
   if not text:
     return None
   part = types.Part.from_text(text=text)
-  state.parts.append(part)
+  _append_text_part(part, state, index)
   return _partial_part_response(part, interaction_id)
 
 
@@ -1008,14 +1088,17 @@ def _handle_unknown_delta(
 
 
 def _handle_thought_summary(
-    delta: ThoughtSummaryDelta, state: _StreamState, interaction_id: str | None
+    delta: ThoughtSummaryDelta,
+    state: _StreamState,
+    interaction_id: str | None,
+    index: int | None = None,
 ) -> LlmResponse | None:
   content = delta.content
   text = content.text if isinstance(content, TextContent) else None
   if not text:
     return None
   part = types.Part(text=text, thought=True)
-  state.parts.append(part)
+  _append_text_part(part, state, index)
   return _partial_part_response(part, interaction_id)
 
 
@@ -1223,9 +1306,9 @@ def convert_interaction_event_to_llm_response(
     # declare the one delta it reads. A renamed class fails at import; a renamed
     # tag string would leave a branch that silently never matches.
     if isinstance(delta, TextDelta):
-      return _handle_text(delta, state, interaction_id)
+      return _handle_text(delta, state, interaction_id, event.index)
     elif isinstance(delta, ThoughtSummaryDelta):
-      return _handle_thought_summary(delta, state, interaction_id)
+      return _handle_thought_summary(delta, state, interaction_id, event.index)
     elif isinstance(delta, ThoughtSignatureDelta):
       return _handle_thought_signature(delta, state, interaction_id)
     elif isinstance(delta, (ImageDelta, AudioDelta, VideoDelta, DocumentDelta)):
@@ -1283,7 +1366,7 @@ def convert_interaction_event_to_llm_response(
     grounding_metadata = _build_grounding_metadata(state)
     if state.parts or grounding_metadata is not None:
       content = (
-          types.Content(role='model', parts=state.parts)
+          types.Content(role='model', parts=_coalesce_text_parts(state))
           if state.parts
           else None
       )
