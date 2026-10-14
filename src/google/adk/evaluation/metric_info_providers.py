@@ -311,12 +311,17 @@ class InvocationDurationV1MetricInfoProvider(MetricInfoProvider):
         metric_name=PrebuiltMetrics.INVOCATION_DURATION_V1.value,
         description=(
             "This metric reports the wall-clock seconds an invocation took,"
-            " averaged across the eval case. The duration is measured while the"
-            " agent runs; an invocation not produced by this eval run reports"
-            " no value. Wall-clock time is noisier than the token and call"
-            " counts, since it moves with model-server load and network, so"
-            " read it as an indication rather than a regression signal. It is"
-            " an informational efficiency metric: it reports the value for"
+            " averaged across the eval case. The score is the total, and where"
+            " it went is reported alongside it as a breakdown that partitions"
+            " the turn: time awaiting a model, time inside tools, and the"
+            " framework's own time. Tool time is kept separate from the"
+            " framework's so that a slow external API a tool calls is not read"
+            " as ADK overhead. The duration is measured while the agent runs;"
+            " an invocation not produced by this eval run reports no value."
+            " Wall-clock time is noisier than the token and call counts, since"
+            " it moves with model-server load and network, so read it as an"
+            " indication rather than a regression signal. It is an"
+            " informational efficiency metric: it reports the value for"
             " tracking and does not pass or fail the eval case."
         ),
         metric_value_info=MetricValueInfo(),

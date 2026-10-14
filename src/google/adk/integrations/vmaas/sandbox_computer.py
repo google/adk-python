@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextvars
 import logging
 import time
 from typing import Any
@@ -54,6 +55,27 @@ _DEFAULT_TOKEN_TIMEOUT = 3600
 
 # Buffer time before token expiry to trigger refresh (60 seconds)
 _TOKEN_REFRESH_BUFFER = 60
+
+# Resources of the session whose tool call is running in the current task
+_bound_resources: contextvars.ContextVar[dict[str, Any] | None] = (
+    contextvars.ContextVar("adk_vmaas_bound_resources", default=None)
+)
+
+
+def _get_bound_resources() -> dict[str, Any]:
+  """Returns the resources of the session whose tool call is running.
+
+  Raises:
+    ValueError: If prepare() has not bound a session in the current task.
+  """
+  resources = _bound_resources.get()
+  if resources is None:
+    raise ValueError(
+        "No session is bound. AgentEngineSandboxComputer must be driven"
+        " through ComputerUseToolset, which calls prepare() before each tool"
+        " call."
+    )
+  return resources
 
 
 @experimental(FeatureName.COMPUTER_USE)
@@ -169,9 +191,6 @@ class AgentEngineSandboxComputer(BaseComputer):
         tuple[str, str, str], dict[str, Any]
     ] = collections.OrderedDict()
 
-    # Resources of the session being served, bound by prepare()
-    self._session_state: dict[str, Any] | None = None
-
     # Access token cache. Held on the instance rather than in session state:
     # session state is persisted and emitted in the event state delta, and the
     # token is a bearer credential for the configured service account.
@@ -186,7 +205,7 @@ class AgentEngineSandboxComputer(BaseComputer):
       self._resources_by_session[key] = {}
       if len(self._resources_by_session) > _MAX_REMEMBERED_SESSIONS:
         self._resources_by_session.popitem(last=False)
-    self._session_state = self._resources_by_session[key]
+    _bound_resources.set(self._resources_by_session[key])
 
   def _get_client(self) -> "agentplatform.Client":
     """Get or create the Agent Platform client."""
@@ -208,8 +227,8 @@ class AgentEngineSandboxComputer(BaseComputer):
     if self._agent_engine_name:
       return self._agent_engine_name
 
-    # Check session state
-    agent_engine_name = self._session_state.get(_STATE_KEY_AGENT_ENGINE_NAME)
+    resources = _get_bound_resources()
+    agent_engine_name = resources.get(_STATE_KEY_AGENT_ENGINE_NAME)
     if agent_engine_name:
       return agent_engine_name
 
@@ -220,8 +239,7 @@ class AgentEngineSandboxComputer(BaseComputer):
     agent_engine = await asyncio.to_thread(client.runtimes.create)
     agent_engine_name = agent_engine.api_resource.name
 
-    # Store in session state for sharing
-    self._session_state[_STATE_KEY_AGENT_ENGINE_NAME] = agent_engine_name
+    resources[_STATE_KEY_AGENT_ENGINE_NAME] = agent_engine_name
     logger.info("Created agent engine: %s", agent_engine_name)
 
     return agent_engine_name
@@ -242,8 +260,8 @@ class AgentEngineSandboxComputer(BaseComputer):
       )
       return self._sandbox_name, sandbox
 
-    # Check session state for existing sandbox
-    sandbox_name = self._session_state.get(_STATE_KEY_SANDBOX_NAME)
+    resources = _get_bound_resources()
+    sandbox_name = resources.get(_STATE_KEY_SANDBOX_NAME)
     if sandbox_name:
       sandbox = await asyncio.to_thread(client.sandboxes.get, name=sandbox_name)
       return sandbox_name, sandbox
@@ -283,8 +301,7 @@ class AgentEngineSandboxComputer(BaseComputer):
 
     sandbox_name = operation.response.name
 
-    # Store in session state for sharing
-    self._session_state[_STATE_KEY_SANDBOX_NAME] = sandbox_name
+    resources[_STATE_KEY_SANDBOX_NAME] = sandbox_name
     logger.info("Created sandbox: %s", sandbox_name)
 
     return sandbox_name, operation.response
@@ -402,6 +419,19 @@ class AgentEngineSandboxComputer(BaseComputer):
         text=text,
         press_enter=press_enter,
         clear_before_typing=clear_before_typing,
+    )
+    return await self._get_current_state()
+
+  async def type_text(
+      self,
+      text: str,
+      press_enter: bool = False,
+  ) -> ComputerState:
+    """Types text into the currently focused element."""
+    client = await self._get_sandbox_client()
+    await client.type_text(
+        text=text,
+        press_enter=press_enter,
     )
     return await self._get_current_state()
 

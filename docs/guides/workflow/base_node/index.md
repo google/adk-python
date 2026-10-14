@@ -50,7 +50,7 @@ The nine options exist on every node, but the way you set one depends on how the
 
 | How you build the node | What you can pass |
 | :--- | :--- |
-| `@node(...)` on a function | `name`, `rerun_on_resume`, `retry_config`, `timeout`, plus `auth_config`, `parameter_binding`, `parallel_worker`, `max_parallel_workers` |
+| `@node(...)` on a function | `name`, `rerun_on_resume`, `retry_config`, `timeout`, plus `auth_config`, `require_confirmation`, `parameter_binding`, `parallel_worker`, `max_parallel_workers` |
 | `FunctionNode(func=...)` | the same, minus the parallel-worker flags, plus `state_schema` |
 | `Workflow(...)`, `JoinNode(...)`, a `Node` subclass, `Agent(...)` | all nine, as ordinary keyword arguments |
 

@@ -132,11 +132,13 @@ async def test_max_concurrency_limits_running_nodes(
   assert started_count == num_nodes
 
 
+@pytest.mark.parametrize('max_concurrency', [-1, 0])
 @pytest.mark.asyncio
-async def test_negative_max_concurrency_treated_as_unlimited(
+async def test_non_positive_max_concurrency_treated_as_unlimited(
     request: pytest.FixtureRequest,
+    max_concurrency: int,
 ):
-  """A negative max_concurrency is treated as unlimited and does not wedge the scheduler."""
+  """A max_concurrency of 0 or less is unlimited and does not wedge."""
 
   class SimpleWorkerNode(BaseNode):
 
@@ -161,7 +163,7 @@ async def test_negative_max_concurrency_treated_as_unlimited(
   terminal_node = TerminalNode(name='Terminal')
   agent = Workflow(
       name='negative_concurrency_agent',
-      max_concurrency=-1,
+      max_concurrency=max_concurrency,
       edges=[(START, tuple(nodes), terminal_node)],
   )
 

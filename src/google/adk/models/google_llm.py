@@ -650,9 +650,14 @@ class Gemini(BaseLlm):
 
       return wait_5_seconds
 
+    wait_tool = llm_request.tools_dict.get('wait')
     await ComputerUseToolset.adapt_computer_use_tool(
-        'wait', convert_wait_to_wait_5_seconds, llm_request
+        'wait',
+        convert_wait_to_wait_5_seconds,
+        llm_request,
     )
+    if wait_tool is not None and 'wait_5_seconds' in llm_request.tools_dict:
+      llm_request.tools_dict['wait'] = wait_tool
 
   async def _preprocess_request(self, llm_request: LlmRequest) -> None:
     from ..tools import load_artifacts_tool  # pylint: disable=import-outside-toplevel

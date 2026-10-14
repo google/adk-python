@@ -48,23 +48,6 @@ class _ArtifactEntry:
   artifact_version: ArtifactVersion
 
 
-# Runner._compute_artifact_delta_for_rewind marks an artifact as
-# inaccessible by saving exactly this part. Match it exactly rather than
-# treating every empty payload as absent, so a caller that saves a
-# legitimately empty artifact can read it back.
-#
-# Notes:
-# 1. A caller that saves an empty artifact with mime type exactly
-#    application/octet-stream will still read back None. That collision is
-#    inherent to using content shape as a tombstone; narrowing the match
-#    shrinks the hole from every empty artifact to one specific mime type.
-# 2. This tombstone convention is in-memory only; other artifact services
-#    (such as GcsArtifactService) do not perform this empty-payload check.
-_REWIND_TOMBSTONE = types.Part(
-    inline_data=types.Blob(mime_type="application/octet-stream", data=b"")
-)
-
-
 class InMemoryArtifactService(BaseArtifactService, BaseModel):
   """An in-memory implementation of the artifact service.
 
@@ -244,7 +227,9 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
           remaining_depth=remaining_depth - 1,
       )
 
-    if artifact_data == types.Part() or artifact_data == _REWIND_TOMBSTONE:
+    if artifact_data == types.Part() or artifact_util._is_rewind_tombstone(
+        artifact_data
+    ):
       return None
     return artifact_data.model_copy(deep=True)
 

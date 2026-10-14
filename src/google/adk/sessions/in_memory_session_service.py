@@ -341,15 +341,15 @@ class InMemorySessionService(BaseSessionService):
     if session_id not in self.sessions.get(app_name, {}).get(user_id, {}):
       raise SessionNotFoundError(f'Session {session_id} not found.')
 
-    # Fetch the canonical storage session early so we can drop a re-delivered
-    # event before modifying any state. The same event can be delivered more
-    # than once when the orchestrator broadcasts a shared-state delta to
-    # several concurrent session references; deduplicating here prevents
-    # double-application of state updates and duplicate entries in event lists.
-    # A re-delivery is an equal event -- the same object, or a copy carrying
-    # the same id and fields -- so dedupe on equality, gated on a matching id
-    # for speed. Distinct events that merely share an id (e.g. tests that
-    # stamp a fixed uuid) are not equal and are kept.
+    # ``append_event`` is idempotent for an equal re-delivery of an event (the
+    # same object, or a copy carrying the same id and fields), so a caller
+    # that retries this call -- e.g. a service that buffers writes behind an
+    # RPC -- neither double-applies the state delta nor duplicates the entry.
+    # ADK itself never re-delivers an event: parallel branches of one
+    # invocation share a single ``InvocationContext.session`` and serialize
+    # their appends, and every produced event carries a fresh id. Dedupe on
+    # equality gated on a matching id; distinct events that merely share an
+    # id (e.g. tests that stamp a fixed uuid) are not equal and are kept.
     storage_session = self.sessions[app_name][user_id][session_id]
     if any(e == event for e in storage_session.events if e.id == event.id):
       return event

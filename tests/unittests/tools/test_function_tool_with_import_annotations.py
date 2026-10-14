@@ -17,12 +17,21 @@ from __future__ import annotations
 from typing import Any
 from typing import Dict
 from typing import Optional
+from typing import TYPE_CHECKING
 
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools import _automatic_function_calling_util
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 import pydantic
+import pytest
+
+if TYPE_CHECKING:
+  # Imported for annotations only, so the names are undefined at runtime.
+  from google.adk.sessions.session import Session
+  from google.adk.tools.tool_context import ToolContext
 
 
 def test_string_annotation_none_return_vertex():
@@ -284,3 +293,43 @@ def test_preprocess_args_with_optional_list_of_pydantic_models_and_annotations()
   assert all(isinstance(item, ItemModel) for item in processed_args['items'])
   assert processed_args['items'][0].quantity == 10
   assert processed_args['items'][1].quantity == 5
+
+
+@pytest.mark.parametrize('json_schema_for_func_decl', [True, False])
+def test_type_checking_only_context_param_is_left_out_of_declaration(
+    json_schema_for_func_decl,
+):
+  """A context param typed with a TYPE_CHECKING-only import builds.
+
+  The name is undefined at runtime, but the param is never part of the
+  schema, so it must not need resolving on either declaration path.
+  """
+
+  def lookup_city(city: str, tool_context: ToolContext) -> str:
+    """Looks up a city."""
+    return city
+
+  with temporary_feature_override(
+      FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, json_schema_for_func_decl
+  ):
+    declaration = FunctionTool(lookup_city)._get_declaration()
+
+  assert declaration.name == 'lookup_city'
+  if json_schema_for_func_decl:
+    assert list(declaration.parameters_json_schema['properties']) == ['city']
+  else:
+    assert list(declaration.parameters.properties) == ['city']
+
+
+def test_type_checking_only_annotation_on_declared_param_still_raises():
+  """Only ignored params are skipped; a declared param must still resolve."""
+
+  def summarize(session: Session, tool_context: ToolContext) -> str:
+    """Summarizes a session."""
+    return session.id
+
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False):
+    with pytest.raises(NameError, match='Session'):
+      _automatic_function_calling_util.build_function_declaration(
+          summarize, ignore_params=['tool_context']
+      )

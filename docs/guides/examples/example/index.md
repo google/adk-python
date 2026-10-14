@@ -179,9 +179,11 @@ example_tool = ExampleTool(
 )
 ```
 
-The class imports fine without any Vertex AI packages installed; its dependency
-is imported inside `get_examples`, so a missing install surfaces as a
-`ModuleNotFoundError` on the first turn rather than at construction.
+The class imports fine without any Vertex AI packages installed. Creating a
+store raises an `ImportError` that names the command to run when a dependency
+is missing: `pip install google-adk[gcp]` for the Agent Platform SDK, or
+`pip install pandas`, which that SDK's example store client needs and the `gcp`
+extra does not install.
 
 ## Configuration options
 

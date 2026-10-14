@@ -18,10 +18,11 @@ from __future__ import annotations
 
 from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events._interrupts import index_open_interrupts
+from google.adk.events._interrupts import is_interrupt_event
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from google.adk.flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
+from google.adk.utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.genai import types
 
 
@@ -109,6 +110,39 @@ class TestExtractEventInterruptIds:
         lro_ids=None,
     )
     assert extract_event_interrupt_ids(ev) == {'fc-cred'}
+
+
+class TestIsInterruptEvent:
+  """Tests `is_interrupt_event`."""
+
+  def test_true_when_long_running_tool_ids_present(self):
+    assert (
+        is_interrupt_event(Event(author='agent', long_running_tool_ids={'x'}))
+        is True
+    )
+
+  def test_true_for_legacy_request_input_and_credential_calls(self):
+    req_ev = _fc_event(
+        author='node',
+        call_id='fc-1',
+        call_name=REQUEST_INPUT_FUNCTION_CALL_NAME,
+    )
+    cred_ev = _fc_event(
+        author='node',
+        call_id='fc-2',
+        call_name=REQUEST_EUC_FUNCTION_CALL_NAME,
+    )
+    assert is_interrupt_event(req_ev) is True
+    assert is_interrupt_event(cred_ev) is True
+
+  def test_false_for_non_interrupt_events(self):
+    assert is_interrupt_event(Event(author='node')) is False
+    regular_fc = _fc_event(
+        author='node',
+        call_id='fc-3',
+        call_name='other_tool',
+    )
+    assert is_interrupt_event(regular_fc) is False
 
 
 class TestIndexOpenInterrupts:
