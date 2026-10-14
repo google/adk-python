@@ -300,6 +300,39 @@ class TestValidateSchema:
 class TestValidateNodeData:
   """Tests for validate_node_data function."""
 
+  @pytest.mark.parametrize("with_media", [False, True])
+  @pytest.mark.parametrize("preserve_content", [False, True])
+  @pytest.mark.parametrize("schema", [str, SampleModel, str | SampleModel])
+  def test_content_thoughts_are_excluded_from_validated_text(
+      self, schema, preserve_content, with_media
+  ):
+    """Only answer text is validated or returned as a typed node payload."""
+    answer = "hello" if schema is str else '{"name": "test", "value": 42}'
+    media = (
+        [types.Part(inline_data=types.Blob(data=b"img", mime_type="image/png"))]
+        if with_media
+        else []
+    )
+    data = types.Content(
+        role="model",
+        parts=[
+            *media,
+            types.Part(text="Let me think first.", thought=True),
+            types.Part(text=answer),
+        ],
+    )
+
+    result = validate_node_data(schema, data, preserve_content=preserve_content)
+
+    if preserve_content:
+      assert result == types.Content(
+          role="model", parts=[*media, types.Part(text=answer)]
+      )
+    else:
+      assert result == (
+          answer if schema is str else {"name": "test", "value": 42}
+      )
+
   def test_none_schema_or_data_returns_data(self):
     """Bypasses validation if schema or data is None."""
     assert validate_node_data(None, "some_data") == "some_data"

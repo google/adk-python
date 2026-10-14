@@ -23,7 +23,7 @@ root_agent = Agent(
         tts=ElevenLabsTTS(),
     ),
     instruction='...',
-    tools=[spell_out, convert_temperature],
+    tools=[convert_temperature],
 )
 ```
 
@@ -102,9 +102,13 @@ cascade only ever calls `generate_content` on a text model.
 
 1. **Start streaming.** Click the **Audio** icon next to the chat input.
 
-1. **Talk to it.** Try "How do you spell 'rhythm'?" or "What is twenty-three
+1. **Talk to it.** Try "Spell five random words." or "What is twenty-three
    degrees Celsius in Fahrenheit?". You will see the live transcript appear as
    captions while you speak, and hear the answer back.
+
+1. **Interrupt it.** While it is spelling the words, start talking, for
+   example "Stop. Which words did you spell?". The agent stops speaking and
+   answers with only the words you heard before you interrupted.
 
 Click **Audio** again to stop streaming. You can stop and restart the stream
 any number of times within the same session.
@@ -172,8 +176,7 @@ it at the right rate.
 
 `AgentSpokenOutput` is emitted after a sentence has been synthesized in full to
 record it in conversation history. Synthesis stops when the `cancel` event is
-set, but `CascadeLive` does not set it yet: interrupting the agent (barge-in)
-is planned.
+set, which `CascadeLive` does when the user interrupts the agent (barge-in).
 
 Docs: [stream speech](https://elevenlabs.io/docs/api-reference/text-to-speech/stream).
 

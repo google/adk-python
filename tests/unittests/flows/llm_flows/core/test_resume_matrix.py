@@ -27,6 +27,7 @@ from typing import Any
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
 from google.adk.flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
@@ -34,11 +35,10 @@ from google.adk.tools._node_tool import NodeTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.tools.tool_context import ToolContext
+from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.adk.workflow._base_node import START
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -317,7 +317,7 @@ def _build_turn2_reply(
         )
     ]
     assert len(req_events) == 1
-    interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+    [interrupt_id] = extract_event_interrupt_ids(req_events[0])
     part = create_request_input_response(interrupt_id, {"value": "approved"})
     return testing_utils.UserContent(part)
 

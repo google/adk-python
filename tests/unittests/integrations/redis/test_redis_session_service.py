@@ -20,11 +20,13 @@ import json
 from unittest import mock
 
 from google.adk.errors.already_exists_error import AlreadyExistsError
+from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
 from google.adk.events.event import EventActions
 from google.adk.integrations.redis._config import RedisSessionServiceConfig
 from google.adk.integrations.redis._redis_session_service import RedisSessionService
 from google.adk.sessions.base_session_service import GetSessionConfig
+from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
 
@@ -806,3 +808,25 @@ async def test_cumulative_user_state_creation(session_service):
       user_id="u1",
   )
   assert user_state == {"theme": "dark", "lang": "en"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [False, True])
+async def test_append_event_to_unknown_session_writes_nothing(
+    session_service, fake_redis, partial
+):
+  """A rejected append leaves no session, app state or user state behind."""
+  session = Session(app_name="app1", user_id="u1", id="never_created")
+  event = Event(
+      author="agent",
+      partial=partial,
+      actions=EventActions(
+          state_delta={"count": 1, "user:score": 100, "app:status": "active"}
+      ),
+  )
+
+  with pytest.raises(SessionNotFoundError):
+    await session_service.append_event(session, event)
+
+  assert fake_redis._store == {}
+  assert session.events == []

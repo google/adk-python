@@ -40,7 +40,21 @@ In this configuration, `gemini-3.5-flash` is the text reasoner. The agent handle
 1. **Ingress (STT):** When live audio arrives from the client, the connection streams raw audio blobs to `stt` (a `LiveIngress` transform). The ingress transform runs voice activity detection (VAD) and speech recognition, yielding `PartialTranscript` events (which surface to the client as live captions) and a final `UserTurnFinished` event once endpointing detects the user has finished speaking.
 2. **Reasoning:** Upon receiving `UserTurnFinished`, `CascadeLive` sends the transcribed text to the underlying text LLM. Instructions and tools are the same as in text mode; callbacks, tool confirmation, and long-running tools follow live-mode semantics, as with any other live model.
 3. **Egress (TTS):** As the reasoning model streams text deltas, `tts` (a `LiveEgress` transform) segments the text (typically on sentence boundaries) and synthesizes audio chunks. The connection emits `AudioChunk` events for playback and records `AgentSpokenOutput` events in session history for all text that was successfully delivered.
-4. **Barge-in / Interruption (planned):** The ingress transform emits `UserSpeechStarted` when the user starts speaking, and `LiveEgress` receives a `cancel` event. The connection does not act on them yet, so speaking while the agent is generating or playing audio does not interrupt it.
+4. **Barge-in / Interruption:** If the user speaks while the agent is generating or playing audio, the ingress transform emits `UserSpeechStarted`. The connection signals the egress transform's `cancel` event to stop synthesis immediately and drops in-flight generation.
+
+### Barge-in and playback truncation
+
+In live voice interactions, users frequently interrupt or speak over the agent while it is thinking or speaking. `CascadeLive` coordinates turn-taking across STT, LLM reasoning, and TTS to handle barge-in cleanly:
+
+1. **Onset detection:** When the user begins speaking during the `THINKING` or `AGENT_SPEAKING` phase—either detected by the ingress transform (`UserSpeechStarted`) or signaled directly by the client (`ActivityStart`)—the connection detects a barge-in.
+2. **Immediate cancellation:** The connection trips the `cancel` event passed to `LiveEgress` to stop audio synthesis immediately, aborts in-flight LLM reasoning, and notifies the client with `interrupted=True` to stop local audio playback.
+3. **Playback estimation & history truncation:** TTS transforms typically burst audio faster than real-time playback, meaning sentences are synthesized well before the user hears them. To keep session history faithful to what was actually experienced:
+   - The connection tracks elapsed wall time against the turn's audio timeline.
+   - Sentences whose audio finished playing are preserved in conversation history.
+   - The sentence interrupted mid-playback is truncated to words whose audio fully played, dropping any word cut off in progress.
+   - Synthesized but unplayed sentences are discarded.
+
+This ensures subsequent reasoning turns only see what the user actually heard, preventing the model from referencing unvoiced content in its follow-up answers.
 
 ## Configuration options
 
@@ -115,7 +129,7 @@ class GuardrailedTTS(LiveEgress):
 - **Additive latency:** Unlike native S2S models where audio processing and generation occur in a single pass, cascaded pipelines execute in series (STT recognition, text reasoning, sentence buffering, and TTS synthesis). Time-to-first-audio is higher than native S2S.
 - **VAD and endpointing tuning:** Turn boundaries are determined by the STT transform's VAD silence threshold. Fixed thresholds can cut off users who pause mid-sentence or introduce latency if the silence window is set too high.
 - **User speech during tool calls:** If the user finishes speaking after the model calls a tool but before the tool returns, the user's words are added to the conversation before the tool's result. The model then gets the tool call and its result out of order, and this turn and all later turns in the session fail.
-- **Client Acoustic Echo Cancellation (AEC):** If client audio plays over open speakers without hardware or software AEC, the microphone will pick up the agent's synthesized speech and transcribe it as user input. Once barge-in is supported, this will also cancel the agent's response.
+- **Client Acoustic Echo Cancellation (AEC):** If client audio plays over open speakers without hardware or software AEC, the microphone will pick up the agent's synthesized speech and transcribe it as user input, triggering an unintended barge-in cancellation.
 - **Loss of audio paralinguistics:** Paralinguistic information present in the user's voice (tone, emotion, emphasis) is lost during transcription; the text reasoner only sees the textual transcript. Similarly, sentence-by-sentence TTS synthesis may not preserve consistent emotional cadence across an extended turn.
 
 ## Related samples

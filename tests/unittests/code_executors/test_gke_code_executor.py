@@ -51,6 +51,11 @@ def mock_k8s_clients():
       "google.adk.code_executors.gke_code_executor.client"
   ) as mock_client_class:
     mock_batch_v1 = MagicMock(spec=client.BatchV1Api)
+    mock_created_job = mock_batch_v1.create_namespaced_job.return_value
+    mock_created_job.api_version = "batch/v1"
+    mock_created_job.kind = "Job"
+    mock_created_job.metadata.name = "test-job"
+    mock_created_job.metadata.uid = "test-job-uid"
     mock_core_v1 = MagicMock(spec=client.CoreV1Api)
     mock_batch_v1.create_namespaced_job.return_value = client.V1Job(
         api_version="batch/v1",

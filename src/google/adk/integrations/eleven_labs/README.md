@@ -23,7 +23,7 @@ export ELEVENLABS_API_KEY="sk_..."
 ## Features
 
 - **`ElevenLabsSTT` (`LiveIngress`)**: Streams live audio into ElevenLabs' Scribe v2 Realtime WebSocket recognizer. Uses server-side Voice Activity Detection (VAD) to emit `PartialTranscript`, `UserSpeechStarted`, and `UserTurnFinished` events.
-- **`ElevenLabsTTS` (`LiveEgress`)**: Splits the model's text output into sentences and synthesizes each one with ElevenLabs streaming text-to-speech. Yields PCM `AudioChunk` events, and an `AgentSpokenOutput` event after each sentence is synthesized. Stops synthesis when the `cancel` event is set; `CascadeLive` does not set it yet, as barge-in is planned.
+- **`ElevenLabsTTS` (`LiveEgress`)**: Splits the model's text output into sentences and synthesizes each one with ElevenLabs streaming text-to-speech. Yields PCM `AudioChunk` events, and an `AgentSpokenOutput` event after each sentence is synthesized. Stops synthesis when `CascadeLive` sets the `cancel` event on barge-in.
 
 ## Usage Example
 

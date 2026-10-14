@@ -353,7 +353,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
 
       direct_events = []
       for event in events_to_process:
-        if _should_filter_out_event(event.content):
+        if _should_filter_out_event(event):
           continue
         if event.content:
           direct_events.append(
@@ -414,7 +414,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
 
     direct_events = []
     for event in events_to_process:
-      if _should_filter_out_event(event.content):
+      if _should_filter_out_event(event):
         continue
       if event.content:
         event_time = None
@@ -704,8 +704,16 @@ def _log_ingest_task_error(task: asyncio.Task[object]) -> None:
     logger.error('Background ingest_events task failed: %s', exception)
 
 
-def _should_filter_out_event(content: types.Content | None) -> bool:
+def _should_filter_out_event(event: Event) -> bool:
   """Returns whether the event should be filtered out."""
+  # Deferred: a module-level import would load the agent and flow stack too.
+  from ..flows.llm_flows.context._contents import _is_auth_event
+
+  return _is_empty_content(event.content) or _is_auth_event(event)
+
+
+def _is_empty_content(content: types.Content | None) -> bool:
+  """Returns whether the content carries nothing worth storing."""
   if not content or not content.parts:
     return True
   for part in content.parts:
@@ -926,7 +934,7 @@ def _memory_entry_to_fact(
 ) -> str:
   """Builds a memories.create fact payload from MemoryEntry text content."""
   parts = memory.content.parts
-  if not parts or _should_filter_out_event(memory.content):
+  if not parts or _is_empty_content(memory.content):
     raise ValueError(f'memories[{index}] must include text.')
 
   text_parts: list[str] = []

@@ -450,6 +450,7 @@ class LocalEvalService(BaseEvalService):
     eval_metric_result_details = EvalMetricResultDetails(
         rubric_scores=evaluation_result.overall_rubric_scores,
         token_usage_details=evaluation_result.overall_token_usage_details,
+        duration_details=evaluation_result.overall_duration_details,
     )
     overall_eval_metric_results.append(
         EvalMetricResult(
@@ -516,6 +517,7 @@ class LocalEvalService(BaseEvalService):
       eval_metric_result_details = EvalMetricResultDetails(
           rubric_scores=invocation_result.rubric_scores,
           token_usage_details=invocation_result.token_usage_details,
+          duration_details=invocation_result.duration_details,
       )
       invocation.eval_metric_results.append(
           EvalMetricResult(

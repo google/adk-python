@@ -68,6 +68,7 @@ def test_get_session_config_rejects_negative_num_recent_events():
   """A negative recent-event limit is rejected at configuration time."""
   with pytest.raises(ValueError, match='greater than or equal to 0'):
     GetSessionConfig(num_recent_events=-1)
+  assert GetSessionConfig(num_recent_events=None).num_recent_events is None
 
 
 class SessionServiceType(enum.Enum):
@@ -1504,6 +1505,55 @@ async def test_delete_session_removes_session_by_id_passed_to_create(
 
 
 @pytest.mark.asyncio
+async def test_delete_session_removes_events_with_caller_owned_sqlite_engine(
+    tmp_path,
+):
+  """DatabaseSessionService with a caller-supplied SQLite engine must purge
+
+  events on delete_session even when PRAGMA foreign_keys is not enabled.
+  """
+  db_path = tmp_path / 'caller_owned.db'
+  engine = create_async_engine(f'sqlite+aiosqlite:///{db_path}')
+  try:
+    service = DatabaseSessionService(db_engine=engine)
+    session = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    event = Event(
+        id='e1',
+        invocation_id='inv1',
+        author='user',
+        content=types.Content(
+            parts=[types.Part.from_text(text='hello')], role='user'
+        ),
+    )
+    await service.append_event(session, event)
+
+    await service.delete_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    assert (
+        await service.get_session(
+            app_name='app', user_id='user', session_id='s1'
+        )
+    ) is None
+
+    # Re-create session with the same id and verify previous events do not reappear
+    recreated = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    assert recreated.events == []
+
+    fetched = await service.get_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    assert fetched is not None
+    assert fetched.events == []
+  finally:
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_create_session_concurrent_same_id_raises_already_exists_error(
     tmp_path,
 ):
@@ -2320,6 +2370,13 @@ async def test_get_session_with_config(session_service):
   assert len(events) == num_test_events - after_event_index + 1
   assert events[0].timestamp == after_timestamp
 
+  # The first event's own timestamp keeps every event, the first included.
+  config = GetSessionConfig(after_timestamp=base_timestamp + 1)
+  session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id, config=config
+  )
+  assert len(session.events) == num_test_events
+
   # Expect no events if none are > after_timestamp.
   way_after_timestamp = base_timestamp + num_test_events * 10
   config = GetSessionConfig(after_timestamp=way_after_timestamp)
@@ -2348,8 +2405,9 @@ async def test_partial_events_are_not_persisted(session_service):
       app_name=app_name, user_id=user_id
   )
   event = Event(author='user', partial=True)
-  await session_service.append_event(session, event)
+  returned = await session_service.append_event(session, event)
 
+  assert returned is event
   # Check in-memory session
   assert len(session.events) == 0
   # Check persisted session
