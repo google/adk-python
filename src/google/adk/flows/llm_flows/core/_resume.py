@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 from google.genai import types
 
 from ....events._branch_path import _BranchPath
+from ....events._interrupts import extract_event_interrupt_ids
 from ....events.event import Event
 from ....utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from ....utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
@@ -111,8 +112,7 @@ def _pause_left_calls_unanswered(
       fc.id for ev in pause_events for fc in ev.get_function_calls() if fc.id
   }
   for ev in pause_events:
-    if ev.long_running_tool_ids:
-      awaited.update(ev.long_running_tool_ids)
+    awaited.update(extract_event_interrupt_ids(ev))
   answered = {
       fr.id for ev in events for fr in ev.get_function_responses() if fr.id
   }
@@ -213,7 +213,7 @@ def _unexecuted_calls_event(
 
   A call ran when a response in `later_events` carries its id. Responses with
   no id each match one remaining same-name call, in call order. Long-running
-  calls (`call_event.long_running_tool_ids`) are also skipped: a long-running
+  calls (the call event's interrupt ids) are also skipped: a long-running
   tool that returns `None` writes no response event when it starts, so a
   missing response means the call is still awaiting its external result rather
   than never having run. None is also returned once the agent has written any
@@ -229,7 +229,7 @@ def _unexecuted_calls_event(
   responses = [fr for ev in later_events for fr in ev.get_function_responses()]
   answered_ids = {fr.id for fr in responses if fr.id is not None}
   answered_names = Counter(fr.name for fr in responses if fr.id is None)
-  lro_ids = call_event.long_running_tool_ids or set()
+  lro_ids = extract_event_interrupt_ids(call_event)
   if call_event.content is None:
     return None
   parts = []
@@ -294,7 +294,7 @@ def _locate_answer(
   calls = call_event.get_function_calls()
   call_names = {fc.name for fc in calls}
   lro_ids = {
-      lro for ev in events[call_idx:] for lro in ev.long_running_tool_ids or []
+      lro for ev in events[call_idx:] for lro in extract_event_interrupt_ids(ev)
   }
   answer_event = _find_answer_event(
       events,

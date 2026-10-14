@@ -61,6 +61,7 @@ _TOOL_EXECUTION_TELEMETRY_KEY = context_api.create_key(
     "tool_execution_telemetry"
 )
 _WORKFLOW_SCOPE_KEY = context_api.create_key("adk_workflow_scope")
+_BUSY_INTERVALS_KEY = context_api.create_key("adk_busy_intervals")
 
 _T = TypeVar("_T")
 
@@ -258,6 +259,108 @@ class _WorkflowScope(_Accumulator):
     while scope is not None:
       yield scope
       scope = scope.parent
+
+
+def _union_seconds(intervals: list[tuple[float, float]]) -> float:
+  """Returns how long the union of `intervals` covers, in seconds.
+
+  Intervals that overlap count once, which is what makes the result the time
+  something was in flight rather than the sum of how long each one took.
+
+  Args:
+    intervals: (start, end) pairs on one shared clock, in any order.
+  """
+  total = 0.0
+  # The furthest point already counted. Everything up to here is accounted
+  # for, so an interval ending before it adds nothing.
+  counted_to = float("-inf")
+  for start, end in sorted(intervals):
+    if end <= counted_to:
+      continue
+    total += end - max(start, counted_to)
+    counted_to = end
+  return total
+
+
+@dataclasses.dataclass
+class _BusyIntervals:
+  """When a turn was inside a model call or a tool, as raw intervals.
+
+  Filled in only while :func:`collect_busy_intervals` is in force, for a caller
+  that needs where a turn's wall-clock time went as data -- eval reports the
+  split per invocation -- rather than as the histograms this module otherwise
+  publishes.
+
+  Intervals are kept whole rather than summed on arrival because they overlap:
+  tools run concurrently, sub-agents run concurrently and share the turn's
+  invocation id, and an `AgentTool` runs model calls nested inside its own
+  tool interval. Summing would count an overlap twice and drive the framework
+  remainder negative; taking the union does not.
+
+  Every endpoint comes from `time.monotonic()`, one process-wide clock, so
+  intervals recorded by different tasks are directly comparable.
+  """
+
+  model: list[tuple[float, float]] = dataclasses.field(default_factory=list)
+  """(start, end) per wait on the model, which for a streamed response is one
+  per chunk rather than one per call."""
+
+  tool: list[tuple[float, float]] = dataclasses.field(default_factory=list)
+  """(start, end) per tool execution."""
+
+  def add_model_interval(self, start_time: float) -> None:
+    """Closes a model call that began at `start_time`."""
+    self.model.append((start_time, time.monotonic()))
+
+  def add_tool_interval(self, start_time: float) -> None:
+    """Closes a tool execution that began at `start_time`."""
+    self.tool.append((start_time, time.monotonic()))
+
+  def model_seconds(self) -> float:
+    """Seconds with at least one model call in flight."""
+    return _union_seconds(self.model)
+
+  def tool_seconds(self) -> float:
+    """Seconds inside a tool that were not already spent awaiting a model.
+
+    An `AgentTool` runs its model calls inside its own tool interval, so that
+    time is attributed to the model rather than counted under both. What is
+    left is the tool's own work: the function body and whatever it calls out
+    to.
+    """
+    return _union_seconds(self.model + self.tool) - _union_seconds(self.model)
+
+  def busy_seconds(self) -> float:
+    """Seconds with a model call or a tool in flight, overlap counted once.
+
+    What is left of the turn after this is the framework's own time.
+    """
+    return _union_seconds(self.model + self.tool)
+
+
+@contextlib.contextmanager
+def collect_busy_intervals() -> Iterator[_BusyIntervals]:
+  """Collects the model and tool intervals of everything run inside the block.
+
+  Nothing collects unless a caller asks, so a run that does not pays one
+  context lookup per model and tool call and nothing more.
+
+  The collector rides the otel context rather than a ContextVar of its own, for
+  the same reason the workflow scope does: it reaches the tasks the run spawns,
+  and a caller that abandons the block keeps its own earlier context, so the
+  collector cannot outlive it.
+
+  Yields:
+    The collector, filled in as the block runs.
+  """
+  collector = _BusyIntervals()
+  token = context_api.attach(
+      context_api.set_value(_BUSY_INTERVALS_KEY, collector)
+  )
+  try:
+    yield collector
+  finally:
+    context_api.detach(token)
 
 
 @contextlib.contextmanager
@@ -582,6 +685,12 @@ def _accumulating_scopes(
   return tuple(scopes)
 
 
+def _busy_intervals() -> _BusyIntervals | None:
+  """Returns the interval collector in force, None when nobody is collecting."""
+  value = context_api.get_value(_BUSY_INTERVALS_KEY)
+  return value if isinstance(value, _BusyIntervals) else None
+
+
 def _accumulate_tool_call(workflow_scope: _WorkflowScope | None) -> None:
   """Counts one tool call against every scope it belongs to.
 
@@ -753,6 +862,7 @@ async def record_tool_execution(
   """Unified context manager for consolidated tool execution telemetry."""
   start_time = time.monotonic()
   workflow_scope = _workflow_scope()
+  busy_intervals = _busy_intervals()
   caught_error: Exception | None = None
   detected_error_type: str | None = None
   span: trace.Span | None = None
@@ -804,6 +914,8 @@ async def record_tool_execution(
               error_type=tel_ctx.error_type,
           )
   finally:
+    if busy_intervals is not None:
+      busy_intervals.add_tool_interval(start_time)
     _accumulate_tool_call(workflow_scope)
     try:
       _metrics.record_tool_execution_duration(
@@ -818,6 +930,52 @@ async def record_tool_execution(
       logger.exception(
           "Failed to record tool execution duration for tool %s", tool.name
       )
+
+
+async def time_model_awaits(
+    responses: AsyncIterator[LlmResponse],
+) -> AsyncGenerator[LlmResponse, None]:
+  """Yields from `responses`, timing how long each item was awaited.
+
+  Wraps the model's response stream so that what is measured is the time
+  blocked on the model, and only that. Timing the enclosing
+  :func:`record_inference_telemetry` block instead would measure the wrong
+  thing: that block stays open while the caller acts on a response, so a turn
+  whose model asks for a tool would count the tool's own runtime as model time.
+  The same reasoning already governs where the inference span is closed.
+
+  For a streamed response this records one interval per chunk, so the time the
+  caller spends handling a chunk before asking for the next falls outside them.
+
+  A pass-through when nobody is collecting, which is the default.
+
+  Args:
+    responses: The model's responses, as the flow received them.
+
+  Yields:
+    Each response, unchanged and in order.
+  """
+  collector = _busy_intervals()
+  if collector is None:
+    async for response in responses:
+      yield response
+    return
+
+  iterator = responses.__aiter__()
+  while True:
+    started = time.monotonic()
+    try:
+      response = await iterator.__anext__()
+    except StopAsyncIteration:
+      return
+    finally:
+      # In `finally` so that every pull is timed, not just the ones that
+      # produced a response: the pull that ends the stream waited on the model
+      # too, and so did one that failed. A failed call recovered by
+      # `on_model_error_callback` would otherwise land its wait in the
+      # framework remainder.
+      collector.add_model_interval(started)
+    yield response
 
 
 @contextlib.asynccontextmanager

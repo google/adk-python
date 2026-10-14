@@ -29,6 +29,7 @@ from google.adk.events.event_actions import EventActions
 from google.adk.platform.thread import create_thread
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
+from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.genai.types import Content
 from google.genai.types import FunctionCall
 from google.genai.types import FunctionResponse
@@ -603,6 +604,30 @@ class TestInvocationContextWithAppResumablity:
     )
 
     assert not invocation_context.should_pause_invocation(nonpausable_event)
+
+  def test_should_pause_on_legacy_request_input_call_without_lro_ids(
+      self, event_to_pause
+  ):
+    """A legacy HITL call with no long_running_tool_ids still pauses."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    legacy_event = event_to_pause.model_copy(
+        update={
+            'long_running_tool_ids': None,
+            'content': testing_utils.ModelContent([
+                Part(
+                    function_call=FunctionCall(
+                        id='req_1',
+                        name=REQUEST_INPUT_FUNCTION_CALL_NAME,
+                        args={},
+                    )
+                )
+            ]),
+        }
+    )
+
+    assert invocation_context.should_pause_invocation(legacy_event)
 
   def test_should_not_pause_invocation_with_no_function_calls(
       self, event_to_pause
