@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import threading
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -179,6 +180,9 @@ class MongoDbMemoryService(BaseMemoryService):
     self._ensure_indexes = ensure_indexes
     self._indexes_ensured = False
     self._max_results = max_results
+    # Serializes first-use index creation across the worker threads that
+    # `asyncio.to_thread` runs `_ensure_indexes_once` on.
+    self._index_lock = threading.Lock()
 
   def _memories(self):
     return self._client[self._database_name][self.memories_collection]
@@ -193,25 +197,27 @@ class MongoDbMemoryService(BaseMemoryService):
     """
     if not self._ensure_indexes or self._indexes_ensured:
       return
-    try:
-      self._memories().create_index(
-          _MEMORIES_RECALL_INDEX_KEYS, name=_MEMORIES_RECALL_INDEX_NAME
-      )
-    except (
-        Exception
-    ) as exc:  # pymongo stays an optional import; match by shape.
-      if not _client.is_index_privilege_error(exc):
-        # Unexpected failure: leave the flag unset so a later operation
-        # retries after the deployment recovers.
-        raise
-      logger.warning(
-          "MongoDbMemoryService could not create the recommended index"
-          " (createIndex privilege missing); reads will fall back to"
-          " unindexed scans. Pass ensure_indexes=False to silence this, or"
-          " grant the privilege. Details: %s",
-          exc,
-      )
-    self._indexes_ensured = True
+    with self._index_lock:
+      # Re-check under the lock: a concurrent first call may have done it.
+      if self._indexes_ensured:
+        return
+      try:
+        self._memories().create_index(
+            _MEMORIES_RECALL_INDEX_KEYS, name=_MEMORIES_RECALL_INDEX_NAME
+        )
+      except Exception as exc:  # pymongo stays an optional import; match by shape.
+        if not _client.is_index_privilege_error(exc):
+          # Unexpected failure: leave the flag unset so a later operation
+          # retries after the deployment recovers.
+          raise
+        logger.warning(
+            "MongoDbMemoryService could not create the recommended index"
+            " (createIndex privilege missing); reads will fall back to"
+            " unindexed scans. Pass ensure_indexes=False to silence this, or"
+            " grant the privilege. Details: %s",
+            exc,
+        )
+      self._indexes_ensured = True
 
   def _extract_keywords(self, text: str) -> set[str]:
     """Extracts lowercase keywords from text, ignoring stop words."""
@@ -229,6 +235,12 @@ class MongoDbMemoryService(BaseMemoryService):
     await asyncio.to_thread(self._ensure_indexes_once)
 
     def _add() -> None:
+      # pymongo is imported lazily here: it stays an optional dependency
+      # until a MongoDB-backed service is actually constructed.
+      from pymongo import ReplaceOne  # pylint: disable=import-outside-toplevel
+
+      # One bulk_write round-trip, not one replace_one per event.
+      operations = []
       for event in session.events:
         if not event.content or not event.content.parts:
           continue
@@ -243,21 +255,25 @@ class MongoDbMemoryService(BaseMemoryService):
         memory_id = (
             f"{session.app_name}/{session.user_id}/{session.id}/{event.id}"
         )
-        self._memories().replace_one(
-            {"_id": memory_id},
-            {
-                "app_name": session.app_name,
-                "user_id": session.user_id,
-                "session_id": session.id,
-                "author": event.author,
-                "keywords": sorted(keywords),
-                "content": event.content.model_dump(
-                    exclude_none=True, mode="json"
-                ),
-                "timestamp": event.timestamp,
-            },
-            upsert=True,
+        operations.append(
+            ReplaceOne(
+                {"_id": memory_id},
+                {
+                    "app_name": session.app_name,
+                    "user_id": session.user_id,
+                    "session_id": session.id,
+                    "author": event.author,
+                    "keywords": sorted(keywords),
+                    "content": event.content.model_dump(
+                        exclude_none=True, mode="json"
+                    ),
+                    "timestamp": event.timestamp,
+                },
+                upsert=True,
+            )
         )
+      if operations:
+        self._memories().bulk_write(operations, ordered=False)
 
     await asyncio.to_thread(_add)
 
