@@ -2158,7 +2158,7 @@ async def test_parallel_single_turn_nodes_with_sub_branch_see_own_node_input(
 ):
   """use_sub_branch=True keeps each parallel single_turn node's own node_input.
 
-  Main already isolates unbranched parallel single_turn nodes by node path
+  ADK 2.12.0 isolates unbranched parallel single_turn nodes by node path
   (097ae1ea3). This covers the branched workaround: with use_sub_branch=True,
   worker_b must still see INPUT_B under include_contents 'none' and 'default'.
   On 2.11.0 without the sub-branch, worker_b lost INPUT_B and only saw
@@ -2210,17 +2210,13 @@ async def test_parallel_single_turn_nodes_with_sub_branch_see_own_node_input(
   await runner.run_async(_testing_utils.get_user_content('start'))
 
   assert len(model_a.requests) == 1
-  texts_a = [
-      p.text for p in _request_parts(model_a.requests[0]) if p.text
-  ]
+  texts_a = [p.text for p in _request_parts(model_a.requests[0]) if p.text]
   assert any('INPUT_A' in t for t in texts_a)
   assert not any('INPUT_B' in t for t in texts_a)
   assert not any('out-b' in t for t in texts_a)
 
   assert len(model_b.requests) == 1
-  texts_b = [
-      p.text for p in _request_parts(model_b.requests[0]) if p.text
-  ]
+  texts_b = [p.text for p in _request_parts(model_b.requests[0]) if p.text]
   # Primary regression: worker_b must keep its own node_input.
   assert any('INPUT_B' in t for t in texts_b)
   assert not any('INPUT_A' in t for t in texts_b)
