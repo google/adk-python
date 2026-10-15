@@ -21,6 +21,7 @@ from .base_plugin import BasePlugin
 from .plugin_manager import PluginManager
 
 if TYPE_CHECKING:
+  from ..tools.model_consult._force_escalation_plugin import ForceEscalationPlugin
   from ._reflect_retry_model_plugin import ReflectAndRetryModelPlugin
   from ._tool_call_integrity_plugin import ToolCallIntegrityError
   from ._tool_call_integrity_plugin import ToolCallIntegrityPlugin
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
 __all__ = [
     "BasePlugin",
     "DebugLoggingPlugin",
+    "ForceEscalationPlugin",
     "LoggingPlugin",
     "PluginManager",
     "ReflectAndRetryModelPlugin",
@@ -41,6 +43,7 @@ __all__ = [
 
 _LAZY_MEMBERS: dict[str, str] = {
     "DebugLoggingPlugin": "debug_logging_plugin",
+    "ForceEscalationPlugin": "..tools.model_consult._force_escalation_plugin",
     "LoggingPlugin": "logging_plugin",
     "ReflectAndRetryModelPlugin": "_reflect_retry_model_plugin",
     "ReflectAndRetryToolPlugin": "reflect_retry_tool_plugin",
@@ -51,6 +54,8 @@ _LAZY_MEMBERS: dict[str, str] = {
 
 def __getattr__(name: str) -> Any:
   if name in _LAZY_MEMBERS:
-    module = importlib.import_module(f"{__name__}.{_LAZY_MEMBERS[name]}")
+    target = _LAZY_MEMBERS[name]
+    module_name = target if target.startswith(".") else f".{target}"
+    module = importlib.import_module(module_name, __name__)
     return vars(module)[name]
   raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

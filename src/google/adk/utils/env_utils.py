@@ -23,12 +23,16 @@ from __future__ import annotations
 import os
 import warnings
 
+_TRUTHY_ENV_VALUES = frozenset({'1', 'true', 'yes', 'on'})
+_STRICT_TRUTHY_ENV_VALUES = frozenset({'1', 'true'})
+
 
 def is_env_enabled(env_var_name: str, default: str = '0') -> bool:
   """Check if an environment variable is enabled.
 
-  An environment variable is considered enabled if its value (case-insensitive)
-  is 'true' or '1'.
+  An environment variable is considered enabled if its value (case-insensitive,
+  with leading and trailing whitespace stripped) is ``'1'``, ``'true'``,
+  ``'yes'``, or ``'on'``.
 
   Args:
     env_var_name: The name of the environment variable to check.
@@ -57,7 +61,19 @@ def is_env_enabled(env_var_name: str, default: str = '0') -> bool:
     >>> is_env_enabled('NONEXISTENT_FLAG', default='1')
     True
   """
-  return os.environ.get(env_var_name, default).lower() in ['true', '1']
+  return (
+      os.environ.get(env_var_name, default).strip().lower()
+      in _TRUTHY_ENV_VALUES
+  )
+
+
+def _is_genai_env_enabled(env_var_name: str) -> bool:
+  """Check if a google-genai boolean environment variable is enabled.
+
+  Matches google-genai's BaseApiClient strict parsing (``env_str.lower() in
+  ['true', '1']`` without stripping whitespace or accepting ``'yes'``/``'on'``).
+  """
+  return os.environ.get(env_var_name, '').lower() in _STRICT_TRUTHY_ENV_VALUES
 
 
 def is_enterprise_mode_enabled() -> bool:
@@ -67,7 +83,7 @@ def is_enterprise_mode_enabled() -> bool:
     True if enabled, False otherwise.
   """
   if 'GOOGLE_GENAI_USE_ENTERPRISE' in os.environ:
-    return is_env_enabled('GOOGLE_GENAI_USE_ENTERPRISE')
+    return _is_genai_env_enabled('GOOGLE_GENAI_USE_ENTERPRISE')
   if 'GOOGLE_GENAI_USE_VERTEXAI' in os.environ:
     warnings.warn(
         'GOOGLE_GENAI_USE_VERTEXAI is deprecated, please use'
@@ -75,5 +91,5 @@ def is_enterprise_mode_enabled() -> bool:
         DeprecationWarning,
         stacklevel=2,
     )
-    return is_env_enabled('GOOGLE_GENAI_USE_VERTEXAI')
+    return _is_genai_env_enabled('GOOGLE_GENAI_USE_VERTEXAI')
   return False

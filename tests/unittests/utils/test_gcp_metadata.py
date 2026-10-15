@@ -544,3 +544,44 @@ def test_get_gcp_client_defaults_skips_defaults_when_user_adc_file_present(
   assert defaults == {}
   assert 'GOOGLE_CLOUD_PROJECT' not in os.environ
   assert 'project' not in defaults
+
+
+@pytest.mark.parametrize(
+    'env_var',
+    [
+        'GOOGLE_GENAI_USE_ENTERPRISE',
+        'GOOGLE_GENAI_USE_VERTEXAI',
+    ],
+)
+@pytest.mark.parametrize(
+    'env_value,expected',
+    [
+        ('true', {'project': 'meta-project'}),
+        ('TRUE', {'project': 'meta-project'}),
+        ('1', {'project': 'meta-project'}),
+        ('yes', {}),
+        ('on', {}),
+        (' true ', {}),
+        ('false', {}),
+        ('0', {}),
+    ],
+)
+def test_get_gcp_client_defaults_uses_strict_genai_env_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+    env_var: str,
+    env_value: str,
+    expected: dict[str, str],
+) -> None:
+  """GCP defaults use google-genai strict parsing for enterprise/vertexai env vars."""
+  import warnings
+
+  monkeypatch.setenv(env_var, env_value)
+  monkeypatch.setattr(
+      _gcp_metadata, 'get_project_id_from_metadata', lambda: 'meta-project'
+  )
+
+  with warnings.catch_warnings():
+    warnings.simplefilter('ignore', DeprecationWarning)
+    defaults = get_gcp_client_defaults()
+
+  assert defaults == expected

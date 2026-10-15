@@ -841,6 +841,27 @@ class Context(ReadonlyContext):
         query=query,
     )
 
+  async def delete_memory(
+      self,
+      memory_id: str | None = None,
+  ) -> None:
+    """Removes a memory item by its id for the current user.
+
+    Args:
+      memory_id: The ID of the memory entry to delete.
+
+    Raises:
+      ValueError: If memory service is not available.
+    """
+    service = self._require_memory_service(
+        'Cannot delete memory: memory service is not available.'
+    )
+    await service.delete_memory(
+        app_name=self._invocation_context.app_name,
+        user_id=self._invocation_context.user_id,
+        memory_id=memory_id,
+    )
+
   # ============================================================================
   # UI Widget methods
   # ============================================================================
