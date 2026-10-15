@@ -186,6 +186,11 @@ _PATCHED_HISTOGRAMS: tuple[HistogramSpec, ...] = (
         attr="_invoke_workflow_skill_loads",
         metric_name="adk.experimental.invoke_workflow.skill.loads",
     ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_workflow_compactions",
+        metric_name="adk.experimental.invoke_workflow.compactions",
+    ),
 )
 
 _PATCHED_COUNTERS: tuple[CounterSpec, ...] = (

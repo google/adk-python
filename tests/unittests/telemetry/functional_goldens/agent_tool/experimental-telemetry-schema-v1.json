@@ -424,6 +424,15 @@
         "value": 130
       }
     ],
+    "adk.experimental.invoke_workflow.compactions": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "my_agent_tool_workflow",
+          "gen_ai.workflow.name": "my_agent_tool_workflow"
+        },
+        "value": 0
+      }
+    ],
     "adk.experimental.invoke_workflow.inference_calls": [
       {
         "attributes": {

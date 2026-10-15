@@ -51,6 +51,9 @@ NON_DETERMINISTIC_ATTRIBUTE_KEYS: frozenset[str] = frozenset({
     "gen_ai.conversation.id",
     "gcp.vertex.agent.invocation_id",
     "gcp.vertex.agent.session_id",
+    "gen_ai.compaction.result_event_id",
+    "gen_ai.compaction.start_timestamp",
+    "gen_ai.compaction.end_timestamp",
 })
 
 # Payload fields that carry a generated id rather than anything recorded --

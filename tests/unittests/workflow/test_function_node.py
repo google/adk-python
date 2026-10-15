@@ -45,6 +45,8 @@ from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import ConfigDict
+from pydantic import field_validator
 import pytest
 
 from .. import testing_utils
@@ -2402,3 +2404,74 @@ async def test_sync_generator_closes_on_no_runner_path() -> None:
   assert not closed
   await agen.aclose()
   assert closed
+
+
+@pytest.mark.asyncio
+async def test_fallback_node_input_coerced_once() -> None:
+  """Fallback node_input parameter is coerced once during binding."""
+  validations = 0
+
+  class _CountingModel(BaseModel):
+    model_config = ConfigDict(revalidate_instances='always')
+    x: int
+
+    @field_validator('x')
+    @classmethod
+    def _count(cls, v: int) -> int:
+      nonlocal validations
+      validations += 1
+      return v
+
+  def process(node_input: _CountingModel) -> int:
+    return node_input.x
+
+  node = FunctionNode(func=process, parameter_binding='node_input')
+  node.input_schema = _CountingModel
+  ctx = mock.MagicMock(spec=Context)
+
+  events = [event async for event in node.run(ctx=ctx, node_input={'x': 25})]
+
+  assert [e.output for e in events] == [25]
+  # Validated once by BaseNode._validate_input_data and once by
+  # _resolve_parameters (not a second time in the has_param branch).
+  assert validations == 2
+
+
+@pytest.mark.asyncio
+async def test_node_input_binding_coerces_parameters_once() -> None:
+  """Running a node_input FunctionNode coerces parameters only once."""
+  validations = 0
+
+  class _CountingModel(BaseModel):
+    model_config = ConfigDict(revalidate_instances='always')
+    x: int
+
+    @field_validator('x')
+    @classmethod
+    def _count(cls, v: int) -> int:
+      nonlocal validations
+      validations += 1
+      return v
+
+  def compute(item: _CountingModel, count: int = 10) -> str:
+    return f'{item.x}:{count}'
+
+  item = _CountingModel(x=7)
+  validations = 0
+  node = FunctionNode(func=compute, parameter_binding='node_input')
+
+  def produce() -> dict[str, Any]:
+    return {'item': item, 'count': 5}
+
+  agent = Workflow(
+      name='test_node_input_binding_coerces_once',
+      edges=[(START, produce), (produce, node)],
+  )
+
+  events, _, _ = await run_workflow(agent)
+
+  assert [e.output for e in get_output_events(events)] == [
+      {'item': item, 'count': 5},
+      '7:5',
+  ]
+  assert validations == 1

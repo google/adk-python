@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import aclosing
+import dataclasses
 import logging
 from typing import Any
 from typing import AsyncGenerator
@@ -232,6 +233,10 @@ async def run_node_async(
         else:
           # 3. Start root node in background
           root_ctx = Context(ic)
+          # A root workflow runs inside the span the runner opened for it.
+          root_ctx._telemetry_context = dataclasses.replace(  # pylint: disable=protected-access
+              root_ctx.telemetry_context, _entrypoint_scope=entrypoint_scope
+          )
           root_node = node or runner.agent
           is_agent = isinstance(runner.agent, BaseAgent)
           has_sub_agents = is_agent and bool(
@@ -370,7 +375,7 @@ async def run_node_async(
       entrypoint_node=node or runner.agent,
       conversation_id=session_id,
       run_config=run_config or RunConfig(),
-  ) as invocation_otel_context:
+  ) as (invocation_otel_context, entrypoint_scope):
     async with aclosing(
         _instrumentation.stream_in_scope(invocation_otel_context, _run())
     ) as agen:

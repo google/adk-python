@@ -425,6 +425,8 @@ def _reconstruct_node_states(
     if interrupt_ids_to_process:
       for interrupt_id in interrupt_ids_to_process:
         child.interrupt_ids.add(interrupt_id)
+        child.resolved_ids.discard(interrupt_id)
+        child.resolved_responses.pop(interrupt_id, None)
         interrupt_owner[interrupt_id] = owner_key
 
         schema_json = _extract_schema_from_event(event, interrupt_id)

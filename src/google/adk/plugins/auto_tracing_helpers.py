@@ -107,8 +107,9 @@ _is_credential_type: Callable[[type], bool] = functools.lru_cache(maxsize=512)(
 
 @functools.lru_cache(maxsize=1024)
 def _is_credential_arg_name(name: str) -> bool:
-  """True iff a parameter called ``name`` conventionally holds a secret."""
-  lowered = name.lower()
+  """True iff a value named ``name`` conventionally holds a secret."""
+  # Hyphens fold so a header key like X-Api-Key matches the way api_key does.
+  lowered = name.lower().replace("-", "_")
   return lowered in _CREDENTIAL_ARG_NAMES or lowered.endswith(
       _CREDENTIAL_ARG_SUFFIXES
   )
