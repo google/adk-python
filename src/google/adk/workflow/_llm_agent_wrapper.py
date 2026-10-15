@@ -527,7 +527,12 @@ async def run_llm_agent_as_node(
       async for event in run_iter:
         if is_task_mode:
           finish_fc = _extract_finish_task_fc(event)
-          if finish_fc is not None:
+          # A turn that also delegates is handled as a delegation below, with
+          # finish_task's response drained like any other tool's. Finishing
+          # here would drop the delegation and leave its call unanswered.
+          if finish_fc is not None and not _extract_task_delegation_fcs(
+              event, tools_dict
+          ):
             # Remember the latest FC's args; wait for FinishTaskTool's FR
             # before terminating. If validation fails, the FR will NOT be
             # the success message — the LLM sees the error and retries.
