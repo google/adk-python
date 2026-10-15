@@ -149,6 +149,46 @@ async def test_versioned_keys_ignore_legacy_session_and_state_keys(
   assert new_session.state == {}
 
 
+@pytest.mark.parametrize("binary_scan_keys", [False, True])
+@pytest.mark.asyncio
+async def test_list_sessions_ignores_legacy_key_matching_v2_scan(
+    session_service, fake_redis, binary_scan_keys
+):
+  legacy_session = Session(
+      id="bar",
+      app_name="v2",
+      user_id="s2_djI.foo",
+      state={"private": "legacy-session"},
+      events=[],
+      last_update_time=1.0,
+  )
+  await fake_redis.set(
+      "test:session:v2:s2_djI.foo:bar", legacy_session.model_dump_json()
+  )
+  current = await session_service.create_session(
+      app_name="v2", user_id="alice", session_id="live"
+  )
+  if binary_scan_keys:
+    original_scan_iter = fake_redis.scan_iter
+    original_get = fake_redis.get
+
+    async def scan_bytes(match):
+      async for key in original_scan_iter(match):
+        yield key.encode("utf-8")
+
+    async def get_with_bytes(key):
+      return await original_get(
+          key.decode("utf-8") if isinstance(key, bytes) else key
+      )
+
+    fake_redis.scan_iter = scan_bytes
+    fake_redis.get = get_with_bytes
+
+  assert (await session_service.list_sessions(app_name="v2")).sessions == [
+      current
+  ]
+
+
 @pytest.mark.asyncio
 async def test_create_session(session_service):
   session = await session_service.create_session(

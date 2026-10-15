@@ -324,8 +324,14 @@ class RedisSessionService(BaseSessionService):
       if raw:
         try:
           s = Session.model_validate_json(raw)
-          # Confirm stored identity as defense in depth, even though the
-          # versioned key components are unambiguous.
+          # A legacy key can match the v2 scan pattern; only list canonical keys.
+          expected_key = self._session_key(s.app_name, s.user_id, s.id)
+          if key != (
+              expected_key.encode("utf-8")
+              if isinstance(key, bytes)
+              else expected_key
+          ):
+            continue
           if s.app_name != app_name or (
               user_id is not None and s.user_id != user_id
           ):
