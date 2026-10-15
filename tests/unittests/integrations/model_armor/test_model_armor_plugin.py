@@ -549,23 +549,70 @@ async def test_fully_screened_clean_content_passes_through():
 
 # --- Regional endpoint ------------------------------------------------------
 
+_MTLS_UTILS_PATH = (
+    'google.adk.integrations.model_armor._plugin._mtls_utils.get_api_endpoint'
+)
 
-def test_regional_endpoint_format():
-  """The host pattern Model Armor serves regional traffic on."""
+
+@mock.patch(
+    _MTLS_UTILS_PATH,
+    return_value='modelarmor.us-central1.rep.googleapis.com',
+)
+def test_regional_endpoint_no_mtls(mock_get_api_endpoint):
+  """Without mTLS, _regional_endpoint returns the plain regional host."""
   assert (
       _regional_endpoint('us-central1')
       == 'modelarmor.us-central1.rep.googleapis.com'
   )
+  mock_get_api_endpoint.assert_called_once_with(
+      location='us-central1',
+      default_template='modelarmor.{location}.rep.googleapis.com',
+      mtls_template='modelarmor.{location}.rep.mtls.googleapis.com',
+  )
+
+
+@mock.patch(
+    _MTLS_UTILS_PATH,
+    return_value='modelarmor.us-central1.rep.mtls.googleapis.com',
+)
+def test_regional_endpoint_mtls(mock_get_api_endpoint):
+  """With mTLS, _regional_endpoint returns the mTLS regional host."""
+  assert (
+      _regional_endpoint('us-central1')
+      == 'modelarmor.us-central1.rep.mtls.googleapis.com'
+  )
+  mock_get_api_endpoint.assert_called_once_with(
+      location='us-central1',
+      default_template='modelarmor.{location}.rep.googleapis.com',
+      mtls_template='modelarmor.{location}.rep.mtls.googleapis.com',
+  )
+
+
+@mock.patch(_MTLS_UTILS_PATH)
+def test_regional_endpoint_preserves_location(mock_get_api_endpoint):
+  """Different locations are forwarded to get_api_endpoint, not hard-coded."""
+  mock_get_api_endpoint.side_effect = lambda *, location, **_kw: (
+      f'modelarmor.{location}.rep.googleapis.com'
+  )
+  for loc in ('europe-west1', 'asia-east1', 'us-west4'):
+    result = _regional_endpoint(loc)
+    assert loc in result
 
 
 @pytest.mark.asyncio
-async def test_regional_endpoint_comes_from_the_template_location():
+@mock.patch(_MTLS_UTILS_PATH)
+async def test_regional_endpoint_comes_from_the_template_location(
+    mock_get_api_endpoint,
+):
   """Model Armor is regional, so the template's own location picks the host.
 
   Async only for the event loop: the ``grpc.aio`` channel binds to it at
   construction, so a sync version fails on a worker with no current loop.
   """
   location = 'europe-west1'
+  mock_get_api_endpoint.return_value = (
+      f'modelarmor.{location}.rep.mtls.googleapis.com'
+  )
   config = _config(
       prompt_template_name=(
           f'projects/test-project/locations/{location}/templates/eu-prompt'
