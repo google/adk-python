@@ -467,3 +467,76 @@ class TestOutputLimits:
     assert result["stdout"].startswith("y" * 100 + "\n...[stdout truncated")
     assert len(result["stdout"]) < 300
     assert result["returncode"] == -signal.SIGKILL
+
+  def test_rejects_negative_output_limit(self):
+    with pytest.raises(ValueError, match="max_output_bytes_per_stream"):
+      bash_tool.BashToolPolicy(max_output_bytes_per_stream=-1)
+
+  def test_zero_output_limit_is_allowed(self):
+    policy = bash_tool.BashToolPolicy(max_output_bytes_per_stream=0)
+    assert policy.max_output_bytes_per_stream == 0
+
+  @pytest.mark.asyncio
+  async def test_output_exactly_at_limit_is_not_truncated(
+      self, workspace, tool_context_confirmed
+  ):
+    limit = 1000
+    policy = bash_tool.BashToolPolicy(max_output_bytes_per_stream=limit)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    result = await tool.run_async(
+        args={
+            "command": (
+                "python3 -c 'import sys;"
+                f' sys.stdout.buffer.write(b"x" * {limit})\''
+            )
+        },
+        tool_context=tool_context_confirmed,
+    )
+    assert result["returncode"] == 0
+    assert result["stdout"] == "x" * limit
+    assert "truncated" not in result["stdout"]
+
+  @pytest.mark.asyncio
+  async def test_cancellation_cleans_up_drain_and_wait(
+      self, workspace, tool_context_confirmed
+  ):
+    """Cancelling run_async must not leave drain/wait tasks pending.
+
+    A child that stays in the process group and keeps stdout open would
+    otherwise leave _drain_stream tasks hanging after CancelledError.
+    """
+    policy = bash_tool.BashToolPolicy(
+        timeout_seconds=30, max_output_bytes_per_stream=64
+    )
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    (workspace / "hold_pipe.py").write_text(
+        "import os\n"
+        "import sys\n"
+        "import time\n"
+        "if os.fork() == 0:\n"
+        "    while True:\n"
+        '        sys.stdout.buffer.write(b"z" * 1024)\n'
+        "        sys.stdout.buffer.flush()\n"
+        "        time.sleep(0.05)\n"
+        "else:\n"
+        "    time.sleep(60)\n"
+    )
+    task = asyncio.create_task(
+        tool.run_async(
+            args={"command": "python3 hold_pipe.py"},
+            tool_context=tool_context_confirmed,
+        )
+    )
+    await asyncio.sleep(0.4)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await task
+    await asyncio.sleep(0)
+    leftover_drains = [
+        t
+        for t in asyncio.all_tasks()
+        if not t.done()
+        and getattr(getattr(t, "get_coro", lambda: None)(), "__name__", None)
+        == "_drain_stream"
+    ]
+    assert leftover_drains == []
