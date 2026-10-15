@@ -98,18 +98,20 @@ rest of the workflow sees it:
 
 ## Configuration options
 
-`FunctionNode` introduces one option of its own, `parameter_binding`, and the
-rest come from `BaseNode`. Neither `@node` nor the `FunctionNode` constructor
-accepts every `BaseNode` field, though, so only these are available:
+`FunctionNode` introduces two options of its own, `parameter_binding` and
+`require_confirmation`, and the rest come from `BaseNode`. Neither `@node` nor
+the `FunctionNode` constructor accepts every `BaseNode` field, though, so only
+these are available:
 
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `parameter_binding` | `'state' \| 'node_input'` | `'state'` | Where non-context parameters are looked up. |
 | `name` | `str \| None` | `None` | Node name. Falls back to the function's `__name__`. |
-| `rerun_on_resume` | `bool` | `False` | Whether the node reruns after an interrupt, or completes with the resuming input. |
+| `rerun_on_resume` | `bool` | `False` | Whether the node reruns after an interrupt, or completes with the resuming input. Nodes with `require_confirmation` or `auth_config` require `True`. |
 | `retry_config` | `RetryConfig \| None` | `None` | Retry policy. See [RetryConfig](../retry_config/index.md). |
 | `timeout` | `float \| None` | `None` | Seconds before the node is canceled and fails with `NodeTimeoutError`. |
 | `auth_config` | `AuthConfig \| None` | `None` | Requests user authentication before the node runs. |
+| `require_confirmation` | `bool \| Callable[..., bool]` | `False` | Gates execution on user approval, either unconditionally or when the predicate callable returns `True`. Requires `rerun_on_resume=True`. |
 | `state_schema` | `type[BaseModel] \| None` | `None` | Declares the state keys the node may write. `FunctionNode(...)` only; `@node` does not take it. |
 
 Two options are the other way round. `@node` also takes `parallel_worker` and
@@ -128,6 +130,27 @@ In `'node_input'` mode the predecessor's output is expected to be a dict (or a
 Pydantic model), and its keys are matched to parameter names instead. That mode
 also infers `input_schema` and `output_schema` from the whole signature, which
 is what makes a function node usable as an agent's tool.
+
+### `require_confirmation`
+
+Setting `require_confirmation=True` pauses the workflow with an
+`adk_request_input` interrupt (`wf_tool_confirmation:{node_path}`) before the
+function body runs. You can also pass a sync or async callable predicate that
+receives the function's bound arguments (and `ctx` or `node_input` if declared)
+and returns a `bool`:
+
+```python
+from google.adk.workflow import node
+
+@node(require_confirmation=lambda amount: amount > 1000)
+def transfer_funds(amount: int) -> str:
+    return f"Transferred ${amount}"
+```
+
+When resumed with `{"confirmed": True}`, the function executes once with the
+parsed `ToolConfirmation` available on `ctx.tool_confirmation`. When resumed
+with `{"confirmed": False}`, the function body is skipped and the node emits
+`{"error": "This tool call is rejected."}` as its output.
 
 ### `input_schema` and `output_schema` are inferred, not passed
 

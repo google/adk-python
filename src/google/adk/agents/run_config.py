@@ -306,6 +306,9 @@ class RunConfig(BaseModel):
   useful in combination with ``EventsCompactionConfig`` to avoid loading the
   full event history on every invocation.
 
+  Ignored by ``Runner.rewind_async``, which always loads the full session
+  history.
+
   Example::
 
       from google.adk.agents.run_config import RunConfig

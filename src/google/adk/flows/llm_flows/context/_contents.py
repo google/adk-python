@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import copy
 import functools
+import importlib.util
 import logging
+import sys
 from typing import AsyncGenerator
 
 from google.genai import types
@@ -30,12 +32,12 @@ from ....events.event import Event
 from ....models.base_llm import BaseLlm
 from ....models.llm_request import LlmRequest
 from ....utils._agent_mode import AgentMode
+from ....utils._function_call_names import AF_FUNCTION_CALL_ID_PREFIX
+from ....utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ....utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..core._utils import as_llm_agent
 from ..tools._functions import _collect_function_call_ids
-from ..tools._functions import AF_FUNCTION_CALL_ID_PREFIX
-from ..tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ..tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..tools._rearranger import _drop_orphaned_function_responses
 from ..tools._rearranger import _rearrange_events_for_async_function_responses_in_history
 from ..tools._rearranger import _rearrange_events_for_latest_function_response
@@ -51,6 +53,10 @@ logger = logging.getLogger('google_adk.' + __name__)
 @functools.cache
 def _id_pairing_model_types() -> tuple[type[BaseLlm], ...]:
   """Returns the installed model types that pair tool calls with results by id.
+
+  Deprecated. Nothing in ADK calls this: `_is_id_pairing_model` answers the
+  same question without importing a provider. Kept because it is exported, and
+  removing it would break a caller outside ADK.
 
   Each provider is optional, so an absent one is simply left out. The result is
   memoized because Python does not cache a failed import: without this, an
@@ -80,6 +86,33 @@ def _id_pairing_model_types() -> tuple[type[BaseLlm], ...]:
   return tuple(model_types)
 
 
+# The types `_id_pairing_model_types` imports, by module and name, for
+# `_is_id_pairing_model` to look up without importing them.
+_ID_PAIRING_MODEL_TYPE_NAMES: tuple[tuple[str, str], ...] = tuple(
+    (importlib.util.resolve_name(module_name, __package__), type_name)
+    for module_name, type_name in (
+        ('....models.anthropic_llm', 'AnthropicLlm'),
+        ('....models.lite_llm', 'LiteLlm'),
+        ('....integrations.openai._openai_responses_llm', 'OpenAIResponsesLlm'),
+    )
+)
+
+
+def _is_id_pairing_model(model: BaseLlm) -> bool:
+  """Returns whether `model` pairs tool calls with their results by id.
+
+  Answers `isinstance(model, _id_pairing_model_types())` without importing the
+  providers, two of which import their SDK at module scope. A model can only
+  be an instance of a type whose module is already imported, so each type is
+  looked up in `sys.modules` instead.
+  """
+  for module_name, type_name in _ID_PAIRING_MODEL_TYPE_NAMES:
+    model_type = getattr(sys.modules.get(module_name), type_name, None)
+    if model_type is not None and isinstance(model, model_type):
+      return True
+  return False
+
+
 class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
   """Builds the contents for the LLM request."""
 
@@ -104,7 +137,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
         # Anthropic and LiteLLM-backed providers (e.g. OpenAI) pair tool
         # calls with their results by id, so `adk-*` fallback ids must
         # survive replay.
-        if isinstance(canonical_model, _id_pairing_model_types()):
+        if _is_id_pairing_model(canonical_model):
           preserve_function_call_ids = True
 
     # Preserve all contents that were added by instruction processor
@@ -414,12 +447,27 @@ def _filter_single_turn_node_events(
     *,
     is_single_turn: bool,
     node_path: str | None,
+    allow_ancestor_node_paths: bool = False,
 ) -> list[Event]:
-  """Retains only root and own-subtree events for an unbranched single-turn node."""
-  if current_branch is not None or not is_single_turn or not node_path:
+  """Retains only visible branch and node-hierarchy events for a single-turn node."""
+  if not is_single_turn:
     return events
+  filtered = [
+      e for e in events if _is_event_belongs_to_branch(current_branch, e)
+  ]
+  if not node_path:
+    return filtered
   self_path = _NodePathBuilder.from_string(node_path)
-  return [e for e in events if self_path.includes_node_path(e.node_info.path)]
+  if allow_ancestor_node_paths:
+    return [
+        e
+        for e in filtered
+        if self_path.includes_node_path(e.node_info.path)
+        or self_path.is_descendant_of(
+            _NodePathBuilder.from_string(e.node_info.path)
+        )
+    ]
+  return [e for e in filtered if self_path.includes_node_path(e.node_info.path)]
 
 
 def _get_contents(
@@ -466,6 +514,7 @@ def _get_contents(
       _apply_rewinds(events),
       is_single_turn=is_single_turn,
       node_path=node_path,
+      allow_ancestor_node_paths=True,
   )
   tool_call_ids = _collect_function_call_ids(rewind_filtered_events)
 

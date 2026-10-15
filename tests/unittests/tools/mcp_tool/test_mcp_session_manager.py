@@ -446,6 +446,85 @@ class TestMCPSessionManager:
     assert merged["user-agent"].startswith("google-adk/")
     assert merged["user-agent"].endswith(" my-app/1.0")
 
+  @pytest.mark.parametrize(
+      "base_headers, additional",
+      [
+          (
+              {
+                  "user-agent": "base-client/1",
+                  "x-goog-api-client": "base-sdk/1",
+                  "X-Custom": "base",
+              },
+              {
+                  "user-agent": "extra-client/1",
+                  "x-goog-api-client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+          (
+              {
+                  "User-Agent": "base-client/1",
+                  "X-Goog-Api-Client": "base-sdk/1",
+                  "X-Custom": "base",
+              },
+              {
+                  "user-agent": "extra-client/1",
+                  "x-goog-api-client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+          (
+              {
+                  "user-agent": "base-client/1",
+                  "x-goog-api-client": "base-sdk/1",
+                  "X-Custom": "base",
+              },
+              {
+                  "User-Agent": "extra-client/1",
+                  "X-Goog-Api-Client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+          (
+              {
+                  "User-Agent": "base-client/1",
+                  "user-agent": "base-client/2",
+                  "X-Goog-Api-Client": "base-sdk/1",
+                  "x-goog-api-client": "base-sdk/2",
+                  "X-Custom": "base",
+              },
+              {
+                  "User-Agent": "extra-client/1",
+                  "X-Goog-Api-Client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+      ],
+  )
+  def test_merge_headers_additional_overrides_base_tracking_headers(
+      self, base_headers, additional
+  ):
+    """Additional tracking headers replace base ones regardless of casing."""
+    original_base = base_headers.copy()
+    original_additional = additional.copy()
+    manager = MCPSessionManager(
+        SseConnectionParams(url="https://example.com/mcp", headers=base_headers)
+    )
+
+    merged = manager._merge_headers(additional)
+
+    assert merged == merge_tracking_headers({
+        "user-agent": "extra-client/1",
+        "x-goog-api-client": "extra-sdk/1",
+        "X-Custom": "extra",
+    })
+    assert "base-client/" not in merged["user-agent"]
+    assert merged["user-agent"].endswith(" extra-client/1")
+    assert "base-sdk/" not in merged["x-goog-api-client"]
+    assert merged["x-goog-api-client"].endswith(" extra-sdk/1")
+    assert base_headers == original_base
+    assert additional == original_additional
+
   def test_is_session_disconnected(self):
     """Test session disconnection detection."""
     manager = MCPSessionManager(self.mock_stdio_connection_params)
@@ -1799,7 +1878,8 @@ class TestMCPSessionManager:
         "GET", "https://example.com/api", headers={"x-test": "value"}
     )
 
-    response = await transport.handle_async_request(request)
+    with patch.dict("os.environ", {}, clear=True):
+      response = await transport.handle_async_request(request)
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
@@ -1810,6 +1890,79 @@ class TestMCPSessionManager:
         data=None,
         headers={"x-test": "value", "host": "example.com"},
         timeout=30.0,
+        proxy=None,
+        proxy_auth=None,
+    )
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_google_auth_async_transport_forwards_env_proxy(self):
+    """Test that _GoogleAuthAsyncTransport resolves HTTPS_PROXY and passes proxy and proxy_auth per request."""
+    import aiohttp
+    from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncTransport
+    import yarl
+
+    mock_session = AsyncMock()
+    mock_auth_response = AsyncMock()
+    mock_auth_response.status_code = 200
+    mock_auth_response.headers = {"content-type": "application/json"}
+    mock_auth_response.content = AsyncMock()
+    mock_session.request.return_value = mock_auth_response
+
+    transport = _GoogleAuthAsyncTransport(mock_session)
+    request = httpx.Request("GET", "https://example.com/api")
+
+    with patch.dict(
+        "os.environ",
+        {"HTTPS_PROXY": "http://user:pass@proxy.example.com:8080"},
+        clear=True,
+    ):
+      await transport.handle_async_request(request)
+
+    mock_session.request.assert_called_once_with(
+        method="GET",
+        url="https://example.com/api",
+        data=None,
+        headers={"host": "example.com"},
+        timeout=30.0,
+        proxy=yarl.URL("http://proxy.example.com:8080"),
+        proxy_auth=aiohttp.BasicAuth("user", "pass"),
+    )
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_google_auth_async_transport_respects_no_proxy(self):
+    """Test that _GoogleAuthAsyncTransport passes proxy=None when host matches NO_PROXY."""
+    from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncTransport
+
+    mock_session = AsyncMock()
+    mock_auth_response = AsyncMock()
+    mock_auth_response.status_code = 200
+    mock_auth_response.headers = {"content-type": "application/json"}
+    mock_auth_response.content = AsyncMock()
+    mock_session.request.return_value = mock_auth_response
+
+    transport = _GoogleAuthAsyncTransport(mock_session)
+    request = httpx.Request("GET", "https://example.com/api")
+
+    with patch.dict(
+        "os.environ",
+        {
+            "HTTPS_PROXY": "http://proxy.example.com:8080",
+            "NO_PROXY": "example.com",
+        },
+        clear=True,
+    ):
+      await transport.handle_async_request(request)
+
+    mock_session.request.assert_called_once_with(
+        method="GET",
+        url="https://example.com/api",
+        data=None,
+        headers={"host": "example.com"},
+        timeout=30.0,
+        proxy=None,
+        proxy_auth=None,
     )
 
 

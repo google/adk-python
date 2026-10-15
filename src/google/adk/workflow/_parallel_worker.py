@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-import json
 import logging
 from typing import Any
 
@@ -29,9 +28,9 @@ from pydantic import PrivateAttr
 from typing_extensions import override
 
 from ..agents.context import Context
-from ..utils._schema_utils import annotation_accepts_content
-from ..utils._schema_utils import annotation_expects_str
+from ..utils._schema_utils import _unwrap_content_payload
 from ._base_node import BaseNode
+from ._errors import NodeInterruptedError
 from ._errors import WorkflowConfigurationError
 from ._graph import NodeLike
 from ._retry_config import RetryConfig
@@ -57,22 +56,11 @@ def _unwrap_content_input(
     node_input: types.Content, inner_node: BaseNode
 ) -> Any:
   """Unwraps text/JSON payload from types.Content for parallel fan-out."""
-  if not node_input.parts or any(p.text is None for p in node_input.parts):
-    return node_input
-  hint = _get_node_input_annotation(inner_node)
-  if hint not in (None, Any, object) and annotation_accepts_content(hint):
-    return node_input
-
-  text_str = ''.join(p.text for p in node_input.parts if p.text is not None)
-  try:
-    parsed = json.loads(text_str)
-    if isinstance(parsed, list):
-      return parsed
-    if annotation_expects_str(hint):
-      return text_str
-    return parsed
-  except json.JSONDecodeError:
-    return text_str
+  return _unwrap_content_payload(
+      node_input,
+      _get_node_input_annotation(inner_node),
+      fan_out_list=True,
+  )
 
 
 class _ParallelWorker(BaseNode):
@@ -137,13 +125,22 @@ class _ParallelWorker(BaseNode):
     results = [None] * len(node_input)
     pending_tasks: set[asyncio.Task[Any]] = set()
     input_index = 0
+    interrupted: NodeInterruptedError | None = None
 
     try:
-      while input_index < len(node_input) or pending_tasks:
-        # Check for any inputs waiting to be processed.
-        while input_index < len(node_input) and (
-            self.max_parallel_workers is None
-            or len(pending_tasks) < self.max_parallel_workers
+      while (
+          not interrupted and input_index < len(node_input)
+      ) or pending_tasks:
+        # Check for any inputs waiting to be processed. Once a worker has
+        # interrupted, stop scheduling new items and wait for in-flight
+        # sibling workers to finish.
+        while (
+            not interrupted
+            and input_index < len(node_input)
+            and (
+                self.max_parallel_workers is None
+                or len(pending_tasks) < self.max_parallel_workers
+            )
         ):
           item = node_input[input_index]
           task = asyncio.create_task(
@@ -174,7 +171,10 @@ class _ParallelWorker(BaseNode):
             # surface, otherwise asyncio reports the rest as never retrieved.
             exc = task.exception()
             if exc is not None:
-              if failure is None:
+              if isinstance(exc, NodeInterruptedError):
+                if interrupted is None:
+                  interrupted = exc
+              elif failure is None:
                 failure = exc
               continue
 
@@ -183,6 +183,8 @@ class _ParallelWorker(BaseNode):
           if failure is not None:
             # Items still in flight are cancelled and drained below.
             raise failure
+      if interrupted is not None:
+        raise interrupted
     finally:
       await self._drain_pending_items(pending_tasks)
 

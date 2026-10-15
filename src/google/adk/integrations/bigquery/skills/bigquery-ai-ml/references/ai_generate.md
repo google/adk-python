@@ -84,7 +84,7 @@ FROM `dataset.invoices`;
 
 ### Process images in a Cloud Storage bucket
 
-```
+```sql
 CREATE SCHEMA IF NOT EXISTS bqml_tutorial;
 
 CREATE OR REPLACE EXTERNAL TABLE bqml_tutorial.product_images
@@ -101,16 +101,4 @@ SELECT
       "image_description STRING, entities_in_the_image ARRAY<STRING>").*
 FROM bqml_tutorial.product_images
 WHERE uri LIKE "%aquarium%";
-```
-
-### Using Grounding
-
-```
-SELECT
-  name,
-  AI.GENERATE(
-    ('Please check the weather of ', name, ' for today.'),
-    model_params => JSON '{"tools": [{"googleSearch": {}}]}'
-  )
-FROM UNNEST(['Seattle', 'NYC', 'Austin']) AS name;
 ```

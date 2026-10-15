@@ -42,6 +42,7 @@ from ...sessions.state import State
 
 try:
   from google.cloud import firestore
+  from google.cloud.firestore_v1.base_query import FieldFilter
 except ImportError as e:
   raise ImportError(
       "FirestoreSessionService requires google-cloud-firestore. "
@@ -245,14 +246,15 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
           (user_snap.to_dict() or {}) if user_snap.exists else {}
       )
 
-      # 2. Writes
+      # 2. Writes. Documents are written whole: a merge write deep-merges
+      # nested maps and would keep keys that the new value dropped.
       if app_state_delta:
         current_app.update(app_state_delta)
-        transaction.set(app_ref, current_app, merge=True)
+        transaction.set(app_ref, current_app)
 
       if user_state_delta:
         current_user.update(user_state_delta)
-        transaction.set(user_ref, current_user, merge=True)
+        transaction.set(user_ref, current_user)
 
       transaction.set(session_ref, session_data)
       return current_app, current_user
@@ -324,7 +326,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
           after_dt = datetime.fromtimestamp(
               config.after_timestamp, tz=timezone.utc
           )
-          query = query.where("timestamp", ">=", after_dt)
+          query = query.where(filter=FieldFilter("timestamp", ">=", after_dt))
         if config.num_recent_events is not None:
           query = query.limit_to_last(config.num_recent_events)
 
@@ -368,12 +370,12 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
     """Lists sessions from Firestore."""
     if user_id:
       query = self._get_sessions_ref(app_name, user_id).where(
-          "appName", "==", app_name
+          filter=FieldFilter("appName", "==", app_name)
       )
       docs = await query.get()
     else:
       query = self.client.collection_group(self.sessions_collection).where(
-          "appName", "==", app_name
+          filter=FieldFilter("appName", "==", app_name)
       )
       docs = await query.get()
 
@@ -440,6 +442,21 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
 
     sessions.sort(key=lambda s: (s.last_update_time, s.user_id, s.id))
     return ListSessionsResponse(sessions=sessions)
+
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    """Gets the user-scoped state from Firestore."""
+    user_ref = (
+        self.client.collection(self.user_state_collection)
+        .document(app_name)
+        .collection("users")
+        .document(user_id)
+    )
+    user_doc = await user_ref.get()
+    if not user_doc.exists:
+      return {}
+    return user_doc.to_dict() or {}
 
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
@@ -544,16 +561,16 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
             else None
         )
 
-        # 2. Writes
+        # 2. Writes. Documents are written whole, as in create_session.
         if app_updates and app_snap is not None:
           current_app = (app_snap.to_dict() or {}) if app_snap.exists else {}
           current_app.update(app_updates)
-          transaction.set(app_ref, current_app, merge=True)
+          transaction.set(app_ref, current_app)
 
         if user_updates and user_snap is not None:
-          current_user = user_snap.to_dict() if user_snap.exists else {}
+          current_user = (user_snap.to_dict() or {}) if user_snap.exists else {}
           current_user.update(user_updates)
-          transaction.set(user_ref, current_user, merge=True)
+          transaction.set(user_ref, current_user)
 
         new_revision = current_revision + 1
 
@@ -588,7 +605,10 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
             event_ref,
             {
                 "event_data": event_data,
-                "timestamp": firestore.SERVER_TIMESTAMP,
+                # Event time, not write time: after_timestamp filters on it.
+                "timestamp": datetime.fromtimestamp(
+                    event.timestamp, tz=timezone.utc
+                ),
                 "appName": session.app_name,
                 "userId": session.user_id,
             },

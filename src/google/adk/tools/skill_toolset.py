@@ -34,6 +34,7 @@ import secrets
 from typing import Any
 from typing import cast
 from typing import Optional
+from typing import Sequence
 from typing import TYPE_CHECKING
 import warnings
 
@@ -61,6 +62,7 @@ if TYPE_CHECKING:
   from ..agents.llm_agent import ToolUnion
   from ..environment import BaseEnvironment
   from ..models.llm_request import LlmRequest
+  from ..workflow._base_node import BaseNode
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -2034,7 +2036,7 @@ class SkillToolset(BaseToolset):
       skills_folder: Path | str | None = None,
       script_timeout: int = _DEFAULT_SCRIPT_TIMEOUT,
       save_output_artifacts: bool = False,
-      additional_tools: list[ToolUnion] | None = None,
+      additional_tools: Sequence[ToolUnion | BaseNode] | None = None,
       tool_name_prefix: str | None = None,
       tool_filter: ToolPredicate | list[str] | None = None,
       discovery_mode: SkillDiscoveryMode = SkillDiscoveryMode.LAZY,
@@ -2056,15 +2058,16 @@ class SkillToolset(BaseToolset):
       save_output_artifacts: Optional flag to automatically save files generated
         by skill scripts as artifacts in the artifact service. Only supported
         with code_executor (not environment). Defaults to False.
-      additional_tools: Optional list of `BaseTool` or `BaseToolset` instances
-        to be made available to the agent when certain skills are activated.
+      additional_tools: Optional list of callables, `BaseTool`, `BaseToolset`,
+        or `BaseNode` instances to be made available to the agent when certain
+        skills are activated.
       tool_name_prefix: Optional prefix to prepend to tool names.
       tool_filter: Optional filter to select specific tools.
       discovery_mode: How the local catalog reaches the model. Defaults to
         `LAZY`, where it calls `list_skills`. `EAGER` drops that tool and
         injects the catalog into the system instruction instead.
-      lifecycle_config: How long skills stay active once loaded, how many may
-        be at once, and whether they are rechecked against their definition.
+      lifecycle_config: How long skills stay active once loaded, how many may be
+        at once, and whether they are rechecked against their definition.
         Defaults to leaving every skill active for the rest of the session,
         which is how skills behaved before this existed.
 
@@ -2135,6 +2138,9 @@ class SkillToolset(BaseToolset):
     ] = collections.OrderedDict()
     self._max_cache_turns = 16
 
+    from ..agents.llm_agent import _wrap_base_node_as_tool
+    from ..workflow._base_node import BaseNode
+
     self._provided_tools_by_name = {}
     self._provided_toolsets = []
     for tool_union in additional_tools or []:
@@ -2142,6 +2148,9 @@ class SkillToolset(BaseToolset):
         self._provided_toolsets.append(tool_union)
       elif isinstance(tool_union, BaseTool):
         self._provided_tools_by_name[tool_union.name] = tool_union
+      elif isinstance(tool_union, BaseNode):
+        nt = _wrap_base_node_as_tool(tool_union)
+        self._provided_tools_by_name[nt.name] = nt
       elif callable(tool_union):
         ft = FunctionTool(tool_union)
         self._provided_tools_by_name[ft.name] = ft
@@ -2614,9 +2623,10 @@ class SkillToolset(BaseToolset):
       self, skills: list[models.Skill]
   ) -> SkillToolset:
     """Creates a new SkillToolset with identical configuration but modified skills."""
-    additional_tools = (
-        list(self._provided_tools_by_name.values()) + self._provided_toolsets
-    )
+    additional_tools: list[ToolUnion] = [
+        *self._provided_tools_by_name.values(),
+        *self._provided_toolsets,
+    ]
     return SkillToolset(
         skills=skills,
         registry=self._registry,

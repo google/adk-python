@@ -14,6 +14,7 @@
 
 """Tests for ToolNode input parsing and execution."""
 
+import asyncio
 import itertools
 import re
 from typing import Any
@@ -21,6 +22,7 @@ from typing import Any
 from google.adk.agents._caller_principal import CallerPrincipal
 from google.adk.agents.context import Context
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
 from google.adk.platform import uuid as platform_uuid
@@ -28,13 +30,14 @@ from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.bash_tool import ExecuteBashTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_confirmation import ToolConfirmation
+from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.adk.workflow import node
 from google.adk.workflow import START
+from google.adk.workflow._errors import WorkflowDataError
 from google.adk.workflow._tool_node import _ToolNode as ToolNode
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -571,6 +574,32 @@ async def test_tool_node_failure_propagates_when_no_plugin_handles_it():
 
 
 @pytest.mark.asyncio
+async def test_tool_node_cancelled_runs_plugin_on_tool_error_callbacks():
+  """Tests that cancelling a tool node runs plugin error callbacks and stays cancelled."""
+  tool_started = asyncio.Event()
+
+  async def slow_lookup(city: str) -> dict[str, str]:
+    tool_started.set()
+    await asyncio.Event().wait()
+    return {"city": city}
+
+  plugin = _RecordingToolPlugin(error_response={"error": "recovered"})
+
+  run = asyncio.create_task(
+      _run_tool_node_with_plugin(FunctionTool(func=slow_lookup), plugin)
+  )
+  await tool_started.wait()
+  run.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await run
+
+  assert plugin.calls == [
+      ("before", "slow_lookup", {"city": "Paris"}),
+      ("error", "slow_lookup", ""),
+  ]
+
+
+@pytest.mark.asyncio
 async def test_tool_node_failure_drops_confirmation_requested_before_it():
   """A tool that fails after requesting confirmation leaves no request pending.
 
@@ -677,7 +706,7 @@ class _ConfirmationWorkflow:
     `caller_principal` stands in for what a serving layer would set on the
     invocation that carries the answer; None is an in-process caller.
     """
-    interrupt_id = get_request_input_interrupt_ids(request)[0]
+    [interrupt_id] = extract_event_interrupt_ids(request)
     new_message = testing_utils.UserContent(
         create_request_input_response(interrupt_id, response)
     )
@@ -1002,7 +1031,7 @@ async def _answer(
 
   Returns the next input request the workflow paused on, if any.
   """
-  interrupt_id = get_request_input_interrupt_ids(request)[0]
+  [interrupt_id] = extract_event_interrupt_ids(request)
   events = await runner.run_async(
       new_message=testing_utils.UserContent(
           create_request_input_response(interrupt_id, response)
@@ -1204,7 +1233,7 @@ async def test_tool_node_authenticated_function_tool_pause_and_resume(
   from google.adk.auth.auth_credential import AuthCredentialTypes
   from google.adk.auth.auth_tool import AuthConfig
   from google.adk.tools.authenticated_function_tool import AuthenticatedFunctionTool
-  from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+  from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 
   auth_config = AuthConfig(
       auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Api-Key"}),
@@ -1254,7 +1283,7 @@ async def test_tool_node_authenticated_function_tool_pause_and_resume(
   auth_events = workflow_testing_utils.get_auth_request_events(events1)
   assert len(auth_events) == 1
   fc = auth_events[0].content.parts[0].function_call
-  assert fc.name == REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+  assert fc.name == REQUEST_EUC_FUNCTION_CALL_NAME
   assert fc.id == "wf_auth:tool_node_auth_wf@1/fetch_data@1"
   assert not seen_credentials
   assert not seen_downstream
@@ -1272,7 +1301,7 @@ async def test_tool_node_authenticated_function_tool_pause_and_resume(
   resume_part = types.Part(
       function_response=types.FunctionResponse(
           id=fc.id,
-          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          name=REQUEST_EUC_FUNCTION_CALL_NAME,
           response=auth_response.model_dump(exclude_none=True, by_alias=True),
       )
   )
@@ -1301,7 +1330,7 @@ async def test_tool_node_dynamic_request_credential_pause_and_resume(
   from google.adk.auth.auth_credential import AuthCredential
   from google.adk.auth.auth_credential import AuthCredentialTypes
   from google.adk.auth.auth_tool import AuthConfig
-  from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+  from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 
   auth_config = AuthConfig(
       auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Api-Key"}),
@@ -1368,7 +1397,7 @@ async def test_tool_node_dynamic_request_credential_pause_and_resume(
   resume_part = types.Part(
       function_response=types.FunctionResponse(
           id=fc.id,
-          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          name=REQUEST_EUC_FUNCTION_CALL_NAME,
           response=auth_response.model_dump(exclude_none=True, by_alias=True),
       )
   )
@@ -1394,7 +1423,7 @@ async def test_tool_node_malformed_auth_response_is_not_a_tool_error():
   from google.adk.auth.auth_credential import AuthCredential
   from google.adk.auth.auth_tool import AuthConfig
   from google.adk.tools.authenticated_function_tool import AuthenticatedFunctionTool
-  from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+  from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 
   auth_config = AuthConfig(
       auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Api-Key"}),
@@ -1432,7 +1461,7 @@ async def test_tool_node_malformed_auth_response_is_not_a_tool_error():
   resume_part = types.Part(
       function_response=types.FunctionResponse(
           id=fc.id,
-          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          name=REQUEST_EUC_FUNCTION_CALL_NAME,
           response={"result": "not a credential"},
       )
   )
@@ -1551,7 +1580,7 @@ async def test_tool_node_non_function_tool_no_output_fast_forwards_on_resume(
   assert request is not None
 
   # Turn 2: resume pause_node. Tool should fast-forward and NOT re-execute.
-  interrupt_id = get_request_input_interrupt_ids(request)[0]
+  [interrupt_id] = extract_event_interrupt_ids(request)
   await runner.run_async(
       new_message=testing_utils.UserContent(
           create_request_input_response(interrupt_id, {"status": "ok"})
@@ -1620,3 +1649,61 @@ async def test_tool_node_autoboxes_streaming_and_rejects_multi_param():
         "scalar_value",
         tool=MockToolWithDeclaration(param_names=("param_a", "param_b")),
     )
+
+
+def test_tool_node_uses_custom_name():
+  tool_node = ToolNode(
+      name="custom_weather_node", tool=MockToolWithDeclaration()
+  )
+  assert tool_node.name == "custom_weather_node"
+
+
+_CONFIRMATION_INTERRUPT_ID = "wf_tool_confirmation:delete_node@1"
+
+
+async def _resume_delete_node(resume_input: Any) -> tuple[list[Event], Context]:
+  """Resumes a confirmation-gated ToolNode with `resume_input`."""
+  inv_ctx = await testing_utils.create_invocation_context(
+      Workflow(name="host_wf")
+  )
+  tool_node = ToolNode(
+      name="delete_node",
+      tool=FunctionTool(
+          func=lambda name: {"deleted": name}, require_confirmation=True
+      ),
+  )
+  ctx = Context(
+      invocation_context=inv_ctx,
+      node_path="delete_node@1",
+      resume_inputs={_CONFIRMATION_INTERRUPT_ID: resume_input},
+  )
+  events = [e async for e in tool_node.run(ctx=ctx, node_input={"name": "x"})]
+  return events, ctx
+
+
+@pytest.mark.asyncio
+async def test_tool_node_resume_accepts_tool_confirmation_instance():
+  events, ctx = await _resume_delete_node(
+      ToolConfirmation(confirmed=True, payload={"ok": 1})
+  )
+
+  assert events[0].output == {"deleted": "x"}
+  assert ctx.tool_confirmation.payload == {"ok": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resume_input, match",
+    [
+        ("not_a_dict_or_confirmation", "must be a ToolConfirmation payload"),
+        (
+            {"confirmed": "not_a_valid_bool_dict", "extra_bad": object()},
+            "Invalid tool confirmation response",
+        ),
+    ],
+)
+async def test_tool_node_resume_rejects_invalid_confirmation(
+    resume_input, match
+):
+  with pytest.raises(WorkflowDataError, match=match):
+    await _resume_delete_node(resume_input)

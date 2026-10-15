@@ -305,6 +305,36 @@ metadata uses the camelCase aliases, so both spellings are listed.
 """
 
 
+_STATE_DELTA_ACTION_FIELDS = frozenset({"state_delta", "stateDelta"})
+"""Both spellings of ``EventActions.state_delta`` in serialized metadata."""
+
+
+def _warn_if_peer_state_delta(parsed_actions: dict[str, Any]) -> None:
+  """Warns that a non-empty peer state delta will not reach caller state."""
+  if any(parsed_actions.get(key) for key in _STATE_DELTA_ACTION_FIELDS):
+    logger.warning(
+        "Ignoring a session state delta from a remote A2A peer. Session state"
+        " is local to each agent; return values needed by the caller as event"
+        " content or task output instead."
+    )
+
+
+def _warn_if_peer_metadata_has_state_delta(a2a_object: Any) -> None:
+  """Warns when a peer's task, update or message metadata has a state delta.
+
+  The legacy response path never rebuilds ``EventActions`` from peer metadata,
+  so it calls this to surface the dropped delta the same way
+  ``_extract_event_actions`` does.
+  """
+  metadata = _compat.meta_to_dict(getattr(a2a_object, "metadata", None))
+  raw_actions = metadata.get(_get_adk_metadata_key("actions"))
+  if raw_actions is None:
+    return
+  parsed_actions = _parse_adk_metadata_value(raw_actions)
+  if isinstance(parsed_actions, dict):
+    _warn_if_peer_state_delta(parsed_actions)
+
+
 def _extract_event_actions(metadata: Any) -> EventActions:
   """Extracts ADK event actions from A2A metadata.
 
@@ -336,10 +366,12 @@ def _extract_event_actions(metadata: Any) -> EventActions:
       for key, value in parsed_actions.items()
       if key in _PEER_SETTABLE_ACTION_FIELDS
   }
-  if len(peer_actions) != len(parsed_actions):
+  dropped_fields = set(parsed_actions) - set(peer_actions)
+  _warn_if_peer_state_delta(parsed_actions)
+  if dropped_fields:
     logger.debug(
         "Dropping ADK actions metadata fields that a peer may not set: %s",
-        sorted(set(parsed_actions) - set(peer_actions)),
+        sorted(dropped_fields),
     )
 
   try:
@@ -525,9 +557,10 @@ def convert_a2a_task_to_event(
         )
         if not metadata_fields:
           metadata_fields = _extract_all_metadata_fields(artifact.metadata)
-      output_parts, _ = _convert_a2a_parts_to_adk_parts(
+      output_parts, ids = _convert_a2a_parts_to_adk_parts(
           artifact_parts, part_converter
       )
+      long_running_function_ids.update(ids)
     if status_message and (
         a2a_task.status.state
         in (
@@ -616,7 +649,7 @@ def convert_a2a_message_to_event(
     raise ValueError("A2A message cannot be None")
 
   try:
-    output_parts, _ = _convert_a2a_parts_to_adk_parts(
+    output_parts, long_running_function_ids = _convert_a2a_parts_to_adk_parts(
         a2a_message.parts, part_converter
     )
     content_role = _a2a_role_to_content_role(getattr(a2a_message, "role", None))
@@ -626,6 +659,7 @@ def convert_a2a_message_to_event(
         invocation_context,
         author,
         _extract_event_actions(a2a_message.metadata),
+        long_running_function_ids,
         content_role=content_role,
         **metadata_fields,
     )
@@ -719,7 +753,7 @@ def convert_a2a_artifact_update_to_event(
     raise ValueError("A2A artifact update cannot be None")
 
   try:
-    output_parts, _ = _convert_a2a_parts_to_adk_parts(
+    output_parts, long_running_function_ids = _convert_a2a_parts_to_adk_parts(
         a2a_artifact_update.artifact.parts, part_converter
     )
     metadata_fields = _extract_all_metadata_fields(
@@ -730,6 +764,7 @@ def convert_a2a_artifact_update_to_event(
         invocation_context,
         author,
         _extract_event_actions(a2a_artifact_update.artifact.metadata),
+        long_running_function_ids,
         partial=not a2a_artifact_update.last_chunk,
         **metadata_fields,
     )

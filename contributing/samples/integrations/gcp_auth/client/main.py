@@ -410,8 +410,10 @@ async def validate_user_id(request: Request):
     }
 
   try:
-    state_bytes = base64.urlsafe_b64decode(
-        user_id_validation_state + "=" * (-len(user_id_validation_state) % 4)
+    state_bytes = base64.b64decode(
+        user_id_validation_state + "=" * (-len(user_id_validation_state) % 4),
+        altchars=b"-_",
+        validate=True,
     )
 
     client_options = None

@@ -381,3 +381,87 @@ async def test_run_async_sse_rebuilt_responses_stay_partial():
       'scrubbed',
       'scrubbed',
   ]
+
+
+_USAGE = types.GenerateContentResponseUsageMetadata(
+    prompt_token_count=120,
+    candidates_token_count=8,
+    total_token_count=128,
+)
+
+
+@pytest.mark.asyncio
+async def test_after_model_callback_replacement_inherits_usage_metadata():
+  """A rebuilt replacement keeps the model call's token accounting."""
+  replacement = _text_response('scrubbed')
+  agent = Agent(
+      name='test_agent',
+      after_model_callback=[_rebuilding_callback(replacement)],
+  )
+  original = _text_response('Hello world.')
+  original.usage_metadata = _USAGE
+
+  result = await _run_handle_after_model_callback(agent, original)
+
+  assert result.usage_metadata == _USAGE
+  assert result.content.parts[0].text == 'scrubbed'
+  # The callback's object is not mutated; inheritance returns a copy.
+  assert replacement.usage_metadata is None
+
+
+@pytest.mark.asyncio
+async def test_after_model_callback_replacement_explicit_usage_respected():
+  """A replacement that reports its own usage is not overridden."""
+  own_usage = types.GenerateContentResponseUsageMetadata(
+      prompt_token_count=1, candidates_token_count=1, total_token_count=2
+  )
+  replacement = _text_response('scrubbed')
+  replacement.usage_metadata = own_usage
+  agent = Agent(
+      name='test_agent',
+      after_model_callback=[_rebuilding_callback(replacement)],
+  )
+  original = _text_response('Hello world.')
+  original.usage_metadata = _USAGE
+
+  result = await _run_handle_after_model_callback(agent, original)
+
+  assert result.usage_metadata == own_usage
+
+
+class _StreamingFakeModelWithUsage(_StreamingFakeModel):
+  """Like _StreamingFakeModel, but reports usage on the final response only."""
+
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    deltas = ['Hello ', 'world.']
+    if stream:
+      for delta in deltas:
+        yield _text_response(delta, partial=True)
+    final = _text_response(''.join(deltas))
+    final.usage_metadata = _USAGE
+    yield final
+
+
+@pytest.mark.asyncio
+async def test_run_async_sse_rebuilt_final_keeps_usage_metadata():
+  """End-to-end: the rebuilt final event still carries the call's usage."""
+  agent = Agent(
+      name='test_agent',
+      model=_StreamingFakeModelWithUsage(model='fake-streaming'),
+      after_model_callback=[_rebuilding_callback(_text_response('scrubbed'))],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      user_content='test message',
+      run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+  )
+
+  flow = BaseLlmFlowForTesting()
+  events = []
+  async for event in flow.run_async(invocation_context):
+    events.append(event)
+
+  assert [event.partial for event in events] == [True, True, None]
+  assert [event.usage_metadata for event in events] == [None, None, _USAGE]

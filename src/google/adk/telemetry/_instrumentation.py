@@ -19,10 +19,13 @@ import dataclasses
 import logging
 import sys
 import time
+from typing import AsyncGenerator
 from typing import AsyncIterator
+from typing import Awaitable
 from typing import Iterator
 from typing import Literal
 from typing import TYPE_CHECKING
+from typing import TypeVar
 
 from opentelemetry import trace
 import opentelemetry.context as context_api
@@ -58,6 +61,128 @@ _TOOL_EXECUTION_TELEMETRY_KEY = context_api.create_key(
     "tool_execution_telemetry"
 )
 _WORKFLOW_SCOPE_KEY = context_api.create_key("adk_workflow_scope")
+_BUSY_INTERVALS_KEY = context_api.create_key("adk_busy_intervals")
+
+_T = TypeVar("_T")
+
+
+@contextlib.contextmanager
+def _using(otel_context: context_api.Context) -> Iterator[None]:
+  """Makes ``otel_context`` current for the duration of the block.
+
+  The block must not suspend on a `yield` that reaches a consumer: attach and
+  detach have to run in one uninterrupted stretch, or the detach lands in a
+  different context than the attach and fails. See `stream_in_scope`.
+  """
+  token = context_api.attach(otel_context)
+  try:
+    yield
+  finally:
+    context_api.detach(token)
+
+
+@contextlib.contextmanager
+def _recording_span(span: trace.Span) -> Iterator[trace.Span]:
+  """`trace.use_span` without the attach.
+
+  Records an escaping exception on ``span`` and ends it, the way
+  `start_as_current_span` would, but leaves the ambient context alone: the
+  span travels by value instead, so it can cross a `yield` safely.
+
+  Catches `Exception` rather than `BaseException`, for the reason upstream
+  `use_span` does: what directly subclasses `BaseException` is not an error
+  the operation made. `GeneratorExit` in particular only says the consumer
+  stopped reading, which is routine for the generators these spans wrap.
+  """
+  try:
+    yield span
+  except Exception as exc:  # pylint: disable=broad-except
+    if span.is_recording():
+      span.record_exception(exc)
+      span.set_status(
+          trace.Status(trace.StatusCode.ERROR, f"{type(exc).__name__}: {exc}")
+      )
+    raise
+  finally:
+    span.end()
+
+
+_R = TypeVar("_R")
+
+
+async def stream_in_scope(
+    otel_context: context_api.Context,
+    agen: AsyncGenerator[_T, None],
+) -> AsyncGenerator[_T, None]:
+  """Drives ``agen`` under ``otel_context``, attached only while it runs.
+
+  ADK's telemetry scopes wrap async generators whose events are yielded all the
+  way out to the caller. Holding an OTel attach token across one of those
+  yields is unsafe: an async generator has no context of its own, so it is
+  resumed -- and finalized -- in the context of whoever drives it. A consumer
+  that closes the stream from another task, or drops it and lets asyncio's
+  async-generator finalizer close it, makes the detach run against a token
+  created somewhere else. `context_api.detach` does not raise on that; it logs
+  "Failed to detach context" and carries on, leaving the scope's span attached
+  to the consumer's context for good, so everything traced there afterwards is
+  parented to a span that has already ended (b/485899016).
+
+  Attaching around each drive keeps every attach/detach pair inside one
+  uninterrupted stretch of this generator's body, where the context cannot
+  shift. It also leaves the consumer's context untouched while it handles an
+  event, so a caller traces into its own span rather than into ADK's.
+
+  Whichever context the generator leaves current is carried into its next
+  resumption, so an inner streaming span opened inside it stays current across
+  yields instead of being reset to the initial context.
+
+  Args:
+    otel_context: The scope's context, carried by value. Whoever built it must
+      not have attached it.
+    agen: The generator to drive. Owned by this function, which closes it.
+
+  Yields:
+    Everything ``agen`` yields, unchanged.
+  """
+  active_ctx = otel_context
+
+  async def _drive(step: Awaitable[_R]) -> _R:
+    nonlocal active_ctx
+    token = context_api.attach(active_ctx)
+    try:
+      return await step
+    finally:
+      active_ctx = context_api.get_current()
+      context_api.detach(token)
+
+  closing = contextlib.aclosing(agen)
+  owned = await closing.__aenter__()
+  pending: BaseException | None = None
+  try:
+    while True:
+      try:
+        if pending is None:
+          item = await _drive(owned.__anext__())
+        else:
+          thrown, pending = pending, None
+          item = await _drive(owned.athrow(thrown))
+      except StopAsyncIteration:
+        return
+      try:
+        yield item
+      except GeneratorExit:
+        raise
+      except BaseException as exc:  # pylint: disable=broad-except
+        # Forwarded on the next drive, so that a consumer cancelling the
+        # stream reaches the generator's own handlers and not just its
+        # `finally` blocks.
+        pending = exc
+  finally:
+    # Closed here, under the scope's context, because teardown inside `agen`
+    # reports telemetry of its own -- a nested scope closing, an
+    # after_agent callback -- and those spans would otherwise start a trace
+    # of their own.
+    await _drive(closing.__aexit__(None, None, None))
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -89,6 +214,14 @@ class _AgentInvocationScope(_Accumulator):
 
   agent_name: str
   """The agent these totals are exclusive to."""
+
+  otel_context: context_api.Context = dataclasses.field(
+      default_factory=context_api.Context
+  )
+  """The context the invocation runs under, carrying its span and this scope.
+
+  Published by `record_agent_invocation` rather than attached, so a caller
+  streaming events out of the scope can hand it to `stream_in_scope`."""
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -128,12 +261,114 @@ class _WorkflowScope(_Accumulator):
       scope = scope.parent
 
 
+def _union_seconds(intervals: list[tuple[float, float]]) -> float:
+  """Returns how long the union of `intervals` covers, in seconds.
+
+  Intervals that overlap count once, which is what makes the result the time
+  something was in flight rather than the sum of how long each one took.
+
+  Args:
+    intervals: (start, end) pairs on one shared clock, in any order.
+  """
+  total = 0.0
+  # The furthest point already counted. Everything up to here is accounted
+  # for, so an interval ending before it adds nothing.
+  counted_to = float("-inf")
+  for start, end in sorted(intervals):
+    if end <= counted_to:
+      continue
+    total += end - max(start, counted_to)
+    counted_to = end
+  return total
+
+
+@dataclasses.dataclass
+class _BusyIntervals:
+  """When a turn was inside a model call or a tool, as raw intervals.
+
+  Filled in only while :func:`collect_busy_intervals` is in force, for a caller
+  that needs where a turn's wall-clock time went as data -- eval reports the
+  split per invocation -- rather than as the histograms this module otherwise
+  publishes.
+
+  Intervals are kept whole rather than summed on arrival because they overlap:
+  tools run concurrently, sub-agents run concurrently and share the turn's
+  invocation id, and an `AgentTool` runs model calls nested inside its own
+  tool interval. Summing would count an overlap twice and drive the framework
+  remainder negative; taking the union does not.
+
+  Every endpoint comes from `time.monotonic()`, one process-wide clock, so
+  intervals recorded by different tasks are directly comparable.
+  """
+
+  model: list[tuple[float, float]] = dataclasses.field(default_factory=list)
+  """(start, end) per wait on the model, which for a streamed response is one
+  per chunk rather than one per call."""
+
+  tool: list[tuple[float, float]] = dataclasses.field(default_factory=list)
+  """(start, end) per tool execution."""
+
+  def add_model_interval(self, start_time: float) -> None:
+    """Closes a model call that began at `start_time`."""
+    self.model.append((start_time, time.monotonic()))
+
+  def add_tool_interval(self, start_time: float) -> None:
+    """Closes a tool execution that began at `start_time`."""
+    self.tool.append((start_time, time.monotonic()))
+
+  def model_seconds(self) -> float:
+    """Seconds with at least one model call in flight."""
+    return _union_seconds(self.model)
+
+  def tool_seconds(self) -> float:
+    """Seconds inside a tool that were not already spent awaiting a model.
+
+    An `AgentTool` runs its model calls inside its own tool interval, so that
+    time is attributed to the model rather than counted under both. What is
+    left is the tool's own work: the function body and whatever it calls out
+    to.
+    """
+    return _union_seconds(self.model + self.tool) - _union_seconds(self.model)
+
+  def busy_seconds(self) -> float:
+    """Seconds with a model call or a tool in flight, overlap counted once.
+
+    What is left of the turn after this is the framework's own time.
+    """
+    return _union_seconds(self.model + self.tool)
+
+
+@contextlib.contextmanager
+def collect_busy_intervals() -> Iterator[_BusyIntervals]:
+  """Collects the model and tool intervals of everything run inside the block.
+
+  Nothing collects unless a caller asks, so a run that does not pays one
+  context lookup per model and tool call and nothing more.
+
+  The collector rides the otel context rather than a ContextVar of its own, for
+  the same reason the workflow scope does: it reaches the tasks the run spawns,
+  and a caller that abandons the block keeps its own earlier context, so the
+  collector cannot outlive it.
+
+  Yields:
+    The collector, filled in as the block runs.
+  """
+  collector = _BusyIntervals()
+  token = context_api.attach(
+      context_api.set_value(_BUSY_INTERVALS_KEY, collector)
+  )
+  try:
+    yield collector
+  finally:
+    context_api.detach(token)
+
+
 @contextlib.contextmanager
 def record_invocation(
     entrypoint_node: BaseNode | None,
     conversation_id: str,
     run_config: RunConfig | None = None,
-) -> Iterator[None]:
+) -> Iterator[context_api.Context]:
   """Top-level invocation span for a runner invocation.
 
   Schema v1 emits the legacy ``invocation`` span. Schema v2 replaces it with an
@@ -150,11 +385,15 @@ def record_invocation(
       experimental opt-in the span's token scope is gated on.
 
   Yields:
-    Nothing; the span (if any) is active for the duration of the block.
+    The context the invocation runs under, carrying the span when there is one.
+    It is handed back by value rather than attached: pass it to
+    `stream_in_scope` to drive the invocation's events under it (b/485899016).
   """
   if resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED:
-    with tracing.tracer.start_as_current_span("invocation"):
-      yield
+    parent_context = context_api.get_current()
+    span = tracing.tracer.start_span("invocation", context=parent_context)
+    with _recording_span(span):
+      yield trace.set_span_in_context(span, parent_context)
     return
 
   from . import node_tracing
@@ -162,7 +401,7 @@ def record_invocation(
 
   if isinstance(entrypoint_node, Workflow):
     # The workflow's own node span is the entrypoint `invoke_workflow` span.
-    yield
+    yield context_api.get_current()
     return
 
   entrypoint_name = entrypoint_node.name if entrypoint_node else ""
@@ -170,8 +409,8 @@ def record_invocation(
       entrypoint_name,
       conversation_id,
       telemetry_config=run_config.telemetry if run_config else None,
-  ):
-    yield
+  ) as (_, workflow_context):
+    yield workflow_context
 
 
 @dataclasses.dataclass
@@ -446,6 +685,12 @@ def _accumulating_scopes(
   return tuple(scopes)
 
 
+def _busy_intervals() -> _BusyIntervals | None:
+  """Returns the interval collector in force, None when nobody is collecting."""
+  value = context_api.get_value(_BUSY_INTERVALS_KEY)
+  return value if isinstance(value, _BusyIntervals) else None
+
+
 def _accumulate_tool_call(workflow_scope: _WorkflowScope | None) -> None:
   """Counts one tool call against every scope it belongs to.
 
@@ -572,25 +817,32 @@ def _accumulate_tokens(
 async def record_agent_invocation(
     ctx: InvocationContext, agent: BaseAgent
 ) -> AsyncIterator[_AgentInvocationScope]:
-  """Unified context manager for consolidated agent invocation telemetry."""
+  """Unified context manager for consolidated agent invocation telemetry.
+
+  The scope's context is published on ``scope.otel_context`` rather than
+  attached, so a caller streaming events out of this block hands it to
+  `stream_in_scope` instead of holding a token across a yield (b/485899016).
+  """
   start_time = time.monotonic()
   caught_error: Exception | None = None
-  span: trace.Span | None = None
   span_name = f"invoke_agent {agent.name}"
+  parent_context = context_api.get_current()
+  span = tracing.tracer.start_span(span_name, context=parent_context)
   scope = _AgentInvocationScope(agent_name=agent.name)
-  token = context_api.attach(
-      context_api.set_value(_AGENT_INVOCATION_SCOPE_KEY, scope)
+  # Built after the scope exists, because the context carries the scope.
+  scope.otel_context = context_api.set_value(
+      _AGENT_INVOCATION_SCOPE_KEY,
+      scope,
+      trace.set_span_in_context(span, parent_context),
   )
   try:
-    with tracing.tracer.start_as_current_span(span_name) as s:
-      span = s
+    with _recording_span(span):
       tracing.trace_agent_invocation(span, agent, ctx)
       yield scope
   except Exception as e:
     caught_error = e
     raise
   finally:
-    context_api.detach(token)
     _record_agent_metrics(
         agent.name,
         _metrics.get_elapsed_s(span, start_time),
@@ -610,6 +862,7 @@ async def record_tool_execution(
   """Unified context manager for consolidated tool execution telemetry."""
   start_time = time.monotonic()
   workflow_scope = _workflow_scope()
+  busy_intervals = _busy_intervals()
   caught_error: Exception | None = None
   detected_error_type: str | None = None
   span: trace.Span | None = None
@@ -648,6 +901,10 @@ async def record_tool_execution(
               span, tel_ctx.response_source, invocation_context
           )
         if tel_ctx.skill_telemetry is not None:
+          if resolve_schema_version() >= SCHEMA_VERSION_SEMCONV_ALIGNED:
+            span.update_name(
+                _skill_span_name(tool.name, tel_ctx.skill_telemetry)
+            )
           _dispatch_skill_telemetry(
               span,
               tel_ctx.skill_telemetry,
@@ -657,6 +914,8 @@ async def record_tool_execution(
               error_type=tel_ctx.error_type,
           )
   finally:
+    if busy_intervals is not None:
+      busy_intervals.add_tool_interval(start_time)
     _accumulate_tool_call(workflow_scope)
     try:
       _metrics.record_tool_execution_duration(
@@ -671,6 +930,52 @@ async def record_tool_execution(
       logger.exception(
           "Failed to record tool execution duration for tool %s", tool.name
       )
+
+
+async def time_model_awaits(
+    responses: AsyncIterator[LlmResponse],
+) -> AsyncGenerator[LlmResponse, None]:
+  """Yields from `responses`, timing how long each item was awaited.
+
+  Wraps the model's response stream so that what is measured is the time
+  blocked on the model, and only that. Timing the enclosing
+  :func:`record_inference_telemetry` block instead would measure the wrong
+  thing: that block stays open while the caller acts on a response, so a turn
+  whose model asks for a tool would count the tool's own runtime as model time.
+  The same reasoning already governs where the inference span is closed.
+
+  For a streamed response this records one interval per chunk, so the time the
+  caller spends handling a chunk before asking for the next falls outside them.
+
+  A pass-through when nobody is collecting, which is the default.
+
+  Args:
+    responses: The model's responses, as the flow received them.
+
+  Yields:
+    Each response, unchanged and in order.
+  """
+  collector = _busy_intervals()
+  if collector is None:
+    async for response in responses:
+      yield response
+    return
+
+  iterator = responses.__aiter__()
+  while True:
+    started = time.monotonic()
+    try:
+      response = await iterator.__anext__()
+    except StopAsyncIteration:
+      return
+    finally:
+      # In `finally` so that every pull is timed, not just the ones that
+      # produced a response: the pull that ends the stream waited on the model
+      # too, and so did one that failed. A failed call recovered by
+      # `on_model_error_callback` would otherwise land its wait in the
+      # framework remainder.
+      collector.add_model_interval(started)
+    yield response
 
 
 @contextlib.asynccontextmanager
@@ -722,6 +1027,21 @@ async def record_inference_telemetry(
           "Failed to record inference metrics for agent %s",
           agent.name if agent is not None else "<unknown>",
       )
+
+
+def _skill_span_name(tool_name: str, skill_telemetry: SkillTelemetry) -> str:
+  """Names an ``execute_tool`` span per the GenAI semconv skill refinements."""
+  skill_name = skill_telemetry.skill_name.maybe_hallucinated_value
+  match skill_telemetry:
+    case SkillLoadTelemetry():
+      return f"execute_tool {tool_name} {skill_name}"
+    case SkillResourceLoadTelemetry():
+      resource_name = skill_telemetry.resource_path.maybe_hallucinated_value
+    case SkillScriptExecutionTelemetry():
+      resource_name = skill_telemetry.script_path.maybe_hallucinated_value
+    case _:
+      assert_never(skill_telemetry)
+  return f"execute_tool {tool_name} {skill_name} {resource_name}"
 
 
 def _dispatch_skill_telemetry(

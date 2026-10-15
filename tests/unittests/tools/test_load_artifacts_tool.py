@@ -487,10 +487,10 @@ def test_maybe_base64_to_bytes_decodes_urlsafe_base64():
   assert _maybe_base64_to_bytes(encoded) == original
 
 
-def test_maybe_base64_to_bytes_returns_none_for_invalid():
+@pytest.mark.parametrize('data', ['x', 'good days', 'hello world!'])
+def test_maybe_base64_to_bytes_returns_none_for_invalid(data):
   """Invalid base64 strings return None."""
-  # Single character is invalid (base64 requires length % 4 == 0 after padding)
-  assert _maybe_base64_to_bytes('x') is None
+  assert _maybe_base64_to_bytes(data) is None
 
 
 def test_get_declaration_with_json_schema_feature_enabled():

@@ -96,23 +96,26 @@ async def send_to_model(
 ) -> None:
   """Sends data to model."""
   run_config = _require_run_config(invocation_context)
-  audio_cache_manager = flow.audio_cache_manager
+  realtime_cache_manager = flow._realtime_cache_manager
   while True:
     live_request_queue = invocation_context.live_request_queue
     assert live_request_queue is not None
     live_request = await live_request_queue.get()
     # duplicate the live_request to all the active streams
+    active_streams = [
+        active.input_stream
+        for active in (
+            invocation_context._active_background_tools or {}
+        ).values()
+        if active.input_stream is not None
+    ]
     logger.debug(
-        'Sending live request %s to active streams: %s',
+        'Sending live request %s to %d active stream(s)',
         live_request,
-        invocation_context.active_streaming_tools,
+        len(active_streams),
     )
-    if invocation_context.active_streaming_tools:
-      for active_streaming_tool in (
-          invocation_context.active_streaming_tools
-      ).values():
-        if active_streaming_tool.stream:
-          active_streaming_tool.stream.send(live_request)
+    for stream in active_streams:
+      stream.send(live_request)
     # Yield to event loop for cooperative multitasking
     await asyncio.sleep(0)
 
@@ -160,7 +163,7 @@ async def send_to_model(
           and live_request.blob.mime_type
           and live_request.blob.mime_type.startswith('audio/')
       ):
-        audio_cache_manager.cache_audio(
+        realtime_cache_manager.cache_audio(
             invocation_context, live_request.blob, cache_type='input'
         )
 
@@ -220,7 +223,7 @@ async def receive_from_model(
 ) -> AsyncGenerator[Event, None]:
   """Receive data from model and process events using BaseLlmConnection."""
   run_config = _require_run_config(invocation_context)
-  audio_cache_manager = flow.audio_cache_manager
+  realtime_cache_manager = flow._realtime_cache_manager
 
   def get_author_for_event(llm_response: LlmResponse) -> str:
     """Get the author of the event.
@@ -329,7 +332,7 @@ async def receive_from_model(
                       data=part.inline_data.data,
                       mime_type=part.inline_data.mime_type,
                   )
-                  audio_cache_manager.cache_audio(
+                  realtime_cache_manager.cache_audio(
                       invocation_context, audio_blob, cache_type='output'
                   )
 
