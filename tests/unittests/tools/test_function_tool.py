@@ -31,6 +31,7 @@ from google.adk.tools.function_tool import _build_declaration_cached
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
+from google.adk.utils._sync_runner import _use_sync_callable_runner
 import pydantic
 import pytest
 
@@ -2047,3 +2048,52 @@ async def test_signatureless_callable_reraises_internal_type_error(
         args={"required_arg": "trigger_internal_type_error"},
         tool_context=mock_tool_context,
     )
+
+
+@pytest.mark.asyncio
+async def test_builtin_callable_returns_error_on_bad_args(
+    mock_tool_context,
+):
+  """A C builtin callable (target_code is None) returns error dict on bad args."""
+  tool = FunctionTool(min)
+
+  result = await tool.run_async(
+      args={"unexpected_kwarg": "val"},
+      tool_context=mock_tool_context,
+  )
+
+  assert "Invoking `min()` failed" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_partial_async_callable_instance_with_sync_confirmation(
+    mock_tool_context,
+):
+  """FunctionTool awaits functools.partial of an async callable instance."""
+
+  class _AsyncMultiplier:
+
+    async def __call__(self, base: int, factor: int) -> int:
+      return base * factor
+
+  partial_target = functools.partial(_AsyncMultiplier(), 6)
+  partial_target.__name__ = "multiply_six"
+  tool = FunctionTool(
+      partial_target,
+      require_confirmation=lambda factor: False,
+  )
+  runner_targets: list[Any] = []
+
+  async def recording_runner(target: Any, kwargs: dict[str, Any]) -> Any:
+    runner_targets.append(target)
+    return target(**kwargs)
+
+  with _use_sync_callable_runner(recording_runner):
+    result = await tool.run_async(
+        args={"factor": 7},
+        tool_context=mock_tool_context,
+    )
+
+  assert result == 42
+  assert len(runner_targets) == 1
+  assert runner_targets[0] is not partial_target
