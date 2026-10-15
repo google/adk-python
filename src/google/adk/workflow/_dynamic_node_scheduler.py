@@ -349,7 +349,7 @@ class DynamicNodeScheduler:
         and getattr(node, 'mode', None) == AgentMode.TASK
     ):
       if not curr_parent_path:
-        override_isolation_scope = f"{target_node_name}@{ctx.invocation_id}"
+        override_isolation_scope = f'{target_node_name}@{ctx.invocation_id}'
       else:
         override_isolation_scope = node_path
 
