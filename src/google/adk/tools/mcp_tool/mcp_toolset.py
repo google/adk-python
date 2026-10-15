@@ -61,9 +61,11 @@ from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
+# MCPTool stays imported so existing mcp_toolset.MCPTool callers still resolve.
 from .mcp_tool import _dump_mcp_model
 from .mcp_tool import _RESERVED_TOOL_NAMES
-from .mcp_tool import MCPTool
+from .mcp_tool import MCPTool  # pylint: disable=unused-import  # noqa: F401
+from .mcp_tool import McpTool
 from .mcp_tool import ProgressCallbackFactory
 from .mcp_tool import ProgressFnT
 
@@ -523,7 +525,7 @@ class McpToolset(BaseToolset):
 
     # Apply filtering based on context and tool_filter. This runs on every call
     # even on a cache hit, so only the round trip is skipped.
-    tools = []
+    tools: List[BaseTool] = []
     for tool in mcp_tools:
       # Skip rather than let McpTool raise: one reserved name would otherwise
       # fail the whole listing and take the server's honest tools down with it.
@@ -535,7 +537,7 @@ class McpToolset(BaseToolset):
         )
         continue
 
-      mcp_tool = MCPTool(
+      mcp_tool = McpTool(
           mcp_tool=tool,
           mcp_session_manager=self._mcp_session_manager,
           auth_scheme=self._auth_scheme,

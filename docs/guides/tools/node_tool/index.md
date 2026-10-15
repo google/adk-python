@@ -64,13 +64,13 @@ When an agent exposes a node or workflow as a tool, the resulting tool configura
 
 The wrapped node accepts any instance derived from `BaseNode`, including `Workflow` graphs and functions decorated with `@node`. Wrapping an agent directly as a tool is rejected because agents operate with conversational session semantics and belong in `sub_agents`.
 
-For workflows, the input schema is specified using `input_schema` on the `Workflow`. For standalone `@node` functions, parameters and their docstring descriptions are inferred directly from the function signature.
+For workflows, `input_schema` is inferred from the `START` successor nodes when not set explicitly on the `Workflow`. For standalone `@node` functions, parameters and their docstring descriptions are inferred directly from the function signature.
 
 ## Advanced applications
 
 ### Function node as a tool
 
-Plain functions and generators passed to an agent's `tools` list are wrapped as [`FunctionTool`](../function_tool/index.md) instances, which already support streaming intermediate `Event` objects and pausing with `RequestInput`. Decorating a function with `@node` wraps it as a `FunctionNode` instead, which is useful when you want node-level execution settings such as `retry_config`, `timeout`, or `auth_config`, or when you share the same node with a `Workflow` graph. Tool parameter names and types are inferred directly from the function signature and docstrings.
+Plain functions and generators passed to an agent's `tools` list are wrapped as [`FunctionTool`](../function_tool/index.md) instances, which already support streaming intermediate `Event` objects and pausing with `RequestInput`. Decorating a function with `@node` wraps it as a `FunctionNode` instead, which is useful when you want node-level execution settings such as `retry_config`, `timeout`, `auth_config`, or `require_confirmation`, or when you share the same node with a `Workflow` graph. Tool parameter names and types are inferred directly from the function signature and docstrings.
 
 ```python
 from google.adk import Agent
@@ -182,7 +182,7 @@ app = App(
 
 Exposing nodes as tools is intended for task-oriented, bounded workflows and deterministic nodes. The framework prohibits wrapping conversational `BaseAgent` instances as tools because conversational agents require separate turn-taking, multi-message histories, and sub-agent handoffs. To delegate to another agent, configure `sub_agents` instead.
 
-Any workflow used as a tool must define a Pydantic `BaseModel` as its `input_schema` so the runner can generate valid parameter declarations for model function calling. In contrast, standalone `@node` functions declare their parameter names and type hints directly on the function signature.
+Custom `BaseNode` subclasses (or workflows whose `START` successors have untyped or conflicting input schemas) must define an explicit `input_schema` so the runner can generate valid parameter declarations for model function calling. Workflows with typed `START` successors and standalone `@node` functions infer their parameter declarations automatically.
 
 ## Related samples
 

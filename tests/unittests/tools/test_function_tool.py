@@ -31,6 +31,7 @@ from google.adk.tools.function_tool import _build_declaration_cached
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
+from google.adk.utils._sync_runner import _use_sync_callable_runner
 import pydantic
 import pytest
 
@@ -460,6 +461,7 @@ async def test_run_async_with_require_confirmation():
   assert result == {
       "error": "This tool call requires confirmation, please approve or reject."
   }
+  assert tool_context_mock.actions.skip_summarization is True
   assert tool_context_mock._event_actions.requested_tool_confirmations[
       "test_function_call_id"
   ].hint == (
@@ -654,9 +656,10 @@ async def test_run_async_with_streaming_tool_and_input_stream(
   mock_stream = mock.MagicMock()
   mock_stream.read.return_value = "stream_data"
 
+  mock_tool_context.function_call_id = "call_1"
   mock_tool_context._invocation_context = mock.MagicMock()
-  mock_tool_context._invocation_context.active_streaming_tools = {
-      "streaming_tool_input": mock.MagicMock(stream=mock_stream)
+  mock_tool_context._invocation_context._active_background_tools = {
+      "call_1": mock.MagicMock(input_stream=mock_stream)
   }
 
   async def streaming_tool_input(val: int, input_stream: Any):
@@ -1641,12 +1644,12 @@ async def test_generator_tool_pauses_on_request_input_and_resumes(
   from google.adk.agents.llm_agent import Agent
   from google.adk.apps.app import App
   from google.adk.apps.app import ResumabilityConfig
+  from google.adk.events._interrupts import extract_event_interrupt_ids
   from google.adk.events.event import Event
   from google.adk.events.request_input import RequestInput
   from google.adk.models.llm_response import LlmResponse
+  from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
   from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-  from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-  from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
   from google.genai import types
 
   from .. import testing_utils
@@ -1698,7 +1701,7 @@ async def test_generator_tool_pauses_on_request_input_and_resumes(
           for p in (e.content.parts if e.content and e.content.parts else [])
       )
   ]
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
   invocation_id = req_events[0].invocation_id
   resume_part = create_request_input_response(interrupt_id, {"text": "APAC"})
   events2 = await runner.run_async(
@@ -1783,12 +1786,12 @@ async def test_generator_tool_repeated_calls_isolate_node_path_and_hitl_state():
   from google.adk.agents.llm_agent import Agent
   from google.adk.apps.app import App
   from google.adk.apps.app import ResumabilityConfig
+  from google.adk.events._interrupts import extract_event_interrupt_ids
   from google.adk.events.event import Event
   from google.adk.events.request_input import RequestInput
   from google.adk.models.llm_response import LlmResponse
+  from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
   from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-  from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-  from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
   from google.genai import types
 
   from .. import testing_utils
@@ -1845,7 +1848,7 @@ async def test_generator_tool_repeated_calls_isolate_node_path_and_hitl_state():
           for p in (e.content.parts if e.content and e.content.parts else [])
       )
   )
-  interrupt_id1 = get_request_input_interrupt_ids(req_event1)[0]
+  [interrupt_id1] = extract_event_interrupt_ids(req_event1)
   invocation_id = req_event1.invocation_id
 
   # Step 2: Resume first call ("APAC"); model then calls ask_and_analyze("marketing"),
@@ -1865,7 +1868,7 @@ async def test_generator_tool_repeated_calls_isolate_node_path_and_hitl_state():
           for p in (e.content.parts if e.content and e.content.parts else [])
       )
   )
-  interrupt_id2 = get_request_input_interrupt_ids(req_event2)[0]
+  [interrupt_id2] = extract_event_interrupt_ids(req_event2)
 
   # Step 3: Resume second call ("EMEA") and complete.
   events3 = await runner.run_async(
@@ -1928,3 +1931,169 @@ async def test_generator_tool_binds_none_default_without_revalidation(
       if p.function_response
   ]
   assert second_req_responses == [{"query": "sales", "tag": None}]
+
+
+def _mixed_params_func(
+    required_num: int,
+    untyped_val,
+    none_val: None,
+    tool_context: ToolContext,
+    optional_num: int = 10,
+) -> dict[str, Any]:
+  return {
+      "required_num": required_num,
+      "untyped_val": untyped_val,
+      "none_val": none_val,
+      "tool_context": tool_context,
+      "optional_num": optional_num,
+  }
+
+
+async def _run_mixed_params_tool(
+    args: dict[str, Any], tool_context: ToolContext
+) -> Any:
+  with temporary_feature_override(
+      FeatureName.FUNCTION_TOOL_ARG_VALIDATION, True
+  ):
+    return await FunctionTool(_mixed_params_func).run_async(
+        args=args, tool_context=tool_context
+    )
+
+
+@pytest.mark.asyncio
+async def test_arg_validation_skips_omitted_optional_param(mock_tool_context):
+  """An omitted parameter with a default is not validated."""
+  result = await _run_mixed_params_tool(
+      {"required_num": 1, "untyped_val": "x", "none_val": None},
+      mock_tool_context,
+  )
+  assert result["optional_num"] == 10
+
+
+@pytest.mark.asyncio
+async def test_arg_validation_passes_untyped_value_through(mock_tool_context):
+  """A parameter without an annotation receives the raw value."""
+  result = await _run_mixed_params_tool(
+      {"required_num": 1, "untyped_val": {"anything": 1}, "none_val": None},
+      mock_tool_context,
+  )
+  assert result["untyped_val"] == {"anything": 1}
+
+
+@pytest.mark.asyncio
+async def test_arg_validation_rejects_value_for_none_annotation(
+    mock_tool_context,
+):
+  """A parameter annotated None rejects a non-None value."""
+  result = await _run_mixed_params_tool(
+      {"required_num": 1, "untyped_val": "x", "none_val": "not_none"},
+      mock_tool_context,
+  )
+  assert "none_val" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_arg_validation_ignores_tool_context_in_args(mock_tool_context):
+  """A model-supplied tool_context arg is replaced by the real context."""
+  result = await _run_mixed_params_tool(
+      {
+          "required_num": 1,
+          "untyped_val": "x",
+          "none_val": None,
+          "tool_context": "ignored_override",
+      },
+      mock_tool_context,
+  )
+  assert result["tool_context"] is mock_tool_context
+
+
+class _SignaturelessCallable:
+  __name__ = "sigless_tool"
+
+  @property
+  def __signature__(self):
+    raise ValueError("no signature available")
+
+  def __call__(self, required_arg: str) -> str:
+    if required_arg == "trigger_internal_type_error":
+      raise TypeError("internal failure")
+    return f"ok:{required_arg}"
+
+
+@pytest.mark.asyncio
+async def test_signatureless_callable_returns_error_on_bad_args(
+    mock_tool_context,
+):
+  """A signature-less callable called with bad args returns an error dict."""
+  tool = FunctionTool(_SignaturelessCallable())
+
+  result = await tool.run_async(
+      args={"unexpected_kwarg": "val"},
+      tool_context=mock_tool_context,
+  )
+
+  assert "Invoking `sigless_tool()` failed" in result["error"]
+  assert "unexpected_kwarg" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_signatureless_callable_reraises_internal_type_error(
+    mock_tool_context,
+):
+  """A TypeError raised inside a signature-less callable propagates."""
+  tool = FunctionTool(_SignaturelessCallable())
+
+  with pytest.raises(TypeError, match="internal failure"):
+    await tool.run_async(
+        args={"required_arg": "trigger_internal_type_error"},
+        tool_context=mock_tool_context,
+    )
+
+
+@pytest.mark.asyncio
+async def test_builtin_callable_returns_error_on_bad_args(
+    mock_tool_context,
+):
+  """A C builtin callable (target_code is None) returns error dict on bad args."""
+  tool = FunctionTool(min)
+
+  result = await tool.run_async(
+      args={"unexpected_kwarg": "val"},
+      tool_context=mock_tool_context,
+  )
+
+  assert "Invoking `min()` failed" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_partial_async_callable_instance_with_sync_confirmation(
+    mock_tool_context,
+):
+  """FunctionTool awaits functools.partial of an async callable instance."""
+
+  class _AsyncMultiplier:
+
+    async def __call__(self, base: int, factor: int) -> int:
+      return base * factor
+
+  partial_target = functools.partial(_AsyncMultiplier(), 6)
+  partial_target.__name__ = "multiply_six"
+  tool = FunctionTool(
+      partial_target,
+      require_confirmation=lambda factor: False,
+  )
+  runner_targets: list[Any] = []
+
+  async def recording_runner(target: Any, kwargs: dict[str, Any]) -> Any:
+    runner_targets.append(target)
+    return target(**kwargs)
+
+  with _use_sync_callable_runner(recording_runner):
+    result = await tool.run_async(
+        args={"factor": 7},
+        tool_context=mock_tool_context,
+    )
+
+  assert result == 42
+  assert len(runner_targets) == 1
+  assert runner_targets[0] is not partial_target

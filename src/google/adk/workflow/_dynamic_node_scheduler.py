@@ -120,6 +120,16 @@ class DynamicNodeState:
     counters[node_name] = counters.get(node_name, 0) + 1
     return str(counters[node_name])
 
+  def reset_for_retry(self, parent_path: str) -> None:
+    """Reset sequential run counters under parent_path before a parent retry."""
+    prefix = f'{parent_path}/' if parent_path else ''
+    for path in [
+        k
+        for k in self.run_counters
+        if k == parent_path or (prefix and k.startswith(prefix))
+    ]:
+      del self.run_counters[path]
+
   def get_dynamic_tasks(self) -> list[asyncio.Task[Context]]:
     """Get all active dynamic node tasks."""
     return [

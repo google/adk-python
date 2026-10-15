@@ -210,6 +210,17 @@ def _validate_chat_agent_wiring(edges: list[Edge]) -> None:
         )
 
 
+def _validate_node_outgoing_edges(
+    nodes: list[BaseNode], edges: list[Edge]
+) -> None:
+  """Lets each node check its own outgoing edges."""
+  outgoing: dict[int, list[Edge]] = {id(node): [] for node in nodes}
+  for edge in edges:
+    outgoing[id(edge.from_node)].append(edge)
+  for node in nodes:
+    node._validate_outgoing_edges(outgoing[id(node)])
+
+
 def _compute_terminal_nodes(
     nodes: list[BaseNode], edges: list[Edge]
 ) -> set[str]:
@@ -231,4 +242,5 @@ def validate_graph(nodes: list[BaseNode], edges: list[Edge]) -> set[str]:
   _detect_unconditional_cycles(edges, node_names)
   _validate_static_schemas(edges)
   _validate_chat_agent_wiring(edges)
+  _validate_node_outgoing_edges(nodes, edges)
   return _compute_terminal_nodes(nodes, edges)

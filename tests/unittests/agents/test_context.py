@@ -174,6 +174,17 @@ class TestContextInitialization:
 
     assert context.actions is context._event_actions
 
+  def test_actions_include_a_write_into_a_nested_state_dict(
+      self, mock_invocation_context
+  ):
+    """The event built from actions carries the write to storage."""
+    mock_invocation_context.session.state = {"cfg": {"a": 1}}
+    context = Context(mock_invocation_context)
+
+    context.state["cfg"]["b"] = 2
+
+    assert context.actions.state_delta == {"cfg": {"a": 1, "b": 2}}
+
   def test_custom_metadata_property(self, mock_invocation_context):
     """Test that custom_metadata property delegates to invocation context."""
     mock_invocation_context._custom_metadata = {"key": "value"}

@@ -158,12 +158,16 @@ async def test_launch_non_blocking_call_live(
 
   mock_session = mock.MagicMock()
   mock_session_service = mock.MagicMock(append_event=mock.AsyncMock())
+  registry = {}
   mock_ic = mock.MagicMock(
       _event_queue=asyncio.Queue() if has_event_queue else None,
       session=mock_session,
       session_service=mock_session_service,
-      active_non_blocking_tool_tasks={},
       _enqueue_event=mock.AsyncMock(),
+      _active_background_tools=registry,
+  )
+  mock_ic._add_background_tool.side_effect = lambda entry: registry.update(
+      {entry.function_call_id: entry}
   )
 
   with (
@@ -186,9 +190,10 @@ async def test_launch_non_blocking_call_live(
         live_session_id='live_session_123',
     )
 
-    task_key = 'my_tool_call_123'
-    assert task_key in mock_ic.active_non_blocking_tool_tasks
-    await mock_ic.active_non_blocking_tool_tasks[task_key]
+    entry = registry['call_123']
+    assert entry.tool_name == 'my_tool'
+    assert not entry.is_generator
+    await entry.task
 
   assert event.live_session_id == 'live_session_123'
   assert mock_ic._enqueue_event.await_count == (1 if expect_enqueue else 0)
@@ -196,7 +201,41 @@ async def test_launch_non_blocking_call_live(
       1 if expect_session_append else 0
   )
   mock_ic.live_request_queue.send_content.assert_called_once_with(event.content)
-  assert task_key not in mock_ic.active_non_blocking_tool_tasks
+  assert 'call_123' not in registry
+
+
+@pytest.mark.asyncio
+async def test_streaming_call_requires_a_call_id() -> None:
+  """A streaming call without an id is refused, not tracked under a made-up one."""
+
+  async def watch():
+    yield 'watching'
+
+  tool = FunctionTool(watch)
+
+  with pytest.raises(ValueError, match='watch'):
+    await _live_caller._process_function_live_helper(
+        tool,
+        mock.MagicMock(function_call_id=None),
+        types.FunctionCall(name='watch'),
+        {},
+        mock.MagicMock(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_launch_non_blocking_call_live_requires_a_call_id() -> None:
+  """A call without an id is refused rather than tracked under a made-up one."""
+  tool = BaseTool(name='my_tool', description='')
+
+  with pytest.raises(ValueError, match='my_tool'):
+    await _live_caller._launch_non_blocking_call_live(
+        invocation_context=mock.MagicMock(),
+        function_call=types.FunctionCall(name='my_tool'),
+        tool=tool,
+        tools_dict={'my_tool': tool},
+        agent=mock.MagicMock(),
+    )
 
 
 @pytest.mark.asyncio

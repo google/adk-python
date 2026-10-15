@@ -2269,6 +2269,200 @@ class TestRestApiTool:
 
     assert request_params["cookies"]["session_id"] == "cookie_value"
 
+  @pytest.mark.parametrize(
+      "value, expected, expected_path",
+      [
+          (50, "50", "50"),
+          (1.5, "1.5", "1.5"),
+          (True, "true", "true"),
+          (False, "false", "false"),
+          (["a", "b", 3], "a,b,3", "a%2Cb%2C3"),
+          (("a", "b", 3), "a,b,3", "a%2Cb%2C3"),
+          ([True, False], "true,false", "true%2Cfalse"),
+          ([1, None, True], "1,true", "1%2Ctrue"),
+          (
+              {"a": 1, "b": None, "c": True},
+              "a,1,c,true",
+              "a%2C1%2Cc%2Ctrue",
+          ),
+          ("already-a-string", "already-a-string", "already-a-string"),
+      ],
+  )
+  def test_prepare_request_params_serializes_header_and_cookie_values(
+      self,
+      sample_operation: Operation,
+      value: object,
+      expected: str,
+      expected_path: str,
+  ) -> None:
+    """httpx rejects non-string header and cookie values."""
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=OperationEndpoint(
+            base_url="https://example.com",
+            path="/items/{item_filter}",
+            method="GET",
+        ),
+        operation=sample_operation,
+    )
+    params = [
+        ApiParameter(
+            original_name="item_filter",
+            py_name="item_filter",
+            param_location="path",
+            param_schema=OpenAPISchema(type="string"),
+        ),
+        ApiParameter(
+            original_name="X-Page-Size",
+            py_name="x_page_size",
+            param_location="header",
+            param_schema=OpenAPISchema(type="integer"),
+        ),
+        ApiParameter(
+            original_name="page_size",
+            py_name="page_size",
+            param_location="cookie",
+            param_schema=OpenAPISchema(type="integer"),
+        ),
+    ]
+    kwargs = {
+        "item_filter": value,
+        "x_page_size": value,
+        "page_size": value,
+    }
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert request_params["url"] == f"https://example.com/items/{expected_path}"
+    assert request_params["headers"]["X-Page-Size"] == expected
+    assert request_params["cookies"]["page_size"] == expected
+    # The values must be accepted by httpx when the request is built.
+    httpx.Request(
+        request_params["method"],
+        request_params["url"],
+        headers=request_params["headers"],
+        cookies=request_params["cookies"],
+    )
+
+  def test_prepare_request_params_omits_none_header_and_cookie_values(
+      self,
+      sample_endpoint: OperationEndpoint,
+      sample_operation: Operation,
+  ) -> None:
+    """Optional header and cookie parameters with None values are omitted."""
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+    )
+    params = [
+        ApiParameter(
+            original_name="X-Page-Size",
+            py_name="x_page_size",
+            param_location="header",
+            param_schema=OpenAPISchema(type="integer"),
+            required=False,
+        ),
+        ApiParameter(
+            original_name="page_size",
+            py_name="page_size",
+            param_location="cookie",
+            param_schema=OpenAPISchema(type="integer"),
+            required=False,
+        ),
+    ]
+    kwargs = {"x_page_size": None, "page_size": None}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert "X-Page-Size" not in request_params["headers"]
+    assert "page_size" not in request_params["cookies"]
+    httpx.Request(
+        request_params["method"],
+        request_params["url"],
+        headers=request_params["headers"],
+        cookies=request_params["cookies"],
+    )
+
+  async def test_call_serializes_non_string_parameters_and_omits_none(
+      self,
+      mock_tool_context: ToolContext,
+  ) -> None:
+    """RestApiTool.call serializes non-string defaults and omits None values."""
+    captured_requests: list[httpx.Request] = []
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+      captured_requests.append(request)
+      return httpx.Response(200, json={"result": "ok"})
+
+    operation = Operation(
+        operationId="listItems",
+        parameters=[
+            OpenAPIParameter(**{
+                "name": "include_archived",
+                "in": "path",
+                "required": True,
+                "schema": OpenAPISchema(type="boolean", default=False),
+            }),
+            OpenAPIParameter(**{
+                "name": "X-Page-Size",
+                "in": "header",
+                "required": True,
+                "schema": OpenAPISchema(type="integer", default=50),
+            }),
+            OpenAPIParameter(**{
+                "name": "flags",
+                "in": "cookie",
+                "required": True,
+                "schema": OpenAPISchema(
+                    type="array",
+                    items=OpenAPISchema(type="boolean"),
+                    default=[True, False],
+                ),
+            }),
+            OpenAPIParameter(**{
+                "name": "X-Optional-Header",
+                "in": "header",
+                "required": False,
+                "schema": OpenAPISchema(type="string"),
+            }),
+            OpenAPIParameter(**{
+                "name": "optional_cookie",
+                "in": "cookie",
+                "required": False,
+                "schema": OpenAPISchema(type="string"),
+            }),
+        ],
+    )
+    tool = RestApiTool(
+        name="list_items",
+        description="List items",
+        endpoint=OperationEndpoint(
+            base_url="https://example.com",
+            path="/items/{include_archived}",
+            method="GET",
+        ),
+        operation=operation,
+        httpx_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handle_request)
+        ),
+    )
+
+    result = await tool.call(
+        args={"x_optional_header": None, "optional_cookie": None},
+        tool_context=mock_tool_context,
+    )
+
+    assert result == {"result": "ok"}
+    assert len(captured_requests) == 1
+    sent_request = captured_requests[0]
+    assert str(sent_request.url) == "https://example.com/items/false"
+    assert sent_request.headers["X-Page-Size"] == "50"
+    assert "X-Optional-Header" not in sent_request.headers
+    assert sent_request.headers["cookie"] == "flags=true,false"
+
   def test_prepare_request_params_quota_project_id(
       self,
       sample_endpoint,

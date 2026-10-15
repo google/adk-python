@@ -24,6 +24,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
   "Topic :: Software Development :: Libraries :: Python Modules",
   # List of https://pypi.org/classifiers/
   "Typing :: Typed",
@@ -36,7 +37,7 @@ dependencies = [
   "cryptography>=42",
   "fastapi>=0.133,<1",
   "google-auth[pyopenssl]>=2.47",
-  "google-genai>=2.19,<3",
+  "google-genai>=2.30,<3",
   "graphviz>=0.20.2,<1",
   "httpx>=0.27,<1",
   "jsonschema>=4.23,<5",
@@ -447,6 +448,10 @@ ignore-words-list = "hel,serie,strin,te,rouge,unparseable,re-use,re-used,lamda,a
 # fixtures, bundled JS/source maps, and the vendored CLI browser bundle are
 # generated or data files, not prose we own.
 skip = "*CHANGELOG.md,*.lock,*.ipynb,*.json,*.js,*.map,*/cli/browser/*,constraints-*.txt"
+
+[tool.pyproject-fmt]
+# Highest Python version that pyproject-fmt writes into the classifiers.
+max_supported_python = "3.15"
 
 [tool.mypy]
 mypy_path = [ "src" ]

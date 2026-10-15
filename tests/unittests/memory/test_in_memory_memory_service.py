@@ -391,6 +391,8 @@ async def test_search_memory_does_not_collide_on_slash_in_identifiers():
         ('我用Python写代码', 'python', 1),
         ('私はPythonでADKを使っています', '使って', 1),
         ('私はPythonでADKを使っています', 'Java', 0),
+        ('私はmy_var_nameを使う', 'my_var_name', 1),
+        ('私はcafé_1を使う', 'café_1', 1),
         # Latin partial-word must NOT match (regression guard)
         ('I like to code in Python.', 'thon', 0),
         ('私はPythonでADKを使っています', 'thon', 0),
@@ -602,3 +604,124 @@ def test_search_memory_is_thread_safe_against_concurrent_writes():
   assert (
       not errors
   ), f'search_memory raced with concurrent writes: {errors[0]!r}'
+
+
+def _event_without_parts(tag: str) -> Event:
+  return Event(
+      id=f'event-{tag}', author='user', content=types.Content(parts=None)
+  )
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_events_without_parts():
+  """An event without parts is not stored, so its id stays free."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_session_to_memory(
+      Session(
+          app_name=MOCK_APP_NAME,
+          user_id=MOCK_USER_ID,
+          id='session-empty',
+          events=[_event_without_parts('reused-id')],
+      )
+  )
+
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      session_id='session-empty',
+      events=[_text_event('reused-id', 'stored later')],
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='later'
+  )
+  assert [m.content.parts[0].text for m in result.memories] == ['stored later']
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_skips_events_without_parts():
+  """An added event without parts is not stored, so its id stays free."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=[
+          Event(id='event-no-content', author='user', content=None),
+          _event_without_parts('reused-id'),
+      ],
+  )
+
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=[_text_event('reused-id', 'stored later')],
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='later'
+  )
+  assert [m.content.parts[0].text for m in result.memories] == ['stored later']
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_empty_and_none_session_id_share_bucket():
+  """session_id '' and None write to one bucket, deduplicated by event id."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      session_id='',
+      events=[_text_event('shared-id', 'first copy')],
+  )
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      session_id=None,
+      events=[_text_event('shared-id', 'second copy')],
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='copy'
+  )
+  assert [m.content.parts[0].text for m in result.memories] == ['first copy']
+
+
+def _blob_part() -> types.Part:
+  return types.Part(inline_data=types.Blob(data=b'abc', mime_type='text/plain'))
+
+
+@pytest.mark.asyncio
+async def test_search_memory_ignores_parts_without_text():
+  """A part without text does not stop the event's text from matching."""
+  memory_service = InMemoryMemoryService()
+  event = _text_event('mixed', 'hello world')
+  event.content.parts.insert(0, _blob_part())
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, events=[event]
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='hello'
+  )
+  assert len(result.memories) == 1
+
+
+@pytest.mark.asyncio
+async def test_search_memory_continues_past_event_without_words():
+  """An event with no searchable words does not end the search."""
+  memory_service = InMemoryMemoryService()
+  blob_only = Event(
+      id='event-blob',
+      author='user',
+      content=types.Content(parts=[_blob_part()]),
+  )
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=[blob_only, _text_event('later', 'hello world')],
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='hello'
+  )
+  assert len(result.memories) == 1

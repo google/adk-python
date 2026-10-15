@@ -44,6 +44,7 @@ from google.adk.cli.api_server import RunAgentRequest
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.cli.utils.base_agent_loader import _AgentLoadError
 from google.adk.errors.input_validation_error import InputValidationError
+from google.adk.errors.not_found_error import NotFoundError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
@@ -492,9 +493,9 @@ def mock_eval_set_results_manager():
 
     def get_eval_set_result(self, app_name, eval_set_result_id):
       if app_name not in eval_set_results:
-        raise ValueError(f"App {app_name} not found.")
+        raise NotFoundError(f"App {app_name} not found.")
       if eval_set_result_id not in eval_set_results[app_name]:
-        raise ValueError(
+        raise NotFoundError(
             f"Eval set result {eval_set_result_id} not found in app {app_name}."
         )
       return eval_set_results[app_name][eval_set_result_id]
@@ -845,6 +846,78 @@ def test_special_agents_allowed_only_on_loopback_web_server(
     )
     assert response.status_code == 403
     assert "internal special agents" in response.json()["detail"]
+
+
+def test_get_fast_api_app_skips_span_processors_without_add_span_processor(
+    tmp_path,
+    monkeypatch,
+    caplog,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """register_processors only receives a provider that accepts processors."""
+  from opentelemetry import trace
+
+  monkeypatch.setattr(
+      api_server_module, "_setup_telemetry", lambda **kwargs: None
+  )
+  monkeypatch.setattr(trace, "get_tracer_provider", trace.NoOpTracerProvider)
+  register_processors = MagicMock()
+  api_server = api_server_module.ApiServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  with caplog.at_level(logging.WARNING):
+    api_server.get_fast_api_app(register_processors=register_processors)
+
+  register_processors.assert_not_called()
+  assert "Not registering span processors" in caplog.text
+
+
+def test_get_fast_api_app_registers_span_processors_on_non_sdk_provider(
+    tmp_path,
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """A provider with add_span_processor need not be the SDK TracerProvider."""
+  from opentelemetry import trace
+
+  provider = MagicMock(spec=["get_tracer", "add_span_processor"])
+  monkeypatch.setattr(
+      api_server_module, "_setup_telemetry", lambda **kwargs: None
+  )
+  monkeypatch.setattr(trace, "get_tracer_provider", lambda: provider)
+  register_processors = MagicMock()
+  api_server = api_server_module.ApiServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  api_server.get_fast_api_app(register_processors=register_processors)
+
+  register_processors.assert_called_once_with(provider)
 
 
 @pytest.fixture
@@ -4444,11 +4517,43 @@ def test_list_artifact_versions_metadata(
   assert data[1]["customMetadata"] == {"foo": "bar"}
 
 
-def test_get_eval_set_result_not_found(test_app):
+def test_get_eval_set_result_not_found(test_app, mock_eval_set_results_manager):
   """Test getting an eval set result that doesn't exist."""
-  url = "/apps/test_app_name/eval_results/test_eval_result_id_not_found"
+  mock_eval_set_results_manager.save_eval_set_result(
+      "test_app_name", "test_eval_set_id", []
+  )
+  url = "/dev/apps/test_app_name/eval-results/test_eval_result_id_not_found"
   response = test_app.get(url)
   assert response.status_code == 404
+  assert "test_eval_result_id_not_found" in response.json()["detail"]
+
+
+def test_get_eval_set_result_not_found_legacy_route(
+    test_app, mock_eval_set_results_manager
+):
+  """Test the legacy eval result route reports a missing result as 404."""
+  mock_eval_set_results_manager.save_eval_set_result(
+      "test_app_name", "test_eval_set_id", []
+  )
+  url = "/dev/apps/test_app_name/eval_results/test_eval_result_id_not_found"
+  response = test_app.get(url)
+  assert response.status_code == 404
+  assert "test_eval_result_id_not_found" in response.json()["detail"]
+
+
+def test_add_session_to_eval_set_with_missing_session(test_app):
+  """Test adding a nonexistent session to an eval set reports 404."""
+  url = "/dev/apps/test_app/eval-sets/test_eval_set_id/add-session"
+  response = test_app.post(
+      url,
+      json={
+          "evalId": "test_eval_case_id",
+          "sessionId": "session_that_does_not_exist",
+          "userId": "test_user",
+      },
+  )
+  assert response.status_code == 404
+  assert response.json()["detail"] == "Session not found"
 
 
 def test_list_metrics_info(builder_test_client):
@@ -6697,7 +6802,8 @@ def test_finalize_agent_identity_credentials_success(test_app):
     mock_client.finalize_credentials.assert_called_once()
 
 
-def test_finalize_agent_identity_credentials_invalid_base64(test_app):
+@pytest.mark.parametrize("state", ["!!!invalid_base64!!!", "ab!cd"])
+def test_finalize_agent_identity_credentials_invalid_base64(test_app, state):
   """Test error handling when user_id_validation_state is invalid Base64."""
   from google.cloud import iamconnectorcredentials_v1alpha
 
@@ -6711,7 +6817,7 @@ def test_finalize_agent_identity_credentials_invalid_base64(test_app):
         json={
             "connector_name": "projects/p/locations/l/connectors/c",
             "user_id": "user-123",
-            "user_id_validation_state": "!!!invalid_base64!!!",
+            "user_id_validation_state": state,
             "consent_nonce": "nonce-456",
         },
     )
@@ -6872,6 +6978,17 @@ def test_api_server_span_exporter_skips_span_without_event_id():
   ])
 
   assert trace_dict == {}
+
+
+def test_api_server_span_exporter_rejects_span_without_context():
+  """A traced span with no span context has no ids to record."""
+  from google.adk.cli.api_server import ApiServerSpanExporter
+  from opentelemetry.sdk.trace import ReadableSpan
+
+  exporter = ApiServerSpanExporter({})
+
+  with pytest.raises(ValueError, match="has no span context"):
+    exporter.export([ReadableSpan(name="call_llm", context=None)])
 
 
 def test_in_memory_exporter_returns_only_spans_of_requested_session():

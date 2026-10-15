@@ -20,11 +20,13 @@ import asyncio
 import contextvars
 from unittest import mock
 
+from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows.tools import _batch_executor as _batch_tool_executor
 from google.adk.flows.llm_flows.tools._caller import _PreparedFunctionCall
 from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
@@ -132,6 +134,127 @@ async def test_gather_or_cancel_cancels_siblings_on_failure() -> None:
   assert cancelled
 
 
+@pytest.mark.asyncio
+async def test_gather_or_cancel_cancels_siblings_on_cancelled_error() -> None:
+  """A child-raised CancelledError cancels unfinished sibling tasks."""
+  started = asyncio.Event()
+  sibling_cancelled = False
+  sibling_finished = False
+
+  async def failing_worker() -> None:
+    await started.wait()
+    raise asyncio.CancelledError()
+
+  async def slow_worker() -> None:
+    nonlocal sibling_cancelled, sibling_finished
+    started.set()
+    try:
+      await asyncio.sleep(10)
+      sibling_finished = True
+    except asyncio.CancelledError:
+      sibling_cancelled = True
+      raise
+
+  tasks = [
+      asyncio.create_task(failing_worker()),
+      asyncio.create_task(slow_worker()),
+  ]
+  with pytest.raises(asyncio.CancelledError):
+    await _batch_tool_executor._gather_or_cancel(tasks)
+
+  assert sibling_cancelled
+  assert not sibling_finished
+  assert all(t.done() for t in tasks)
+
+
+@pytest.mark.asyncio
+async def test_gather_or_cancel_cancels_siblings_on_self_cancel() -> None:
+  """A child that cancels its own task still tears down unfinished siblings."""
+  started = asyncio.Event()
+  sibling_cancelled = False
+  sibling_finished = False
+
+  async def self_cancelling_worker() -> None:
+    await started.wait()
+    task = asyncio.current_task()
+    assert task is not None
+    task.cancel()
+    await asyncio.sleep(0)
+
+  async def slow_worker() -> None:
+    nonlocal sibling_cancelled, sibling_finished
+    started.set()
+    try:
+      await asyncio.sleep(10)
+      sibling_finished = True
+    except asyncio.CancelledError:
+      sibling_cancelled = True
+      raise
+
+  tasks = [
+      asyncio.create_task(self_cancelling_worker()),
+      asyncio.create_task(slow_worker()),
+  ]
+  with pytest.raises(asyncio.CancelledError):
+    await _batch_tool_executor._gather_or_cancel(tasks)
+
+  assert sibling_cancelled
+  assert not sibling_finished
+  assert all(t.done() for t in tasks)
+
+
+@pytest.mark.asyncio
+async def test_gather_or_cancel_cancels_and_awaits_tasks_on_cancelled_error() -> (
+    None
+):
+  """Cancelling the gather task cancels and awaits unfinished child tasks."""
+  started = asyncio.Event()
+  cleanup_finished = False
+
+  async def fast_cancel_worker() -> None:
+    await asyncio.sleep(10)
+
+  async def slow_cleanup_worker() -> None:
+    nonlocal cleanup_finished
+    started.set()
+    try:
+      await asyncio.sleep(10)
+    finally:
+      await asyncio.sleep(0.02)
+      cleanup_finished = True
+
+  fast_task = asyncio.create_task(fast_cancel_worker())
+  slow_task = asyncio.create_task(slow_cleanup_worker())
+  gather_task = asyncio.create_task(
+      _batch_tool_executor._gather_or_cancel([fast_task, slow_task])
+  )
+  await started.wait()
+
+  gather_task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await gather_task
+
+  assert fast_task.cancelled()
+  assert slow_task.cancelled()
+  assert cleanup_finished
+
+
+@pytest.mark.asyncio
+async def test_gather_or_cancel_cancels_tasks_on_generator_exit() -> None:
+  """Closing the coroutine mid-await (GeneratorExit) still cancels the child tasks."""
+
+  async def slow_worker() -> None:
+    await asyncio.sleep(10)
+
+  task = asyncio.create_task(slow_worker())
+  coro = _batch_tool_executor._gather_or_cancel([task])
+  coro.send(None)
+  coro.close()
+  await asyncio.sleep(0)
+
+  assert task.cancelled()
+
+
 _probe: contextvars.ContextVar[str] = contextvars.ContextVar(
     'probe', default='unset'
 )
@@ -225,6 +348,95 @@ async def test_execute_prepared_function_calls_sets_live_session_id_and_merges()
   assert merged.live_session_id == 'live-sess-1'
   assert merged.content is not None
   assert [p.text for p in merged.content.parts] == ['r1', 'r2']
+
+
+def _response_event(name: str, **actions) -> Event:
+  return Event(
+      invocation_id='inv-1',
+      author='agent',
+      content=types.Content(
+          role='user',
+          parts=[types.Part.from_function_response(name=name, response={})],
+      ),
+      actions=EventActions(**actions),
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'name, actions, kept',
+    [
+        ('plain', {}, True),
+        ('state_delta', {'state_delta': {'k': 'v'}}, True),
+        ('transfer', {'transfer_to_agent': 'other'}, False),
+        ('escalate', {'escalate': True}, False),
+        (
+            'confirmation',
+            {'requested_tool_confirmations': {'id': ToolConfirmation()}},
+            False,
+        ),
+        ('set_model_response', {'set_model_response': {'a': 1}}, False),
+        (FINISH_TASK_TOOL_NAME, {}, False),
+    ],
+)
+async def test_keep_completed_responses_keeps_only_finished_plain_results(
+    name: str, actions: dict, kept: bool
+) -> None:
+  """Finished plain results are merged and kept; control actions are not."""
+  mock_ic = mock.MagicMock()
+  mock_ic.session.state = {}
+  mock_ic.live_request_queue = None
+  mock_ic.is_aborted = False
+
+  async def returns(event):
+    return event
+
+  async def raises():
+    raise RuntimeError('boom')
+
+  tasks = [
+      asyncio.create_task(returns(_response_event('fast'))),
+      asyncio.create_task(asyncio.Event().wait()),
+      asyncio.create_task(raises()),
+      asyncio.create_task(returns(None)),
+      asyncio.create_task(returns(_response_event(name, **actions))),
+  ]
+  await asyncio.sleep(0)
+  tasks[1].cancel()
+  await asyncio.gather(*tasks, return_exceptions=True)
+
+  # The cancelled call, the call that raised and the None result get nothing.
+  merged = _batch_tool_executor._keep_completed_responses(mock_ic, tasks)
+  assert merged is not None
+  assert [r.name for r in merged.get_function_responses()] == (
+      ['fast', name] if kept else ['fast']
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'live_request_queue, is_aborted',
+    [
+        (mock.MagicMock(), False),
+        (None, True),
+    ],
+)
+async def test_keep_completed_responses_skips_live_or_aborted_invocation(
+    live_request_queue: object, is_aborted: bool
+) -> None:
+  """Live mode and aborted invocations do not keep completed responses."""
+  mock_ic = mock.MagicMock()
+  mock_ic.session.state = {}
+  mock_ic.live_request_queue = live_request_queue
+  mock_ic.is_aborted = is_aborted
+
+  async def returns(event):
+    return event
+
+  task = asyncio.create_task(returns(_response_event('fast')))
+  await task
+
+  assert _batch_tool_executor._keep_completed_responses(mock_ic, [task]) is None
 
 
 @pytest.mark.asyncio

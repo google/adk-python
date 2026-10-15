@@ -1210,3 +1210,138 @@ def test_dynamic_node_fail_error_surfaces_wrapped_error_attrs():
   assert (
       dynamic_err2.details == 'forbidden body'
   )  # via `.response.text` fallback
+
+
+@pytest.mark.asyncio
+async def test_parent_node_retries_on_dynamic_child_failure():
+  """A parent node with retry_config retries when a dynamic child node fails.
+
+  Earlier completed dynamic children under the parent are replayed from cache
+  without re-running, while the failing dynamic child is retried.
+  """
+  completed_runs = 0
+  flaky_runs = 0
+
+  @node
+  async def completed_child(ctx: Context):
+    nonlocal completed_runs
+    completed_runs += 1
+    return 'step1_ok'
+
+  @node
+  async def flaky_child(ctx: Context):
+    nonlocal flaky_runs
+    flaky_runs += 1
+    if flaky_runs < 3:
+      raise CustomRetryableError('Dynamic child failed')
+    return 'step2_recovered'
+
+  @node(
+      rerun_on_resume=True,
+      retry_config=RetryConfig(
+          max_attempts=3,
+          initial_delay=0.0,
+          jitter=0.0,
+          exceptions=[CustomRetryableError],
+      ),
+  )
+  async def parent_node(ctx: Context):
+    r1 = await ctx.run_node(completed_child)
+    r2 = await ctx.run_node(flaky_child)
+    return f'{r1}:{r2}'
+
+  wf = Workflow(name='wf', edges=[(START, parent_node)])
+  events, _, _ = await _run_workflow(wf)
+
+  assert completed_runs == 1
+  assert flaky_runs == 3
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'step1_ok:step2_recovered' in outputs
+
+
+@pytest.mark.asyncio
+async def test_parent_node_retries_on_dynamic_sub_workflow_failure():
+  """A parent node with retry_config retries when a dynamic Workflow child fails.
+
+  Completed nodes inside the dynamic sub-workflow are fast-forwarded from
+  session events while the failing child inside the sub-workflow re-executes.
+  """
+  inner_completed_runs = 0
+  inner_flaky_runs = 0
+
+  @node
+  async def inner_ok(ctx: Context):
+    nonlocal inner_completed_runs
+    inner_completed_runs += 1
+    return 'inner_ok'
+
+  @node
+  async def inner_flaky(ctx: Context, node_input: Any):
+    nonlocal inner_flaky_runs
+    inner_flaky_runs += 1
+    if inner_flaky_runs < 3:
+      raise CustomRetryableError('Inner sub-workflow node failed')
+    return f'{node_input}+inner_recovered'
+
+  sub_wf = Workflow(
+      name='sub_wf',
+      edges=[(START, inner_ok, inner_flaky)],
+  )
+
+  @node(
+      rerun_on_resume=True,
+      retry_config=RetryConfig(
+          max_attempts=3,
+          initial_delay=0.0,
+          jitter=0.0,
+          exceptions=[CustomRetryableError],
+      ),
+  )
+  async def parent_node(ctx: Context):
+    return await ctx.run_node(sub_wf)
+
+  wf = Workflow(name='wf', edges=[(START, parent_node)])
+  events, _, _ = await _run_workflow(wf)
+
+  assert inner_completed_runs == 1
+  assert inner_flaky_runs == 3
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'inner_ok+inner_recovered' in outputs
+
+
+@pytest.mark.asyncio
+async def test_parent_node_plain_exception_retry_reruns_dynamic_children():
+  """A parent node retrying on its own exception re-runs its dynamic children."""
+  child_runs = 0
+  parent_runs = 0
+
+  @node
+  async def child_node(ctx: Context):
+    nonlocal child_runs
+    child_runs += 1
+    return f'child_run_{child_runs}'
+
+  @node(
+      rerun_on_resume=True,
+      retry_config=RetryConfig(
+          max_attempts=3,
+          initial_delay=0.0,
+          jitter=0.0,
+          exceptions=[CustomRetryableError],
+      ),
+  )
+  async def parent_node(ctx: Context):
+    nonlocal parent_runs
+    parent_runs += 1
+    res = await ctx.run_node(child_node)
+    if parent_runs < 3:
+      raise CustomRetryableError('Parent failed after child completed')
+    return res
+
+  wf = Workflow(name='wf', edges=[(START, parent_node)])
+  events, _, _ = await _run_workflow(wf)
+
+  assert parent_runs == 3
+  assert child_runs == 3
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'child_run_3' in outputs

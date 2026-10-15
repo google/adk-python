@@ -40,6 +40,7 @@ from google.genai.interactions import InteractionCreatedEvent
 from google.genai.interactions import InteractionSseEventInteraction
 from google.genai.interactions import ModelOutputStep
 from google.genai.interactions import StepDelta
+from google.genai.interactions import StepDeltaMetadata
 from google.genai.interactions import StepStart
 from google.genai.interactions import StepStop
 from google.genai.interactions import TextContent
@@ -1281,6 +1282,39 @@ class TestConvertInteractionToLlmResponse:
 
     assert result.usage_metadata.total_token_count == 15
 
+  def test_usage_includes_cached_and_detailed_tokens(self):
+    """Cached/thought/tool token counts are mapped from interaction usage."""
+    interaction = Interaction(
+        id='interaction_cache',
+        status='completed',
+        model='gemini-2.5-flash',
+        created=datetime.now(timezone.utc).isoformat(),
+        updated=datetime.now(timezone.utc).isoformat(),
+        steps=[
+            ModelOutputStep(
+                type='model_output',
+                content=[TextContent(type='text', text='ok')],
+            )
+        ],
+        usage=Usage(
+            total_input_tokens=100,
+            total_output_tokens=20,
+            total_cached_tokens=75,
+            total_thought_tokens=8,
+            total_tool_use_tokens=4,
+            total_tokens=120,
+        ),
+    )
+    result = interactions_utils.convert_interaction_to_llm_response(interaction)
+
+    assert result.usage_metadata.prompt_token_count == 100
+    assert result.usage_metadata.candidates_token_count == 20
+    assert result.usage_metadata.cached_content_token_count == 75
+    assert result.usage_metadata.thoughts_token_count == 8
+    assert result.usage_metadata.tool_use_prompt_token_count == 4
+    assert result.usage_metadata.total_token_count == 120
+    assert result.model_version == 'gemini-2.5-flash'
+
   def test_failed_response(self):
     """Test converting a failed response."""
     interaction = Interaction(
@@ -2303,6 +2337,87 @@ class TestConvertInteractionEventToLlmResponse:
     assert final.usage_metadata.prompt_token_count == 12
     assert final.usage_metadata.candidates_token_count == 7
     assert final.usage_metadata.total_token_count == 30
+
+  def test_final_event_falls_back_to_step_delta_usage(self):
+    """No interaction.usage -> usage comes from step delta metadata."""
+    state = interactions_utils._StreamState()
+    conv = interactions_utils.convert_interaction_event_to_llm_response
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'text', 'text': 'Answer.'},
+            metadata=StepDeltaMetadata(
+                total_usage=Usage(
+                    total_input_tokens=5,
+                    total_output_tokens=3,
+                    total_cached_tokens=2,
+                )
+            ),
+        ),
+        state,
+        interaction_id='int_u4',
+    )
+    final = conv(
+        InteractionCompletedEvent(
+            event_type='interaction.completed',
+            interaction=InteractionSseEventInteraction(
+                id='int_u4',
+                status='completed',
+                model='gemini-2.5-flash',
+                steps=[],
+            ),
+        ),
+        state,
+        interaction_id='int_u4',
+    )
+    assert final is not None
+    assert final.usage_metadata is not None
+    assert final.usage_metadata.prompt_token_count == 5
+    assert final.usage_metadata.candidates_token_count == 3
+    assert final.usage_metadata.cached_content_token_count == 2
+    assert final.usage_metadata.total_token_count == 8
+    assert final.model_version == 'gemini-2.5-flash'
+
+  def test_final_event_without_parts_falls_back_to_step_delta_usage(self):
+    """No parts collected -> usage still comes from step delta metadata."""
+    state = interactions_utils._StreamState()
+    conv = interactions_utils.convert_interaction_event_to_llm_response
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'text', 'text': ''},
+            metadata=StepDeltaMetadata(
+                total_usage=Usage(
+                    total_input_tokens=5,
+                    total_output_tokens=3,
+                    total_cached_tokens=2,
+                )
+            ),
+        ),
+        state,
+        interaction_id='int_u5',
+    )
+    assert not state.parts
+    final = conv(
+        InteractionCompletedEvent(
+            event_type='interaction.completed',
+            interaction=InteractionSseEventInteraction(
+                id='int_u5',
+                status='completed',
+                model='gemini-2.5-flash',
+                steps=[],
+            ),
+        ),
+        state,
+        interaction_id='int_u5',
+    )
+    assert final is not None
+    assert final.usage_metadata is not None
+    assert final.usage_metadata.prompt_token_count == 5
+    assert final.usage_metadata.candidates_token_count == 3
+    assert final.usage_metadata.cached_content_token_count == 2
 
   def test_final_event_without_usage_has_no_usage_metadata(self):
     """No interaction.usage -> final event has usage_metadata None."""

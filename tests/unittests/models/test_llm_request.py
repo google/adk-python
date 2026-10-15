@@ -851,3 +851,85 @@ def test_set_output_schema_without_any_schema_raises_value_error():
 
   assert request.config.response_schema is None
   assert request.config.response_mime_type is None
+
+
+def test_append_tools_adds_function_tool_after_non_function_tools():
+  """A function tool gets its own Tool entry after a google_search Tool."""
+  request = LlmRequest()
+  request.config.tools = [types.Tool(google_search=types.GoogleSearch())]
+
+  request.append_tools([FunctionTool(func=dummy_tool)])
+
+  assert len(request.config.tools) == 2
+  assert request.config.tools[0].google_search is not None
+  declarations = request.config.tools[1].function_declarations
+  assert [d.name for d in declarations] == ['dummy_tool']
+
+
+def test_append_instructions_with_text_returns_no_references():
+  request = LlmRequest()
+  assert request.append_instructions(['Base system instruction']) == []
+
+
+def _user_text(text: str) -> types.Content:
+  return types.Content(role='user', parts=[types.Part(text=text)])
+
+
+def _request_with_static_refs(
+    contents: list[types.Content],
+) -> tuple[LlmRequest, list[types.Content]]:
+  """Returns a request whose static instruction references an image."""
+  request = LlmRequest()
+  request.append_instructions(['Base system instruction'])
+  static_refs = request.append_instructions(
+      types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  inline_data=types.Blob(
+                      data=b'img', mime_type='image/png', display_name='a.png'
+                  )
+              )
+          ],
+      )
+  )
+  request.contents = contents
+  return request, static_refs
+
+
+def _texts(request: LlmRequest) -> list[str]:
+  return [c.parts[0].text for c in request.contents]
+
+
+def test_insert_transient_user_content_ignores_empty_list():
+  """An empty insert does not consume the static prefix's first placement."""
+  request, static_refs = _request_with_static_refs([
+      _user_text('first question'),
+      types.Content(role='model', parts=[types.Part(text='first answer')]),
+  ])
+
+  request._insert_transient_user_content([])
+  request._insert_transient_user_content(static_refs)
+
+  assert request.contents[0] == static_refs[0]
+
+
+def test_insert_transient_user_content_goes_before_trailing_user_turns():
+  request, static_refs = _request_with_static_refs([
+      _user_text('first question'),
+      types.Content(role='model', parts=[types.Part(text='first answer')]),
+      _user_text('follow-up part 1'),
+      _user_text('follow-up part 2'),
+  ])
+  request._insert_transient_user_content(static_refs)
+
+  request._insert_transient_user_content([_user_text('transient context')])
+
+  assert _texts(request) == [
+      'Referenced inline data: inline_data_0',
+      'first question',
+      'first answer',
+      'transient context',
+      'follow-up part 1',
+      'follow-up part 2',
+  ]
