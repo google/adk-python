@@ -24,6 +24,7 @@ import time
 from typing import Any
 from typing import Awaitable
 from typing import Callable
+from typing import cast
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -63,6 +64,7 @@ from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
 # MCPTool stays imported so existing mcp_toolset.MCPTool callers still resolve.
 from .mcp_tool import _dump_mcp_model
+from .mcp_tool import _merge_auth_and_provider_headers
 from .mcp_tool import _RESERVED_TOOL_NAMES
 from .mcp_tool import MCPTool  # pylint: disable=unused-import  # noqa: F401
 from .mcp_tool import McpTool
@@ -357,22 +359,17 @@ class McpToolset(BaseToolset):
     Returns:
         The merged header provider and auth headers, empty if there are none.
     """
-    headers: Dict[str, str] = {}
-
-    # Add headers from header_provider if available
+    provider_headers = None
     if self._header_provider and readonly_context:
       provider_headers = self._header_provider(readonly_context)
       if inspect.isawaitable(provider_headers):
         provider_headers = await provider_headers
-      if provider_headers:
-        headers.update(provider_headers)
 
-    # Add auth headers from exchanged credential if available
     auth_headers = self._get_auth_headers(readonly_context)
-    if auth_headers:
-      headers.update(auth_headers)
-
-    return headers
+    return _merge_auth_and_provider_headers(
+        auth_headers=auth_headers,
+        provider_headers=cast(Dict[str, str] | None, provider_headers),
+    )
 
   async def _execute_with_session(
       self,
