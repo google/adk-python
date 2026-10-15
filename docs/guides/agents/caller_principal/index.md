@@ -85,9 +85,10 @@ hangs waiting for an approval that will not come.
 
 The same decision applies wherever a confirmation answer enters the framework:
 a confirmation carried in a user event to an `LlmAgent`, and an answer that
-resumes a paused workflow tool node (`RequestInput` with interrupt id
-`wf_tool_confirmation:<node_path>`). In the tool node the answer is rewritten
-before it is stored on the tool context, so tools that read
+resumes a paused workflow node (`RequestInput` with interrupt id
+`wf_tool_confirmation:<node_path>`), whether the node wraps a tool or a
+function declared with `@node(require_confirmation=True)`. In a workflow node
+the answer is rewritten before it is stored on the context, so tools that read
 `tool_confirmation` themselves, such as `ExecuteBashTool`, see the refusal too.
 
 The principal is derived only from what the serving layer established. It is
@@ -185,10 +186,11 @@ decision stays uniform across all of them.
 
 - The principal describes the caller of the invocation as a whole. ADK does
   not verify the identity behind each individual event within a session.
-- Only tool confirmation answers are gated on the principal today, on both
-  paths that accept one: the `LlmAgent` confirmation flow and the workflow tool
-  node's resume. Other consumers can read `InvocationContext.caller_principal`,
-  but the framework does not yet gate anything else on it.
+- Only tool confirmation answers are gated on the principal today, on every
+  path that accepts one: the `LlmAgent` confirmation flow and the resume of a
+  workflow tool node or `require_confirmation` function node. Other consumers
+  can read `InvocationContext.caller_principal`, but the framework does not yet
+  gate anything else on it.
 - The synchronous `Runner.run` wrapper and live sessions do not accept a
   principal. Both behave as in-process callers.
 - Setting a principal does not authenticate anything by itself. The ADK API
