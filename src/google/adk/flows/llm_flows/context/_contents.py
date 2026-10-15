@@ -446,7 +446,7 @@ def _copy_content_for_request(
 
 
 def _get_sibling_final_response(
-    current_branch: str | None,
+    current_path: _BranchPath,
     event: Event,
     agent_name: str,
     tool_call_ids: set[str],
@@ -458,8 +458,7 @@ def _get_sibling_final_response(
   through skip_summarization, so finality alone is insufficient.
   """
   if (
-      not current_branch
-      or not event.branch
+      not event.branch
       or event.author in ('user', agent_name)
       or event.isolation_scope is not None
       or event.partial
@@ -472,13 +471,11 @@ def _get_sibling_final_response(
   ):
     return None
 
-  current_path = _BranchPath.from_string(current_branch)
   event_path = _BranchPath.from_string(event.branch)
   if (
       current_path.parent is None
       or current_path.parent != event_path.parent
       or current_path == event_path
-      or current_path.run_ids.intersection(tool_call_ids)
       or event_path.run_ids.intersection(tool_call_ids)
   ):
     return None
@@ -580,6 +577,22 @@ def _get_contents(
   )
   tool_call_ids = _collect_function_call_ids(rewind_filtered_events)
 
+  # The receiver's branch and tool ancestry are constant across the history.
+  # Leave the default path alone when sibling sharing is disabled.
+  sibling_context_path: _BranchPath | None = None
+  if (
+      include_sibling_final_responses
+      and isolation_scope is None
+      and not is_single_turn
+      and current_branch
+  ):
+    current_path = _BranchPath.from_string(current_branch)
+    if (
+        current_path.parent is not None
+        and not current_path.run_ids.intersection(tool_call_ids)
+    ):
+      sibling_context_path = current_path
+
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
   raw_filtered_events = []
@@ -597,13 +610,9 @@ def _get_contents(
         current_branch, event, agent_name, tool_call_ids
     ):
       raw_filtered_events.append(event)
-    elif (
-        include_sibling_final_responses
-        and isolation_scope is None
-        and not is_single_turn
-    ):
+    elif sibling_context_path is not None:
       sibling_answer = _get_sibling_final_response(
-          current_branch, event, agent_name, tool_call_ids
+          sibling_context_path, event, agent_name, tool_call_ids
       )
       if sibling_answer is not None:
         raw_filtered_events.append(sibling_answer)

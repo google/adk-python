@@ -38,7 +38,15 @@ def _answer(**overrides):
   return Event(**values)
 
 
-async def _request(events, *, enabled=True, scope=None, mode='chat', **options):
+async def _request(
+    events,
+    *,
+    enabled=True,
+    scope=None,
+    mode='chat',
+    branch='dispatcher.guide',
+    **options,
+):
   agent = Agent(
       name='guide',
       model='gemini-2.5-flash',
@@ -47,7 +55,7 @@ async def _request(events, *, enabled=True, scope=None, mode='chat', **options):
       **options,
   )
   ctx = await testing_utils.create_invocation_context(agent=agent)
-  ctx.branch = 'dispatcher.guide'
+  ctx.branch = branch
   ctx.isolation_scope = scope
   ctx.user_content = None
   ctx.session.events = events
@@ -324,6 +332,59 @@ async def test_tool_sub_branch_text_is_not_a_sibling_answer(author):
   request = await _request([call, progress])
 
   assert request.contents == []
+
+
+@pytest.mark.parametrize(
+    'receiver_branch,sibling_branch,tool_call_id,can_share',
+    [
+        (
+            'dispatcher.guide@guide-run',
+            'dispatcher.bookings@bookings-run',
+            None,
+            True,
+        ),
+        (
+            'dispatcher.lookup@adk-call.guide',
+            'dispatcher.lookup@adk-call.bookings',
+            'adk-call',
+            False,
+        ),
+        (
+            'dispatcher.guide@adk-call',
+            'dispatcher.bookings',
+            'adk-call',
+            False,
+        ),
+    ],
+    ids=['ordinary-run-ids', 'tool-ancestor', 'receiver-as-tool'],
+)
+async def test_only_non_tool_receivers_can_import_sibling_answers(
+    receiver_branch, sibling_branch, tool_call_id, can_share
+):
+  """Ordinary run IDs allow sharing; a receiver's tool ancestry forbids it."""
+  events = []
+  if tool_call_id:
+    events.append(
+        _answer(
+            author='dispatcher',
+            branch=None,
+            content=types.Content(
+                role='model',
+                parts=[
+                    types.Part(
+                        function_call=types.FunctionCall(
+                            id=tool_call_id, name='lookup', args={}
+                        )
+                    )
+                ],
+            ),
+        )
+    )
+  events.append(_answer(branch=sibling_branch))
+
+  request = await _request(events, branch=receiver_branch)
+
+  assert ('You land on Tuesday at 14:05.' in str(request.contents)) == can_share
 
 
 @pytest.mark.parametrize('enabled', [False, True])
