@@ -12,9 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Legacy, label-only feature decorators.
+
+New code must not use this module. Gate a new feature with the registry-backed
+decorators in `google.adk.features` instead, which take a `FeatureName`:
+
+```
+from google.adk.features import FeatureName
+from google.adk.features import experimental
+
+@experimental(FeatureName.MY_FEATURE)
+class MyFeature:
+  ...
+```
+
+The decorators here predate the feature registry. They have no `FeatureName`,
+so a decorated unit cannot be turned on or off with `ADK_ENABLE_<NAME>` /
+`ADK_DISABLE_<NAME>`, and the registry does not know it exists. They are kept
+for the units that still carry them and for external callers; each remaining
+unit should either graduate (drop the decorator) or move to a `FeatureName`.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable
+from enum import Enum
 import functools
 import os
 from typing import Any
@@ -85,6 +107,16 @@ def _make_feature_decorator(
       return _create_decorator(
           default_message, label, block_usage, bypass_env_var
       )(message_or_obj)
+
+    # A FeatureName is a str enum, so without this check it would be taken as
+    # the warning message: the unit would warn but never be gated.
+    if isinstance(message_or_obj, Enum):
+      raise TypeError(
+          "This is a legacy label-only decorator built on"
+          " google.adk.utils.feature_decorator; it takes a message, not"
+          f" {message_or_obj!r}. To gate a unit on a FeatureName, use the"
+          " decorators in google.adk.features instead."
+      )
 
     # Case 2: Used as @decorator() with or without message
     # message_or_obj is either None or a string message

@@ -23,7 +23,9 @@ from google.adk.features._feature_registry import _get_feature_config
 from google.adk.features._feature_registry import _register_feature
 from google.adk.features._feature_registry import _WARNED_FEATURES
 from google.adk.features._feature_registry import FeatureConfig
+from google.adk.features._feature_registry import FeatureName
 from google.adk.features._feature_registry import FeatureStage
+from google.adk.features._feature_registry import temporary_feature_override
 import pytest
 
 
@@ -205,3 +207,105 @@ def test_stable_function_does_not_raise_error_or_warn():
   with warnings.catch_warnings(record=True) as w:
     stable_function()
     assert not w
+
+
+@pytest.mark.parametrize(
+    "decorator", [experimental, working_in_progress, stable]
+)
+def test_bare_decorator_on_class_raises_type_error(decorator):
+  """Applying the decorator without a FeatureName must fail at decoration."""
+  registry_before = dict(_FEATURE_REGISTRY)
+
+  with pytest.raises(TypeError, match="Did you apply it without arguments"):
+
+    @decorator
+    class Unused:  # pylint: disable=unused-variable
+      pass
+
+  assert _FEATURE_REGISTRY == registry_before
+
+
+@pytest.mark.parametrize(
+    "decorator", [experimental, working_in_progress, stable]
+)
+def test_bare_decorator_on_function_raises_type_error(decorator):
+  """Applying the decorator without a FeatureName must fail at decoration."""
+  with pytest.raises(TypeError, match="takes a FeatureName"):
+
+    @decorator
+    def unused():  # pylint: disable=unused-variable
+      pass
+
+
+def test_bare_decorator_error_names_the_decorator_that_was_misused():
+  with pytest.raises(
+      TypeError, match="@working_in_progress from google.adk.features takes a"
+  ):
+
+    @working_in_progress
+    def unused():  # pylint: disable=unused-variable
+      pass
+
+
+@pytest.fixture
+def real_experimental_feature():
+  """A public FeatureName currently at the experimental stage.
+
+  Picked at test time so that graduating any one feature does not break this
+  file, and its warned-once state is restored afterwards.
+  """
+  feature = next(
+      (
+          name
+          for name in FeatureName
+          if _get_feature_config(name).stage == FeatureStage.EXPERIMENTAL
+      ),
+      None,
+  )
+  if feature is None:
+    pytest.skip("No FeatureName is at the experimental stage.")
+  already_warned = feature in _WARNED_FEATURES
+  _WARNED_FEATURES.discard(feature)
+  yield feature
+  if already_warned:
+    _WARNED_FEATURES.add(feature)
+  else:
+    _WARNED_FEATURES.discard(feature)
+
+
+def test_disabled_real_feature_error_names_the_bare_flag(
+    real_experimental_feature,
+):
+  """Messages name a FeatureName as in ADK_ENABLE_<NAME>, not FeatureName.X."""
+
+  @experimental(real_experimental_feature)
+  def gated():
+    return "executing"
+
+  with temporary_feature_override(real_experimental_feature, False):
+    with pytest.raises(RuntimeError) as excinfo:
+      gated()
+
+  assert (
+      str(excinfo.value)
+      == f"Feature {real_experimental_feature.value} is not enabled."
+  )
+
+
+def test_enabled_real_feature_warning_names_the_bare_flag(
+    real_experimental_feature,
+):
+  """Messages name a FeatureName as in ADK_ENABLE_<NAME>, not FeatureName.X."""
+
+  @experimental(real_experimental_feature)
+  def gated():
+    return "executing"
+
+  with temporary_feature_override(real_experimental_feature, True):
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      gated()
+
+  assert [str(warning.message) for warning in w] == [
+      f"[EXPERIMENTAL] feature {real_experimental_feature.value} is enabled."
+  ]
