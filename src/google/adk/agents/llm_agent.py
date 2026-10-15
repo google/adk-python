@@ -451,6 +451,15 @@ class LlmAgent(BaseAgent, abc.ABC):
     instruction and input
   """
 
+  include_sibling_final_responses: bool = False
+  """Includes final text from sibling branches in this agent's chat history.
+
+  Opt-in for the receiving agent. Only non-thought text is shared, with the
+  producing agent attributed as quoted context. Tool and media events remain
+  excluded. Task and single-turn isolation, and include_contents='none', are
+  unaffected.
+  """
+
   # Controlled input/output configurations - Start
   input_schema: Optional[type[BaseModel]] = None
   """The input schema when agent is used as a tool."""

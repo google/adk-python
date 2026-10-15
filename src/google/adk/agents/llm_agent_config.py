@@ -131,6 +131,11 @@ class LlmAgentConfig(BaseAgentConfig):
       default='default', description='Optional. LlmAgent.include_contents.'
   )
 
+  include_sibling_final_responses: bool = Field(
+      default=False,
+      description='Optional. LlmAgent.include_sibling_final_responses.',
+  )
+
   tools: Optional[list[ToolConfig]] = Field(
       default=None,
       description="""\

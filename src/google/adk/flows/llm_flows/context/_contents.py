@@ -166,6 +166,10 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           is_single_turn=is_single_turn,
           user_content=invocation_context.user_content,
           include_thoughts_from_other_agents=include_thoughts_from_other_agents,
+          include_sibling_final_responses=(
+              agent.include_sibling_final_responses
+              and agent.mode not in (AgentMode.TASK, AgentMode.SINGLE_TURN)
+          ),
       )
     else:
       # Include current turn context only (no conversation history). Stateful
@@ -441,6 +445,61 @@ def _copy_content_for_request(
   return new_content
 
 
+def _get_sibling_final_response(
+    current_branch: str | None,
+    event: Event,
+    agent_name: str,
+    tool_call_ids: set[str],
+) -> Event | None:
+  """Projects a sibling's final answer onto public text parts only.
+
+  This is a request-only view: the stored event, including any thought parts
+  and signatures, is never changed. A tool result can report itself as final
+  through skip_summarization, so finality alone is insufficient.
+  """
+  if (
+      not current_branch
+      or not event.branch
+      or event.author in ('user', agent_name)
+      or event.isolation_scope is not None
+      or event.partial
+      or event.long_running_tool_ids
+      or event.actions.compaction
+      or not event.is_final_response()
+      or not event.content
+      or event.content.role != 'model'
+      or not event.content.parts
+  ):
+    return None
+
+  current_path = _BranchPath.from_string(current_branch)
+  event_path = _BranchPath.from_string(event.branch)
+  if (
+      current_path.parent is None
+      or current_path.parent != event_path.parent
+      or current_path == event_path
+      or current_path.run_ids.intersection(tool_call_ids)
+      or event_path.run_ids.intersection(tool_call_ids)
+  ):
+    return None
+
+  text_parts = []
+  for part in event.content.parts:
+    # Reject mixed tool/media events, including future non-text Part fields.
+    # Rebuild plain text below rather than forwarding opaque model metadata.
+    if part.model_dump(
+        exclude_none=True, exclude={'text', 'thought', 'thought_signature'}
+    ):
+      return None
+    if part.text and part.text.strip() and not part.thought:
+      text_parts.append(types.Part(text=part.text))
+  if not text_parts:
+    return None
+  return event.model_copy(
+      update={'content': types.Content(role='model', parts=text_parts)}
+  )
+
+
 def _filter_single_turn_node_events(
     current_branch: str | None,
     events: list[Event],
@@ -481,6 +540,7 @@ def _get_contents(
     is_single_turn: bool = False,
     user_content: types.Content | None = None,
     include_thoughts_from_other_agents: bool = False,
+    include_sibling_final_responses: bool = False,
 ) -> list[types.Content]:
   """Get the contents for the LLM request.
 
@@ -499,6 +559,8 @@ def _get_contents(
       task case).
     include_thoughts_from_other_agents: Whether to include thought parts from
       other agents when presenting their messages as user context.
+    include_sibling_final_responses: Whether to include final public text from
+      sibling branches in unscoped chat history.
 
   Returns:
     A list of processed contents.
@@ -520,23 +582,31 @@ def _get_contents(
 
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
-  raw_filtered_events = [
-      e
-      for e in rewind_filtered_events
-      if _should_include_event_in_context(
-          current_branch,
-          e,
-          isolation_scope=isolation_scope,
-          node_path=node_path,
-          include_thoughts=(
-              include_thoughts_from_other_agents
-              and _is_other_agent_reply(agent_name, e)
-          ),
+  raw_filtered_events = []
+  for event in rewind_filtered_events:
+    if _should_include_event_in_context(
+        current_branch,
+        event,
+        isolation_scope=isolation_scope,
+        node_path=node_path,
+        include_thoughts=(
+            include_thoughts_from_other_agents
+            and _is_other_agent_reply(agent_name, event)
+        ),
+    ) and not _is_tool_sub_branch_event(
+        current_branch, event, agent_name, tool_call_ids
+    ):
+      raw_filtered_events.append(event)
+    elif (
+        include_sibling_final_responses
+        and isolation_scope is None
+        and not is_single_turn
+    ):
+      sibling_answer = _get_sibling_final_response(
+          current_branch, event, agent_name, tool_call_ids
       )
-      and not _is_tool_sub_branch_event(
-          current_branch, e, agent_name, tool_call_ids
-      )
-  ]
+      if sibling_answer is not None:
+        raw_filtered_events.append(sibling_answer)
 
   has_compaction_events = any(
       e.actions and e.actions.compaction for e in raw_filtered_events
