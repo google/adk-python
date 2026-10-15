@@ -460,8 +460,14 @@ async def test_execute_tool_span_names_the_callback_that_answered(
       {'answer': FunctionTool(answer), 'fail': FunctionTool(fail)},
   )
 
-  (span,) = span_exporter.get_finished_spans()
-  assert span.name == f'execute_tool {tool_name}'
+  finished_spans = span_exporter.get_finished_spans()
+  (span,) = [s for s in finished_spans if s.name == f'execute_tool {tool_name}']
+  callback_spans = [s for s in finished_spans if s is not span]
+  assert {s.name for s in callback_spans} == {
+      f'execute_callback {callback.__qualname__}'
+      for callback in callbacks.values()
+  }
+  assert all(s.parent.span_id == span.context.span_id for s in callback_spans)
   attributes = dict(span.attributes or {})
   assert attributes.get('adk.experimental.response.source') == expected_source
 
