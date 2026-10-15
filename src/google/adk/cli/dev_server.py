@@ -1215,8 +1215,8 @@ class DevServer(ApiServer):
                 )
             )
         )
-      except ValueError as ve:
-        raise HTTPException(status_code=404, detail=str(ve)) from ve
+      except (NotFoundError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
       except ValidationError as ve:
         raise HTTPException(status_code=500, detail=str(ve)) from ve
 
@@ -1270,7 +1270,8 @@ class DevServer(ApiServer):
       session = await self.session_service.get_session(
           app_name=app_name, user_id=req.user_id, session_id=req.session_id
       )
-      assert session, "Session not found."
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
 
       # Convert the session data to eval invocations
       invocations = evals.convert_session_to_eval_invocations(session)
@@ -1542,8 +1543,8 @@ class DevServer(ApiServer):
                 )
             )
         )
-      except ValueError as ve:
-        raise HTTPException(status_code=404, detail=str(ve)) from ve
+      except (NotFoundError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
       except ValidationError as ve:
         raise HTTPException(status_code=500, detail=str(ve)) from ve
 

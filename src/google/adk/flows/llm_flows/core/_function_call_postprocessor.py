@@ -25,6 +25,7 @@ from ....events.event import Event
 from ....models.llm_request import LlmRequest
 from ....utils.context_utils import Aclosing
 from ..prompt import _schema as _output_schema_processor
+from ..tools._batch_executor import _pop_kept_function_response_event
 from ._utils import require_agent as _require_agent
 
 
@@ -74,9 +75,16 @@ async def postprocess_handle_function_calls_async(
     llm_request: LlmRequest,
 ) -> AsyncGenerator[Event, None]:
   """Executes function calls and emits auth, confirmation, schema, and transfer events."""
-  if function_response_event := await functions.handle_function_calls_async(
-      invocation_context, function_call_event, llm_request.tools_dict
-  ):
+  try:
+    function_response_event = await functions.handle_function_calls_async(
+        invocation_context, function_call_event, llm_request.tools_dict
+    )
+  except Exception as e:
+    kept_event = _pop_kept_function_response_event(e)
+    if kept_event is not None and not invocation_context.is_aborted:
+      yield kept_event
+    raise
+  if function_response_event:
     auth_event = functions.generate_auth_event(
         invocation_context, function_response_event
     )

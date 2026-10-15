@@ -1248,6 +1248,65 @@ def test_get_events_current_branch_filters_each_response_independently():
   ]
 
 
+def test_get_events_current_branch_filters_by_node_path_for_single_turn_agent():
+  """A branched single_turn agent drops events from sibling node_paths on the same branch."""
+  from google.adk.events.event import NodeInfo
+  from google.adk.utils._agent_mode import AgentMode
+
+  agent = Mock(spec=BaseAgent)
+  agent.mode = AgentMode.SINGLE_TURN
+
+  unscoped_user = Event(invocation_id='inv_1', author='user', branch=None)
+  sibling_node_event = Event(
+      invocation_id='inv_1',
+      author='node_a',
+      branch='agent_1',
+      node_info=NodeInfo(id='node_a', path='wf@1/node_a@1'),
+  )
+  sibling_user_event = Event(
+      invocation_id='inv_1',
+      author='user',
+      branch='agent_1',
+      node_info=NodeInfo(id='node_a', path='wf@1/node_a@1'),
+  )
+  own_node_event = Event(
+      invocation_id='inv_1',
+      author='node_b',
+      branch='agent_1',
+      node_info=NodeInfo(id='node_b', path='wf@1/node_b@1'),
+  )
+  descendant_node_event = Event(
+      invocation_id='inv_1',
+      author='child',
+      branch='agent_1',
+      node_info=NodeInfo(id='child', path='wf@1/node_b@1/child@1'),
+  )
+
+  ctx = InvocationContext(
+      session_service=Mock(spec=BaseSessionService),
+      agent=agent,
+      invocation_id='inv_1',
+      branch='agent_1',
+      node_path='wf@1/node_b@1',
+      session=Mock(
+          spec=Session,
+          events=[
+              unscoped_user,
+              sibling_node_event,
+              sibling_user_event,
+              own_node_event,
+              descendant_node_event,
+          ],
+      ),
+  )
+
+  assert ctx._get_events(current_branch=True) == [
+      unscoped_user,
+      own_node_event,
+      descendant_node_event,
+  ]
+
+
 def _background_ctx() -> InvocationContext:
   return InvocationContext(
       session_service=Mock(spec=BaseSessionService),

@@ -2274,6 +2274,7 @@ class Runner:
     if not toolsets_to_close:
       return
 
+    cancelled_error = None
     # This maintains the same task context throughout cleanup
     for toolset in toolsets_to_close:
       cleanup_task = asyncio.create_task(
@@ -2324,24 +2325,46 @@ class Runner:
               type(toolset).__name__,
               close_error,
           )
-        raise
+        cancelled_error = e
       except Exception as e:
         logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
 
+    if cancelled_error is not None:
+      raise cancelled_error
+
   async def close(self) -> None:
-    """Closes the runner."""
+    """Closes the runner.
+
+    Raises:
+      asyncio.CancelledError: If closing was cancelled. The rest of the cleanup
+        still runs before it is re-raised, even if that cleanup fails.
+      RuntimeError: If one or more plugins failed to close.
+    """
     logger.info('Closing runner...')
-    # Close Toolsets
-    if self.agent is not None:
-      await self._cleanup_toolsets(self._collect_toolset(self.agent))
+    cancelled_error = None
+    try:
+      # Close Toolsets
+      if self.agent is not None:
+        await self._cleanup_toolsets(self._collect_toolset(self.agent))
+    except asyncio.CancelledError as e:
+      cancelled_error = e
 
-    # Close Plugins
-    if self.plugin_manager:
-      await self.plugin_manager.close()
-
-    # Close Session Service
-    if self.session_service:
-      await self.session_service.flush()
+    try:
+      # Close Plugins
+      if self.plugin_manager:
+        await self.plugin_manager.close()
+    except asyncio.CancelledError as e:
+      cancelled_error = e
+    finally:
+      try:
+        # Close Session Service
+        if self.session_service:
+          await self.session_service.flush()
+      except asyncio.CancelledError as e:
+        cancelled_error = e
+      finally:
+        if cancelled_error is not None:
+          raise cancelled_error
 
     logger.info('Runner closed.')
 
