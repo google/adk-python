@@ -351,20 +351,7 @@ class RedisSessionService(BaseSessionService):
     """Deletes a session from Redis."""
     client = self._get_redis()
     key = self._session_key(app_name, user_id, session_id)
-
-    async def delete_if_identity_matches(pipe):
-      raw = await pipe.get(key)
-      if not raw:
-        return
-      session = Session.model_validate_json(raw)
-      if not self._matches_session_identity(
-          session, app_name, user_id, session_id
-      ):
-        return
-      pipe.multi()
-      pipe.delete(key)
-
-    await client.transaction(delete_if_identity_matches, key)
+    await client.delete(key)
 
   async def get_user_state(
       self, *, app_name: str, user_id: str
@@ -381,14 +368,8 @@ class RedisSessionService(BaseSessionService):
     """Appends an event to the session and synchronizes state in Redis."""
     client = self._get_redis()
     key = self._session_key(session.app_name, session.user_id, session.id)
-    raw = await client.get(key)
-    if not raw:
+    if not await client.exists(key):
       raise SessionNotFoundError(f"Session {session.id} not found.")
-    stored_session = Session.model_validate_json(raw)
-    if not self._matches_session_identity(
-        stored_session, session.app_name, session.user_id, session.id
-    ):
-      raise SessionNotFoundError("Session not found.")
 
     event = await super().append_event(session, event)
     # Stamp the session with the event's own timestamp, matching
