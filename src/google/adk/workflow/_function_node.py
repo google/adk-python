@@ -52,8 +52,8 @@ from ._retry_config import RetryConfig
 from .utils._workflow_hitl_utils import confirmation_interrupt_id
 from .utils._workflow_hitl_utils import create_auth_request_event
 from .utils._workflow_hitl_utils import has_auth_credential
-from .utils._workflow_hitl_utils import parse_tool_confirmation
 from .utils._workflow_hitl_utils import process_auth_resume
+from .utils._workflow_hitl_utils import resumed_tool_confirmation
 
 logger = logging.getLogger("google_adk." + __name__)
 _ANY_TYPE_ADAPTER: TypeAdapter[Any] = TypeAdapter(Any)
@@ -794,9 +794,9 @@ class FunctionNode(BaseNode):
     resumed_confirmation = False
     if self.require_confirmation:
       interrupt_id = confirmation_interrupt_id(ctx.node_path)
-      if (conf_response := ctx.resume_inputs.get(interrupt_id)) is not None:
+      if (confirmation := resumed_tool_confirmation(ctx)) is not None:
         resumed_confirmation = True
-        ctx.tool_confirmation = parse_tool_confirmation(conf_response)
+        ctx.tool_confirmation = confirmation
       if ctx.tool_confirmation is not None:
         if not ctx.tool_confirmation.confirmed:
           yield Event(output={"error": "This tool call is rejected."})
