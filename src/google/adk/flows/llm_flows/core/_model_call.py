@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from opentelemetry import context as otel_context
 from opentelemetry import trace
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 
 from ....agents._streaming_mode import StreamingMode
 from ....agents.invocation_context import InvocationContext
@@ -33,6 +34,7 @@ from ....live.live_request_queue import LiveRequestQueue
 from ....models.llm_request import LlmRequest
 from ....models.llm_response import LlmResponse
 from ....telemetry import _instrumentation
+from ....telemetry.tracing import resolve_error_type
 from ....telemetry.tracing import trace_call_llm
 from ....telemetry.tracing import tracer
 from ....utils.context_utils import Aclosing
@@ -318,6 +320,7 @@ async def call_llm_async(
   except Exception as e:  # pylint: disable=broad-except
     if span.is_recording():
       span.record_exception(e)
+      span.set_attribute(ERROR_TYPE, resolve_error_type(e))
       span.set_status(
           trace.Status(trace.StatusCode.ERROR, f'{type(e).__name__}: {e}')
       )
