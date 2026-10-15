@@ -264,11 +264,12 @@ def _apply_caller_principal_gate(
   """Decides whether the caller of this invocation may approve a tool call.
 
   The decision itself is ``caller_may_confirm``, shared with the workflow tool
-  node so that both consumers of a human-in-the-loop answer refuse the same
-  callers. A refusal rewrites each confirmation to ``confirmed=False`` instead
-  of dropping it: dropping it leaves the ``adk_request_confirmation`` call
-  pending with nothing left to resolve it, which is what made an earlier
-  attempt at this guard stall every human-in-the-loop tool.
+  and function nodes so that every consumer of a human-in-the-loop answer
+  refuses the same callers. A refusal rewrites each confirmation to
+  ``confirmed=False`` instead of dropping it: dropping it leaves the
+  ``adk_request_confirmation`` call pending with nothing left to resolve it,
+  which is what made an earlier attempt at this guard stall every
+  human-in-the-loop tool.
 
   Args:
     invocation_context: Current invocation context.
