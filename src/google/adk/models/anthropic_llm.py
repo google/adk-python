@@ -351,6 +351,29 @@ def to_google_genai_finish_reason(
   )
 
 
+def _truncated_tool_use_response(
+    *,
+    usage_metadata: types.GenerateContentResponseUsageMetadata,
+    model_version: Optional[str],
+) -> LlmResponse:
+  """Reports a response that max_tokens cut off inside a tool_use block.
+
+  The last tool call's input is incomplete, so no call from the response is
+  returned: running one would act on arguments Claude never finished.
+  """
+  return LlmResponse(
+      error_code=types.FinishReason.MAX_TOKENS,
+      error_message=(
+          "A tool call was cut off by the max_tokens limit before its"
+          " arguments were complete, so no tool call was returned. Increase"
+          " `max_output_tokens` and retry."
+      ),
+      finish_reason=types.FinishReason.MAX_TOKENS,
+      usage_metadata=usage_metadata,
+      model_version=model_version,
+  )
+
+
 def _is_image_part(part: types.Part) -> bool:
   inline_data = part.inline_data
   return bool(
@@ -849,6 +872,15 @@ def message_to_generate_content_response(
   if cache_creation is not None:
     object.__setattr__(
         usage_metadata, "cache_creation_input_tokens", cache_creation
+    )
+
+  if (
+      message.stop_reason == "max_tokens"
+      and message.content
+      and message.content[-1].type == "tool_use"
+  ):
+    return _truncated_tool_use_response(
+        usage_metadata=usage_metadata, model_version=message.model
     )
 
   return LlmResponse(
@@ -1492,6 +1524,18 @@ class AnthropicLlm(BaseLlm):
         if event.delta and event.delta.stop_reason:
           stop_reason = event.delta.stop_reason
 
+    usage_metadata = types.GenerateContentResponseUsageMetadata(
+        prompt_token_count=input_tokens,
+        candidates_token_count=output_tokens - (thinking_tokens or 0),
+        total_token_count=input_tokens + output_tokens,
+        cached_content_token_count=cached_input_tokens,
+        thoughts_token_count=thinking_tokens,
+    )
+    if cache_creation_tokens is not None:
+      object.__setattr__(
+          usage_metadata, "cache_creation_input_tokens", cache_creation_tokens
+      )
+
     # Build the final aggregated response with all content.
     all_parts: list[types.Part] = []
     all_indices = sorted(
@@ -1502,6 +1546,15 @@ class AnthropicLlm(BaseLlm):
             + list(tool_use_blocks.keys())
         )
     )
+    if (
+        stop_reason == "max_tokens"
+        and all_indices
+        and all_indices[-1] in tool_use_blocks
+    ):
+      yield _truncated_tool_use_response(
+          usage_metadata=usage_metadata, model_version=model_version
+      )
+      return
     for idx in all_indices:
       if idx in thinking_blocks:
         thinking_acc = thinking_blocks[idx]
@@ -1533,18 +1586,6 @@ class AnthropicLlm(BaseLlm):
           )
         function_call.id = tool_acc.id
         all_parts.append(part)
-
-    usage_metadata = types.GenerateContentResponseUsageMetadata(
-        prompt_token_count=input_tokens,
-        candidates_token_count=output_tokens - (thinking_tokens or 0),
-        total_token_count=input_tokens + output_tokens,
-        cached_content_token_count=cached_input_tokens,
-        thoughts_token_count=thinking_tokens,
-    )
-    if cache_creation_tokens is not None:
-      object.__setattr__(
-          usage_metadata, "cache_creation_input_tokens", cache_creation_tokens
-      )
 
     final_response = LlmResponse(
         content=types.Content(role="model", parts=all_parts),
