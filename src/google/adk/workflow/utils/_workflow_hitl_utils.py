@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from google.genai import types
 
+from ...agents._caller_principal import caller_may_confirm
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_credential import AuthCredentialTypes as _AuthCredentialTypes
 from ...auth.auth_credential import OAuth2Auth
@@ -34,6 +35,7 @@ from ...utils._schema_utils import schema_to_json_schema
 from .._errors import WorkflowDataError
 
 if TYPE_CHECKING:
+  from ...agents.context import Context
   from ...auth.auth_tool import AuthConfig
   from ...sessions.state import State
 
@@ -65,6 +67,26 @@ def parse_tool_confirmation(response: Any) -> ToolConfirmation:
     raise WorkflowDataError(
         f'Invalid tool confirmation response: {response!r}'
     ) from e
+
+
+def resumed_tool_confirmation(ctx: Context) -> ToolConfirmation | None:
+  """Returns the caller's answer to this node run's confirmation request.
+
+  None when the run is not resuming from a confirmation request. An answer
+  from a caller the serving layer could not authenticate comes back as a
+  rejection, the same decision the agent pipeline makes for a confirmation
+  carried in a user event. It is made here, before the answer is stored on
+  the context, because tools such as `ExecuteBashTool` read
+  `tool_confirmation` themselves rather than through
+  `apply_confirmation_gate`.
+  """
+  response = ctx.resume_inputs.get(confirmation_interrupt_id(ctx.node_path))
+  if response is None:
+    return None
+  confirmation = parse_tool_confirmation(response)
+  if not caller_may_confirm(ctx.get_invocation_context().caller_principal):
+    confirmation = confirmation.model_copy(update={'confirmed': False})
+  return confirmation
 
 
 def create_request_input_event(request_input: RequestInput) -> Event:
