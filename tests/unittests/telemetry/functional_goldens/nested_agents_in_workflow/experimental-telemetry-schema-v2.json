@@ -428,6 +428,23 @@
         "value": 130
       }
     ],
+    "adk.experimental.invoke_workflow.compactions": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "my_workflow",
+          "gen_ai.workflow.name": "my_nested_workflow",
+          "gen_ai.workflow.nested": true
+        },
+        "value": 0
+      },
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "my_workflow",
+          "gen_ai.workflow.name": "my_workflow"
+        },
+        "value": 0
+      }
+    ],
     "adk.experimental.invoke_workflow.inference_calls": [
       {
         "attributes": {

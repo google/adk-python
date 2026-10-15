@@ -89,6 +89,7 @@ from ..evaluation.eval_metrics import EvalStatus
 from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
+from ..sessions.session import Session
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
 from ._dev_deploy import register_dev_deploy_endpoints
@@ -108,6 +109,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
+_INITIAL_STATE_FILENAME = "initial_state.json"
 _PROCESS_TERMINATION_GRACE_SECONDS = 0.5
 _PROCESS_TERMINATOR_TIMEOUT_SECONDS = 1.0
 _TEST_OUTPUT_CHUNK_BYTES = 64 * 1024
@@ -533,6 +535,55 @@ class DevServer(ApiServer):
       )
 
     return str(resolved_path)
+
+  def _load_initial_state(self, app_name: str) -> dict[str, Any]:
+    """Reads the optional ``initial_state.json`` next to an agent.
+
+    The file is read on every call, so edits apply to the next session without
+    restarting the server. A missing, unreadable or malformed file yields an
+    empty state rather than failing session creation.
+    """
+    try:
+      path = Path(self._get_agent_dir(app_name)) / _INITIAL_STATE_FILENAME
+    except HTTPException:
+      return {}
+    if not path.is_file():
+      return {}
+    try:
+      with open(path, "r", encoding="utf-8") as f:
+        initial_state = json.load(f)
+    except (OSError, ValueError) as e:
+      logger.warning("Ignoring %s: %s", path, e)
+      return {}
+    if not isinstance(initial_state, dict):
+      logger.warning("Ignoring %s: expected a JSON object", path)
+      return {}
+    return initial_state
+
+  async def _create_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str] = None,
+      state: Optional[dict[str, Any]] = None,
+  ) -> Session:
+    """Creates a session seeded from the agent's ``initial_state.json``.
+
+    State supplied by the caller takes precedence over the file's values, key by
+    key. Only explicit session creation is seeded; a session that the runner
+    creates itself (``--auto_create_session``) is not. ``app:`` and ``user:``
+    keys in the file follow the usual state scoping.
+    """
+    initial_state = self._load_initial_state(app_name)
+    if initial_state:
+      state = {**initial_state, **(state or {})}
+    return await super()._create_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        state=state,
+    )
 
   def _get_test_file_path(self, *, app_name: str, test_name: str) -> str:
     """Resolves a test file to a path inside the app's own tests directory.
@@ -1296,6 +1347,8 @@ class DevServer(ApiServer):
         self.eval_sets_manager.add_eval_case(
             app_name, eval_set_id, new_eval_case
         )
+      except NotFoundError as nfe:
+        raise HTTPException(status_code=404, detail=str(nfe)) from nfe
       except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve)) from ve
 
