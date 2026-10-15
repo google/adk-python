@@ -215,6 +215,9 @@ class _ResolvedParameters(dict[str, Any]):
   may have mutated.
   """
 
+  source: Any
+  bound: bool
+
   def __init__(self, values: dict[str, Any], *, source: Any = None):
     super().__init__(values)
     self.source = source
