@@ -19,7 +19,6 @@ from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalStatus
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
-from google.adk.evaluation.eval_metrics import LlmAsAJudgeCriterion
 from google.adk.evaluation.eval_metrics import LlmBackedUserSimulatorCriterion
 from google.adk.evaluation.evaluator import PerInvocationResult
 from google.adk.evaluation.llm_as_judge import AutoRaterScore
@@ -33,8 +32,6 @@ from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 from google.genai import types as genai_types
 import pytest
-
-from ... import testing_utils
 
 
 @pytest.mark.parametrize(
@@ -783,44 +780,3 @@ async def test_evaluate_invocations_judge_request_disables_afc(
   for request in captured_requests:
     assert request.config.automatic_function_calling is not None
     assert request.config.automatic_function_calling.disable is True
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "criterion_cls",
-    [LlmBackedUserSimulatorCriterion, LlmAsAJudgeCriterion],
-)
-async def test_evaluate_invocations_uses_basellm_judge(criterion_cls):
-  judge_model = testing_utils.MockModel.create(
-      responses=['```json\n{"is_valid": true}\n```'] * 2
-  )
-  evaluator = PerTurnUserSimulatorQualityV1(
-      EvalMetric(
-          metric_name="test_per_turn_user_simulator_quality_v1",
-          threshold=0.8,
-          criterion=criterion_cls(
-              threshold=0.5,
-              judge_model_options=JudgeModelOptions(
-                  judge_model=judge_model,
-                  num_samples=1,
-              ),
-          ),
-      )
-  )
-  starting_prompt = "first user prompt."
-  conversation_scenario = _create_test_conversation_scenario(
-      starting_prompt=starting_prompt
-  )
-  invocations = _create_test_invocations(
-      [starting_prompt, "model 1.", "user 2.", "model 2."]
-  )
-
-  result = await evaluator.evaluate_invocations(
-      actual_invocations=invocations,
-      expected_invocations=None,
-      conversation_scenario=conversation_scenario,
-  )
-
-  assert result.overall_score == 1.0
-  assert result.overall_eval_status == EvalStatus.PASSED
-  assert len(judge_model.requests) == 2

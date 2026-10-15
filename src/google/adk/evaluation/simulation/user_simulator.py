@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 from abc import ABC
-import copy
 import enum
 from typing import Optional
 
@@ -28,7 +27,6 @@ from pydantic import model_validator
 from pydantic import ValidationError
 
 from ...events.event import Event
-from ...models.base_llm import BaseLlm
 from ...utils.feature_decorator import experimental
 from ..common import EvalBaseModel
 from ..evaluator import Evaluator
@@ -110,14 +108,7 @@ class UserSimulator(ABC):
     # Unpack the config to a specific type needed by the class implementing this
     # interface.
     try:
-      shared = {
-          id(v): v for v in dict(config).values() if isinstance(v, BaseLlm)
-      }
-      # Use dict() instead of model_dump() so the field serializer does not
-      # convert a BaseLlm model into its name string.
-      self._config = config_type.model_validate(
-          dict(copy.deepcopy(config, shared))
-      )
+      self._config = config_type.model_validate(config.model_dump())
     except ValidationError as e:
       raise ValueError(f"Expect config of type `{config_type}`.") from e
 

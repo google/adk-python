@@ -28,6 +28,7 @@ from typing_extensions import override
 
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
+from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
 from ._retry_options_utils import add_default_retry_options_if_not_present
@@ -46,10 +47,8 @@ from .evaluator import PerInvocationResult
 from .llm_as_judge_utils import build_judge_request_config
 from .llm_as_judge_utils import get_eval_status
 from .llm_as_judge_utils import get_grounding_metadata_as_json_str
-from .llm_as_judge_utils import get_model_name
 from .llm_as_judge_utils import get_text_from_content
 from .llm_as_judge_utils import get_tool_declarations_as_json_str
-from .llm_as_judge_utils import resolve_llm
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -288,10 +287,8 @@ class HallucinationsV1Evaluator(Evaluator):
       if self._eval_metric.criterion is None:
         raise expected_criterion_type_error
 
-      # Use dict() instead of model_dump() so the field serializer does not
-      # convert a BaseLlm judge into its name string.
       self._criterion = HallucinationsV1Evaluator.criterion_type.model_validate(
-          dict(self._eval_metric.criterion)
+          self._eval_metric.criterion.model_dump()
       )
     except ValidationError as e:
       raise expected_criterion_type_error from e
@@ -300,7 +297,7 @@ class HallucinationsV1Evaluator(Evaluator):
     self._judge_model = self._setup_auto_rater()
     self.segmenter_prompt = _HALLUCINATIONS_V1_SEGMENTER_PROMPT
     self.sentence_validator_prompt = _HALLUCINATIONS_V1_VALIDATOR_PROMPT
-    self._model = get_model_name(self._judge_model_options.judge_model)
+    self._model = self._judge_model_options.judge_model
     # Force AFC off on judge requests so google-genai does not log a
     # per-request warning when the judge sends no tools; see
     # build_judge_request_config.
@@ -309,7 +306,10 @@ class HallucinationsV1Evaluator(Evaluator):
     )
 
   def _setup_auto_rater(self) -> BaseLlm:
-    return resolve_llm(self._judge_model_options.judge_model)
+    model_id = self._judge_model_options.judge_model
+    llm_registry = LLMRegistry()
+    llm_class = llm_registry.resolve(model_id)
+    return llm_class(model=model_id)
 
   def _create_context_for_step(
       self,

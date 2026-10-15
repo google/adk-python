@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import abc
 from enum import Enum
-from typing import Any
 from typing import Optional
 from typing import Union
 
@@ -25,15 +24,12 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
-from pydantic import field_serializer
 from pydantic import field_validator
 from pydantic import PrivateAttr
 from pydantic import SerializeAsAny
 from pydantic.json_schema import SkipJsonSchema
-from typing_extensions import Self
 from typing_extensions import TypeAlias
 
-from ..models.base_llm import BaseLlm
 from ..telemetry._token_usage import CACHE_READ_INPUT_TOKENS_MEANING
 from ..telemetry._token_usage import CANDIDATE_OUTPUT_TOKENS_MEANING
 from ..telemetry._token_usage import INPUT_TOKENS_MEANING
@@ -114,17 +110,10 @@ Threshold: TypeAlias = float
 class JudgeModelOptions(EvalBaseModel):
   """Options for an eval metric's judge model."""
 
-  judge_model: Union[str, SkipJsonSchema[BaseLlm]] = Field(
+  judge_model: str = Field(
       default="gemini-2.5-flash",
       description=(
-          "The judge model to use for evaluation. It can be a model name or a"
-          " BaseLlm instance. A BaseLlm instance is only supported when"
-          " constructing the metric programmatically, not via CLI/JSON eval"
-          " configs. On serialization only BaseLlm.model (the name) is"
-          " persisted, so a saved/reloaded config resolves the name through"
-          " LLMRegistry, which may produce a differently configured model or"
-          " fail. The same instance is shared across evaluators and may be"
-          " called concurrently when parallelism_limit > 1."
+          "The judge model to use for evaluation. It can be a model name."
       ),
   )
 
@@ -155,28 +144,6 @@ class JudgeModelOptions(EvalBaseModel):
           "The maximum number of parallel LLM evaluation calls to execute."
       ),
   )
-
-  @field_validator("judge_model", mode="before")
-  @classmethod
-  def _validate_judge_model(cls, value: object) -> object:
-    if isinstance(value, (str, BaseLlm)):
-      return value
-    raise ValueError("judge_model must be a model name or a BaseLlm instance.")
-
-  @field_serializer("judge_model")
-  def _serialize_judge_model(self, value: Union[str, BaseLlm]) -> str:
-    # Imported here to avoid a circular import with llm_as_judge_utils.
-    from .llm_as_judge_utils import get_model_name
-
-    return get_model_name(value)
-
-  def __deepcopy__(self, memo: dict[int, Any] | None = None) -> Self:
-    memo = {} if memo is None else memo
-    if isinstance(self.judge_model, BaseLlm):
-      # The judge instance is shared by design, and a used client may hold
-      # locks that cannot be deep-copied.
-      memo.setdefault(id(self.judge_model), self.judge_model)
-    return super().__deepcopy__(memo)
 
 
 class BaseCriterion(BaseModel):

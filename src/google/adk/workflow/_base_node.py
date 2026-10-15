@@ -33,6 +33,7 @@ from ._retry_config import RetryConfig
 if TYPE_CHECKING:
   from ..agents.context import Context
   from ..events.event import Event
+  from ._graph import Edge
 
 
 # The `abc.ABC` base is load-bearing and must not be dropped. Subclasses
@@ -228,6 +229,16 @@ class BaseNode(BaseModel, abc.ABC):
   def _requires_all_predecessors(self) -> bool:
     """If True, the node waits for all predecessors to complete before running."""
     return False
+
+  def _validate_outgoing_edges(self, edges: list[Edge]) -> None:
+    """Checks the node's outgoing edges when its graph is validated.
+
+    Override to reject wiring the node cannot serve, such as routes it never
+    emits, by raising ``GraphValidationError``. The default accepts any edges.
+
+    Args:
+      edges: Every edge in the graph whose ``from_node`` is this node.
+    """
 
 
 def find_static_node_path(root: BaseNode, target: BaseNode) -> str | None:

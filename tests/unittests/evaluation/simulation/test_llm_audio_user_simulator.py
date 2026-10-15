@@ -121,7 +121,7 @@ def mock_llms(mocker):
   """
   # Text-generation LLM used by the internal LlmBackedUserSimulator.
   mock_text_registry_cls = mocker.patch(
-      "google.adk.evaluation.llm_as_judge_utils.LLMRegistry",
+      "google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry",
       autospec=True,
   )
   mock_text_llm = mocker.MagicMock()
@@ -364,28 +364,6 @@ class TestToAudioContent:
     audio_part = content.parts[1]
     assert audio_part.inline_data.mime_type == audio_utils.LIVE_INPUT_MIME_TYPE
     assert len(audio_part.inline_data.data) == 400 * 2
-
-  @pytest.mark.asyncio
-  async def test_to_audio_content_does_not_mutate_caller_config(
-      self, mock_llms, conversation_scenario, mocker
-  ):
-    """to_audio_content leaves caller audio_model_configuration unchanged."""
-    _, mock_audio_llm = mock_llms
-    mock_audio_llm.generate_content_async.return_value = to_async_iter(
-        [_audio_response(mocker, data=b"WAV", mime_type="audio/pcm")]
-    )
-    config = LlmAudioUserSimulatorConfig()
-    text_simulator = LlmBackedUserSimulator(
-        config=LlmBackedUserSimulatorConfig(),
-        conversation_scenario=conversation_scenario,
-    )
-    simulator = _LlmAudioUserSimulator(
-        config=config, text_simulator=text_simulator
-    )
-
-    await simulator.to_audio_content("Hello there")
-
-    assert config.audio_model_configuration.http_options is None
 
 
 # ---------------------------------------------------------------------------

@@ -20,11 +20,13 @@ import asyncio
 import contextvars
 from unittest import mock
 
+from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows.tools import _batch_executor as _batch_tool_executor
 from google.adk.flows.llm_flows.tools._caller import _PreparedFunctionCall
 from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
@@ -346,6 +348,95 @@ async def test_execute_prepared_function_calls_sets_live_session_id_and_merges()
   assert merged.live_session_id == 'live-sess-1'
   assert merged.content is not None
   assert [p.text for p in merged.content.parts] == ['r1', 'r2']
+
+
+def _response_event(name: str, **actions) -> Event:
+  return Event(
+      invocation_id='inv-1',
+      author='agent',
+      content=types.Content(
+          role='user',
+          parts=[types.Part.from_function_response(name=name, response={})],
+      ),
+      actions=EventActions(**actions),
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'name, actions, kept',
+    [
+        ('plain', {}, True),
+        ('state_delta', {'state_delta': {'k': 'v'}}, True),
+        ('transfer', {'transfer_to_agent': 'other'}, False),
+        ('escalate', {'escalate': True}, False),
+        (
+            'confirmation',
+            {'requested_tool_confirmations': {'id': ToolConfirmation()}},
+            False,
+        ),
+        ('set_model_response', {'set_model_response': {'a': 1}}, False),
+        (FINISH_TASK_TOOL_NAME, {}, False),
+    ],
+)
+async def test_keep_completed_responses_keeps_only_finished_plain_results(
+    name: str, actions: dict, kept: bool
+) -> None:
+  """Finished plain results are merged and kept; control actions are not."""
+  mock_ic = mock.MagicMock()
+  mock_ic.session.state = {}
+  mock_ic.live_request_queue = None
+  mock_ic.is_aborted = False
+
+  async def returns(event):
+    return event
+
+  async def raises():
+    raise RuntimeError('boom')
+
+  tasks = [
+      asyncio.create_task(returns(_response_event('fast'))),
+      asyncio.create_task(asyncio.Event().wait()),
+      asyncio.create_task(raises()),
+      asyncio.create_task(returns(None)),
+      asyncio.create_task(returns(_response_event(name, **actions))),
+  ]
+  await asyncio.sleep(0)
+  tasks[1].cancel()
+  await asyncio.gather(*tasks, return_exceptions=True)
+
+  # The cancelled call, the call that raised and the None result get nothing.
+  merged = _batch_tool_executor._keep_completed_responses(mock_ic, tasks)
+  assert merged is not None
+  assert [r.name for r in merged.get_function_responses()] == (
+      ['fast', name] if kept else ['fast']
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'live_request_queue, is_aborted',
+    [
+        (mock.MagicMock(), False),
+        (None, True),
+    ],
+)
+async def test_keep_completed_responses_skips_live_or_aborted_invocation(
+    live_request_queue: object, is_aborted: bool
+) -> None:
+  """Live mode and aborted invocations do not keep completed responses."""
+  mock_ic = mock.MagicMock()
+  mock_ic.session.state = {}
+  mock_ic.live_request_queue = live_request_queue
+  mock_ic.is_aborted = is_aborted
+
+  async def returns(event):
+    return event
+
+  task = asyncio.create_task(returns(_response_event('fast')))
+  await task
+
+  assert _batch_tool_executor._keep_completed_responses(mock_ic, [task]) is None
 
 
 @pytest.mark.asyncio

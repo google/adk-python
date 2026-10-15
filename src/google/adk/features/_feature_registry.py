@@ -36,6 +36,7 @@ class FeatureName(str, Enum):
   BIGTABLE_TOOL_SETTINGS = "BIGTABLE_TOOL_SETTINGS"
   BIGTABLE_TOOLSET = "BIGTABLE_TOOLSET"
   CASCADE_LIVE = "CASCADE_LIVE"
+  CLASSIFIER = "CLASSIFIER"
   COMPUTER_USE = "COMPUTER_USE"
   DATA_AGENT_TOOL_CONFIG = "DATA_AGENT_TOOL_CONFIG"
   DATA_AGENT_TOOLSET = "DATA_AGENT_TOOLSET"
@@ -142,6 +143,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.CASCADE_LIVE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.CLASSIFIER: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.COMPUTER_USE: FeatureConfig(

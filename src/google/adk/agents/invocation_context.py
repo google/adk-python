@@ -667,8 +667,7 @@ class InvocationContext(BaseModel):
 
       self_node_path: _NodePathBuilder | None = None
       if (
-          self.branch is None
-          and getattr(self.agent, "mode", None) == AgentMode.SINGLE_TURN
+          getattr(self.agent, "mode", None) == AgentMode.SINGLE_TURN
           and self.node_path
       ):
         self_node_path = _NodePathBuilder.from_string(self.node_path)

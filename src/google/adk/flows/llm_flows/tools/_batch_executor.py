@@ -27,6 +27,7 @@ from typing import TypeVar
 
 from google.genai import types
 
+from ....agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from ....events.event import Event
 from ....events.event_actions import EventActions
 from ....telemetry.tracing import trace_merged_tool_calls
@@ -245,6 +246,9 @@ async def _prepare_function_calls(
   return await _gather_or_cancel(tasks)
 
 
+_KEPT_FUNCTION_RESPONSE_EVENT_ATTR = '_adk_kept_function_response_event'
+
+
 async def _execute_prepared_function_calls(
     invocation_context: InvocationContext,
     prepared_calls: list[_PreparedFunctionCall],
@@ -265,7 +269,17 @@ async def _execute_prepared_function_calls(
   ]
 
   # Wait for all tasks to complete
-  maybe_function_response_events = await _gather_or_cancel(tasks)
+  try:
+    maybe_function_response_events = await _gather_or_cancel(tasks)
+  except Exception as e:
+    # A call raised and its unfinished siblings were cancelled. Calls that had
+    # already finished may have had side effects, so keep their real results
+    # for the postprocessor to yield before the error unwinds the agent.
+    if (
+        kept_event := _keep_completed_responses(invocation_context, tasks)
+    ) is not None:
+      setattr(e, _KEPT_FUNCTION_RESPONSE_EVENT_ATTR, kept_event)
+    raise
 
   # Filter out None results
   function_response_events = [
@@ -281,6 +295,74 @@ async def _execute_prepared_function_calls(
 
   return _merge_and_trace_function_response_events(
       invocation_context, function_response_events
+  )
+
+
+def _keep_completed_responses(
+    invocation_context: InvocationContext,
+    tasks: list[asyncio.Task[Optional[Event]]],
+) -> Optional[Event]:
+  """Keeps the responses of calls that finished before their batch ended early.
+
+  Only plain tool results are kept: a call that was cancelled, raised or
+  returned no event gets nothing. They are merged as a complete batch would
+  be and returned for the flow postprocessor to yield before re-raising. Live
+  mode and aborted invocations are skipped.
+  """
+  if (
+      invocation_context.live_request_queue is not None
+      or invocation_context.is_aborted
+  ):
+    return None
+  finished = [
+      t.result()
+      for t in tasks
+      if t.done() and not t.cancelled() and t.exception() is None
+  ]
+  completed = [
+      event
+      for event in finished
+      if event is not None and _is_plain_result(event)
+  ]
+  if not completed:
+    return None
+  return _merge_and_trace_function_response_events(
+      invocation_context, completed
+  )
+
+
+def _pop_kept_function_response_event(
+    error: BaseException,
+) -> Optional[Event]:
+  """Pops and returns any kept function response event attached to `error`."""
+  kept_event = getattr(error, _KEPT_FUNCTION_RESPONSE_EVENT_ATTR, None)
+  if isinstance(kept_event, Event):
+    delattr(error, _KEPT_FUNCTION_RESPONSE_EVENT_ATTR)
+    return kept_event
+  return None
+
+
+def _is_plain_result(event: Event) -> bool:
+  """True if the event is a tool result with no control-flow actions.
+
+  Besides the tool's state and artifact deltas, any action (a transfer, an
+  escalation, a confirmation or credential request whose tool has not run)
+  is an instruction the failed step never carried out, so it is not kept.
+  finish_task sets no action and is detected by name.
+  """
+  actions = event.actions.model_copy(
+      update={
+          'state_delta': {},
+          'artifact_delta': {},
+          'skip_summarization': None,
+          'render_ui_widgets': None,
+      }
+  )
+  if actions != EventActions():
+    return False
+  return not any(
+      response.name == FINISH_TASK_TOOL_NAME
+      for response in event.get_function_responses()
   )
 
 
