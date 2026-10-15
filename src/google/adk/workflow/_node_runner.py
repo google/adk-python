@@ -49,6 +49,27 @@ def _has_non_output_content(event: Event) -> bool:
   return False
 
 
+class EventAppendsBarrier:
+  """Queue-only marker that waits out every event appended before it.
+
+  Enqueued by ``NodeRunner._wait_for_enqueued_events`` (not by user code),
+  it never becomes an ``Event``: ``Runner._consume_event_queue`` recognises
+  it and just sets the paired processed signal once every earlier queue item
+  has been handled — no plugin callbacks, no session append, and no empty
+  event yielded to ``run_async`` consumers.
+  """
+
+  _instance: EventAppendsBarrier | None = None
+
+  def __new__(cls) -> EventAppendsBarrier:
+    if cls._instance is None:
+      cls._instance = super().__new__(cls)
+    return cls._instance
+
+
+EVENT_APPENDS_BARRIER = EventAppendsBarrier()
+
+
 class NodeRunner:
   """Per-node executor. Drives BaseNode.run(), enriches events.
 
@@ -198,21 +219,18 @@ class NodeRunner:
     before those appends complete misses the siblings' outputs and the retry
     re-executes work that already happened.
 
-    A partial sentinel event is never appended to the session, but the runner
-    still sets its processed signal after handling everything queued ahead of
-    it, which is exactly the barrier the retry needs. The sentinel flows to
-    the runner's consumer as a bare partial event, as any other streamed
-    partial event would.
+    An ``EventAppendsBarrier`` marker is never appended to the session, never
+    passed to plugin callbacks, and never yielded to ``run_async`` consumers;
+    the runner's main loop just sets its processed signal after handling
+    everything queued ahead of it, which is exactly the barrier the retry
+    needs.
     """
     event_queue = ctx._invocation_context._event_queue  # pylint: disable=protected-access
     if event_queue is None:
       return
-    from ..events.event import Event
 
     processed = asyncio.Event()
-    sentinel = Event(partial=True)
-    self._enrich_event(sentinel, ctx)
-    await event_queue.put((sentinel, processed))
+    await event_queue.put((EVENT_APPENDS_BARRIER, processed))
     await processed.wait()
 
   def _reset_dynamic_children_for_retry(self, ctx: Context) -> None:
