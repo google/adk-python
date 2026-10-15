@@ -7326,6 +7326,106 @@ def test_dev_endpoint_rejects_app_name_that_is_not_an_identifier(
     assert "must be valid" in rejected.json()["detail"]
 
 
+def _create_builder_session(client, payload=None):
+  response = client.post(
+      "/apps/test_app/users/test_user/sessions", json=payload or {}
+  )
+  assert response.status_code == 200, response.text
+  return response.json()
+
+
+def test_dev_create_session_seeds_state_from_initial_state_file(
+    builder_test_client, tmp_path
+):
+  (tmp_path / "test_app").mkdir()
+  (tmp_path / "test_app" / "initial_state.json").write_text(
+      json.dumps({"city": "New York", "time": "10:30"}), encoding="utf-8"
+  )
+
+  session = _create_builder_session(builder_test_client)
+
+  assert session["state"] == {"city": "New York", "time": "10:30"}
+
+
+def test_dev_create_session_client_state_overrides_initial_state_file(
+    builder_test_client, tmp_path
+):
+  (tmp_path / "test_app").mkdir()
+  (tmp_path / "test_app" / "initial_state.json").write_text(
+      json.dumps({"city": "New York", "time": "10:30"}), encoding="utf-8"
+  )
+
+  session = _create_builder_session(
+      builder_test_client, {"state": {"city": "Paris", "mood": "calm"}}
+  )
+
+  assert session["state"] == {
+      "city": "Paris",
+      "time": "10:30",
+      "mood": "calm",
+  }
+
+
+def test_dev_create_session_without_initial_state_file_is_unchanged(
+    builder_test_client, tmp_path
+):
+  (tmp_path / "test_app").mkdir()
+
+  session = _create_builder_session(builder_test_client, {"state": {"a": 1}})
+
+  assert session["state"] == {"a": 1}
+
+
+@pytest.mark.parametrize("content", ["{not json", "[1, 2]", '"text"'])
+def test_dev_create_session_ignores_invalid_initial_state_file(
+    builder_test_client, tmp_path, content
+):
+  (tmp_path / "test_app").mkdir()
+  (tmp_path / "test_app" / "initial_state.json").write_text(
+      content, encoding="utf-8"
+  )
+
+  session = _create_builder_session(builder_test_client, {"state": {"a": 1}})
+
+  assert session["state"] == {"a": 1}
+
+
+def test_api_server_create_session_ignores_initial_state_file(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    test_session_info,
+    tmp_path,
+):
+  """Only the dev server reads initial_state.json."""
+  (tmp_path / test_session_info["app_name"]).mkdir()
+  (tmp_path / test_session_info["app_name"] / "initial_state.json").write_text(
+      json.dumps({"city": "New York"}), encoding="utf-8"
+  )
+  api_only_client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+      web=False,
+  )
+
+  response = api_only_client.post(
+      f"/apps/{test_session_info['app_name']}/users/"
+      f"{test_session_info['user_id']}/sessions",
+      json={},
+  )
+
+  assert response.status_code == 200
+  assert "city" not in response.json().get("state", {})
+
+
 #################################################
 # Eval endpoint plumbing
 #################################################
@@ -7388,10 +7488,6 @@ def test_add_session_to_eval_set_builds_eval_case_from_session(
   ] == ["what is 2+2?"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="add-session maps ValueError, but the managers raise NotFoundError",
-)
 def test_add_session_to_eval_set_unknown_eval_set_is_a_client_error(
     test_app, create_test_session
 ):
@@ -7407,7 +7503,7 @@ def test_add_session_to_eval_set_unknown_eval_set_is_a_client_error(
       },
   )
 
-  assert 400 <= response.status_code < 500
+  assert response.status_code == 404
 
 
 def test_get_eval_result_returns_saved_eval_set_result(
@@ -7507,6 +7603,47 @@ def test_agent_run_sse_deferred_without_streaming_is_allowed(
   response = test_app.post("/run_sse", json=payload)
 
   assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("url_prefix", "request_prefix", "mount_prefix"),
+    [
+        (None, "", None),
+        ("/adk", "", None),
+        ("/adk", "/adk", None),
+        ("/adk", "/adk", "/adk"),
+        ("/nested/adk", "", None),
+        ("/dev", "", None),
+        ("https://example.com/adk", "", None),
+    ],
+)
+def test_dev_ui_static_files_with_url_prefix(
+    tmp_path, url_prefix, request_prefix, mount_prefix
+):
+  """Static mounts support both stripped and retained proxy prefixes."""
+  app = get_fast_api_app(
+      agents_dir=str(tmp_path), web=True, url_prefix=url_prefix
+  )
+  server = Starlette(routes=[Mount(mount_prefix, app)]) if mount_prefix else app
+  client = TestClient(server)
+
+  index = client.get(request_prefix + "/dev-ui/")
+  assert index.status_code == 200
+  assert "text/html" in index.headers["content-type"]
+  favicon = client.get(request_prefix + "/dev-ui/adk_favicon.svg")
+  assert favicon.status_code == 200
+  assert "image/svg+xml" in favicon.headers["content-type"]
+  assert client.get(request_prefix + "/dev-ui/missing.js").status_code == 404
+  assert client.get(request_prefix + "/list-apps").status_code == 200
+  config = client.get(
+      request_prefix + "/dev-ui/assets/config/runtime-config.json"
+  )
+  assert config.status_code == 200
+  assert config.json()["backendUrl"] == (url_prefix or "")
+  docs = client.get(request_prefix + "/docs")
+  assert docs.status_code == 200
+  assert (app.root_path + "/openapi.json") in docs.text
+  assert client.get(request_prefix + "/openapi.json").status_code == 200
 
 
 def test_runtime_config_endpoint_shadows_static_file(tmp_path):
