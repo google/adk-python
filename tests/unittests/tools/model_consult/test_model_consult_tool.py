@@ -193,6 +193,7 @@ def test_public_exports_and_prompt_constants():
   assert TopLevelModelConsultTool is ModelConsultTool
   assert TopLevelContextConfig is ModelConsultContextConfig
   expected_all = {
+      'ForceEscalationPlugin',
       'ModelConsultContextConfig',
       'ModelConsultTool',
   }

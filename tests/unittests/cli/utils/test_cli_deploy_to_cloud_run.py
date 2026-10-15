@@ -32,6 +32,7 @@ import click
 import pytest
 
 import src.google.adk.cli.cli_deploy as cli_deploy
+import src.google.adk.cli.deployers._dockerfile_template as _dockerfile_template
 
 
 class AgentDirFixture(Protocol):
@@ -39,6 +40,36 @@ class AgentDirFixture(Protocol):
 
   def __call__(self, *, include_requirements: bool, include_env: bool) -> Path:
     ...
+
+
+def test_dockerfile_template_consumes_agent_gateway_root_certificates() -> None:
+  """The shared deploy template must declare and consume the Cloud Build ARG."""
+  content = _dockerfile_template._DOCKERFILE_TEMPLATE
+  assert "ARG AGENT_GATEWAY_ROOT_CERTIFICATES" in content
+  assert "update-ca-certificates" in content
+  assert "ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt" in content
+  assert "ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" in content
+  assert (
+      "ENV GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=/etc/ssl/certs/ca-certificates.crt"
+      in content
+  )
+  assert (
+      content.index("ARG AGENT_GATEWAY_ROOT_CERTIFICATES")
+      < content.index("update-ca-certificates")
+      < content.index(
+          "ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
+      )
+      < content.index("USER myuser")
+  )
+
+
+def test_dockerfile_template_preserves_multiline_ca_certificates_run() -> None:
+  """The shared deploy template must preserve line-continuation backslashes."""
+  content = _dockerfile_template._DOCKERFILE_TEMPLATE
+  assert (
+      'RUN if [ -n "$AGENT_GATEWAY_ROOT_CERTIFICATES" ]; then \\\n' in content
+  )
+  assert "update-ca-certificates; \\\n" in content
 
 
 # Helpers
@@ -169,6 +200,28 @@ def test_to_cloud_run_happy_path(
       'RUN adduser --disabled-password --gecos "" myuser' in dockerfile_content
   )
   assert "USER myuser" in dockerfile_content
+  assert "ARG AGENT_GATEWAY_ROOT_CERTIFICATES" in dockerfile_content
+  assert "update-ca-certificates" in dockerfile_content
+  assert (
+      "ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
+      in dockerfile_content
+  )
+  assert (
+      "ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+      in dockerfile_content
+  )
+  assert (
+      "ENV GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=/etc/ssl/certs/ca-certificates.crt"
+      in dockerfile_content
+  )
+  assert (
+      dockerfile_content.index("ARG AGENT_GATEWAY_ROOT_CERTIFICATES")
+      < dockerfile_content.index("update-ca-certificates")
+      < dockerfile_content.index(
+          "ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
+      )
+      < dockerfile_content.index("USER myuser")
+  )
   assert (
       'RUN ["pip", "install", "google-adk[a2a,gcp,otel-gcp]==1.3.0"]'
       in dockerfile_content
@@ -926,7 +979,9 @@ def test_dockerfile_run_and_cmd_use_exec_form() -> None:
     if stripped.startswith(("RUN ", "CMD ", "ENTRYPOINT ")):
       payload = stripped.split(" ", 1)[1]
       if stripped.startswith("RUN ") and (
-          "adduser" in stripped or "dev_server" in stripped
+          "adduser" in stripped
+          or "dev_server" in stripped
+          or "AGENT_GATEWAY_ROOT_CERTIFICATES" in stripped
       ):
         # Static instructions with no interpolated values; intentionally left in
         # shell form.

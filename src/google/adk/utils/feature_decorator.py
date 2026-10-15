@@ -38,7 +38,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from enum import Enum
 import functools
-import os
 from typing import Any
 from typing import cast
 from typing import Optional
@@ -46,6 +45,8 @@ from typing import overload
 from typing import Protocol
 from typing import TypeVar
 import warnings
+
+from .env_utils import is_env_enabled
 
 T = TypeVar("T")
 
@@ -69,13 +70,6 @@ class _FeatureDecorator(Protocol):
 
   def __call__(self, message_or_obj: Any = None) -> Any:
     ...
-
-
-def _is_truthy_env(var_name: str) -> bool:
-  value = os.environ.get(var_name)
-  if value is None:
-    return False
-  return value.strip().lower() in ("1", "true", "yes", "on")
 
 
 # Repeating an unchanging notice buries warnings the user can act on, and the
@@ -142,7 +136,7 @@ def _create_decorator(
       @functools.wraps(orig_init)
       def new_init(self: Any, *args: Any, **kwargs: Any) -> Any:
         # Check if usage should be bypassed via environment variable at call time
-        should_bypass = bypass_env_var is not None and _is_truthy_env(
+        should_bypass = bypass_env_var is not None and is_env_enabled(
             bypass_env_var
         )
 
@@ -164,7 +158,7 @@ def _create_decorator(
       @functools.wraps(func)
       def wrapper(*args: Any, **kwargs: Any) -> Any:
         # Check if usage should be bypassed via environment variable at call time
-        should_bypass = bypass_env_var is not None and _is_truthy_env(
+        should_bypass = bypass_env_var is not None and is_env_enabled(
             bypass_env_var
         )
 
