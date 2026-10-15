@@ -210,6 +210,7 @@ variable covers features the list does not mention.
 | `workflow` | Per-workflow inference call and tool call metrics, keyed by root agent and workflow name. |
 | `token_usage` | Token usage metrics, keyed by agent name or root agent and workflow name. |
 | `context_cache` | Context cache hit and fingerprint attributes on the inference span. |
+| `grounding` | Grounding attributes on the inference span for built-in tools such as `google_search`: query and chunk counts, plus the queries and source URIs when content capture is on. |
 | `mcp` | MCP HTTP exchange debug logs. |
 
 Certain instrumentations are gated by a combination of features,
@@ -259,6 +260,13 @@ legacy spans, which people miss because its name says nothing about spans.
 When content is suppressed the attributes are not dropped; they are set to the
 string `"{}"`. The span shape stays the same so that consumers expecting those
 keys keep working.
+
+The `grounding` feature adds two attributes that follow
+`should_add_content_to_legacy_spans`: the queries a built-in grounding tool
+searched for, and the URIs of the sources it found. Both hold lists rather than
+JSON text, so when content is suppressed they are left off the span instead of
+being set to `"{}"`. The query and chunk counts stay on the span either way, so
+a search that ran remains visible.
 
 ### The instrumentation-library caveat
 

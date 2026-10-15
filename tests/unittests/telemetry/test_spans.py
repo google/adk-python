@@ -37,6 +37,11 @@ from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_
 from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT
 from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT
 from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED
+from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT
+from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_GROUNDED
+from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT
+from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_SOURCE_URIS
+from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_WEB_SEARCH_QUERIES
 from google.adk.telemetry._experimental_semconv import _safe_json_serialize_no_whitespaces
 from google.adk.telemetry._stable_semconv import USER_CONTENT_ELIDED
 from google.adk.telemetry.context import ADK_EXPERIMENTAL_TELEMETRY
@@ -487,6 +492,427 @@ async def test_trace_inference_result_omits_context_cache_without_opt_in(
   for call in mock_span_fixture.set_attributes.call_args_list:
     set_keys.extend(call.args[0])
   assert not [key for key in set_keys if key.startswith('adk.experimental.')]
+
+
+def _experimental_telemetry_run_config(
+    monkeypatch: pytest.MonkeyPatch, *, capture_content: bool
+) -> RunConfig:
+  """Builds an opted-in run config under the given span content setting.
+
+  `TelemetryConfig` reads its env fallbacks at construction, so the config has
+  to be built after the env var is set.
+  """
+  monkeypatch.setenv(
+      ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, str(capture_content).lower()
+  )
+  return RunConfig(
+      telemetry=TelemetryConfig(adk_experimental_telemetry_opt_in=True)
+  )
+
+
+def _web_grounding_metadata() -> types.GroundingMetadata:
+  """What Gemini returns after a built-in google_search call."""
+  return types.GroundingMetadata(
+      web_search_queries=['adk release', 'google-adk pypi'],
+      grounding_chunks=[
+          types.GroundingChunk(
+              web=types.GroundingChunkWeb(uri='https://a.test/1', title='A')
+          ),
+          types.GroundingChunk(
+              web=types.GroundingChunkWeb(uri='https://b.test/2', title='B')
+          ),
+      ],
+  )
+
+
+def _grounding_attributes_set_on(span: mock.MagicMock) -> dict[str, Any]:
+  """Returns every `adk.experimental.grounding.*` attribute set on the span."""
+  attributes: dict[str, Any] = {}
+  for call in span.set_attributes.call_args_list:
+    attributes.update(call.args[0])
+  for call in span.set_attribute.call_args_list:
+    attributes[call.args[0]] = call.args[1]
+  return {
+      key: value
+      for key, value in attributes.items()
+      if key.startswith('adk.experimental.grounding.')
+  }
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_records_a_built_in_search(
+    monkeypatch, mock_span_fixture
+):
+  """Test trace_call_llm records a built-in search on the span."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  invocation_context = await _create_invocation_context(
+      LlmAgent(name='test_agent'),
+      run_config=_experimental_telemetry_run_config(
+          monkeypatch, capture_content=True
+      ),
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      grounding_metadata=_web_grounding_metadata(),
+  )
+
+  trace_call_llm(
+      invocation_context,
+      'test_event_id',
+      LlmRequest(model='gemini-pro'),
+      llm_response,
+  )
+
+  assert _grounding_attributes_set_on(mock_span_fixture) == {
+      ADK_EXPERIMENTAL_GROUNDING_GROUNDED: True,
+      ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT: 2,
+      ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT: 2,
+      ADK_EXPERIMENTAL_GROUNDING_WEB_SEARCH_QUERIES: [
+          'adk release',
+          'google-adk pypi',
+      ],
+      ADK_EXPERIMENTAL_GROUNDING_SOURCE_URIS: [
+          'https://a.test/1',
+          'https://b.test/2',
+      ],
+  }
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_withholds_grounding_content_without_capture(
+    monkeypatch, mock_span_fixture
+):
+  """Test the queries and sources stay off the span when content is off.
+
+  The counts carry no user content, so they are what still tells a search ran.
+  """
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  invocation_context = await _create_invocation_context(
+      LlmAgent(name='test_agent'),
+      run_config=_experimental_telemetry_run_config(
+          monkeypatch, capture_content=False
+      ),
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      grounding_metadata=_web_grounding_metadata(),
+  )
+
+  trace_call_llm(
+      invocation_context,
+      'test_event_id',
+      LlmRequest(model='gemini-pro'),
+      llm_response,
+  )
+
+  assert _grounding_attributes_set_on(mock_span_fixture) == {
+      ADK_EXPERIMENTAL_GROUNDING_GROUNDED: True,
+      ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT: 2,
+      ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT: 2,
+  }
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_omits_grounding_without_opt_in(
+    monkeypatch, mock_span_fixture
+):
+  """Test grounding attributes stay off unless experimental is opted in."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  invocation_context = await _create_invocation_context(
+      LlmAgent(name='test_agent')
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      grounding_metadata=_web_grounding_metadata(),
+  )
+
+  trace_call_llm(
+      invocation_context,
+      'test_event_id',
+      LlmRequest(model='gemini-pro'),
+      llm_response,
+  )
+
+  assert not _grounding_attributes_set_on(mock_span_fixture)
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_omits_grounding_for_an_ungrounded_response(
+    monkeypatch, mock_span_fixture
+):
+  """Test a response with no grounding metadata leaves the span unchanged."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  invocation_context = await _create_invocation_context(
+      LlmAgent(name='test_agent'),
+      run_config=_experimental_telemetry_run_config(
+          monkeypatch, capture_content=True
+      ),
+  )
+  llm_response = LlmResponse(
+      turn_complete=True, finish_reason=types.FinishReason.STOP
+  )
+
+  trace_call_llm(
+      invocation_context,
+      'test_event_id',
+      LlmRequest(model='gemini-pro'),
+      llm_response,
+  )
+
+  assert not _grounding_attributes_set_on(mock_span_fixture)
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_reports_a_search_tool_that_did_not_search(
+    monkeypatch, mock_span_fixture
+):
+  """Test empty grounding metadata is reported as not grounded."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  invocation_context = await _create_invocation_context(
+      LlmAgent(name='test_agent'),
+      run_config=_experimental_telemetry_run_config(
+          monkeypatch, capture_content=True
+      ),
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      grounding_metadata=types.GroundingMetadata(),
+  )
+
+  trace_call_llm(
+      invocation_context,
+      'test_event_id',
+      LlmRequest(model='gemini-pro'),
+      llm_response,
+  )
+
+  # The exact dict also pins that the empty lists are left off the span.
+  assert _grounding_attributes_set_on(mock_span_fixture) == {
+      ADK_EXPERIMENTAL_GROUNDING_GROUNDED: False,
+      ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT: 0,
+      ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT: 0,
+  }
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_lists_a_source_cited_twice_once(
+    monkeypatch, mock_span_fixture
+):
+  """Test two chunks from one page are two chunks but a single source."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  invocation_context = await _create_invocation_context(
+      LlmAgent(name='test_agent'),
+      run_config=_experimental_telemetry_run_config(
+          monkeypatch, capture_content=True
+      ),
+  )
+  page = types.GroundingChunkWeb(uri='https://a.test/1', title='A')
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      grounding_metadata=types.GroundingMetadata(
+          web_search_queries=['adk release'],
+          grounding_chunks=[
+              types.GroundingChunk(web=page),
+              types.GroundingChunk(web=page),
+          ],
+      ),
+  )
+
+  trace_call_llm(
+      invocation_context,
+      'test_event_id',
+      LlmRequest(model='gemini-pro'),
+      llm_response,
+  )
+
+  attributes = _grounding_attributes_set_on(mock_span_fixture)
+  assert attributes[ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT] == 2
+  assert attributes[ADK_EXPERIMENTAL_GROUNDING_SOURCE_URIS] == [
+      'https://a.test/1'
+  ]
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_counts_a_chunk_that_names_no_source(
+    monkeypatch, mock_span_fixture
+):
+  """Test a chunk with no source is counted but adds no source URI."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  invocation_context = await _create_invocation_context(
+      LlmAgent(name='test_agent'),
+      run_config=_experimental_telemetry_run_config(
+          monkeypatch, capture_content=True
+      ),
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      grounding_metadata=types.GroundingMetadata(
+          grounding_chunks=[types.GroundingChunk()]
+      ),
+  )
+
+  trace_call_llm(
+      invocation_context,
+      'test_event_id',
+      LlmRequest(model='gemini-pro'),
+      llm_response,
+  )
+
+  assert _grounding_attributes_set_on(mock_span_fixture) == {
+      ADK_EXPERIMENTAL_GROUNDING_GROUNDED: True,
+      ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT: 0,
+      ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT: 1,
+  }
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_counts_an_image_search_as_grounding(
+    monkeypatch, mock_span_fixture
+):
+  """Test an image search counts as grounding and names its source page."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  invocation_context = await _create_invocation_context(
+      LlmAgent(name='test_agent'),
+      run_config=_experimental_telemetry_run_config(
+          monkeypatch, capture_content=True
+      ),
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      grounding_metadata=types.GroundingMetadata(
+          image_search_queries=['eiffel tower at night'],
+          grounding_chunks=[
+              types.GroundingChunk(
+                  image=types.GroundingChunkImage(
+                      source_uri='https://example.com/paris',
+                      image_uri='https://example.com/paris/tower.jpg',
+                  )
+              )
+          ],
+      ),
+  )
+
+  trace_call_llm(
+      invocation_context,
+      'test_event_id',
+      LlmRequest(model='gemini-pro'),
+      llm_response,
+  )
+
+  assert _grounding_attributes_set_on(mock_span_fixture) == {
+      ADK_EXPERIMENTAL_GROUNDING_GROUNDED: True,
+      ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT: 1,
+      ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT: 1,
+      ADK_EXPERIMENTAL_GROUNDING_SOURCE_URIS: ['https://example.com/paris'],
+  }
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_lists_a_maps_place_as_a_source(
+    monkeypatch, mock_span_fixture
+):
+  """Test a Google Maps result is counted and names its place as a source."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  invocation_context = await _create_invocation_context(
+      LlmAgent(name='test_agent'),
+      run_config=_experimental_telemetry_run_config(
+          monkeypatch, capture_content=True
+      ),
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      grounding_metadata=types.GroundingMetadata(
+          grounding_chunks=[
+              types.GroundingChunk(
+                  maps=types.GroundingChunkMaps(
+                      uri='https://maps.google.com/?cid=1', title='Cafe'
+                  )
+              )
+          ],
+      ),
+  )
+
+  trace_call_llm(
+      invocation_context,
+      'test_event_id',
+      LlmRequest(model='gemini-pro'),
+      llm_response,
+  )
+
+  assert _grounding_attributes_set_on(mock_span_fixture) == {
+      ADK_EXPERIMENTAL_GROUNDING_GROUNDED: True,
+      ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT: 0,
+      ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT: 1,
+      ADK_EXPERIMENTAL_GROUNDING_SOURCE_URIS: [
+          'https://maps.google.com/?cid=1'
+      ],
+  }
+
+
+@pytest.mark.asyncio
+async def test_trace_inference_result_records_a_retrieval_search(
+    monkeypatch, mock_span_fixture
+):
+  """Test the generate_content span records a retrieval-based grounding.
+
+  Retrieval tools such as Vertex AI Search report retrieval queries and
+  retrieved-context chunks rather than web ones.
+  """
+  invocation_context = await _create_invocation_context(
+      LlmAgent(name='test_agent'),
+      run_config=_experimental_telemetry_run_config(
+          monkeypatch, capture_content=True
+      ),
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      grounding_metadata=types.GroundingMetadata(
+          retrieval_queries=['refund policy'],
+          grounding_chunks=[
+              types.GroundingChunk(
+                  retrieved_context=types.GroundingChunkRetrievedContext(
+                      uri='gs://bucket/policy.pdf', title='policy'
+                  )
+              ),
+          ],
+      ),
+  )
+
+  trace_inference_result(invocation_context, mock_span_fixture, llm_response)
+
+  assert _grounding_attributes_set_on(mock_span_fixture) == {
+      ADK_EXPERIMENTAL_GROUNDING_GROUNDED: True,
+      ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT: 1,
+      ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT: 1,
+      ADK_EXPERIMENTAL_GROUNDING_SOURCE_URIS: ['gs://bucket/policy.pdf'],
+  }
 
 
 @pytest.mark.asyncio
