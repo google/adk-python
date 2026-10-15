@@ -38,6 +38,7 @@ from ..auth.credential_service.in_memory_credential_service import InMemoryCrede
 from ..events._internal_metadata import mark_restored
 from ..events._internal_metadata import public_event
 from ..events._internal_metadata import public_session
+from ..events._interrupts import index_open_interrupts
 from ..events.event import Event
 from ..memory.base_memory_service import BaseMemoryService
 from ..runners import Runner
@@ -680,18 +681,23 @@ async def run_once_cli(
     # active interrupt (Human-In-The-Loop suspension). If so, we automatically
     # map the user's text query to the required function response instead of
     # treating it as a new user message.
-    # Find the last event with active interrupts
+    # Find the last event with active interrupts. An interrupt that a later
+    # user FunctionResponse already answered is no longer active, so a query
+    # sent after it is a new message, not another answer to it.
+    open_interrupts = index_open_interrupts(session.events)
     interrupt_event = None
-    interrupt_tool_ids: set[str] = set()
+    interrupt_id = None
     for e in reversed(session.events):
-      if e.long_running_tool_ids:
+      active_ids = [
+          i for i in e.long_running_tool_ids or () if i in open_interrupts
+      ]
+      if active_ids:
         interrupt_event = e
-        interrupt_tool_ids = e.long_running_tool_ids
+        # Assume the first active interrupt is the one we want to answer
+        interrupt_id = active_ids[0]
         break
 
     if interrupt_event:
-      # Assume the first active interrupt is the one we want to answer
-      interrupt_id = list(interrupt_tool_ids)[0]
       if not jsonl:
         click.secho(
             f'Auto-resuming interrupt {interrupt_id} with input: {query}',

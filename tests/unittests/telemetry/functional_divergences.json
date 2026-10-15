@@ -306,6 +306,23 @@
         },
         "kind": "otel_bug",
         "reason": "ADK passes `user.id` as a log-only attribute; the instrumentor honours span extras only, so it drops it."
+      },
+      {
+        "path": [],
+        "example_native_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "example_otel_instrumentation_value": {
+          "event_name": "gen_ai.user.message",
+          "body": {
+            "content": "<elided>"
+          },
+          "attributes": {
+            "gen_ai.system": "gemini"
+          }
+        },
+        "kind": "adk_bug",
+        "reason": "ADK logs one user message fewer than the model receives. If a request ends on a model turn, `Gemini.generate_content_async` appends a user turn (`Continue processing previous requests as instructed. ...`) before sending it, in `BaseLlm._maybe_append_user_content`. ADK logs the request's messages when it opens the inference span, before that append, so its logs miss the turn; the OTel instrumentor logs the request as sent, so it has it. In the token-threshold compaction cases the first request ends on a model turn: compaction keeps no events after its summary (`event_retention_size=0`), and a summary is a model turn."
       }
     ]
   },

@@ -28,6 +28,7 @@ from ..events.event_actions import EventActions
 from ..events.event_actions import EventCompaction
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..telemetry import _instrumentation
 from ..telemetry.tracing import _build_compaction_attributes
 from ..telemetry.tracing import _build_compaction_result_attributes
 from ..telemetry.tracing import tracer
@@ -149,6 +150,7 @@ async def _summarize_events_with_trace(
       return None
     span.set_attributes(_build_compaction_result_attributes(compaction_event))
     if compaction_event is not None:
+      _instrumentation.count_compaction()
       chars_saved = _prompt_chars_saved(
           events=events, compaction_event=compaction_event
       )

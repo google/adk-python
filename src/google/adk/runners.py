@@ -1381,7 +1381,7 @@ class Runner:
         entrypoint_node=root_agent,
         conversation_id=session_id,
         run_config=run_config,
-    ) as invocation_otel_context:
+    ) as (invocation_otel_context, _):
       async with aclosing(
           _instrumentation.stream_in_scope(
               invocation_otel_context,

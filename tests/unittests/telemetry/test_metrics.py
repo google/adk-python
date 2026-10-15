@@ -842,3 +842,67 @@ def test_record_invoke_workflow_skill_loads_of_a_workflow_that_loaded_nothing(
       },
       0,
   )]
+
+
+@pytest.fixture(name="invoke_workflow_compactions")
+def _invoke_workflow_compactions(monkeypatch):
+  """Redirects the per-workflow compaction histogram."""
+  histogram = mock.MagicMock(spec=metrics.Histogram)
+  monkeypatch.setattr(_metrics, "_invoke_workflow_compactions", histogram)
+  return histogram
+
+
+def test_record_invoke_workflow_compactions(invoke_workflow_compactions):
+  """The workflow total carries both names, and no agent dimension."""
+  _metrics.record_invoke_workflow_compactions(
+      _gates_on("compaction", "workflow"),
+      root_agent_name="root_agent",
+      workflow_name="specialist",
+      count=2,
+      nested=False,
+  )
+
+  assert _recorded(invoke_workflow_compactions) == [(
+      {
+          "adk.experimental.root_agent.name": "root_agent",
+          "gen_ai.workflow.name": "specialist",
+      },
+      2,
+  )]
+
+
+def test_record_invoke_workflow_compactions_of_a_turn_that_compacted_nothing(
+    invoke_workflow_compactions,
+):
+  """Zero is the measurement the share of compacting turns divides by."""
+  _metrics.record_invoke_workflow_compactions(
+      _gates_on("compaction", "workflow"),
+      root_agent_name="root_agent",
+      workflow_name=None,
+      count=0,
+      nested=True,
+  )
+
+  assert _recorded(invoke_workflow_compactions) == [(
+      {
+          "adk.experimental.root_agent.name": "root_agent",
+          "gen_ai.workflow.nested": True,
+      },
+      0,
+  )]
+
+
+@pytest.mark.parametrize("gate", ["workflow", "compaction"])
+def test_record_invoke_workflow_compactions_needs_both_gates(
+    invoke_workflow_compactions, gate: _ExperimentalFeature
+):
+  """Neither gate alone opts in to compaction counts."""
+  _metrics.record_invoke_workflow_compactions(
+      _gates_on(gate),
+      root_agent_name="root_agent",
+      workflow_name="specialist",
+      count=2,
+      nested=False,
+  )
+
+  assert not _recorded(invoke_workflow_compactions)

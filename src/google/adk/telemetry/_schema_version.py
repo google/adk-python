@@ -60,8 +60,8 @@ ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN = "ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN"
 # Presence of this env var indicates the process runs on Vertex Agent Engine.
 GOOGLE_CLOUD_AGENT_ENGINE_ID = "GOOGLE_CLOUD_AGENT_ENGINE_ID"
 
-# Legacy telemetry format: top-level ``invocation`` span, no entrypoint
-# ``invoke_workflow`` span/metric.
+# Legacy telemetry format: top-level ``invocation`` span. Only a workflow
+# entrypoint gets an entrypoint ``invoke_workflow`` span/metric, under it.
 SCHEMA_VERSION_LEGACY = 1
 
 # OTel-semconv-aligned telemetry format: the ``invocation`` span is replaced by

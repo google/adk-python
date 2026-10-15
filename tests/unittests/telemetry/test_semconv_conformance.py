@@ -87,6 +87,7 @@ _OPERATION_BY_METRIC: dict[str, str] = {
     "adk.experimental.invoke_workflow.inference_calls": "invoke_workflow",
     "adk.experimental.invoke_workflow.tool_calls": "invoke_workflow",
     "adk.experimental.invoke_workflow.skill.loads": "invoke_workflow",
+    "adk.experimental.invoke_workflow.compactions": "invoke_workflow",
 }
 
 # Attributes that split a histogram into series rather than state a fact about
