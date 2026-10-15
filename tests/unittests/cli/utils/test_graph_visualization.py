@@ -84,6 +84,58 @@ def test_edges_attach_to_nodes_whose_names_contain_colons():
   assert not {'srv', 'step'} & endpoints
 
 
+def _assert_colon_node_is_wired(dot: str, edge: str) -> None:
+  """Checks `edge` is present and the colon node "b:x" has no phantom port."""
+  declared = set(_NODE_LINE.findall(dot))
+  endpoints = {end for pair in _EDGE_LINE.findall(dot) for end in pair}
+  assert '"b:x"' in declared
+  assert endpoints <= declared
+  assert 'b' not in endpoints
+  assert f'\t{edge}' in dot
+
+
+def test_workflow_node_with_colon_can_be_an_edge_target():
+  """An edge into a node named "b:x" lands on the declared node."""
+  info = _workflow_info(
+      [
+          {'name': 'a', 'type': 'agent'},
+          {'name': 'b:x', 'type': 'function'},
+      ],
+      [('a', 'b:x')],
+  )
+
+  _assert_colon_node_is_wired(_plot(info), 'a -> "b:x"')
+
+
+def test_workflow_node_with_colon_can_be_an_edge_source():
+  """An edge out of a node named "b:x" starts at the declared node."""
+  info = _workflow_info(
+      [
+          {'name': 'b:x', 'type': 'function'},
+          {'name': 'c', 'type': 'agent'},
+      ],
+      [('b:x', 'c')],
+  )
+
+  _assert_colon_node_is_wired(_plot(info), '"b:x" -> c')
+
+
+def test_workflow_terminal_node_with_colon_is_linked_to_end():
+  """A terminal node named "b:x" gets its edge to END from the real node."""
+  info = _workflow_info(
+      [
+          {'name': 'a', 'type': 'agent'},
+          {'name': 'b:x', 'type': 'function'},
+      ],
+      [('a', 'b:x')],
+  )
+
+  dot = _plot(info)
+
+  _assert_colon_node_is_wired(dot, '"b:x" -> __END__')
+  assert '\t__END__ [label=END' in dot
+
+
 def test_digraph_edge_hook_quotes_colon_endpoints():
   """The graphviz hook that keeps colon names whole still exists and works."""
   assert hasattr(graphviz.Digraph, '_quote_edge'), (
