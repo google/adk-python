@@ -152,6 +152,13 @@ class BashToolPolicy:
   max_output_bytes_per_stream: Optional[int] = _DEFAULT_MAX_OUTPUT_BYTES
 
   def __post_init__(self) -> None:
+    if (
+        self.max_output_bytes_per_stream is not None
+        and self.max_output_bytes_per_stream < 0
+    ):
+      raise ValueError(
+          "max_output_bytes_per_stream must be >= 0, or None to disable"
+      )
     for prefix in self.allowed_command_prefixes:
       try:
         shlex.split(prefix)
@@ -315,6 +322,8 @@ class ExecuteBashTool(BaseTool):
     stdout = _BoundedOutput(self._policy.max_output_bytes_per_stream)
     stderr = _BoundedOutput(self._policy.max_output_bytes_per_stream)
     readers: list[asyncio.Task[None]] = []
+    process: Optional[asyncio.subprocess.Process] = None
+    completion: Optional[asyncio.Future[Any]] = None
     try:
       process = await asyncio.create_subprocess_exec(
           *shlex.split(command),
@@ -365,6 +374,26 @@ class ExecuteBashTool(BaseTool):
           "stderr": stderr.render("stderr"),
           "returncode": process.returncode,
       }
+    except asyncio.CancelledError:
+      # Cancellation must not leave drain/wait tasks pending when a
+      # descendant still holds a pipe open after the process group kill.
+      try:
+        if process is not None and process.pid:
+          _kill_process_group(process)
+      except ProcessLookupError:
+        pass
+      if completion is not None and not completion.done():
+        completion.cancel()
+      for task in readers:
+        task.cancel()
+      if readers:
+        await asyncio.gather(*readers, return_exceptions=True)
+      if process is not None and process.returncode is None:
+        try:
+          await asyncio.shield(process.wait())
+        except Exception:  # pylint: disable=broad-except
+          pass
+      raise
     except Exception as e:  # pylint: disable=broad-except
       logger.exception("ExecuteBashTool execution failed")
       if readers:
