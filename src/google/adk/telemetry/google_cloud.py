@@ -139,6 +139,8 @@ def get_gcp_exporters(
   if enable_cloud_tracing:
     span_processor = _get_gcp_span_exporter(credentials)
     span_processors.append(span_processor)
+  if user_span_processor := _maybe_get_configured_otlp_span_processor():
+    span_processors.append(user_span_processor)
 
   metric_readers: list[MetricReader] = []
   if enable_cloud_metrics:
@@ -158,6 +160,31 @@ def get_gcp_exporters(
       metric_readers=metric_readers,
       log_record_processors=log_record_processors,
   )
+
+
+def _maybe_get_configured_otlp_span_processor() -> Optional[SpanProcessor]:
+  """Returns a span processor for a user-configured OTLP endpoint, or None when
+  OTEL_EXPORTER_OTLP_(TRACES_)ENDPOINT is not set.
+
+  Lets an existing OTLP pipeline receive spans alongside the GCP exporters. The
+  OTLPSpanExporter reads OTEL_EXPORTER_OTLP_* (endpoint, headers, timeout)
+  itself; this only wires it into the provider.
+  """
+  if not (
+      os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+      or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+  ):
+    return None
+  try:
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+  except (ImportError, AttributeError):
+    logger.warning(
+        "OTEL_EXPORTER_OTLP_ENDPOINT is set but"
+        " opentelemetry-exporter-otlp-proto-http is not installed;"
+        " skipping the additional OTLP span exporter."
+    )
+    return None
+  return BatchSpanProcessor(OTLPSpanExporter())
 
 
 def _get_gcp_span_exporter(credentials: Credentials) -> SpanProcessor:
