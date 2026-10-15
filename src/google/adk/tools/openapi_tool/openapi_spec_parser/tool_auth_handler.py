@@ -595,6 +595,7 @@ class ToolAuthHandler:
       recovery was possible.
     """
     if self._is_client_credentials_only():
+      self._evict_credentials()
       return "failed"
 
     # Budget bookkeeping needs the store to name the credential and the context

@@ -203,12 +203,15 @@ async def test_failed_client_exchange_does_not_request_user_consent(
 
 
 async def test_client_credentials_401_does_not_request_user_consent(
-    client_credentials_case,
+    client_credentials_case, token_requests
 ):
-  """A rejected client token cannot be repaired with interactive consent."""
+  """A rejected token is discarded so a later call can obtain a new one."""
   handler, context, _ = client_credentials_case
+  await handler.prepare_auth_credentials()
 
   assert await handler.handle_unauthorized_error() == 'failed'
+  result = await handler.prepare_auth_credentials()
+  assert result.auth_credential.http.credentials.token == 'token-2'
   assert not context.actions.requested_auth_configs
 
 
