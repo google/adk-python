@@ -24,26 +24,44 @@ if TYPE_CHECKING:
   from ._reflect_retry_model_plugin import ReflectAndRetryModelPlugin
   from ._tool_call_integrity_plugin import ToolCallIntegrityError
   from ._tool_call_integrity_plugin import ToolCallIntegrityPlugin
+  from .auto_tracing_plugin import AutoTracingPlugin
+  from .bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
+  from .context_filter_plugin import ContextFilterPlugin
   from .debug_logging_plugin import DebugLoggingPlugin
+  from .global_instruction_plugin import GlobalInstructionPlugin
   from .logging_plugin import LoggingPlugin
+  from .multimodal_tool_results_plugin import MultimodalToolResultsPlugin
   from .reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
+  from .save_files_as_artifacts_plugin import SaveFilesAsArtifactsPlugin
 
 __all__ = [
+    "AutoTracingPlugin",
     "BasePlugin",
+    "BigQueryAgentAnalyticsPlugin",
+    "ContextFilterPlugin",
     "DebugLoggingPlugin",
+    "GlobalInstructionPlugin",
     "LoggingPlugin",
+    "MultimodalToolResultsPlugin",
     "PluginManager",
     "ReflectAndRetryModelPlugin",
     "ReflectAndRetryToolPlugin",
+    "SaveFilesAsArtifactsPlugin",
     "ToolCallIntegrityError",
     "ToolCallIntegrityPlugin",
 ]
 
 _LAZY_MEMBERS: dict[str, str] = {
+    "AutoTracingPlugin": "auto_tracing_plugin",
+    "BigQueryAgentAnalyticsPlugin": "bigquery_agent_analytics_plugin",
+    "ContextFilterPlugin": "context_filter_plugin",
     "DebugLoggingPlugin": "debug_logging_plugin",
+    "GlobalInstructionPlugin": "global_instruction_plugin",
     "LoggingPlugin": "logging_plugin",
+    "MultimodalToolResultsPlugin": "multimodal_tool_results_plugin",
     "ReflectAndRetryModelPlugin": "_reflect_retry_model_plugin",
     "ReflectAndRetryToolPlugin": "reflect_retry_tool_plugin",
+    "SaveFilesAsArtifactsPlugin": "save_files_as_artifacts_plugin",
     "ToolCallIntegrityError": "_tool_call_integrity_plugin",
     "ToolCallIntegrityPlugin": "_tool_call_integrity_plugin",
 }
