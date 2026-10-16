@@ -36,6 +36,8 @@ from . import _function_parameter_parse_util
 from . import _function_tool_declarations
 from ..features import FeatureName
 from ..features import is_feature_enabled
+from ..utils._callable_utils import get_callable_doc
+from ..utils._callable_utils import unwrap_callable
 from ..utils.variant_utils import GoogleLLMVariant
 from ._gemini_schema_util import _sanitize_schema_formats_for_gemini
 
@@ -262,16 +264,19 @@ def build_function_declaration(
       if name not in ignore_params
   ]
   new_sig = signature.replace(parameters=new_params)
-  original = cast(FunctionType, func)
+  callable_func = cast(Callable[..., Any], func)
+  original = cast(
+      FunctionType, unwrap_callable(callable_func, follow_wrapped=True)
+  )
   new_func = FunctionType(
       original.__code__,
       original.__globals__,
-      original.__name__,
+      _function_tool_declarations.get_callable_name(callable_func),
       original.__defaults__,
       original.__closure__,
   )
   setattr(new_func, '__signature__', new_sig)
-  new_func.__doc__ = original.__doc__
+  new_func.__doc__ = get_callable_doc(callable_func) or None
   # Drop the ignored params' annotations too: get_type_hints resolves every
   # annotation, so an ignored param (e.g. `tool_context`) typed with a
   # TYPE_CHECKING-only import would otherwise raise NameError although it
@@ -355,7 +360,9 @@ def from_function_with_options(
   parameters_properties: dict[str, types.Schema] = {}
   parameters_json_schema: dict[str, types.Schema] = {}
   try:
-    annotation_under_future = typing.get_type_hints(func)
+    annotation_under_future = typing.get_type_hints(
+        unwrap_callable(func, follow_wrapped=True)
+    )
   except TypeError:
     # This can happen if func is a mock object. A NameError is deliberately
     # not caught here: emptying the hints only turns its clear "name is not
@@ -420,7 +427,7 @@ def from_function_with_options(
 
   declaration = types.FunctionDeclaration(
       name=func_name,
-      description=func.__doc__,
+      description=get_callable_doc(func) or None,
   )
   if parameters_properties:
     declaration.parameters = types.Schema(
@@ -507,7 +514,9 @@ def from_function_with_options(
   )
   if isinstance(return_value.annotation, str):
     return_value = return_value.replace(
-        annotation=typing.get_type_hints(func)['return']
+        annotation=typing.get_type_hints(
+            unwrap_callable(func, follow_wrapped=True)
+        )['return']
     )
 
   response_schema: types.Schema | None = None

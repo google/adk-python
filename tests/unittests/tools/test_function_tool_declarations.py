@@ -744,7 +744,7 @@ class TestAnnotatedMetadata(parameterized.TestCase):
         "return": str,
     }
     with mock.patch(
-        "google.adk.tools._function_tool_declarations.get_type_hints",
+        "google.adk.tools._function_tool_declarations.get_type_hints_cached",
         return_value=py310_hints,
     ):
       decl = build_function_declaration_with_json_schema(save)
@@ -981,7 +981,7 @@ class TestAnnotatedMetadata(parameterized.TestCase):
         "return": str,
     }
     with mock.patch(
-        "google.adk.tools._function_tool_declarations.get_type_hints",
+        "google.adk.tools._function_tool_declarations.get_type_hints_cached",
         return_value=py310_hints,
     ):
       decl = build_function_declaration_with_json_schema(process_items)
