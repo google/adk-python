@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""A voice agent: a text reasoner bracketed by ElevenLabs STT and TTS models.
+"""A voice agent: a text reasoner bracketed by STT and TTS models.
 
 There is no ``live=`` switch and no live policy object: composition is the
 ``model``. `CascadeLive` wraps a plain text model in an STT transform and a
@@ -20,29 +20,43 @@ TTS transform. The tools and the instruction below are the same as in text
 mode; callbacks, tool confirmation and long-running tools follow live-mode
 semantics. This same agent still runs under ``run_async`` with no live
 session at all.
+
+`CASCADE_SPEECH_PROVIDER` picks the transforms: `gemini`, the default, uses
+Gemini 3.5 Transcribe and Gemini 3.8 Flash-Lite TTS, and `elevenlabs` uses
+ElevenLabs Scribe v2 Realtime and Flash v2.5. The reasoner thinks at its
+lowest level, because thinking delays the first word of every reply by
+seconds.
 """
 
 from __future__ import annotations
 
-from google.adk.agents.llm_agent import Agent
+import os
+
+from google.adk import Agent
 from google.adk.integrations.eleven_labs import ElevenLabsSTT
 from google.adk.integrations.eleven_labs import ElevenLabsTTS
 from google.adk.live import CascadeLive
+from google.adk.live import GeminiSTT
+from google.adk.live import GeminiTTS
+from google.adk.live import LiveEgress
+from google.adk.live import LiveIngress
+from google.genai import types
 
 
-def spell_out(word: str) -> str:
-  """Spell a word out one letter at a time.
+def _speech_transforms() -> tuple[LiveIngress, LiveEgress]:
+  """Returns the STT and TTS of the provider `CASCADE_SPEECH_PROVIDER` names."""
+  provider = (os.environ.get('CASCADE_SPEECH_PROVIDER') or 'gemini').lower()
+  if provider == 'gemini':
+    return GeminiSTT(), GeminiTTS(speech_config='Kore')
+  if provider == 'elevenlabs':
+    return ElevenLabsSTT(), ElevenLabsTTS()
+  raise ValueError(
+      "CASCADE_SPEECH_PROVIDER must be 'gemini' or 'elevenlabs', not"
+      f' {provider!r}.'
+  )
 
-  Args:
-    word: The word to spell.
 
-  Returns:
-    A str with the letters separated, ready to be read aloud.
-  """
-  letters = [character.upper() for character in word if character.isalnum()]
-  if not letters:
-    return 'There are no letters in that to spell.'
-  return f'{word} is spelled {", ".join(letters)}.'
+_stt, _tts = _speech_transforms()
 
 
 def convert_temperature(value: float, from_unit: str) -> str:
@@ -68,40 +82,52 @@ def convert_temperature(value: float, from_unit: str) -> str:
 root_agent = Agent(
     model=CascadeLive(
         # The reasoner: an ordinary text model, set as the `model`.
-        model='gemini-3.5-flash',
-        stt=ElevenLabsSTT(),
-        tts=ElevenLabsTTS(),
+        model='gemini-3.8-flash',
+        stt=_stt,
+        tts=_tts,
     ),
     name='cascade_agent',
     description=(
-        'Voice agent that spells words out and converts temperatures, using'
-        ' ElevenLabs for speech recognition and speech synthesis.'
+        'Voice agent that spells random words out and converts temperatures,'
+        ' using Gemini or ElevenLabs for speech recognition and speech'
+        ' synthesis.'
     ),
     instruction="""
       You are a voice assistant. Everything you say is spoken aloud by a
       speech synthesizer, so write for the ear, not for the page.
 
-      Keep answers to one or two short sentences. End every sentence with a
-      full stop, a question mark or an exclamation mark: the synthesizer cuts
-      your text at those boundaries, and a sentence that never ends waits
-      before it is spoken.
+      Keep answers to one or two short sentences, except when spelling words
+      out as described below. End every sentence with a full stop, a question
+      mark or an exclamation mark: the synthesizer cuts your text at those
+      boundaries, and a sentence that never ends waits before it is spoken.
 
       Never use markdown, bullet points, headings, code blocks or emoji.
       Write numbers, symbols and abbreviations the way you would say them out
       loud - "twenty three degrees", not "23 deg".
 
-      When the user asks how a word is spelled, call the spell_out tool. Do
-      not spell it yourself.
+      When the user asks you to spell some random words, pick that many common
+      words yourself and spell them out in a single reply. Announce each word
+      as its own sentence, then spell it with each letter as its own short
+      sentence. For example: "Apple. A. P. P. L. E." Do all of the words in
+      one reply, one after another.
+
+      When the user asks which words you spelled or what you just said, answer
+      only from what you actually said earlier in this conversation. Do not
+      pick new words, and do not spell anything again.
+
       When the user asks to convert a temperature, call the
       convert_temperature tool with the number and the unit it is currently
-      in. Do not do the arithmetic yourself.
-      Read the tool's answer back naturally rather than reciting it verbatim.
-      Call the tool every time you are asked, even if the same question was
-      already answered earlier in this conversation. Never reuse an answer
-      from an earlier turn.
+      in. Do not do the arithmetic yourself. Read the tool's answer back
+      naturally rather than reciting it verbatim. Call the tool every time you
+      are asked, even if the same question was already answered earlier.
     """,
     tools=[
-        spell_out,
         convert_temperature,
     ],
+    generate_content_config=types.GenerateContentConfig(
+        # The lowest level Gemini 3.8 Flash supports.
+        thinking_config=types.ThinkingConfig(
+            thinking_level=types.ThinkingLevel.LOW
+        ),
+    ),
 )

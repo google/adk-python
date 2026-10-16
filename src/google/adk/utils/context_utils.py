@@ -21,15 +21,16 @@ Please do not rely on the implementation details.
 from __future__ import annotations
 
 from contextlib import aclosing
-import functools
 import inspect
 from types import UnionType
-import typing
 from typing import Any
 from typing import Callable
 from typing import get_args
 from typing import get_origin
 from typing import Union
+
+from ._callable_utils import get_type_hints_cached
+from ._callable_utils import lru_cache_allowing_unhashable
 
 # Re-export aclosing for backward compatibility
 Aclosing = aclosing
@@ -64,7 +65,7 @@ def _is_context_type(annotation: Any) -> bool:
   return annotation is Context
 
 
-@functools.lru_cache(maxsize=1024)
+@lru_cache_allowing_unhashable(maxsize=1024)
 def find_context_parameter(func: Callable[..., Any]) -> str | None:
   """Find the parameter name that has a Context type annotation.
 
@@ -86,11 +87,11 @@ def find_context_parameter(func: Callable[..., Any]) -> str | None:
     return None
   # Resolve string annotations (e.g., 'Context')
   try:
-    type_hints = typing.get_type_hints(func)
+    type_hints = get_type_hints_cached(func)
   except Exception:
-    # get_type_hints can fail for various reasons (e.g., unresolvable forward
-    # references). In such cases, we fall back to inspecting the parameter
-    # annotations directly.
+    # get_type_hints_cached can fail for various reasons (e.g., unresolvable
+    # forward references). In such cases, we fall back to inspecting the
+    # parameter annotations directly.
     type_hints = {}
 
   for name, param in signature.parameters.items():

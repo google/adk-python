@@ -56,24 +56,24 @@ from fastapi.websockets import WebSocket
 from fastapi.websockets import WebSocketDisconnect
 from google.genai import types
 from opentelemetry import trace
+from opentelemetry.sdk._logs.export import SimpleLogRecordProcessor
 import opentelemetry.sdk.environment_variables as otel_env
 from opentelemetry.sdk.trace import export as export_lib
 from opentelemetry.sdk.trace import ReadableSpan
-from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider
 from pydantic import Field
 from pydantic import ValidationError
 import pydantic_core
 from starlette.types import Lifespan
+from starlette.types import Scope
 from typing_extensions import deprecated
 from typing_extensions import override
-from watchdog.observers import Observer
 import yaml
 
+from ..agents._streaming_mode import StreamingMode
 from ..agents.base_agent import BaseAgent
 from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import RunConfig
-from ..agents.run_config import StreamingMode
 from ..apps.app import App
 from ..artifacts.base_artifact_service import ArtifactVersion
 from ..artifacts.base_artifact_service import BaseArtifactService
@@ -95,6 +95,9 @@ from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..telemetry._web_ui import WebUiLogExporter
+from ..telemetry.setup import maybe_set_otel_providers
+from ..telemetry.setup import OTelHooks
 from ..utils._function_call_names import CLIENT_FUNCTION_CALL_NAMES as _CLIENT_FUNCTION_CALL_NAMES
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils.agent_info import AgentInfo
@@ -109,6 +112,16 @@ from .utils import common
 from .utils.base_agent_loader import _AgentLoadError
 from .utils.base_agent_loader import BaseAgentLoader
 from .utils.shared_value import SharedValue
+
+if typing.TYPE_CHECKING:
+  from collections.abc import AsyncIterator
+  from collections.abc import Sequence
+
+  from opentelemetry.util.types import AttributeValue
+  # watchdog types Observer as a factory, so type checkers see its base class.
+  from watchdog.observers.api import BaseObserver as Observer
+else:
+  from watchdog.observers import Observer
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -184,7 +197,8 @@ def _get_scope_header(
   """Return the first matching header value from an ASGI scope."""
   for candidate_name, candidate_value in scope.get("headers", []):
     if candidate_name == header_name:
-      return candidate_value.decode("latin-1").split(",", 1)[0].strip()
+      value = cast(bytes, candidate_value)  # ASGI header values are bytes
+      return value.decode("latin-1").split(",", 1)[0].strip()
   return None
 
 
@@ -223,7 +237,7 @@ def _is_loopback_address(host: str) -> bool:
     return False
 
 
-def _get_server_host(scope: dict[str, Any]) -> Optional[str]:
+def _get_server_host(scope: Mapping[str, Any]) -> Optional[str]:
   """Return the host the server is actually bound to (from ASGI server port)."""
   server = scope.get("server")
   if server and len(server) == 2:
@@ -257,7 +271,7 @@ def _is_local_client(scope: Mapping[str, Any]) -> bool:
   return _is_loopback_address(str(client[0]))
 
 
-def _get_request_origin(scope: dict[str, Any]) -> Optional[str]:
+def _get_request_origin(scope: Mapping[str, Any]) -> Optional[str]:
   """Compute the effective origin for the current HTTP/WebSocket request."""
   forwarded = _get_scope_header(scope, b"forwarded")
   if forwarded is not None:
@@ -348,7 +362,7 @@ def _is_dns_rebinding_request(
 
 def _is_request_origin_allowed(
     origin: str,
-    scope: dict[str, Any],
+    scope: Mapping[str, Any],
     allowed_literal_origins: list[str],
     allowed_origin_regex: Optional[re.Pattern[str]],
     has_configured_allowed_origins: bool,
@@ -458,6 +472,21 @@ _current_session_options: contextvars.ContextVar[Optional[dict[str, Any]]] = (
 )
 
 
+class _DevUiStaticFiles(StaticFiles):
+  """Serve dev-UI files when a reverse proxy strips the app root path."""
+
+  def get_path(self, scope: Scope) -> str:
+    app_root_path = scope.get("app_root_path", "")
+    path = scope["path"]
+    if app_root_path and not (
+        path == app_root_path or path.startswith(app_root_path + "/")
+    ):
+      # Mount includes the app root in root_path even when the proxy stripped
+      # it from path. Restore it for StaticFiles' mount-relative lookup only.
+      scope = {**scope, "path": app_root_path + path}
+    return super().get_path(scope)
+
+
 class _OriginCheckMiddleware:
   """ASGI middleware that blocks cross-origin requests."""
 
@@ -545,23 +574,33 @@ class _DefaultAppRewriteMiddleware:
 
 class ApiServerSpanExporter(export_lib.SpanExporter):
 
-  def __init__(self, trace_dict):
+  def __init__(self, trace_dict: dict[str, dict[str, AttributeValue]]) -> None:
     self.trace_dict = trace_dict
 
   def export(
       self, spans: typing.Sequence[ReadableSpan]
   ) -> export_lib.SpanExportResult:
     for span in spans:
+      # Schema v1 emits both `call_llm` and `generate_content`; v2 emits only
+      # `generate_content`. In v1 `call_llm` ends later, so it overwrites
+      # `generate_content` in `trace_dict`.
       if (
           span.name == "call_llm"
           or span.name == "send_data"
           or span.name.startswith("execute_tool")
+          or span.name.startswith("generate_content")
       ):
-        attributes = dict(span.attributes)
-        attributes["trace_id"] = span.get_span_context().trace_id
-        attributes["span_id"] = span.get_span_context().span_id
+        # ReadableSpan.attributes wraps its attributes and is never None.
+        attributes = dict(cast("Mapping[str, AttributeValue]", span.attributes))
+        span_context = span.get_span_context()
+        if span_context is None:
+          raise ValueError(f"Span {span.name!r} has no span context.")
+        attributes["trace_id"] = span_context.trace_id
+        attributes["span_id"] = span_context.span_id
         if attributes.get("gcp.vertex.agent.event_id", None):
-          self.trace_dict[attributes["gcp.vertex.agent.event_id"]] = attributes
+          # ADK tracing sets this attribute from the str Event.id.
+          event_id = cast(str, attributes["gcp.vertex.agent.event_id"])
+          self.trace_dict[event_id] = attributes
     return export_lib.SpanExportResult.SUCCESS
 
   def force_flush(self, timeout_millis: int = 30000) -> bool:
@@ -570,9 +609,9 @@ class ApiServerSpanExporter(export_lib.SpanExporter):
 
 class InMemoryExporter(export_lib.SpanExporter):
 
-  def __init__(self, trace_dict):
+  def __init__(self, trace_dict: dict[str, list[int]]) -> None:
     super().__init__()
-    self._spans = []
+    self._spans: list[ReadableSpan] = []
     self.trace_dict = trace_dict
 
   @override
@@ -581,12 +620,14 @@ class InMemoryExporter(export_lib.SpanExporter):
   ) -> export_lib.SpanExportResult:
     for span in spans:
       trace_id = span.context.trace_id
-      attributes = dict(span.attributes)
+      # ReadableSpan.attributes wraps its attributes and is never None.
+      attributes = dict(cast("Mapping[str, AttributeValue]", span.attributes))
       session_id = attributes.get(
           "gcp.vertex.agent.session_id", None
       ) or attributes.get("gen_ai.conversation.id", None)
       if session_id:
-        trace_ids = self.trace_dict.setdefault(session_id, [])
+        # ADK tracing sets both attributes from the str Session.id.
+        trace_ids = self.trace_dict.setdefault(cast(str, session_id), [])
         if trace_id not in trace_ids:
           trace_ids.append(trace_id)
     self._spans.extend(spans)
@@ -596,13 +637,13 @@ class InMemoryExporter(export_lib.SpanExporter):
   def force_flush(self, timeout_millis: int = 30000) -> bool:
     return True
 
-  def get_finished_spans(self, session_id: str):
+  def get_finished_spans(self, session_id: str) -> list[ReadableSpan]:
     trace_ids = self.trace_dict.get(session_id, None)
     if trace_ids is None or not trace_ids:
       return []
     return [x for x in self._spans if x.context.trace_id in trace_ids]
 
-  def clear(self):
+  def clear(self) -> None:
     self._spans.clear()
 
 
@@ -767,27 +808,33 @@ class ListAppsResponse(common.BaseModel):
 
 def _setup_telemetry(
     otel_to_cloud: bool = False,
-    internal_exporters: Optional[list[SpanProcessor]] = None,
-):
+    internal_processors: Optional[OTelHooks] = None,
+) -> None:
+  internal_processors = internal_processors or OTelHooks()
   # TODO - remove the else branch here once maybe_set_otel_providers is no
   # longer experimental.
   if otel_to_cloud:
-    _setup_gcp_telemetry(internal_exporters=internal_exporters)
+    _setup_gcp_telemetry(internal_processors)
   elif _otel_env_vars_enabled():
-    _setup_telemetry_from_env(internal_exporters=internal_exporters)
+    _setup_telemetry_from_env(internal_processors)
   else:
     # Old logic - to be removed when above leaves experimental.
     tracer_provider = trace.get_tracer_provider()
     is_proxy = isinstance(tracer_provider, trace.ProxyTracerProvider)
     if is_proxy:
       tracer_provider = TracerProvider()
-    if internal_exporters is not None:
-      add_proc = getattr(tracer_provider, "add_span_processor", None)
-      if callable(add_proc):
-        for exporter in internal_exporters:
-          add_proc(exporter)
+    add_proc = getattr(tracer_provider, "add_span_processor", None)
+    if callable(add_proc):
+      for processor in internal_processors.span_processors:
+        add_proc(processor)
     if is_proxy:
       trace.set_tracer_provider(tracer_provider=tracer_provider)
+    # Logs never had the old logic: a provider set elsewhere is left alone.
+    maybe_set_otel_providers([
+        OTelHooks(
+            log_record_processors=internal_processors.log_record_processors
+        )
+    ])
 
 
 def _otel_env_vars_enabled() -> bool:
@@ -802,66 +849,38 @@ def _otel_env_vars_enabled() -> bool:
   ])
 
 
-def _setup_gcp_telemetry(
-    internal_exporters: list[SpanProcessor] = None,
-):
-  if typing.TYPE_CHECKING:
-    from ..telemetry.setup import OTelHooks
-
-  otel_hooks_to_add: list[OTelHooks] = []
-
-  if internal_exporters:
-    from ..telemetry.setup import OTelHooks
-
-    # Register ADK-specific exporters in trace provider.
-    otel_hooks_to_add.append(OTelHooks(span_processors=internal_exporters))
-
+def _setup_gcp_telemetry(internal_processors: OTelHooks) -> None:
   import google.auth
 
   from ..telemetry.google_cloud import _CLOUD_PLATFORM_SCOPE
   from ..telemetry.google_cloud import get_gcp_exporters
   from ..telemetry.google_cloud import get_gcp_resource
-  from ..telemetry.setup import maybe_set_otel_providers
 
   credentials, project_id = google.auth.default(scopes=[_CLOUD_PLATFORM_SCOPE])
 
-  otel_hooks_to_add.append(
-      get_gcp_exporters(
-          # TODO - use trace_to_cloud here as well once otel_to_cloud is no
-          # longer experimental.
-          enable_cloud_tracing=True,
-          enable_cloud_metrics=True,
-          enable_cloud_logging=True,
-          google_auth=(credentials, project_id),
-      )
-  )
-  otel_resource = get_gcp_resource(project_id)
-
   maybe_set_otel_providers(
-      otel_hooks_to_setup=otel_hooks_to_add,
-      otel_resource=otel_resource,
+      otel_hooks_to_setup=[
+          internal_processors,
+          get_gcp_exporters(
+              # TODO - use trace_to_cloud here as well once otel_to_cloud is no
+              # longer experimental.
+              enable_cloud_tracing=True,
+              enable_cloud_metrics=True,
+              enable_cloud_logging=True,
+              google_auth=(credentials, project_id),
+          ),
+      ],
+      otel_resource=get_gcp_resource(project_id),
   )
   _setup_instrumentation_lib_if_installed()
 
 
-def _setup_telemetry_from_env(
-    internal_exporters: list[SpanProcessor] = None,
-):
-  from ..telemetry.setup import maybe_set_otel_providers
-
-  otel_hooks_to_add = []
-
-  if internal_exporters:
-    from ..telemetry.setup import OTelHooks
-
-    # Register ADK-specific exporters in trace provider.
-    otel_hooks_to_add.append(OTelHooks(span_processors=internal_exporters))
-
-  maybe_set_otel_providers(otel_hooks_to_setup=otel_hooks_to_add)
+def _setup_telemetry_from_env(internal_processors: OTelHooks) -> None:
+  maybe_set_otel_providers(otel_hooks_to_setup=[internal_processors])
   _setup_instrumentation_lib_if_installed()
 
 
-def _setup_instrumentation_lib_if_installed():
+def _setup_instrumentation_lib_if_installed() -> None:
   # Set instrumentation to enable emitting OTel data from GenAISDK
   # Currently the instrumentation lib is in extras dependencies, make sure to
   # warn the user if it's not installed.
@@ -968,7 +987,7 @@ class ApiServer:
       logo_image_url: Optional[str] = None,
       url_prefix: Optional[str] = None,
       auto_create_session: bool = False,
-      trigger_sources: Optional[list[str]] = None,
+      trigger_sources: Optional[Sequence[str]] = None,
       trigger_oidc_audience: Optional[str] = None,
       trigger_oidc_service_accounts: Optional[list[str]] = None,
       trigger_auth_verifier: Optional[
@@ -1288,7 +1307,7 @@ class ApiServer:
       otel_to_cloud: bool = False,
       with_ui: bool = False,
       bind_host: Optional[str] = None,
-  ):
+  ) -> FastAPI:
     """Creates a FastAPI app for the ADK web server.
 
     By default it'll just return a FastAPI instance with the API server
@@ -1323,17 +1342,21 @@ class ApiServer:
     self._session_trace_dict = session_trace_dict
 
     # Set up a file system watcher to detect changes in the agents directory.
-    observer = Observer()
+    from watchdog.observers import Observer as PlatformObserver
+
+    observer = PlatformObserver()
     setup_observer(observer, self)
 
     @asynccontextmanager
-    async def internal_lifespan(app: FastAPI):
+    async def internal_lifespan(
+        app: FastAPI,
+    ) -> AsyncIterator[Mapping[str, Any] | None]:
       try:
         if lifespan:
           async with lifespan(app) as lifespan_context:
             yield lifespan_context
         else:
-          yield
+          yield None
       finally:
         tear_down_observer(observer, self)
         # Create tasks for all runner closures to run concurrently
@@ -1341,20 +1364,32 @@ class ApiServer:
 
     memory_exporter = InMemoryExporter(session_trace_dict)
     self._memory_exporter = memory_exporter
+    self._log_exporter = WebUiLogExporter()
 
-    internal_exporters: list[SpanProcessor] = []
+    internal_processors = None
     if self._serves_debug_trace_endpoints:
-      internal_exporters = [
-          export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
-          export_lib.SimpleSpanProcessor(memory_exporter),
-      ]
+      internal_processors = OTelHooks(
+          span_processors=[
+              export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
+              export_lib.SimpleSpanProcessor(memory_exporter),
+          ],
+          log_record_processors=[SimpleLogRecordProcessor(self._log_exporter)],
+      )
 
     _setup_telemetry(
         otel_to_cloud=otel_to_cloud,
-        internal_exporters=internal_exporters,
+        internal_processors=internal_processors,
     )
     tracer_provider = trace.get_tracer_provider()
-    register_processors(tracer_provider)
+    if hasattr(tracer_provider, "add_span_processor"):
+      # Not necessarily the SDK class, but it has add_span_processor.
+      register_processors(cast(TracerProvider, tracer_provider))
+    else:
+      logger.warning(
+          "Not registering span processors: the global tracer provider is a"
+          " %s, which does not accept them.",
+          type(tracer_provider).__name__,
+      )
 
     # Run the FastAPI server.
     #
@@ -1376,7 +1411,11 @@ class ApiServer:
       if prefix and not prefix.startswith("/"):
         prefix = "/" + prefix
       root_path = prefix.rstrip("/")
-    app = FastAPI(lifespan=internal_lifespan, root_path=root_path)
+    # The wrapper yields exactly the state the wrapped lifespan yields.
+    app = FastAPI(
+        lifespan=cast("Lifespan[FastAPI]", internal_lifespan),
+        root_path=root_path,
+    )
 
     has_configured_allowed_origins = bool(allow_origins)
     if allow_origins:
@@ -1445,7 +1484,7 @@ class ApiServer:
       # registration order and the "/dev-ui/" mount would otherwise shadow this
       # path and return a stale file from disk.
       @app.get("/dev-ui/assets/config/runtime-config.json")
-      async def get_runtime_config():
+      async def get_runtime_config() -> JSONResponse:
         config: dict[str, Any] = {
             "backendUrl": self.url_prefix or "",
             # Read per request so a consent change takes effect on reload,
@@ -1459,24 +1498,26 @@ class ApiServer:
           }
         return JSONResponse(config, headers={"Cache-Control": "no-store"})
 
-      @app.get("/dev-ui/config")
-      async def get_ui_config():
+      @app.get("/dev-ui/config", response_model=None)
+      async def get_ui_config() -> dict[str, Optional[str]]:
         return {
             "logo_text": self.logo_text,
             "logo_image_url": self.logo_image_url,
         }
 
       @app.get("/")
-      async def redirect_root_to_dev_ui():
+      async def redirect_root_to_dev_ui() -> RedirectResponse:
         return RedirectResponse(redirect_dev_ui_url)
 
       @app.get("/dev-ui")
-      async def redirect_dev_ui_add_slash():
+      async def redirect_dev_ui_add_slash() -> RedirectResponse:
         return RedirectResponse(redirect_dev_ui_url)
 
       app.mount(
           "/dev-ui/",
-          StaticFiles(directory=web_assets_dir, html=True, follow_symlink=True),
+          _DevUiStaticFiles(
+              directory=web_assets_dir, html=True, follow_symlink=True
+          ),
           name="static",
       )
 
@@ -1504,14 +1545,14 @@ class ApiServer:
   def _register_production_endpoints(
       self,
       app: FastAPI,
-      trace_dict: dict,
+      trace_dict: dict[str, dict[str, AttributeValue]],
       memory_exporter: Any,
       literal_origins: list[str],
       compiled_origin_regex: Optional[re.Pattern[str]],
       has_configured_allowed_origins: bool,
       bind_host: Optional[str],
       allowed_request_hosts: Optional[frozenset[str]],
-  ):
+  ) -> None:
     """Register all core production-safe endpoints."""
 
     @app.get("/health")
@@ -1786,7 +1827,7 @@ class ApiServer:
       import uuid
 
       from ..events.event import Event
-      from ..events.event import EventActions
+      from ..events.event_actions import EventActions
 
       state_update_event = Event(
           invocation_id="p-" + str(uuid.uuid4()),
@@ -2030,7 +2071,7 @@ class ApiServer:
         raise HTTPException(status_code=404, detail="Session not found")
       await self.memory_service.add_session_to_memory(session)
 
-    def _set_telemetry_context_if_needed(runner: Runner):
+    def _set_telemetry_context_if_needed(runner: Runner) -> None:
       """Helper to set contextvars for the current request task."""
       app = getattr(runner, "app", None)
       from ..utils._telemetry_context import _is_visual_builder
@@ -2072,7 +2113,7 @@ class ApiServer:
 
       abort_signal = asyncio.Event()
 
-      async def worker():
+      async def worker() -> list[Event]:
         run_async_kwargs = _with_abort_signal_kwarg(
             runner,
             {
@@ -2093,7 +2134,7 @@ class ApiServer:
 
       worker_task = asyncio.create_task(worker())
 
-      async def monitor():
+      async def monitor() -> None:
         try:
           while True:
             message = await request.receive()
@@ -2184,7 +2225,7 @@ class ApiServer:
           )
 
       # Convert the events to properly formatted SSE
-      async def event_generator():
+      async def event_generator() -> AsyncIterator[str]:
         is_closing = False
         original_exc: Optional[BaseException] = None
         abort_signal = asyncio.Event()
@@ -2370,7 +2411,7 @@ class ApiServer:
 
       live_request_queue = LiveRequestQueue()
 
-      async def forward_events():
+      async def forward_events() -> None:
         runner = await self.get_runner_async(app_name)
         # Avatars are rendered as video, so only VIDEO sessions get an avatar
         # config, falling back to a pre-built avatar when none is configured.
@@ -2422,7 +2463,7 @@ class ApiServer:
                 ).decode("utf-8")
             )
 
-      async def process_messages():
+      async def process_messages() -> None:
         try:
           while True:
             data = await websocket.receive_text()

@@ -104,6 +104,30 @@ def _agent_state_key(ctx: Any, agent_name: str) -> str:
   return agent_name
 
 
+def _subtree_names(agent: Any, visited: set[int]) -> set[str]:
+  if agent is None or id(agent) in visited:
+    return set()
+  visited.add(id(agent))
+  children = getattr(agent, 'sub_agents', None)
+  sub = children if isinstance(children, (list, tuple)) else ()
+  name = getattr(agent, 'name', None)
+  return ({name} if isinstance(name, str) else set()) | {
+      n for c in sub for n in _subtree_names(c, visited)
+  }
+
+
+def _warn_duplicate_agent_names(duplicates: set[str]) -> None:
+  if not duplicates:
+    return
+  duplicate_names_str = ', '.join(f'`{name}`' for name in sorted(duplicates))
+  logger.warning(
+      'Found duplicate agent names: %s. '
+      'All agents in the tree must have unique names. '
+      'find_agent() returns the first match in a depth-first walk.',
+      duplicate_names_str,
+  )
+
+
 # TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
 # static type checkers.
 class BaseAgent(BaseNode, abc.ABC):
@@ -569,7 +593,8 @@ class BaseAgent(BaseNode, abc.ABC):
       end_invocation_on_content: Whether returned content ends the invocation.
 
     Returns:
-      Optional[Event]: an event if a callback provides content or changed state.
+      Optional[Event]: an event if a callback provides content or changed state
+        or artifacts.
     """
     callback_context = CallbackContext(ctx)
 
@@ -595,13 +620,16 @@ class BaseAgent(BaseNode, abc.ABC):
           author=self.name,
           branch=ctx.branch,
           content=callback_content,
-          actions=callback_context._event_actions,
+          actions=callback_context.actions,
       )
       if end_invocation_on_content:
         ctx.end_invocation = True
       return ret_event
 
-    if callback_context.state.has_delta():
+    if (
+        callback_context.state.has_delta()
+        or callback_context._event_actions.artifact_delta
+    ):
       return Event(
           invocation_id=ctx.invocation_id,
           author=self.name,
@@ -620,7 +648,8 @@ class BaseAgent(BaseNode, abc.ABC):
       ctx: InvocationContext, the invocation context for this agent.
 
     Returns:
-      Optional[Event]: an event if callback provides content or changed state.
+      Optional[Event]: an event if a callback provides content or changed state
+        or artifacts.
     """
     return await self._handle_agent_callbacks(
         ctx,
@@ -639,7 +668,8 @@ class BaseAgent(BaseNode, abc.ABC):
         agent.
 
     Returns:
-      Optional[Event]: an event if callback provides content or changed state.
+      Optional[Event]: an event if a callback provides content or changed state
+        or artifacts.
     """
     return await self._handle_agent_callbacks(
         invocation_context,
@@ -680,6 +710,13 @@ class BaseAgent(BaseNode, abc.ABC):
   @override
   def model_post_init(self, __context: Any) -> None:
     super().model_post_init(__context)
+    # >= 2 branches already warned in validate_sub_agents_unique_names.
+    if (
+        isinstance(self.sub_agents, (list, tuple))
+        and sum(self.name in _subtree_names(c, set()) for c in self.sub_agents)
+        == 1
+    ):
+      _warn_duplicate_agent_names({self.name})
     self.__set_parent_agent_for_sub_agents()
 
   @field_validator('name', mode='after')
@@ -713,29 +750,13 @@ class BaseAgent(BaseNode, abc.ABC):
       The validated list of sub-agents.
 
     """
-    if not value:
-      return value
-
     seen_names: set[str] = set()
     duplicates: set[str] = set()
-
     for sub_agent in value:
-      name = sub_agent.name
-      if name in seen_names:
-        duplicates.add(name)
-      else:
-        seen_names.add(name)
-
-    if duplicates:
-      duplicate_names_str = ', '.join(
-          f'`{name}`' for name in sorted(duplicates)
-      )
-      logger.warning(
-          'Found duplicate sub-agent names: %s. '
-          'All sub-agents must have unique names.',
-          duplicate_names_str,
-      )
-
+      branch_names = _subtree_names(sub_agent, set())
+      duplicates |= seen_names & branch_names
+      seen_names |= branch_names
+    _warn_duplicate_agent_names(duplicates)
     return value
 
   def __set_parent_agent_for_sub_agents(self) -> BaseAgent:

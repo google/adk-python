@@ -30,6 +30,7 @@ from collections.abc import Sequence
 import hashlib
 import json
 import logging
+import time
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -47,11 +48,17 @@ _SANDBOX_DISPLAY_NAME = "adk-sandbox"
 _SANDBOX_STATE_PAUSED = "STATE_PAUSED"
 _SANDBOX_STATE_PAUSING = "STATE_PAUSING"
 _SANDBOX_STATE_TERMINATED = "STATE_TERMINATED"
+_SANDBOX_STATE_RUNNING = "STATE_RUNNING"
+_SANDBOX_STATES_GONE = (_SANDBOX_STATE_TERMINATED, "STATE_DELETED")
 
 # Templates and sandboxes take a while to provision, so poll less often than
 # the SDK default of every 0.1 seconds.
 _TEMPLATE_POLL_INTERVAL_SECONDS = 1.0
 _SANDBOX_POLL_INTERVAL_SECONDS = 0.5
+
+# How long to wait for a paused or resuming sandbox to be running again.
+_RESUME_TIMEOUT_SECONDS = 300
+_RESUME_POLL_INTERVAL_SECONDS = 2.0
 
 
 class SandboxManager:
@@ -285,6 +292,83 @@ class SandboxManager:
           self._get_client().sandboxes.delete, name=sandbox_name
       )
     self._sandbox_locks.pop(sandbox_name, None)
+
+  async def sandbox_exists(self, sandbox_name: str) -> bool:
+    """Returns whether a sandbox exists and has not terminated."""
+    from google.genai.errors import ClientError
+
+    try:
+      state = await self.get_sandbox_state(sandbox_name)
+    except ClientError as e:
+      if e.code == 404:
+        return False
+      raise
+    return state not in _SANDBOX_STATES_GONE
+
+  async def wait_until_running(
+      self,
+      sandbox_name: str,
+      *,
+      timeout_seconds: float = _RESUME_TIMEOUT_SECONDS,
+  ) -> None:
+    """Waits for a sandbox to be running, resuming it if it is paused.
+
+    Raises:
+      RuntimeError: If the sandbox has terminated or been deleted.
+      TimeoutError: If the sandbox is not running within ``timeout_seconds``.
+    """
+    from google.genai.errors import ClientError
+
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+      try:
+        state = await self.get_sandbox_state(sandbox_name)
+      except ClientError as e:
+        if e.code == 404:
+          raise RuntimeError(f"Sandbox {sandbox_name} has been deleted.") from e
+        raise
+      if state == _SANDBOX_STATE_RUNNING:
+        return
+      if state in _SANDBOX_STATES_GONE:
+        raise RuntimeError(f"Sandbox {sandbox_name} is {state}.")
+      if time.monotonic() >= deadline:
+        raise TimeoutError(
+            f"Sandbox {sandbox_name} is {state} and is not running after"
+            f" {timeout_seconds} seconds."
+        )
+      # The service resumes only a PAUSED sandbox and rejects a resume while it
+      # is PAUSING, so a pausing sandbox is polled until its pause finishes,
+      # and a RESUMING one until it is running. A resume blocks until it
+      # finishes, so right after one the state is checked again without waiting.
+      if (
+          state == _SANDBOX_STATE_PAUSED
+          and await self.resume_sandbox_if_paused(sandbox_name)
+      ):
+        continue
+      await asyncio.sleep(_RESUME_POLL_INTERVAL_SECONDS)
+
+  async def execute_bash(
+      self, sandbox_name: str, command: str, *, timeout: int | None = None
+  ) -> dict[str, Any]:
+    """Runs a bash command in a shell sandbox.
+
+    Args:
+      sandbox_name: The shell sandbox to run the command in.
+      command: The command to run.
+      timeout: Seconds the command may run before the sandbox kills it. If None,
+        the sandbox default applies.
+
+    Returns:
+      The command's ``stdout``, ``stderr``, ``returncode`` and
+      ``duration_ms``. A command that exits non-zero is reported here rather
+      than raised.
+    """
+    return await asyncio.to_thread(
+        self._get_client().sandboxes.execute_bash,
+        name=sandbox_name,
+        command=command,
+        timeout=timeout,
+    )
 
   def _get_client(self) -> agentplatform.Client:
     if self._client is None:

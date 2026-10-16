@@ -265,6 +265,7 @@ cryptography==49.0.0
     #   authlib
     #   crewai-cli
     #   crewai-core
+    #   google-adk
     #   google-auth
     #   joserfc
     #   oci

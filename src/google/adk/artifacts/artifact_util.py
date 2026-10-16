@@ -285,7 +285,7 @@ def validate_path_segment(value: str, field_name: str) -> None:
       is an absolute path / starts with a slash, is drive-qualified, or contains
       slashes along with reserved path segments.
   """
-  if not value:
+  if not value or (isinstance(value, str) and not value.strip()):
     raise input_validation_error.InputValidationError(
         f"{field_name} must not be empty."
     )

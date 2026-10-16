@@ -60,7 +60,9 @@ _AGENT_INVOCATION_SCOPE_KEY = context_api.create_key("agent_invocation_scope")
 _TOOL_EXECUTION_TELEMETRY_KEY = context_api.create_key(
     "tool_execution_telemetry"
 )
+_INFERENCE_SCOPE_KEY = context_api.create_key("adk_inference_scope")
 _WORKFLOW_SCOPE_KEY = context_api.create_key("adk_workflow_scope")
+_BUSY_INTERVALS_KEY = context_api.create_key("adk_busy_intervals")
 
 _T = TypeVar("_T")
 
@@ -248,6 +250,19 @@ class _WorkflowScope(_Accumulator):
   """The enclosing scope, None on the root. Its presence is what
   `gen_ai.workflow.nested` reports."""
 
+  compaction_count: int = 0
+  """Conversation compactions counted against this scope. Per workflow rather
+  than per agent because the runner compacts again once every agent has
+  finished, against the whole session, with no agent left to attribute it to."""
+
+  otel_context: context_api.Context = dataclasses.field(
+      default_factory=context_api.Context
+  )
+  """The context the workflow runs under, carrying its span and this scope.
+
+  Published by `node_tracing._use_invoke_workflow_span` rather than attached, so
+  the runner can hand the scope it opened to its root workflow."""
+
   def self_and_enclosing(self) -> Iterator[_WorkflowScope]:
     """Yields this scope, then each one enclosing it, outermost last.
 
@@ -260,54 +275,161 @@ class _WorkflowScope(_Accumulator):
       scope = scope.parent
 
 
+def _union_seconds(intervals: list[tuple[float, float]]) -> float:
+  """Returns how long the union of `intervals` covers, in seconds.
+
+  Intervals that overlap count once, which is what makes the result the time
+  something was in flight rather than the sum of how long each one took.
+
+  Args:
+    intervals: (start, end) pairs on one shared clock, in any order.
+  """
+  total = 0.0
+  # The furthest point already counted. Everything up to here is accounted
+  # for, so an interval ending before it adds nothing.
+  counted_to = float("-inf")
+  for start, end in sorted(intervals):
+    if end <= counted_to:
+      continue
+    total += end - max(start, counted_to)
+    counted_to = end
+  return total
+
+
+@dataclasses.dataclass
+class _BusyIntervals:
+  """When a turn was inside a model call or a tool, as raw intervals.
+
+  Filled in only while :func:`collect_busy_intervals` is in force, for a caller
+  that needs where a turn's wall-clock time went as data -- eval reports the
+  split per invocation -- rather than as the histograms this module otherwise
+  publishes.
+
+  Intervals are kept whole rather than summed on arrival because they overlap:
+  tools run concurrently, sub-agents run concurrently and share the turn's
+  invocation id, and an `AgentTool` runs model calls nested inside its own
+  tool interval. Summing would count an overlap twice and drive the framework
+  remainder negative; taking the union does not.
+
+  Every endpoint comes from `time.monotonic()`, one process-wide clock, so
+  intervals recorded by different tasks are directly comparable.
+  """
+
+  model: list[tuple[float, float]] = dataclasses.field(default_factory=list)
+  """(start, end) per wait on the model, which for a streamed response is one
+  per chunk rather than one per call."""
+
+  tool: list[tuple[float, float]] = dataclasses.field(default_factory=list)
+  """(start, end) per tool execution."""
+
+  def add_model_interval(self, start_time: float) -> None:
+    """Closes a model call that began at `start_time`."""
+    self.model.append((start_time, time.monotonic()))
+
+  def add_tool_interval(self, start_time: float) -> None:
+    """Closes a tool execution that began at `start_time`."""
+    self.tool.append((start_time, time.monotonic()))
+
+  def model_seconds(self) -> float:
+    """Seconds with at least one model call in flight."""
+    return _union_seconds(self.model)
+
+  def tool_seconds(self) -> float:
+    """Seconds inside a tool that were not already spent awaiting a model.
+
+    An `AgentTool` runs its model calls inside its own tool interval, so that
+    time is attributed to the model rather than counted under both. What is
+    left is the tool's own work: the function body and whatever it calls out
+    to.
+    """
+    return _union_seconds(self.model + self.tool) - _union_seconds(self.model)
+
+  def busy_seconds(self) -> float:
+    """Seconds with a model call or a tool in flight, overlap counted once.
+
+    What is left of the turn after this is the framework's own time.
+    """
+    return _union_seconds(self.model + self.tool)
+
+
+@contextlib.contextmanager
+def collect_busy_intervals() -> Iterator[_BusyIntervals]:
+  """Collects the model and tool intervals of everything run inside the block.
+
+  Nothing collects unless a caller asks, so a run that does not pays one
+  context lookup per model and tool call and nothing more.
+
+  The collector rides the otel context rather than a ContextVar of its own, for
+  the same reason the workflow scope does: it reaches the tasks the run spawns,
+  and a caller that abandons the block keeps its own earlier context, so the
+  collector cannot outlive it.
+
+  Yields:
+    The collector, filled in as the block runs.
+  """
+  collector = _BusyIntervals()
+  token = context_api.attach(
+      context_api.set_value(_BUSY_INTERVALS_KEY, collector)
+  )
+  try:
+    yield collector
+  finally:
+    context_api.detach(token)
+
+
 @contextlib.contextmanager
 def record_invocation(
     entrypoint_node: BaseNode | None,
     conversation_id: str,
     run_config: RunConfig | None = None,
-) -> Iterator[context_api.Context]:
+) -> Iterator[tuple[context_api.Context, _WorkflowScope | None]]:
   """Top-level invocation span for a runner invocation.
 
   Schema v1 emits the legacy ``invocation`` span. Schema v2 replaces it with an
   entrypoint ``invoke_workflow {entrypoint}`` span (entrypoint = root agent or
   root node name), which omits the ``gen_ai.workflow.nested`` attribute, and a
-  ``gen_ai.invoke_workflow.duration`` metric -- unless the entrypoint is itself
-  a workflow, in which case its own node span is the entrypoint
-  ``invoke_workflow`` span and we avoid double-emitting it here.
+  ``gen_ai.invoke_workflow.duration`` metric. A workflow entrypoint gets that
+  span in v1 too, under ``invocation``. Its root node runs inside the span
+  rather than opening one of its own, so the span also covers the runner's
+  post-invocation work.
 
   Args:
     entrypoint_node: The runner's root agent/node.
-    conversation_id: Session/conversation id (stamped on the v2 span).
+    conversation_id: Session/conversation id (stamped on the entrypoint span).
     run_config: The run's config, whose telemetry settings carry the
       experimental opt-in the span's token scope is gated on.
 
   Yields:
-    The context the invocation runs under, carrying the span when there is one.
-    It is handed back by value rather than attached: pass it to
-    `stream_in_scope` to drive the invocation's events under it (b/485899016).
+    The context the invocation runs under, carrying its spans, and a workflow
+    entrypoint's scope for its root node to run in (see
+    `node_tracing.TelemetryContext._entrypoint_scope`); None for any other
+    entrypoint. The context is handed back by value rather than attached: pass
+    it to `stream_in_scope` to drive the invocation's events under it
+    (b/485899016).
   """
-  if resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED:
-    parent_context = context_api.get_current()
-    span = tracing.tracer.start_span("invocation", context=parent_context)
-    with _recording_span(span):
-      yield trace.set_span_in_context(span, parent_context)
-    return
-
   from . import node_tracing
   from ..workflow._workflow import Workflow
 
-  if isinstance(entrypoint_node, Workflow):
-    # The workflow's own node span is the entrypoint `invoke_workflow` span.
-    yield context_api.get_current()
-    return
-
-  entrypoint_name = entrypoint_node.name if entrypoint_node else ""
-  with node_tracing._use_invoke_workflow_span(
-      entrypoint_name,
-      conversation_id,
-      telemetry_config=run_config.telemetry if run_config else None,
-  ) as (_, workflow_context):
-    yield workflow_context
+  legacy = resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED
+  entrypoint_workflow = isinstance(entrypoint_node, Workflow)
+  otel_context = context_api.get_current()
+  with contextlib.ExitStack() as spans:
+    if legacy:
+      span = tracing.tracer.start_span("invocation", context=otel_context)
+      spans.enter_context(_recording_span(span))
+      otel_context = trace.set_span_in_context(span, otel_context)
+    if not legacy or entrypoint_workflow:
+      _, otel_context = spans.enter_context(
+          node_tracing._use_invoke_workflow_span(  # pylint: disable=protected-access
+              entrypoint_node.name if entrypoint_node else "",
+              conversation_id,
+              otel_context=otel_context,
+              telemetry_config=run_config.telemetry if run_config else None,
+          )
+      )
+    yield otel_context, (
+        _workflow_scope(otel_context) if entrypoint_workflow else None
+    )
 
 
 @dataclasses.dataclass
@@ -392,6 +514,13 @@ def record_response_source(
     invocation_context: InvocationContext,
 ) -> None:
   """Names the callback that produced the response recorded on ``span``."""
+  if (
+      source in ("before_model_callback", "on_model_error_callback")
+      and resolve_schema_version() >= SCHEMA_VERSION_SEMCONV_ALIGNED
+  ):
+    # Schema v2 has no `call_llm` span: `span` is the agent span, which covers
+    # every model call of the turn, so it cannot name one call's callback.
+    return
   _set_response_source(
       tracing._telemetry_config_from_invocation_context(invocation_context),
       span,
@@ -426,6 +555,8 @@ class ToolScope:
 class InferenceScope:
   """What one model call collects while its inference span is open."""
 
+  llm_request: LlmRequest
+  user_id: str
   span: tracing.GenerateContentSpan | trace.Span | None = None
   _llm_responses: list[LlmResponse] = dataclasses.field(default_factory=list)
   _inference_span_ended: bool = False
@@ -536,12 +667,27 @@ def _flush_workflow_metrics(scope: _WorkflowScope) -> None:
       count=scope.skill_load_count,
       nested=nested,
   )
+  _metrics.record_invoke_workflow_compactions(
+      scope.telemetry_config,
+      root_agent_name=scope.root_agent_name,
+      workflow_name=scope.workflow_name,
+      count=scope.compaction_count,
+      nested=nested,
+  )
 
 
 def _agent_invocation_scope() -> _AgentInvocationScope | None:
   """Returns the agent invocation's scope."""
   value = context_api.get_value(_AGENT_INVOCATION_SCOPE_KEY)
   return value if isinstance(value, _AgentInvocationScope) else None
+
+
+def inference_scope(
+    otel_context: context_api.Context | None = None,
+) -> InferenceScope | None:
+  """Returns the InferenceScope published on ``otel_context`` (default: current)."""
+  value = context_api.get_value(_INFERENCE_SCOPE_KEY, context=otel_context)
+  return value if isinstance(value, InferenceScope) else None
 
 
 def _workflow_scope(
@@ -582,6 +728,12 @@ def _accumulating_scopes(
   return tuple(scopes)
 
 
+def _busy_intervals() -> _BusyIntervals | None:
+  """Returns the interval collector in force, None when nobody is collecting."""
+  value = context_api.get_value(_BUSY_INTERVALS_KEY)
+  return value if isinstance(value, _BusyIntervals) else None
+
+
 def _accumulate_tool_call(workflow_scope: _WorkflowScope | None) -> None:
   """Counts one tool call against every scope it belongs to.
 
@@ -610,6 +762,15 @@ def _accumulate_skill_load(workflow_scope: _WorkflowScope | None) -> None:
   """
   for scope in _accumulating_scopes(workflow_scope):
     scope.skill_load_count += 1
+
+
+def count_compaction() -> None:
+  """Counts one conversation compaction against every workflow it ran inside."""
+  scope = _workflow_scope()
+  if scope is None:
+    return
+  for enclosing in scope.self_and_enclosing():
+    enclosing.compaction_count += 1
 
 
 def _active_tool_execution_tel_ctx() -> ToolScope | None:
@@ -753,6 +914,7 @@ async def record_tool_execution(
   """Unified context manager for consolidated tool execution telemetry."""
   start_time = time.monotonic()
   workflow_scope = _workflow_scope()
+  busy_intervals = _busy_intervals()
   caught_error: Exception | None = None
   detected_error_type: str | None = None
   span: trace.Span | None = None
@@ -804,6 +966,8 @@ async def record_tool_execution(
               error_type=tel_ctx.error_type,
           )
   finally:
+    if busy_intervals is not None:
+      busy_intervals.add_tool_interval(start_time)
     _accumulate_tool_call(workflow_scope)
     try:
       _metrics.record_tool_execution_duration(
@@ -820,6 +984,52 @@ async def record_tool_execution(
       )
 
 
+async def time_model_awaits(
+    responses: AsyncIterator[LlmResponse],
+) -> AsyncGenerator[LlmResponse, None]:
+  """Yields from `responses`, timing how long each item was awaited.
+
+  Wraps the model's response stream so that what is measured is the time
+  blocked on the model, and only that. Timing the enclosing
+  :func:`record_inference_telemetry` block instead would measure the wrong
+  thing: that block stays open while the caller acts on a response, so a turn
+  whose model asks for a tool would count the tool's own runtime as model time.
+  The same reasoning already governs where the inference span is closed.
+
+  For a streamed response this records one interval per chunk, so the time the
+  caller spends handling a chunk before asking for the next falls outside them.
+
+  A pass-through when nobody is collecting, which is the default.
+
+  Args:
+    responses: The model's responses, as the flow received them.
+
+  Yields:
+    Each response, unchanged and in order.
+  """
+  collector = _busy_intervals()
+  if collector is None:
+    async for response in responses:
+      yield response
+    return
+
+  iterator = responses.__aiter__()
+  while True:
+    started = time.monotonic()
+    try:
+      response = await iterator.__anext__()
+    except StopAsyncIteration:
+      return
+    finally:
+      # In `finally` so that every pull is timed, not just the ones that
+      # produced a response: the pull that ends the stream waited on the model
+      # too, and so did one that failed. A failed call recovered by
+      # `on_model_error_callback` would otherwise land its wait in the
+      # framework remainder.
+      collector.add_model_interval(started)
+    yield response
+
+
 @contextlib.asynccontextmanager
 async def record_inference_telemetry(
     llm_request: LlmRequest,
@@ -829,7 +1039,16 @@ async def record_inference_telemetry(
   """Unified async context manager for consolidated inference metrics."""
   start_time = time.monotonic()
   workflow_scope = _workflow_scope()
-  tel_ctx = InferenceScope()
+  tel_ctx = InferenceScope(
+      llm_request=llm_request,
+      user_id=invocation_context.session.user_id,
+  )
+  # Current until the caller finishes consuming the call, so log records
+  # emitted during it can find it. Held across the caller's yields, so the
+  # caller runs in its own context (`_stream_in_caller_scope`).
+  token = context_api.attach(
+      context_api.set_value(_INFERENCE_SCOPE_KEY, tel_ctx)
+  )
   try:
     async with tracing.use_inference_span(
         llm_request,
@@ -839,6 +1058,7 @@ async def record_inference_telemetry(
       tel_ctx.span = gc_span
       yield tel_ctx
   finally:
+    context_api.detach(token)
     inference_error = sys.exc_info()[1]
     _accumulate_inference_call(workflow_scope)
     usage = _token_usage.TokenUsage.from_llm_responses(tel_ctx.llm_responses)
@@ -847,7 +1067,9 @@ async def record_inference_telemetry(
     agent = invocation_context.agent
     elapsed_s = _metrics.get_elapsed_s(tel_ctx.span, start_time)
     try:
-      if agent is not None and tracing._should_emit_native_telemetry(agent):
+      if agent is not None and isinstance(
+          tel_ctx.span, tracing.GenerateContentSpan
+      ):
         _metrics.record_client_operation_duration(
             agent_name=agent.name,
             elapsed_s=elapsed_s,

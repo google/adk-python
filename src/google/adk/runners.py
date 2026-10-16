@@ -142,6 +142,8 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
 
   # Pass 2: Walk backward to find the latest active scope that is not finished.
   for event in reversed(live_events):
+    if event.actions and event.actions.compaction:
+      continue
     scope = event.isolation_scope
     if not scope:
       continue
@@ -1381,7 +1383,7 @@ class Runner:
         entrypoint_node=root_agent,
         conversation_id=session_id,
         run_config=run_config,
-    ) as invocation_otel_context:
+    ) as (invocation_otel_context, _):
       async with aclosing(
           _instrumentation.stream_in_scope(
               invocation_otel_context,
@@ -1401,15 +1403,23 @@ class Runner:
   ) -> None:
     """Rewinds the session to before the specified invocation.
 
+    Args:
+      user_id: The user ID of the session.
+      session_id: The session ID of the session.
+      rewind_before_invocation_id: The invocation ID to rewind to before.
+      run_config: Retained for backward compatibility. ``get_session_config``
+        is ignored because rewinds must replay state and artifact deltas from
+        the start of the session history.
+
     Raises:
       InvocationNotFoundError: If rewind_before_invocation_id does not match
         any event in the session.
     """
-    run_config = run_config or RunConfig()
+    if run_config and run_config.get_session_config:
+      logger.warning('rewind_async ignores run_config.get_session_config')
     session = await self._get_or_create_session(
         user_id=user_id,
         session_id=session_id,
-        get_session_config=run_config.get_session_config,
     )
     from .sessions import _rewind_utils
 
@@ -1799,22 +1809,9 @@ class Runner:
     """Returns whether chat-mode root LlmAgent uses the legacy sub-agent picker."""
     from .agents.llm_agent import LlmAgent  # pylint: disable=g-import-not-at-top
 
-    if (
-        not isinstance(self.agent, LlmAgent)
-        or (self.agent.mode or _AgentMode.CHAT) != _AgentMode.CHAT
-    ):
-      return False
-    remote_a2a_agent_class: tuple[Any, ...] = ()
-    try:
-      from .agents.remote_a2a_agent import RemoteA2aAgent  # pylint: disable=g-import-not-at-top
-
-      remote_a2a_agent_class = (RemoteA2aAgent,)
-    except ImportError:
-      pass
-    return not any(
-        isinstance(sa, (LlmAgent,) + remote_a2a_agent_class)
-        and getattr(sa, 'mode', None) == _AgentMode.TASK
-        for sa in self.agent.sub_agents or []
+    return (
+        isinstance(self.agent, LlmAgent)
+        and (self.agent.mode or _AgentMode.CHAT) == _AgentMode.CHAT
     )
 
   def _find_agent_to_run(
@@ -1829,6 +1826,9 @@ class Runner:
     - The root agent.
     - An LlmAgent who replied last and is capable to transfer to any other agent
       in the agent hierarchy.
+
+    An agent inside a task delegation is replaced by the agent that delegated
+    it.
 
     Args:
         session: The session to find the agent for.
@@ -2276,6 +2276,7 @@ class Runner:
     if not toolsets_to_close:
       return
 
+    cancelled_error = None
     # This maintains the same task context throughout cleanup
     for toolset in toolsets_to_close:
       cleanup_task = asyncio.create_task(
@@ -2326,24 +2327,46 @@ class Runner:
               type(toolset).__name__,
               close_error,
           )
-        raise
+        cancelled_error = e
       except Exception as e:
         logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
 
+    if cancelled_error is not None:
+      raise cancelled_error
+
   async def close(self) -> None:
-    """Closes the runner."""
+    """Closes the runner.
+
+    Raises:
+      asyncio.CancelledError: If closing was cancelled. The rest of the cleanup
+        still runs before it is re-raised, even if that cleanup fails.
+      RuntimeError: If one or more plugins failed to close.
+    """
     logger.info('Closing runner...')
-    # Close Toolsets
-    if self.agent is not None:
-      await self._cleanup_toolsets(self._collect_toolset(self.agent))
+    cancelled_error = None
+    try:
+      # Close Toolsets
+      if self.agent is not None:
+        await self._cleanup_toolsets(self._collect_toolset(self.agent))
+    except asyncio.CancelledError as e:
+      cancelled_error = e
 
-    # Close Plugins
-    if self.plugin_manager:
-      await self.plugin_manager.close()
-
-    # Close Session Service
-    if self.session_service:
-      await self.session_service.flush()
+    try:
+      # Close Plugins
+      if self.plugin_manager:
+        await self.plugin_manager.close()
+    except asyncio.CancelledError as e:
+      cancelled_error = e
+    finally:
+      try:
+        # Close Session Service
+        if self.session_service:
+          await self.session_service.flush()
+      except asyncio.CancelledError as e:
+        cancelled_error = e
+      finally:
+        if cancelled_error is not None:
+          raise cancelled_error
 
     logger.info('Runner closed.')
 

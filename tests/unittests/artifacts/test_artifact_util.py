@@ -113,6 +113,32 @@ def test_get_user_scoped_artifact_uri():
   assert uri == "artifact://apps/app2/users/user2/artifacts/file2/versions/456"
 
 
+def test_get_artifact_uri_preserves_padded_session_id() -> None:
+  """Preserves a padded session ID when constructing an artifact URI."""
+  uri = artifact_util.get_artifact_uri(
+      app_name="app1",
+      user_id="user1",
+      session_id="  session1\n",
+      filename="file1",
+      version=123,
+  )
+  assert uri == (
+      "artifact://apps/app1/users/user1/sessions/  session1\n/"
+      "artifacts/file1/versions/123"
+  )
+
+
+def test_parse_artifact_uri_preserves_padded_session_id() -> None:
+  """Preserves a padded session ID segment when parsing an artifact URI."""
+  uri = (
+      "artifact://apps/app1/users/user1/sessions/session1"
+      " /artifacts/file1/versions/123"
+  )
+  parsed = artifact_util.parse_artifact_uri(uri)
+  assert parsed is not None
+  assert parsed.session_id == "session1 "
+
+
 def test_is_artifact_ref_true():
   """Tests is_artifact_ref with a valid artifact reference."""
   artifact = types.Part(
@@ -185,6 +211,8 @@ def test_validate_path_segment_valid(value, field_name):
         ".",
         "null\x00byte",
         "",
+        "   ",
+        "\t\n",
         "/etc/passwd",
         "/leading/slash",
         "\\leading\\backslash",

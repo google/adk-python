@@ -627,3 +627,183 @@ def test_duration_averages_only_the_timed_invocations():
   # 3.0 / 1, not 3.0 / 2: the second turn has no measurement, which is not the
   # same as having taken no time.
   assert result.overall_score == 3.0
+
+
+def _invocation_spending(
+    duration: Optional[float],
+    model_duration: Optional[float] = None,
+    tool_duration: Optional[float] = None,
+) -> Invocation:
+  """Returns an invocation whose time is split the given way."""
+  return Invocation(
+      user_content=_USER_CONTENT,
+      duration=duration,
+      model_duration=model_duration,
+      tool_duration=tool_duration,
+  )
+
+
+def _duration_evaluator() -> _InvocationDurationV1Evaluator:
+  return _InvocationDurationV1Evaluator(
+      eval_metric=EvalMetric(
+          metric_name=PrebuiltMetrics.INVOCATION_DURATION_V1.value
+      )
+  )
+
+
+def test_duration_breakdown_parts_add_up_to_the_total():
+  """The three parts partition the turn, so the remainder is the framework's."""
+  result = _duration_evaluator().evaluate_invocations(
+      [_invocation_spending(10.0, model_duration=6.0, tool_duration=3.0)]
+  )
+
+  details = result.per_invocation_results[0].duration_details
+  assert details.total_seconds == 10.0
+  assert details.model_seconds == 6.0
+  assert details.tool_seconds == 3.0
+  assert details.framework_seconds == 1.0
+  assert (
+      details.model_seconds + details.tool_seconds + details.framework_seconds
+      == details.total_seconds
+  )
+
+
+def test_duration_breakdown_keeps_tool_time_out_of_the_framework_figure():
+  """A slow external API a tool calls is the agent's cost, not the framework's.
+
+  Folding it in would report ADK as the bottleneck for work it never did.
+  """
+  result = _duration_evaluator().evaluate_invocations(
+      [_invocation_spending(20.0, model_duration=1.0, tool_duration=18.0)]
+  )
+
+  details = result.per_invocation_results[0].duration_details
+  assert details.tool_seconds == 18.0
+  assert details.framework_seconds == 1.0
+
+
+def test_duration_breakdown_never_reports_a_negative_framework_share():
+  """Total and parts are closed at slightly different moments.
+
+  A turn that was entirely one model call can leave the subtraction a hair
+  below zero; a negative share of a turn would read as a bug in the agent
+  rather than as the rounding it is.
+  """
+  result = _duration_evaluator().evaluate_invocations(
+      # No tool ran, which is a measured zero -- both parts are present, so
+      # the remainder is derivable and only the clamping is under test.
+      [_invocation_spending(2.0, model_duration=2.001, tool_duration=0.0)]
+  )
+
+  details = result.per_invocation_results[0].duration_details
+  assert details.framework_seconds == 0.0
+
+
+def test_duration_breakdown_treats_an_unsplit_turn_as_all_framework():
+  """A turn with no model or tool call spent all of its time in the framework."""
+  result = _duration_evaluator().evaluate_invocations(
+      [_invocation_spending(4.0, model_duration=0.0, tool_duration=0.0)]
+  )
+
+  details = result.per_invocation_results[0].duration_details
+  assert details.framework_seconds == 4.0
+
+
+def test_duration_breakdown_reports_no_framework_share_without_the_parts():
+  """A turn timed before the split existed cannot have its remainder derived.
+
+  `duration` shipped ahead of the breakdown, so a stored eval result carries a
+  total and no parts. Treating those as zero would report the whole turn as
+  framework overhead -- the exact misreading this metric exists to prevent.
+  """
+  result = _duration_evaluator().evaluate_invocations(
+      [_invocation_spending(10.0)]
+  )
+
+  details = result.per_invocation_results[0].duration_details
+  assert details.total_seconds == 10.0
+  assert details.model_seconds is None
+  assert details.tool_seconds is None
+  assert details.framework_seconds is None
+
+
+def test_duration_breakdown_needs_both_parts_to_derive_the_remainder():
+  """Half a split is not enough: what is left over is still unknown."""
+  result = _duration_evaluator().evaluate_invocations(
+      [_invocation_spending(10.0, model_duration=6.0)]
+  )
+
+  details = result.per_invocation_results[0].duration_details
+  assert details.model_seconds == 6.0
+  assert details.tool_seconds is None
+  assert details.framework_seconds is None
+
+
+def test_duration_breakdown_averages_framework_over_the_split_turns_only():
+  """An unsplit turn is left out of the framework average, not counted whole."""
+  result = _duration_evaluator().evaluate_invocations([
+      _invocation_spending(10.0, model_duration=6.0, tool_duration=2.0),
+      _invocation_spending(20.0),
+  ])
+
+  details = result.overall_duration_details
+  # Both turns were timed, so the total averages over both.
+  assert details.total_seconds == 15.0
+  # Only one was split, so the parts average over that one alone -- the
+  # unsplit turn must not drag framework up by its whole 20s.
+  assert details.model_seconds == 6.0
+  assert details.framework_seconds == 2.0
+
+
+def test_duration_breakdown_is_na_for_an_untimed_invocation():
+  """An invocation read back from a stored session was never measured.
+
+  Reporting zeros would claim the turn was instantaneous in every part.
+  """
+  result = _duration_evaluator().evaluate_invocations(
+      [_invocation_spending(None)]
+  )
+
+  details = result.per_invocation_results[0].duration_details
+  assert details.total_seconds is None
+  assert details.model_seconds is None
+  assert details.tool_seconds is None
+  assert details.framework_seconds is None
+
+
+def test_duration_breakdown_averages_only_the_timed_invocations():
+  """An untimed turn is left out of every part, not averaged in as zero."""
+  result = _duration_evaluator().evaluate_invocations([
+      _invocation_spending(10.0, model_duration=6.0, tool_duration=2.0),
+      _invocation_spending(None),
+  ])
+
+  details = result.overall_duration_details
+  # 10 / 1 and 6 / 1, not / 2: the second turn has no measurement at all.
+  assert details.total_seconds == 10.0
+  assert details.model_seconds == 6.0
+  assert details.framework_seconds == 2.0
+
+
+def test_duration_breakdown_averages_each_part_across_turns():
+  """Every part is averaged over the turns, not just the headline total."""
+  result = _duration_evaluator().evaluate_invocations([
+      _invocation_spending(10.0, model_duration=8.0, tool_duration=1.0),
+      _invocation_spending(20.0, model_duration=10.0, tool_duration=5.0),
+  ])
+
+  details = result.overall_duration_details
+  assert details.total_seconds == 15.0
+  assert details.model_seconds == 9.0
+  assert details.tool_seconds == 3.0
+  assert details.framework_seconds == 3.0
+
+
+def test_duration_score_is_still_the_total_after_adding_the_breakdown():
+  """The headline number a released metric reports does not change."""
+  result = _duration_evaluator().evaluate_invocations(
+      [_invocation_spending(2.844, model_duration=2.0, tool_duration=0.5)]
+  )
+
+  assert result.overall_score == 2.844
+  assert result.per_invocation_results[0].score == 2.844

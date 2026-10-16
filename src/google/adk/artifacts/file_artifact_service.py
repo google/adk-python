@@ -93,7 +93,7 @@ def _read_text_if_present(path: Path) -> Optional[str]:
     return path.read_text(encoding="utf-8")
   except FileNotFoundError:
     return None
-  except OSError as exc:
+  except (OSError, UnicodeDecodeError) as exc:
     logger.warning("Unreadable artifact payload at %s: %s", path, exc)
     return None
 
@@ -965,7 +965,7 @@ def _read_metadata(path: Path) -> Optional[FileArtifactVersion]:
     raw = path.read_text(encoding="utf-8")
   except FileNotFoundError:
     return None
-  except OSError as exc:
+  except (OSError, UnicodeDecodeError) as exc:
     logger.warning("Unreadable metadata at %s: %s", path, exc)
     return None
   try:

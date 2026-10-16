@@ -201,6 +201,18 @@ class PlaywrightComputer(BaseComputer):
     await self._page.wait_for_load_state()
     return await self.current_state()
 
+  async def type_text(
+      self,
+      text: str,
+      press_enter: bool = False,
+  ) -> ComputerState:
+    await self._page.keyboard.type(text)
+    await self._page.wait_for_load_state()
+
+    if press_enter:
+      return await self.key_combination(["Enter"])
+    return await self.current_state()
+
   async def _horizontal_document_scroll(
       self, direction: Literal["left", "right"]
   ) -> ComputerState:

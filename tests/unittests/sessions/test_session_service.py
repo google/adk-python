@@ -1505,6 +1505,55 @@ async def test_delete_session_removes_session_by_id_passed_to_create(
 
 
 @pytest.mark.asyncio
+async def test_delete_session_removes_events_with_caller_owned_sqlite_engine(
+    tmp_path,
+):
+  """DatabaseSessionService with a caller-supplied SQLite engine must purge
+
+  events on delete_session even when PRAGMA foreign_keys is not enabled.
+  """
+  db_path = tmp_path / 'caller_owned.db'
+  engine = create_async_engine(f'sqlite+aiosqlite:///{db_path}')
+  try:
+    service = DatabaseSessionService(db_engine=engine)
+    session = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    event = Event(
+        id='e1',
+        invocation_id='inv1',
+        author='user',
+        content=types.Content(
+            parts=[types.Part.from_text(text='hello')], role='user'
+        ),
+    )
+    await service.append_event(session, event)
+
+    await service.delete_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    assert (
+        await service.get_session(
+            app_name='app', user_id='user', session_id='s1'
+        )
+    ) is None
+
+    # Re-create session with the same id and verify previous events do not reappear
+    recreated = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    assert recreated.events == []
+
+    fetched = await service.get_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    assert fetched is not None
+    assert fetched.events == []
+  finally:
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_create_session_concurrent_same_id_raises_already_exists_error(
     tmp_path,
 ):

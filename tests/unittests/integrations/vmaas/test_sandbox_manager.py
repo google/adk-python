@@ -25,6 +25,7 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from google.adk.integrations.vmaas import _sandbox_manager
 from google.adk.integrations.vmaas._sandbox_manager import SandboxManager
 from google.genai.errors import ClientError
 import pytest
@@ -576,3 +577,136 @@ async def test_sandbox_is_deleted():
   await SandboxManager(client=client).delete_sandbox(name)
 
   assert client.sandboxes.delete_calls == [name]
+
+
+async def test_bash_command_runs_in_sandbox():
+  """A bash command is sent to the sandbox and its result is returned."""
+  client = _make_client()
+  client.sandboxes.execute_bash = MagicMock(
+      return_value={"stdout": "hi\n", "returncode": 0}
+  )
+
+  result = await SandboxManager(client=client).execute_bash(
+      "sandbox", "echo hi", timeout=5
+  )
+
+  assert result == {"stdout": "hi\n", "returncode": 0}
+  client.sandboxes.execute_bash.assert_called_once_with(
+      name="sandbox", command="echo hi", timeout=5
+  )
+
+
+@pytest.mark.parametrize(
+    "state, exists",
+    [
+        ("STATE_RUNNING", True),
+        ("STATE_PAUSED", True),
+        ("STATE_TERMINATED", False),
+    ],
+)
+async def test_sandbox_exists_until_it_terminates(state, exists):
+  """A sandbox exists until it terminates."""
+  client = _make_client()
+  name = await _make_sandbox(client, state=state)
+
+  assert await SandboxManager(client=client).sandbox_exists(name) is exists
+
+
+async def test_deleted_sandbox_does_not_exist():
+  """A sandbox the service no longer knows does not exist."""
+  client = _make_client()
+  client.sandboxes.get = MagicMock(
+      side_effect=ClientError(404, {"error": {"code": 404}})
+  )
+
+  assert not await SandboxManager(client=client).sandbox_exists("sandbox")
+
+
+async def test_waiting_for_paused_sandbox_resumes_it():
+  """Waiting for a paused sandbox to run resumes it."""
+  client = _make_client()
+  name = await _make_sandbox(client, state="STATE_PAUSED")
+
+  await SandboxManager(client=client).wait_until_running(name)
+
+  assert client.sandboxes.resume_calls == [name]
+
+
+async def test_waiting_for_pausing_sandbox_resumes_it_once_paused(monkeypatch):
+  """A sandbox still pausing is resumed once its pause finishes."""
+  monkeypatch.setattr(_sandbox_manager, "_RESUME_POLL_INTERVAL_SECONDS", 0)
+  client = _make_client()
+  name = await _make_sandbox(client, state="STATE_PAUSING")
+  get = client.sandboxes.get
+
+  def finish_pause_after_first_get(*, name):
+    sandbox = get(name=name)
+    state = sandbox.state
+    if state == "STATE_PAUSING":
+      sandbox.state = "STATE_PAUSED"
+    return SimpleNamespace(name=name, state=state)
+
+  client.sandboxes.get = finish_pause_after_first_get
+
+  await SandboxManager(client=client).wait_until_running(name)
+
+  assert client.sandboxes.resume_calls == [name]
+
+
+async def test_waiting_for_terminated_sandbox_raises():
+  """Waiting for a terminated sandbox raises instead of waiting."""
+  client = _make_client()
+  name = await _make_sandbox(client, state="STATE_TERMINATED")
+
+  with pytest.raises(RuntimeError, match="STATE_TERMINATED"):
+    await SandboxManager(client=client).wait_until_running(name)
+
+
+async def test_waiting_for_sandbox_that_stays_paused_times_out(monkeypatch):
+  """Waiting for a sandbox that stays paused after resuming times out."""
+  monkeypatch.setattr(_sandbox_manager, "_RESUME_POLL_INTERVAL_SECONDS", 0)
+  client = _make_client()
+  name = await _make_sandbox(client, state="STATE_PAUSED")
+  client.sandboxes.resume = MagicMock(return_value=SimpleNamespace(error=None))
+
+  with pytest.raises(TimeoutError, match="STATE_PAUSED"):
+    await SandboxManager(client=client).wait_until_running(
+        name, timeout_seconds=0.1
+    )
+
+  client.sandboxes.resume.assert_called()
+
+
+async def test_waiting_with_no_time_left_does_not_resume():
+  """Waiting with no time left times out without resuming a paused sandbox."""
+  client = _make_client()
+  name = await _make_sandbox(client, state="STATE_PAUSED")
+
+  with pytest.raises(TimeoutError):
+    await SandboxManager(client=client).wait_until_running(
+        name, timeout_seconds=0
+    )
+
+  assert not client.sandboxes.resume_calls
+
+
+async def test_waiting_for_deleted_sandbox_raises():
+  """Waiting for a sandbox the service no longer knows raises RuntimeError."""
+  client = _make_client()
+  client.sandboxes.get = MagicMock(
+      side_effect=ClientError(404, {"error": {"code": 404}})
+  )
+
+  with pytest.raises(RuntimeError, match="has been deleted"):
+    await SandboxManager(client=client).wait_until_running("sandbox")
+
+
+async def test_waiting_for_sandbox_times_out():
+  """Waiting for a sandbox that stays resuming times out."""
+  client = _make_client()
+  name = await _make_sandbox(client, state="STATE_RESUMING")
+
+  with pytest.raises(TimeoutError):
+    await SandboxManager(client=client).wait_until_running(
+        name, timeout_seconds=0
+    )

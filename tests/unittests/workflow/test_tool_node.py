@@ -14,6 +14,7 @@
 
 """Tests for ToolNode input parsing and execution."""
 
+import asyncio
 import itertools
 import re
 from typing import Any
@@ -569,6 +570,32 @@ async def test_tool_node_failure_propagates_when_no_plugin_handles_it():
   with pytest.raises(ValueError, match="no data for Paris"):
     await _run_tool_node_with_plugin(FunctionTool(func=lookup), plugin)
   assert ("error", "lookup", "no data for Paris") in plugin.calls
+
+
+@pytest.mark.asyncio
+async def test_tool_node_cancelled_runs_plugin_on_tool_error_callbacks():
+  """Tests that cancelling a tool node runs plugin error callbacks and stays cancelled."""
+  tool_started = asyncio.Event()
+
+  async def slow_lookup(city: str) -> dict[str, str]:
+    tool_started.set()
+    await asyncio.Event().wait()
+    return {"city": city}
+
+  plugin = _RecordingToolPlugin(error_response={"error": "recovered"})
+
+  run = asyncio.create_task(
+      _run_tool_node_with_plugin(FunctionTool(func=slow_lookup), plugin)
+  )
+  await tool_started.wait()
+  run.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await run
+
+  assert plugin.calls == [
+      ("before", "slow_lookup", {"city": "Paris"}),
+      ("error", "slow_lookup", ""),
+  ]
 
 
 @pytest.mark.asyncio

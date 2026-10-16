@@ -16,6 +16,7 @@ from __future__ import annotations
 
 """A node that wraps an ADK Tool."""
 
+import asyncio
 from collections.abc import AsyncGenerator
 import json
 from typing import Any
@@ -31,20 +32,19 @@ from ..auth._auth_resume import find_requested_auth_configs
 from ..auth.auth_tool import AuthConfig
 from ..events.event import Event
 from ..events.request_input import RequestInput
+from ..flows.llm_flows.tools import _error_handler as _tool_error_handler
 from ..platform import uuid as platform_uuid
 from ..tools._confirmation_utils import apply_confirmation_gate
 from ..tools.base_tool import BaseTool
-from ..tools.tool_confirmation import ToolConfirmation
 from ..utils.content_utils import extract_text_from_content
 from ._base_node import BaseNode
 from ._errors import WorkflowDataError
 from ._retry_config import RetryConfig
-from .utils._workflow_hitl_utils import confirmation_interrupt_id
+from .utils._workflow_hitl_utils import apply_confirmation_resume
+from .utils._workflow_hitl_utils import auth_interrupt_id
 from .utils._workflow_hitl_utils import create_auth_request_event
-from .utils._workflow_hitl_utils import parse_tool_confirmation
+from .utils._workflow_hitl_utils import create_confirmation_request_input
 from .utils._workflow_hitl_utils import process_auth_resume
-
-_TOOL_AUTH_INTERRUPT_PREFIX = 'wf_auth:'
 
 
 def _get_tool_auth_config(tool: BaseTool) -> AuthConfig | None:
@@ -155,9 +155,8 @@ class _ToolNode(BaseNode):
       yield response
       return
     if isinstance(response, _AuthPending):
-      auth_interrupt_id = f'{_TOOL_AUTH_INTERRUPT_PREFIX}{ctx.node_path}'
       yield create_auth_request_event(
-          response.auth_config, auth_interrupt_id, ctx.state
+          response.auth_config, auth_interrupt_id(ctx.node_path), ctx.state
       )
       return
 
@@ -175,9 +174,9 @@ class _ToolNode(BaseNode):
 
     Mirrors the plugin steps of the LlmAgent tool pipeline: a before-tool
     callback may answer the call instead of the tool, an on-tool-error
-    callback may answer a failed call, and an after-tool callback may replace
-    the result. Agent-level tool callbacks do not apply because no agent owns
-    a tool node.
+    callback may answer a failed call (and runs for cleanup when the call is
+    cancelled), and an after-tool callback may replace the result. Agent-level
+    tool callbacks do not apply because no agent owns a tool node.
 
     Like the agent pipeline, the user's answer to a confirmation request is on
     `ctx.tool_confirmation`, and a credential the user supplied is stored in
@@ -190,7 +189,7 @@ class _ToolNode(BaseNode):
     """
     # Set before the callbacks so they see the answers, and outside the tool
     # error handling so a malformed answer is not reported as a tool failure.
-    self._apply_confirmation_resume(ctx=ctx)
+    apply_confirmation_resume(ctx)
     await self._apply_auth_resume(ctx=ctx)
     plugin_manager = ctx.get_invocation_context().plugin_manager
     response = await plugin_manager.run_before_tool_callback(
@@ -212,6 +211,17 @@ class _ToolNode(BaseNode):
               ctx.function_call_id
           )
           return _AuthPending(auth_request)
+      except asyncio.CancelledError as cancelled:
+        ctx.actions.requested_tool_confirmations.pop(ctx.function_call_id, None)
+        ctx.actions.requested_auth_configs.pop(ctx.function_call_id, None)
+        await _tool_error_handler.notify_tool_cancelled(
+            invocation_context=ctx.get_invocation_context(),
+            tool=self.tool,
+            tool_args=args,
+            tool_context=ctx,
+            cancelled=cancelled,
+        )
+        raise
       except Exception as error:
         # The failure is the call's result, so a confirmation or credential
         # the tool asked for before raising is dropped rather than left
@@ -231,16 +241,6 @@ class _ToolNode(BaseNode):
       response = altered_response
     return response
 
-  def _apply_confirmation_resume(self, *, ctx: Context) -> None:
-    """Stores the user's answer to this node's confirmation request.
-
-    The answer is set on `ctx.tool_confirmation`, so the confirmation gate and
-    the tool see it the same way they do inside an agent.
-    """
-    response = ctx.resume_inputs.get(confirmation_interrupt_id(ctx.node_path))
-    if response is not None:
-      ctx.tool_confirmation = parse_tool_confirmation(response)
-
   def _take_requested_confirmation(
       self, *, ctx: Context, args: dict[str, Any]
   ) -> RequestInput | None:
@@ -257,20 +257,17 @@ class _ToolNode(BaseNode):
     )
     if requested is None:
       return None
-    payload: dict[str, Any] = {'tool_name': self.tool.name, 'args': args}
-    if requested.payload is not None:
-      payload['confirmation_payload'] = requested.payload
-    return RequestInput(
-        interrupt_id=confirmation_interrupt_id(ctx.node_path),
-        message=requested.hint
-        or f'Please approve or reject the tool call {self.tool.name}().',
-        payload=payload,
-        response_schema=ToolConfirmation,
+    return create_confirmation_request_input(
+        node_path=ctx.node_path,
+        tool_name=self.tool.name,
+        args=args,
+        hint=requested.hint,
+        confirmation_payload=requested.payload,
     )
 
   async def _apply_auth_resume(self, *, ctx: Context) -> None:
     """Processes a resumed auth credential response before running the tool."""
-    interrupt_id = f'{_TOOL_AUTH_INTERRUPT_PREFIX}{ctx.node_path}'
+    interrupt_id = auth_interrupt_id(ctx.node_path)
     auth_response = ctx.resume_inputs.get(interrupt_id)
     if auth_response is None:
       return
