@@ -498,6 +498,42 @@ def test_record_client_token_usage_keeps_usage_before_trailing_response(
   assert recorded == {"input": 120, "output": 40}
 
 
+@pytest.mark.parametrize("trailing_without_usage", [False, True])
+def test_record_client_token_usage_takes_newest_cumulative_report(
+    mock_meter_setup, trailing_without_usage
+):
+  """Streaming usage is cumulative, so the newest report is recorded, not a sum."""
+  llm_request = mock.MagicMock(model="test-model")
+  responses = [
+      LlmResponse(
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=120, candidates_token_count=10
+          ),
+      ),
+      LlmResponse(
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=120, candidates_token_count=40
+          ),
+      ),
+  ]
+  if trailing_without_usage:
+    responses.append(LlmResponse(finish_reason=types.FinishReason.MAX_TOKENS))
+
+  _metrics.record_client_token_usage(
+      agent_name="test_agent",
+      llm_request=llm_request,
+      responses=responses,
+  )
+
+  recorded = {
+      kwargs["attributes"]["gen_ai.token.type"]: args[0]
+      for args, kwargs in mock_meter_setup[
+          "client_token_usage"
+      ].record.call_args_list
+  }
+  assert recorded == {"input": 120, "output": 40}
+
+
 @pytest.fixture(name="call_count_histograms")
 def _call_count_histograms(monkeypatch):
   """Redirects the two per-invocation call-count histograms."""
