@@ -6023,6 +6023,7 @@ def test_setup_gcp_telemetry_requests_cloud_platform_scope(monkeypatch):
   """
   from google.adk.cli.api_server import _setup_gcp_telemetry
   from google.adk.telemetry.google_cloud import _CLOUD_PLATFORM_SCOPE
+  from google.adk.telemetry.setup import OTelHooks
 
   auth_default = MagicMock(return_value=("creds", "project-id"))
   monkeypatch.setattr("google.auth.default", auth_default)
@@ -6035,7 +6036,7 @@ def test_setup_gcp_telemetry_requests_cloud_platform_scope(monkeypatch):
       lambda project_id: MagicMock(),
   )
   monkeypatch.setattr(
-      "google.adk.telemetry.setup.maybe_set_otel_providers",
+      "google.adk.cli.api_server.maybe_set_otel_providers",
       lambda **kwargs: None,
   )
   monkeypatch.setattr(
@@ -6043,7 +6044,7 @@ def test_setup_gcp_telemetry_requests_cloud_platform_scope(monkeypatch):
       lambda: None,
   )
 
-  _setup_gcp_telemetry()
+  _setup_gcp_telemetry(OTelHooks())
 
   auth_default.assert_called_once_with(scopes=[_CLOUD_PLATFORM_SCOPE])
 
@@ -7236,7 +7237,7 @@ def _readable_span(name, *, trace_id, span_id=1, attributes=None):
 
 
 def test_api_server_span_exporter_records_only_llm_and_tool_spans():
-  """Only call_llm / send_data / execute_tool* spans are kept, by event id."""
+  """Only LLM, send_data and execute_tool* spans are kept, by event id."""
   from google.adk.cli.api_server import ApiServerSpanExporter
   from opentelemetry.sdk.trace.export import SpanExportResult
 
@@ -7263,6 +7264,12 @@ def test_api_server_span_exporter_records_only_llm_and_tool_spans():
           attributes={"gcp.vertex.agent.event_id": "tool-event"},
       ),
       _readable_span(
+          "generate_content gemini-2.5-flash",
+          trace_id=15,
+          span_id=5,
+          attributes={"gcp.vertex.agent.event_id": "inference-event"},
+      ),
+      _readable_span(
           "invocation",
           trace_id=14,
           span_id=4,
@@ -7272,7 +7279,12 @@ def test_api_server_span_exporter_records_only_llm_and_tool_spans():
 
   assert exporter.export(spans) == SpanExportResult.SUCCESS
 
-  assert sorted(trace_dict) == ["data-event", "llm-event", "tool-event"]
+  assert sorted(trace_dict) == [
+      "data-event",
+      "inference-event",
+      "llm-event",
+      "tool-event",
+  ]
   # The exporter augments the span attributes with its trace/span identifiers,
   # which is what the /debug/trace endpoint hands back to the UI.
   assert trace_dict["llm-event"]["trace_id"] == 11
@@ -7392,6 +7404,7 @@ def test_setup_telemetry_guards_add_span_processor_on_non_sdk_provider(
   from unittest.mock import MagicMock
 
   from google.adk.cli.api_server import _setup_telemetry
+  from google.adk.telemetry.setup import OTelHooks
   from opentelemetry import trace
 
   non_sdk_provider = MagicMock(spec=trace.TracerProvider)
@@ -7399,7 +7412,10 @@ def test_setup_telemetry_guards_add_span_processor_on_non_sdk_provider(
   monkeypatch.setattr(trace, "get_tracer_provider", lambda: non_sdk_provider)
 
   exporter = MagicMock()
-  _setup_telemetry(otel_to_cloud=False, internal_exporters=[exporter])
+  _setup_telemetry(
+      otel_to_cloud=False,
+      internal_processors=OTelHooks(span_processors=[exporter]),
+  )
 
 
 def test_setup_telemetry_adds_span_processors_when_supported(monkeypatch):
@@ -7407,13 +7423,17 @@ def test_setup_telemetry_adds_span_processors_when_supported(monkeypatch):
   from unittest.mock import MagicMock
 
   from google.adk.cli.api_server import _setup_telemetry
+  from google.adk.telemetry.setup import OTelHooks
   from opentelemetry import trace
 
   provider = MagicMock()
   monkeypatch.setattr(trace, "get_tracer_provider", lambda: provider)
 
   exporter = MagicMock()
-  _setup_telemetry(otel_to_cloud=False, internal_exporters=[exporter])
+  _setup_telemetry(
+      otel_to_cloud=False,
+      internal_processors=OTelHooks(span_processors=[exporter]),
+  )
   provider.add_span_processor.assert_called_once_with(exporter)
 
 
@@ -7538,8 +7558,13 @@ def _installed_internal_exporters(
         mock_eval_set_results_manager,
         web=web,
     )
-  processors = mock_setup_telemetry.call_args.kwargs["internal_exporters"]
-  return [type(processor.span_exporter).__name__ for processor in processors]
+  hooks = mock_setup_telemetry.call_args.kwargs["internal_processors"]
+  if hooks is None:
+    return []
+  return [
+      type(processor.span_exporter).__name__
+      for processor in hooks.span_processors
+  ]
 
 
 def test_span_buffers_not_filled_when_web_disabled(
