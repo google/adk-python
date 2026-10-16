@@ -109,6 +109,43 @@ principal for every request. With the default settings that yields a warning
 per approval and the approval is honored, which is the behavior those
 deployments had before the principal existed.
 
+### ADK API server
+
+The `/run` and `/run_sse` routes of the ADK API server (`adk api_server`,
+`adk web`, `get_fast_api_app`) record a principal on every invocation as
+well. The server does not authenticate callers itself, and the `user_id` in
+the request body is a claim the caller made rather than one the server
+checked, so without anything in front of these routes every request runs as
+`CallerPrincipal(authenticated=False, source="api_server")`. With the default
+settings that is a warning per approval, as for an unauthenticated A2A caller.
+
+A deployment that authenticates callers in front of these routes, with an
+identity-aware proxy, a gateway or its own middleware, states the result on
+`request.state.caller_principal`, and the server uses that value as is:
+
+```python
+from google.adk.agents import CallerPrincipal
+from google.adk.cli.fast_api import get_fast_api_app
+
+app = get_fast_api_app(agents_dir="./agents", web=False)
+
+
+@app.middleware("http")
+async def record_caller(request, call_next):
+  # Your authenticator decides who sent this request; report that outcome.
+  user = verify_request(request)  # None when the request is not authenticated.
+  if user is not None:
+    request.state.caller_principal = CallerPrincipal(
+        authenticated=True, user_name=user.name, source="gateway"
+    )
+  return await call_next(request)
+```
+
+Under strict mode, approvals arriving on `/run` or `/run_sse` are refused
+unless the deployment sets the principal this way. The dev UI served by `adk
+web` has no authentication of its own, so run it without strict mode, or add
+middleware that recognizes its operator.
+
 ### Strict mode
 
 Strict mode refuses confirmations from unauthenticated callers instead of
@@ -194,5 +231,7 @@ decision stays uniform across all of them.
 - The synchronous `Runner.run` wrapper and live sessions do not accept a
   principal. Both behave as in-process callers.
 - Setting a principal does not authenticate anything by itself. The ADK API
-  server's `/run` endpoint still requires its own authentication; the principal
-  records the outcome of authentication, it does not perform it.
+  server's `/run` and `/run_sse` routes record an unauthenticated principal
+  unless the deployment's own authentication sets one; the principal records
+  the outcome of authentication, it does not perform it. `/run_live` sessions
+  do not carry a principal.
