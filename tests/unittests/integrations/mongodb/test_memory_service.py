@@ -205,6 +205,194 @@ def test_max_results_must_be_positive():
     )
 
 
+def test_retrieval_mode_must_be_known():
+  """An unknown retrieval mode is a config error."""
+  with pytest.raises(ValueError, match="retrieval_mode"):
+    MongoDbMemoryService(
+        mongo_client=mongomock.MongoClient(),
+        database_name="test_db",
+        retrieval_mode="semantic",
+    )
+
+
+def _memory_doc(text: str, doc_id: str = "m1") -> dict:
+  return {
+      "_id": doc_id,
+      "app_name": APP,
+      "user_id": USER,
+      "author": "user",
+      "text": text,
+      "content": (
+          types.Content(role="user", parts=[types.Part(text=text)]).model_dump(
+              exclude_none=True, mode="json"
+          )
+      ),
+      "timestamp": 1.0,
+  }
+
+
+def _vector_service(**kwargs) -> MongoDbMemoryService:
+  defaults = dict(
+      database_name="test_db",
+      ensure_indexes=False,
+      retrieval_mode="vector",
+      genai_client=mock.MagicMock(),
+  )
+  defaults.update(kwargs)
+  return MongoDbMemoryService(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_vector_mode_ingest_embeds_in_one_batch():
+  """Vector mode embeds all event texts in one call and stores the vectors."""
+  client = mongomock.MongoClient()
+  genai_client = mock.MagicMock()
+  embedding = mock.MagicMock()
+  embedding.values = [0.1, 0.2]
+  genai_client.aio.models.embed_content = mock.AsyncMock(
+      return_value=mock.MagicMock(embeddings=[embedding, embedding])
+  )
+  service = _vector_service(mongo_client=client, genai_client=genai_client)
+
+  await service.add_session_to_memory(
+      _session_with_texts("first memory", "second memory")
+  )
+
+  embed_call = genai_client.aio.models.embed_content.await_args
+  assert embed_call.kwargs["contents"] == ["first memory", "second memory"]
+  assert embed_call.kwargs["model"] == "text-embedding-005"
+  docs = list(client["test_db"]["memories"].find({}))
+  assert len(docs) == 2
+  assert all(doc["embedding"] == [0.1, 0.2] for doc in docs)
+  assert all("text" in doc and "keywords" not in doc for doc in docs)
+
+
+@pytest.mark.asyncio
+async def test_vector_mode_recall_runs_vector_search(monkeypatch):
+  """Vector mode recalls via $vectorSearch with an embedded query."""
+  embed_query = mock.AsyncMock(return_value=[0.1, 0.2])
+  monkeypatch.setattr(
+      "google.adk.integrations.mongodb._search_tool._embed_query", embed_query
+  )
+  client = mock.MagicMock()
+  collection = client["test_db"]["memories"]
+  collection.aggregate.return_value = iter([_memory_doc("nearest memory")])
+  service = _vector_service(mongo_client=client)
+
+  response = await service.search_memory(
+      app_name=APP, user_id=USER, query="coffee machine"
+  )
+
+  assert embed_query.await_args.kwargs["query"] == "coffee machine"
+  stage = collection.aggregate.call_args.args[0][0]["$vectorSearch"]
+  assert stage["queryVector"] == [0.1, 0.2]
+  assert stage["path"] == "embedding"
+  assert stage["filter"] == {"app_name": APP, "user_id": USER}
+  assert stage["limit"] == service._max_results
+  texts = [
+      " ".join(p.text for p in m.content.parts if p.text)
+      for m in response.memories
+  ]
+  assert texts == ["nearest memory"]
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_ingest_stores_plain_text_without_embeddings():
+  """Auto mode stores plain text; Atlas embeds it, not the genai client."""
+  client = mongomock.MongoClient()
+  genai_client = mock.MagicMock()
+  service = MongoDbMemoryService(
+      mongo_client=client,
+      database_name="test_db",
+      ensure_indexes=False,
+      retrieval_mode="auto",
+      genai_client=genai_client,
+  )
+
+  await service.add_session_to_memory(_session_with_texts("just text"))
+
+  doc = client["test_db"]["memories"].find_one({})
+  assert doc["text"] == "just text"
+  assert "embedding" not in doc and "keywords" not in doc
+  genai_client.aio.models.embed_content.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_recall_sends_query_text(monkeypatch):
+  """Auto mode sends query.text to the autoEmbed index; no embed call."""
+  embed_query = mock.AsyncMock(return_value=[0.1])
+  monkeypatch.setattr(
+      "google.adk.integrations.mongodb._search_tool._embed_query", embed_query
+  )
+  client = mock.MagicMock()
+  collection = client["test_db"]["memories"]
+  collection.aggregate.return_value = iter([_memory_doc("atlas recall")])
+  service = MongoDbMemoryService(
+      mongo_client=client,
+      database_name="test_db",
+      ensure_indexes=False,
+      retrieval_mode="auto",
+  )
+
+  response = await service.search_memory(
+      app_name=APP, user_id=USER, query="coffee machine"
+  )
+
+  embed_query.assert_not_awaited()
+  stage = collection.aggregate.call_args.args[0][0]["$vectorSearch"]
+  assert stage["query"] == {"text": "coffee machine"}
+  assert stage["path"] == "text"
+  assert stage["filter"] == {"app_name": APP, "user_id": USER}
+  assert len(response.memories) == 1
+
+
+def test_vector_mode_creates_vector_index():
+  """ensure_indexes in vector mode creates a vectorSearch index."""
+  client = mock.MagicMock()
+  service = _vector_service(mongo_client=client, ensure_indexes=True)
+
+  service._ensure_indexes_once()
+
+  # The collection is created first: createSearchIndexes rejects a
+  # collection that does not exist (fresh deployment's first ingest).
+  client["test_db"].create_collection.assert_called_once_with("memories")
+  create = client["test_db"]["memories"].create_search_index
+  assert create.call_count == 1
+  model = create.call_args.kwargs["model"]
+  fields = model.document["definition"]["fields"]
+  assert {
+      "type": "vector",
+      "path": "embedding",
+      "numDimensions": 768,
+      "similarity": "cosine",
+  } in fields
+  assert {"type": "filter", "path": "app_name"} in fields
+  assert model.document["name"] == "memory_vector_index"
+
+
+def test_auto_mode_creates_autoembed_index():
+  """ensure_indexes in auto mode creates an autoEmbed index on `text`."""
+  client = mock.MagicMock()
+  service = MongoDbMemoryService(
+      mongo_client=client,
+      database_name="test_db",
+      ensure_indexes=True,
+      retrieval_mode="auto",
+  )
+
+  service._ensure_indexes_once()
+
+  create = client["test_db"]["memories"].create_search_index
+  model = create.call_args.kwargs["model"]
+  fields = model.document["definition"]["fields"]
+  assert {
+      "type": "autoEmbed",
+      "modality": "text",
+      "path": "text",
+      "model": "voyage-4",
+  } in fields
+
+
 def _session_with_texts(*texts: str, session_id: str = "s1") -> Session:
   events = [
       Event(

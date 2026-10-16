@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 from typing_extensions import override
 
 from . import _client
+from . import _search_tool
 from ...features import experimental
 from ...features import FeatureName
 from ...memory import _utils
@@ -32,6 +33,7 @@ from ...memory.base_memory_service import SearchMemoryResponse
 from ...memory.memory_entry import MemoryEntry
 
 if TYPE_CHECKING:
+  from google.genai import Client
   from pymongo import MongoClient
 
   from ...sessions.session import Session
@@ -39,6 +41,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger("google_adk." + __name__)
 
 DEFAULT_MEMORIES_COLLECTION = "memories"
+
+# Retrieval modes for the `retrieval_mode` constructor argument.
+KEYWORD_RETRIEVAL = "keyword"
+VECTOR_RETRIEVAL = "vector"
+AUTO_EMBEDDING_RETRIEVAL = "auto"
+_RETRIEVAL_MODES = frozenset(
+    {KEYWORD_RETRIEVAL, VECTOR_RETRIEVAL, AUTO_EMBEDDING_RETRIEVAL}
+)
+
+_DEFAULT_EMBEDDING_MODEL_NAME = "text-embedding-005"
+_DEFAULT_EMBEDDING_DIMENSIONS = 768  # native size of text-embedding-005
+_DEFAULT_AUTO_EMBEDDING_MODEL = "voyage-4"
+_DEFAULT_MEMORY_VECTOR_INDEX_NAME = "memory_vector_index"
+_DEFAULT_NUM_CANDIDATES = 100
 
 # Recommended secondary index, created only when `ensure_indexes=True`. It
 # covers the `search_memory` lookup (app/user equality plus a multikey `$in`
@@ -101,12 +117,23 @@ class MongoDbMemoryService(BaseMemoryService):
   """Memory service that uses MongoDB as the backend.
 
   Events ingested from sessions are stored as memory documents (one per
-  event) in a single collection, each carrying the lowercase keywords
-  extracted from its text content. `search_memory` matches documents whose
-  keyword array intersects the query's keywords, ranks them by keyword
-  overlap (most recent first within a tie), and returns at most
-  `max_results` entries — a common keyword in a large memory store can
-  otherwise return everything.
+  event) in a single collection. `retrieval_mode` selects how
+  `search_memory` recalls them:
+
+    - `"keyword"` (default): each document carries the lowercase keywords
+      extracted from its text; recall matches documents whose keyword array
+      intersects the query's keywords, ranked by overlap (most recent first
+      within a tie) and capped at `max_results`. Works on any MongoDB
+      deployment — no embedding model, credentials, or search index needed.
+    - `"vector"`: texts are embedded at ingest with the Google embedding
+      model (`embedding_model_name`) through the genai client, and recall
+      runs `$vectorSearch` with the embedded query. Requires a deployment
+      with vector search (Atlas or self-managed 8.0+) and Google credentials.
+    - `"auto"`: Atlas Automated Embedding (Preview). Documents carry plain
+      text only; an `autoEmbed` vector index over the `text` field makes
+      Atlas embed documents on write and queries on read with a Voyage AI
+      model, so no Google credentials are needed. Freshly ingested memories
+      become recallable once Atlas has embedded them (typically seconds).
 
   Example:
       ```python
@@ -130,6 +157,12 @@ class MongoDbMemoryService(BaseMemoryService):
       stop_words: set[str] | None = None,
       ensure_indexes: bool = True,
       max_results: int = 20,
+      retrieval_mode: str = KEYWORD_RETRIEVAL,
+      genai_client: Client | None = None,
+      embedding_model_name: str = _DEFAULT_EMBEDDING_MODEL_NAME,
+      embedding_output_dimensionality: int | None = None,
+      auto_embedding_model_name: str = _DEFAULT_AUTO_EMBEDDING_MODEL,
+      vector_index_name: str = _DEFAULT_MEMORY_VECTOR_INDEX_NAME,
   ):
     """Initializes the MongoDB memory service.
 
@@ -141,23 +174,44 @@ class MongoDbMemoryService(BaseMemoryService):
       mongo_client: An existing PyMongo client to use instead of creating one
         from `connection_string`. The caller keeps ownership of the client.
       memories_collection: Collection name for memory documents.
-      stop_words: Words to ignore when extracting keywords. Defaults to a
-        standard English stop-word list.
-      ensure_indexes: Create the recommended secondary index on first use
-        (default True): `app_user_keywords` on the memories collection (the
-        app/user/keywords lookup behind `search_memory`). Index creation is
-        idempotent. Without the `createIndex` privilege a warning is logged
-        once and reads fall back to unindexed scans; pass False to skip the
-        attempt entirely.
-      max_results: Maximum number of memories a search returns, ranked by
-        keyword overlap and recency. Bounds what a query with a common
-        keyword can return.
+      stop_words: Words to ignore when extracting keywords (keyword mode).
+        Defaults to a standard English stop-word list.
+      ensure_indexes: Create the recommended index for the retrieval mode on
+        first use (default True): the `app_user_keywords` multikey index in
+        keyword mode, or the `memory_vector_index` vector search index in
+        vector/auto modes. Index creation is idempotent. Without the
+        `createIndex`/`createSearchIndexes` privilege a warning is logged
+        once and reads fall back to unindexed behavior; pass False to skip
+        the attempt entirely. Vector search indexes build asynchronously —
+        recall works once the index reports READY.
+      max_results: Maximum number of memories a search returns (keyword mode:
+        ranked by overlap and recency; vector modes: nearest neighbors).
+      retrieval_mode: "keyword" (default), "vector", or "auto" — see the
+        class docstring. The mode must match how the stored memories were
+        ingested: memories ingested in one mode are invisible to the others.
+      genai_client: The `google.genai` client used to embed memory texts and
+        queries in vector mode. Defaults to a client built from the ambient
+        environment. Unused in keyword and auto modes.
+      embedding_model_name: Google embedding model for vector mode. Must be
+        the model the stored embeddings were produced with.
+      embedding_output_dimensionality: Optional shortened embedding length;
+        must match the vector index's `numDimensions` when set.
+      auto_embedding_model_name: Voyage AI model the auto mode's `autoEmbed`
+        index embeds with.
+      vector_index_name: Name of the vector search index used in vector/auto
+        modes.
 
     Raises:
-      ValueError: If `max_results` is not positive.
+      ValueError: If `max_results` is not positive, or `retrieval_mode` is
+        unknown.
     """
     if max_results < 1:
       raise ValueError("max_results must be a positive integer.")
+    if retrieval_mode not in _RETRIEVAL_MODES:
+      raise ValueError(
+          f"retrieval_mode must be one of {sorted(_RETRIEVAL_MODES)}, got"
+          f" {retrieval_mode!r}."
+      )
     if mongo_client is not None and connection_string is not None:
       raise ValueError(
           "Only one of `connection_string` and `mongo_client` may be provided."
@@ -180,6 +234,12 @@ class MongoDbMemoryService(BaseMemoryService):
     self._ensure_indexes = ensure_indexes
     self._indexes_ensured = False
     self._max_results = max_results
+    self._retrieval_mode = retrieval_mode
+    self._genai_client = genai_client
+    self._embedding_model_name = embedding_model_name
+    self._embedding_output_dimensionality = embedding_output_dimensionality
+    self._auto_embedding_model_name = auto_embedding_model_name
+    self._vector_index_name = vector_index_name
     # Serializes first-use index creation across the worker threads that
     # `asyncio.to_thread` runs `_ensure_indexes_once` on.
     self._index_lock = threading.Lock()
@@ -202,9 +262,12 @@ class MongoDbMemoryService(BaseMemoryService):
       if self._indexes_ensured:
         return
       try:
-        self._memories().create_index(
-            _MEMORIES_RECALL_INDEX_KEYS, name=_MEMORIES_RECALL_INDEX_NAME
-        )
+        if self._retrieval_mode == KEYWORD_RETRIEVAL:
+          self._memories().create_index(
+              _MEMORIES_RECALL_INDEX_KEYS, name=_MEMORIES_RECALL_INDEX_NAME
+          )
+        else:
+          self._create_vector_index()
       except (
           Exception
       ) as exc:  # pymongo stays an optional import; match by shape.
@@ -215,16 +278,91 @@ class MongoDbMemoryService(BaseMemoryService):
         logger.warning(
             "MongoDbMemoryService could not create the recommended index"
             " (createIndex privilege missing); reads will fall back to"
-            " unindexed scans. Pass ensure_indexes=False to silence this, or"
-            " grant the privilege. Details: %s",
+            " unindexed behavior. Pass ensure_indexes=False to silence this,"
+            " or grant the privilege. Details: %s",
             exc,
         )
       self._indexes_ensured = True
+
+  def _create_vector_index(self) -> None:
+    """Creates the vector search index for vector/auto retrieval modes."""
+    # pymongo is imported lazily here: it stays an optional dependency until
+    # a MongoDB-backed service is actually constructed.
+    from pymongo.operations import (  # pylint: disable=import-outside-toplevel
+        SearchIndexModel,
+    )
+
+    # createSearchIndexes rejects a collection that does not exist yet, which
+    # is exactly the state of a fresh deployment on its first ingest.
+    database = self._client[self._database_name]
+    if self.memories_collection not in database.list_collection_names():
+      try:
+        database.create_collection(self.memories_collection)
+      except Exception as exc:
+        # CollectionInvalid (code 48): another process created it first.
+        if getattr(exc, "code", None) != 48:
+          raise
+
+    fields: list[dict[str, Any]] = []
+    if self._retrieval_mode == VECTOR_RETRIEVAL:
+      fields.append({
+          "type": "vector",
+          "path": "embedding",
+          "numDimensions": (
+              self._embedding_output_dimensionality
+              or _DEFAULT_EMBEDDING_DIMENSIONS
+          ),
+          "similarity": "cosine",
+      })
+    else:  # auto mode: Atlas embeds the plain `text` field server-side.
+      fields.append({
+          "type": "autoEmbed",
+          "modality": "text",
+          "path": "text",
+          "model": self._auto_embedding_model_name,
+      })
+    fields += [
+        {"type": "filter", "path": "app_name"},
+        {"type": "filter", "path": "user_id"},
+    ]
+    self._memories().create_search_index(
+        model=SearchIndexModel(
+            definition={"fields": fields},
+            name=self._vector_index_name,
+            type="vectorSearch",
+        )
+    )
 
   def _extract_keywords(self, text: str) -> set[str]:
     """Extracts lowercase keywords from text, ignoring stop words."""
     words = re.findall(r"[a-z0-9]+", text.lower())
     return {word for word in words if word not in self.stop_words}
+
+  async def _embed_texts(self, texts: list[str]) -> list[list[float]]:
+    """Embeds memory texts in one batch call with the configured model."""
+    # google.genai is imported lazily here: it stays an optional dependency
+    # until vector mode is actually used.
+    from google.genai import Client  # pylint: disable=import-outside-toplevel
+    from google.genai import types as genai_types  # pylint: disable=import-outside-toplevel
+
+    config = genai_types.EmbedContentConfig()
+    if self._embedding_output_dimensionality:
+      config.output_dimensionality = self._embedding_output_dimensionality
+    try:
+      response = await (
+          self._genai_client or Client()
+      ).aio.models.embed_content(
+          model=self._embedding_model_name,
+          contents=list(texts),
+          config=config,
+      )
+    except Exception as ex:
+      raise RuntimeError(f"Failed to embed memory texts: {ex!r}") from ex
+    if not response.embeddings:
+      raise ValueError(
+          f"Model {self._embedding_model_name} returned no embeddings."
+      )
+    return [[float(v) for v in e.values] for e in response.embeddings]
 
   @override
   async def add_session_to_memory(self, session: Session) -> None:
@@ -232,9 +370,27 @@ class MongoDbMemoryService(BaseMemoryService):
 
     Ingestion is idempotent: memory documents are keyed by
     `<app_name>/<user_id>/<session_id>/<event_id>`, so re-adding a session
-    overwrites its memories rather than duplicating them.
+    overwrites its memories rather than duplicating them. In vector mode the
+    texts are embedded with one batch call before the write; in auto mode
+    plain text is stored and Atlas embeds it when the autoEmbed index
+    processes the document.
     """
     await asyncio.to_thread(self._ensure_indexes_once)
+
+    pairs: list[tuple[Any, str]] = []
+    for event in session.events:
+      if not event.content or not event.content.parts:
+        continue
+      text = " ".join([part.text for part in event.content.parts if part.text])
+      if not text:
+        continue
+      pairs.append((event, text))
+    if not pairs:
+      return
+
+    embeddings: list[list[float]] | None = None
+    if self._retrieval_mode == VECTOR_RETRIEVAL:
+      embeddings = await self._embed_texts([text for _, text in pairs])
 
     def _add() -> None:
       # pymongo is imported lazily here: it stays an optional dependency
@@ -243,37 +399,27 @@ class MongoDbMemoryService(BaseMemoryService):
 
       # One bulk_write round-trip, not one replace_one per event.
       operations = []
-      for event in session.events:
-        if not event.content or not event.content.parts:
-          continue
-        text = " ".join(
-            [part.text for part in event.content.parts if part.text]
-        )
-        if not text:
-          continue
-        keywords = self._extract_keywords(text)
-        if not keywords:
-          continue
+      for i, (event, text) in enumerate(pairs):
+        document = {
+            "app_name": session.app_name,
+            "user_id": session.user_id,
+            "session_id": session.id,
+            "author": event.author,
+            "text": text,
+            "content": event.content.model_dump(exclude_none=True, mode="json"),
+            "timestamp": event.timestamp,
+        }
+        if self._retrieval_mode == KEYWORD_RETRIEVAL:
+          keywords = self._extract_keywords(text)
+          if not keywords:
+            continue
+          document["keywords"] = sorted(keywords)
+        elif embeddings is not None:
+          document["embedding"] = embeddings[i]
         memory_id = (
             f"{session.app_name}/{session.user_id}/{session.id}/{event.id}"
         )
-        operations.append(
-            ReplaceOne(
-                {"_id": memory_id},
-                {
-                    "app_name": session.app_name,
-                    "user_id": session.user_id,
-                    "session_id": session.id,
-                    "author": event.author,
-                    "keywords": sorted(keywords),
-                    "content": event.content.model_dump(
-                        exclude_none=True, mode="json"
-                    ),
-                    "timestamp": event.timestamp,
-                },
-                upsert=True,
-            )
-        )
+        operations.append(ReplaceOne({"_id": memory_id}, document, upsert=True))
       if operations:
         self._memories().bulk_write(operations, ordered=False)
 
@@ -283,44 +429,23 @@ class MongoDbMemoryService(BaseMemoryService):
   async def search_memory(
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
-    """Searches memory for events matching the query's keywords."""
+    """Searches memory for events matching the query.
+
+    Keyword mode matches the query's keywords; vector mode embeds the query
+    and runs `$vectorSearch`; auto mode sends the query text to the autoEmbed
+    index. All modes cap results at `max_results`.
+    """
     await asyncio.to_thread(self._ensure_indexes_once)
 
-    keywords = self._extract_keywords(query)
-    if not keywords:
-      return SearchMemoryResponse()
-
-    def _search() -> list[dict[str, Any]]:
-      # Ranking and the limit run server-side: a common keyword can match a
-      # large share of the memories, and without `$limit` every one of them
-      # crosses the wire.
-      pipeline = [
-          {
-              "$match": {
-                  "app_name": app_name,
-                  "user_id": user_id,
-                  "keywords": {"$in": sorted(keywords)},
-              }
-          },
-          {
-              "$addFields": {
-                  "overlap": {
-                      "$size": {
-                          "$filter": {
-                              "input": "$keywords",
-                              "as": "keyword",
-                              "cond": {"$in": ["$$keyword", sorted(keywords)]},
-                          }
-                      }
-                  }
-              }
-          },
-          {"$sort": {"overlap": -1, "timestamp": -1}},
-          {"$limit": self._max_results},
-      ]
-      return list(self._memories().aggregate(pipeline))
-
-    docs = await asyncio.to_thread(_search)
+    if self._retrieval_mode == KEYWORD_RETRIEVAL:
+      keywords = self._extract_keywords(query)
+      if not keywords:
+        return SearchMemoryResponse()
+      docs = await asyncio.to_thread(
+          self._keyword_search, app_name, user_id, keywords
+      )
+    else:
+      docs = await self._vector_search(app_name, user_id, query)
 
     seen = set()
     memories = []
@@ -349,6 +474,72 @@ class MongoDbMemoryService(BaseMemoryService):
         memories.append(entry)
 
     return SearchMemoryResponse(memories=memories)
+
+  def _keyword_search(
+      self, app_name: str, user_id: str, keywords: set[str]
+  ) -> list[dict[str, Any]]:
+    """Keyword recall: overlap-ranked, capped — all server-side."""
+    # Ranking and the limit run server-side: a common keyword can match a
+    # large share of the memories, and without `$limit` every one of them
+    # crosses the wire.
+    pipeline = [
+        {
+            "$match": {
+                "app_name": app_name,
+                "user_id": user_id,
+                "keywords": {"$in": sorted(keywords)},
+            }
+        },
+        {
+            "$addFields": {
+                "overlap": {
+                    "$size": {
+                        "$filter": {
+                            "input": "$keywords",
+                            "as": "keyword",
+                            "cond": {"$in": ["$$keyword", sorted(keywords)]},
+                        }
+                    }
+                }
+            }
+        },
+        {"$sort": {"overlap": -1, "timestamp": -1}},
+        {"$limit": self._max_results},
+    ]
+    return list(self._memories().aggregate(pipeline))
+
+  async def _vector_search(
+      self, app_name: str, user_id: str, query: str
+  ) -> list[dict[str, Any]]:
+    """Vector recall: `$vectorSearch` with a pre-filter on app and user."""
+    stage: dict[str, Any] = {
+        "index": self._vector_index_name,
+        "numCandidates": max(self._max_results * 10, _DEFAULT_NUM_CANDIDATES),
+        "limit": self._max_results,
+        "filter": {"app_name": app_name, "user_id": user_id},
+    }
+    if self._retrieval_mode == AUTO_EMBEDDING_RETRIEVAL:
+      # Atlas embeds the query text with the autoEmbed index's model.
+      stage["path"] = "text"
+      stage["query"] = {"text": query}
+    else:
+      stage["path"] = "embedding"
+      stage["queryVector"] = await _search_tool._embed_query(
+          query=query,
+          model_name=self._embedding_model_name,
+          output_dimensionality=self._embedding_output_dimensionality,
+          genai_client=self._genai_client,
+      )
+
+    def _run() -> list[dict[str, Any]]:
+      return list(
+          self._memories().aggregate([
+              {"$vectorSearch": stage},
+              {"$project": {"embedding": 0}},
+          ])
+      )
+
+    return await asyncio.to_thread(_run)
 
   async def close(self) -> None:
     """Closes the MongoDB client if it was created by this service."""

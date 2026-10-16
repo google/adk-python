@@ -21,7 +21,9 @@ deployments.
   service falls back to sequential writes with optimistic concurrency
   control on the session document.
 - **Long-term Memory (`MongoDbMemoryService`):** Ingests session events into a
-  memory collection and recalls them by keyword matching.
+  memory collection and recalls them by keyword matching (default), by
+  `$vectorSearch` with Google embeddings (`retrieval_mode="vector"`), or with
+  Atlas Automated Embedding (`retrieval_mode="auto"`).
 - **Flexible Connection Options:** Pass a connection string and let the
   integration create/own the PyMongo client, or bring your own pre-configured
   `pymongo.MongoClient`.
@@ -47,7 +49,7 @@ pip install "pymongo>=4.9,<5"
 | `mongodb_vector_search` | A **vector search index** on the collection (MongoDB Atlas or MongoDB 8.0+). |
 | `mongodb_hybrid_search` | A **vector search index** and a **full-text search index** on the collection, and a deployment that supports `$rankFusion` (MongoDB Atlas or MongoDB 8.0+). |
 | `MongoDbSessionService` | Any MongoDB deployment reachable by PyMongo (no search indexes needed). |
-| `MongoDbMemoryService` | Any MongoDB deployment reachable by PyMongo (no search indexes needed). |
+| `MongoDbMemoryService` | Keyword mode (default): any MongoDB deployment reachable by PyMongo (no search indexes needed). `"vector"` / `"auto"` modes: a deployment with vector search (Atlas or self-managed 8.0+). |
 
 ## Quick Start: Search Tools
 
@@ -193,22 +195,56 @@ runner = Runner(
 ```
 
 Events ingested via `add_session_to_memory` are stored as memory documents
-(one per event) keyed by `<app_name>/<user_id>/<session_id>/<event_id>`, each
-carrying the lowercase keywords extracted from its text content (a compact
-English stop-word list is ignored; pass `stop_words` to customize).
-`search_memory` returns entries whose keyword array intersects the query's
-keywords. Ingestion is idempotent — re-adding a session overwrites its
-memories rather than duplicating them.
+(one per event) keyed by `<app_name>/<user_id>/<session_id>/<event_id>`.
+Ingestion is idempotent — re-adding a session overwrites its memories rather
+than duplicating them — and every search returns at most `max_results`
+(default 20) ranked entries, so a query carrying a common term returns the
+best few memories rather than everything it touched.
 
-Results are ranked by keyword overlap (most recent first within a tie) and
-capped at `max_results` (default 20) — the ranking and the limit run inside
-MongoDB, so a query carrying a common keyword returns the best few memories
-rather than everything it touched.
+`retrieval_mode` selects how `search_memory` recalls memories:
 
-Retrieval is intentionally keyword-only: it needs no embedding model, no
-Google credentials, and no vector index, so it works on any MongoDB
-deployment (not just Atlas) at zero per-query cost. Vector recall is a
-possible follow-up that can build on this integration's own search tools.
+| Mode | How it works | Requirements |
+| :--- | :--- | :--- |
+| `"keyword"` (default) | Documents carry keywords extracted from their text; recall matches the query's keywords, ranked by overlap (most recent first within a tie). | Any MongoDB deployment — no embedding model, credentials, or search index. |
+| `"vector"` | Texts are embedded at ingest with a Google embedding model (`embedding_model_name`, default `text-embedding-005`) through the genai client; recall embeds the query and runs `$vectorSearch`. | A deployment with vector search (Atlas or self-managed 8.0+), Google credentials, and a vector index on the `embedding` field. |
+| `"auto"` | Documents carry plain text only; an `autoEmbed` index over the `text` field makes Atlas embed documents on write and queries on read with a Voyage AI model (Atlas Automated Embedding, Preview). | Atlas, and an `autoEmbed` vector index. Freshly ingested memories become recallable once Atlas embeds them (typically seconds). |
+
+```python
+# Default: keyword recall, no embeddings anywhere.
+memory_service = MongoDbMemoryService(
+    connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
+    database_name="my_app",
+)
+
+# Vector recall with Google embeddings (needs Google credentials).
+vector_memory = MongoDbMemoryService(
+    connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
+    database_name="my_app",
+    retrieval_mode="vector",
+)
+
+# Atlas Automated Embedding: Atlas embeds memories and queries for you.
+auto_memory = MongoDbMemoryService(
+    connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
+    database_name="my_app",
+    retrieval_mode="auto",
+)
+```
+
+With `ensure_indexes=True` (the default) the service creates the index its
+mode needs on first use: the `app_user_keywords` multikey index for keyword
+mode, or the `memory_vector_index` vector search index for vector/auto modes
+(with `app_name`/`user_id` pre-filter fields; vector mode sizes the vector
+field from `embedding_output_dimensionality`, default 768). Vector search
+indexes build asynchronously — recall works once the index reports READY.
+The retrieval mode must match how memories were ingested: memories ingested
+in one mode are invisible to the others (keyword docs carry no embedding,
+vector/auto docs carry no keywords).
+
+Keyword is the default because it is dependency-free and works everywhere;
+pick a vector mode when semantic similarity matters more than synonym-blind
+exactness, or when no Google credentials are available but Atlas is
+(`"auto"`).
 
 ## Secondary indexes (`ensure_indexes`)
 
