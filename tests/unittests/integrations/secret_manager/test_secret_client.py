@@ -15,12 +15,14 @@
 """Unit tests for the SecretManagerClient."""
 
 import json
+import sys
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from google.adk.integrations.secret_manager.secret_client import SecretManagerClient
 from google.adk.integrations.secret_manager.secret_client import USER_AGENT
 from google.api_core.gapic_v1 import client_info
+import google.cloud
 from google.oauth2.credentials import Credentials
 import pytest
 
@@ -245,3 +247,14 @@ class TestSecretManagerClient:
       client.get_secret(
           "projects/test-project/secrets/test-secret/versions/latest"
       )
+
+  def test_init_raises_descriptive_error_without_secretmanager(
+      self, monkeypatch
+  ):
+    """Test the missing-dependency error names the extra to install."""
+    # `from google.cloud import X` short-circuits on the parent attribute.
+    monkeypatch.delattr(google.cloud, "secretmanager", raising=False)
+    monkeypatch.setitem(sys.modules, "google.cloud.secretmanager", None)
+
+    with pytest.raises(ImportError, match=r"google-adk\[gcp\]"):
+      SecretManagerClient(auth_token="test-token")

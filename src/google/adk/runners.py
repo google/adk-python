@@ -142,6 +142,8 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
 
   # Pass 2: Walk backward to find the latest active scope that is not finished.
   for event in reversed(live_events):
+    if event.actions and event.actions.compaction:
+      continue
     scope = event.isolation_scope
     if not scope:
       continue

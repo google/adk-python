@@ -103,6 +103,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Plugins
 * [ForceEscalationPlugin](tools/model_consult/force_escalation_plugin/index.md) - Enforcing deterministic first-turn, repeated-tool-call, and pre-tool gating escalations to ModelConsultTool.
+* [ModelConsultObservabilityPlugin](tools/model_consult/observability_plugin/index.md) - Measuring ModelConsultTool escalations, advisor and executor tokens, latency, and estimated cost for every invocation.
 * [ReflectAndRetryModelPlugin](plugins/reflect_retry_model_plugin/index.md) - Self-healing, concurrent-safe error recovery for model failures.
 * [ReflectAndRetryToolPlugin](plugins/reflect_retry_tool_plugin/index.md) - Self-healing, concurrent-safe error recovery for tool failures.
 * [ToolCallIntegrityPlugin](plugins/tool_call_integrity_plugin/index.md) - Optional HMAC integrity check for stored function call arguments.

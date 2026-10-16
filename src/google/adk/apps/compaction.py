@@ -246,6 +246,7 @@ def _estimate_prompt_token_count(
     events: list[Event],
     current_branch: str | None,
     agent_name: str,
+    isolation_scope: str | None = None,
 ) -> int | None:
   """Returns an approximate prompt token count from session events.
 
@@ -260,6 +261,7 @@ def _estimate_prompt_token_count(
       current_branch=current_branch,
       events=events,
       agent_name=agent_name,
+      isolation_scope=isolation_scope,
   )
   total_chars = 0
   for content in effective_contents:
@@ -277,6 +279,7 @@ def _latest_prompt_token_count(
     *,
     current_branch: str | None = None,
     agent_name: str = '',
+    isolation_scope: str | None = None,
 ) -> int | None:
   """Returns the most recently observed prompt token count, if available.
 
@@ -286,7 +289,8 @@ def _latest_prompt_token_count(
   turn ends in a small sub-agent otherwise measures that sub-agent forever and
   never reaches its threshold.
   """
-  for event in reversed(events):
+  scoped_events = [e for e in events if e.isolation_scope == isolation_scope]
+  for event in reversed(scoped_events):
     if event.actions and event.actions.compaction:
       # Counts at or before a summarization describe a prompt it replaced.
       break
@@ -300,6 +304,7 @@ def _latest_prompt_token_count(
       events=events,
       current_branch=current_branch,
       agent_name=agent_name,
+      isolation_scope=isolation_scope,
   )
 
 
@@ -467,6 +472,7 @@ def _events_to_compact_for_token_threshold(
         author='model',
         content=latest_compaction_event.actions.compaction.compacted_content,
         branch=latest_compaction_event.branch,
+        isolation_scope=latest_compaction_event.isolation_scope,
         invocation_id=Event.new_id(),
     )
     return [seed_event] + events_to_compact
@@ -661,6 +667,7 @@ async def _run_compaction_for_token_threshold_config(
     agent: BaseNode,
     agent_name: str = '',
     current_branch: str | None = None,
+    isolation_scope: str | None = None,
 ) -> bool:
   """Runs token-threshold compaction for a provided compaction config."""
   if not _has_token_threshold_config(config):
@@ -674,13 +681,16 @@ async def _run_compaction_for_token_threshold_config(
   # Drop rewound invocations so the summary covers only live events, consistent
   # with prompt building and sliding-window compaction (all route through
   # _apply_rewinds); otherwise rewound content would leak back into future
-  # prompts via the compaction summary.
-  events = _apply_rewinds(session.events)
+  # prompts via the compaction summary. Also filter by isolation_scope so
+  # isolated task/sub-agent events never leak into or out of another scope.
+  rewound_events = _apply_rewinds(session.events)
+  events = [e for e in rewound_events if e.isolation_scope == isolation_scope]
 
   prompt_token_count = _latest_prompt_token_count(
-      events,
+      rewound_events,
       current_branch=current_branch,
       agent_name=agent_name,
+      isolation_scope=isolation_scope,
   )
   if prompt_token_count is None or prompt_token_count < config.token_threshold:
     return False
@@ -709,6 +719,7 @@ async def _run_compaction_for_token_threshold_config(
       trigger='token_threshold',
   )
   if compaction_event:
+    compaction_event.isolation_scope = isolation_scope
     await session_service.append_event(session=session, event=compaction_event)
     logger.debug('Token-threshold event compactor finished.')
     return True
@@ -773,8 +784,11 @@ async def _run_compaction_for_sliding_window(
   # Drop rewound invocations first so the summary covers only live events. This
   # keeps the compactor consistent with prompt building (the contents processor
   # also applies rewinds); otherwise rewound content would leak back into future
-  # prompts via the compaction summary.
-  events = _apply_rewinds(session.events)
+  # prompts via the compaction summary. Also exclude isolated task/sub-agent
+  # events so their private turns do not leak into the root session summary.
+  events = [
+      e for e in _apply_rewinds(session.events) if e.isolation_scope is None
+  ]
   if not events:
     return
 

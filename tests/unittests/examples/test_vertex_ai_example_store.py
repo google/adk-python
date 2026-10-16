@@ -374,3 +374,13 @@ def test_get_examples_tolerates_unset_contents_example(search_examples):
   assert len(examples) == 1
   assert examples[0].input.parts[0].text == "prompt"
   assert examples[0].output == []
+
+
+def test_get_examples_rejects_agentplatform_before_2_2(mocker: MockerFixture):
+  """get_examples raises ImportError on a pre-2.2 agentplatform."""
+  mocker.patch(
+      "agentplatform.Client", return_value=mocker.Mock(spec=["agent_engines"])
+  )
+
+  with pytest.raises(ImportError, match="has no example_stores"):
+    VertexAiExampleStore(_STORE_NAME).get_examples("query")

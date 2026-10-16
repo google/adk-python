@@ -193,23 +193,7 @@ async def _convert_tool_union_to_tools(
   if multiple_tools and isinstance(tool_union, VertexAiSearchTool):
     vais_tool = tool_union
     if vais_tool.bypass_multi_tools_limit:
-      try:
-        from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
-      except ImportError as e:
-        raise ImportError(
-            'VertexAiSearchTool with bypass_multi_tools_limit=True requires'
-            ' the google-cloud-discoveryengine package. Install it with'
-            ' `pip install google-adk[gcp]`.'
-        ) from e
-      return [
-          DiscoveryEngineSearchTool(
-              data_store_id=vais_tool.data_store_id,
-              data_store_specs=vais_tool.data_store_specs,
-              search_engine_id=vais_tool.search_engine_id,
-              filter=vais_tool.filter,
-              max_results=vais_tool.max_results,
-          )
-      ]
+      return [vais_tool._to_discovery_engine_search_tool()]
 
   if isinstance(tool_union, BaseNode):
     return [_wrap_base_node_as_tool(tool_union)]

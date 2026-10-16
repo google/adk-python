@@ -54,6 +54,7 @@ class CompactionRequestProcessor(BaseLlmRequestProcessor):
         agent=agent,
         agent_name=agent.name,
         current_branch=invocation_context.branch,
+        isolation_scope=invocation_context.isolation_scope,
     )
     if token_compacted:
       invocation_context.token_compaction_checked = True
@@ -122,6 +123,7 @@ def _process_compaction_events(
               author=agent_name or 'model',
               content=compaction.compacted_content,
               branch=event.branch,
+              isolation_scope=event.isolation_scope,
               invocation_id=event.invocation_id,
               actions=event.actions,
           ),
