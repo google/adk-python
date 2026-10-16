@@ -16,6 +16,7 @@ import os
 import tempfile
 import warnings
 
+from google.adk.features import FeatureName
 from google.adk.utils.feature_decorator import _WARNED_MESSAGES
 from google.adk.utils.feature_decorator import experimental
 from google.adk.utils.feature_decorator import working_in_progress
@@ -412,3 +413,10 @@ def test_experimental_function_empty_parens_warns(monkeypatch):
     assert "This feature is experimental and may change or be removed" in str(
         w[0].message
     )
+
+
+@pytest.mark.parametrize("decorator", [experimental, working_in_progress])
+def test_feature_name_is_rejected(decorator):
+  """A FeatureName must not be swallowed as the warning message."""
+  with pytest.raises(TypeError, match="google.adk.features"):
+    decorator(FeatureName.TOOL_CONFIG)

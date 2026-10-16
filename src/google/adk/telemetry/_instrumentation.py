@@ -249,6 +249,19 @@ class _WorkflowScope(_Accumulator):
   """The enclosing scope, None on the root. Its presence is what
   `gen_ai.workflow.nested` reports."""
 
+  compaction_count: int = 0
+  """Conversation compactions counted against this scope. Per workflow rather
+  than per agent because the runner compacts again once every agent has
+  finished, against the whole session, with no agent left to attribute it to."""
+
+  otel_context: context_api.Context = dataclasses.field(
+      default_factory=context_api.Context
+  )
+  """The context the workflow runs under, carrying its span and this scope.
+
+  Published by `node_tracing._use_invoke_workflow_span` rather than attached, so
+  the runner can hand the scope it opened to its root workflow."""
+
   def self_and_enclosing(self) -> Iterator[_WorkflowScope]:
     """Yields this scope, then each one enclosing it, outermost last.
 
@@ -368,49 +381,54 @@ def record_invocation(
     entrypoint_node: BaseNode | None,
     conversation_id: str,
     run_config: RunConfig | None = None,
-) -> Iterator[context_api.Context]:
+) -> Iterator[tuple[context_api.Context, _WorkflowScope | None]]:
   """Top-level invocation span for a runner invocation.
 
   Schema v1 emits the legacy ``invocation`` span. Schema v2 replaces it with an
   entrypoint ``invoke_workflow {entrypoint}`` span (entrypoint = root agent or
   root node name), which omits the ``gen_ai.workflow.nested`` attribute, and a
-  ``gen_ai.invoke_workflow.duration`` metric -- unless the entrypoint is itself
-  a workflow, in which case its own node span is the entrypoint
-  ``invoke_workflow`` span and we avoid double-emitting it here.
+  ``gen_ai.invoke_workflow.duration`` metric. A workflow entrypoint gets that
+  span in v1 too, under ``invocation``. Its root node runs inside the span
+  rather than opening one of its own, so the span also covers the runner's
+  post-invocation work.
 
   Args:
     entrypoint_node: The runner's root agent/node.
-    conversation_id: Session/conversation id (stamped on the v2 span).
+    conversation_id: Session/conversation id (stamped on the entrypoint span).
     run_config: The run's config, whose telemetry settings carry the
       experimental opt-in the span's token scope is gated on.
 
   Yields:
-    The context the invocation runs under, carrying the span when there is one.
-    It is handed back by value rather than attached: pass it to
-    `stream_in_scope` to drive the invocation's events under it (b/485899016).
+    The context the invocation runs under, carrying its spans, and a workflow
+    entrypoint's scope for its root node to run in (see
+    `node_tracing.TelemetryContext._entrypoint_scope`); None for any other
+    entrypoint. The context is handed back by value rather than attached: pass
+    it to `stream_in_scope` to drive the invocation's events under it
+    (b/485899016).
   """
-  if resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED:
-    parent_context = context_api.get_current()
-    span = tracing.tracer.start_span("invocation", context=parent_context)
-    with _recording_span(span):
-      yield trace.set_span_in_context(span, parent_context)
-    return
-
   from . import node_tracing
   from ..workflow._workflow import Workflow
 
-  if isinstance(entrypoint_node, Workflow):
-    # The workflow's own node span is the entrypoint `invoke_workflow` span.
-    yield context_api.get_current()
-    return
-
-  entrypoint_name = entrypoint_node.name if entrypoint_node else ""
-  with node_tracing._use_invoke_workflow_span(
-      entrypoint_name,
-      conversation_id,
-      telemetry_config=run_config.telemetry if run_config else None,
-  ) as (_, workflow_context):
-    yield workflow_context
+  legacy = resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED
+  entrypoint_workflow = isinstance(entrypoint_node, Workflow)
+  otel_context = context_api.get_current()
+  with contextlib.ExitStack() as spans:
+    if legacy:
+      span = tracing.tracer.start_span("invocation", context=otel_context)
+      spans.enter_context(_recording_span(span))
+      otel_context = trace.set_span_in_context(span, otel_context)
+    if not legacy or entrypoint_workflow:
+      _, otel_context = spans.enter_context(
+          node_tracing._use_invoke_workflow_span(  # pylint: disable=protected-access
+              entrypoint_node.name if entrypoint_node else "",
+              conversation_id,
+              otel_context=otel_context,
+              telemetry_config=run_config.telemetry if run_config else None,
+          )
+      )
+    yield otel_context, (
+        _workflow_scope(otel_context) if entrypoint_workflow else None
+    )
 
 
 @dataclasses.dataclass
@@ -639,6 +657,13 @@ def _flush_workflow_metrics(scope: _WorkflowScope) -> None:
       count=scope.skill_load_count,
       nested=nested,
   )
+  _metrics.record_invoke_workflow_compactions(
+      scope.telemetry_config,
+      root_agent_name=scope.root_agent_name,
+      workflow_name=scope.workflow_name,
+      count=scope.compaction_count,
+      nested=nested,
+  )
 
 
 def _agent_invocation_scope() -> _AgentInvocationScope | None:
@@ -719,6 +744,15 @@ def _accumulate_skill_load(workflow_scope: _WorkflowScope | None) -> None:
   """
   for scope in _accumulating_scopes(workflow_scope):
     scope.skill_load_count += 1
+
+
+def count_compaction() -> None:
+  """Counts one conversation compaction against every workflow it ran inside."""
+  scope = _workflow_scope()
+  if scope is None:
+    return
+  for enclosing in scope.self_and_enclosing():
+    enclosing.compaction_count += 1
 
 
 def _active_tool_execution_tel_ctx() -> ToolScope | None:

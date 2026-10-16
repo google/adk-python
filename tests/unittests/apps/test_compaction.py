@@ -2409,6 +2409,39 @@ async def test_summarizer_failure_marks_the_compaction_span_as_error(
   assert summary_span.status.description == 'RuntimeError'
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('summarized', [True, False])
+async def test_summarize_events_with_trace_counts_only_a_produced_summary(
+    monkeypatch: pytest.MonkeyPatch, summarized: bool
+):
+  """A summarizer that returns nothing compacted nothing."""
+  # pylint: disable=protected-access
+  count_compaction = Mock()
+  monkeypatch.setattr(
+      compaction_module._instrumentation, 'count_compaction', count_compaction
+  )
+  summary = None
+  if summarized:
+    summary = _create_trace_compacted_event(
+        start_ts=1.0, end_ts=2.0, summary_text='summary'
+    )
+  config = EventsCompactionConfig(
+      summarizer=_StubSummarizer(summary),
+      compaction_interval=2,
+      overlap_size=0,
+  )
+
+  await compaction_module._summarize_events_with_trace(
+      session=Session(app_name='app', user_id='user', id='session-id'),
+      config=config,
+      events=[],
+      events_to_compact=[],
+      trigger='sliding_window',
+  )
+
+  assert count_compaction.call_count == (1 if summarized else 0)
+
+
 def test_count_chars_in_content():
   """Tests counting characters in Content objects."""
   # pylint: disable=protected-access

@@ -569,7 +569,8 @@ class BaseAgent(BaseNode, abc.ABC):
       end_invocation_on_content: Whether returned content ends the invocation.
 
     Returns:
-      Optional[Event]: an event if a callback provides content or changed state.
+      Optional[Event]: an event if a callback provides content or changed state
+        or artifacts.
     """
     callback_context = CallbackContext(ctx)
 
@@ -601,7 +602,10 @@ class BaseAgent(BaseNode, abc.ABC):
         ctx.end_invocation = True
       return ret_event
 
-    if callback_context.state.has_delta():
+    if (
+        callback_context.state.has_delta()
+        or callback_context._event_actions.artifact_delta
+    ):
       return Event(
           invocation_id=ctx.invocation_id,
           author=self.name,
@@ -620,7 +624,8 @@ class BaseAgent(BaseNode, abc.ABC):
       ctx: InvocationContext, the invocation context for this agent.
 
     Returns:
-      Optional[Event]: an event if callback provides content or changed state.
+      Optional[Event]: an event if a callback provides content or changed state
+        or artifacts.
     """
     return await self._handle_agent_callbacks(
         ctx,
@@ -639,7 +644,8 @@ class BaseAgent(BaseNode, abc.ABC):
         agent.
 
     Returns:
-      Optional[Event]: an event if callback provides content or changed state.
+      Optional[Event]: an event if a callback provides content or changed state
+        or artifacts.
     """
     return await self._handle_agent_callbacks(
         invocation_context,

@@ -48,9 +48,12 @@ from ...features import is_feature_enabled
 from ...flows.llm_flows.context._fencing import fence_schema_descriptions
 from ...flows.llm_flows.context._fencing import fence_tool_description
 from ...flows.llm_flows.context._fencing import TOOL_DESCRIPTION_PREAMBLE
+from ...utils._callable_utils import unwrap_callable
 from ...utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ...utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ...utils._sync_runner import _invoke_callable
+from ...utils._sync_runner import _is_async_callable
 from ...utils.context_utils import find_context_parameter
 # `is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)` gates the
 # error-boundary and transport-crash-detection behavior added in this module.
@@ -178,19 +181,6 @@ def _read_field(model: Any, *names: str) -> Any:
   raise AttributeError(
       f"{type(model).__name__} defines none of {names}. This usually means the"
       " installed MCP SDK renamed the field again."
-  )
-
-
-def _is_async_callable(target: Any) -> bool:
-  """Whether calling ``target`` returns a coroutine.
-
-  Functions are callable objects, but not all callable objects are functions:
-  ``iscoroutinefunction`` is False for an instance whose ``__call__`` is async,
-  so check that too.
-  """
-  return inspect.iscoroutinefunction(target) or (
-      hasattr(target, "__call__")
-      and inspect.iscoroutinefunction(target.__call__)
   )
 
 
@@ -510,11 +500,9 @@ class McpTool(BaseAuthenticatedTool):
       self, target: Callable[..., Any], args_to_call: dict[str, Any]
   ) -> Any:
     """Invokes a callable, handling both sync and async cases."""
-
-    if _is_async_callable(target):
-      return await target(**args_to_call)
-    else:
-      return target(**args_to_call)
+    return await _invoke_callable(
+        target, args_to_call, unwrapped=unwrap_callable(target)
+    )
 
   def _prepare_callable_args(
       self,

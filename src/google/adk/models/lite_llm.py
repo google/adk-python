@@ -4003,6 +4003,8 @@ class LiteLlm(BaseLlm):
             tool_calls.append(tool_call)
 
         if has_incomplete_tool_call_args:
+          # Dropping complete calls when any call in the batch is incomplete
+          # ensures the caller never acts on a partially understood batch.
           if finish_reason == "length":
             return LlmResponse(
                 error_code=types.FinishReason.MAX_TOKENS,
@@ -4103,6 +4105,15 @@ class LiteLlm(BaseLlm):
         part_grounding = _extract_grounding_metadata(part)
         if part_grounding:
           grounding_metadata = part_grounding
+        # One delta can carry several complete tool calls, and
+        # _model_response_to_chunk yields a FunctionChunk per call, each paired
+        # with the same choice-level finish_reason. Record what this part asks
+        # for and finalize once, after every chunk in it has been accumulated:
+        # finalizing inside the loop rebuilds the response per call and keeps
+        # only the last one.
+        finalize_tool_calls = False
+        finalize_text = False
+        finalize_finish_reason: str = ""
         for chunk, finish_reason in _model_response_to_chunk(part):
           if finish_reason:
             last_finish_reason = finish_reason
@@ -4210,14 +4221,9 @@ class LiteLlm(BaseLlm):
               or finish_reason == "length"
               or (finish_reason == "stop" and chunk is None)
           ):
-            aggregated_llm_response_with_tool_call = (
-                _finalize_tool_call_response(
-                    model_version=part.model,
-                    finish_reason=finish_reason,
-                )
-            )
-            _reset_stream_buffers()
-          elif (text_parts or reasoning_parts) and (
+            finalize_tool_calls = True
+            finalize_finish_reason = finish_reason
+          if (text_parts or reasoning_parts) and (
               finish_reason == "length"
               or (
                   finish_reason == "stop"
@@ -4225,11 +4231,35 @@ class LiteLlm(BaseLlm):
                   and not function_calls
               )
           ):
+            finalize_text = True
+            finalize_finish_reason = finish_reason
+
+        # Tool calls take precedence for a part that asks for both:
+        # _finalize_tool_call_response carries the buffered text and reasoning
+        # into the tool-call response, so nothing accumulated here is dropped.
+        # But if tool-call finalization returns an error response with no
+        # content, text finalization still runs so text and reasoning are kept
+        # in their own response.
+        if finalize_tool_calls:
+          aggregated_llm_response_with_tool_call = _finalize_tool_call_response(
+              model_version=part.model,
+              finish_reason=finalize_finish_reason,
+          )
+          if (
+              text_parts or reasoning_parts
+          ) and aggregated_llm_response_with_tool_call.content is None:
+            # Assign to the single text slot so the later stream segment wins.
             aggregated_llm_response = _finalize_text_response(
                 model_version=part.model,
-                finish_reason=finish_reason,
+                finish_reason=finalize_finish_reason,
             )
-            _reset_stream_buffers()
+          _reset_stream_buffers()
+        elif finalize_text:
+          aggregated_llm_response = _finalize_text_response(
+              model_version=part.model,
+              finish_reason=finalize_finish_reason,
+          )
+          _reset_stream_buffers()
 
       # The in-loop finalizers only fire on the reasons known to end a stream,
       # so any other terminal reason ("content_filter" above all) reaches the
@@ -4243,6 +4273,18 @@ class LiteLlm(BaseLlm):
             model_version=resolved_model_version,
             finish_reason=last_finish_reason or "tool_calls",
         )
+        if (
+            (text_parts or reasoning_parts)
+            and not aggregated_llm_response
+            and aggregated_llm_response_with_tool_call.content is None
+        ):
+          # Default to "stop" so error_code remains unset on the rescued
+          # text response, avoiding two error-bearing responses for one
+          # cut-off stream.
+          aggregated_llm_response = _finalize_text_response(
+              model_version=resolved_model_version,
+              finish_reason=last_finish_reason or "stop",
+          )
         _reset_stream_buffers()
 
       if (text_parts or reasoning_parts) and not aggregated_llm_response:
@@ -4271,6 +4313,8 @@ class LiteLlm(BaseLlm):
       if aggregated_llm_response:
         if usage_metadata:
           aggregated_llm_response.usage_metadata = usage_metadata
+          # Clear usage so tokens are not counted twice across yielded
+          # responses.
           usage_metadata = None
         if grounding_metadata:
           aggregated_llm_response.grounding_metadata = grounding_metadata

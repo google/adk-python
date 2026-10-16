@@ -69,6 +69,10 @@ class BaseNode(BaseModel, abc.ABC):
 
   If True, the node reruns from scratch. If False, it completes immediately
   using the user's resuming input as the node's output.
+
+  A rerun node that raised several interrupts reruns as soon as any one of them
+  is answered, with the answers received so far in ``ctx.resume_inputs``. To
+  keep waiting for the rest, yield their interrupts again.
   """
 
   wait_for_output: bool = False

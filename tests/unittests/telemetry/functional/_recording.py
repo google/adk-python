@@ -50,6 +50,8 @@ from .scenarios.agent import run_agent_tool_scenario
 from .scenarios.agent import run_nested_agents_scenario
 from .scenarios.agent import run_node_scenario
 from .scenarios.agent import run_streaming_agent_scenario
+from .scenarios.compaction import CompactionSetup
+from .scenarios.compaction import run_compaction_scenario
 from .scenarios.conversation import AGENT_TOOL_TURNS
 from .scenarios.conversation import MULTI_AGENT_TURNS
 from .scenarios.conversation import NESTED_WORKFLOW_TURNS
@@ -103,6 +105,8 @@ class FunctionalTestCase:
   # server over ADK's instrumented httpx client, so the case records the
   # transport as well as the tools it resolved.
   mcp_over_http: bool = False
+  # The compaction scenarios only: how the app compacts.
+  compaction_setup: CompactionSetup | None = None
   # Anything else the case needs in the environment, applied last.
   env: dict[str, str] = field(default_factory=dict)
 
@@ -322,5 +326,13 @@ async def _run_scenario(
         await run_agent_tool_scenario(model, event_sink=event_sink)
       case "nested_agents_in_workflow":
         await run_nested_agents_scenario(model, event_sink=event_sink)
+      case "conversational_agent_compaction" | "workflow_compaction":
+        assert case.compaction_setup is not None
+        await run_compaction_scenario(
+            model,
+            setup=case.compaction_setup,
+            workflow_root=case.scenario == "workflow_compaction",
+            event_sink=event_sink,
+        )
       case _:
         assert_never(case.scenario)

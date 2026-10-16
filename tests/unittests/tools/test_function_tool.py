@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import dataclasses
 from enum import Enum
 import functools
 import inspect
+from typing import Annotated
 from typing import Any
 from typing import Optional
 from typing import Union
@@ -31,6 +33,7 @@ from google.adk.tools.function_tool import _build_declaration_cached
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
+from google.adk.utils._sync_runner import _use_sync_callable_runner
 import pydantic
 import pytest
 
@@ -623,6 +626,45 @@ def test_get_declaration_is_cached_and_returns_independent_copies():
   d1.name = "prefixed_sample_tool"
   d3 = tool._get_declaration()  # pylint: disable=protected-access
   assert d3.name == "sample_tool"
+
+
+@pytest.mark.asyncio
+async def test_unhashable_callable_can_be_declared_and_invoked(
+    mock_tool_context,
+):
+  """Dataclass callable tools remain usable in LLM requests."""
+
+  @dataclasses.dataclass
+  class Search:
+    prefix: str
+
+    def __call__(self, query: str) -> str:
+      """Search for a query."""
+      return self.prefix + query
+
+  search = Search(prefix="found: ")
+  tool = FunctionTool(search)
+  assert tool.description == "Search for a query."
+  with mock.patch.object(
+      _build_declaration_cached,
+      "__wrapped__",
+      wraps=_build_declaration_cached.__wrapped__,
+  ) as mock_build:
+    first = LlmRequest()
+    first.append_tools([tool])
+    first.config.tools[0].function_declarations[0].name = "prefixed_search"
+    second = LlmRequest()
+    second.append_tools([tool])
+  assert mock_build.call_count == 1
+  result = await tool.run_async(
+      args={"query": "hello"}, tool_context=mock_tool_context
+  )
+
+  declaration = second.config.tools[0].function_declarations[0]
+  assert declaration.name == tool.name
+  assert declaration.description == "Search for a query."
+  assert "query" in declaration.parameters_json_schema["properties"]
+  assert result == "found: hello"
 
 
 @pytest.mark.asyncio
@@ -2047,3 +2089,260 @@ async def test_signatureless_callable_reraises_internal_type_error(
         args={"required_arg": "trigger_internal_type_error"},
         tool_context=mock_tool_context,
     )
+
+
+@pytest.mark.asyncio
+async def test_builtin_callable_returns_error_on_bad_args(
+    mock_tool_context,
+):
+  """A C builtin callable (target_code is None) returns error dict on bad args."""
+  tool = FunctionTool(min)
+
+  result = await tool.run_async(
+      args={"unexpected_kwarg": "val"},
+      tool_context=mock_tool_context,
+  )
+
+  assert "Invoking `min()` failed" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_partial_async_callable_instance_with_sync_confirmation(
+    mock_tool_context,
+):
+  """FunctionTool awaits functools.partial of an async callable instance."""
+
+  class _AsyncMultiplier:
+
+    async def __call__(self, base: int, factor: int) -> int:
+      return base * factor
+
+  partial_target = functools.partial(_AsyncMultiplier(), 6)
+  partial_target.__name__ = "multiply_six"
+  tool = FunctionTool(
+      partial_target,
+      require_confirmation=lambda factor: False,
+  )
+  runner_targets: list[Any] = []
+
+  async def recording_runner(target: Any, kwargs: dict[str, Any]) -> Any:
+    runner_targets.append(target)
+    return target(**kwargs)
+
+  with _use_sync_callable_runner(recording_runner):
+    result = await tool.run_async(
+        args={"factor": 7},
+        tool_context=mock_tool_context,
+    )
+
+  assert result == 42
+  assert len(runner_targets) == 1
+  assert runner_targets[0] is not partial_target
+
+
+def test_unhashable_callable_with_custom_return_type_declaration(monkeypatch):
+  """Callable tools with unparseable return types omit response schema."""
+  monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", "1")
+
+  class CustomResult:
+    pass
+
+  @dataclasses.dataclass
+  class Search:
+    prefix: str
+
+    def __call__(self, query: str) -> CustomResult:
+      return CustomResult()
+
+  tool = FunctionTool(Search(prefix="found: "))
+  declaration = tool._get_declaration()
+  assert declaration is not None
+  assert declaration.response_json_schema is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("json_schema_enabled", [True, False])
+async def test_unhashable_callable_with_string_context_parameter(
+    mock_tool_context,
+    json_schema_enabled,
+):
+  """Unhashable callable tools detect string-annotated context params."""
+
+  @dataclasses.dataclass
+  class Search:
+    prefix: str
+
+    def __call__(self, query: str, ctx: "ToolContext") -> str:
+      """Search for a query."""
+      assert ctx is mock_tool_context
+      return self.prefix + query
+
+  with temporary_feature_override(
+      FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, json_schema_enabled
+  ):
+    tool = FunctionTool(Search(prefix="found: "))
+    declaration = tool._get_declaration()
+    assert declaration is not None
+    assert declaration.description == "Search for a query."
+    if json_schema_enabled:
+      assert "ctx" not in declaration.parameters_json_schema["properties"]
+    else:
+      assert "ctx" not in declaration.parameters.properties
+    result = await tool.run_async(
+        args={"query": "hello"}, tool_context=mock_tool_context
+    )
+    assert result == "found: hello"
+
+    def wrapped_search(query: str, ctx: "ToolContext") -> str:
+      """Wrapped search."""
+      assert ctx is mock_tool_context
+      return f"wrapped: {query}"
+
+    class Wrapper:
+
+      def __init__(self, fn):
+        functools.update_wrapper(self, fn)
+
+      async def __call__(self, *args, **kwargs):
+        return self.__wrapped__(*args, **kwargs)
+
+    wrapped_tool = FunctionTool(Wrapper(wrapped_search))
+    assert wrapped_tool._spec.unwrapped_func is Wrapper.__call__
+    wrapped_decl = wrapped_tool._get_declaration()
+    assert wrapped_decl is not None
+    assert wrapped_decl.name == "wrapped_search"
+    assert wrapped_decl.description == "Wrapped search."
+    if json_schema_enabled:
+      assert "ctx" not in wrapped_decl.parameters_json_schema["properties"]
+    else:
+      assert "ctx" not in wrapped_decl.parameters.properties
+    wrapped_res = await wrapped_tool.run_async(
+        args={"query": "hello"}, tool_context=mock_tool_context
+    )
+    assert wrapped_res == "wrapped: hello"
+
+    from google.adk.workflow._function_node import FunctionNode
+
+    node = FunctionNode(
+        func=Wrapper(wrapped_search), parameter_binding="node_input"
+    )
+    node_events = [
+        e
+        async for e in node._run_impl(
+            ctx=mock_tool_context, node_input={"query": "hello"}
+        )
+    ]
+    assert node_events[0].output == "wrapped: hello"
+
+    def gen_search(query: str, ctx: "ToolContext"):
+      assert ctx is mock_tool_context
+      yield f"item: {query}"
+
+    class ListWrapper:
+
+      def __init__(self, fn):
+        functools.update_wrapper(self, fn)
+
+      def __call__(self, *args, **kwargs) -> list[str]:
+        return list(self.__wrapped__(*args, **kwargs))
+
+    mock_tool_context._invocation_context.live_request_queue = None
+    list_tool = FunctionTool(ListWrapper(gen_search))
+    assert not list_tool._spec.is_generator
+    list_res = await list_tool.run_async(
+        args={"query": "hello"}, tool_context=mock_tool_context
+    )
+    assert list_res == ["item: hello"]
+
+
+def test_unhashable_callable_field_does_not_override_call_annotations(
+    monkeypatch,
+):
+  """Dataclass fields do not shadow __call__ parameter or return hints."""
+  monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", "1")
+
+  @dataclasses.dataclass
+  class Search:
+    limit: int = 10
+
+    def __call__(
+        self,
+        limit: Annotated[
+            int | None, pydantic.Field(description="Max results")
+        ] = None,
+    ) -> "list[str]":
+      return ["ok"] * (limit or self.limit)
+
+  tool = FunctionTool(Search())
+  declaration = tool._get_declaration()
+  assert declaration is not None
+  limit_schema = declaration.parameters_json_schema["properties"]["limit"]
+  assert limit_schema["description"] == "Max results"
+  assert limit_schema["nullable"] is True
+  assert declaration.response_json_schema == {
+      "items": {"type": "string"},
+      "type": "array",
+  }
+
+
+@pytest.mark.asyncio
+async def test_partial_tool_with_context_parameter(mock_tool_context):
+  """functools.partial tools detect context and exclude it from declaration."""
+
+  def search_fn(query: str, count: int, ctx: "ToolContext") -> str:
+    assert ctx is mock_tool_context
+    return f"{query}_{count}"
+
+  partial_tool = functools.partial(search_fn, count=5)
+  tool = FunctionTool(partial_tool)
+  assert tool.name == "search_fn"
+  assert tool.description == ""
+  declaration = tool._get_declaration()
+  assert declaration is not None
+  assert declaration.name == "search_fn"
+  assert declaration.description is None
+  assert "ctx" not in declaration.parameters_json_schema["properties"]
+  result = await tool.run_async(
+      args={"query": "hello"}, tool_context=mock_tool_context
+  )
+  assert result == "hello_5"
+
+  model_cls = pydantic.create_model("DynamicTool", query=(str, ...))
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False):
+    model_tool = FunctionTool(model_cls)
+    assert model_tool.description == ""
+    model_decl = model_tool._get_declaration()
+    assert model_decl is not None
+    assert model_decl.description is None
+
+  class BaseSearch:
+
+    def __call__(self, query: str) -> str:
+      """Inherited call docstring."""
+      return query
+
+  class SubSearch(BaseSearch):
+
+    def __call__(self, query: str) -> str:
+      return query.upper()
+
+  sub_tool = FunctionTool(SubSearch())
+  assert sub_tool.description == "Inherited call docstring."
+  sub_decl = sub_tool._get_declaration()
+  assert sub_decl is not None
+  assert sub_decl.description == "Inherited call docstring."
+
+  class UnsupportedParam:
+    pass
+
+  def bad_tool(x: UnsupportedParam) -> str:
+    return str(x)
+
+  with mock.patch.object(
+      _build_declaration_cached,
+      "__wrapped__",
+      wraps=_build_declaration_cached.__wrapped__,
+  ) as mock_unwrapped:
+    with pytest.raises(pydantic.PydanticSchemaGenerationError):
+      FunctionTool(bad_tool)._get_declaration()
+  assert mock_unwrapped.call_count == 0

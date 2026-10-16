@@ -17,12 +17,18 @@ import asyncio
 import concurrent.futures
 import contextlib
 import dataclasses
+import datetime
+import functools
 import gc
+import importlib.util
+import inspect
 import io
 import json
 import logging
 import os
+import pathlib
 import pickle
+import re
 import sys
 import threading
 import time
@@ -31,6 +37,7 @@ from typing import Any
 from unittest import mock
 import warnings
 
+from google.adk import tools as tools_lib
 from google.adk.agents import base_agent
 from google.adk.agents import llm_agent
 from google.adk.agents.callback_context import CallbackContext
@@ -46,7 +53,9 @@ from google.adk.plugins import plugin_manager as plugin_manager_lib
 from google.adk.sessions import base_session_service as base_session_service_lib
 from google.adk.sessions import session as session_lib
 from google.adk.tools import base_tool as base_tool_lib
+from google.adk.tools import function_tool
 from google.adk.tools import tool_context as tool_context_lib
+from google.adk.tools import transfer_to_agent_tool
 from google.adk.utils import streaming_utils
 from google.adk.utils._telemetry_context import _is_visual_builder
 from google.adk.utils._telemetry_context import _telemetry_surface
@@ -61,6 +70,7 @@ from google.genai import types
 from opentelemetry import trace
 import pyarrow as pa
 from pydantic import BaseModel
+from pydantic import ValidationError
 import pytest
 
 PROJECT_ID = "test-gcp-project"
@@ -9923,6 +9933,2185 @@ class TestSchemaReadinessMemo:
     assert restored._loop_state_futures == {}
     assert hasattr(restored, "_builder_waiters")
     assert restored._builder_waiters == {}
+
+
+# ==============================================================================
+# Agent Evaluation View Tests
+# ==============================================================================
+class _EvalViewSqlEvaluator:
+  """Runs a generated eval view statement over sample rows in Python.
+
+  Lets tests check the views' own SQL instead of restating it. Only the
+  GoogleSQL subset that the eval views use is supported:
+
+  - A ``WITH`` list of CTEs and a final SELECT, each with ``*`` or
+    ``<expr> [AS alias]`` items and FROM, WHERE, GROUP BY and ORDER BY.
+  - FROM a table or CTE, joined by ``, UNNEST(...) AS x [WITH OFFSET AS y]``
+    or by ``LEFT JOIN ... USING (...)`` or ``LEFT JOIN ... ON ...``.
+  - Literals, columns, CASE, IF, AND/OR/NOT, comparisons, ``+`` and ``-``,
+    IS [NOT] NULL, [NOT] IN, ``ARRAY<...>[]``, ``[SAFE_OFFSET(n)]``, CAST,
+    SAFE_CAST, and ``(SELECT ...)``, ``EXISTS(SELECT ...)`` and
+    ``ARRAY(SELECT ...)`` over ``UNNEST``.
+  - The aggregates in ``_aggregate``, also over ``OVER (PARTITION BY ...)``;
+    ROW_NUMBER, LAG and LEAD over ``OVER (PARTITION BY ... ORDER BY ...)``;
+    and the scalar functions in ``_call``.
+
+  SQL NULL is ``None``, and JSON values are Python dicts, lists and scalars.
+  A JSON function reads a field of a ``str`` by parsing it as JSON text, as
+  for the STRING ``part_attributes``. RE2's ``$`` matches only at the end of
+  the text, so it becomes Python's ``\\Z``.
+  """
+
+  _TOKEN_RE = re.compile(
+      r"(?P<space>\s+)"
+      r"|(?P<string>[rR]?(?:'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"))"
+      r"|(?P<number>\d+)"
+      r"|(?P<name>`[^`]*`|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)"
+      r"|(?P<op><>|!=|<=|>=|[-+*/=<>,.()\[\]])"
+  )
+  _COMPARISONS = {
+      "=": lambda a, b: a == b,
+      "!=": lambda a, b: a != b,
+      "<>": lambda a, b: a != b,
+      "<": lambda a, b: a < b,
+      ">": lambda a, b: a > b,
+      "<=": lambda a, b: a <= b,
+      ">=": lambda a, b: a >= b,
+  }
+  _JSON_TYPES = {
+      dict: "object",
+      list: "array",
+      str: "string",
+      bool: "boolean",
+      int: "number",
+      float: "number",
+  }
+  _ESCAPES = {"n": "\n", "t": "\t", "\\": "\\", "'": "'", '"': '"'}
+  _AGGREGATES = frozenset({
+      "ARRAY_AGG",
+      "ARRAY_CONCAT_AGG",
+      "COUNT",
+      "COUNTIF",
+      "LOGICAL_AND",
+      "LOGICAL_OR",
+      "MAX",
+      "MIN",
+      "STRING_AGG",
+      "SUM",
+  })
+
+  def __init__(self, sql: str):
+    self._tokens = []
+    pos = 0
+    while pos < len(sql):
+      match = self._TOKEN_RE.match(sql, pos)
+      assert match, f"Unexpected SQL text: {sql[pos:pos + 40]!r}"
+      if match.lastgroup != "space":
+        self._tokens.append((match.lastgroup, match.group()))
+      pos = match.end()
+    self._pos, self._end = 0, len(self._tokens)
+    while not self._accept("WITH"):  # Skips CREATE OR REPLACE VIEW ... AS.
+      self._next()
+    self._ctes = {}
+    while True:
+      name = self._next()[1]
+      self._expect("AS", "(")
+      self._ctes[name] = self._parse_query()
+      self._expect(")")
+      if not self._accept(","):
+        break
+    self._final = self._parse_query()
+    assert self._pos == self._end, f"Unsupported SQL at token {self._pos}"
+
+  def run(self, table_rows, cte=None):
+    """Returns the rows of CTE ``cte``, or of the view, over ``table_rows``."""
+    results = {}
+
+    def table(name):
+      if name not in self._ctes:
+        return table_rows
+      if name not in results:
+        results[name] = self._run_query(self._ctes[name], table, {})
+      return results[name]
+
+    return table(cte) if cte else self._run_query(self._final, table, {})
+
+  def evaluate(self, alias, row=None, rows=None, *, cte=None):
+    """Evaluates the select item ``alias`` on ``row``, aggregating ``rows``.
+
+    Args:
+      alias: The name of the select item.
+      row: The input row's column values.
+      rows: The rows that an aggregate or window function reads; for a window
+        function, ``row`` must be one of them.
+      cte: The CTE that holds the select item. By default, ``alias`` must
+        name one select item that does more than pass through the column of
+        the same name.
+    """
+    queries = [self._ctes[cte]] if cte else [*self._ctes.values(), self._final]
+    nodes = [
+        node
+        for query in queries
+        for name, node in query["items"]
+        if name == alias
+        and (cte or node[0] != "column" or node[1].rsplit(".")[-1] != alias)
+    ]
+    assert len(nodes) == 1, f"Expected one select item AS {alias}"
+    return self._eval(nodes[0], row or {}, rows)
+
+  @staticmethod
+  def _is_word(token, word):
+    return token[0] == "name" and token[1].upper() == word
+
+  def _next(self):
+    assert self._pos < self._end, "Unexpected end of SQL"
+    self._pos += 1
+    return self._tokens[self._pos - 1]
+
+  def _accept(self, *texts):
+    """Consumes the next tokens if they are ``texts``; words match any case."""
+    upcoming = self._tokens[self._pos : min(self._pos + len(texts), self._end)]
+    if len(upcoming) != len(texts) or any(
+        (token.upper() if kind == "name" else token) != text
+        for (kind, token), text in zip(upcoming, texts)
+    ):
+      return False
+    self._pos += len(texts)
+    return True
+
+  def _expect(self, *texts):
+    assert self._accept(*texts), f"Expected {texts} at token {self._pos}"
+
+  def _parse_query(self):
+    """Parses a SELECT through its FROM, WHERE, GROUP BY and ORDER BY."""
+    self._expect("SELECT")
+    query = {
+        "distinct": self._accept("DISTINCT"),
+        "items": [],
+        "from": [],
+        "where": None,
+        "group_by": [],
+        "order_by": [],
+    }
+    while True:
+      if self._accept("*"):
+        query["items"].append(("*", None))
+      else:
+        node = self._parse_expr()
+        if self._accept("AS"):
+          alias = self._next()[1]
+        else:
+          alias = node[1].rsplit(".")[-1] if node[0] == "column" else None
+        query["items"].append((alias, node))
+      if not self._accept(","):
+        break
+    if self._accept("FROM"):
+      query["from"].append((None, *self._parse_source(), None))
+      while True:
+        if self._accept(","):
+          query["from"].append(("cross", *self._parse_source(), None))
+        elif self._accept("LEFT", "JOIN"):
+          source, alias = self._parse_source()
+          if self._accept("USING", "("):
+            condition = ("using", [node[1] for node in self._parse_list()])
+          else:
+            self._expect("ON")
+            condition = ("on", self._parse_expr())
+          query["from"].append(("left", source, alias, condition))
+        else:
+          break
+    if self._accept("WHERE"):
+      query["where"] = self._parse_expr()
+    if self._accept("GROUP", "BY"):
+      query["group_by"] = self._parse_exprs()
+    if self._accept("ORDER", "BY"):
+      query["order_by"] = self._parse_order_by()
+    return query
+
+  def _parse_source(self):
+    """Parses a table, CTE or ``UNNEST(...)`` source and its alias."""
+    if self._accept("UNNEST", "("):
+      array = self._parse_expr()
+      self._expect(")", "AS")
+      alias = self._next()[1]
+      offset = self._next()[1] if self._accept("WITH", "OFFSET", "AS") else None
+      return ("unnest", array, offset), alias
+    name = self._next()[1].strip("`")
+    return ("table", name), self._next()[1] if self._accept("AS") else None
+
+  def _parse_exprs(self):
+    nodes = [self._parse_expr()]
+    while self._accept(","):
+      nodes.append(self._parse_expr())
+    return nodes
+
+  def _parse_order_by(self):
+    keys = []
+    while True:
+      keys.append((self._parse_expr(), self._accept("DESC")))
+      if not self._accept(","):
+        return keys
+
+  def _parse_expr(self):
+    node = self._parse_and()
+    while self._accept("OR"):
+      node = ("or", node, self._parse_and())
+    return node
+
+  def _parse_and(self):
+    node = self._parse_not()
+    while self._accept("AND"):
+      node = ("and", node, self._parse_not())
+    return node
+
+  def _parse_not(self):
+    if self._accept("NOT"):
+      return ("not", self._parse_not())
+    node = self._parse_sum()
+    if self._accept("IS"):
+      negated = self._accept("NOT")
+      self._expect("NULL")
+      return ("is_null", node, negated)
+    for negated, words in ((False, ("IN", "(")), (True, ("NOT", "IN", "("))):
+      if self._accept(*words):
+        return ("in", node, self._parse_list(), negated)
+    for op in self._COMPARISONS:
+      if self._accept(op):
+        return ("compare", op, node, self._parse_sum())
+    return node
+
+  def _parse_sum(self):
+    node = self._parse_postfix()
+    while True:
+      op = "+" if self._accept("+") else "-" if self._accept("-") else None
+      if op is None:
+        return node
+      node = ("arith", op, node, self._parse_postfix())
+
+  def _parse_postfix(self):
+    node = self._parse_primary()
+    while self._accept("[", "SAFE_OFFSET", "("):
+      node = ("safe_offset", node, self._parse_expr())
+      self._expect(")", "]")
+    return node
+
+  def _parse_list(self, close=")"):
+    """Parses comma-separated expressions through the closing token."""
+    items = []
+    while not self._accept(close):
+      if items:
+        self._expect(",")
+      items.append(self._parse_expr())
+    return items
+
+  def _parse_primary(self):
+    kind, text = self._next()
+    if kind == "string":
+      raw = text[0] in "rR"
+      body = text[2:-1] if raw else text[1:-1]
+      if not raw:
+        body = re.sub(r"\\(.)", lambda m: self._ESCAPES[m.group(1)], body)
+      return ("literal", body)
+    if kind == "number":
+      return ("literal", int(text))
+    if text == "(":
+      if self._is_word(self._tokens[self._pos], "SELECT"):
+        node = ("subquery", "scalar", self._parse_query())
+      else:
+        node = self._parse_expr()
+      self._expect(")")
+      return node
+    assert kind == "name", f"Unsupported SQL token {text!r}"
+    word = text.upper()
+    if word in ("NULL", "TRUE", "FALSE"):
+      return ("literal", {"NULL": None, "TRUE": True, "FALSE": False}[word])
+    if word == "CASE":
+      operand = None
+      if not self._accept("WHEN"):
+        operand = self._parse_expr()
+        self._expect("WHEN")
+      branches = []
+      while True:
+        condition = self._parse_expr()
+        self._expect("THEN")
+        branches.append((condition, self._parse_expr()))
+        if not self._accept("WHEN"):
+          break
+      default = ("literal", None)
+      if self._accept("ELSE"):
+        default = self._parse_expr()
+      self._expect("END")
+      return ("case", operand, branches, default)
+    if word == "ARRAY" and self._accept("<"):
+      depth = 1
+      while depth:  # Skips the element type, such as STRUCT<...>.
+        depth += {"<": 1, ">": -1}.get(self._next()[1], 0)
+      self._expect("[")
+      return ("array", self._parse_list("]"))
+    if not self._accept("("):
+      return ("column", text)
+    if word in ("ARRAY", "EXISTS"):
+      node = ("subquery", word, self._parse_query())
+      self._expect(")")
+      return node
+    if word in ("CAST", "SAFE_CAST"):
+      value = self._parse_expr()
+      self._expect("AS")
+      node = ("cast", value, self._next()[1].upper(), word == "SAFE_CAST")
+      self._expect(")")
+      return node
+    if word in self._AGGREGATES:
+      distinct = self._accept("DISTINCT")
+      # COUNT(*) counts a non-NULL value per row.
+      args = [("literal", 0) if self._accept("*") else self._parse_expr()]
+      while self._accept(","):
+        args.append(self._parse_expr())
+      ignore_nulls = self._accept("IGNORE", "NULLS")
+      order_by = self._parse_order_by() if self._accept("ORDER", "BY") else []
+      limit = int(self._next()[1]) if self._accept("LIMIT") else None
+      self._expect(")")
+      node = ("aggregate", word, args, distinct, ignore_nulls, order_by, limit)
+    else:
+      args = self._parse_list()
+      node = ("if", *args) if word == "IF" else ("call", word, args)
+    if self._accept("OVER", "("):
+      partition_by = []
+      if self._accept("PARTITION", "BY"):
+        partition_by = self._parse_exprs()
+      order_by = self._parse_order_by() if self._accept("ORDER", "BY") else []
+      self._expect(")")
+      return ("window", node, partition_by, order_by)
+    return node
+
+  @classmethod
+  def _has_aggregate(cls, node):
+    """Whether ``node`` aggregates its query's rows.
+
+    Aggregates under OVER or in a subquery do not, so they are not searched.
+    Lists and CASE branches are searched element by element.
+    """
+    if isinstance(node, list) or (
+        isinstance(node, tuple) and node and not isinstance(node[0], str)
+    ):
+      return any(cls._has_aggregate(child) for child in node)
+    if not isinstance(node, tuple) or node[0] in (
+        "literal",
+        "subquery",
+        "window",
+    ):
+      return False
+    return node[0] == "aggregate" or any(
+        cls._has_aggregate(child) for child in node[1:]
+    )
+
+  def _run_query(self, query, table, outer):
+    """Returns the rows that ``query`` selects, given the ``outer`` row."""
+    rows = [outer]
+    for kind, source, alias, condition in query["from"]:
+      if kind is None:
+        rows = self._source_rows(source, alias, table, outer)
+        continue
+      joined = []
+      for left in rows:
+        right_rows = self._source_rows(source, alias, table, left)
+        if kind == "cross":
+          joined += [{**left, **right} for right in right_rows]
+          continue
+        mode, spec = condition
+        matches = [
+            row
+            for row in ({**left, **right} for right in right_rows)
+            if (
+                all(left[k] is not None and left[k] == row[k] for k in spec)
+                if mode == "using"
+                else self._eval(spec, row, None) is True
+            )
+        ]
+        names = [name for name, _ in self._ctes[source[1]]["items"]]
+        prefix = f"{alias}." if alias else ""
+        joined += matches or [{**{prefix + n: None for n in names}, **left}]
+      rows = joined
+    if query["where"] is not None:
+      rows = [r for r in rows if self._eval(query["where"], r, None) is True]
+    contexts = [(row, rows) for row in rows]
+    items = [node for _, node in query["items"]]
+    if query["group_by"] or self._has_aggregate(items):
+      groups = {}
+      if not query["group_by"]:
+        groups[()] = []  # An aggregate with no GROUP BY yields one row.
+      for row in rows:
+        key = tuple(self._eval(node, row, None) for node in query["group_by"])
+        groups.setdefault(key, []).append(row)
+      contexts = [(g[0] if g else outer, g) for g in groups.values()]
+    results = []
+    for row, group in contexts:
+      result = {}
+      for alias, node in query["items"]:
+        if node is None:
+          result.update(row)
+        else:
+          result[alias] = self._eval(node, row, group)
+      if not query["distinct"] or result not in [r for _, r in results]:
+        results.append(({**row, **result}, result))
+    results = self._sorted(results, query["order_by"], lambda pair: pair[0])
+    return [result for _, result in results]
+
+  def _source_rows(self, source, alias, table, outer):
+    """Returns the rows of a FROM source; ``outer`` scopes ``UNNEST``."""
+    if source[0] == "table":
+      prefix = f"{alias}." if alias else ""
+      return [
+          {prefix + k: v for k, v in row.items()} for row in table(source[1])
+      ]
+    _, array, offset = source
+    rows = []
+    for index, value in enumerate(self._eval(array, outer, None) or ()):
+      row = {**outer, alias: value}
+      if offset:
+        row[offset] = index
+      if isinstance(value, dict):
+        row.update({f"{alias}.{key}": item for key, item in value.items()})
+      rows.append(row)
+    return rows
+
+  def _sorted(self, items, order_by, row_of=lambda item: item):
+    """Sorts ``items`` by ``order_by``; NULL sorts first, as in GoogleSQL."""
+
+    def compare(a, b):
+      for node, descending in order_by:
+        x, y = (self._eval(node, row_of(item), None) for item in (a, b))
+        if x != y:
+          order = -1 if x is None else 1 if y is None else -1 if x < y else 1
+          return -order if descending else order
+      return 0
+
+    return sorted(items, key=functools.cmp_to_key(compare))
+
+  def _eval(self, node, row, rows):
+    kind, *args = node
+    if kind == "literal":
+      return args[0]
+    if kind == "column":
+      assert args[0] in row, f"No sample value for column {args[0]}"
+      return row[args[0]]
+    if kind == "and":
+      values = [self._eval(arg, row, rows) for arg in args]
+      return False if False in values else None if None in values else True
+    if kind == "or":
+      values = [self._eval(arg, row, rows) for arg in args]
+      return True if True in values else None if None in values else False
+    if kind == "not":
+      value = self._eval(args[0], row, rows)
+      return None if value is None else not value
+    if kind == "compare":
+      op, left, right = args
+      a, b = self._eval(left, row, rows), self._eval(right, row, rows)
+      return None if a is None or b is None else self._COMPARISONS[op](a, b)
+    if kind == "arith":
+      op, left, right = args
+      a, b = self._eval(left, row, rows), self._eval(right, row, rows)
+      return None if a is None or b is None else a + b if op == "+" else a - b
+    if kind == "is_null":
+      operand, negated = args
+      return (self._eval(operand, row, rows) is None) != negated
+    if kind == "in":
+      operand, items, negated = args
+      value = self._eval(operand, row, rows)
+      if value is None:
+        return None
+      return (value in [self._eval(i, row, rows) for i in items]) != negated
+    if kind == "case":
+      operand, branches, default = args
+      subject = None if operand is None else self._eval(operand, row, rows)
+      for condition, result in branches:
+        value = self._eval(condition, row, rows)
+        if operand is None:
+          matched = value is True
+        else:
+          matched = subject is not None and value == subject
+        if matched:
+          return self._eval(result, row, rows)
+      return self._eval(default, row, rows)
+    if kind == "if":
+      condition, if_true, if_false = args
+      is_true = self._eval(condition, row, rows) is True
+      return self._eval(if_true if is_true else if_false, row, rows)
+    if kind == "array":
+      return [self._eval(item, row, rows) for item in args[0]]
+    if kind == "safe_offset":
+      array, index = (self._eval(arg, row, rows) for arg in args)
+      return array[index] if array and 0 <= index < len(array) else None
+    if kind == "cast":
+      value_node, type_name, safe = args
+      value = self._eval(value_node, row, rows)
+      if value is None or type_name == "JSON":
+        return value
+      assert type_name == "INT64", f"Unsupported CAST to {type_name}"
+      try:
+        return int(value)
+      except ValueError:
+        if safe:
+          return None
+        raise
+    if kind == "subquery":
+      mode, query = args
+      results = self._run_query(query, None, row)
+      values = [value for result in results for value in result.values()]
+      if mode == "EXISTS":
+        return bool(results)
+      if mode == "ARRAY":
+        return values
+      assert len(values) <= 1, "A scalar subquery returned more than one row"
+      return values[0] if values else None
+    if kind == "aggregate":
+      assert rows is not None, f"{args[0]} needs a group of rows"
+      return self._aggregate(rows, *args)
+    if kind == "window":
+      return self._window(row, rows, *args)
+    name, call_args = args
+    return self._call(name, [self._eval(arg, row, rows) for arg in call_args])
+
+  def _aggregate(
+      self, rows, name, args, distinct, ignore_nulls, order_by, limit
+  ):
+    """Evaluates the aggregate ``name`` over ``rows``."""
+    values = [
+        self._eval(args[0], r, None) for r in self._sorted(rows, order_by)
+    ]
+    if name == "COUNTIF":
+      return sum(value is True for value in values)
+    if ignore_nulls or name != "ARRAY_AGG":
+      values = [value for value in values if value is not None]
+    if distinct:
+      values = [v for i, v in enumerate(values) if v not in values[:i]]
+    values = values[:limit]
+    if name == "COUNT":
+      return len(values)
+    if not values:
+      return None  # The other aggregates of no values are NULL.
+    if name == "STRING_AGG":
+      return self._eval(args[1], {}, None).join(values)
+    if name == "ARRAY_CONCAT_AGG":
+      return [item for value in values for item in value]
+    return {
+        "ARRAY_AGG": list,
+        "LOGICAL_AND": all,
+        "LOGICAL_OR": any,
+        "MAX": max,
+        "MIN": min,
+        "SUM": sum,
+    }[name](values)
+
+  def _window(self, row, rows, function, partition_by, order_by):
+    """Evaluates ``function`` over ``row``'s window partition of ``rows``."""
+    assert rows is not None, "A window function needs the input rows"
+    key = [self._eval(node, row, None) for node in partition_by]
+    partition = self._sorted(
+        [
+            other
+            for other in rows
+            if [self._eval(node, other, None) for node in partition_by] == key
+        ],
+        order_by,
+    )
+    if function[0] == "aggregate":
+      assert not order_by, "Only whole-partition aggregate frames are supported"
+      return self._aggregate(partition, *function[1:])
+    name, call_args = function[1:]
+    index = next(i for i, other in enumerate(partition) if other is row)
+    if name == "ROW_NUMBER":
+      return index + 1
+    assert name in ("LAG", "LEAD"), f"Unsupported window function {name}"
+    index += 1 if name == "LEAD" else -1
+    if not 0 <= index < len(partition):
+      return None
+    return self._eval(call_args[0], partition[index], None)
+
+  def _call(self, name, args):
+    if name == "COALESCE":
+      return next((arg for arg in args if arg is not None), None)
+    if name == "NULLIF":
+      return None if args[0] == args[1] else args[0]
+    if name == "ARRAY_LENGTH":
+      return None if args[0] is None else len(args[0])
+    if name == "CHR":
+      return chr(args[0])
+    if name in ("REGEXP_CONTAINS", "REGEXP_REPLACE"):
+      value, pattern, *replacement = args
+      if value is None:
+        return None
+      regex = re.compile(re.sub(r"(?<!\\)\$", r"\\Z", pattern))
+      if name == "REGEXP_CONTAINS":
+        return regex.search(value) is not None
+      return regex.sub(lambda _: replacement[0], value)  # No backreferences.
+    if name == "FORMAT_TIMESTAMP":
+      fmt, timestamp = args
+      return timestamp.strftime(fmt.replace("%E6S", "%S.%f"))
+    if name == "TO_JSON":
+      return args[0]
+    if name == "TO_JSON_STRING":
+      return json.dumps(args[0], separators=(",", ":"), ensure_ascii=False)
+    if name == "JSON_ARRAY":
+      return list(args)
+    if name == "JSON_OBJECT":
+      if len(args) == 2 and isinstance(args[0], list):
+        keys, values = args  # The JSON_OBJECT(keys, values) signature.
+      else:
+        keys, values = args[0::2], args[1::2]
+      assert len(keys) == len(values)
+      assert all(isinstance(key, str) for key in keys), keys
+      return dict(zip(keys, values))
+    if name == "JSON_TYPE":
+      return None if args[0] is None else self._JSON_TYPES[type(args[0])]
+    if name in ("JSON_QUERY", "JSON_QUERY_ARRAY", "JSON_VALUE"):
+      value, path = args if len(args) == 2 else (args[0], "$")
+      assert path == "$" or path.startswith("$."), path
+      if isinstance(value, str) and path != "$":
+        try:
+          value = json.loads(value)
+        except ValueError:
+          pass  # A JSON string value, which has no fields.
+      for key in path.split(".")[1:]:
+        value = value.get(key) if isinstance(value, dict) else None
+      if name == "JSON_QUERY_ARRAY":
+        return value if isinstance(value, list) else None
+      if name == "JSON_QUERY" or value is None:
+        return value
+      if isinstance(value, (dict, list)):
+        return None
+      return str(value).lower() if isinstance(value, bool) else str(value)
+    raise NotImplementedError(f"SQL function {name}")
+
+
+class TestEvalViews:
+  """Tests for the opt-in agent evaluation session and turn views."""
+
+  _SESSION_COLUMNS = [
+      "session_id",
+      "user_id",
+      "root_agent",
+      "session_start_timestamp",
+      "session_end_timestamp",
+      "turn_count",
+      "tool_call_count",
+      "tool_error_count",
+      "llm_error_count",
+      "agent_error_count",
+      "has_error",
+      "has_truncated_content",
+      "has_tool_loop",
+      "max_consecutive_identical_tool_calls",
+      "distinct_tools_used",
+      "total_prompt_tokens",
+      "total_completion_tokens",
+      "total_tokens",
+      "total_latency_ms",
+      "eval_ready",
+      "trace",
+  ]
+  _TURN_COLUMNS = [
+      "session_id",
+      "invocation_id",
+      "turn_index",
+      "user_id",
+      "root_agent",
+      "turn_start_timestamp",
+      "turn_end_timestamp",
+      "tool_call_count",
+      "tool_error_count",
+      "llm_error_count",
+      "agent_error_count",
+      "has_error",
+      "has_truncated_content",
+      "has_tool_loop",
+      "max_consecutive_identical_tool_calls",
+      "distinct_tools_used",
+      "total_prompt_tokens",
+      "total_completion_tokens",
+      "total_tokens",
+      "turn_latency_ms",
+      "eval_ready",
+      "trace",
+  ]
+
+  def _make_plugin(self, **config_kwargs):
+    """Builds a plugin whose table is missing, so setup creates it."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        **config_kwargs
+    )
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    )
+    plugin.client = mock.MagicMock()
+    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+    plugin._schema = bigquery_agent_analytics_plugin._get_events_schema()
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    return plugin
+
+  @staticmethod
+  def _queried_sql(client):
+    return [c[0][0] for c in client.query.call_args_list]
+
+  @staticmethod
+  def _view_names(client):
+    """Returns the name of each view the client's DDL created, in order."""
+    return [
+        sql.split("`", 2)[1].rsplit(".", 1)[1]
+        for sql in TestEvalViews._queried_sql(client)
+    ]
+
+  @staticmethod
+  def _final_select(sql):
+    """Returns the top-level SELECT list; CTE bodies are all indented."""
+    return sql.rsplit("\nSELECT\n", 1)[1].split("\nFROM\n", 1)[0]
+
+  @staticmethod
+  def _output_columns(sql):
+    # A long column's alias wraps onto its own line, indented 4 spaces.
+    final_select = TestEvalViews._final_select(sql).replace("\n    AS ", " AS ")
+    return [
+        line.rsplit(" AS ", 1)[1].rstrip(",")
+        for line in final_select.splitlines()
+        if not line.startswith("   ") and " AS " in line
+    ]
+
+  @staticmethod
+  def _normalized_view_sql():
+    """Returns the session and turn view SQL with whitespace collapsed."""
+    return tuple(
+        " ".join(build_view_sql("p.d.t").split())
+        for build_view_sql in (
+            bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+            bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+        )
+    )
+
+  @staticmethod
+  def _eval_views():
+    """Returns evaluators of the session and turn view SQL."""
+    return tuple(
+        _EvalViewSqlEvaluator(build_view_sql("p.d.t"))
+        for build_view_sql in (
+            bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+            bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+        )
+    )
+
+  @staticmethod
+  def _event(invocation_id, second, event_type, content=None, **columns):
+    """Returns an events table row; ``second`` orders it in its session."""
+    return {
+        "timestamp": datetime.datetime(
+            2026, 4, 19, 12, 0, second, tzinfo=datetime.timezone.utc
+        ),
+        "event_id": f"{invocation_id}-{second:02d}",
+        "event_type": event_type,
+        "agent": "root_agent",
+        "session_id": "session-1",
+        "invocation_id": invocation_id,
+        "user_id": "user-1",
+        "content": content,
+        "content_parts": [],
+        "attributes": {"root_agent_name": "root_agent"},
+        "latency_ms": None,
+        "status": "OK",
+        "error_message": None,
+        "is_truncated": False,
+        **columns,
+    }
+
+  def test_config_create_eval_views_default_false(self):
+    """Eval views are opt-in, so default setup only creates analytics views."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    assert config.create_eval_views is False
+    plugin = self._make_plugin()
+
+    assert plugin._ensure_schema_exists() is True
+
+    view_names = self._view_names(plugin.client)
+    assert len(view_names) == len(
+        bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS
+    )
+    assert not [name for name in view_names if "_eval_" in name]
+
+  @pytest.mark.parametrize("create_views", [True, False])
+  def test_eval_views_created_when_enabled(self, create_views):
+    """create_eval_views adds both views, with or without create_views."""
+    plugin = self._make_plugin(
+        create_views=create_views, create_eval_views=True
+    )
+
+    assert plugin._ensure_schema_exists() is True
+
+    view_names = self._view_names(plugin.client)
+    analytics_view_count = (
+        len(bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS)
+        if create_views
+        else 0
+    )
+    assert len(view_names) == analytics_view_count + 2
+    assert view_names[-2:] == ["v_eval_session", "v_eval_turn"]
+
+  def test_eval_views_created_for_existing_table(self):
+    """The existing-table readiness path creates the eval views too."""
+    plugin = self._make_plugin(create_views=False, create_eval_views=True)
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = plugin._schema
+    existing.labels = {
+        bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY: (
+            bigquery_agent_analytics_plugin._SCHEMA_VERSION
+        ),
+    }
+    plugin.client.get_table.side_effect = None
+    plugin.client.get_table.return_value = existing
+
+    assert plugin._ensure_schema_exists() is True
+
+    plugin.client.create_table.assert_not_called()
+    assert self._view_names(plugin.client) == [
+        "v_eval_session",
+        "v_eval_turn",
+    ]
+
+  def test_eval_view_failure_reported_not_raised(self):
+    """A failed eval view fails the readiness pass without raising."""
+    plugin = self._make_plugin(create_eval_views=True)
+
+    def run_query(sql):
+      if "v_eval_session`" in sql:
+        raise RuntimeError("eval view DDL rejected")
+      return mock.MagicMock()
+
+    plugin.client.query.side_effect = run_query
+
+    assert plugin._ensure_schema_exists() is False
+    # The turn view is still attempted after the session view failed.
+    assert self._view_names(plugin.client)[-2:] == [
+        "v_eval_session",
+        "v_eval_turn",
+    ]
+
+  def test_eval_view_conflict_counts_as_created(self):
+    """A concurrent replace by another process is not a failure."""
+    plugin = self._make_plugin(create_views=False, create_eval_views=True)
+    plugin.client.query.side_effect = cloud_exceptions.Conflict("in use")
+
+    assert plugin._create_eval_views() is True
+    assert plugin.client.query.call_count == 2
+
+  @pytest.mark.asyncio
+  async def test_create_eval_views_public_method(
+      self, mock_auth_default, mock_bq_client, mock_write_client
+  ):
+    """create_eval_views() starts the plugin and creates each view once."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    assert plugin._started is False
+
+    try:
+      await plugin.create_eval_views()
+
+      assert plugin._started is True
+      # Setup created only the analytics views (create_eval_views is off);
+      # the explicit call added one of each eval view.
+      view_names = self._view_names(mock_bq_client)
+      assert len(view_names) == (
+          len(bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS) + 2
+      )
+      assert view_names.count("v_eval_session") == 1
+      assert view_names.count("v_eval_turn") == 1
+      assert plugin._schema_ready is True
+
+      mock_bq_client.query.side_effect = RuntimeError("view DDL rejected")
+      await plugin.create_eval_views()
+      assert plugin._schema_ready is False
+
+      # A later analytics-only refresh must not mask the missing eval views.
+      mock_bq_client.query.side_effect = None
+      await plugin.create_analytics_views()
+      assert plugin._schema_ready is False
+    finally:
+      await plugin.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_create_eval_views_raises_on_startup_failure(
+      self, mock_auth_default, mock_write_client
+  ):
+    """create_eval_views() raises with the startup error chained."""
+    with mock.patch.object(
+        bigquery, "Client", side_effect=Exception("client boom")
+    ):
+      plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+      )
+      with pytest.raises(
+          RuntimeError, match="cannot create eval views"
+      ) as exc_info:
+        await plugin.create_eval_views()
+      assert "client boom" in str(exc_info.value.__cause__)
+
+  def test_eval_views_custom_view_prefix(self):
+    """view_prefix namespaces the eval views like the analytics views."""
+    plugin = self._make_plugin(
+        create_views=False, create_eval_views=True, view_prefix="v_prod"
+    )
+
+    assert plugin._ensure_schema_exists() is True
+
+    assert self._view_names(plugin.client) == [
+        "v_prod_eval_session",
+        "v_prod_eval_turn",
+    ]
+    for sql in self._queried_sql(plugin.client):
+      assert f"`{PROJECT_ID}.{DATASET_ID}.v_prod_eval_" in sql
+      assert f"`{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`" in sql
+
+  @pytest.mark.asyncio
+  async def test_eval_views_reject_denied_content_column(self):
+    """Denying content is rejected at init, on refresh, and by the builders."""
+    with pytest.raises(
+        ValueError, match="create_eval_views=True cannot be used"
+    ):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              create_eval_views=True, payload_column_denylist=["content"]
+          ),
+      )
+
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+            payload_column_denylist=["content"]
+        ),
+    )
+    with mock.patch.object(
+        plugin, "_ensure_started", new_callable=mock.AsyncMock
+    ) as ensure_started:
+      with pytest.raises(ValueError, match="Cannot create eval views"):
+        await plugin.create_eval_views()
+    ensure_started.assert_not_called()
+
+    for build_view_sql in (
+        bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+        bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+    ):
+      with pytest.raises(ValueError, match="Cannot build eval view SQL"):
+        build_view_sql("p.d.t", denied_columns=frozenset({"content"}))
+
+  @pytest.mark.asyncio
+  async def test_eval_views_reject_filtered_required_events(self):
+    """Denying or not allowlisting a required trace event fails fast."""
+    # A HITL pause and its resumption reach the trace and is_paused only as
+    # these rows; the adk_request_* tools' own TOOL_* rows are skipped.
+    pause_events = {
+        "TOOL_PAUSED",
+        "HITL_CREDENTIAL_REQUEST",
+        "HITL_CONFIRMATION_REQUEST",
+        "HITL_INPUT_REQUEST",
+        "HITL_CREDENTIAL_REQUEST_COMPLETED",
+        "HITL_CONFIRMATION_REQUEST_COMPLETED",
+        "HITL_INPUT_REQUEST_COMPLETED",
+    }
+    required_events = {
+        "USER_MESSAGE_RECEIVED",
+        "AGENT_STARTING",
+        "LLM_REQUEST",
+        "TOOL_STARTING",
+        "TOOL_COMPLETED",
+        "AGENT_TRANSFER",
+        "AGENT_RESPONSE",
+        "INVOCATION_COMPLETED",
+        *pause_events,
+    }
+    assert (
+        bigquery_agent_analytics_plugin._EVAL_VIEW_REQUIRED_EVENTS
+        == required_events
+    )
+    for required_event in sorted(required_events):
+      with pytest.raises(
+          ValueError, match="required events are in event_denylist"
+      ):
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True, event_denylist=[required_event]
+            ),
+        )
+
+    with pytest.raises(
+        ValueError, match="event_allowlist includes all required events"
+    ):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              create_eval_views=True,
+              event_allowlist=[
+                  "USER_MESSAGE_RECEIVED",
+                  "AGENT_RESPONSE",
+                  "TOOL_STARTING",
+                  "TOOL_COMPLETED",
+                  "INVOCATION_COMPLETED",
+              ],
+          ),
+      )
+
+    # The trace carries a multi-agent handoff only as the AGENT_TRANSFER
+    # function_call, and a HITL pause and resumption only as the pause rows,
+    # so an allowlist without either is rejected too.
+    for missing_events in ({"AGENT_TRANSFER"}, pause_events):
+      with pytest.raises(
+          ValueError, match=re.escape(f"missing: {sorted(missing_events)}.")
+      ):
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True,
+                event_allowlist=sorted(required_events - missing_events),
+            ),
+        )
+
+    plugin_full_allowlist = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True,
+                event_allowlist=sorted(
+                    bigquery_agent_analytics_plugin._EVAL_VIEW_REQUIRED_EVENTS
+                ),
+            ),
+        )
+    )
+    assert set(plugin_full_allowlist.config.event_allowlist) == (
+        bigquery_agent_analytics_plugin._EVAL_VIEW_REQUIRED_EVENTS
+    )
+
+    # An empty event_allowlist is treated as unset by _log_event, so it must
+    # not be rejected when create_eval_views=True.
+    plugin_empty_allowlist = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True,
+                event_allowlist=[],
+            ),
+        )
+    )
+    assert plugin_empty_allowlist.config.event_allowlist == []
+
+    plugin_denied = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                event_denylist=["TOOL_STARTING"]
+            ),
+        )
+    )
+    with mock.patch.object(
+        plugin_denied, "_ensure_started", new_callable=mock.AsyncMock
+    ) as ensure_started:
+      with pytest.raises(
+          ValueError, match="required events are in event_denylist"
+      ):
+        await plugin_denied.create_eval_views()
+    ensure_started.assert_not_called()
+
+  def test_eval_views_handle_denied_attributes_and_latency_columns(self):
+    """Denied content_parts / attributes / latency_ms read as empty/NULL."""
+    plugin = self._make_plugin(
+        create_views=False,
+        create_eval_views=True,
+        payload_column_denylist=["content_parts", "attributes", "latency_ms"],
+    )
+
+    assert plugin._ensure_schema_exists() is True
+
+    eval_sql = self._queried_sql(plugin.client)
+    assert len(eval_sql) == 2
+    for sql in eval_sql:
+      # raw_events is the only CTE that reads the table.
+      assert sql.count(f"`{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`") == 1
+      raw_events = sql.split("raw_events AS (", 1)[1].split("\n  ),", 1)[0]
+      denied_refs = [
+          line.strip().rstrip(",")
+          for line in raw_events.splitlines()
+          if (
+              "content_parts" in line
+              or "attributes" in line
+              or "latency_ms" in line
+          )
+      ]
+      assert denied_refs == [
+          (
+              "ARRAY<STRUCT<part_index INT64, mime_type STRING, text STRING,"
+              " part_attributes STRING, storage_mode STRING>>[] AS"
+              " content_parts"
+          ),
+          "CAST(NULL AS JSON) AS attributes",
+          "CAST(NULL AS JSON) AS latency_ms",
+      ]
+
+    default_sql = bigquery_agent_analytics_plugin._build_eval_turn_view_sql(
+        "p.d.t"
+    )
+    default_raw_events = default_sql.split("raw_events AS (", 1)[1]
+    assert (
+        "      content_parts,\n      attributes,\n      latency_ms,\n"
+        in default_raw_events
+    )
+
+  def test_eval_session_and_turn_sql_contract(self):
+    """The view SQL matches the AgentData and output column contract."""
+    session_sql = bigquery_agent_analytics_plugin._build_eval_session_view_sql(
+        "p.d.t"
+    )
+    turn_sql = bigquery_agent_analytics_plugin._build_eval_turn_view_sql(
+        "p.d.t"
+    )
+
+    assert session_sql.startswith(
+        "CREATE OR REPLACE VIEW `p.d.v_eval_session` AS\nWITH\n"
+    )
+    assert turn_sql.startswith(
+        "CREATE OR REPLACE VIEW `p.d.v_eval_turn` AS\nWITH\n"
+    )
+    # Downstream evaluation output schemas use status, so no view outputs one.
+    assert self._output_columns(session_sql) == self._SESSION_COLUMNS
+    assert self._output_columns(turn_sql) == self._TURN_COLUMNS
+    for sql in (session_sql, turn_sql):
+      assert sql.count("`p.d.t`") == 1
+      assert sql.count("\nSELECT\n") == 1
+      assert " AS status" not in sql
+      for key in (
+          "'agents'",
+          "'turns'",
+          "'agent_id'",
+          "'instruction'",
+          "'description'",
+          "'sub_agents'",
+          "'tools'",
+          "'function_declarations'",
+          "'parameters_json_schema'",
+          "'turn_index'",
+          "'turn_id'",
+          "'events'",
+          "'author'",
+          "'content'",
+          "'event_time'",
+          "'role'",
+          "'parts'",
+          "'text'",
+          "'function_call'",
+          "'function_response'",
+          "'transfer_to_agent'",
+          "'agent_name'",
+      ):
+        assert key in sql, key
+      # Fields outside the AgentData proto are rejected.
+      assert "model_name" not in sql
+      assert "event_timestamp" not in sql
+      assert "FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', timestamp)" in sql
+      assert (
+          "r'^(?:<(?:function|bound method) |<.+ at"
+          " 0x[0-9a-fA-F]+>|functools\\.partial\\()'"
+          in sql
+      )
+      assert "JSON_VALUE(attributes, '$.static_instruction')" in sql
+      # Trace model text comes solely from AGENT_RESPONSE so LLM_RESPONSE
+      # reasoning thoughts cannot leak into the evaluation trace.
+      assert (
+          "WHEN 'LLM_RESPONSE' THEN JSON_VALUE(content, '$.response')"
+          not in sql
+      )
+      assert (
+          "WHEN event_type = 'AGENT_RESPONSE' AND response_text IS NOT NULL"
+          in sql
+      )
+      trace_keys = [
+          line.strip().split(",", 1)[0]
+          for line in self._final_select(sql).splitlines()
+          if line.startswith("    '")
+      ]
+      assert trace_keys == ["'agents'", "'turns'"]
+    # The turn view's trace holds its one turn re-indexed to 0; the turn's
+    # position in the session is the turn_index column.
+    assert "'turn_index', 0," in turn_sql
+    assert "'turn_index', turn_index," in session_sql
+    assert "'turn_index', 0," not in session_sql
+
+    with pytest.raises(ValueError, match="dataset-qualified"):
+      bigquery_agent_analytics_plugin._build_eval_turn_view_sql("agent_events")
+
+  def test_eval_guardrail_columns(self):
+    """Guardrail columns follow the per-turn rules and roll up per session."""
+    session_sql, turn_sql = self._normalized_view_sql()
+    for sql in (session_sql, turn_sql):
+      for fragment in (
+          # Tool metrics skip transfer_to_agent; AGENT_TRANSFER is the handoff.
+          (
+              "( event_type = 'TOOL_STARTING' AND COALESCE(tool_name, '') !="
+              " 'transfer_to_agent' ) AS is_tool_call"
+          ),
+          "COUNTIF(is_tool_call) AS tool_call_count",
+          "IF(is_tool_call, NULLIF(tool_name, ''), NULL) AS invoked_tool_name",
+          (
+              "ARRAY_AGG( DISTINCT invoked_tool_name IGNORE NULLS ORDER BY"
+              " invoked_tool_name ), ARRAY<STRING>[] ) AS distinct_tools_used"
+          ),
+          # Calls in a row with the same name and args share an island.
+          "TO_JSON_STRING(JSON_QUERY(content, '$.args')) AS tool_args_json",
+          (
+              "ROW_NUMBER() OVER ( PARTITION BY session_id, invocation_id,"
+              " is_tool_call ORDER BY timestamp, event_id ) - ROW_NUMBER()"
+              " OVER ( PARTITION BY session_id, invocation_id, is_tool_call,"
+              " tool_name, tool_args_json ORDER BY timestamp, event_id ) AS"
+              " tool_call_island"
+          ),
+          (
+              "COUNT(*) OVER ( PARTITION BY session_id, invocation_id,"
+              " is_tool_call, tool_name, tool_args_json, tool_call_island )"
+          ),
+          "COALESCE(MAX(tool_call_run_length), 0) >= 3 AS has_tool_loop",
+          (
+              "COALESCE(MAX(tool_call_run_length), 0) AS"
+              " max_consecutive_identical_tool_calls"
+          ),
+          "COUNTIF(event_type = 'LLM_ERROR') AS llm_error_count",
+          "COUNTIF(event_type = 'AGENT_ERROR') AS agent_error_count",
+          "LOGICAL_OR(COALESCE(is_truncated, FALSE)) AS has_truncated_content",
+          # Token totals count terminal LLM_RESPONSE rows when the turn has
+          # any, so streamed usage is not counted twice.
+          "JSON_VALUE(content, '$.usage.prompt') AS INT64) AS usage_prompt",
+          (
+              "JSON_VALUE(content, '$.usage.completion') AS INT64) AS"
+              " usage_completion"
+          ),
+          (
+              "( event_type = 'LLM_RESPONSE' AND (is_final_llm_response OR NOT"
+              " turn_has_final_llm_response) ) AS is_usage_row"
+          ),
+          (
+              "COALESCE(SUM(IF(is_usage_row, usage_prompt, NULL)), 0) AS"
+              " total_prompt_tokens"
+          ),
+          (
+              "COALESCE(SUM(IF(is_usage_row, usage_completion, NULL)), 0) AS"
+              " total_completion_tokens"
+          ),
+          (
+              "COALESCE(SUM(IF(is_usage_row, usage_total, NULL)), 0) AS"
+              " total_tokens"
+          ),
+      ):
+        assert fragment in sql, fragment
+    for fragment in (
+        "SUM(llm_error_count) AS llm_error_count",
+        "SUM(agent_error_count) AS agent_error_count",
+        "LOGICAL_OR(has_truncated_content) AS has_truncated_content",
+        "LOGICAL_OR(has_tool_loop) AS has_tool_loop",
+        (
+            "MAX(max_consecutive_identical_tool_calls) AS"
+            " max_consecutive_identical_tool_calls"
+        ),
+        "SUM(total_prompt_tokens) AS total_prompt_tokens",
+        "SUM(total_completion_tokens) AS total_completion_tokens",
+        # Turns can share tools, so the session de-duplicates them again.
+        "ARRAY_CONCAT_AGG(distinct_tools_used) AS tools_used_by_turn",
+        (
+            "ARRAY( SELECT DISTINCT tool FROM UNNEST(s.tools_used_by_turn) AS"
+            " tool ORDER BY tool ) AS distinct_tools_used"
+        ),
+    ):
+      assert fragment in session_sql, fragment
+
+    # has_error, is_paused and is_complete, evaluated over sample turns.
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    hello = event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"})
+    reply = event("inv-1", 5, "AGENT_RESPONSE", {"response": "text: 'Done.'"})
+    completed = event("inv-1", 9, "INVOCATION_COMPLETED")
+
+    def turn(*events):
+      """Returns the turn_rollup row of a one-turn session."""
+      (row,) = turn_view.run([hello, *events], cte="turn_rollup")
+      return row
+
+    def paused_and_complete(*events):
+      row = turn(*events)
+      return row["is_paused"], row["is_complete"]
+
+    assert paused_and_complete(reply, completed) == (False, True)
+    # A turn still running is neither paused nor complete, nor is one that
+    # ended without a reply or whose reply has no text.
+    assert paused_and_complete(reply) == (False, False)
+    assert paused_and_complete(completed) == (False, False)
+    tool_reply = event(
+        "inv-1", 5, "AGENT_RESPONSE", {"response": "text: 'On it.' | call: f"}
+    )
+    assert paused_and_complete(tool_reply, completed) == (False, False)
+    # It is paused only if it also logged a pause or HITL request event; a
+    # pause followed by a reply, or a turn still running, is not paused.
+    for pause_event_type in (
+        "TOOL_PAUSED",
+        "HITL_CREDENTIAL_REQUEST",
+        "HITL_CONFIRMATION_REQUEST",
+        "HITL_INPUT_REQUEST",
+    ):
+      pause = event("inv-1", 3, pause_event_type, {"tool": "f", "args": {}})
+      assert paused_and_complete(pause, completed) == (True, False)
+      assert paused_and_complete(pause, reply, completed) == (False, True)
+      assert paused_and_complete(pause) == (False, False)
+
+    def has_error(event_type, **columns):
+      """Returns has_error of a finished turn with one more event."""
+      row = turn(event("inv-1", 3, event_type, **columns), reply, completed)
+      return row["has_error"]
+
+    assert has_error("TOOL_COMPLETED") is False
+    assert has_error("TOOL_ERROR", status="ERROR") is True
+    assert (
+        has_error("TOOL_COMPLETED", status="FAILED", error_message="x") is True
+    )
+    assert has_error("AGENT_COMPLETED", status=None, error_message="x") is True
+    # An error_message on an OK row, such as a formatter failure note, is not
+    # an error, except on LLM_RESPONSE, which logs a model error with OK.
+    assert has_error("TOOL_COMPLETED", error_message="note") is False
+    assert has_error("LLM_RESPONSE", error_message="SAFETY") is True
+    # A session has an error when any of its turns has one.
+    rows = [
+        hello,
+        reply,
+        completed,
+        event("inv-2", 10, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"}),
+        event("inv-2", 11, "TOOL_ERROR", status="ERROR"),
+        event("inv-2", 19, "INVOCATION_COMPLETED"),
+    ]
+    assert {
+        row["invocation_id"]: row["has_error"] for row in turn_view.run(rows)
+    } == {"inv-1": False, "inv-2": True}
+    assert [row["has_error"] for row in session_view.run(rows)] == [True]
+
+  def test_eval_ready_requires_user_text(self):
+    """A turn whose user input has no text is not ready on its own.
+
+    Image-only input and function_response resumptions have no user text.
+    """
+    session_view, turn_view = self._eval_views()
+
+    def part(index, text, mime_type="text/plain", **fields):
+      """Returns a content_parts entry as the plugin's parser writes it."""
+      return {
+          "part_index": index,
+          "mime_type": mime_type,
+          "text": text,
+          "part_attributes": "{}",
+          "storage_mode": "INLINE",
+          **fields,
+      }
+
+    def function_response(tool):
+      """Returns the content and content_parts of a function_response."""
+      summary = f"Function response: {tool}"
+      attributes = {"function_response": {"name": tool, "response": {}}}
+      return {"text_summary": summary}, [
+          part(
+              0,
+              summary,
+              "application/json",
+              part_attributes=json.dumps(attributes),
+          )
+      ]
+
+    def user_message(content, *parts):
+      """Returns message_text and is_function_response of a user message."""
+      row = self._event(
+          "inv-1",
+          0,
+          "USER_MESSAGE_RECEIVED",
+          content,
+          content_parts=list(parts),
+      )
+      (typed,) = turn_view.run([row], cte="typed_events")
+      return typed["message_text"], typed["is_function_response"]
+
+    # Inline text parts are joined in part order. Other parts are skipped,
+    # including code parts, which are text/plain with part_attributes.
+    code_attributes = {"executable_code": {"code": "print(1)"}}
+    assert user_message(
+        {"text_summary": "Hello | world"},
+        part(3, "world"),
+        part(2, "print(1)", part_attributes=json.dumps(code_attributes)),
+        part(1, "[BINARY DATA]", "image/png"),
+        part(0, "Hello"),
+    ) == ("Hello\nworld", False)
+    # Image-only input and text offloaded to GCS leave no user text.
+    assert user_message(
+        {"text_summary": ""}, part(0, "[BINARY DATA]", "image/png")
+    ) == (None, False)
+    assert user_message(
+        {"text_summary": ""},
+        part(0, "Long text... [OFFLOADED]", storage_mode="GCS_REFERENCE"),
+    ) == (None, False)
+    # A function_response is not user text, with or without content_parts.
+    resume_content, resume_parts = function_response("lookup")
+    assert user_message(resume_content, *resume_parts) == (None, True)
+    assert user_message(resume_content) == (None, True)
+    # Without content_parts, the text summary or a JSON string is the text.
+    assert user_message({"text_summary": "Hello"}) == ("Hello", False)
+    assert user_message("Hello") == ("Hello", False)
+    assert user_message({"text_summary": ""}) == (None, False)
+
+    text_input = ({"text_summary": "Hello"}, [part(0, "Hello")])
+    image_input = (
+        {"text_summary": ""},
+        [part(0, "[BINARY DATA]", "image/png")],
+    )
+    reply = ("AGENT_RESPONSE", {"response": "text: 'Done.'"})
+    completed = ("INVOCATION_COMPLETED", None)
+
+    def turn(session_id, invocation_id, second, user_input, *events):
+      """Returns the rows of a user message followed by ``events``."""
+      content, parts = user_input
+      rows = [
+          self._event(
+              invocation_id,
+              second,
+              "USER_MESSAGE_RECEIVED",
+              content,
+              session_id=session_id,
+              content_parts=parts,
+          )
+      ]
+      for offset, (event_type, event_content) in enumerate(events, 1):
+        rows.append(
+            self._event(
+                invocation_id,
+                second + offset,
+                event_type,
+                event_content,
+                session_id=session_id,
+            )
+        )
+      return rows
+
+    confirm = "adk_request_confirmation"
+    ask = "adk_request_input"
+    rows = [
+        # Paused for a HITL confirmation, then for HITL input after resuming,
+        # then resumed to a reply. The middle turn's only trace events are
+        # the HITL completion and the next HITL request.
+        *turn(
+            "paused",
+            "inv-1",
+            0,
+            text_input,
+            ("TOOL_STARTING", {"tool": "delete", "args": {}}),
+            ("TOOL_COMPLETED", {"tool": "delete", "result": {"error": "?"}}),
+            ("HITL_CONFIRMATION_REQUEST", {"tool": confirm, "args": {}}),
+            ("TOOL_PAUSED", {"tool": confirm, "args": {}}),
+            completed,
+        ),
+        *turn(
+            "paused",
+            "inv-2",
+            10,
+            function_response(confirm),
+            (
+                "HITL_CONFIRMATION_REQUEST_COMPLETED",
+                {"tool": confirm, "result": {"confirmed": True}},
+            ),
+            ("HITL_INPUT_REQUEST", {"tool": ask, "args": {}}),
+            ("TOOL_PAUSED", {"tool": ask, "args": {}}),
+            completed,
+        ),
+        *turn(
+            "paused",
+            "inv-3",
+            20,
+            function_response(ask),
+            ("HITL_INPUT_REQUEST_COMPLETED", {"tool": ask, "result": "yes"}),
+            ("TOOL_STARTING", {"tool": "delete", "args": {}}),
+            ("TOOL_COMPLETED", {"tool": "delete", "result": {"ok": True}}),
+            reply,
+            completed,
+        ),
+        # The second turn ended without a reply.
+        *turn("no_reply", "inv-1", 0, text_input, reply, completed),
+        *turn("no_reply", "inv-2", 10, text_input, completed),
+        *turn("image_only", "inv-1", 0, image_input, reply, completed),
+        # A function_response that resumes no paused turn.
+        *turn("not_resumed", "inv-1", 0, text_input, reply, completed),
+        *turn(
+            "not_resumed",
+            "inv-2",
+            10,
+            function_response("lookup"),
+            ("TOOL_COMPLETED", {"tool": "lookup", "result": {}}),
+            reply,
+            completed,
+        ),
+        # A paused turn that the next turn does not resume.
+        *turn(
+            "abandoned",
+            "inv-1",
+            0,
+            text_input,
+            ("TOOL_PAUSED", {"tool": "lookup", "args": {}}),
+            completed,
+        ),
+        *turn("abandoned", "inv-2", 10, text_input, reply, completed),
+    ]
+    rows.reverse()  # The views' ORDER BY clauses must order the rows.
+
+    # (has_user_message, has_function_response, eval_ready,
+    #  session_turn_eval_ready) of each turn.
+    expected_turns = {
+        ("paused", "inv-1"): (True, False, False, True),
+        ("paused", "inv-2"): (False, True, False, True),
+        ("paused", "inv-3"): (False, True, False, True),
+        ("no_reply", "inv-1"): (True, False, True, True),
+        ("no_reply", "inv-2"): (True, False, False, False),
+        ("image_only", "inv-1"): (False, False, False, False),
+        ("not_resumed", "inv-1"): (True, False, True, True),
+        ("not_resumed", "inv-2"): (False, True, False, False),
+        ("abandoned", "inv-1"): (True, False, False, False),
+        ("abandoned", "inv-2"): (True, False, True, True),
+    }
+    assert {
+        (row["session_id"], row["invocation_id"]): (
+            row["has_user_message"],
+            row["has_function_response"],
+            row["eval_ready"],
+            row["session_turn_eval_ready"],
+        )
+        for row in turn_view.run(rows, cte="turns")
+    } == expected_turns
+    assert {
+        (row["session_id"], row["invocation_id"]): row["eval_ready"]
+        for row in turn_view.run(rows)
+    } == {key: flags[2] for key, flags in expected_turns.items()}
+    # A session is ready when every turn is ready, counting a paused turn and
+    # the function_response turn that resumes it as ready.
+    assert {
+        row["session_id"]: row["eval_ready"] for row in session_view.run(rows)
+    } == {
+        "paused": True,
+        "no_reply": False,
+        "image_only": False,
+        "not_resumed": False,
+        "abandoned": False,
+    }
+
+  def test_eval_response_text_patterns_unwrap_format_content(self):
+    """The view unwraps _format_content text and stays in sync with it."""
+    _, turn_view = self._eval_views()
+
+    # Guard against drift in _format_content's prefixes or delimiter without
+    # updating response_events in _EVAL_VIEW_CTES_SQL.
+    format_content_src = inspect.getsource(
+        bigquery_agent_analytics_plugin._format_content
+    )
+    for expected_literal in (
+        'return "None", False',
+        "f\"text: '{sanitized_text}'\"",
+        'f"call: {p.function_call.name}"',
+        'f"resp: {p.function_response.name}"',
+        'f"Executable code ({lang}): {sanitized_code}"',
+        'f"Code execution result ({outcome}): {sanitized_output}"',
+        'parts.append("other")',
+        '" | ".join(parts)',
+    ):
+      assert expected_literal in format_content_src, expected_literal
+
+    def response_text_of(formatted_response):
+      return turn_view.evaluate(
+          "response_text",
+          {
+              "event_type": "AGENT_RESPONSE",
+              "formatted_response": formatted_response,
+          },
+      )
+
+    def response_text(*parts):
+      formatted, _ = bigquery_agent_analytics_plugin._format_content(
+          types.Content(role="model", parts=list(parts))
+      )
+      return response_text_of(formatted)
+
+    assert response_text(types.Part(text="It's done.")) == "It's done."
+    assert (
+        response_text(types.Part(text="Hello"), types.Part(text="a\nb"))
+        == "Hello\na\nb"
+    )
+    # Any other _format_content output has no response text: no parts, or a
+    # non-text part alone or before, between or after text parts.
+    image = types.Part(
+        inline_data=types.Blob(mime_type="image/png", data=b"\x89PNG")
+    )
+    assert response_text() is None
+    for non_text_part in (
+        types.Part(function_call=types.FunctionCall(name="lookup", args={})),
+        types.Part(
+            function_response=types.FunctionResponse(
+                name="lookup", response={"ok": True}
+            )
+        ),
+        types.Part(
+            executable_code=types.ExecutableCode(
+                language=types.Language.PYTHON, code="print(1)"
+            )
+        ),
+        types.Part(
+            code_execution_result=types.CodeExecutionResult(
+                outcome=types.Outcome.OUTCOME_OK, output="1"
+            )
+        ),
+        image,
+    ):
+      assert response_text(non_text_part) is None
+      assert response_text(types.Part(text="Before:"), non_text_part) is None
+      assert response_text(non_text_part, types.Part(text="After")) is None
+    assert (
+        response_text(types.Part(text="a"), image, types.Part(text="b")) is None
+    )
+    # A response in another shape, such as the JSON args that a
+    # final_response_tool_names tool logs, is kept as is.
+    formatted_args = turn_view.evaluate(
+        "formatted_response",
+        {
+            "event_type": "AGENT_RESPONSE",
+            "content": {"response": {"answer": "42"}},
+        },
+    )
+    assert formatted_args == '{"answer":"42"}'
+    assert response_text_of(formatted_args) == formatted_args
+    assert response_text_of("Order 42 has shipped.") == "Order 42 has shipped."
+    assert response_text_of("") is None
+    assert response_text_of(None) is None
+
+  @pytest.mark.asyncio
+  async def test_eval_view_trace_schema_matches_agent_data_proto(
+      self, bq_plugin_inst
+  ):
+    """The views turn the rows that plugin callbacks log into AgentData."""
+    try:
+      from vertexai._genai.types import evals as evals_types  # pylint: disable=g-import-not-at-top
+    except ImportError:
+      evals_path = (
+          pathlib.Path(__file__).resolve().parents[4]
+          / "cloud/aiplatform/vertexai/_genai/types/evals.py"
+      )
+      if not evals_path.is_file():
+        pytest.skip("vertexai._genai.types.evals is not available")
+      spec = importlib.util.spec_from_file_location(
+          "_vertexai_evals_types", evals_path
+      )
+      assert spec is not None and spec.loader is not None
+      evals_types = importlib.util.module_from_spec(spec)
+      sys.modules[spec.name] = evals_types
+      spec.loader.exec_module(evals_types)
+
+    def extract_json_object_key_tuples(sql: str) -> set[tuple[str, ...]]:
+      marker = "JSON_OBJECT("
+      key_tuples: set[tuple[str, ...]] = set()
+      start = 0
+      while True:
+        idx = sql.find(marker, start)
+        if idx == -1:
+          break
+        pos = idx + len(marker)
+        depth = 1
+        quote: str | None = None
+        args: list[str] = []
+        arg_start = pos
+        while pos < len(sql) and depth > 0:
+          ch = sql[pos]
+          if quote is not None:
+            if ch == quote and sql[pos - 1] != "\\":
+              quote = None
+          elif ch in ("'", '"'):
+            quote = ch
+          elif ch == "(":
+            depth += 1
+          elif ch == ")":
+            depth -= 1
+            if depth == 0:
+              args.append(sql[arg_start:pos].strip())
+              break
+          elif ch == "," and depth == 1:
+            args.append(sql[arg_start:pos].strip())
+            arg_start = pos + 1
+          pos += 1
+        start = idx + len(marker)
+        if not args or not args[0] or not args[0].startswith("'"):
+          continue
+        keys = tuple(arg.strip().strip("'") for arg in args[0::2])
+        key_tuples.add(keys)
+      return key_tuples
+
+    expected_schema_models = {
+        ("agents", "turns"): evals_types.AgentData,
+        ("turn_index", "turn_id", "events"): evals_types.ConversationTurn,
+        (
+            "agent_id",
+            "instruction",
+            "description",
+            "sub_agents",
+            "tools",
+        ): evals_types.AgentConfig,
+        ("author", "content", "event_time"): evals_types.AgentEvent,
+        ("function_declarations",): types.Tool,
+        (
+            "name",
+            "description",
+            "parameters_json_schema",
+        ): types.FunctionDeclaration,
+        ("name", "description"): types.FunctionDeclaration,
+        ("role", "parts"): types.Content,
+        ("text",): types.Part,
+        ("function_call",): types.Part,
+        ("function_response",): types.Part,
+        ("name", "args"): types.FunctionCall,
+        ("name", "response"): types.FunctionResponse,
+    }
+    # Free-form payloads inside FunctionCall.args and FunctionResponse.response.
+    freeform_payload_key_tuples = {
+        ("agent_name",),
+        ("result",),
+    }
+
+    for sql in (
+        bigquery_agent_analytics_plugin._build_eval_session_view_sql("p.d.t"),
+        bigquery_agent_analytics_plugin._build_eval_turn_view_sql("p.d.t"),
+    ):
+      found_key_tuples = extract_json_object_key_tuples(sql)
+      assert found_key_tuples == (
+          set(expected_schema_models) | freeform_payload_key_tuples
+      )
+      for key_tuple, model_cls in expected_schema_models.items():
+        assert set(key_tuple) <= set(model_cls.model_fields), (
+            f"{key_tuple} contains fields not in {model_cls.__name__}:"
+            f" {set(model_cls.model_fields)}"
+        )
+
+    # Log a session through the plugin callbacks and capture the rows that
+    # the plugin appends to the write stream.
+    plugin = bq_plugin_inst
+    captured_rows = []
+    loop_state = mock.MagicMock()
+    loop_state.batch_processor.append = mock.AsyncMock(
+        side_effect=captured_rows.append
+    )
+
+    def lookup_order(order_id: str) -> dict[str, str]:
+      """Looks up an order by ID."""
+      return {"order_id": order_id}
+
+    def cancel_order(order_id: str) -> dict[str, str]:
+      """Cancels an order."""
+      return {"order_id": order_id}
+
+    lookup_tool = function_tool.FunctionTool(lookup_order)
+    cancel_tool = function_tool.FunctionTool(cancel_order)
+    # Unlike the framework's own HITL calls, request_input is a tool, so it
+    # also logs TOOL_STARTING and TOOL_COMPLETED (with no result) when called.
+    request_input = tools_lib.request_input
+    transfer_tool = transfer_to_agent_tool.TransferToAgentTool(["helper_agent"])
+    root_tools = (lookup_tool, cancel_tool, request_input, transfer_tool)
+    helper_agent = llm_agent.LlmAgent(
+        name="helper_agent", model="gemini-2.5-flash"
+    )
+    root_agent = llm_agent.LlmAgent(
+        name="root_agent",
+        model="gemini-2.5-flash",
+        instruction="Help the user.",
+        description="Root coordinator",
+        tools=[lookup_tool, cancel_tool, request_input],
+        sub_agents=[helper_agent],
+    )
+    session = session_lib.Session(
+        id="session-1", app_name="test_app", user_id="user-1"
+    )
+
+    def context(agent, invocation_id):
+      return InvocationContext(
+          agent=agent,
+          session=session,
+          invocation_id=invocation_id,
+          session_service=mock.create_autospec(
+              base_session_service_lib.BaseSessionService,
+              instance=True,
+              spec_set=True,
+          ),
+          plugin_manager=mock.create_autospec(
+              plugin_manager_lib.PluginManager, instance=True, spec_set=True
+          ),
+      )
+
+    def function_call(name, args, **fields):
+      return types.Part(
+          function_call=types.FunctionCall(name=name, args=args, **fields)
+      )
+
+    async def start_turn(invocation_id, *parts):
+      """Logs a user message and starts the root agent on it."""
+      ctx = context(root_agent, invocation_id)
+      await plugin.on_user_message_callback(
+          invocation_context=ctx,
+          user_message=types.Content(role="user", parts=list(parts)),
+      )
+      await plugin.before_run_callback(invocation_context=ctx)
+      await plugin.before_agent_callback(
+          agent=root_agent, callback_context=CallbackContext(ctx)
+      )
+      return ctx
+
+    async def end_turn(*contexts):
+      """Ends the agents of ``contexts``, innermost first, and the run."""
+      for ctx in contexts:
+        await plugin.after_agent_callback(
+            agent=ctx.agent, callback_context=CallbackContext(ctx)
+        )
+      await plugin.after_run_callback(invocation_context=contexts[-1])
+
+    async def call_model(ctx, *parts, tools=(), **event_fields):
+      """Logs a model call and the event of its response."""
+      callback_context = CallbackContext(ctx)
+      llm_request = llm_request_lib.LlmRequest(model="gemini-2.5-flash")
+      llm_request.append_tools(list(tools))
+      await plugin.before_model_callback(
+          callback_context=callback_context, llm_request=llm_request
+      )
+      response = types.Content(role="model", parts=list(parts))
+      await plugin.after_model_callback(
+          callback_context=callback_context,
+          llm_response=llm_response_lib.LlmResponse(
+              content=response, finish_reason=types.FinishReason.STOP
+          ),
+      )
+      await on_event(ctx, response, **event_fields)
+
+    async def call_tool(ctx, tool, args, result):
+      tool_context = tool_context_lib.ToolContext(invocation_context=ctx)
+      await plugin.before_tool_callback(
+          tool=tool, tool_args=args, tool_context=tool_context
+      )
+      await plugin.after_tool_callback(
+          tool=tool, tool_args=args, tool_context=tool_context, result=result
+      )
+
+    async def on_event(ctx, content, **fields):
+      await plugin.on_event_callback(
+          invocation_context=ctx,
+          event=event_lib.Event(
+              author=ctx.agent.name,
+              invocation_id=ctx.invocation_id,
+              content=content,
+              **fields,
+          ),
+      )
+
+    with mock.patch.object(
+        plugin, "_get_loop_state", mock.AsyncMock(return_value=loop_state)
+    ):
+      # A tool call, then a transfer to the helper agent, which replies after
+      # a thought that the trace must not show.
+      ctx = await start_turn("inv-1", types.Part(text="Where is order 42?"))
+      await call_model(
+          ctx,
+          function_call("lookup_order", {"order_id": "42"}),
+          tools=root_tools,
+      )
+      await call_tool(ctx, lookup_tool, {"order_id": "42"}, "shipped")
+      await call_model(
+          ctx,
+          function_call("transfer_to_agent", {"agent_name": "helper_agent"}),
+          tools=root_tools,
+      )
+      await call_tool(ctx, transfer_tool, {"agent_name": "helper_agent"}, None)
+      await on_event(
+          ctx,
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name="transfer_to_agent", response={}
+                      )
+                  )
+              ],
+          ),
+          actions=event_actions_lib.EventActions(
+              transfer_to_agent="helper_agent"
+          ),
+      )
+      helper_ctx = context(helper_agent, "inv-1")
+      await plugin.before_agent_callback(
+          agent=helper_agent, callback_context=CallbackContext(helper_ctx)
+      )
+      await call_model(
+          helper_ctx,
+          types.Part(text="Checking the carrier.", thought=True),
+          types.Part(text="Order 42 has shipped."),
+      )
+      await end_turn(helper_ctx, ctx)
+
+      # cancel_order needs a HITL confirmation, so the turn pauses.
+      ctx = await start_turn("inv-2", types.Part(text="Cancel it."))
+      await call_model(
+          ctx,
+          function_call("cancel_order", {"order_id": "42"}),
+          tools=root_tools,
+      )
+      await call_tool(
+          ctx, cancel_tool, {"order_id": "42"}, {"error": "Needs confirmation."}
+      )
+      await on_event(
+          ctx,
+          types.Content(
+              role="model",
+              parts=[
+                  function_call(
+                      "adk_request_confirmation",
+                      {"originalFunctionCall": {"name": "cancel_order"}},
+                      id="confirm-1",
+                  )
+              ],
+          ),
+          long_running_tool_ids={"confirm-1"},
+      )
+      await end_turn(ctx)
+
+      # The user's confirmation resumes the turn, and the agent replies.
+      ctx = await start_turn(
+          "inv-3",
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="confirm-1",
+                  name="adk_request_confirmation",
+                  response={"confirmed": True},
+              )
+          ),
+      )
+      await call_tool(ctx, cancel_tool, {"order_id": "42"}, {"cancelled": True})
+      await call_model(
+          ctx, types.Part(text="Order 42 is cancelled."), tools=root_tools
+      )
+      await end_turn(ctx)
+
+      # request_input pauses the turn for HITL input: its model event logs
+      # HITL_INPUT_REQUEST, then the tool itself runs and returns no result.
+      ask_args = {"message": "Which category?"}
+      ctx = await start_turn("inv-4", types.Part(text="File a ticket."))
+      await call_model(
+          ctx,
+          function_call("adk_request_input", ask_args, id="input-1"),
+          tools=root_tools,
+          long_running_tool_ids={"input-1"},
+      )
+      await call_tool(ctx, request_input, ask_args, None)
+      await end_turn(ctx)
+
+      # The user's input resumes the turn, and the agent replies.
+      ctx = await start_turn(
+          "inv-5",
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="input-1",
+                  name="adk_request_input",
+                  response={"result": "database"},
+              )
+          ),
+      )
+      await call_model(
+          ctx, types.Part(text="Filed a database ticket."), tools=root_tools
+      )
+      await end_turn(ctx)
+
+    # Mirror the table: attributes is a JSON column, and distinct timestamps
+    # in logging order stand in for the wall clock. The rows are reversed,
+    # so the views' ORDER BY clauses must order them.
+    start = datetime.datetime(2026, 4, 19, 12, 0, tzinfo=datetime.timezone.utc)
+    table_rows = [
+        {
+            **row,
+            "timestamp": start + datetime.timedelta(seconds=index),
+            "attributes": json.loads(row["attributes"]),
+        }
+        for index, row in enumerate(captured_rows)
+    ][::-1]
+
+    session_view, turn_view = self._eval_views()
+    (session_row,) = session_view.run(table_rows)
+    turn_rows = {row["invocation_id"]: row for row in turn_view.run(table_rows)}
+    session_trace = session_row["trace"]
+    for view_trace in (
+        session_trace,
+        *(r["trace"] for r in turn_rows.values()),
+    ):
+      evals_types.AgentData.model_validate(view_trace)
+      for agent_config in view_trace["agents"].values():
+        for tool in agent_config["tools"]:
+          types.Tool.model_validate(tool)
+      for turn in view_trace["turns"]:
+        for agent_event in turn["events"]:
+          types.Content.model_validate(agent_event["content"])
+
+    turns = session_trace["turns"]
+    assert [(turn["turn_index"], turn["turn_id"]) for turn in turns] == [
+        (0, "inv-1"),
+        (1, "inv-2"),
+        (2, "inv-3"),
+        (3, "inv-4"),
+        (4, "inv-5"),
+    ]
+    for turn in turns:
+      # The turn view's trace holds its one turn, re-indexed to 0.
+      assert turn_rows[turn["turn_id"]]["trace"]["turns"] == [
+          {**turn, "turn_index": 0}
+      ]
+
+    def describe(agent_event):
+      (part,) = agent_event["content"]["parts"]
+      ((kind, value),) = part.items()
+      return (
+          agent_event["author"],
+          agent_event["content"]["role"],
+          kind,
+          value if kind == "text" else value["name"],
+      )
+
+    assert [describe(agent_event) for agent_event in turns[0]["events"]] == [
+        ("user", "user", "text", "Where is order 42?"),
+        ("root_agent", "model", "function_call", "lookup_order"),
+        ("root_agent", "user", "function_response", "lookup_order"),
+        ("root_agent", "model", "function_call", "transfer_to_agent"),
+        ("helper_agent", "model", "text", "Order 42 has shipped."),
+    ]
+    assert [describe(agent_event) for agent_event in turns[1]["events"]] == [
+        ("user", "user", "text", "Cancel it."),
+        ("root_agent", "model", "function_call", "cancel_order"),
+        ("root_agent", "user", "function_response", "cancel_order"),
+        ("root_agent", "model", "function_call", "adk_request_confirmation"),
+    ]
+    assert [describe(agent_event) for agent_event in turns[2]["events"]] == [
+        ("root_agent", "user", "function_response", "adk_request_confirmation"),
+        ("root_agent", "model", "function_call", "cancel_order"),
+        ("root_agent", "user", "function_response", "cancel_order"),
+        ("root_agent", "model", "text", "Order 42 is cancelled."),
+    ]
+    # request_input's own TOOL_STARTING and TOOL_COMPLETED rows are skipped:
+    # the HITL rows carry its one function_call and the function_response
+    # that resumes it.
+    assert [describe(agent_event) for agent_event in turns[3]["events"]] == [
+        ("user", "user", "text", "File a ticket."),
+        ("root_agent", "model", "function_call", "adk_request_input"),
+    ]
+    assert [describe(agent_event) for agent_event in turns[4]["events"]] == [
+        ("root_agent", "user", "function_response", "adk_request_input"),
+        ("root_agent", "model", "text", "Filed a database ticket."),
+    ]
+
+    def payload(turn_index, event_index):
+      """Returns the function_call or function_response of an event."""
+      (part,) = turns[turn_index]["events"][event_index]["content"]["parts"]
+      ((_, value),) = part.items()
+      return value
+
+    first_turn_events = turns[0]["events"]
+    assert first_turn_events[0]["event_time"] == "2026-04-19T12:00:00.000000Z"
+    assert payload(0, 1)["args"] == {"order_id": "42"}
+    assert payload(0, 2)["response"] == {"result": "shipped"}
+    assert payload(0, 3)["args"] == {"agent_name": "helper_agent"}
+    assert payload(1, 3)["args"] == {
+        "originalFunctionCall": {"name": "cancel_order"}
+    }
+    assert payload(2, 0)["response"] == {"confirmed": True}
+    assert payload(3, 1)["args"] == {"message": "Which category?"}
+    assert payload(4, 0)["response"] == {"result": "database"}
+
+    agents = session_trace["agents"]
+    assert sorted(agents) == ["helper_agent", "root_agent"]
+    assert agents["helper_agent"] == {
+        "agent_id": "helper_agent",
+        "instruction": "",
+        "description": "",
+        "sub_agents": [],
+        "tools": [],
+    }
+    root_config = agents["root_agent"]
+    assert root_config["instruction"] == "Help the user."
+    assert root_config["description"] == "Root coordinator"
+    assert root_config["sub_agents"] == ["helper_agent"]
+    (root_tool,) = root_config["tools"]
+    declarations = root_tool["function_declarations"]
+    assert [declaration["name"] for declaration in declarations] == [
+        "lookup_order",
+        "cancel_order",
+        "adk_request_input",
+        "transfer_to_agent",
+    ]
+    assert declarations[0]["description"] == "Looks up an order by ID."
+    assert "order_id" in json.dumps(declarations[0]["parameters_json_schema"])
+    # The turn view's agents are those of its own turn.
+    assert sorted(turn_rows["inv-1"]["trace"]["agents"]) == sorted(agents)
+    assert sorted(turn_rows["inv-3"]["trace"]["agents"]) == ["root_agent"]
+
+    # Each paused turn and the turn that resumes it make the session ready,
+    # though neither is ready on its own.
+    assert session_row["eval_ready"] is True
+    assert {
+        invocation_id: row["eval_ready"]
+        for invocation_id, row in turn_rows.items()
+    } == {
+        "inv-1": True,
+        "inv-2": False,
+        "inv-3": False,
+        "inv-4": False,
+        "inv-5": False,
+    }
+    # request_input is a tool the model called, so tool metrics count it.
+    assert session_row["tool_call_count"] == 4
+    assert session_row["distinct_tools_used"] == [
+        "adk_request_input",
+        "cancel_order",
+        "lookup_order",
+    ]
+
+    with pytest.raises(ValidationError):
+      evals_types.AgentConfig.model_validate({
+          **root_config,
+          "model_name": "gemini-2.5-pro",
+      })
+    with pytest.raises(ValidationError):
+      evals_types.AgentEvent.model_validate({
+          **first_turn_events[0],
+          "event_timestamp": "2026-04-19T12:00:00Z",
+      })
 
 
 # ==============================================================================

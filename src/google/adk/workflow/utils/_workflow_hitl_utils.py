@@ -45,6 +45,11 @@ def confirmation_interrupt_id(node_path: str) -> str:
   return f'wf_tool_confirmation:{node_path}'
 
 
+def auth_interrupt_id(node_path: str) -> str:
+  """Returns the interrupt id of a node run's auth request."""
+  return f'wf_auth:{node_path}'
+
+
 def parse_tool_confirmation(response: Any) -> ToolConfirmation:
   """Parses the user's answer to a tool or node confirmation request.
 
@@ -69,24 +74,44 @@ def parse_tool_confirmation(response: Any) -> ToolConfirmation:
     ) from e
 
 
-def resumed_tool_confirmation(ctx: Context) -> ToolConfirmation | None:
-  """Returns the caller's answer to this node run's confirmation request.
+def apply_confirmation_resume(ctx: Context) -> bool:
+  """Applies resumed tool confirmation input onto ctx if present.
 
-  None when the run is not resuming from a confirmation request. An answer
-  from a caller the serving layer could not authenticate comes back as a
-  rejection, the same decision the agent pipeline makes for a confirmation
-  carried in a user event. It is made here, before the answer is stored on
-  the context, because tools such as `ExecuteBashTool` read
+  An answer from a caller the serving layer could not authenticate is stored
+  as a rejection, the same decision the agent pipeline makes for a
+  confirmation carried in a user event. It is made here, before the answer is
+  stored on the context, because tools such as `ExecuteBashTool` read
   `tool_confirmation` themselves rather than through
   `apply_confirmation_gate`.
   """
   response = ctx.resume_inputs.get(confirmation_interrupt_id(ctx.node_path))
   if response is None:
-    return None
+    return False
   confirmation = parse_tool_confirmation(response)
   if not caller_may_confirm(ctx.get_invocation_context().caller_principal):
     confirmation = confirmation.model_copy(update={'confirmed': False})
-  return confirmation
+  ctx.tool_confirmation = confirmation
+  return True
+
+
+def create_confirmation_request_input(
+    *,
+    node_path: str,
+    tool_name: str,
+    args: dict[str, Any],
+    hint: str | None = None,
+    confirmation_payload: Any = None,
+) -> RequestInput:
+  """Builds a RequestInput asking to approve or reject a tool call."""
+  payload: dict[str, Any] = {'tool_name': tool_name, 'args': args}
+  if confirmation_payload is not None:
+    payload['confirmation_payload'] = confirmation_payload
+  return RequestInput(
+      interrupt_id=confirmation_interrupt_id(node_path),
+      message=hint or f'Please approve or reject the tool call {tool_name}().',
+      payload=payload,
+      response_schema=ToolConfirmation,
+  )
 
 
 def create_request_input_event(request_input: RequestInput) -> Event:
