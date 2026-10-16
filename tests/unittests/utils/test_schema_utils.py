@@ -352,6 +352,28 @@ class TestValidateNodeData:
     )
     assert result == {"role": "user", "parts": []}
 
+  @pytest.mark.parametrize(
+      "schema",
+      [
+          Annotated[types.Content, "content"],
+          Annotated[types.Content, "content"] | None,
+      ],
+  )
+  def test_annotated_content_schema_preserves_content(self, schema):
+    """Content annotations keep the message instead of parsing its text."""
+    data = types.Content(role="user", parts=[types.Part(text='{"value": 42}')])
+
+    assert validate_node_data(schema, data) == data.model_dump(
+        exclude_none=True
+    )
+
+  def test_annotated_string_schema_enforces_constraints(self):
+    """Text conversion still validates the metadata on the string schema."""
+    data = types.Content(parts=[types.Part(text="1")])
+
+    with pytest.raises(ValidationError, match="at least 2 characters"):
+      validate_node_data(Annotated[str, Field(min_length=2)], data)
+
   def test_plain_basemodel_schema_validates_raw_dict(self):
     """Validates raw dict data against BaseModel schema."""
     result = validate_node_data(SampleModel, {"name": "test", "value": 42})

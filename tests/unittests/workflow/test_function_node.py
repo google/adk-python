@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 import copy
 import threading
 import time
+from typing import Annotated
 from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
@@ -46,6 +47,7 @@ from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
 from pydantic import field_validator
 import pytest
 
@@ -671,6 +673,31 @@ async def test_function_node_yield_event_with_content(
   assert events[0].output is None
   assert events[0].content is not None
   assert events[0].content.parts[0].text == 'some content'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('text', ['123', 'true', '"quoted"'])
+async def test_annotated_string_output_preserves_json_looking_text(text):
+  """A string output schema preserves text while enforcing its metadata."""
+  received_inputs = []
+
+  def produce_content():
+    return Event(output=types.Content(parts=[types.Part(text=text)]))
+
+  def record_input(node_input: str) -> str:
+    received_inputs.append(node_input)
+    return node_input
+
+  producer = FunctionNode(func=produce_content)
+  producer.output_schema = Annotated[str, Field(min_length=1)]
+  agent = Workflow(
+      name='annotated_string_output',
+      edges=[(START, producer), (producer, record_input)],
+  )
+
+  await run_workflow(agent)
+
+  assert received_inputs == [text]
 
 
 @pytest.mark.asyncio
