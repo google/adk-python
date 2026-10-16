@@ -24,7 +24,11 @@ registry = GCPSkillRegistry(
 )
 
 # Initialize SkillToolset with registry
-skill_toolset = SkillToolset(skills=[], registry=registry)
+skill_toolset = SkillToolset(
+    skills=[],
+    registry=registry,
+    registry_skills=["your-pinned-skill-id"],
+)
 
 root_agent = Agent(
     model="gemini-2.5-flash",
