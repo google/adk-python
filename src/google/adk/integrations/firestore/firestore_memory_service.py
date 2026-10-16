@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from google.cloud.firestore_v1.base_query import FieldFilter
 from typing_extensions import override
 
+from ...events._rewind_events import _apply_rewinds
 from ...memory import _utils
 from ...memory.base_memory_service import BaseMemoryService
 from ...memory.base_memory_service import SearchMemoryResponse
@@ -102,7 +103,7 @@ class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
         app_name=session.app_name,
         user_id=session.user_id,
         session_id=session.id,
-        events=session.events,
+        events=_apply_rewinds(session.events),
     )
 
   @override

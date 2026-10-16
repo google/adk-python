@@ -37,6 +37,7 @@ from google.genai import types
 from typing_extensions import override
 
 from . import _utils
+from ..events._rewind_events import _apply_rewinds
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
@@ -302,7 +303,7 @@ class SqliteMemoryService(BaseMemoryService):
     await self.add_events_to_memory(
         app_name=session.app_name,
         user_id=session.user_id,
-        events=session.events,
+        events=_apply_rewinds(session.events),
         session_id=session.id,
     )
 

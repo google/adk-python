@@ -20,6 +20,7 @@ import sqlite3
 
 import aiosqlite
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.memory import SqliteMemoryService
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.migration._schema_check_utils import get_db_schema_version
@@ -834,3 +835,32 @@ async def test_shared_db_with_v0_session_schema_preserves_session_migration_chec
   )
   assert len(resp.memories) == 1
   assert resp.memories[0].content.parts[0].text == "memory in shared legacy db"
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_rewound_events(fts_mode):
+  """Turns a rewind took back are not stored, so search cannot recall them."""
+  service = SqliteMemoryService(db_path=":memory:", fts=fts_mode)
+  kept = _make_event("user", "trip to paris", 1.0)
+  kept.invocation_id = "inv-kept"
+  rewound = _make_event("user", "address is baker street", 2.0)
+  rewound.invocation_id = "inv-rewound"
+  rewind = Event(
+      invocation_id="inv-rewind",
+      author="user",
+      timestamp=3.0,
+      actions=EventActions(rewind_before_invocation_id="inv-rewound"),
+  )
+
+  await service.add_session_to_memory(_make_session([kept, rewound, rewind]))
+
+  rewound_result = await service.search_memory(
+      app_name="app", user_id="user", query="baker"
+  )
+  kept_result = await service.search_memory(
+      app_name="app", user_id="user", query="paris"
+  )
+  assert not rewound_result.memories
+  assert [m.content.parts[0].text for m in kept_result.memories] == [
+      "trip to paris"
+  ]
