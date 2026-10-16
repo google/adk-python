@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import gc
 import logging
 import signal
 import sys
@@ -540,3 +541,38 @@ class TestOutputLimits:
         == "_drain_stream"
     ]
     assert leftover_drains == []
+
+  @pytest.mark.asyncio
+  async def test_cancellation_retrieves_completion_exception(
+      self, workspace, tool_context_confirmed
+  ):
+    """Cancelling run_async must not report an unretrieved gather exception."""
+    loop = asyncio.get_running_loop()
+    reports = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _, context: reports.append(context))
+    try:
+      tool = bash_tool.ExecuteBashTool(
+          workspace=workspace,
+          policy=bash_tool.BashToolPolicy(timeout_seconds=30),
+      )
+      task = asyncio.create_task(
+          tool.run_async(
+              args={"command": "sleep 30"},
+              tool_context=tool_context_confirmed,
+          )
+      )
+      await asyncio.sleep(0.4)
+      task.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await task
+      del task
+      for _ in range(3):
+        await asyncio.sleep(0)
+      gc.collect()
+      await asyncio.sleep(0)
+    finally:
+      loop.set_exception_handler(previous_handler)
+    assert [
+        r for r in reports if "never retrieved" in r.get("message", "")
+    ] == []
