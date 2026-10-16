@@ -36,6 +36,7 @@ from . import _function_parameter_parse_util
 from . import _function_tool_declarations
 from ..features import FeatureName
 from ..features import is_feature_enabled
+from ..utils._callable_utils import _is_routine
 from ..utils._callable_utils import get_callable_doc
 from ..utils._callable_utils import unwrap_callable
 from ..utils.variant_utils import GoogleLLMVariant
@@ -219,6 +220,13 @@ def _get_return_type(func: Callable[..., Any]) -> types.Type:
   )
 
 
+def _get_legacy_callable_doc(func: Callable[..., Any]) -> str | None:
+  """Preserves raw __doc__ for routines, falling back to get_callable_doc."""
+  if _is_routine(func):
+    return func.__doc__
+  return get_callable_doc(func) or None
+
+
 def build_function_declaration(
     func: Union[Callable[..., Any], BaseModel],
     ignore_params: list[str] | None = None,
@@ -276,7 +284,7 @@ def build_function_declaration(
       original.__closure__,
   )
   setattr(new_func, '__signature__', new_sig)
-  new_func.__doc__ = get_callable_doc(callable_func) or None
+  new_func.__doc__ = _get_legacy_callable_doc(callable_func)
   # Drop the ignored params' annotations too: get_type_hints resolves every
   # annotation, so an ignored param (e.g. `tool_context`) typed with a
   # TYPE_CHECKING-only import would otherwise raise NameError although it
@@ -427,7 +435,7 @@ def from_function_with_options(
 
   declaration = types.FunctionDeclaration(
       name=func_name,
-      description=get_callable_doc(func) or None,
+      description=_get_legacy_callable_doc(func),
   )
   if parameters_properties:
     declaration.parameters = types.Schema(

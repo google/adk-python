@@ -2346,3 +2346,34 @@ async def test_partial_tool_with_context_parameter(mock_tool_context):
     with pytest.raises(pydantic.PydanticSchemaGenerationError):
       FunctionTool(bad_tool)._get_declaration()
   assert mock_unwrapped.call_count == 0
+
+
+def test_legacy_declaration_preserves_raw_routine_docstring():
+  """Legacy from_function_with_options preserves raw __doc__ on routines."""
+
+  def plain_tool(query: str) -> str:
+    """Plain tool summary.
+
+    Args:
+      query: Search query.
+    """
+    return query
+
+  def context_tool(query: str, tool_context: "ToolContext") -> str:
+    """Context tool summary.
+
+    Args:
+      query: Search query.
+      tool_context: Tool context.
+    """
+    del tool_context
+    return query
+
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False):
+    plain_decl = FunctionTool(plain_tool)._get_declaration()
+    assert plain_decl is not None
+    assert plain_decl.description == plain_tool.__doc__
+
+    context_decl = FunctionTool(context_tool)._get_declaration()
+    assert context_decl is not None
+    assert context_decl.description == context_tool.__doc__
