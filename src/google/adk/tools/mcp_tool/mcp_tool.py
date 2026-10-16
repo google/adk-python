@@ -91,6 +91,24 @@ _RESERVED_TOOL_NAMES = frozenset({
 _UNSET = object()
 
 
+def _merge_auth_and_provider_headers(
+    *,
+    auth_headers: dict[str, str] | None,
+    provider_headers: dict[str, str] | None,
+) -> dict[str, str]:
+  """Merges MCP session headers, with explicit auth taking precedence."""
+  headers = dict(provider_headers or {})
+  if auth_headers:
+    auth_header_names = {name.lower() for name in auth_headers}
+    headers = {
+        name: value
+        for name, value in headers.items()
+        if name.lower() not in auth_header_names
+    }
+    headers.update(auth_headers)
+  return headers
+
+
 # Values the server owns: free-form JSON, not model fields. A `_meta` inside
 # one is the server's own -- a JSON Schema may even declare a property by that
 # name -- so the walk below must not descend into them.
@@ -651,11 +669,10 @@ class McpTool(BaseAuthenticatedTool):
       if inspect.isawaitable(dynamic_headers):
         dynamic_headers = await dynamic_headers
 
-    headers: dict[str, str] = {}
-    if auth_headers:
-      headers.update(auth_headers)
-    if dynamic_headers:
-      headers.update(dynamic_headers)
+    headers = _merge_auth_and_provider_headers(
+        auth_headers=auth_headers,
+        provider_headers=cast(dict[str, str] | None, dynamic_headers),
+    )
     final_headers = headers if headers else None
 
     # Propagate trace context in the _meta field as sprcified by MCP protocol.

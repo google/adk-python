@@ -77,6 +77,49 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+async def _build_vector_search_stage(
+    *,
+    query: str,
+    settings: MongoDbToolSettings,
+    genai_client: Any,
+    index_name: str,
+    embedding_field: str,
+    limit: int,
+    num_candidates: int,
+) -> dict[str, Any]:
+  """Builds the `$vectorSearch` stage for the configured embedding mode.
+
+  By default the query text is embedded with the Google embedding model
+  (`settings.vertex_ai_embedding_model_name`) and sent as `queryVector`.
+  With `settings.use_mongodb_auto_embedding` the raw text goes out as
+  `query.text` and Atlas generates the embedding with the Voyage AI model on
+  the `autoEmbed` index field (Atlas Automated Embedding, Preview), so the
+  genai client is never called.
+  """
+  stage: dict[str, Any] = {
+      "index": index_name,
+      "path": embedding_field,
+      "numCandidates": num_candidates,
+      "limit": limit,
+  }
+  if settings.use_mongodb_auto_embedding:
+    stage["query"] = {"text": query}
+    # `model` must be omitted when querying with a vector, and is optional
+    # for text queries: the index's own model is the default.
+    if settings.mongodb_auto_embedding_model:
+      stage["model"] = settings.mongodb_auto_embedding_model
+  else:
+    stage["queryVector"] = await _embed_query(
+        query=query,
+        model_name=settings.vertex_ai_embedding_model_name,
+        output_dimensionality=(
+            settings.vertex_ai_embedding_output_dimensionality
+        ),
+        genai_client=genai_client,
+    )
+  return stage
+
+
 def _check_filter(filter: Any) -> None:
   """Raises ValueError if the filter uses an operator outside the allowlist.
 
@@ -137,13 +180,17 @@ def _resolve_weight(weight: float | None) -> float:
 
 
 def _build_result_stages(
-    embedding_field: str, output_fields: list[str] | None, score_meta: str
+    embedding_field: str | None,
+    output_fields: list[str] | None,
+    score_meta: str,
 ) -> list[dict[str, Any]]:
   """Builds the stages that shape search results.
 
   The raw embedding vector is excluded by default to keep results compact;
   callers can opt into exact fields via `output_fields`. The search score is
-  always added under the `search_score` field.
+  always added under the `search_score` field. With Atlas auto-embedding the
+  searched field holds text, not a vector, so `embedding_field` is None and
+  no exclusion is applied.
 
   The score gets its own `$addFields` stage because `$project` rejects a
   computed field alongside an exclusion, which is what the default case needs.
@@ -154,9 +201,9 @@ def _build_result_stages(
   if output_fields:
     projection: dict[str, Any] = {field: 1 for field in output_fields}
     projection[_SEARCH_SCORE_ALIAS] = 1
-  else:
-    projection = {embedding_field: 0}
-  stages.append({"$project": projection})
+    stages.append({"$project": projection})
+  elif embedding_field:
+    stages.append({"$project": {embedding_field: 0}})
   return stages
 
 
@@ -249,8 +296,9 @@ async def vector_search(
         the search. Higher values improve recall at the cost of latency.
       index_name (str): The name of the vector search index to query. Defaults
         to the toolset settings.
-      embedding_field (str): The document field that stores the embedding
-        vectors. Defaults to the toolset settings.
+      embedding_field (str): The document field searched by `$vectorSearch`
+        (the field storing embedding vectors, or the `autoEmbed` text field
+        when auto-embedding is enabled). Defaults to the toolset settings.
       output_fields (list[str]): The document fields to return in the results.
         By default all fields except the embedding vector are returned. The
         `_id` and the `search_score` are always included.
@@ -280,14 +328,6 @@ async def vector_search(
   """
   try:
     _check_filter(filter)
-    query_embedding = await _embed_query(
-        query=query,
-        model_name=settings.vertex_ai_embedding_model_name,
-        output_dimensionality=(
-            settings.vertex_ai_embedding_output_dimensionality
-        ),
-        genai_client=genai_client,
-    )
     resolved_index_name = index_name or settings.default_vector_index_name
     resolved_embedding_field = (
         embedding_field or settings.default_embedding_field
@@ -296,20 +336,30 @@ async def vector_search(
         limit, num_candidates, settings
     )
 
-    vector_search_stage: dict[str, Any] = {
-        "index": resolved_index_name,
-        "path": resolved_embedding_field,
-        "queryVector": query_embedding,
-        "numCandidates": resolved_num_candidates,
-        "limit": resolved_limit,
-    }
+    vector_search_stage = await _build_vector_search_stage(
+        query=query,
+        settings=settings,
+        genai_client=genai_client,
+        index_name=resolved_index_name,
+        embedding_field=resolved_embedding_field,
+        limit=resolved_limit,
+        num_candidates=resolved_num_candidates,
+    )
     if filter:
       vector_search_stage["filter"] = filter
 
     pipeline: list[dict[str, Any]] = [
         {"$vectorSearch": vector_search_stage},
         *_build_result_stages(
-            resolved_embedding_field, output_fields, "vectorSearchScore"
+            # Auto-embedding searches a text field; there is no bulky stored
+            # vector to exclude from the results.
+            (
+                None
+                if settings.use_mongodb_auto_embedding
+                else resolved_embedding_field
+            ),
+            output_fields,
+            "vectorSearchScore",
         ),
     ]
 
@@ -377,8 +427,9 @@ async def hybrid_search(
         Defaults to the toolset settings.
       search_index_name (str): The name of the full-text search index to
         query. Defaults to the toolset settings.
-      embedding_field (str): The document field that stores the embedding
-        vectors. Defaults to the toolset settings.
+      embedding_field (str): The document field searched by `$vectorSearch`
+        (the field storing embedding vectors, or the `autoEmbed` text field
+        when auto-embedding is enabled). Defaults to the toolset settings.
       vector_weight (float): The weight of the vector search ranking in the
         fused score. Defaults to 1.0. Must not be negative.
       text_weight (float): The weight of the full-text search ranking in the
@@ -414,14 +465,6 @@ async def hybrid_search(
   """
   try:
     _check_filter(filter)
-    query_embedding = await _embed_query(
-        query=query,
-        model_name=settings.vertex_ai_embedding_model_name,
-        output_dimensionality=(
-            settings.vertex_ai_embedding_output_dimensionality
-        ),
-        genai_client=genai_client,
-    )
     resolved_vector_index_name = (
         vector_index_name or settings.default_vector_index_name
     )
@@ -443,13 +486,15 @@ async def hybrid_search(
         resolved_limit * _RANK_FUSION_ARM_OVERSAMPLE, resolved_num_candidates
     )
 
-    vector_search_stage: dict[str, Any] = {
-        "index": resolved_vector_index_name,
-        "path": resolved_embedding_field,
-        "queryVector": query_embedding,
-        "numCandidates": resolved_num_candidates,
-        "limit": arm_limit,
-    }
+    vector_search_stage = await _build_vector_search_stage(
+        query=query,
+        settings=settings,
+        genai_client=genai_client,
+        index_name=resolved_vector_index_name,
+        embedding_field=resolved_embedding_field,
+        limit=arm_limit,
+        num_candidates=resolved_num_candidates,
+    )
     if filter:
       vector_search_stage["filter"] = filter
 
@@ -489,7 +534,15 @@ async def hybrid_search(
             }
         },
         {"$limit": resolved_limit},
-        *_build_result_stages(resolved_embedding_field, output_fields, "score"),
+        *_build_result_stages(
+            (
+                None
+                if settings.use_mongodb_auto_embedding
+                else resolved_embedding_field
+            ),
+            output_fields,
+            "score",
+        ),
     ]
 
     return await asyncio.to_thread(

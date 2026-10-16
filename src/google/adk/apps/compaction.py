@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import AsyncGenerator
 
 from google.genai import types
@@ -198,53 +199,46 @@ def _count_chars_in_content(content: types.Content | None) -> int:
   return total_chars
 
 
-def _valid_compactions(
+def _get_compaction_ranges(
     events: list[Event],
-) -> list[tuple[int, float, float, Event]]:
-  """Returns compaction events with fully-defined compaction ranges."""
-  compactions: list[tuple[int, float, float, Event]] = []
-  for i, event in enumerate(events):
-    if not event.actions.compaction:
-      continue
-    compaction = event.actions.compaction
-    if (
-        compaction.start_timestamp is None
-        or compaction.end_timestamp is None
-        or compaction.compacted_content is None
-    ):
-      continue
-    compactions.append((
-        i,
-        compaction.start_timestamp,
-        compaction.end_timestamp,
-        event,
-    ))
-  return compactions
+) -> list[tuple[int, float, float]]:
+  """Return surviving (event index, start, end) ranges in event order.
 
+  A containing range supersedes its contained ranges; identical ranges keep
+  the latest event. Sorting by start, descending end and descending index puts
+  every possible containing range first, so one maximum end suffices.
 
-def _is_compaction_subsumed(
-    *,
-    start_timestamp: float,
-    end_timestamp: float,
-    event_index: int,
-    compactions: list[tuple[int, float, float, Event]],
-) -> bool:
-  """Returns True if a compaction range is fully contained by another.
+  Args:
+    events: Events whose valid compaction ranges should be considered.
 
-  If two compactions have identical ranges, the earlier event is treated as
-  subsumed by the later event.
+  Returns:
+    Non-subsumed ranges, preserving their original event order.
   """
-  for other_index, other_start, other_end, _ in compactions:
-    if other_index == event_index:
+  ranges: list[tuple[int, float, float]] = []
+  comparable: list[tuple[int, float, float]] = []
+  retained: set[int] = set()
+  for index, event in enumerate(events):
+    compaction = event.actions.compaction if event.actions else None
+    if compaction is None or compaction.compacted_content is None:
       continue
-    if other_start <= start_timestamp and other_end >= end_timestamp:
-      if (
-          other_start < start_timestamp
-          or other_end > end_timestamp
-          or other_index > event_index
-      ):
-        return True
-  return False
+    start, end = compaction.start_timestamp, compaction.end_timestamp
+    if start is None or end is None:
+      continue
+    item = (index, start, end)
+    ranges.append(item)
+    if math.isnan(start) or math.isnan(end):
+      # NaN bounds neither contain another range nor are contained by one.
+      retained.add(index)
+    else:
+      comparable.append(item)
+
+  comparable.sort(key=lambda item: (item[1], -item[2], -item[0]))
+  max_end: float | None = None
+  for index, _, end in comparable:
+    if max_end is None or end > max_end:
+      retained.add(index)
+      max_end = end
+  return [item for item in ranges if item[0] in retained]
 
 
 def _estimate_prompt_token_count(
@@ -311,21 +305,8 @@ def _latest_prompt_token_count(
 
 def _latest_compaction_event(events: list[Event]) -> Event | None:
   """Returns the latest non-subsumed compaction event by stream order."""
-  compactions = _valid_compactions(events)
-  latest_event = None
-  latest_index = -1
-  for event_index, start_ts, end_ts, event in compactions:
-    if _is_compaction_subsumed(
-        start_timestamp=start_ts,
-        end_timestamp=end_ts,
-        event_index=event_index,
-        compactions=compactions,
-    ):
-      continue
-    if event_index > latest_index:
-      latest_index = event_index
-      latest_event = event
-  return latest_event
+  ranges = _get_compaction_ranges(events)
+  return events[ranges[-1][0]] if ranges else None
 
 
 def _latest_compaction_end_timestamp(events: list[Event]) -> float:

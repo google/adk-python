@@ -531,6 +531,38 @@ class TestMcpToolset:
     )
 
   @pytest.mark.asyncio
+  async def test_get_tools_auth_overrides_duplicate_provider_header(self):
+    """Explicit auth is authoritative when provider headers overlap."""
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult([MockMCPTool("tool1")])
+    )
+    mock_readonly_context = Mock(spec=ReadonlyContext)
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        header_provider=Mock(
+            return_value={
+                "authorization": "Bearer provider-token",
+                "X-Tenant-ID": "test-tenant",
+            }
+        ),
+    )
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    with patch.object(
+        toolset,
+        "_get_auth_headers",
+        return_value={"Authorization": "Bearer auth-token"},
+    ):
+      await toolset.get_tools(readonly_context=mock_readonly_context)
+
+    self.mock_session_manager.create_session.assert_awaited_once_with(
+        headers={
+            "Authorization": "Bearer auth-token",
+            "X-Tenant-ID": "test-tenant",
+        }
+    )
+
+  @pytest.mark.asyncio
   async def test_close_success(self):
     """Test successful cleanup."""
     toolset = McpToolset(connection_params=self.mock_stdio_params)

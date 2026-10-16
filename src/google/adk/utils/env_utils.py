@@ -25,6 +25,9 @@ import warnings
 
 _TRUTHY_ENV_VALUES = frozenset({'1', 'true', 'yes', 'on'})
 _STRICT_TRUTHY_ENV_VALUES = frozenset({'1', 'true'})
+_EXPERIMENTAL_WARNING_SUPPRESSION_ENV_VAR = (
+    'ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS'
+)
 
 
 def is_env_enabled(env_var_name: str, default: str = '0') -> bool:
@@ -93,3 +96,12 @@ def is_enterprise_mode_enabled() -> bool:
     )
     return _is_genai_env_enabled('GOOGLE_GENAI_USE_VERTEXAI')
   return False
+
+
+def _is_experimental_warning_suppressed() -> bool:
+  """Check whether experimental warnings should be suppressed.
+
+  Returns:
+    True if the general experimental warning suppression env var is truthy.
+  """
+  return is_env_enabled(_EXPERIMENTAL_WARNING_SUPPRESSION_ENV_VAR)
