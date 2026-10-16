@@ -59,13 +59,25 @@ class LoggingPlugin(BasePlugin):
       ... )
   """
 
-  def __init__(self, name: str = "logging_plugin"):
+  def __init__(
+      self,
+      name: str = "logging_plugin",
+      *,
+      max_content_length: Optional[int] = 200,
+      max_args_length: Optional[int] = 300,
+  ):
     """Initialize the logging plugin.
 
     Args:
       name: The name of the plugin instance.
+      max_content_length: Maximum characters per text part and rendered system
+        instruction. Set to None to disable truncation.
+      max_args_length: Maximum characters for tool arguments and results.
+        Set to None to disable truncation.
     """
     super().__init__(name)
+    self._max_content_length = max_content_length
+    self._max_args_length = max_args_length
 
   @override
   async def on_user_message_callback(
@@ -177,9 +189,11 @@ class LoggingPlugin(BasePlugin):
     system_instruction = llm_request.config.system_instruction
     if system_instruction:
       rendered_instruction = self._render_system_instruction(system_instruction)
-      sys_instruction = rendered_instruction[:200]
-      if len(rendered_instruction) > 200:
-        sys_instruction += "..."
+      max_length = self._max_content_length
+      if max_length is not None and len(rendered_instruction) > max_length:
+        sys_instruction = rendered_instruction[:max_length] + "..."
+      else:
+        sys_instruction = rendered_instruction
       self._log(f"   System Instruction: '{sys_instruction}'")
 
     # Note: Content logging removed due to type compatibility issues
@@ -311,18 +325,17 @@ class LoggingPlugin(BasePlugin):
       )
     return str(system_instruction)
 
-  def _format_content(
-      self, content: Optional[types.Content], max_length: int = 200
-  ) -> str:
+  def _format_content(self, content: Optional[types.Content]) -> str:
     """Format content for logging, truncating if too long."""
     if not content or not content.parts:
       return "None"
 
     parts = []
+    max_length = self._max_content_length
     for part in content.parts:
       if part.text:
         text = part.text.strip()
-        if len(text) > max_length:
+        if max_length is not None and len(text) > max_length:
           text = text[:max_length] + "..."
         parts.append(f"text: '{text}'")
       elif part.function_call:
@@ -336,12 +349,13 @@ class LoggingPlugin(BasePlugin):
 
     return " | ".join(parts)
 
-  def _format_args(self, args: dict[str, Any], max_length: int = 300) -> str:
+  def _format_args(self, args: dict[str, Any]) -> str:
     """Format arguments dictionary for logging."""
     if not args:
       return "{}"
 
     formatted = str(args)
-    if len(formatted) > max_length:
+    max_length = self._max_args_length
+    if max_length is not None and len(formatted) > max_length:
       formatted = formatted[:max_length] + "...}"
     return formatted
