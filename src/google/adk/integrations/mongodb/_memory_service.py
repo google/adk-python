@@ -288,9 +288,7 @@ class MongoDbMemoryService(BaseMemoryService):
     """Creates the vector search index for vector/auto retrieval modes."""
     # pymongo is imported lazily here: it stays an optional dependency until
     # a MongoDB-backed service is actually constructed.
-    from pymongo.operations import (  # pylint: disable=import-outside-toplevel
-        SearchIndexModel,
-    )
+    from pymongo.operations import SearchIndexModel  # pylint: disable=import-outside-toplevel
 
     # createSearchIndexes rejects a collection that does not exist yet, which
     # is exactly the state of a fresh deployment on its first ingest.
