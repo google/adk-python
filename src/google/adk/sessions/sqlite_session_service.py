@@ -60,9 +60,14 @@ PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
 # SQLite parses an integer outside the signed 64-bit range as a REAL, so its
 # json_each value has already lost digits. The `->` operator (SQLite 3.38+)
 # returns the element's JSON text as stored, which keeps such an integer exact.
+# Each `->` lookup searches the whole object, so it runs only for those values;
+# running it for every key would make the merge quadratic in the key count.
 # Older SQLite has no `->`, and there such an integer still reads back rounded.
 _JSON_TEXT_SQL = (
-    "{source} -> fullkey" if sqlite3.sqlite_version_info >= (3, 38) else "NULL"
+    "CASE WHEN type = 'integer' AND typeof(value) = 'real'"
+    " THEN {source} -> fullkey END"
+    if sqlite3.sqlite_version_info >= (3, 38)
+    else "NULL"
 )
 _MERGE_STATE_SQL = """
         SELECT json_group_object(

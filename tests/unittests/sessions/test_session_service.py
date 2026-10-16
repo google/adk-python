@@ -18,6 +18,7 @@ from datetime import datetime
 from datetime import timezone
 import enum
 import inspect
+import json
 import os
 from pathlib import Path
 import sqlite3
@@ -35,6 +36,7 @@ from google.adk.events.event_actions import EventActions
 from google.adk.features import FeatureName
 from google.adk.features import override_feature_enabled
 from google.adk.sessions import database_session_service
+from google.adk.sessions import sqlite_session_service
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -1390,6 +1392,33 @@ async def test_large_integer_state_delta_is_stored_exactly(
   reloaded_numbers = {key: reloaded.state[key] for key in numbers}
   assert reloaded_numbers == numbers
   assert all(type(value) is int for value in reloaded_numbers.values())
+
+
+def test_sqlite_state_merge_scales_linearly_with_ordinary_state():
+  """Merging a one-key delta into ordinary state stays linear in the key count.
+
+  Only out-of-range integers may take the exact JSON text lookup. Running it
+  for every key makes the merge quadratic, which 10x the keys shows as about
+  100x the time instead of about 10x.
+  """
+  sql = sqlite_session_service._MERGE_STATE_SQL.format(delta='?1', state='?2')
+  db = sqlite3.connect(':memory:')
+  delta = json.dumps({'other': 1})
+
+  def merge_seconds(n: int) -> float:
+    state = json.dumps({f'k{i}': i for i in range(n)})
+    times = []
+    for _ in range(3):
+      start = time.perf_counter()
+      merged = db.execute(sql, (delta, state)).fetchone()[0]
+      times.append(time.perf_counter() - start)
+    assert json.loads(merged) == {**json.loads(state), 'other': 1}
+    return min(times)
+
+  small, large = merge_seconds(2_000), merge_seconds(20_000)
+  db.close()
+
+  assert large / small < 30
 
 
 @pytest.mark.asyncio
