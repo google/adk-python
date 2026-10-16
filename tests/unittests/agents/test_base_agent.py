@@ -32,6 +32,7 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.plugin_manager import PluginManager
@@ -742,6 +743,51 @@ async def test_run_async_with_async_after_agent_callback_append_reply(
   assert (
       events[1].content.parts[0].text
       == 'Agent reply from after agent callback.'
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('callback_field', 'filename', 'artifact_event_idx', 'reply_event_idx'),
+    [
+        ('before_agent_callback', 'before_agent.txt', 0, 1),
+        ('after_agent_callback', 'after_agent.txt', 1, 0),
+    ],
+)
+async def test_run_async_agent_callback_records_artifact_delta(
+    request: pytest.FixtureRequest,
+    callback_field: str,
+    filename: str,
+    artifact_event_idx: int,
+    reply_event_idx: int,
+) -> None:
+  async def _save_artifact(callback_context: CallbackContext) -> None:
+    await callback_context.save_artifact(
+        filename, types.Part.from_text(text=f'saved in {callback_field}')
+    )
+
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_agent',
+      before_agent_callback=(
+          _save_artifact if callback_field == 'before_agent_callback' else None
+      ),
+      after_agent_callback=(
+          _save_artifact if callback_field == 'after_agent_callback' else None
+      ),
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  parent_ctx.artifact_service = InMemoryArtifactService()
+
+  events = [e async for e in agent.run_async(parent_ctx)]
+
+  assert len(events) == 2
+  assert events[artifact_event_idx].author == agent.name
+  assert events[artifact_event_idx].content is None
+  assert events[artifact_event_idx].actions.artifact_delta == {filename: 0}
+  assert events[reply_event_idx].content == types.Content(
+      parts=[types.Part(text='Hello, world!')]
   )
 
 

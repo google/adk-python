@@ -83,6 +83,8 @@ This directory contains specific developer guides for the ADK Python implementat
 ### Live
 * [Live tools](live/tools/index.md) - Asynchronous background execution and response scheduling for Gemini Live agents.
 * [CascadeLive](live/cascade_live/index.md) - A live-composing model wrapping a text reasoner in speech-to-text and text-to-speech transforms.
+* [GeminiSTT](live/gemini_stt/index.md) - Recognizing a CascadeLive agent's user speech with Gemini streaming transcription, and when the user's turn ends.
+* [GeminiTTS](live/gemini_tts/index.md) - Speaking a CascadeLive agent's replies with Gemini text-to-speech, sentence by sentence and without gaps.
 * [LiveRequestQueue](live/live_request_queue/index.md) - Streaming content, realtime audio, and stream control signals to live agents.
 
 ### Memory
@@ -100,6 +102,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [BasePlanner](planners/planner/index.md) - Guiding model execution with structured planning instructions, thinking configurations, and Plan-Re-Act thought tagging.
 
 ### Plugins
+* [ForceEscalationPlugin](tools/model_consult/force_escalation_plugin/index.md) - Enforcing deterministic first-turn, repeated-tool-call, and pre-tool gating escalations to ModelConsultTool.
 * [ReflectAndRetryModelPlugin](plugins/reflect_retry_model_plugin/index.md) - Self-healing, concurrent-safe error recovery for model failures.
 * [ReflectAndRetryToolPlugin](plugins/reflect_retry_tool_plugin/index.md) - Self-healing, concurrent-safe error recovery for tool failures.
 * [ToolCallIntegrityPlugin](plugins/tool_call_integrity_plugin/index.md) - Optional HMAC integrity check for stored function call arguments.

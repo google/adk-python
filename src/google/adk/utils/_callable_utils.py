@@ -21,16 +21,19 @@ FunctionTool (LLM tool calling) and FunctionNode (Workflow execution).
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import inspect
 import logging
 import typing
 from typing import Any
 from typing import Callable
-
-from . import context_utils
+from typing import cast
+from typing import TypeVar
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 _DEFAULT_CALL_DOC = inspect.getdoc(type.__call__)
 _DEFAULT_PARTIAL_DOC = inspect.getdoc(functools.partial)
@@ -42,12 +45,50 @@ _METHOD_WRAPPER_TYPES = (
 )
 
 
+def lru_cache_allowing_unhashable(maxsize: int) -> Callable[[_F], _F]:
+  """Wraps functools.lru_cache to run uncached when arguments are unhashable."""
+
+  def decorator(func: _F) -> _F:
+    cached = functools.lru_cache(maxsize=maxsize)(func)
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+      try:
+        hash(args + tuple(kwargs.values()))
+      except TypeError:
+        return wrapper.__wrapped__(*args, **kwargs)
+      return cached(*args, **kwargs)
+
+    for attribute in ("cache_clear", "cache_info", "cache_parameters"):
+      setattr(wrapper, attribute, getattr(cached, attribute))
+    # wraps preserves the runtime signature; cast preserves _F for mypy.
+    return cast(_F, wrapper)
+
+  return decorator
+
+
 def _is_routine(func: Any) -> bool:
   """Returns True if func is a routine or method-wrapper across Python versions."""
   return inspect.isroutine(func) or isinstance(func, _METHOD_WRAPPER_TYPES)
 
 
-def unwrap_callable(func: Callable[..., Any]) -> Callable[..., Any]:
+def _is_dataclass_generated_doc(func: Any, doc: str) -> bool:
+  """Returns True if doc is the default @dataclass signature docstring."""
+  if not dataclasses.is_dataclass(func) or isinstance(func, type):
+    return False
+  cls = type(func)
+  try:
+    text_sig = str(inspect.signature(cls)).replace(" -> None", "")
+  except (TypeError, ValueError):
+    text_sig = ""
+  return doc == inspect.cleandoc(cls.__name__ + text_sig)
+
+
+def unwrap_callable(
+    func: Callable[..., Any],
+    *,
+    follow_wrapped: bool = False,
+) -> Callable[..., Any]:
   """Unwraps partials, bound methods and callable objects to find the stable underlying function."""
   seen: set[int] = set()
   while id(func) not in seen:
@@ -61,6 +102,11 @@ def unwrap_callable(func: Callable[..., Any]) -> Callable[..., Any]:
         and not _is_routine(func)
         and not isinstance(func, type)
     ):
+      if follow_wrapped:
+        wrapped = getattr(func, "__wrapped__", None)
+        if wrapped is not None and wrapped is not func:
+          func = wrapped
+          continue
       # callable object instance, unwrap to its __call__ method
       call_method = getattr(func, "__call__", None)
       if call_method is None or call_method is func:
@@ -72,28 +118,36 @@ def unwrap_callable(func: Callable[..., Any]) -> Callable[..., Any]:
 
 
 @functools.lru_cache(maxsize=1024)
-def _get_type_hints_for_unwrapped(func: Callable[..., Any]) -> dict[str, Any]:
+def _get_type_hints_for_unwrapped(
+    func: Callable[..., Any],
+    include_extras: bool = False,
+) -> dict[str, Any]:
   """Cached version of typing.get_type_hints for an unwrapped function.
 
   Note: NameError is deliberately not caught here so that unresolved forward
   references are not cached by lru_cache, allowing recovery once defined.
   """
   try:
-    return typing.get_type_hints(func)
+    return typing.get_type_hints(func, include_extras=include_extras)
   except (TypeError, AttributeError):
     return {}
 
 
-def get_type_hints_cached(func: Callable[..., Any]) -> dict[str, Any]:
+def get_type_hints_cached(
+    func: Callable[..., Any],
+    include_extras: bool = False,
+) -> dict[str, Any]:
   """Cached version of typing.get_type_hints with robust callable unwrapping.
 
   Unwraps functools.partial and custom callable objects to ensure type hints
   are resolved even when typing.get_type_hints would otherwise raise TypeError
   on partial objects (such as under `from __future__ import annotations`).
   """
-  unwrapped = unwrap_callable(func)
+  unwrapped = unwrap_callable(func, follow_wrapped=True)
   try:
-    hints = _get_type_hints_for_unwrapped(unwrapped)
+    hints = _get_type_hints_for_unwrapped(
+        unwrapped, include_extras=include_extras
+    )
   except NameError:
     hints = {}
 
@@ -104,10 +158,20 @@ def get_type_hints_cached(func: Callable[..., Any]) -> dict[str, Any]:
       and not isinstance(func, type)
   ):
     try:
-      hints = _get_type_hints_for_unwrapped(func.__call__)
+      hints = _get_type_hints_for_unwrapped(
+          func.__call__, include_extras=include_extras
+      )
     except NameError:
       hints = {}
   return hints
+
+
+def _clean_doc(obj: Any) -> str:
+  """Returns the cleaned docstring of obj, skipping MRO for classes."""
+  if isinstance(obj, type):
+    doc = getattr(obj, "__doc__", None)
+    return inspect.cleandoc(doc) if isinstance(doc, str) else ""
+  return inspect.getdoc(obj) or ""
 
 
 def get_callable_doc(func: Callable[..., Any]) -> str:
@@ -115,19 +179,17 @@ def get_callable_doc(func: Callable[..., Any]) -> str:
 
   A functools.partial without a docstring of its own resolves to the wrapped
   callable's docstring, and a callable object without one falls back to its
-  `__call__` docstring. CallableSpec uses this for FunctionTool's description,
-  and `build_function_declaration_with_json_schema` uses it for the
-  declaration sent to the model. That covers only the JSON schema path: with
-  JSON_SCHEMA_FOR_FUNC_DECL off, `from_function_with_options` still reads
-  `func.__doc__` directly, so the two can differ there.
+  `__call__` docstring.
   """
-  doc = inspect.getdoc(func) or ""
+  doc = _clean_doc(func)
   if isinstance(func, functools.partial) and doc == _DEFAULT_PARTIAL_DOC:
     return get_callable_doc(func.func)
+  if _is_dataclass_generated_doc(func, doc):
+    doc = ""
   if not doc and not _is_routine(func) and not isinstance(func, type):
     call_method = getattr(func, "__call__", None)
     if call_method is not None:
-      call_doc = inspect.getdoc(call_method) or ""
+      call_doc = _clean_doc(call_method)
       if call_doc and call_doc != _DEFAULT_CALL_DOC:
         doc = call_doc
   if doc == _DEFAULT_CALL_DOC:
@@ -160,12 +222,14 @@ class CallableSpec:
     if func is not None:
       self.doc = get_callable_doc(func)
 
-      # Context parameter detection
+      # Function-level import avoids circular import with context_utils.
+      from . import context_utils
+
       self.context_param_name = context_utils.find_context_parameter(func)
 
       # Resolve signature presence at initialization
       try:
-        self._signature = inspect.signature(self.func)
+        self._signature = inspect.signature(func)
         self._has_signature = True
       except (ValueError, TypeError):
         self._signature = None

@@ -15,9 +15,11 @@
 """Lets a fast executor model consult a stronger advisor model mid-task."""
 
 from ._context import ModelConsultContextConfig
+from ._force_escalation_plugin import ForceEscalationPlugin
 from ._model_consult_tool import ModelConsultTool
 
 __all__ = [
+    'ForceEscalationPlugin',
     'ModelConsultContextConfig',
     'ModelConsultTool',
 ]

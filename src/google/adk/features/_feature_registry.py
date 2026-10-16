@@ -274,6 +274,24 @@ _WARNED_FEATURES: set[FeatureName] = set()
 _FEATURE_OVERRIDES: dict[FeatureName, bool] = {}
 
 
+def _feature_display_name(feature_name: FeatureName | str) -> str:
+  """Returns the bare flag name, as spelled in `ADK_ENABLE_<NAME>`.
+
+  On Python 3.11 and later, formatting a `str`-mixin enum member in an f-string
+  yields `FeatureName.X` rather than `X`, so messages must not interpolate the
+  member directly.
+
+  Args:
+    feature_name: The feature name, as a `FeatureName` or a plain string.
+
+  Returns:
+    The flag's name without the enum class prefix.
+  """
+  if isinstance(feature_name, FeatureName):
+    return feature_name.value
+  return feature_name
+
+
 def _get_feature_config(
     feature_name: FeatureName,
 ) -> FeatureConfig | None:
@@ -325,7 +343,9 @@ def override_feature_enabled(
   """
   config = _get_feature_config(feature_name)
   if config is None:
-    raise ValueError(f"Feature {feature_name} is not registered.")
+    raise ValueError(
+        f"Feature {_feature_display_name(feature_name)} is not registered."
+    )
   _FEATURE_OVERRIDES[feature_name] = enabled
 
 
@@ -359,7 +379,9 @@ def is_feature_enabled(feature_name: FeatureName) -> bool:
   """
   config = _get_feature_config(feature_name)
   if config is None:
-    raise ValueError(f"Feature {feature_name} is not registered.")
+    raise ValueError(
+        f"Feature {_feature_display_name(feature_name)} is not registered."
+    )
 
   # Check programmatic overrides first (highest priority)
   if feature_name in _FEATURE_OVERRIDES:
@@ -369,11 +391,7 @@ def is_feature_enabled(feature_name: FeatureName) -> bool:
     return enabled
 
   # Check environment variables second
-  feature_name_str = (
-      feature_name.value
-      if isinstance(feature_name, FeatureName)
-      else feature_name
-  )
+  feature_name_str = _feature_display_name(feature_name)
   enable_var = f"ADK_ENABLE_{feature_name_str}"
   disable_var = f"ADK_DISABLE_{feature_name_str}"
   if is_env_enabled(enable_var):
@@ -402,7 +420,8 @@ def _emit_non_stable_warning_once(
   if feature_name not in _WARNED_FEATURES:
     _WARNED_FEATURES.add(feature_name)
     full_message = (
-        f"[{feature_stage.name.upper()}] feature {feature_name} is enabled."
+        f"[{feature_stage.name.upper()}] feature"
+        f" {_feature_display_name(feature_name)} is enabled."
     )
     warnings.warn(full_message, category=UserWarning, stacklevel=4)
 
@@ -438,7 +457,9 @@ def temporary_feature_override(
   """
   config = _get_feature_config(feature_name)
   if config is None:
-    raise ValueError(f"Feature {feature_name} is not registered.")
+    raise ValueError(
+        f"Feature {_feature_display_name(feature_name)} is not registered."
+    )
 
   # Save the original override state
   had_override = feature_name in _FEATURE_OVERRIDES
