@@ -388,6 +388,10 @@ class ExecuteBashTool(BaseTool):
         task.cancel()
       if readers:
         await asyncio.gather(*readers, return_exceptions=True)
+      if completion is not None:
+        # Retrieve the cancelled gather's result so asyncio does not report
+        # "_GatheringFuture exception was never retrieved".
+        await asyncio.gather(completion, return_exceptions=True)
       if process is not None and process.returncode is None:
         try:
           await asyncio.shield(process.wait())
