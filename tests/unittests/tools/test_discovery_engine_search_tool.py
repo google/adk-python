@@ -83,6 +83,38 @@ class TestDiscoveryEngineSearchTool:
           data_store_id="test_data_store", data_store_specs=[{"id": "123"}]
       )
 
+  def test_init_default_name(self):
+    """Default name is 'discovery_engine_search' (derived from the method name)."""
+    tool = DiscoveryEngineSearchTool(data_store_id="test_data_store")
+    assert tool.name == "discovery_engine_search"
+
+  def test_init_custom_name(self):
+    """Custom name overrides the default tool name."""
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        name="knowledge_base_search",
+    )
+    assert tool.name == "knowledge_base_search"
+
+  def test_init_custom_description(self):
+    """Custom description overrides the default tool description."""
+    custom_desc = "Search the internal product knowledge base."
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        description=custom_desc,
+    )
+    assert tool.description == custom_desc
+
+  def test_init_custom_name_and_description(self):
+    """Both custom name and description are applied simultaneously."""
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        name="product_search",
+        description="Search the product catalogue.",
+    )
+    assert tool.name == "product_search"
+    assert tool.description == "Search the product catalogue."
+
   @pytest.mark.parametrize(
       ("tool_kwargs", "expected_endpoint"),
       [
