@@ -56,10 +56,10 @@ from fastapi.websockets import WebSocket
 from fastapi.websockets import WebSocketDisconnect
 from google.genai import types
 from opentelemetry import trace
+from opentelemetry.sdk._logs.export import SimpleLogRecordProcessor
 import opentelemetry.sdk.environment_variables as otel_env
 from opentelemetry.sdk.trace import export as export_lib
 from opentelemetry.sdk.trace import ReadableSpan
-from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider
 from pydantic import Field
 from pydantic import ValidationError
@@ -95,6 +95,9 @@ from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..telemetry._web_ui import WebUiLogExporter
+from ..telemetry.setup import maybe_set_otel_providers
+from ..telemetry.setup import OTelHooks
 from ..utils._function_call_names import CLIENT_FUNCTION_CALL_NAMES as _CLIENT_FUNCTION_CALL_NAMES
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils.agent_info import AgentInfo
@@ -578,10 +581,14 @@ class ApiServerSpanExporter(export_lib.SpanExporter):
       self, spans: typing.Sequence[ReadableSpan]
   ) -> export_lib.SpanExportResult:
     for span in spans:
+      # Schema v1 emits both `call_llm` and `generate_content`; v2 emits only
+      # `generate_content`. In v1 `call_llm` ends later, so it overwrites
+      # `generate_content` in `trace_dict`.
       if (
           span.name == "call_llm"
           or span.name == "send_data"
           or span.name.startswith("execute_tool")
+          or span.name.startswith("generate_content")
       ):
         # ReadableSpan.attributes wraps its attributes and is never None.
         attributes = dict(cast("Mapping[str, AttributeValue]", span.attributes))
@@ -801,27 +808,33 @@ class ListAppsResponse(common.BaseModel):
 
 def _setup_telemetry(
     otel_to_cloud: bool = False,
-    internal_exporters: Optional[list[SpanProcessor]] = None,
+    internal_processors: Optional[OTelHooks] = None,
 ) -> None:
+  internal_processors = internal_processors or OTelHooks()
   # TODO - remove the else branch here once maybe_set_otel_providers is no
   # longer experimental.
   if otel_to_cloud:
-    _setup_gcp_telemetry(internal_exporters=internal_exporters)
+    _setup_gcp_telemetry(internal_processors)
   elif _otel_env_vars_enabled():
-    _setup_telemetry_from_env(internal_exporters=internal_exporters)
+    _setup_telemetry_from_env(internal_processors)
   else:
     # Old logic - to be removed when above leaves experimental.
     tracer_provider = trace.get_tracer_provider()
     is_proxy = isinstance(tracer_provider, trace.ProxyTracerProvider)
     if is_proxy:
       tracer_provider = TracerProvider()
-    if internal_exporters is not None:
-      add_proc = getattr(tracer_provider, "add_span_processor", None)
-      if callable(add_proc):
-        for exporter in internal_exporters:
-          add_proc(exporter)
+    add_proc = getattr(tracer_provider, "add_span_processor", None)
+    if callable(add_proc):
+      for processor in internal_processors.span_processors:
+        add_proc(processor)
     if is_proxy:
       trace.set_tracer_provider(tracer_provider=tracer_provider)
+    # Logs never had the old logic: a provider set elsewhere is left alone.
+    maybe_set_otel_providers([
+        OTelHooks(
+            log_record_processors=internal_processors.log_record_processors
+        )
+    ])
 
 
 def _otel_env_vars_enabled() -> bool:
@@ -836,62 +849,34 @@ def _otel_env_vars_enabled() -> bool:
   ])
 
 
-def _setup_gcp_telemetry(
-    internal_exporters: Optional[list[SpanProcessor]] = None,
-) -> None:
-  if typing.TYPE_CHECKING:
-    from ..telemetry.setup import OTelHooks
-
-  otel_hooks_to_add: list[OTelHooks] = []
-
-  if internal_exporters:
-    from ..telemetry.setup import OTelHooks
-
-    # Register ADK-specific exporters in trace provider.
-    otel_hooks_to_add.append(OTelHooks(span_processors=internal_exporters))
-
+def _setup_gcp_telemetry(internal_processors: OTelHooks) -> None:
   import google.auth
 
   from ..telemetry.google_cloud import _CLOUD_PLATFORM_SCOPE
   from ..telemetry.google_cloud import get_gcp_exporters
   from ..telemetry.google_cloud import get_gcp_resource
-  from ..telemetry.setup import maybe_set_otel_providers
 
   credentials, project_id = google.auth.default(scopes=[_CLOUD_PLATFORM_SCOPE])
 
-  otel_hooks_to_add.append(
-      get_gcp_exporters(
-          # TODO - use trace_to_cloud here as well once otel_to_cloud is no
-          # longer experimental.
-          enable_cloud_tracing=True,
-          enable_cloud_metrics=True,
-          enable_cloud_logging=True,
-          google_auth=(credentials, project_id),
-      )
-  )
-  otel_resource = get_gcp_resource(project_id)
-
   maybe_set_otel_providers(
-      otel_hooks_to_setup=otel_hooks_to_add,
-      otel_resource=otel_resource,
+      otel_hooks_to_setup=[
+          internal_processors,
+          get_gcp_exporters(
+              # TODO - use trace_to_cloud here as well once otel_to_cloud is no
+              # longer experimental.
+              enable_cloud_tracing=True,
+              enable_cloud_metrics=True,
+              enable_cloud_logging=True,
+              google_auth=(credentials, project_id),
+          ),
+      ],
+      otel_resource=get_gcp_resource(project_id),
   )
   _setup_instrumentation_lib_if_installed()
 
 
-def _setup_telemetry_from_env(
-    internal_exporters: Optional[list[SpanProcessor]] = None,
-) -> None:
-  from ..telemetry.setup import maybe_set_otel_providers
-
-  otel_hooks_to_add = []
-
-  if internal_exporters:
-    from ..telemetry.setup import OTelHooks
-
-    # Register ADK-specific exporters in trace provider.
-    otel_hooks_to_add.append(OTelHooks(span_processors=internal_exporters))
-
-  maybe_set_otel_providers(otel_hooks_to_setup=otel_hooks_to_add)
+def _setup_telemetry_from_env(internal_processors: OTelHooks) -> None:
+  maybe_set_otel_providers(otel_hooks_to_setup=[internal_processors])
   _setup_instrumentation_lib_if_installed()
 
 
@@ -1379,17 +1364,21 @@ class ApiServer:
 
     memory_exporter = InMemoryExporter(session_trace_dict)
     self._memory_exporter = memory_exporter
+    self._log_exporter = WebUiLogExporter()
 
-    internal_exporters: list[SpanProcessor] = []
+    internal_processors = None
     if self._serves_debug_trace_endpoints:
-      internal_exporters = [
-          export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
-          export_lib.SimpleSpanProcessor(memory_exporter),
-      ]
+      internal_processors = OTelHooks(
+          span_processors=[
+              export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
+              export_lib.SimpleSpanProcessor(memory_exporter),
+          ],
+          log_record_processors=[SimpleLogRecordProcessor(self._log_exporter)],
+      )
 
     _setup_telemetry(
         otel_to_cloud=otel_to_cloud,
-        internal_exporters=internal_exporters,
+        internal_processors=internal_processors,
     )
     tracer_provider = trace.get_tracer_provider()
     if hasattr(tracer_provider, "add_span_processor"):
