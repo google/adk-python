@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 
 from authlib.oauth2.rfc6749 import OAuth2Token
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
+from google.adk.agents._caller_principal import CallerPrincipal
 from google.adk.auth.auth_handler import AuthHandler
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
@@ -56,6 +57,8 @@ def test_apply_confirmation_resume():
   ctx.node_path = "wf@1/node@1"
   ctx.tool_confirmation = None
   ctx.resume_inputs = {}
+  # An in-process caller: no serving layer set a principal.
+  ctx.get_invocation_context.return_value.caller_principal = None
 
   assert apply_confirmation_resume(ctx) is False
   assert ctx.tool_confirmation is None
@@ -70,6 +73,45 @@ def test_apply_confirmation_resume():
   assert ctx.tool_confirmation == ToolConfirmation(
       confirmed=True, payload={"note": "approved"}
   )
+
+
+def test_apply_confirmation_resume_refuses_unauthenticated_caller_in_strict_mode(
+    monkeypatch,
+):
+  """An approval the serving layer could not attribute is stored as a rejection.
+
+  Same decision as the agent confirmation flow; made here because tools that
+  read `tool_confirmation` themselves never pass through the confirmation
+  gate.
+  """
+  monkeypatch.setenv("ADK_ENABLE_STRICT_CALLER_PRINCIPAL", "1")
+  ctx = MagicMock()
+  ctx.node_path = "wf@1/node@1"
+  ctx.tool_confirmation = None
+  ctx.resume_inputs = {"wf_tool_confirmation:wf@1/node@1": {"confirmed": True}}
+  ctx.get_invocation_context.return_value.caller_principal = CallerPrincipal(
+      authenticated=False, source="a2a"
+  )
+
+  assert apply_confirmation_resume(ctx) is True
+  assert ctx.tool_confirmation == ToolConfirmation(confirmed=False)
+
+
+def test_apply_confirmation_resume_honors_authenticated_caller_in_strict_mode(
+    monkeypatch,
+):
+  """An approval from a caller the serving layer verified is kept as sent."""
+  monkeypatch.setenv("ADK_ENABLE_STRICT_CALLER_PRINCIPAL", "1")
+  ctx = MagicMock()
+  ctx.node_path = "wf@1/node@1"
+  ctx.tool_confirmation = None
+  ctx.resume_inputs = {"wf_tool_confirmation:wf@1/node@1": {"confirmed": True}}
+  ctx.get_invocation_context.return_value.caller_principal = CallerPrincipal(
+      authenticated=True, user_name="operator", source="a2a"
+  )
+
+  assert apply_confirmation_resume(ctx) is True
+  assert ctx.tool_confirmation == ToolConfirmation(confirmed=True)
 
 
 def test_create_confirmation_request_input():
