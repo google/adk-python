@@ -860,7 +860,10 @@ class McpTool(BaseAuthenticatedTool):
     headers: dict[str, str] | None = None
     if credential:
       if credential.oauth2:
-        headers = {"Authorization": f"Bearer {credential.oauth2.access_token}"}
+        if credential.oauth2.access_token:
+          headers = {
+              "Authorization": f"Bearer {credential.oauth2.access_token}"
+          }
       elif credential.http:
         # Handle HTTP authentication schemes
         if (
