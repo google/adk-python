@@ -107,6 +107,7 @@ from ..utils.feature_decorator import experimental
 from ..version import __version__
 from .cli_eval import _LEGACY_EVAL_SESSION_ID_PREFIX
 from .cli_eval import EVAL_SESSION_ID_PREFIX
+from .sse import format_event_frames
 from .utils import cleanup
 from .utils import common
 from .utils.base_agent_loader import _AgentLoadError
@@ -2273,36 +2274,15 @@ class ApiServer:
               if event is None:
                 break
               # ADK Web renders artifacts from `actions.artifactDelta`
-              # during part processing *and* during action processing
-              # 1) the original event with `artifactDelta` cleared (content)
-              # 2) a content-less "action-only" event carrying `artifactDelta`
-              events_to_stream = [event]
-              if (
-                  not req.function_call_event_id
-                  and event.actions.artifact_delta
-                  and event.content
-                  and event.content.parts
+              # during part processing *and* during action processing, so the
+              # frame split keeps an artifact from rendering twice. The resume
+              # request that answers a long-running function call must not
+              # split.
+              for frame in format_event_frames(
+                  event, split_artifact_delta=not req.function_call_event_id
               ):
-                content_event = event.model_copy(deep=True)
-                content_event.actions.artifact_delta = {}
-                artifact_event = event.model_copy(deep=True)
-                artifact_event.content = None
-                events_to_stream = [content_event, artifact_event]
-
-              for event_to_stream in events_to_stream:
-                sse_event = pydantic_core.to_json(
-                    _redact_credential_secrets(
-                        public_event(event_to_stream).model_dump(
-                            exclude_none=True,
-                            by_alias=True,
-                            mode="json",
-                        )
-                    )
-                ).decode("utf-8")
-                logger.debug(
-                    "Generated event in agent run streaming: %s", sse_event
-                )
-                yield f"data: {sse_event}\n\n"
+                logger.debug("Generated event in agent run stream: %s", frame)
+                yield frame
               next_step_event.set()
           except (GeneratorExit, asyncio.CancelledError) as e:
             is_closing = True

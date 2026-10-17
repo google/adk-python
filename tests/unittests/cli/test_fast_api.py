@@ -42,6 +42,7 @@ from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli import service_registry as service_registry_module
 from google.adk.cli.api_server import RunAgentRequest
 from google.adk.cli.fast_api import get_fast_api_app
+from google.adk.cli.sse import format_event_frames
 from google.adk.cli.utils.base_agent_loader import _AgentLoadError
 from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.errors.not_found_error import NotFoundError
@@ -7786,6 +7787,57 @@ def test_url_prefix_propagated_to_docs_openapi_url(
   response = client.get("/docs")
   assert response.status_code == 200
   assert "/adk/openapi.json" in response.text
+
+
+def test_agent_run_sse_frames_match_the_public_serializer(
+    test_app, create_test_session, monkeypatch
+):
+  """/run_sse writes exactly the frames `format_event_frames` returns.
+
+  The helper exists so a caller that streams a runner outside this route can
+  reproduce the wire format. Pinning the route's bytes to the helper keeps the
+  two from drifting: a framing change that is not made in the helper fails
+  here.
+  """
+  info = create_test_session
+  streamed = Event(
+      author="agent",
+      invocation_id="invocation_id",
+      content=types.Content(
+          role="model", parts=[types.Part(text="LLM reply")]
+      ),
+      actions=EventActions(artifact_delta={"artifact.txt": 0}),
+  )
+
+  async def run_async_with_artifact_delta(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+      **kwargs,
+  ):
+    del user_id, session_id, invocation_id, new_message, state_delta
+    del run_config, kwargs
+    yield streamed
+
+  monkeypatch.setattr(Runner, "run_async", run_async_with_artifact_delta)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": True,
+  }
+
+  response = test_app.post("/run_sse", json=payload)
+
+  assert response.status_code == 200
+  assert response.text == "".join(format_event_frames(streamed))
 
 
 if __name__ == "__main__":
