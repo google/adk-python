@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import gc
 import logging
 import signal
 import sys
@@ -297,7 +298,8 @@ class TestExecuteBashTool:
     tool = bash_tool.ExecuteBashTool(workspace=workspace)
     mock_process = mock.AsyncMock()
     mock_process.pid = 12345
-    mock_process.communicate.return_value = (b"", b"")
+    mock_process.stdout = None
+    mock_process.stderr = None
     with (
         mock.patch.object(
             asyncio,
@@ -344,7 +346,8 @@ class TestExecuteBashTool:
     tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
     mock_process = mock.AsyncMock()
     mock_process.pid = None  # Ensure finally block doesn't try to kill it
-    mock_process.communicate.return_value = (b"", b"")
+    mock_process.stdout = None
+    mock_process.stderr = None
     mock_exec = mock.AsyncMock(return_value=mock_process)
 
     with mock.patch("asyncio.create_subprocess_exec", mock_exec):
@@ -365,3 +368,211 @@ class TestExecuteBashTool:
         mock_setrlimit.assert_any_call(
             resource.RLIMIT_FSIZE, (50 * 1024 * 1024, 50 * 1024 * 1024)
         )
+
+
+class TestOutputLimits:
+
+  def test_default_limit(self):
+    assert bash_tool.BashToolPolicy().max_output_bytes_per_stream == (
+        1024 * 1024
+    )
+
+  @pytest.mark.asyncio
+  async def test_small_output_unchanged(
+      self, workspace, tool_context_confirmed
+  ):
+    policy = bash_tool.BashToolPolicy(max_output_bytes_per_stream=1024)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    result = await tool.run_async(
+        args={"command": "python3 -c 'print(\"hello\")'"},
+        tool_context=tool_context_confirmed,
+    )
+    assert result["stdout"] == "hello\n"
+    assert result["returncode"] == 0
+
+  @pytest.mark.asyncio
+  async def test_large_stdout_is_truncated(
+      self, workspace, tool_context_confirmed
+  ):
+    policy = bash_tool.BashToolPolicy(max_output_bytes_per_stream=1000)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    total = 2 * 1024 * 1024
+    result = await tool.run_async(
+        args={
+            "command": (
+                "python3 -c 'import sys;"
+                f' sys.stdout.buffer.write(b"x" * {total})\''
+            )
+        },
+        tool_context=tool_context_confirmed,
+    )
+    assert result["returncode"] == 0
+    assert result["stdout"].startswith("x" * 1000 + "\n...[stdout truncated")
+    assert f"{total - 1000} of {total} bytes omitted" in result["stdout"]
+    assert len(result["stdout"]) < 1200
+
+  @pytest.mark.asyncio
+  async def test_stdout_and_stderr_are_bounded_independently(
+      self, workspace, tool_context_confirmed
+  ):
+    policy = bash_tool.BashToolPolicy(max_output_bytes_per_stream=500)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    script = (
+        "import sys\n"
+        "for _ in range(64):\n"
+        '    sys.stdout.buffer.write(b"o" * 16384)\n'
+        '    sys.stderr.buffer.write(b"e" * 16384)\n'
+    )
+    (workspace / "noisy.py").write_text(script)
+    result = await tool.run_async(
+        args={"command": "python3 noisy.py"},
+        tool_context=tool_context_confirmed,
+    )
+    assert result["returncode"] == 0
+    assert result["stdout"].startswith("o" * 500 + "\n...[stdout truncated")
+    assert result["stderr"].startswith("e" * 500 + "\n...[stderr truncated")
+    assert len(result["stdout"]) < 700
+    assert len(result["stderr"]) < 700
+
+  @pytest.mark.asyncio
+  async def test_limit_can_be_disabled(self, workspace, tool_context_confirmed):
+    policy = bash_tool.BashToolPolicy(max_output_bytes_per_stream=None)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    result = await tool.run_async(
+        args={
+            "command": (
+                'python3 -c \'import sys; sys.stdout.buffer.write(b"x" *'
+                " 200000)'"
+            )
+        },
+        tool_context=tool_context_confirmed,
+    )
+    assert result["stdout"] == "x" * 200000
+
+  @pytest.mark.asyncio
+  async def test_timeout_output_is_bounded_and_process_reaped(
+      self, workspace, tool_context_confirmed
+  ):
+    policy = bash_tool.BashToolPolicy(
+        timeout_seconds=1, max_output_bytes_per_stream=100
+    )
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    (workspace / "forever.py").write_text(
+        'import sys\nwhile True:\n    sys.stdout.buffer.write(b"y" * 65536)\n'
+    )
+    result = await tool.run_async(
+        args={"command": "python3 forever.py"},
+        tool_context=tool_context_confirmed,
+    )
+    assert "timed out" in result["error"]
+    assert result["stdout"].startswith("y" * 100 + "\n...[stdout truncated")
+    assert len(result["stdout"]) < 300
+    assert result["returncode"] == -signal.SIGKILL
+
+  def test_rejects_negative_output_limit(self):
+    with pytest.raises(ValueError, match="max_output_bytes_per_stream"):
+      bash_tool.BashToolPolicy(max_output_bytes_per_stream=-1)
+
+  def test_zero_output_limit_is_allowed(self):
+    policy = bash_tool.BashToolPolicy(max_output_bytes_per_stream=0)
+    assert policy.max_output_bytes_per_stream == 0
+
+  @pytest.mark.asyncio
+  async def test_output_exactly_at_limit_is_not_truncated(
+      self, workspace, tool_context_confirmed
+  ):
+    limit = 1000
+    policy = bash_tool.BashToolPolicy(max_output_bytes_per_stream=limit)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    result = await tool.run_async(
+        args={
+            "command": (
+                "python3 -c 'import sys;"
+                f' sys.stdout.buffer.write(b"x" * {limit})\''
+            )
+        },
+        tool_context=tool_context_confirmed,
+    )
+    assert result["returncode"] == 0
+    assert result["stdout"] == "x" * limit
+    assert "truncated" not in result["stdout"]
+
+  @pytest.mark.asyncio
+  async def test_cancellation_cleans_up_drain_and_wait(
+      self, workspace, tool_context_confirmed
+  ):
+    """Cancelling run_async must not leave drain/wait tasks pending.
+
+    A child that stays in the process group and keeps stdout open would
+    otherwise leave _drain_stream tasks hanging after CancelledError.
+    """
+    policy = bash_tool.BashToolPolicy(
+        timeout_seconds=30, max_output_bytes_per_stream=64
+    )
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    (workspace / "hold_pipe.py").write_text(
+        "import os\n"
+        "import sys\n"
+        "import time\n"
+        "if os.fork() == 0:\n"
+        "    while True:\n"
+        '        sys.stdout.buffer.write(b"z" * 1024)\n'
+        "        sys.stdout.buffer.flush()\n"
+        "        time.sleep(0.05)\n"
+        "else:\n"
+        "    time.sleep(60)\n"
+    )
+    task = asyncio.create_task(
+        tool.run_async(
+            args={"command": "python3 hold_pipe.py"},
+            tool_context=tool_context_confirmed,
+        )
+    )
+    await asyncio.sleep(0.4)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await task
+    await asyncio.sleep(0)
+    leftover_drains = [
+        t
+        for t in asyncio.all_tasks()
+        if not t.done()
+        and getattr(getattr(t, "get_coro", lambda: None)(), "__name__", None)
+        == "_drain_stream"
+    ]
+    assert leftover_drains == []
+
+  @pytest.mark.asyncio
+  async def test_cancellation_retrieves_completion_exception(
+      self, workspace, tool_context_confirmed
+  ):
+    """Cancelling run_async must not report an unretrieved gather exception."""
+    loop = asyncio.get_running_loop()
+    reports = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _, context: reports.append(context))
+    try:
+      tool = bash_tool.ExecuteBashTool(
+          workspace=workspace,
+          policy=bash_tool.BashToolPolicy(timeout_seconds=30),
+      )
+      task = asyncio.create_task(
+          tool.run_async(
+              args={"command": "sleep 30"},
+              tool_context=tool_context_confirmed,
+          )
+      )
+      await asyncio.sleep(0.4)
+      task.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await task
+      del task
+      for _ in range(3):
+        await asyncio.sleep(0)
+      gc.collect()
+      await asyncio.sleep(0)
+    finally:
+      loop.set_exception_handler(previous_handler)
+    assert [
+        r for r in reports if "never retrieved" in r.get("message", "")
+    ] == []

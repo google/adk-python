@@ -58,6 +58,66 @@ def _load_resource_module() -> Optional[_ResourceModule]:
 
 _resource = _load_resource_module()
 
+_DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
+_READ_CHUNK_SIZE = 64 * 1024
+# Grace period to drain pipes after the process group has been killed.
+_DRAIN_GRACE_SECONDS = 1.0
+
+
+class _BoundedOutput:
+  """Accumulates a stream's output up to a byte limit."""
+
+  def __init__(self, limit: Optional[int]):
+    self._limit = limit
+    self._data = bytearray()
+    self.total_bytes = 0
+
+  def append(self, chunk: bytes) -> None:
+    self.total_bytes += len(chunk)
+    if self._limit is None:
+      self._data.extend(chunk)
+      return
+    remaining = self._limit - len(self._data)
+    if remaining > 0:
+      self._data.extend(chunk[:remaining])
+
+  @property
+  def truncated_bytes(self) -> int:
+    return self.total_bytes - len(self._data)
+
+  def render(self, stream_name: str) -> str:
+    if not self.total_bytes:
+      return f"<no {stream_name} captured>"
+    text = bytes(self._data).decode(errors="replace")
+    if self.truncated_bytes:
+      text += (
+          f"\n...[{stream_name} truncated: {self.truncated_bytes} of"
+          f" {self.total_bytes} bytes omitted; limit is {self._limit}"
+          " bytes]"
+      )
+    return text
+
+
+async def _drain_stream(
+    stream: Optional[asyncio.StreamReader], output: _BoundedOutput
+) -> None:
+  """Reads a stream to EOF in fixed-size chunks into a bounded buffer."""
+  if stream is None:
+    return
+  while True:
+    chunk = await stream.read(_READ_CHUNK_SIZE)
+    if not chunk:
+      return
+    output.append(chunk)
+
+
+async def _finish_readers(readers: list[asyncio.Task[None]]) -> None:
+  """Waits briefly for readers to reach EOF, then cancels any stragglers."""
+  _, pending = await asyncio.wait(readers, timeout=_DRAIN_GRACE_SECONDS)
+  for task in pending:
+    task.cancel()
+  await asyncio.gather(*readers, return_exceptions=True)
+
 
 @dataclasses.dataclass(frozen=True)
 class BashToolPolicy:
@@ -75,6 +135,12 @@ class BashToolPolicy:
 
   Values for max_memory_bytes, max_file_size_bytes, and max_child_processes
   will be enforced upon the spawned subprocess.
+
+  max_output_bytes_per_stream bounds how many bytes of stdout and of stderr
+  are retained in the agent process. Output beyond the limit is still read
+  (so the subprocess never blocks on a full pipe) but discarded, and the
+  returned text ends with a marker reporting how many bytes were truncated.
+  Set it to None to disable the limit.
   """
 
   allowed_command_prefixes: tuple[str, ...] = ("*",)
@@ -83,8 +149,16 @@ class BashToolPolicy:
   max_memory_bytes: Optional[int] = None
   max_file_size_bytes: Optional[int] = None
   max_child_processes: Optional[int] = None
+  max_output_bytes_per_stream: Optional[int] = _DEFAULT_MAX_OUTPUT_BYTES
 
   def __post_init__(self) -> None:
+    if (
+        self.max_output_bytes_per_stream is not None
+        and self.max_output_bytes_per_stream < 0
+    ):
+      raise ValueError(
+          "max_output_bytes_per_stream must be >= 0, or None to disable"
+      )
     for prefix in self.allowed_command_prefixes:
       try:
         shlex.split(prefix)
@@ -245,8 +319,11 @@ class ExecuteBashTool(BaseTool):
     if os.name != "posix":
       return {"error": "ExecuteBashTool is only supported on POSIX systems."}
 
-    stdout = None
-    stderr = None
+    stdout = _BoundedOutput(self._policy.max_output_bytes_per_stream)
+    stderr = _BoundedOutput(self._policy.max_output_bytes_per_stream)
+    readers: list[asyncio.Task[None]] = []
+    process: Optional[asyncio.subprocess.Process] = None
+    completion: Optional[asyncio.Future[Any]] = None
     try:
       process = await asyncio.create_subprocess_exec(
           *shlex.split(command),
@@ -256,10 +333,18 @@ class ExecuteBashTool(BaseTool):
           start_new_session=True,
           preexec_fn=lambda: _set_resource_limits(self._policy),
       )
+      readers = [
+          asyncio.create_task(_drain_stream(process.stdout, stdout)),
+          asyncio.create_task(_drain_stream(process.stderr, stderr)),
+      ]
 
+      completion = asyncio.gather(*readers, process.wait())
       try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=self._policy.timeout_seconds
+        # Shield so a timeout does not cancel the readers: they must keep
+        # draining the pipes until EOF for the killed process to be reaped.
+        await asyncio.wait_for(
+            asyncio.shield(completion),
+            timeout=self._policy.timeout_seconds,
         )
       except asyncio.TimeoutError:
         try:
@@ -267,22 +352,15 @@ class ExecuteBashTool(BaseTool):
             _kill_process_group(process)
         except ProcessLookupError:
           pass
-        stdout, stderr = await process.communicate()
+        await _finish_readers(readers)
+        await process.wait()
         return {
             "error": (
                 f"Command timed out after {self._policy.timeout_seconds}"
                 " seconds."
             ),
-            "stdout": (
-                stdout.decode(errors="replace")
-                if stdout
-                else "<no stdout captured>"
-            ),
-            "stderr": (
-                stderr.decode(errors="replace")
-                if stderr
-                else "<no stderr captured>"
-            ),
+            "stdout": stdout.render("stdout"),
+            "stderr": stderr.render("stderr"),
             "returncode": process.returncode,
         }
       finally:
@@ -292,32 +370,42 @@ class ExecuteBashTool(BaseTool):
         except ProcessLookupError:
           pass
       return {
-          "stdout": (
-              stdout.decode(errors="replace")
-              if stdout
-              else "<no stdout captured>"
-          ),
-          "stderr": (
-              stderr.decode(errors="replace")
-              if stderr
-              else "<no stderr captured>"
-          ),
+          "stdout": stdout.render("stdout"),
+          "stderr": stderr.render("stderr"),
           "returncode": process.returncode,
       }
+    except asyncio.CancelledError:
+      # Cancellation must not leave drain/wait tasks pending when a
+      # descendant still holds a pipe open after the process group kill.
+      try:
+        if process is not None and process.pid:
+          _kill_process_group(process)
+      except ProcessLookupError:
+        pass
+      if completion is not None and not completion.done():
+        completion.cancel()
+      for task in readers:
+        task.cancel()
+      if readers:
+        await asyncio.gather(*readers, return_exceptions=True)
+      if completion is not None:
+        # Retrieve the cancelled gather's result so asyncio does not report
+        # "_GatheringFuture exception was never retrieved".
+        await asyncio.gather(completion, return_exceptions=True)
+      if process is not None and process.returncode is None:
+        try:
+          await asyncio.shield(process.wait())
+        except Exception:  # pylint: disable=broad-except
+          pass
+      raise
     except Exception as e:  # pylint: disable=broad-except
       logger.exception("ExecuteBashTool execution failed")
-
-      stdout_res = (
-          stdout.decode(errors="replace") if stdout else "<no stdout captured>"
-      )
-      stderr_res = (
-          stderr.decode(errors="replace") if stderr else "<no stderr captured>"
-      )
-
+      if readers:
+        await _finish_readers(readers)
       return {
           "error": f"Execution failed: {str(e)}",
-          "stdout": stdout_res,
-          "stderr": stderr_res,
+          "stdout": stdout.render("stdout"),
+          "stderr": stderr.render("stderr"),
       }
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:
