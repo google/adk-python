@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+from collections.abc import Iterator
 import inspect
 import logging
 import sys
@@ -888,6 +889,18 @@ class LlmAgent(BaseAgent, abc.ABC):
       resolved_tools.extend(tools)
 
     return resolved_tools
+
+  @override
+  def _iter_static_children(self) -> Iterator[BaseNode]:
+    """Yields direct static children (sub-agents and node tools)."""
+    from ..tools._node_tool import NodeTool
+
+    yield from super()._iter_static_children()
+    for tool in self.tools:
+      if isinstance(tool, NodeTool):
+        yield tool.node
+      elif isinstance(tool, BaseNode):
+        yield tool
 
   @property
   def canonical_before_model_callbacks(

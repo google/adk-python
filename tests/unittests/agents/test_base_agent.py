@@ -189,6 +189,15 @@ def test_user_agent_name_validation():
   assert agent_all_caps.name == 'USER'
 
 
+def test_base_agent_iter_static_children_yields_sub_agents():
+  """BaseAgent._iter_static_children yields direct sub-agents in order."""
+  sub1 = _TestingAgent(name='sub1')
+  sub2 = _TestingAgent(name='sub2')
+  parent = _TestingAgent(name='parent', sub_agents=[sub1, sub2])
+
+  assert list(parent._iter_static_children()) == [sub1, sub2]
+
+
 @pytest.mark.asyncio
 async def test_run_async(request: pytest.FixtureRequest):
   agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')

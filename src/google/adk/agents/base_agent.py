@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+from collections.abc import Iterator
 import inspect
 import logging
 from typing import Any
@@ -550,6 +551,11 @@ class BaseAgent(BaseNode, abc.ABC):
       if result := sub_agent.find_agent(name):
         return result
     return None
+
+  @override
+  def _iter_static_children(self) -> Iterator[BaseNode]:
+    """Yields direct static children (sub-agents) of this agent."""
+    yield from self.sub_agents
 
   def _create_invocation_context(
       self, parent_context: InvocationContext

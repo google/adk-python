@@ -1381,3 +1381,35 @@ async def test_canonical_live_model_async_matches_the_property():
   assert (
       await agent.canonical_live_model_async(ctx) is agent.canonical_live_model
   )
+
+
+def test_llm_agent_iter_static_children_sub_agents_and_node_tools():
+  """LlmAgent._iter_static_children yields sub-agents and NodeTool/BaseNode tools."""
+  from google.adk.tools.agent_tool import AgentTool
+  from google.adk.workflow import BaseNode
+  from google.adk.workflow import START
+  from google.adk.workflow import Workflow
+
+  sub_agent = LlmAgent(name='sub')
+  wf_as_tool = Workflow(
+      name='tool_wf',
+      input_schema=str,
+      edges=[(START, BaseNode(name='wf_node'))],
+  )
+  agent_tool_agent = LlmAgent(name='standalone_agent')
+  agent_tool = AgentTool(agent=agent_tool_agent)
+  standalone_node = BaseNode(name='appended_node')
+
+  def my_tool():
+    pass
+
+  parent = LlmAgent(
+      name='parent',
+      sub_agents=[sub_agent],
+      tools=[wf_as_tool, agent_tool, my_tool],
+  )
+  parent.tools.append(standalone_node)
+
+  children = list(parent._iter_static_children())
+  assert [c.name for c in children] == ['sub', 'tool_wf', 'appended_node']
+  assert agent_tool_agent not in children
