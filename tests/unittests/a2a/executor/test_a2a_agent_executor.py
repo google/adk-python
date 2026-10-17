@@ -25,6 +25,7 @@ from a2a.types import Task
 from a2a.types import TaskArtifactUpdateEvent
 from google.adk.a2a import _compat
 from google.adk.a2a.agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
+from google.adk.a2a.converters.event_converter import DEFAULT_ERROR_MESSAGE
 from google.adk.a2a.converters.request_converter import AgentRunRequest
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutorConfig
@@ -799,6 +800,9 @@ class TestA2aAgentExecutor:
     failure_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
     assert failure_event.status.state == _compat.TS_FAILED
     _assert_final(failure_event)
+    failure_text = failure_event.status.message.parts[0].text
+    assert failure_text == DEFAULT_ERROR_MESSAGE
+    assert "Test error" not in failure_text
 
   @pytest.mark.asyncio
   async def test_handle_request_with_aggregator_message(self):
