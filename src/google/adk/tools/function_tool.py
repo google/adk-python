@@ -20,7 +20,6 @@ import logging
 import re
 from typing import Any
 from typing import Callable
-from typing import cast
 from typing import Iterable
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -317,10 +316,14 @@ class FunctionTool(BaseTool):
       args_to_call = self._prepare_invocation_args(
           preprocessed_args, tool_context
       )
-      return cast(
-          bool,
-          await self._invoke_callable(self._require_confirmation, args_to_call),
+      result = await self._invoke_callable(
+          self._require_confirmation, args_to_call
       )
+      # typing.cast is erased at runtime. A callable that returns None (e.g. an
+      # unhandled branch) must not skip the confirmation gate.
+      if isinstance(result, bool):
+        return result
+      return True
     return bool(self._require_confirmation)
 
   def _is_invocation_type_error(
