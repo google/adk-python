@@ -262,6 +262,8 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
 
 def annotation_expects_str(annotated_type: Any) -> bool:
   """Returns True if the annotation expects ``str`` rather than JSON data."""
+  if get_origin(annotated_type) is Annotated:
+    annotated_type = get_args(annotated_type)[0]
   if annotated_type is str:
     return True
   if get_origin(annotated_type) in (Union, UnionType):
@@ -277,6 +279,8 @@ def annotation_expects_str(annotated_type: Any) -> bool:
 
 def annotation_accepts_content(annotated_type: Any) -> bool:
   """Returns True if the annotation accepts ``types.Content`` as-is."""
+  if get_origin(annotated_type) is Annotated:
+    annotated_type = get_args(annotated_type)[0]
   if annotated_type in (Any, object, types.Content):
     return True
   if isinstance(annotated_type, type) and issubclass(
