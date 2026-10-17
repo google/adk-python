@@ -64,7 +64,6 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import TracerProvider
 from pydantic import Field
 from pydantic import ValidationError
-import pydantic_core
 from starlette.types import Lifespan
 from starlette.types import Scope
 from typing_extensions import deprecated
@@ -108,6 +107,8 @@ from ..utils.agent_info import AgentInfo
 from ..utils.agent_info import get_agents_dict
 from ..utils.context_utils import Aclosing
 from ..version import __version__
+from ._sse import format_event_frames
+from ._sse import serialize_event
 from .cli_eval import _LEGACY_EVAL_SESSION_ID_PREFIX
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
@@ -2492,38 +2493,17 @@ class ApiServer:
               if event is None or is_closing:
                 break
               # ADK Web renders artifacts from `actions.artifactDelta`
-              # during part processing *and* during action processing
-              # 1) the original event with `artifactDelta` cleared (content)
-              # 2) a content-less "action-only" event carrying `artifactDelta`
-              events_to_stream = [event]
-              if (
-                  not req.function_call_event_id
-                  and event.actions.artifact_delta
-                  and event.content
-                  and event.content.parts
+              # during part processing *and* during action processing, so the
+              # frame split keeps an artifact from rendering twice. The resume
+              # request that answers a long-running function call must not
+              # split.
+              for frame in format_event_frames(
+                  event, split_artifact_delta=not req.function_call_event_id
               ):
-                content_event = event.model_copy(deep=True)
-                content_event.actions.artifact_delta = {}
-                artifact_event = event.model_copy(deep=True)
-                artifact_event.content = None
-                events_to_stream = [content_event, artifact_event]
-
-              for event_to_stream in events_to_stream:
                 if is_closing:
                   break
-                sse_event = pydantic_core.to_json(
-                    _redact_credential_secrets(
-                        public_event(event_to_stream).model_dump(
-                            exclude_none=True,
-                            by_alias=True,
-                            mode="json",
-                        )
-                    )
-                ).decode("utf-8")
-                logger.debug(
-                    "Generated event in agent run streaming: %s", sse_event
-                )
-                yield f"data: {sse_event}\n\n"
+                logger.debug("Generated event in agent run stream: %s", frame)
+                yield frame
               next_step_event.set()
           except (GeneratorExit, asyncio.CancelledError) as e:
             is_closing = True
@@ -2680,15 +2660,9 @@ class ApiServer:
             )
         ) as agen:
           async for event in agen:
-            await websocket.send_text(
-                pydantic_core.to_json(
-                    _redact_credential_secrets(
-                        public_event(event).model_dump(
-                            exclude_none=True, by_alias=True, mode="json"
-                        )
-                    )
-                ).decode("utf-8")
-            )
+            # /run_live carries the same event JSON as a /run_sse data frame,
+            # minus the SSE framing, so it uses the one serializer too.
+            await websocket.send_text(serialize_event(event))
 
       close_code: int | None = None
       close_reason = ""
