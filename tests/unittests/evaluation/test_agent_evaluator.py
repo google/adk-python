@@ -524,6 +524,17 @@ def _make_result_with_invocation(
   )
 
 
+def test_convert_content_to_text_excludes_thought_parts():
+  content = genai_types.Content(
+      parts=[
+          genai_types.Part(text="Consider the options.", thought=True),
+          genai_types.Part(text="Paris"),
+      ]
+  )
+
+  assert AgentEvaluator._convert_content_to_text(content) == "Paris"
+
+
 def test_get_results_as_rows_flattens_metrics_and_invocations():
   eval_metric_results = {
       "response_match_score": [
