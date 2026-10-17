@@ -24,6 +24,7 @@ from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.cli.agent_graph import get_agent_graph
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools.function_tool import FunctionTool
 import pytest
 
 _DARK_GREEN = '#0F5223'
@@ -250,3 +251,66 @@ async def test_get_agent_graph_is_strict_so_repeated_edges_collapse():
 
   assert graph.strict
   assert graph.source.count('child -> roll_dice') == 1
+
+
+def _colon_tool() -> FunctionTool:
+  """A tool whose name contains ':', which Gemini function names allow."""
+  tool = FunctionTool(roll_dice)
+  tool.name = 'srv:tool'
+  return tool
+
+
+def _assert_tool_edge_lands_on_declared_node(source: str, agent: str) -> None:
+  """Checks `agent -> "srv:tool"` targets the node, not a phantom port.
+
+  _parse() unquotes names, so it cannot tell `a -> srv:tool` (port syntax)
+  from `a -> "srv:tool"`; compare the raw tokens instead.
+  """
+  declared = {
+      match['name']
+      for line in source.splitlines()
+      if (match := _NODE_RE.match(line.strip()))
+  }
+  endpoints = {
+      match[end]
+      for line in source.splitlines()
+      if (match := _EDGE_RE.match(line.strip()))
+      for end in ('src', 'dst')
+  }
+  assert '"srv:tool"' in declared
+  assert endpoints <= declared
+  assert 'srv' not in endpoints
+  assert f'{agent} -> "srv:tool"' in source
+
+
+@pytest.mark.asyncio
+async def test_build_graph_tool_name_with_colon_is_linked_to_its_agent():
+  root = LlmAgent(name='root', model='gemini-2.0-flash', tools=[_colon_tool()])
+
+  graph = await get_agent_graph(root, [])
+
+  _assert_tool_edge_lands_on_declared_node(graph.source, 'root')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'workflow_agent_class', [SequentialAgent, LoopAgent, ParallelAgent]
+)
+async def test_build_graph_tool_name_with_colon_is_linked_inside_a_cluster(
+    workflow_agent_class,
+):
+  workflow = workflow_agent_class(
+      name='steps',
+      sub_agents=[
+          LlmAgent(
+              name='first', model='gemini-2.0-flash', tools=[_colon_tool()]
+          ),
+          LlmAgent(name='second', model='gemini-2.0-flash'),
+      ],
+  )
+
+  graph = await get_agent_graph(workflow, [])
+
+  # The tool edge is drawn on the cluster's own Digraph.
+  assert 'subgraph "cluster_steps' in graph.source
+  _assert_tool_edge_lands_on_declared_node(graph.source, 'first')

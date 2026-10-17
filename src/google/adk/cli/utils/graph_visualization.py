@@ -21,8 +21,25 @@ from typing import Any
 from typing import cast
 
 import graphviz
+from graphviz import quoting
 
 from ...workflow._node_status import NodeStatus
+
+
+class _Digraph(graphviz.Digraph):  # type: ignore[misc]  # graphviz is untyped
+  """A Digraph whose edge endpoints are quoted as plain node ids.
+
+  Digraph.edge() splits an endpoint on ":" before quoting it, treating the
+  rest as a port, so an edge to a node named "srv:tool" is written as
+  `a -> srv:tool` and attaches to a phantom node "srv". Quoting the whole
+  endpoint keeps the real name as the DOT id, which adk-web reads back from
+  the SVG title as the node name. No port syntax is used in these graphs.
+
+  This overrides the private `_quote_edge` hook. Verified on graphviz 0.20.2
+  and 0.21; a unit test fails if the hook is renamed or stops working.
+  """
+
+  _quote_edge = staticmethod(quoting.quote)
 
 
 def plot_workflow_graph(
@@ -64,7 +81,7 @@ def plot_workflow_graph(
     graph = {"nodes": nodes, "edges": edges}
 
   nodes_state = agent_state.get("nodes", {})
-  dot = graphviz.Digraph(comment="Workflow Visualization")
+  dot = _Digraph(comment="Workflow Visualization")
 
   if dark_mode:
     graph_bgcolor = "#0F172A"
