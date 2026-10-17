@@ -111,6 +111,31 @@ def _maybe_base64_to_bytes(data: str) -> bytes | None:
       return None
 
 
+def _decode_xml_reference(match: re.Match[str]) -> str:
+  """Decodes one predefined XML entity or numeric character reference."""
+  reference = match.group(1)
+  if not reference.startswith('#'):
+    return {'amp': '&', 'lt': '<', 'gt': '>', 'quot': '"', 'apos': "'"}[
+        reference
+    ]
+  try:
+    codepoint = (
+        int(reference[2:], 16)
+        if reference.startswith('#x')
+        else int(reference[1:])
+    )
+    # Preserve invalid XML character references instead of aborting extraction.
+    if codepoint in (9, 10, 13) or (
+        0x20 <= codepoint <= 0xD7FF
+        or 0xE000 <= codepoint <= 0xFFFD
+        or 0x10000 <= codepoint <= 0x10FFFF
+    ):
+      return chr(codepoint)
+  except ValueError:
+    pass
+  return match.group(0)
+
+
 def _try_extract_docx_text(data: bytes) -> str | None:
   """Extracts raw text from a DOCX binary."""
   # We use regex instead of standard XML parser to avoid XML bomb vulnerabilities,
@@ -139,7 +164,13 @@ def _try_extract_docx_text(data: bytes) -> str | None:
       for p in re.split(rf'<{p_tag}(?:[^>]*)>', xml_content):
         texts = re.findall(rf'<{t_tag}(?:[^>]*)>([^<]*)</{t_tag}>', p)
         if texts:
-          paragraphs.append(''.join(texts))
+          paragraphs.append(
+              re.sub(
+                  r'&(#x[0-9a-fA-F]+|#[0-9]+|amp|lt|gt|quot|apos);',
+                  _decode_xml_reference,
+                  ''.join(texts),
+              )
+          )
 
       return '\n'.join(paragraphs)
   except (zipfile.BadZipFile, KeyError, struct.error) as e:
