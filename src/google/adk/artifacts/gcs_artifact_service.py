@@ -246,11 +246,11 @@ class GcsArtifactService(BaseArtifactService):
     artifact_util.validate_path_segment(user_id, "user_id")
     if self._file_has_user_namespace(filename):
       return f"{app_name}/{user_id}/user/{filename}"
-
     if session_id is None:
-      raise InputValidationError(
-          "Session ID must be provided for session-scoped artifacts."
-      )
+      # No session means the user-scoped namespace, the one the "user:"
+      # prefix selects.
+      return f"{app_name}/{user_id}/user/user:{filename}"
+
     artifact_util.validate_path_segment(session_id, "session_id")
     return f"{app_name}/{user_id}/{session_id}/{filename}"
 
@@ -289,11 +289,11 @@ class GcsArtifactService(BaseArtifactService):
   ) -> int:
     from google.cloud import exceptions  # pylint: disable=g-import-not-at-top
 
-    if not self._file_has_user_namespace(filename):
-      if session_id is None:
-        raise InputValidationError(
-            "Session ID must be provided for session-scoped artifacts."
-        )
+    if session_id is None:
+      # No session means the user-scoped namespace.
+      if not self._file_has_user_namespace(filename):
+        filename = f"user:{filename}"
+    elif not self._file_has_user_namespace(filename):
       artifact_util._validate_session_id_for_flat_storage(session_id)
 
     artifact = ensure_part(artifact)
