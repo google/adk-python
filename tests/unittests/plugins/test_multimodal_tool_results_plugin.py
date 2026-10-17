@@ -103,7 +103,7 @@ async def test_tool_returning_non_list_of_parts_is_unchanged(
       result=original_result,
   )
 
-  assert result == original_result
+  assert result is None
   assert PARTS_RETURNED_BY_TOOLS_ID not in tool_context.state
 
   callback_context = Mock(spec=CallbackContext)
@@ -708,3 +708,40 @@ async def test_session_retention_retains_parts_on_subsequent_model_calls_in_same
       callback_context=callback_context, llm_request=llm_request_2
   )
   assert llm_request_2.contents[-1].parts == [file_part]
+
+
+def test_agent_after_tool_callback_runs_for_non_part_results():
+  """The plugin does not short-circuit the agent's after_tool_callback."""
+
+  def get_weather(city: str) -> dict[str, Any]:
+    return {"city": city, "temp": 20}
+
+  seen = []
+
+  def after_tool_callback(tool, args, tool_context, tool_response):
+    seen.append(tool_response)
+    return {"redacted": True}
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name="get_weather", args={"city": "Paris"}
+          ),
+          "done",
+      ]
+  )
+  agent = Agent(
+      name="root_agent",
+      model=mock_model,
+      tools=[get_weather],
+      after_tool_callback=after_tool_callback,
+  )
+  runner = testing_utils.InMemoryRunner(
+      agent, plugins=[MultimodalToolResultsPlugin()]
+  )
+
+  events = runner.run("weather?")
+
+  assert seen == [{"city": "Paris", "temp": 20}]
+  responses = [fr.response for e in events for fr in e.get_function_responses()]
+  assert responses == [{"redacted": True}]

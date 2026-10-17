@@ -83,7 +83,8 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
           "Artifact service is not set. SaveFilesAsArtifactsPlugin"
           " will not be enabled."
       )
-      return user_message
+      # None leaves the message unchanged without stopping later plugins.
+      return None
 
     if not user_message.parts:
       return None
