@@ -50,6 +50,8 @@ def _clear_proxy_env(monkeypatch):
   for env_var in list(os.environ):
     if env_var.lower().endswith('_proxy'):
       monkeypatch.delenv(env_var, raising=False)
+  # An empty proxy environment can fall back to macOS system proxies.
+  monkeypatch.setenv('NO_PROXY', '*')
 
 
 def _set_proxy_env(monkeypatch):
