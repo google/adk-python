@@ -56,12 +56,19 @@ PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
 # json_group_object writes a REAL with 15 significant digits, which rounds
 # floats such as 0.1 + 0.2 for every key in the row. A REAL is written with 17
 # digits when 15 do not read back as the same value, so floats round-trip.
+#
+# An integer outside the signed 64-bit range also comes out of json_each as a
+# REAL (its type column still says 'integer'), so we can't rebuild it from
+# value. The -> operator gives back the original JSON text of the element
+# instead, which keeps those integers exact.
 _MERGE_STATE_SQL = """
         SELECT json_group_object(
                  key,
                  CASE
                    WHEN type IN ('object','array') THEN json(value)
                    WHEN type IN ('true','false') THEN json(type)
+                   WHEN type = 'integer' AND typeof(value) = 'real'
+                     THEN json(raw)
                    WHEN type = 'real' THEN json(
                      CASE
                        WHEN CAST(printf('%!.15g', value) AS REAL) = value
@@ -71,9 +78,11 @@ _MERGE_STATE_SQL = """
                    ELSE value
                  END)
         FROM (
-          SELECT key, value, type FROM json_each({delta})
+          SELECT key, value, type, {delta} -> fullkey AS raw
+            FROM json_each({delta})
           UNION ALL
-          SELECT key, value, type FROM json_each({state})
+          SELECT key, value, type, {state} -> fullkey AS raw
+            FROM json_each({state})
            WHERE key NOT IN (SELECT key FROM json_each({delta}))
         )
       """
@@ -675,10 +684,10 @@ class SqliteSessionService(BaseSessionService):
     delta_json = json.dumps(delta)
     await db.execute(
         "UPDATE sessions SET"
-        f" state=({_MERGE_STATE_SQL.format(delta='?', state='state')}),"
-        " update_time=? WHERE app_name=? AND user_id=? AND id=?",
+        # The delta is used several times in the merge, so bind it by number.
+        f" state=({_MERGE_STATE_SQL.format(delta='?1', state='state')}),"
+        " update_time=?2 WHERE app_name=?3 AND user_id=?4 AND id=?5",
         (
-            delta_json,
             delta_json,
             now,
             app_name,

@@ -1272,10 +1272,12 @@ async def test_user_state_none_valued_delta_is_stored_not_dropped(
   assert session1.state.get('user:pref') is None
 
 
-# Floats that need more than 15 significant digits to read back unchanged.
+# Floats that need more than 15 significant digits to read back unchanged, plus
+# an unsigned 64-bit hash that does not fit in a signed 64-bit integer.
 _EXACT_NUMBERS = {
     'ratio': 0.1 + 0.2,
     'epoch_seconds': 1727500000.1234567,
+    'fingerprint': 0xFEDCBA9876543210,
 }
 
 
