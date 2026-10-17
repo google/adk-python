@@ -163,3 +163,36 @@ class TestLoadMcpResourceTool:
     assert part.inline_data is not None
     assert part.inline_data.mime_type == "image/png"
     assert part.inline_data.data == blob_data
+
+  @pytest.mark.asyncio
+  async def test_process_llm_request_multi_part_traversal(self):
+    """Test loading resource when function response is not the first part."""
+    tool = LoadMcpResourceTool(mcp_toolset=self.mock_mcp_toolset)
+    function_response = types.FunctionResponse(
+        name="load_mcp_resource",
+        response={"resource_names": ["res1"]},
+    )
+    prior_part = types.Part.from_text(text="Prior text part")
+    part = types.Part(function_response=function_response)
+    content = types.Content(role="user", parts=[prior_part, part])
+    llm_request = LlmRequest(
+        model="dummy",
+        contents=[content],
+    )
+    text_content = TextResourceContents(
+        uri="file:///res1", mimeType="text/plain", text="hello content"
+    )
+    self.mock_mcp_toolset.read_resource = AsyncMock(return_value=[text_content])
+    self.mock_mcp_toolset.list_resources = AsyncMock(return_value=["res1"])
+
+    await tool.process_llm_request(
+        tool_context=self.mock_tool_context, llm_request=llm_request
+    )
+
+    self.mock_mcp_toolset.read_resource.assert_called_once_with("res1")
+    assert len(llm_request.contents) == 2
+    new_content = llm_request.contents[1]
+    assert new_content.role == "user"
+    assert len(new_content.parts) == 2
+    assert "Resource res1 is:" in new_content.parts[0].text
+    assert new_content.parts[1].text == "hello content"

@@ -76,6 +76,7 @@ def test_parse_user_scoped_artifact_uri_with_nested_filename():
 @pytest.mark.parametrize(
     "invalid_uri",
     [
+        "",
         "http://example.com",
         "artifact://invalid",
         "artifact://app1/user1/sessions/session1/artifacts/file1",
@@ -112,6 +113,32 @@ def test_get_user_scoped_artifact_uri():
   assert uri == "artifact://apps/app2/users/user2/artifacts/file2/versions/456"
 
 
+def test_get_artifact_uri_preserves_padded_session_id() -> None:
+  """Preserves a padded session ID when constructing an artifact URI."""
+  uri = artifact_util.get_artifact_uri(
+      app_name="app1",
+      user_id="user1",
+      session_id="  session1\n",
+      filename="file1",
+      version=123,
+  )
+  assert uri == (
+      "artifact://apps/app1/users/user1/sessions/  session1\n/"
+      "artifacts/file1/versions/123"
+  )
+
+
+def test_parse_artifact_uri_preserves_padded_session_id() -> None:
+  """Preserves a padded session ID segment when parsing an artifact URI."""
+  uri = (
+      "artifact://apps/app1/users/user1/sessions/session1"
+      " /artifacts/file1/versions/123"
+  )
+  parsed = artifact_util.parse_artifact_uri(uri)
+  assert parsed is not None
+  assert parsed.session_id == "session1 "
+
+
 def test_is_artifact_ref_true():
   """Tests is_artifact_ref with a valid artifact reference."""
   artifact = types.Part(
@@ -132,6 +159,9 @@ def test_is_artifact_ref_true():
                 file_uri="http://example.com", mime_type="text/plain"
             )
         ),
+        types.Part(
+            file_data=types.FileData(file_uri=None, mime_type="text/plain")
+        ),
         types.Part(),
     ],
 )
@@ -151,6 +181,9 @@ def test_is_artifact_ref_false(part):
         "myapp",
         "sess123",
         "group/user123",
+        "mdbuser/username",
+        "projects/123/locations/us-central1/reasoningEngines/456",
+        "nested/app/name",
         "has/slash",
         "back\\slash",
         mock.MagicMock(),
@@ -178,18 +211,52 @@ def test_validate_path_segment_valid(value, field_name):
         ".",
         "null\x00byte",
         "",
+        "   ",
+        "\t\n",
         "/etc/passwd",
         "/leading/slash",
         "\\leading\\backslash",
         "C:\\absolute",
         "C:/absolute",
         "C:drive-relative",
+        "group/sessions/123",
+        "has/users/slash",
+        "back\\apps\\slash",
+        "victim/sessions/s1",
+        "victim/artifacts/a1",
+        "victim/versions/v1",
     ],
 )
 def test_validate_path_segment_invalid(value, field_name):
-  """Traversal segments, null bytes, and absolute paths should raise InputValidationError."""
+  """Traversal segments, null bytes, absolute paths, and reserved segments with slashes should raise InputValidationError."""
   with pytest.raises(InputValidationError):
     artifact_util.validate_path_segment(value, field_name)
+
+
+@pytest.mark.parametrize(
+    "session_id",
+    ["user", "user/x", "user\\x", "user/has/slash", "user\\has\\backslash"],
+)
+def test_validate_session_id_for_flat_storage_rejects_reserved_user(
+    session_id: str,
+):
+  with pytest.raises(InputValidationError, match="reserved value 'user'"):
+    artifact_util._validate_session_id_for_flat_storage(session_id)
+
+
+@pytest.mark.parametrize(
+    "session_id",
+    ["session1", "users", "username", "group/user", "has/slash"],
+)
+def test_validate_session_id_for_flat_storage_allows_ordinary_values(
+    session_id: str,
+):
+  artifact_util._validate_session_id_for_flat_storage(session_id)
+
+
+def test_validate_session_id_for_flat_storage_still_runs_path_segment_checks():
+  with pytest.raises(InputValidationError, match="must not be empty"):
+    artifact_util._validate_session_id_for_flat_storage("")
 
 
 @pytest.mark.parametrize(
@@ -313,3 +380,91 @@ def test_validate_artifact_reference_scope_session_uri_without_caller_session_ra
 def test_is_drive_qualified_matches_only_drive_letters(value, expected):
   """Only a single ASCII letter followed by a colon counts as a drive."""
   assert artifact_util._is_drive_qualified(value) is expected
+
+
+def test_parse_artifact_uri_with_namespaced_segments():
+  """Tests parsing artifact URIs when app_name and user_id contain slashes."""
+  app_name = "projects/123/locations/us-central1/reasoningEngines/456"
+  user_id = "group/user123"
+  session_id = "sess123"
+  filename = "safe.txt"
+  version = 1
+
+  session_uri = artifact_util.get_artifact_uri(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=version,
+  )
+  parsed_session = artifact_util.parse_artifact_uri(session_uri)
+  assert parsed_session == artifact_util.ParsedArtifactUri(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=version,
+  )
+
+  user_uri = artifact_util.get_artifact_uri(
+      app_name=app_name,
+      user_id=user_id,
+      filename=filename,
+      version=version,
+  )
+  parsed_user = artifact_util.parse_artifact_uri(user_uri)
+  assert parsed_user == artifact_util.ParsedArtifactUri(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=None,
+      filename=filename,
+      version=version,
+  )
+
+
+def test_parse_artifact_uri_with_namespaced_session_id():
+  """Tests parsing an artifact URI when session_id contains slashes."""
+  app_name = "projects/123/locations/us-central1/reasoningEngines/456"
+  user_id = "group/user123"
+  session_id = "team/sess123"
+  filename = "safe.txt"
+  version = 1
+
+  session_uri = artifact_util.get_artifact_uri(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=version,
+  )
+  parsed_session = artifact_util.parse_artifact_uri(session_uri)
+  assert parsed_session == artifact_util.ParsedArtifactUri(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=version,
+  )
+
+
+def test_parse_artifact_uri_user_scoped_with_sessions_in_filename():
+  """Tests parsing a user-scoped artifact URI whose filename contains sessions."""
+  app_name = "myapp"
+  user_id = "alice"
+  filename = "sessions/sess1/artifacts/data.txt"
+  version = 1
+
+  uri = artifact_util.get_artifact_uri(
+      app_name=app_name,
+      user_id=user_id,
+      filename=filename,
+      version=version,
+  )
+  parsed = artifact_util.parse_artifact_uri(uri)
+  assert parsed == artifact_util.ParsedArtifactUri(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=None,
+      filename=filename,
+      version=version,
+  )

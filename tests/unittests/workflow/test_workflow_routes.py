@@ -617,6 +617,95 @@ async def test_routing_map_fan_out_runs_both_targets(
 
 
 @pytest.mark.asyncio
+async def test_routing_map_default_route_fan_out_runs_both_targets(
+    request: pytest.FixtureRequest,
+):
+  """Tests that fan-out on DEFAULT_ROUTE triggers both fallback targets."""
+  node_a = TestingNode(name='NodeA', output='A', route='unmatched_route')
+  node_b = TestingNode(name='NodeB', output='B')
+  node_c = TestingNode(name='NodeC', output='C')
+  gate = JoinNode(name='Gate')
+
+  agent = Workflow(
+      name='test_default_route_fan_out',
+      edges=[
+          (START, node_a),
+          (node_a, {DEFAULT_ROUTE: (node_b, node_c)}),
+          (node_b, gate),
+          (node_c, gate),
+      ],
+  )
+
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+  simplified = simplify_events_with_node(events)
+
+  outputs = [
+      e
+      for e in simplified
+      if isinstance(e[1], dict) and e[1].get('output') is not None
+  ]
+
+  assert len(outputs) == 4
+  assert outputs[0] == (
+      'test_default_route_fan_out@1/NodeA@1',
+      {'output': 'A'},
+  )
+  assert outputs[-1] == (
+      'test_default_route_fan_out@1/Gate@1',
+      {'output': {'NodeB': 'B', 'NodeC': 'C'}},
+  )
+
+  other = outputs[1:3]
+  expected = [
+      (
+          'test_default_route_fan_out@1/NodeB@1',
+          {'output': 'B'},
+      ),
+      (
+          'test_default_route_fan_out@1/NodeC@1',
+          {'output': 'C'},
+      ),
+  ]
+  assert len(other) == len(expected)
+  assert all(item in other for item in expected)
+
+
+@pytest.mark.asyncio
+async def test_routing_map_default_route_fan_out_with_named_route(
+    request: pytest.FixtureRequest,
+):
+  """Tests that a matched named route wins over a fanned-out default."""
+  node_a = TestingNode(name='NodeA', output='A', route='route_b')
+  node_b = TestingNode(name='NodeB', output='B')
+  node_c = TestingNode(name='NodeC', output='C')
+  node_d = TestingNode(name='NodeD', output='D')
+
+  agent = Workflow(
+      name='test_default_route_fan_out_named',
+      edges=[
+          (START, node_a),
+          (node_a, {'route_b': node_b, DEFAULT_ROUTE: (node_c, node_d)}),
+      ],
+  )
+
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+  assert simplify_events_with_node(events) == [
+      (
+          'test_default_route_fan_out_named@1/NodeA@1',
+          {'output': 'A'},
+      ),
+      (
+          'test_default_route_fan_out_named@1/NodeB@1',
+          {'output': 'B'},
+      ),
+  ]
+
+
+@pytest.mark.asyncio
 async def test_fan_in_with_route(request: pytest.FixtureRequest):
   """Fan-in with conditional routes — both route to same target."""
   a = TestingNode(name='a', output='A', route='route1')

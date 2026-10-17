@@ -1,0 +1,99 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+from pydantic import BaseModel
+from pydantic import Field
+
+from ...features import experimental
+from ...features import FeatureName
+
+
+@experimental(FeatureName.MONGODB_TOOL_SETTINGS)
+class MongoDbToolSettings(BaseModel):
+  """Settings for MongoDB tools."""
+
+  vertex_ai_embedding_model_name: str = "text-embedding-005"
+  """The Vertex AI embedding model name used to generate query embeddings.
+
+  The query vector is compared against vectors already stored in the
+  collection, so this has to be the model those were produced with. A
+  different model, or the same model at a different output dimensionality,
+  ranks by a similarity that means nothing.
+  """
+
+  vertex_ai_embedding_output_dimensionality: int | None = Field(
+      default=None, gt=0
+  )
+  """Length of the query embedding, for models that support shortening it.
+
+  Leave it unset to get the model's native length. Set it to the length of the
+  stored vectors when those were generated with a truncated embedding.
+  """
+
+  use_mongodb_auto_embedding: bool = False
+  """Let Atlas generate query embeddings instead of calling a Google model.
+
+  When False (default), every search embeds its query text through the genai
+  client (`vertex_ai_embedding_model_name`, a Google embedding model) and
+  sends the resulting vector to `$vectorSearch` as `queryVector`. The stored
+  documents must carry embeddings produced by that same model.
+
+  When True, the raw query text is sent to `$vectorSearch` as `query.text`
+  and Atlas generates the embedding itself with the Voyage AI model
+  configured on the index (Atlas "Automated Embedding", a Preview feature).
+  The searched field must be indexed as the `autoEmbed` type, and the genai
+  client is never called, so no Google credentials are needed. See
+  https://www.mongodb.com/docs/vector-search/query/aggregation-stages/vector-search-stage/
+  """
+
+  mongodb_auto_embedding_model: str | None = None
+  """Voyage AI model Atlas should embed queries with, e.g. "voyage-4".
+
+  Only used with `use_mongodb_auto_embedding`. The model must be compatible
+  with the one the index embeds documents with; leave unset to use the
+  index's own model. Must be omitted when querying with `queryVector`, which
+  is why it is never sent in the default (Google embedding) mode.
+  """
+
+  default_vector_index_name: str = "vector_index"
+  """Default name of the vector search index to query."""
+
+  default_search_index_name: str = "default"
+  """Default name of the full-text search index used by hybrid search."""
+
+  default_embedding_field: str = "embedding"
+  """Default document field searched by `$vectorSearch`.
+
+  In the default mode this is the field storing embedding vectors. With
+  `use_mongodb_auto_embedding=True` it is the raw text field indexed as
+  `autoEmbed`.
+  """
+
+  default_limit: int = Field(default=4, gt=0)
+  """Default number of documents returned by a search operation."""
+
+  max_results: int = Field(default=50, gt=0)
+  """Maximum number of documents a search operation may return."""
+
+  default_num_candidates: int = Field(default=100, gt=0)
+  """Default number of nearest neighbors considered by vector search."""
+
+  timeout_ms: int = Field(default=60_000, gt=0)
+  """Time limit in milliseconds for a single search operation.
+
+  A search runs on a worker thread that cannot be cancelled, and the model
+  steers how much work it asks the server for, so every search is bounded.
+  """

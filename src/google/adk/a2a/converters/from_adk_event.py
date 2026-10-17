@@ -32,6 +32,7 @@ from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskStatusUpdateEvent
 
 from .. import _compat
+from ...events._internal_metadata import public_metadata
 from ...events.event import Event
 from ..experimental import a2a_experimental
 from .part_converter import convert_genai_part_to_a2a_part
@@ -283,7 +284,7 @@ def _add_event_metadata(event: Event, a2a_events: Sequence[A2AEvent]) -> None:
       "branch": event.branch,
       "citation_metadata": event.citation_metadata,
       "grounding_metadata": event.grounding_metadata,
-      "custom_metadata": event.custom_metadata,
+      "custom_metadata": public_metadata(event.custom_metadata),
       "usage_metadata": event.usage_metadata,
       "error_code": event.error_code,
       "actions": event.actions,

@@ -127,3 +127,41 @@ Only use the latest schema in the `DatabaseSessionService`, and raise an
 Exception if detecting legacy schema versions. Keep the schema files like
 `schemas/v1.py` and the migration scripts for documentation and not-yet-migrated
 users.
+
+## 8. Index Changes and Runtime DDL Guidelines
+
+When adding or evolving indexes on existing tables (especially high-volume
+tables like `events` and `sessions`), follow these operational rules in
+`_ensure_schema_indexes_exist()` (invoked by
+`DatabaseSessionService.prepare_tables()`):
+
+*   **Never execute destructive DDL (such as `DROP INDEX`) at runtime**:
+    *   Dropping a superseded index automatically during service startup
+        acquires an `ACCESS EXCLUSIVE` lock in PostgreSQL, which blocks all
+        concurrent reads and writes and can stall traffic behind any active
+        transaction.
+    *   During rolling deployments or rollbacks, older container instances run
+        concurrently against the same database and still rely on the previous
+        index definition. Leave cleanup of superseded indexes to operators
+        (for example via `DROP INDEX CONCURRENTLY`) after the rollout has
+        stabilized.
+*   **Guard additive runtime DDL against cross-container startup races**:
+    *   In-memory locks (`self._table_creation_lock`) only synchronize
+        coroutines within a single process. When multiple containers start
+        simultaneously, `checkfirst=True` (and
+        `inspect(connection).get_indexes()`) has a time-of-check to
+        time-of-use (TOCTOU) race window.
+    *   Always wrap each runtime
+        `index.create(bind=connection, checkfirst=True)` call inside a
+        `SAVEPOINT` (`with connection.begin_nested():`) and catch
+        `(OperationalError, ProgrammingError)`. When an error occurs,
+        re-inspect the table indexes and treat the operation as succeeded if a
+        peer container created the index concurrently. Without a savepoint, a
+        duplicate-index error aborts the enclosing PostgreSQL transaction
+        (`InFailedSqlTransaction`).
+*   **Support out-of-band `CREATE INDEX CONCURRENTLY` pre-creation**:
+    *   Because `_ensure_schema_indexes_exist` checks existing index names
+        before issuing `CREATE INDEX`, operators with large production tables
+        can run `CREATE INDEX CONCURRENTLY IF NOT EXISTS ...` ahead of a
+        rollout so that container startup performs a fast metadata no-op
+        without holding table write locks.

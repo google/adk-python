@@ -22,6 +22,8 @@ from pydantic import BaseModel
 from pydantic import Field
 from pydantic import field_validator
 
+from ._errors import WorkflowConfigurationError
+
 
 class RetryConfig(BaseModel):
   """Configuration for retrying a node."""
@@ -68,7 +70,7 @@ class RetryConfig(BaseModel):
       elif isinstance(item, type) and issubclass(item, BaseException):
         normalized.append(item.__name__)
       else:
-        raise ValueError(
+        raise WorkflowConfigurationError(
             'exceptions must contain exception class names (str) or'
             f' exception classes, got {type(item).__name__}: {item!r}'
         )

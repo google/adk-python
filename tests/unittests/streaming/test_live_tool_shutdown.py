@@ -30,14 +30,16 @@ from typing import AsyncGenerator
 from typing import Callable
 from unittest import mock
 
-from google.adk.agents.active_streaming_tool import ActiveStreamingTool
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows import base_llm_flow
-from google.adk.flows.llm_flows.single_flow import SingleFlow
+from google.adk.flows.llm_flows import functions
+from google.adk.live import _flow_utils
 from google.adk.live import LiveRequestQueue
+from google.adk.live._active_background_tool import ActiveBackgroundTool
+from google.adk.live._active_streaming_tool import ActiveStreamingTool
 from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -127,15 +129,15 @@ def _task_completed() -> str:
 
 
 @pytest.mark.asyncio
-async def test_teardown_empties_both_registries(
+async def test_teardown_empties_the_registry(
     monkeypatch: pytest.MonkeyPatch,
 ):
-  """Neither registry keeps a tool of a run that is over.
+  """The registry keeps no tool of a run that is over.
 
   Tools that stop on request retire themselves, so this uses two that refuse
   to: what is left behind is exactly what teardown has to sweep up.
   """
-  monkeypatch.setattr(base_llm_flow, '_TOOL_SHUTDOWN_TIMEOUT_SECONDS', 0.05)
+  monkeypatch.setattr(_flow_utils, '_TOOL_SHUTDOWN_TIMEOUT_SECONDS', 0.05)
 
   def refuses_to_stop() -> Any:
     """Ignores the first cancellation; honors the second, so this test ends."""
@@ -160,19 +162,26 @@ async def test_teardown_empties_both_registries(
   invocation_context = await testing_utils.create_invocation_context(
       agent=Agent(name='agent', model=testing_utils.MockModel.create([]))
   )
-  invocation_context.active_streaming_tools = {
-      _MONITOR: ActiveStreamingTool(
-          task=streaming_task, stream=LiveRequestQueue()
+  invocation_context._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name=_MONITOR,
+          function_call_id='call_1',
+          task=streaming_task,
+          input_stream=LiveRequestQueue(),
+          is_generator=True,
       )
-  }
-  invocation_context.active_non_blocking_tool_tasks = {
-      'lookup_1': non_blocking_task
-  }
+  )
+  invocation_context._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='lookup',
+          function_call_id='call_2',
+          task=non_blocking_task,
+      )
+  )
 
-  await SingleFlow()._stop_background_tool_tasks(invocation_context)
+  await _flow_utils.stop_background_tool_tasks(invocation_context)
 
-  assert not invocation_context.active_streaming_tools
-  assert not invocation_context.active_non_blocking_tool_tasks
+  assert not invocation_context._active_background_tools
 
   # The registry no longer holds them, so this test owns their disposal: a
   # task left pending here would stall the event loop's shutdown.
@@ -182,6 +191,64 @@ async def test_teardown_empties_both_registries(
       streaming_task, non_blocking_task, return_exceptions=True
   )
   assert streaming_task.done() and non_blocking_task.done()
+
+
+@pytest.mark.asyncio
+async def test_teardown_stops_every_parallel_call_of_one_streaming_tool():
+  """Teardown cancels every call of a streaming tool, not just the last one.
+
+  Setup: one model turn calls the same streaming tool twice.
+  Act: once both calls are running, tear down the live run.
+  Assert: both calls are cancelled, and nothing stays registered.
+  """
+  started_tasks: list[asyncio.Task[Any]] = []
+  both_started = asyncio.Event()
+
+  async def monitor(symbol: str) -> AsyncGenerator[str, None]:
+    started_tasks.append(asyncio.current_task())
+    if len(started_tasks) == 2:
+      both_started.set()
+    yield f'watching {symbol}'
+    await asyncio.sleep(100)
+
+  tool = FunctionTool(func=monitor)
+  agent = Agent(
+      name='agent', model=testing_utils.MockModel.create([]), tools=[tool]
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name=tool.name, args={'symbol': symbol}, id=f'fc_{symbol}'
+                  )
+              )
+              for symbol in ('GOOG', 'AAPL')
+          ],
+      ),
+  )
+
+  try:
+    await functions.handle_function_calls_live(
+        invocation_context, event, {tool.name: tool}
+    )
+    await asyncio.wait_for(both_started.wait(), timeout=5)
+
+    await _flow_utils.stop_background_tool_tasks(invocation_context)
+
+    assert [task.done() for task in started_tasks] == [True, True]
+    assert not invocation_context._active_background_tools
+  finally:
+    for task in started_tasks:
+      task.cancel()
+    await asyncio.gather(*started_tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -364,7 +431,10 @@ async def test_handoff_stops_feeding_the_stopped_tools_stream():
   except asyncio.TimeoutError:
     pass
 
-  assert _MONITOR not in (contexts[0].active_streaming_tools or {}), (
+  assert not any(
+      active.tool_name == _MONITOR
+      for active in (contexts[0]._active_background_tools or {}).values()
+  ), (
       'the stopped tool is still registered, so every live request the user'
       ' sends for the rest of the session is copied into its stream'
   )
@@ -604,7 +674,7 @@ async def _handoff_with_background_tool(
           testing_utils.MockLlmConnection, '_send_content', _record_send_content
       ),
       mock.patch(
-          'google.adk.flows.llm_flows._live_llm_flow.asyncio.sleep',
+          'google.adk.live._live_llm_flow.asyncio.sleep',
           side_effect=_mock_sleep,
       ),
   ):
@@ -654,3 +724,197 @@ async def test_handoff_stops_streaming_tools_before_the_transfer_delay():
   assert (
       'late_stream' not in forwarded
   ), "the handing-off agent's streaming tool yielded during the transfer delay"
+
+
+@pytest.mark.asyncio
+async def test_stop_streaming_propagates_outer_cancelled_error():
+  """Cancelling the caller while stop_streaming awaits a stubborn task propagates CancelledError."""
+
+  def stop_streaming(function_name: str) -> None:
+    del function_name
+
+  agent = Agent(
+      name='root_agent',
+      model='gemini-2.0-flash',
+      tools=[stop_streaming],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  stubborn_cancelled = asyncio.Event()
+  release_stubborn = asyncio.Event()
+
+  async def _stubborn_task() -> None:
+    try:
+      await asyncio.sleep(10)
+    except asyncio.CancelledError:
+      stubborn_cancelled.set()
+      while not release_stubborn.is_set():
+        try:
+          await release_stubborn.wait()
+        except asyncio.CancelledError:
+          pass
+      raise
+
+  target_task = asyncio.create_task(_stubborn_task())
+  invocation_context._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='monitor',
+          function_call_id='call_1',
+          task=target_task,
+          is_generator=True,
+      )
+  )
+
+  stop_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part.from_function_call(
+                  name='stop_streaming', args={'function_name': 'monitor'}
+              )
+          ],
+      ),
+  )
+  tools_dict = {'stop_streaming': FunctionTool(func=stop_streaming)}
+
+  caller_task = asyncio.create_task(
+      functions.handle_function_calls_live(
+          invocation_context, stop_event, tools_dict
+      )
+  )
+  await stubborn_cancelled.wait()
+  caller_task.cancel()
+
+  try:
+    with pytest.raises(asyncio.CancelledError):
+      await caller_task
+  finally:
+    release_stubborn.set()
+    try:
+      await target_task
+    except asyncio.CancelledError:
+      pass
+
+
+@pytest.mark.asyncio
+async def test_stop_streaming_reraises_target_task_exception():
+  """If the streaming tool task raised an exception on cancel, stop_streaming re-raises it."""
+
+  def stop_streaming(function_name: str) -> None:
+    del function_name
+
+  agent = Agent(
+      name='root_agent',
+      model='gemini-2.0-flash',
+      tools=[stop_streaming],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  async def _failing_task() -> None:
+    try:
+      await asyncio.sleep(10)
+    except asyncio.CancelledError:
+      raise RuntimeError('streaming tool crashed on cancel')
+
+  target_task = asyncio.create_task(_failing_task())
+  invocation_context._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='monitor',
+          function_call_id='call_1',
+          task=target_task,
+          is_generator=True,
+      )
+  )
+
+  stop_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part.from_function_call(
+                  name='stop_streaming', args={'function_name': 'monitor'}
+              )
+          ],
+      ),
+  )
+  tools_dict = {'stop_streaming': FunctionTool(func=stop_streaming)}
+
+  with pytest.raises(RuntimeError, match='streaming tool crashed on cancel'):
+    await functions.handle_function_calls_live(
+        invocation_context, stop_event, tools_dict
+    )
+
+
+async def _call_stop_streaming(
+    invocation_context: InvocationContext, agent: Agent
+) -> dict[str, Any]:
+  """Runs a stop_streaming call for the monitor and returns its response."""
+
+  def stop_streaming(function_name: str) -> None:
+    del function_name
+
+  stop_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part.from_function_call(
+                  name='stop_streaming', args={'function_name': _MONITOR}
+              )
+          ],
+      ),
+  )
+  event = await functions.handle_function_calls_live(
+      invocation_context,
+      stop_event,
+      {'stop_streaming': FunctionTool(func=stop_streaming)},
+  )
+  assert event is not None and event.content and event.content.parts
+  response = event.content.parts[0].function_response
+  assert response is not None and response.response is not None
+  return response.response
+
+
+@pytest.mark.asyncio
+async def test_stop_streaming_stops_a_tool_set_through_deprecated_field():
+  """stop_streaming stops a task registered through active_streaming_tools."""
+  agent = Agent(name='root_agent', model='gemini-2.0-flash')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  task = asyncio.create_task(asyncio.sleep(10))
+  with pytest.warns(DeprecationWarning):
+    invocation_context.active_streaming_tools = {
+        _MONITOR: ActiveStreamingTool(task=task)
+    }
+
+  response = await _call_stop_streaming(invocation_context, agent)
+
+  assert task.cancelled()
+  assert 'Successfully stopped' in response['status']
+  assert not invocation_context._active_background_tools
+
+
+@pytest.mark.asyncio
+async def test_stop_streaming_skips_an_entry_with_a_cleared_task():
+  """An entry whose task was cleared counts as not running."""
+  agent = Agent(name='root_agent', model='gemini-2.0-flash')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  with pytest.warns(DeprecationWarning):
+    invocation_context.active_streaming_tools = {
+        _MONITOR: ActiveStreamingTool(stream=LiveRequestQueue())
+    }
+
+  response = await _call_stop_streaming(invocation_context, agent)
+
+  assert 'No active streaming function' in response['status']

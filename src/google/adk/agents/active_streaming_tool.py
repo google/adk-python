@@ -11,30 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Backward-compatibility module re-exporting ActiveStreamingTool."""
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any
-from typing import Optional
+from ..live._active_streaming_tool import ActiveStreamingTool as ActiveStreamingTool
 
-from pydantic import BaseModel
-from pydantic import ConfigDict
-
-from ..live.live_request_queue import LiveRequestQueue
-
-
-class ActiveStreamingTool(BaseModel):
-  """Manages streaming tool related resources during invocation."""
-
-  model_config = ConfigDict(
-      arbitrary_types_allowed=True,
-      extra='forbid',
-  )
-  """The pydantic model config."""
-
-  task: Optional[asyncio.Task[Any]] = None
-  """The active task of this streaming tool."""
-
-  stream: Optional[LiveRequestQueue] = None
-  """The active (input) streams of this streaming tool."""
+__all__ = [
+    'ActiveStreamingTool',
+]

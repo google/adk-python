@@ -63,6 +63,32 @@ def my_node(ctx: Context, node_input: str) -> str:
 `NodeTimeoutError` (importable from `google.adk.workflow`), which the retry
 machinery treats like any other exception.
 
+## Execution cancellation
+
+Pass an `asyncio.Event` as `abort_signal` to `runner.run_async` to halt an
+in-flight workflow or agent cleanly. Setting the signal cancels active tasks,
+emits a terminal `Event(error_code='INVOCATION_ABORTED')`, seals any dangling
+`FunctionCall` events with a synthetic `FunctionResponse`, and still runs
+`after_run` plugin callbacks.
+
+```python
+import asyncio
+
+abort_signal = asyncio.Event()
+
+async for event in runner.run_async(
+    user_id='u1',
+    session_id='s1',
+    new_message=user_content,
+    abort_signal=abort_signal,
+):
+  if should_stop(event):
+    abort_signal.set()
+```
+
+Inside a node or tool, `ctx.is_aborted` reflects whether the signal has been
+set.
+
 ## Custom node classes
 
 `BaseNode` is a Pydantic model. Declare fields as fields, and override
@@ -169,8 +195,7 @@ raises `ValueError` naming the offending node or edge.
 4. Every node is reachable from `START`, and `START` has no incoming edges.
 5. No two edges share both a source and a target — routes are not part of edge
    identity.
-6. At most one `__DEFAULT__` route per node, and `__DEFAULT__` never appears
-   inside a list of routes.
+6.  A `route` list on one edge never mixes `__DEFAULT__` with named routes.
 7. No unconditional cycle — a cycle needs at least one routed edge.
 8. Where a source declares `output_schema` and its target declares
    `input_schema`, the two must be the same schema.

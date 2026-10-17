@@ -87,11 +87,18 @@ class LlmEventSummarizer(BaseEventsSummarizer):
     Thoughts carry the agent's analysis of tool responses, and tool calls and
     responses carry the evidence retrieved so far, so all three are included.
     Thoughts emitted by a compaction event are skipped so a prior summary's
-    reasoning does not leak into the next summary.
+    reasoning does not leak into the next summary. Credential-request events
+    are skipped because their payload is the end user's credential rather than
+    conversation context, which is why the request path drops them too.
     """
+    # Deferred: the context package imports this module via apps.compaction.
+    from ..flows.llm_flows.context._contents import _is_auth_event
+
     formatted_history = []
     for event in events:
       if not (event.content and event.content.parts):
+        continue
+      if _is_auth_event(event):
         continue
       is_compaction = bool(event.actions and event.actions.compaction)
       for part in event.content.parts:

@@ -15,10 +15,19 @@
 import unittest
 from unittest.mock import AsyncMock
 
+from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlows
 from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.auth.auth_tool import AuthConfig
+from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.event_actions import EventCompaction
+from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -238,6 +247,83 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
     expected_formatted_history = 'model: Prior summary.\nuser: New user input'
     formatted_history = self.compactor._format_events_for_prompt(events)
     self.assertEqual(formatted_history, expected_formatted_history)
+
+  def test_format_events_for_prompt_skips_credential_request_events(self):
+    auth_config = AuthConfig(
+        auth_scheme=OAuth2(
+            flows=OAuthFlows(
+                authorizationCode=OAuthFlowAuthorizationCode(
+                    authorizationUrl='https://example.com/auth',
+                    tokenUrl='https://example.com/token',
+                    scopes={},
+                )
+            )
+        ),
+        raw_auth_credential=AuthCredential(
+            auth_type=AuthCredentialTypes.OAUTH2,
+            oauth2=OAuth2Auth(client_id='client'),
+        ),
+        exchanged_auth_credential=AuthCredential(
+            auth_type=AuthCredentialTypes.OAUTH2,
+            oauth2=OAuth2Auth(
+                client_id='client',
+                code_verifier='pkce-verifier',
+            ),
+        ),
+    )
+    events = [
+        self._create_event(1.0, 'Read my mail', 'user'),
+        Event(
+            timestamp=2.0,
+            author='model',
+            content=Content(
+                parts=[
+                    Part(
+                        function_call=FunctionCall(
+                            id='adk-1',
+                            name=REQUEST_EUC_FUNCTION_CALL_NAME,
+                            args=AuthToolArguments(
+                                function_call_id='call_1',
+                                auth_config=auth_config,
+                            ).model_dump(
+                                mode='json', exclude_none=True, by_alias=True
+                            ),
+                        )
+                    )
+                ]
+            ),
+        ),
+        Event(
+            timestamp=3.0,
+            author='user',
+            content=Content(
+                parts=[
+                    Part(
+                        function_response=FunctionResponse(
+                            id='adk-1',
+                            name=REQUEST_EUC_FUNCTION_CALL_NAME,
+                            response={
+                                'auth_response_uri': (
+                                    'https://example.com/callback?code=auth-code'
+                                ),
+                                'access_token': 'granted-token',
+                            },
+                        )
+                    )
+                ]
+            ),
+        ),
+        self._create_event(4.0, 'Here is your mail.', 'model'),
+    ]
+
+    formatted_history = self.compactor._format_events_for_prompt(events)
+
+    self.assertNotIn('pkce-verifier', formatted_history)
+    self.assertNotIn('auth-code', formatted_history)
+    self.assertNotIn('granted-token', formatted_history)
+    self.assertEqual(
+        formatted_history, 'user: Read my mail\nmodel: Here is your mail.'
+    )
 
   def test_format_events_for_prompt_truncates_large_tool_response(self):
     limit = self.compactor._MAX_TOOL_CONTENT_CHARS

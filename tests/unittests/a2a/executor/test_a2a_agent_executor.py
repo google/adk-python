@@ -141,7 +141,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
     # Mock session service
     mock_session = Mock()
@@ -220,10 +220,9 @@ class TestA2aAgentExecutor:
     # Verify final event was enqueued with proper message field
     final_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
     _assert_final(final_event)
-    # The TaskResultAggregator is created with default state (working), and since no messages
-    # are processed, it will publish a status event with the current state
+    # No messages were processed, and the run still ends the task as completed.
     assert hasattr(final_event.status, "message")
-    assert final_event.status.state == _compat.TS_WORKING
+    assert final_event.status.state == _compat.TS_COMPLETED
 
   @pytest.mark.asyncio
   @pytest.mark.skipif(
@@ -243,7 +242,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
     mock_session = Mock()
     mock_session.id = "test-session"
@@ -308,7 +307,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -360,10 +359,9 @@ class TestA2aAgentExecutor:
     # Verify final event was enqueued with proper message field
     final_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
     _assert_final(final_event)
-    # The TaskResultAggregator is created with default state (working), and since no messages
-    # are processed, it will publish a status event with the current state
+    # No messages were processed, and the run still ends the task as completed.
     assert hasattr(final_event.status, "message")
-    assert final_event.status.state == _compat.TS_WORKING
+    assert final_event.status.state == _compat.TS_COMPLETED
 
   @pytest.mark.asyncio
   async def test_prepare_session_new_session(self):
@@ -372,7 +370,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id=None,
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -400,7 +398,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="existing-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -544,7 +542,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -585,10 +583,9 @@ class TestA2aAgentExecutor:
     # Verify final event was enqueued with proper message field
     final_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
     _assert_final(final_event)
-    # The TaskResultAggregator is created with default state (working), and since no messages
-    # are processed, it will publish a status event with the current state
+    # No messages were processed, and the run still ends the task as completed.
     assert hasattr(final_event.status, "message")
-    assert final_event.status.state == _compat.TS_WORKING
+    assert final_event.status.state == _compat.TS_COMPLETED
 
   @pytest.mark.asyncio
   async def test_execute_with_async_callable_runner(self):
@@ -603,7 +600,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -644,10 +641,9 @@ class TestA2aAgentExecutor:
     # Verify final event was enqueued with proper message field
     final_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
     _assert_final(final_event)
-    # The TaskResultAggregator is created with default state (working), and since no messages
-    # are processed, it will publish a status event with the current state
+    # No messages were processed, and the run still ends the task as completed.
     assert hasattr(final_event.status, "message")
-    assert final_event.status.state == _compat.TS_WORKING
+    assert final_event.status.state == _compat.TS_COMPLETED
 
   @pytest.mark.asyncio
   async def test_handle_request_integration(self):
@@ -660,7 +656,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -729,8 +725,8 @@ class TestA2aAgentExecutor:
           assert final_event.status.message.message_id == exp_msg.message_id
       else:
         assert final_event.status.message == mock_aggregator.task_status_message
-      # When aggregator state is working but no message, final event should be working
-      assert final_event.status.state == _compat.TS_WORKING
+      # When aggregator state is working but no message, the task still completes.
+      assert final_event.status.state == _compat.TS_COMPLETED
 
   @pytest.mark.asyncio
   async def test_cancel_with_task_id(self):
@@ -823,7 +819,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -894,7 +890,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -968,7 +964,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -1056,7 +1052,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -1133,7 +1129,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Setup Interceptor
@@ -1239,7 +1235,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service

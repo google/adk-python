@@ -19,6 +19,7 @@ import asyncio
 from collections import defaultdict
 from collections.abc import Sequence
 import logging
+from typing import cast
 from typing import Generic
 from typing import Optional
 from typing import TypeVar
@@ -47,6 +48,7 @@ from .evaluator import _validate_invocation_lengths
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
+from .llm_as_judge_utils import build_judge_request_config
 from .llm_as_judge_utils import get_eval_status
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -106,6 +108,9 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
       raise expected_criterion_type_error from e
 
     self._judge_model_options = self._criterion.judge_model_options
+    self._judge_model_config = build_judge_request_config(
+        self._judge_model_options.judge_model_config
+    )
     self._threshold = _get_metric_threshold(eval_metric)
     self._judge_model = self._setup_auto_rater()
 
@@ -221,8 +226,7 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
                   role="user",
               )
           ],
-          config=self._judge_model_options.judge_model_config
-          or genai_types.GenerateContentConfig(),
+          config=self._judge_model_config,
       )
       add_default_retry_options_if_not_present(llm_request)
       num_samples = self._judge_model_options.num_samples
@@ -242,7 +246,7 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
     for invocation_idx, result in zip(
         invocation_indices, all_results, strict=True
     ):
-      if isinstance(result, Exception):
+      if isinstance(result, BaseException):
         logger.warning(
             "Evaluation sample failed for invocation %d: %s",
             invocation_idx,
@@ -257,7 +261,7 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
       invocation_result_samples = results_by_invocation[invocation_idx]
       actual = actual_invocations[invocation_idx]
       expected = resolved_expected[invocation_idx]
-      if any(isinstance(r, Exception) for r in invocation_result_samples):
+      if any(isinstance(r, BaseException) for r in invocation_result_samples):
         per_invocation_results.append(
             PerInvocationResult(
                 actual_invocation=actual,
@@ -267,8 +271,10 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
             )
         )
       elif invocation_result_samples:
+        # gather returns cancellations too; the check above excludes them all.
+        samples = cast(list[PerInvocationResult], invocation_result_samples)
         per_invocation_results.append(
-            self.aggregate_per_invocation_samples(invocation_result_samples)
+            self.aggregate_per_invocation_samples(samples)
         )
 
     if per_invocation_results:

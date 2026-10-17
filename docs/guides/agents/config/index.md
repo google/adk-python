@@ -235,7 +235,7 @@ and descendant files rather than anywhere on disk.
 
 ## Related samples
 
--   [Workflow loop config](../../../contributing/samples/workflows/loop_config/README.md)
+-   [Workflow loop config](../../../../contributing/samples/workflows/loop_config/README.md)
     -- looping and conditional routing declared in YAML.
--   [Multi-agent loop config](../../../contributing/samples/multi_agent/multi_agent_loop_config/README.md)
+-   [Multi-agent loop config](../../../../contributing/samples/multi_agent/multi_agent_loop_config/README.md)
     -- sequential and loop workflows across several config files.

@@ -130,3 +130,45 @@ async def test_max_concurrency_limits_running_nodes(
   await run_task
   started_count = sum(1 for e in started_events if e.is_set())
   assert started_count == num_nodes
+
+
+@pytest.mark.parametrize('max_concurrency', [-1, 0])
+@pytest.mark.asyncio
+async def test_non_positive_max_concurrency_treated_as_unlimited(
+    request: pytest.FixtureRequest,
+    max_concurrency: int,
+):
+  """A max_concurrency of 0 or less is unlimited and does not wedge."""
+
+  class SimpleWorkerNode(BaseNode):
+
+    @override
+    async def _run_impl(
+        self,
+        *,
+        ctx: Context,
+        node_input: Any,
+    ) -> AsyncGenerator[Any, None]:
+      yield f'{self.name}_done'
+
+  class TerminalNode(BaseNode):
+
+    @override
+    async def _run_impl(
+        self, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield 'workflow_done'
+
+  nodes = [SimpleWorkerNode(name=f'Node{i}') for i in range(3)]
+  terminal_node = TerminalNode(name='Terminal')
+  agent = Workflow(
+      name='negative_concurrency_agent',
+      max_concurrency=max_concurrency,
+      edges=[(START, tuple(nodes), terminal_node)],
+  )
+
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'workflow_done' in outputs

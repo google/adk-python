@@ -272,12 +272,165 @@ def test_claude_does_not_support_output_schema_and_tools(
     ).capabilities.output_schema_and_tools
 
 
-def test_litellm_supports_output_schema_and_tools():
-  """LiteLLM reconciles schema and tools for every provider it fronts."""
+def test_litellm_resolves_output_schema_and_tools(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """LiteLLM resolves schema and tools capability per model."""
+  monkeypatch.setenv('ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS', 'true')
   with _assert_no_warning():
     assert LiteLlm(model='openai/gpt-4o').capabilities.output_schema_and_tools
+    assert LiteLlm(
+        model='vertex_ai/gemini-2.5-flash'
+    ).capabilities.output_schema_and_tools
+    assert not LiteLlm(
+        model='openrouter/google/gemini-3.1-flash-lite'
+    ).capabilities.output_schema_and_tools
+    assert not LiteLlm(
+        model='anthropic/claude-3-opus-20240229'
+    ).capabilities.output_schema_and_tools
+    assert not LiteLlm(
+        model='bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0'
+    ).capabilities.output_schema_and_tools
+    assert not LiteLlm(
+        model='vertex_ai/claude-3-7-sonnet@20250219'
+    ).capabilities.output_schema_and_tools
+    assert not LiteLlm(
+        model='openrouter/anthropic/claude-opus-4.7'
+    ).capabilities.output_schema_and_tools
+    assert not LiteLlm(
+        model='azure_ai/claude-opus-4-5'
+    ).capabilities.output_schema_and_tools
+    assert not LiteLlm(
+        model='databricks/claude-3-5-sonnet'
+    ).capabilities.output_schema_and_tools
 
 
-def test_gemma3_ollama_inherits_litellm_capabilities():
-  """Gemma3Ollama extends LiteLlm and inherits its capability."""
-  assert Gemma3Ollama().capabilities.output_schema_and_tools
+def test_gemma3_ollama_does_not_support_output_schema_and_tools():
+  """Gemma3Ollama inherits LiteLlm's per-model capability resolution."""
+  assert not Gemma3Ollama().capabilities.output_schema_and_tools
+
+
+def test_litellm_resolves_output_schema_and_tools_with_custom_llm_provider():
+  """LiteLLM resolves capability when custom_llm_provider is passed."""
+  assert LiteLlm(
+      model='llama-v3p1-70b', custom_llm_provider='fireworks_ai'
+  ).capabilities.output_schema_and_tools
+  assert LiteLlm(
+      model='gemini-2.5-flash', custom_llm_provider='vertex_ai'
+  ).capabilities.output_schema_and_tools
+  assert not LiteLlm(
+      model='gemini-2.5-flash', custom_llm_provider='gemini'
+  ).capabilities.output_schema_and_tools
+
+
+@pytest.mark.parametrize(
+    'model,expected',
+    [
+        ('azure/my-deployment', True),
+        ('azure/claude-migration', True),
+        ('openai/my-deployment', True),
+        ('openai/claude-replacement', True),
+        ('litellm_proxy/my-deployment', False),
+        ('litellm_proxy/azure/my-deployment', True),
+        ('openai/gpt-3.5-turbo', False),
+    ],
+)
+def test_litellm_resolves_output_schema_and_tools_with_provider_fallback(
+    monkeypatch: pytest.MonkeyPatch, model: str, expected: bool
+):
+  """LiteLLM falls back to provider support when exact model id is unmapped."""
+  if 'gpt-3.5-turbo' in model:
+    import litellm
+
+    monkeypatch.setattr(
+        litellm, 'supports_response_schema', lambda *a, **kw: False
+    )
+    monkeypatch.setattr(
+        litellm, 'get_model_info', lambda *a, **kw: {'mode': 'chat'}
+    )
+  assert LiteLlm(model=model).capabilities.output_schema_and_tools is expected
+
+
+def test_litellm_anthropic_route_with_custom_llm_provider_does_not_support_output_schema_and_tools():
+  """Anthropic Claude routes via custom_llm_provider do not combine schema with tools."""
+  assert not LiteLlm(
+      model='claude-3-7-sonnet@20250219', custom_llm_provider='vertex_ai'
+  ).capabilities.output_schema_and_tools
+  assert not LiteLlm(
+      model='us.anthropic.claude-3-5-sonnet-20241022-v2:0',
+      custom_llm_provider='bedrock',
+  ).capabilities.output_schema_and_tools
+  assert not LiteLlm(
+      model='claude-3-opus-20240229',
+      custom_llm_provider='anthropic',
+  ).capabilities.output_schema_and_tools
+
+
+def test_litellm_capabilities_cached_and_follows_model_reassignment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Capabilities are resolved lazily on first access and cached per model."""
+  monkeypatch.setenv('ADK_SUPPRESS_GEMINI_LITELLM_WARNINGS', 'true')
+  import litellm
+
+  call_count = 0
+  original_supports = litellm.supports_response_schema
+
+  def mock_supports(*args, **kwargs):
+    nonlocal call_count
+    call_count += 1
+    return original_supports(*args, **kwargs)
+
+  monkeypatch.setattr(litellm, 'supports_response_schema', mock_supports)
+
+  llm = LiteLlm(model='openai/gpt-4o')
+  # Not resolved during __init__
+  assert call_count == 0
+  # Resolved lazily on first access
+  assert llm.capabilities.output_schema_and_tools
+  assert call_count == 1
+  # Repeated access uses cache, does not call litellm again
+  assert llm.capabilities.output_schema_and_tools
+  assert call_count == 1
+
+  # Model reassignment re-resolves
+  llm.model = 'anthropic/claude-3-opus-20240229'
+  assert not llm.capabilities.output_schema_and_tools
+  assert call_count == 1
+
+  # Reassigning back to openai re-resolves
+  llm.model = 'openai/gpt-4o-mini'
+  assert llm.capabilities.output_schema_and_tools
+  assert call_count == 2
+  assert llm.capabilities.output_schema_and_tools
+  assert call_count == 2
+
+
+def test_litellm_subclass_override_capabilities_avoids_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """A subclass overriding capabilities avoids litellm lookup at construction and access."""
+  import litellm
+
+  lookup_called = False
+
+  def fail_lookup(*args, **kwargs):
+    nonlocal lookup_called
+    lookup_called = True
+    raise AssertionError('litellm provider lookup should not be called')
+
+  monkeypatch.setattr(litellm, 'get_llm_provider', fail_lookup)
+  monkeypatch.setattr(litellm, 'supports_response_schema', fail_lookup)
+
+  class CustomLiteLlm(LiteLlm):
+
+    @property
+    def capabilities(self) -> LlmCapabilities:
+      return LlmCapabilities(output_schema_and_tools=True)
+
+  # Construction does not call litellm lookup
+  custom_llm = CustomLiteLlm(model='custom/unsupported-model')
+  assert not lookup_called
+  # Accessing capabilities uses override and does not call litellm lookup
+  assert custom_llm.capabilities.output_schema_and_tools
+  assert not lookup_called

@@ -122,7 +122,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
     # Mock session service
     mock_session = Mock()
@@ -224,7 +224,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -364,7 +364,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -540,7 +540,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Initialize executor context attributes
@@ -595,7 +595,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     executor_context = Mock()
@@ -665,7 +665,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session
@@ -710,7 +710,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Execute
@@ -738,7 +738,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="old-session-id",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     await self.executor._resolve_session(run_request, self.mock_runner)
@@ -769,7 +769,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id=None,
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     session_id = await self.executor._resolve_session(
@@ -827,7 +827,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     mock_session = Mock()
@@ -891,7 +891,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     mock_event = Event(

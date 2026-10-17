@@ -28,28 +28,12 @@ from ..models._capabilities import gemini_output_schema_and_tools
 from ..models.base_llm import BaseLlm
 
 
-@deprecated(
-    'Use model.capabilities.output_schema_and_tools instead. This function'
-    ' does not honor capabilities declared by a BaseLlm subclass.'
-)
+@deprecated('Use model.capabilities.output_schema_and_tools instead.')
 def can_use_output_schema_with_tools(model: Union[str, BaseLlm]) -> bool:
   """Returns True if output schema with tools is supported."""
-  # LiteLLM handles tools + response_format compatibility per-provider:
-  # - Providers with native support (OpenAI, Azure): both passed directly
-  # - Providers without (Fireworks): auto-converted to json_tool_call +
-  #   tool_choice enforcement
-  # This is strictly more reliable than the SetModelResponseTool
-  # prompt-based workaround.
   if not isinstance(model, str):
-    try:
-      from ..models.lite_llm import LiteLlm
-    except ImportError:
-      LiteLlm = None
-    if LiteLlm is not None and isinstance(model, LiteLlm):
-      return True
-
-  model_string = model if isinstance(model, str) else model.model
+    return model.capabilities.output_schema_and_tools
 
   # Delegates so that this function and BaseLlm.capabilities cannot drift while
   # both are live. Callers should read model.capabilities instead.
-  return gemini_output_schema_and_tools(model_string)
+  return gemini_output_schema_and_tools(model)

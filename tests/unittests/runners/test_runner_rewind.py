@@ -14,16 +14,19 @@
 
 """Tests for runner.rewind_async."""
 
+import logging
 from typing import Any
 from typing import Optional
 from typing import Union
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.run_config import RunConfig
 from google.adk.artifacts.base_artifact_service import ensure_part
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.events.event import EventActions
 from google.adk.runners import Runner
+from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.genai import types
@@ -76,7 +79,8 @@ class TestRunnerRewind:
     )
 
   @pytest.mark.asyncio
-  async def test_rewind_async_with_state_and_artifacts(self):
+  @pytest.mark.parametrize("initial_text", ["f1v0", ""])
+  async def test_rewind_async_with_state_and_artifacts(self, initial_text):
     """Tests rewind_async rewinds state and artifacts."""
     runner = self.runner
     user_id = "test_user"
@@ -93,7 +97,7 @@ class TestRunnerRewind:
         user_id=user_id,
         session_id=session_id,
         filename="f1",
-        artifact=types.Part.from_text(text="f1v0"),
+        artifact=types.Part.from_text(text=initial_text),
     )
     event1 = Event(
         invocation_id="invocation1",
@@ -177,7 +181,7 @@ class TestRunnerRewind:
         user_id=user_id,
         session_id=session_id,
         filename="f1",
-    ) == types.Part.from_text(text="f1v0")
+    ) == types.Part.from_text(text=initial_text)
     # f2 should not exist
     assert (
         await runner.artifact_service.load_artifact(
@@ -280,6 +284,78 @@ class TestRunnerRewind:
         session_id=session_id,
         filename="f2",
     ) == types.Part.from_text(text="f2v0")
+
+  @pytest.mark.asyncio
+  async def test_rewind_async_ignores_get_session_config(self):
+    """Rewind computes deltas from the full history, not recent events."""
+    runner = self.runner
+    user_id = "test_user"
+    session_id = "test_session"
+
+    session = await runner.session_service.create_session(
+        app_name=runner.app_name, user_id=user_id, session_id=session_id
+    )
+    await runner.session_service.append_event(
+        session=session,
+        event=Event(
+            invocation_id="invocation1",
+            author="agent",
+            actions=EventActions(state_delta={"k1": "v1"}),
+        ),
+    )
+    await runner.session_service.append_event(
+        session=session,
+        event=Event(
+            invocation_id="invocation2",
+            author="agent",
+            actions=EventActions(state_delta={"k2": "v2"}),
+        ),
+    )
+
+    # With only the most recent event loaded, invocation1's state_delta
+    # would be missing and k1 would be wrongly reverted.
+    await runner.rewind_async(
+        user_id=user_id,
+        session_id=session_id,
+        rewind_before_invocation_id="invocation2",
+        run_config=RunConfig(
+            get_session_config=GetSessionConfig(num_recent_events=1)
+        ),
+    )
+
+    session = await runner.session_service.get_session(
+        app_name=runner.app_name, user_id=user_id, session_id=session_id
+    )
+    assert session.events[-1].actions.state_delta == {"k2": None}
+    assert session.state["k1"] == "v1"
+
+  @pytest.mark.asyncio
+  async def test_rewind_async_warns_on_get_session_config(
+      self, caplog: pytest.LogCaptureFixture
+  ):
+    """rewind_async warns that it ignores run_config.get_session_config."""
+    runner = self.runner
+    session = await runner.session_service.create_session(
+        app_name=runner.app_name, user_id="u1", session_id="s1"
+    )
+    await runner.session_service.append_event(
+        session=session, event=Event(invocation_id="inv1", author="user")
+    )
+
+    with caplog.at_level(logging.WARNING):
+      await runner.rewind_async(
+          user_id="u1",
+          session_id="s1",
+          rewind_before_invocation_id="inv1",
+          run_config=RunConfig(
+              get_session_config=GetSessionConfig(num_recent_events=1)
+          ),
+      )
+
+    assert any(
+        "ignores run_config.get_session_config" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 class TestRunnerRewindNoFileData:

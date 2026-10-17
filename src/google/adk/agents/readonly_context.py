@@ -79,6 +79,11 @@ class ReadonlyContext:
     # pylint: disable=protected-access
     return MappingProxyType(self._invocation_context._custom_metadata)
 
+  @property
+  def is_aborted(self) -> bool:
+    """Returns whether the current invocation has been requested to abort."""
+    return self._invocation_context.is_aborted
+
   def get_credential(self, key: str) -> AuthCredential | None:
     """Gets a resolved credential by key for this invocation."""
     return self._invocation_context.credential_by_key.get(key)

@@ -48,6 +48,15 @@ def test_parses_bytearray():
   assert result == {'key': 'value'}
 
 
+@pytest.mark.parametrize('text', [b'"\xff"', bytearray(b'"\xff"')])
+def test_invalid_encoding_includes_context_and_preserves_cause(text):
+  with pytest.raises(
+      ValueError, match='Invalid JSON in session state'
+  ) as exc_info:
+    safe_json_loads(text, context='session state')
+  assert isinstance(exc_info.value.__cause__, UnicodeDecodeError)
+
+
 def test_parses_number():
   result = safe_json_loads('42')
   assert result == 42

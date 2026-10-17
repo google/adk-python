@@ -73,8 +73,9 @@ edges = [
 ]
 ```
 
-One default per node. `'__DEFAULT__'` may not appear inside a list of routes on
-one edge — give it its own edge.
+The default fans out like any other route, so `'__DEFAULT__': (a, b)` triggers
+both. `'__DEFAULT__'` may not appear inside a list of routes on one edge — give
+it its own edge.
 
 ## One edge, several routes
 

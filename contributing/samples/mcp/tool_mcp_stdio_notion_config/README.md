@@ -45,7 +45,8 @@ Only set this when you trust every agent config the process will load.
 
 ### 5. Run the Agent
 
-Use `adk run` to run the agent and interact with your Notion workspace.
+Use `adk run` or `adk web` to run the agent and interact with your Notion
+workspace. The stdio opt-in above is required for either command.
 
 ## Example Queries
 

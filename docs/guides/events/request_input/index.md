@@ -51,3 +51,4 @@ When a node yields a `RequestInput` object, the following process occurs:
 ## Limitations
 
 - **Client-Side Validation**: When using `response_schema`, the client application is responsible for validating that the user's input conforms to the schema before sending it back to resume the workflow. ADK handles parsing on resume, but client-side validation is recommended for a better user experience.
+- **Unique `interrupt_id` Across Loop Iterations**: In a `@node(rerun_on_resume=True)` node that can run multiple times inside a workflow cycle, scope the `interrupt_id` by `ctx.invocation_id` and `ctx.run_id` (for example, `f"review_{ctx.invocation_id}_{ctx.run_id}"`) so each conversation turn and loop iteration emits a distinct `FunctionCall` ID for client UIs while keeping the ID deterministic when the same iteration reruns on resume.

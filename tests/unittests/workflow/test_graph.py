@@ -20,6 +20,8 @@ from google.adk.workflow import Edge
 from google.adk.workflow import START
 from google.adk.workflow._graph import DEFAULT_ROUTE
 from google.adk.workflow._graph import Graph
+import pydantic
+import pytest
 
 from .workflow_testing_utils import TestingNode
 
@@ -73,6 +75,31 @@ def test_get_next_pending_nodes() -> None:
   assert set(next_nodes) == {'NodeB', 'NodeC'}
 
 
+def test_get_next_pending_nodes_with_default_route_fan_out() -> None:
+  """Tests that an unmatched route triggers every DEFAULT_ROUTE target."""
+  node_a = TestingNode(name='NodeA')
+  node_b = TestingNode(name='NodeB')
+  node_c = TestingNode(name='NodeC')
+  node_d = TestingNode(name='NodeD')
+
+  graph = Graph(
+      edges=[
+          Edge(from_node=node_a, to_node=node_b, route='route1'),
+          Edge(from_node=node_a, to_node=node_c, route=DEFAULT_ROUTE),
+          Edge(from_node=node_a, to_node=node_d, route=DEFAULT_ROUTE),
+      ],
+  )
+
+  next_nodes = graph.get_next_pending_nodes(
+      'NodeA', routes_to_match='unknown_route'
+  )
+  assert set(next_nodes) == {'NodeC', 'NodeD'}
+
+  # A matched specific route still suppresses every default target.
+  next_nodes = graph.get_next_pending_nodes('NodeA', routes_to_match='route1')
+  assert next_nodes == ['NodeB']
+
+
 def test_get_next_pending_nodes_unmatched_route_warning(caplog) -> None:
   """Tests that a warning is logged when a route is unmatched and there's no DEFAULT_ROUTE."""
   node_a = TestingNode(name='NodeA')
@@ -110,3 +137,46 @@ def test_from_edge_items_expands_a_chain_and_infers_its_nodes() -> None:
   # NodeA is both a destination and a source; it must appear once, in the
   # order it was first seen.
   assert [n.name for n in graph.nodes] == [START.name, 'NodeA', 'NodeB']
+
+
+def test_graph_accepts_explicit_empty_nodes() -> None:
+  """Graph(nodes=[]) is accepted."""
+  assert Graph(nodes=[]).nodes == []
+
+
+def test_graph_rejects_explicit_non_empty_nodes() -> None:
+  """Passing non-empty nodes raises ValidationError."""
+  with pytest.raises(
+      pydantic.ValidationError,
+      match='Nodes are inferred from edges, do not set nodes explicitly',
+  ):
+    Graph(nodes=[TestingNode(name='NodeA')])
+
+
+def _linear_graph() -> Graph:
+  node_a = TestingNode(name='NodeA')
+  node_b = TestingNode(name='NodeB')
+  return Graph(
+      edges=[
+          Edge(from_node=START, to_node=node_a),
+          Edge(from_node=node_a, to_node=node_b),
+      ]
+  )
+
+
+def test_get_next_pending_nodes_ignores_route_without_routing_edges(
+    caplog,
+) -> None:
+  """A route passed for a node with only plain edges follows them, silently."""
+  graph = _linear_graph()
+
+  with caplog.at_level(logging.WARNING):
+    from_a = graph.get_next_pending_nodes('NodeA', routes_to_match='unused')
+    from_b = graph.get_next_pending_nodes('NodeB', routes_to_match='unused')
+
+  assert from_a == ['NodeB']
+  assert from_b == []
+  assert not any(
+      'has conditional/DEFAULT edges' in record.message
+      for record in caplog.records
+  )

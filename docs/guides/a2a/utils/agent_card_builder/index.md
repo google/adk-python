@@ -16,11 +16,11 @@ actually has.
 
 [`to_a2a`](../agent_to_a2a/index.md) calls this class on your behalf, so a
 deployment that is content with the derived card never has to construct one. You
-come here directly when you need a field `to_a2a` cannot set. It only ever passes the
-agent and the RPC URL, so the provider, the version, the capabilities, the
-security schemes, and the documentation URL all stay at their defaults. To set
-any of them, build the card here and hand it back through
-`to_a2a(agent, agent_card=...)`.
+come here directly when you need a field `to_a2a` cannot set. It only ever
+passes the agent, the RPC URL, `security_schemes`, and `default_skill_security`,
+so the provider, the version, the capabilities, and the documentation URL all
+stay at their defaults. To set any of them, build the card here and hand it back
+through `to_a2a(agent, agent_card=...)`.
 
 The import path is nested and not re-exported:
 
@@ -136,6 +136,7 @@ They are never mined out of the instruction.
 | `provider` | `AgentProvider \| None` | `None` | Who publishes the agent. Omitted from the card when unset. |
 | `agent_version` | `str \| None` | `'0.0.1'` | The version string in the card. |
 | `security_schemes` | `dict[str, SecurityScheme] \| None` | `None` | Named auth schemes a client must satisfy. |
+| `default_skill_security` | `list[dict[str, list[str]]] \| None` | `None` | Default security requirements applied to every derived skill unless overridden via `BaseTool.custom_metadata['security']`. |
 
 **`rpc_url`.** The default is a placeholder, not a working address. Leaving it
 unset produces a card that tells clients to call `http://localhost:80/a2a`,
@@ -157,6 +158,17 @@ whatever your deployment already uses as a version.
 **`security_schemes`.** Published so a client knows what credentials to present.
 Declaring a scheme here does not enforce anything; the server does not check
 incoming requests against it.
+
+**`default_skill_security`.** Applies a default A2A security requirement list
+(`list[dict[str, list[str]]]`) to every skill derived for the agent and its
+sub-agents; passing any other shape raises `ValueError`. An individual
+`BaseTool` can override the requirement on its own skill by setting
+`custom_metadata={"security": [{"oauth2": ["scope"]}]}`, using that same
+`list[dict[str, list[str]]]` shape; a `custom_metadata["security"]` value with
+any other shape is ignored with a warning. During `build()`, any skill security
+requirement that references a scheme name absent from `security_schemes` logs a
+warning. Like `security_schemes`, skill security is descriptive metadata on the
+published card and is not enforced at runtime.
 
 ## Advanced applications
 

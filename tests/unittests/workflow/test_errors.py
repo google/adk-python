@@ -14,7 +14,11 @@
 
 """Tests for the workflow error types."""
 
+from google.adk.workflow._errors import GraphValidationError
 from google.adk.workflow._errors import NodeInterruptedError
+from google.adk.workflow._errors import WorkflowConfigurationError
+from google.adk.workflow._errors import WorkflowDataError
+from google.adk.workflow._errors import WorkflowInvariantError
 import pytest
 
 
@@ -34,3 +38,43 @@ def test_node_interrupted_error_survives_a_broad_except_in_node_code():
 
   with pytest.raises(NodeInterruptedError):
     node_body_that_swallows_errors()
+
+
+@pytest.mark.parametrize(
+    'error_type',
+    [GraphValidationError, WorkflowConfigurationError, WorkflowDataError],
+)
+def test_caller_facing_errors_stay_value_errors(error_type):
+  """Naming these errors must not stop existing handlers catching them.
+
+  Each replaced a bare ValueError, so anything already catching ValueError
+  around a workflow keeps working.
+  """
+  with pytest.raises(ValueError):
+    raise error_type('boom')
+
+
+def test_invariant_error_is_not_a_value_error():
+  """An engine bug is not the caller's bad input and must not look like it.
+
+  Keeping it off ValueError stops a caller's ``except ValueError`` from
+  quietly absorbing a defect in the workflow engine.
+  """
+  assert issubclass(WorkflowInvariantError, RuntimeError)
+  assert not issubclass(WorkflowInvariantError, ValueError)
+
+
+def test_the_caller_facing_errors_are_distinguishable():
+  """The three caller-facing errors say different things, so keep them apart."""
+  for error_type in (
+      GraphValidationError,
+      WorkflowConfigurationError,
+      WorkflowDataError,
+  ):
+    others = {
+        GraphValidationError,
+        WorkflowConfigurationError,
+        WorkflowDataError,
+    } - {error_type}
+    for other in others:
+      assert not issubclass(error_type, other)

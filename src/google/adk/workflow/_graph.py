@@ -33,6 +33,7 @@ from pydantic import SerializeAsAny
 
 from ..tools.base_tool import BaseTool
 from ._base_node import BaseNode
+from ._errors import WorkflowConfigurationError
 
 RouteValue: TypeAlias = bool | int | str
 """Type alias for valid routing values used in conditional graph edges."""
@@ -106,7 +107,11 @@ class Graph(BaseModel):
   """The edges in the workflow graph."""
 
   _terminal_node_names: set[str] = PrivateAttr(default_factory=set)
-  """Nodes with no outgoing edges. Computed by validate_graph."""
+  """Nodes with no outgoing edges. Computed by validate_graph.
+
+  Empty until ``validate_graph`` has run, so an empty set means "not computed
+  yet" as well as "no terminal nodes". Read it only after validating.
+  """
 
   @classmethod
   def from_edge_items(cls, edge_items: list[EdgeItem]) -> Graph:
@@ -118,7 +123,7 @@ class Graph(BaseModel):
   def model_post_init(self, context: Any) -> None:
     """Populates nodes from edges."""
     if "nodes" in self.model_fields_set and self.nodes:
-      raise ValueError(
+      raise WorkflowConfigurationError(
           "Nodes are inferred from edges, do not set nodes explicitly."
       )
     if self.edges:
@@ -138,7 +143,7 @@ class Graph(BaseModel):
     """Determines the next nodes to transition to PENDING state based on routes."""
     next_pending_nodes: list[str] = []
     matched_specific_route = False
-    default_route_node: str | None = None
+    default_route_nodes: list[str] = []
     has_routing_edges = False
 
     for edge in self.edges:
@@ -150,7 +155,7 @@ class Graph(BaseModel):
 
         has_routing_edges = True
         if edge.route == DEFAULT_ROUTE:
-          default_route_node = edge.to_node.name
+          default_route_nodes.append(edge.to_node.name)
           continue
 
         # Normalize edge routes to a set for matching.
@@ -169,8 +174,8 @@ class Graph(BaseModel):
           next_pending_nodes.append(edge.to_node.name)
           matched_specific_route = True
 
-    if not matched_specific_route and default_route_node:
-      next_pending_nodes.append(default_route_node)
+    if not matched_specific_route:
+      next_pending_nodes.extend(default_route_nodes)
 
     if has_routing_edges and not next_pending_nodes:
       logger.warning(

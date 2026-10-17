@@ -184,8 +184,10 @@ part before or alongside your code PR.
    pre-commit install
    ```
 
-   The pre-commit hooks run `isort`, `pyink`, `addlicense`, and
-   `mdformat` automatically on each commit.
+   The pre-commit hooks run formatters (`ruff`, `isort`, `pyink`,
+   `addlicense`, `mdformat`) and checks (`codespell`, ADK compliance and
+   documentation checks) automatically on each commit. See
+   `.pre-commit-config.yaml` for the full list.
 
 1. **Create virtual environment and install dependencies:**
 
@@ -229,7 +231,7 @@ part before or alongside your code PR.
 
 1. **Test the locally built wheel file:** Have a simple testing folder setup as
    mentioned in the
-   [quickstart](https://google.github.io/adk-docs/get-started/quickstart/).
+   [quickstart](https://adk.dev/get-started/).
 
    Then following below steps to test your changes:
 

@@ -21,21 +21,24 @@ from typing import AsyncGenerator
 from google.adk.agents.context import Context
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events.event import Event
+from google.adk.events.request_input import RequestInput
 from google.adk.workflow import BaseNode
 from google.adk.workflow import START
 from google.adk.workflow._node import node
+from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._parallel_worker import _ParallelWorker as ParallelWorker
 from google.adk.workflow._workflow import Workflow
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-from google.adk.workflow.utils._workflow_hitl_utils import has_request_input_function_call
 from google.genai import types
+from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 import pytest
 from typing_extensions import override
 
 from . import testing_utils
+from .workflow_testing_utils import get_request_input_events
 from .workflow_testing_utils import simplify_events_with_node
 
 # Upper bound on any wait between workers that are supposed to be running
@@ -469,7 +472,6 @@ class _HitlWorkerNode(BaseNode):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason='ctx.run_node needs barrier for parallel HITL')
 async def test_parallel_worker_pauses_for_human_input(
     request: pytest.FixtureRequest,
 ):
@@ -506,9 +508,9 @@ async def test_parallel_worker_pauses_for_human_input(
   events1 = await runner.run_async(testing_utils.get_user_content('start'))
 
   # Then item1 should complete and item2 should interrupt
-  req_events = [e for e in events1 if has_request_input_function_call(e)]
+  req_events = get_request_input_events(events1)
   assert len(req_events) == 1
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
   assert interrupt_id == 'req_item2'
   invocation_id = events1[0].invocation_id
 
@@ -524,11 +526,11 @@ async def test_parallel_worker_pauses_for_human_input(
           },
       ),
       (
-          'parallel_worker_hitl_agent@1/Worker@1',
+          'parallel_worker_hitl_agent@1/Worker@1/Worker@1',
           {'output': 'item1_processed'},
       ),
       (
-          'parallel_worker_hitl_agent',
+          'parallel_worker_hitl_agent@1/Worker@1/Worker@2',
           testing_utils.simplify_content(req_events[0].content),
       ),
   ]
@@ -551,7 +553,16 @@ async def test_parallel_worker_pauses_for_human_input(
 
   assert simplified_events2 == [
       (
-          'parallel_worker_hitl_agent@1/Worker@1',
+          'parallel_worker_hitl_agent@1/NodeA@1',
+          {
+              'output': [
+                  {'val': 'item1', 'ask': False},
+                  {'val': 'item2', 'ask': True},
+              ],
+          },
+      ),
+      (
+          'parallel_worker_hitl_agent@1/Worker@1/Worker@2',
           {'output': 'item2_resumed'},
       ),
       (
@@ -854,7 +865,6 @@ async def test_parallel_worker_limits_parallel_workers(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason='Hangs: ctx.run_node needs barrier for parallel HITL')
 async def test_parallel_worker_hitl_respects_parallel_workers_limits(
     request: pytest.FixtureRequest,
 ):
@@ -941,9 +951,9 @@ async def test_parallel_worker_hitl_respects_parallel_workers_limits(
   events1 = await run_task
   events.extend(events1)
 
-  req_events = [e for e in events1 if has_request_input_function_call(e)]
+  req_events = get_request_input_events(events1)
   assert len(req_events) == 1
-  interrupt_id_2 = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id_2] = extract_event_interrupt_ids(req_events[0])
   assert interrupt_id_2 == 'req_item2'
   invocation_id_1 = events1[0].invocation_id
 
@@ -956,11 +966,11 @@ async def test_parallel_worker_hitl_respects_parallel_workers_limits(
           },
       ),
       (
-          'max_parallel_workers_hitl_agent',
+          'max_parallel_workers_hitl_agent@1/Worker@1/Worker@2',
           testing_utils.simplify_content(req_events[0].content),
       ),
       (
-          'max_parallel_workers_hitl_agent@1/Worker__0@1',
+          'max_parallel_workers_hitl_agent@1/Worker@1/Worker@1',
           {'output': 'item1_processed'},
       ),
   ]
@@ -989,20 +999,26 @@ async def test_parallel_worker_hitl_respects_parallel_workers_limits(
   events2 = await run_task_2
   events.extend(events2)
 
-  req_events_2 = [e for e in events2 if has_request_input_function_call(e)]
+  req_events_2 = get_request_input_events(events2)
   assert len(req_events_2) == 1
-  interrupt_id_3 = get_request_input_interrupt_ids(req_events_2[0])[0]
+  [interrupt_id_3] = extract_event_interrupt_ids(req_events_2[0])
   assert interrupt_id_3 == 'req_item3'
   invocation_id_2 = events2[0].invocation_id
 
   simplified_events2 = simplify_events_with_node(events2)
   assert simplified_events2 == [
       (
-          'max_parallel_workers_hitl_agent@1/Worker__1@1',
+          'max_parallel_workers_hitl_agent@1/NodeA@1',
+          {
+              'output': items,
+          },
+      ),
+      (
+          'max_parallel_workers_hitl_agent@1/Worker@1/Worker@2',
           {'output': 'item2_resumed'},
       ),
       (
-          'max_parallel_workers_hitl_agent',
+          'max_parallel_workers_hitl_agent@1/Worker@1/Worker@3',
           testing_utils.simplify_content(req_events_2[0].content),
       ),
   ]
@@ -1031,7 +1047,13 @@ async def test_parallel_worker_hitl_respects_parallel_workers_limits(
 
   assert simplified_events3 == [
       (
-          'max_parallel_workers_hitl_agent@1/Worker__2@1',
+          'max_parallel_workers_hitl_agent@1/NodeA@1',
+          {
+              'output': items,
+          },
+      ),
+      (
+          'max_parallel_workers_hitl_agent@1/Worker@1/Worker@3',
           {'output': 'item3_resumed'},
       ),
       (
@@ -1128,6 +1150,75 @@ async def test_parallel_worker_cancels_in_flight_items(
   await asyncio.wait_for(
       asyncio.gather(*(event.wait() for event in cancelled.values())), timeout=1
   )
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_waits_for_in_flight_items_on_interrupt(
+    request: pytest.FixtureRequest,
+):
+  """An interrupted item does not cancel its siblings still in flight.
+
+  Setup: 2 items. item1 blocks on a gate the test controls; item2 requests
+    input while item1 is still running.
+  Assert: the run is still going after item2 interrupts, and once item1 is
+    released its output is part of run 1 while the worker checkpoints as
+    WAITING. Previously the interrupt was treated as a failure, which
+    cancelled item1 and lost its result.
+  """
+  item1_release = asyncio.Event()
+  item2_interrupted = asyncio.Event()
+
+  @node(name='Worker')
+  async def gated_hitl_worker(
+      ctx: Context, node_input: str
+  ) -> AsyncGenerator[Any, None]:
+    if node_input == 'item2':
+      item2_interrupted.set()
+      yield RequestInput(interrupt_id='req_item2', message='Input for item2')
+    else:
+      await item1_release.wait()
+      yield Event(output='item1_processed')
+
+  node_a = _ProducerNode(items=['item1', 'item2'], name='NodeA')
+  worker = ParallelWorker(node=gated_hitl_worker)
+  agent = Workflow(
+      name='in_flight_interrupt_agent',
+      edges=[(START, node_a), (node_a, worker)],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+  run_task = asyncio.create_task(
+      runner.run_async(testing_utils.get_user_content('start'))
+  )
+
+  # When item2 interrupts while item1 is still blocked on its gate
+  await asyncio.wait_for(item2_interrupted.wait(), timeout=_MAX_WAIT_S)
+  # Give the interrupt time to reach the worker. Before the fix this is where
+  # it cancelled item1 and finished the run.
+  await asyncio.sleep(0.1)
+
+  # Then the run is still waiting on item1 rather than finished without it
+  assert not run_task.done()
+
+  # When item1 is released
+  item1_release.set()
+  events1 = await asyncio.wait_for(run_task, timeout=_MAX_WAIT_S)
+
+  # Then item1's output is part of run 1 and the worker is WAITING on item2
+  assert (
+      'in_flight_interrupt_agent@1/Worker@1/Worker@1',
+      {'output': 'item1_processed'},
+  ) in simplify_events_with_node(events1)
+  checkpoints = [
+      e.actions.agent_state for e in events1 if e.actions.agent_state
+  ]
+  worker_state = checkpoints[-1]['nodes']['Worker']
+  assert worker_state['status'] == NodeStatus.WAITING.value
+  assert worker_state['interrupts'] == ['req_item2']
 
 
 @pytest.mark.asyncio
@@ -1240,3 +1331,251 @@ async def test_parallel_worker_gives_up_on_item_that_ignores_cancellation(
 
   release.set()
   await asyncio.sleep(0)
+
+
+def _outputs_for(events: list[Event], path: str) -> list[Any]:
+  return [
+      e.output
+      for e in events
+      if e.node_info and e.node_info.path == path and e.output is not None
+  ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_directly_after_start_json_array_untyped(
+    request: pytest.FixtureRequest,
+) -> None:
+  """ParallelWorker placed directly after START unwraps a JSON array Content."""
+
+  @node(parallel_worker=True)
+  def review_case(node_input):
+    return {
+        'order_id': node_input['order_id'],
+        'decision': 'APPROVE' if node_input['amount'] < 100 else 'REVIEW',
+    }
+
+  def collect_decisions(node_input: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        'approved': [
+            d['order_id'] for d in node_input if d['decision'] == 'APPROVE'
+        ],
+        'needs_review': [
+            d['order_id'] for d in node_input if d['decision'] == 'REVIEW'
+        ],
+    }
+
+  agent = Workflow(
+      name='batch_review',
+      edges=[(START, review_case, collect_decisions)],
+  )
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  payload = (
+      '[{"order_id": "ORD-1", "amount": 420}, '
+      '{"order_id": "ORD-2", "amount": 85}]'
+  )
+  events = await runner.run_async(testing_utils.get_user_content(payload))
+  assert _outputs_for(events, 'batch_review@1/collect_decisions@1') == [
+      {'approved': ['ORD-2'], 'needs_review': ['ORD-1']}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_directly_after_start_json_array_typed_model(
+    request: pytest.FixtureRequest,
+) -> None:
+  """ParallelWorker after START coerces each JSON item to inner BaseModel."""
+
+  class _OrderCase(BaseModel):
+    order_id: str
+    amount: int
+
+  @node(parallel_worker=True)
+  def review_case(node_input: _OrderCase) -> str:
+    return f'{node_input.order_id}:{node_input.amount}'
+
+  agent = Workflow(name='typed_batch', edges=[(START, review_case)])
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  payload = (
+      '[{"order_id": "ORD-1", "amount": 420}, '
+      '{"order_id": "ORD-2", "amount": 85}]'
+  )
+  events = await runner.run_async(testing_utils.get_user_content(payload))
+  assert _outputs_for(events, 'typed_batch@1/review_case@1') == [
+      ['ORD-1:420', 'ORD-2:85']
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('raw_text', 'expected'),
+    [
+        ('{"order_id": "ORD-1"}', {'order_id': 'ORD-1'}),
+        ('plain_text_item', 'plain_text_item'),
+    ],
+)
+async def test_parallel_worker_directly_after_start_non_list_payload(
+    request: pytest.FixtureRequest,
+    raw_text: str,
+    expected: Any,
+) -> None:
+  """ParallelWorker after START unwraps single JSON objects and plain text."""
+
+  @node(parallel_worker=True)
+  def echo_worker(node_input):
+    return {'received': node_input}
+
+  agent = Workflow(name='single_or_text', edges=[(START, echo_worker)])
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content(raw_text))
+  assert _outputs_for(events, 'single_or_text@1/echo_worker@1') == [
+      [{'received': expected}]
+  ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_str_annotated_worker_receives_raw_json_text(
+    request: pytest.FixtureRequest,
+) -> None:
+  """ParallelWorker wrapping a str-annotated node passes raw JSON text."""
+
+  @node(parallel_worker=True)
+  def string_worker(node_input: str) -> dict[str, str]:
+    return {'received_type': type(node_input).__name__, 'val': node_input}
+
+  agent = Workflow(name='str_worker_wf', edges=[(START, string_worker)])
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(
+      testing_utils.get_user_content('{"order_id": "ORD-1"}')
+  )
+  assert _outputs_for(events, 'str_worker_wf@1/string_worker@1') == [
+      [{'received_type': 'str', 'val': '{"order_id": "ORD-1"}'}]
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('optional', [False, True])
+async def test_parallel_worker_content_annotated_worker_preserves_content(
+    request: pytest.FixtureRequest,
+    optional: bool,
+) -> None:
+  """ParallelWorker preserves Content when inner node expects Content."""
+  if optional:
+
+    @node(parallel_worker=True)
+    def content_worker(node_input: types.Content | None) -> str:
+      assert node_input is not None
+      return node_input.parts[0].text or ''
+
+  else:
+
+    @node(parallel_worker=True)
+    def content_worker(node_input: types.Content) -> str:
+      return node_input.parts[0].text or ''
+
+  agent = Workflow(name='content_worker_wf', edges=[(START, content_worker)])
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(
+      testing_utils.get_user_content('[{"order_id": "ORD-1"}]')
+  )
+  assert _outputs_for(events, 'content_worker_wf@1/content_worker@1') == [
+      ['[{"order_id": "ORD-1"}]']
+  ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_multimodal_content_preserved_untouched(
+    request: pytest.FixtureRequest,
+) -> None:
+  """ParallelWorker with multimodal non-text parts leaves Content untouched."""
+
+  @node(parallel_worker=True)
+  def raw_worker(node_input):
+    return {'is_content': isinstance(node_input, types.Content)}
+
+  agent = Workflow(name='multimodal_wf', edges=[(START, raw_worker)])
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  blob = types.Blob(mime_type='image/png', data=b'123')
+  content = types.Content(role='user', parts=[types.Part(inline_data=blob)])
+  events = await runner.run_async(content)
+  assert _outputs_for(events, 'multimodal_wf@1/raw_worker@1') == [
+      [{'is_content': True}]
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('structured', [False, True])
+async def test_parallel_worker_fans_out_json_list_without_thoughts(
+    request: pytest.FixtureRequest,
+    structured: bool,
+) -> None:
+  """ParallelWorker unwraps a JSON list from Content without thoughts."""
+
+  class _OutputModel(BaseModel):
+    name: str
+    value: int
+
+  received: list[Any] = []
+
+  def process_text(node_input: str) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  def process_model(node_input: _OutputModel) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  answer = (
+      '[{"name": "first", "value": 1}, {"name": "second", "value": 2}]'
+      if structured
+      else '["first", "second"]'
+  )
+
+  def produce() -> Event:
+    return Event(
+        output=types.Content(
+            role='model',
+            parts=[
+                types.Part(text='Let me think first.', thought=True),
+                types.Part(text=answer),
+            ],
+        )
+    )
+
+  worker = node(
+      process_model if structured else process_text, parallel_worker=True
+  )
+  agent = Workflow(
+      name='parallel_answer', edges=[(START, produce), (produce, worker)]
+  )
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+  await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert received == (
+      [
+          _OutputModel(name='first', value=1),
+          _OutputModel(name='second', value=2),
+      ]
+      if structured
+      else ['first', 'second']
+  )
+
+
+def test_parallel_worker_iter_static_children():
+  """_ParallelWorker._iter_static_children yields the wrapped node."""
+  inner = BaseNode(name='wrapped_node')
+  worker = ParallelWorker(node=inner)
+  children = list(worker._iter_static_children())
+  assert children == [inner]

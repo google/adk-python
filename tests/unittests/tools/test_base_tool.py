@@ -218,3 +218,15 @@ def test_response_scheduling_defaults_to_none():
 
   t = SimpleTool(name='test', description='desc')
   assert t.response_scheduling is None
+
+
+def test_behavior_defaults_to_none():
+  """behavior defaults to None, preserving existing behavior."""
+
+  class SimpleTool(BaseTool):
+
+    async def run_async(self, **kwargs):
+      pass
+
+  t = SimpleTool(name='test', description='desc')
+  assert t.behavior is None

@@ -14,20 +14,20 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-import contextvars
 import functools
 import inspect
 import logging
+import re
 from typing import Any
-from typing import Awaitable
 from typing import Callable
 from typing import cast
-from typing import Iterator
+from typing import Iterable
 from typing import Optional
+from typing import TYPE_CHECKING
 from typing import Union
 
 from google.genai import types
+import pydantic
 from typing_extensions import override
 
 from . import _function_tool_declarations
@@ -35,35 +35,18 @@ from ..features import FeatureName
 from ..features import is_feature_enabled
 from ..utils import _schema_utils
 from ..utils._callable_utils import CallableSpec
+from ..utils._callable_utils import unwrap_callable
+from ..utils._sync_runner import _invoke_callable
+from ..utils._sync_runner import _use_sync_callable_runner as _use_sync_callable_runner
 from ..utils.variant_utils import GoogleLLMVariant
 from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
+if TYPE_CHECKING:
+  from ..workflow._function_node import FunctionNode
+
 logger = logging.getLogger("google_adk." + __name__)
-
-_SyncCallableRunner = Callable[
-    [Callable[..., Any], dict[str, Any]], Awaitable[Any]
-]
-_SYNC_CALLABLE_RUNNER: contextvars.ContextVar[_SyncCallableRunner | None] = (
-    contextvars.ContextVar("adk_sync_callable_runner", default=None)
-)
-
-
-@contextmanager
-def _use_sync_callable_runner(
-    runner: _SyncCallableRunner | None = None,
-) -> Iterator[None]:
-  """Binds the runner used for synchronous callables.
-
-  Passing ``None`` clears the binding, which stops a worker-owned nested call
-  from reusing the caller's runner.
-  """
-  token = _SYNC_CALLABLE_RUNNER.set(runner)
-  try:
-    yield
-  finally:
-    _SYNC_CALLABLE_RUNNER.reset(token)
 
 
 @functools.lru_cache(maxsize=1024)
@@ -122,6 +105,14 @@ class FunctionTool(BaseTool):
     self._context_param_name = self._spec.context_param_name or "tool_context"
     self._ignore_params = [self._context_param_name, "input_stream"]
     self._require_confirmation = require_confirmation
+    self._type_adapter_cache: dict[Any, pydantic.TypeAdapter[Any]] = {}
+    self._generator_node_cache: (
+        tuple[tuple[str, Any, str], FunctionNode] | None
+    ) = None
+    self._declaration_cache: dict[
+        tuple[tuple[str, ...], GoogleLLMVariant, bool],
+        types.FunctionDeclaration,
+    ] = {}
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -130,24 +121,38 @@ class FunctionTool(BaseTool):
     # `ignore_params` drops the function context and input_stream (for streaming
     # tools), which the model doesn't understand. Return a copy: the cached
     # declaration is shared and callers (e.g. toolset prefixing) mutate it.
-    declaration = _build_declaration_cached(
-        self.func,
-        tuple(self._ignore_params),
-        self._api_variant,
-        is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL),
+    ignore_params = tuple(self._ignore_params)
+    json_schema_enabled = is_feature_enabled(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL
     )
+    try:
+      hash(self.func)
+    except TypeError:
+      cache_key = (ignore_params, self._api_variant, json_schema_enabled)
+      cached = self._declaration_cache.get(cache_key)
+      if cached is None:
+        cached = _build_declaration_cached.__wrapped__(
+            self.func,
+            ignore_params,
+            self._api_variant,
+            json_schema_enabled,
+        )
+        self._declaration_cache[cache_key] = cached
+      declaration = cached
+    else:
+      declaration = _build_declaration_cached(
+          self.func,
+          ignore_params,
+          self._api_variant,
+          json_schema_enabled,
+      )
     return declaration.model_copy(deep=True)
 
   def _preprocess_args(self, args: dict[str, Any]) -> dict[str, Any]:
     """Preprocess and convert function arguments before invocation.
 
-    Currently handles:
-    - Converting JSON dictionaries to Pydantic model instances where expected
-
-    Future extensions could include:
-    - Type coercion for other complex types
-    - Validation and sanitization
-    - Custom conversion logic
+    Converts JSON dictionaries to Pydantic model instances where expected.
+    Subclasses may override this to customize raw argument preprocessing.
 
     Args:
       args: Raw arguments from the LLM tool call
@@ -161,11 +166,119 @@ class FunctionTool(BaseTool):
       signature = None
     return _schema_utils.preprocess_args(args, signature, self._spec.type_hints)
 
+  def _preprocess_args_with_validation(
+      self, args: dict[str, Any]
+  ) -> tuple[dict[str, Any], list[str]]:
+    """Preprocess, validate, and convert function arguments before invocation.
+
+    When `FUNCTION_TOOL_ARG_VALIDATION` is enabled:
+    - Runs `_preprocess_args` first to convert Pydantic models or apply subclass preprocessing
+    - Validates and coerces primitive types (int, float, str, bool)
+    - Validates enum values
+    - Validates container types (list[int], dict[str, float], etc.)
+    - Skips validation for parameters with unhandled annotation types
+
+    When disabled, falls back to `_preprocess_args` without validation errors.
+
+    Args:
+      args: Raw arguments from the LLM tool call
+
+    Returns:
+      A tuple of (processed_args, validation_errors). If validation_errors is
+      non-empty, the caller should return the errors to the LLM instead of
+      invoking the function.
+    """
+    preprocessed_args = self._preprocess_args(args)
+    if not is_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION):
+      return preprocessed_args, []
+
+    if not self._spec.has_signature:
+      return preprocessed_args, []
+
+    signature = self._spec.signature
+    type_hints = self._spec.type_hints
+
+    return self._validate_args(
+        preprocessed_args,
+        (
+            (n, type_hints.get(n, p.annotation))
+            for n, p in signature.parameters.items()
+        ),
+    )
+
+  def _validate_args(
+      self,
+      args: dict[str, Any],
+      annotations: Iterable[tuple[str, Any]],
+  ) -> tuple[dict[str, Any], list[str]]:
+    """Validates `args` against `annotations`, returning coerced args and errors.
+
+    Parameters with unhandled annotation types (e.g. TypeError, NameError, or
+    PydanticUserError during adapter creation or validation) skip validation
+    with a warning and pass through raw values.
+    """
+    converted_args = args.copy()
+    validation_errors = []
+
+    for param_name, target_type in annotations:
+      if (
+          param_name not in args
+          or target_type is inspect.Parameter.empty
+          or target_type is None
+          or param_name in self._ignore_params
+      ):
+        continue
+
+      # Validate and coerce using TypeAdapter. Handles primitives, enums,
+      # Pydantic models, Optional[T], T | None, and container types natively.
+      try:
+        try:
+          adapter = self._type_adapter_cache[target_type]
+        except TypeError:
+          adapter = pydantic.TypeAdapter[Any](target_type)
+        except KeyError:
+          adapter = pydantic.TypeAdapter[Any](target_type)
+          self._type_adapter_cache[target_type] = adapter
+        converted_args[param_name] = adapter.validate_python(args[param_name])
+      except pydantic.ValidationError as e:
+        validation_errors.append(
+            f"Parameter '{param_name}': expected type"
+            f" '{getattr(target_type, '__name__', target_type)}', validation"
+            f" error: {e}"
+        )
+      except (TypeError, NameError, pydantic.PydanticUserError) as e:
+        # TypeAdapter could not handle this annotation (e.g. a forward
+        # reference string or unsupported type). Skip validation but log a warning.
+        logger.warning(
+            "Skipping validation for parameter '%s' due to unhandled"
+            " annotation type '%s': %s",
+            param_name,
+            target_type,
+            e,
+        )
+
+    return converted_args, validation_errors
+
+  def _build_validation_error_response(
+      self, validation_errors: list[str]
+  ) -> dict[str, str]:
+    """Formats validation errors into an error dict for the LLM."""
+    validation_errors_str = "\n".join(validation_errors)
+    return {
+        "error": (
+            f"Invoking `{self.name}()` failed due to argument validation"
+            f" errors:\n{validation_errors_str}\nYou could retry calling"
+            " this tool with corrected argument types."
+        )
+    }
+
   def _prepare_invocation_args(
-      self, args: dict[str, Any], tool_context: ToolContext
+      self,
+      args: dict[str, Any],
+      tool_context: ToolContext,
   ) -> dict[str, Any]:
-    """Prepare args for function invocation (preprocesses, injects context and filters)."""
-    args_to_call = self._preprocess_args(args)
+    """Prepare args for function invocation (injects context and filters)."""
+    args_to_call = args.copy()
     if not self._spec.has_signature:
       logger.warning(
           "Could not introspect signature for tool '%s'; skipping"
@@ -178,27 +291,32 @@ class FunctionTool(BaseTool):
     valid_params = set(signature.parameters.keys())
     if self._context_param_name in valid_params:
       args_to_call[self._context_param_name] = tool_context
+
     # In live mode (bidirectional streaming), tools may accept an 'input_stream'
     # parameter (e.g., LiveRequestQueue) to receive real-time streaming data.
-    # When registered in _process_function_live_helper, the framework attaches
-    # the dedicated stream to invocation_context.active_streaming_tools[name].
-    # If the tool signature expects 'input_stream', we inject that active stream.
-    if "input_stream" in valid_params:
-      active_tools = tool_context._invocation_context.active_streaming_tools
-      if (
-          active_tools is not None
-          and self.name in active_tools
-          and active_tools[self.name].stream is not None
-      ):
-        args_to_call["input_stream"] = active_tools[self.name].stream
+    # _process_function_live_helper registers each call with its own stream,
+    # keyed by function call id; inject the stream of this call.
+    if "input_stream" in valid_params and tool_context.function_call_id:
+      active_tools = (
+          tool_context._invocation_context._active_background_tools or {}
+      )
+      active = active_tools.get(tool_context.function_call_id)
+      if active is not None and active.input_stream is not None:
+        args_to_call["input_stream"] = active.input_stream
     return {k: v for k, v in args_to_call.items() if k in valid_params}
 
   @override
   async def check_require_confirmation(
-      self, args: dict[str, Any], tool_context: ToolContext
+      self,
+      args: dict[str, Any],
+      tool_context: ToolContext,
   ) -> bool:
+    """Returns whether the tool requires confirmation for the given args."""
     if callable(self._require_confirmation):
-      args_to_call = self._prepare_invocation_args(args, tool_context)
+      preprocessed_args, _ = self._preprocess_args_with_validation(args)
+      args_to_call = self._prepare_invocation_args(
+          preprocessed_args, tool_context
+      )
       return cast(
           bool,
           await self._invoke_callable(self._require_confirmation, args_to_call),
@@ -231,21 +349,40 @@ class FunctionTool(BaseTool):
       return True
 
     # For callables without Python code objects (e.g. C builtins like bin):
+    # Traceback terminates in utils._sync_runner._invoke_callable (or
+    # FunctionTool._invoke_callable / invoke / run_async). We check both the
+    # code object and frame function name to confirm the TypeError originated at
+    # the invocation call-site.
     curr = tb
     while curr.tb_next:
       curr = curr.tb_next
-    return curr.tb_frame.f_code.co_name in (
-        "_invoke_callable",
-        "invoke",
-        "run_async",
+    return (
+        curr.tb_frame.f_code is _invoke_callable.__code__
+        or curr.tb_frame.f_code.co_name
+        in (
+            "_invoke_callable",
+            "invoke",
+            "run_async",
+        )
     )
 
   @override
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    # Preprocess arguments (includes Pydantic model conversion)
-    args_to_call = self._prepare_invocation_args(args, tool_context)
+    # Preprocess arguments (includes Pydantic model conversion and type
+    # validation). Validation errors are returned to the LLM so it can
+    # self-correct and retry with proper argument types.
+    preprocessed_args, validation_errors = (
+        self._preprocess_args_with_validation(args)
+    )
+
+    if validation_errors:
+      return self._build_validation_error_response(validation_errors)
+
+    args_to_call = self._prepare_invocation_args(
+        preprocessed_args, tool_context
+    )
 
     # Before invoking the function, we check for if the list of args passed in
     # has all the mandatory arguments or not.
@@ -292,6 +429,10 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
         return {"error": "This tool call is rejected."}
 
     try:
+      if self._should_run_generator_as_node(tool_context):
+        return await self._run_generator_as_node(
+            args_to_call=args_to_call, tool_context=tool_context
+        )
       return await self._invoke_callable(self.func, args_to_call)
     except TypeError as e:
       if not self._spec.has_signature and self._is_invocation_type_error(
@@ -310,6 +451,68 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
         }
       raise
 
+  def _should_run_generator_as_node(self, tool_context: ToolContext) -> bool:
+    """Returns whether a generator tool should run as a FunctionNode."""
+    if not self._spec.is_generator:
+      return False
+    if self._spec.has_signature and (
+        "input_stream" in self._spec.signature.parameters
+    ):
+      return False
+    ic = getattr(tool_context, "_invocation_context", None)
+    return ic is not None and ic.live_request_queue is None
+
+  def _get_generator_node(self) -> FunctionNode:
+    """Returns a cached FunctionNode configured for this generator tool."""
+    from ..workflow._function_node import FunctionNode
+
+    cache_key = (self.name, self.func, self._context_param_name)
+    if (
+        self._generator_node_cache is not None
+        and self._generator_node_cache[0] == cache_key
+    ):
+      return self._generator_node_cache[1]
+
+    node_name = re.sub(r"[^a-zA-Z0-9_]", "_", self.name)
+    if not node_name or not node_name.isidentifier():
+      node_name = f"_{node_name}"
+
+    node = FunctionNode(
+        func=self.func,
+        name=node_name,
+        parameter_binding="node_input",
+        rerun_on_resume=True,
+    )
+    # Inject the context under the same parameter FunctionTool uses, so
+    # e.g. a plain `ctx: str` argument is bound from args rather than
+    # replaced by the node's own `ctx` convention.
+    node._context_param_name = self._context_param_name
+    # run_async has already preprocessed and (when FUNCTION_TOOL_ARG_VALIDATION
+    # is on) validated the arguments. Clearing the node's type hints makes it
+    # bind them as-is, so generator tools see the same values as other
+    # FunctionTools instead of a second TypeAdapter pass that would reject a
+    # `param: str = None` default or raise past the tool's error handling.
+    node._type_hints = {}
+    node._type_adapters = {}
+    self._generator_node_cache = (cache_key, node)
+    return node
+
+  async def _run_generator_as_node(
+      self,
+      *,
+      args_to_call: dict[str, Any],
+      tool_context: ToolContext,
+  ) -> Any:
+    """Executes a non-live generator FunctionTool via FunctionNode."""
+    from ._node_tool import _run_node_in_tool_context
+
+    return await _run_node_in_tool_context(
+        self._get_generator_node(),
+        tool_name=self.name,
+        node_input=args_to_call,
+        tool_context=tool_context,
+    )
+
   def _detect_error_in_response(self, response: Any) -> Optional[str]:
     """Telemetry hook: returns an error type if the response indicates an error."""
     if isinstance(response, dict) and response.get("error"):
@@ -320,20 +523,12 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
       self, target: Callable[..., Any], args_to_call: dict[str, Any]
   ) -> Any:
     """Invokes a callable, handling both sync and async cases."""
-
-    # Functions are callable objects, but not all callable objects are functions
-    # checking coroutine function is not enough. We also need to check whether
-    # Callable's __call__ function is a coroutine function
-    is_async = inspect.iscoroutinefunction(target) or (
-        hasattr(target, "__call__")
-        and inspect.iscoroutinefunction(target.__call__)
+    unwrapped = (
+        self._spec.unwrapped_func
+        if target is self.func
+        else unwrap_callable(target)
     )
-    if is_async:
-      return await target(**args_to_call)
-    runner = _SYNC_CALLABLE_RUNNER.get()
-    if runner is not None:
-      return await runner(target, args_to_call)
-    return target(**args_to_call)
+    return await _invoke_callable(target, args_to_call, unwrapped=unwrapped)
 
   def _get_mandatory_args(
       self,
@@ -358,12 +553,12 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
       # For more refer to: https://docs.python.org/3/library/inspect.html#inspect.Parameter.kind
       if (
           param.default == inspect.Parameter.empty
-          and name not in self._ignore_params
           and param.kind
           not in (
               inspect.Parameter.VAR_POSITIONAL,
               inspect.Parameter.VAR_KEYWORD,
           )
+          and name not in self._ignore_params
       ):
         mandatory_params.append(name)
 

@@ -18,8 +18,8 @@ from typing import Any
 from typing import Optional
 
 from google.adk.agents.llm_agent import Agent
-from google.adk.agents.transcription_entry import TranscriptionEntry
 from google.adk.live._audio_transcriber import AudioTranscriber
+from google.adk.live._transcription_entry import TranscriptionEntry
 from google.genai import types
 import pytest
 

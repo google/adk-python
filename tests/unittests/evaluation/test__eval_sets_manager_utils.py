@@ -146,6 +146,22 @@ class TestUpdateEvalCaseInEvalSet:
     assert get_eval_case_from_eval_set(eval_set, "a").creation_timestamp == 99.0
     assert get_eval_case_from_eval_set(eval_set, "b").creation_timestamp == 2.0
 
+  def test_replaces_the_case_in_place_and_preserves_order(self):
+    eval_set = _eval_set([
+        _eval_case("a", 1.0),
+        _eval_case("b", 2.0),
+        _eval_case("c", 3.0),
+    ])
+
+    returned = update_eval_case_in_eval_set(
+        eval_set,
+        _eval_case("b", 99.0),
+    )
+
+    assert returned is eval_set
+    assert _eval_ids(eval_set) == ["a", "b", "c"]
+    assert eval_set.eval_cases[1].creation_timestamp == 99.0
+
   def test_unknown_eval_id_raises_not_found_naming_case_and_set(self):
     eval_set = _eval_set([_eval_case("a")], eval_set_id="set_1")
 

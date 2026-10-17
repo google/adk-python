@@ -27,7 +27,7 @@ from pydantic import Field
 class SamplingResult(BaseModel):
   """Base class for evaluation results of the candidate agent on the batch of examples."""
 
-  scores: dict[str, float] = Field(
+  scores: dict[str, float] = Field(  # type: ignore[call-overload]
       required=True,
       description=(
           "A map from example UID to the agent's overall score on that example."
@@ -49,7 +49,7 @@ class AgentWithScores(BaseModel):
   sub-classing this class.
   """
 
-  optimized_agent: Agent = Field(
+  optimized_agent: Agent = Field(  # type: ignore[call-overload]
       required=True,
       description="The optimized agent.",
   )
@@ -66,7 +66,7 @@ AgentWithScoresT = TypeVar("AgentWithScoresT", bound=AgentWithScores)
 class OptimizerResult(BaseModel, Generic[AgentWithScoresT]):
   """Base class for optimizer final results."""
 
-  optimized_agents: list[AgentWithScoresT] = Field(
+  optimized_agents: list[AgentWithScoresT] = Field(  # type: ignore[call-overload]
       required=True,
       description=(
           "A list of optimized agents which cannot be considered strictly"

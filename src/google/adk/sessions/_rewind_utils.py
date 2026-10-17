@@ -25,16 +25,24 @@ from typing import TYPE_CHECKING
 
 from google.genai import types
 
+from ..errors._invocation_not_found_error import InvocationNotFoundError
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..platform import uuid as platform_uuid
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..sessions.state import State
 
 if TYPE_CHECKING:
   from ..artifacts.base_artifact_service import BaseArtifactService
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_NON_SESSION_STATE_PREFIXES = (
+    State.APP_PREFIX,
+    State.USER_PREFIX,
+    State.TEMP_PREFIX,
+)
 
 
 async def compute_state_delta_for_rewind(
@@ -45,7 +53,7 @@ async def compute_state_delta_for_rewind(
   for i in range(rewind_event_index):
     if session.events[i].actions.state_delta:
       for k, v in session.events[i].actions.state_delta.items():
-        if k.startswith("app:") or k.startswith("user:"):
+        if k.startswith(_NON_SESSION_STATE_PREFIXES):
           continue
         if v is None:
           state_at_rewind_point.pop(k, None)
@@ -64,7 +72,7 @@ async def compute_state_delta_for_rewind(
   #    but not in state_at_rewind_point. These keys were added after the
   #    rewind point and need to be removed.
   for key in current_state:
-    if key.startswith("app:") or key.startswith("user:"):
+    if key.startswith(_NON_SESSION_STATE_PREFIXES):
       continue
     if key not in state_at_rewind_point:
       rewind_state_delta[key] = None
@@ -82,6 +90,9 @@ async def compute_artifact_delta_for_rewind(
   """Computes the artifact delta to reverse changes."""
   if not artifact_service:
     return {}
+
+  # Imported here so that importing sessions does not load artifacts.
+  from ..artifacts import artifact_util
 
   versions_at_rewind_point: dict[str, int] = {}
   for i in range(rewind_event_index):
@@ -103,13 +114,10 @@ async def compute_artifact_delta_for_rewind(
     if vt == vn:
       continue
 
-    rewind_artifact_delta[filename] = vn + 1
     artifact: types.Part
     if vt is None:
       # Artifact did not exist at rewind point. Mark it as inaccessible.
-      artifact = types.Part(
-          inline_data=types.Blob(mime_type="application/octet-stream", data=b"")
-      )
+      artifact = artifact_util._new_rewind_tombstone()
     else:
       # Artifact version changed after rewind point. Restore to version at
       # rewind point by loading the actual data via the artifact service.
@@ -128,14 +136,10 @@ async def compute_artifact_delta_for_rewind(
             vt,
             session.id,
         )
-        artifact = types.Part(
-            inline_data=types.Blob(
-                mime_type="application/octet-stream", data=b""
-            )
-        )
+        artifact = artifact_util._new_rewind_tombstone()
       else:
         artifact = loaded_artifact
-    await artifact_service.save_artifact(
+    rewind_artifact_delta[filename] = await artifact_service.save_artifact(
         app_name=app_name,
         user_id=session.user_id,
         session_id=session.id,
@@ -168,7 +172,9 @@ async def rewind_session(
       break
 
   if rewind_event_index == -1:
-    raise ValueError(f"Invocation ID not found: {rewind_before_invocation_id}")
+    raise InvocationNotFoundError(
+        f"Invocation ID not found: {rewind_before_invocation_id}"
+    )
 
   # Compute state delta to reverse changes
   if compute_state_delta is not None:

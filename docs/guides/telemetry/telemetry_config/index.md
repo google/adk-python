@@ -138,7 +138,7 @@ effect.
 
 ## How it works
 
-Every setting is answered the same way, from three fields that a fixed
+Every setting is answered the same way, from four fields that a fixed
 precedence ladder reads in order. Knowing that order is how you predict what a
 given deployment actually does.
 
@@ -157,9 +157,9 @@ Every property answers the same four-step question, in this order.
 A field left at `None` is not "off". It means "I have no opinion", and
 resolution falls through to the environment.
 
-### The three fields
+### The four fields
 
-`TelemetryConfig` carries three fields, each with an environment variable it
+`TelemetryConfig` carries four fields, each with an environment variable it
 falls back to when the field is left at `None`.
 
 | Field | Type | Default | Environment variable |
@@ -167,6 +167,7 @@ falls back to when the field is left at `None`.
 | `capture_message_content` | `ContentCapturingMode \| None` | `None` | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` |
 | `genai_semconv_stability_opt_in` | `'stable' \| 'experimental' \| None` | `None` | `OTEL_SEMCONV_STABILITY_OPT_IN` |
 | `adk_experimental_telemetry_opt_in` | `bool \| None` | `None` | `ADK_EXPERIMENTAL_TELEMETRY` |
+| `experimental_features_opt_in` | `frozenset[str] \| None` | `None` | `ADK_EXPERIMENTAL_TELEMETRY_FEATURES` |
 
 The model forbids unknown fields, so a misspelled keyword raises at
 construction rather than being ignored.
@@ -191,10 +192,43 @@ infers "stable" from its absence. So `'stable'` is a per-request value with no
 environment-variable equivalent, and it is the way to hold one run on the
 legacy attributes while the deployment as a whole has opted in.
 
-**`adk_experimental_telemetry_opt_in`** gates telemetry whose shape is still
-changing, which so far means spans and attributes for skills. It is off by
-default, because an attribute name that moves between releases breaks a
-dashboard built on it.
+**`adk_experimental_telemetry_opt_in`** and **`experimental_features_opt_in`**
+gate telemetry whose shape is still changing. They are off by default, because
+an attribute name that moves between releases breaks a dashboard built on it.
+
+Some instrumentations are grouped into features, and there are two
+environment variables. `ADK_EXPERIMENTAL_TELEMETRY` is a plain
+boolean, `1` or `true`, and turns on every instrumentation at once.
+`ADK_EXPERIMENTAL_TELEMETRY_FEATURES` takes a comma-separated list of feature
+names and turns on just those. Neither one needs the other: a feature named in
+the list is on whether or not the blanket variable is set, and the blanket
+variable covers features the list does not mention.
+
+| Feature | What it gates |
+| :--- | :--- |
+| `skills` | Spans, attributes and metrics for skill loads, skill resource loads and skill script executions. |
+| `workflow` | Per-workflow inference call and tool call metrics, keyed by root agent and workflow name. |
+| `token_usage` | Token usage metrics, keyed by agent name or root agent and workflow name. |
+| `context_cache` | Context cache hit and fingerprint attributes on the inference span. |
+| `mcp` | MCP HTTP exchange debug logs. |
+
+Certain instrumentations are gated by a combination of features,
+e.g. metric collecting skill loads per workflow is gated behind
+both `skills` and `workflow`.
+
+```bash
+export ADK_EXPERIMENTAL_TELEMETRY_FEATURES=skills,workflow   # just these two
+export ADK_EXPERIMENTAL_TELEMETRY=true                       # every instrumentation
+```
+
+Case and spacing in the list are normalized, so `Skills, Workflow` reads the
+same as `skills,workflow`.
+
+**`adk_experimental_telemetry_opt_in`** takes precedence over
+**`experimental_features_opt_in`**, and both take precedence over the
+environment's default. In particular, setting
+**`adk_experimental_telemetry_opt_in`** to `false` disables every
+experimental instrumentation.
 
 ### Why one field drives four properties
 
@@ -282,9 +316,13 @@ happened to want.
     `capture_message_content=NO_CONTENT`.
 *   **An unrecognized environment value fails quietly.** Anything outside the
     four mode names, and the legacy `true` and `1`, resolves to `NO_CONTENT` with
-    no warning, so a typo silently disables capture. `ADK_TELEMETRY_IGNORE_RUN_CONFIG`
-    and `ADK_EXPERIMENTAL_TELEMETRY` behave the same way in reverse: only `1`
-    and `true` count as set.
+    no warning, so a typo silently disables capture.
+    `ADK_TELEMETRY_IGNORE_RUN_CONFIG` and `ADK_EXPERIMENTAL_TELEMETRY` behave
+    the same way in reverse: only `1` and `true` count as set, so
+    `ADK_EXPERIMENTAL_TELEMETRY=skills` enables nothing.
+    `ADK_EXPERIMENTAL_TELEMETRY_FEATURES` is the one exception to the silence:
+    a name it does not recognize is dropped with a warning naming it, so a
+    `skils` typo enables nothing but does say so in the logs.
 *   **`'stable'` cannot be expressed as an environment variable.** The semconv
     variable only supports opting in.
 *   **The granularity is the whole request.** There is no per-field or

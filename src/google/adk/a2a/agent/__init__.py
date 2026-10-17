@@ -18,9 +18,12 @@ from ...utils._dependency import missing_extra
 
 __all__ = [
     "A2aCardRequestConfig",
+    "A2AClientError",
     "A2aRemoteAgentConfig",
+    "AgentCardResolutionError",
     "CardRequestInterceptor",
     "ParametersConfig",
+    "RemoteA2aAgent",
     "RequestInterceptor",
 ]
 
@@ -28,12 +31,18 @@ __all__ = [
 def __getattr__(name: str) -> object:
   if name in [
       "A2aCardRequestConfig",
+      "A2AClientError",
       "A2aRemoteAgentConfig",
+      "AgentCardResolutionError",
       "CardRequestInterceptor",
       "ParametersConfig",
+      "RemoteA2aAgent",
       "RequestInterceptor",
   ]:
     try:
+      from ._remote_a2a_agent import A2AClientError
+      from ._remote_a2a_agent import AgentCardResolutionError
+      from ._remote_a2a_agent import RemoteA2aAgent
       from .config import A2aCardRequestConfig
       from .config import A2aRemoteAgentConfig
       from .config import CardRequestInterceptor
@@ -42,14 +51,20 @@ def __getattr__(name: str) -> object:
 
       if name == "A2aCardRequestConfig":
         return A2aCardRequestConfig
+      elif name == "A2AClientError":
+        return A2AClientError
       elif name == "A2aRemoteAgentConfig":
         return A2aRemoteAgentConfig
+      elif name == "AgentCardResolutionError":
+        return AgentCardResolutionError
       elif name == "CardRequestInterceptor":
         return CardRequestInterceptor
       elif name == "ParametersConfig":
         return ParametersConfig
       elif name == "RequestInterceptor":
         return RequestInterceptor
+      elif name == "RemoteA2aAgent":
+        return RemoteA2aAgent
     except ImportError as e:
       raise missing_extra("a2a-sdk", "a2a") from e
   raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

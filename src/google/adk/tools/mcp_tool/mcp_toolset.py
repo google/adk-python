@@ -24,6 +24,7 @@ import time
 from typing import Any
 from typing import Awaitable
 from typing import Callable
+from typing import cast
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -55,14 +56,18 @@ from ..load_mcp_resource_tool import LoadMcpResourceTool
 from ..tool_configs import BaseToolConfig
 from ..tool_configs import ToolArgsConfig
 from .mcp_session_manager import _http_debug_var
+from .mcp_session_manager import _is_session_terminated_error
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
+# MCPTool stays imported so existing mcp_toolset.MCPTool callers still resolve.
 from .mcp_tool import _dump_mcp_model
+from .mcp_tool import _merge_auth_and_provider_headers
 from .mcp_tool import _RESERVED_TOOL_NAMES
-from .mcp_tool import MCPTool
+from .mcp_tool import MCPTool  # pylint: disable=unused-import  # noqa: F401
+from .mcp_tool import McpTool
 from .mcp_tool import ProgressCallbackFactory
 from .mcp_tool import ProgressFnT
 
@@ -171,6 +176,7 @@ class McpToolset(BaseToolset):
       sampling_capabilities: SamplingCapability | None = None,
       elicitation_callback: ElicitationFnT | None = None,
       credential_key: str | None = None,
+      propagate_grounding_metadata: bool = False,
   ):
     """Initializes the McpToolset.
 
@@ -223,6 +229,9 @@ class McpToolset(BaseToolset):
         elicitations used for out-of-band flows such as auth challenges.
       credential_key: A user specified key used to load and save this credential
         in a credential service. Used with auth_scheme.
+      propagate_grounding_metadata: If True, each listed tool copies
+        ``meta.adk_grounding_metadata`` from the MCP result into
+        ``temp:_adk_grounding_metadata``. Default False.
     """
 
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
@@ -264,6 +273,7 @@ class McpToolset(BaseToolset):
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
     self._require_confirmation = require_confirmation
+    self._propagate_grounding_metadata = propagate_grounding_metadata
     # Store auth config as instance variable so ADK can populate
     # exchanged_auth_credential in-place before calling get_tools()
     self._auth_config: Optional[AuthConfig] = (
@@ -349,22 +359,17 @@ class McpToolset(BaseToolset):
     Returns:
         The merged header provider and auth headers, empty if there are none.
     """
-    headers: Dict[str, str] = {}
-
-    # Add headers from header_provider if available
+    provider_headers = None
     if self._header_provider and readonly_context:
       provider_headers = self._header_provider(readonly_context)
       if inspect.isawaitable(provider_headers):
         provider_headers = await provider_headers
-      if provider_headers:
-        headers.update(provider_headers)
 
-    # Add auth headers from exchanged credential if available
     auth_headers = self._get_auth_headers(readonly_context)
-    if auth_headers:
-      headers.update(auth_headers)
-
-    return headers
+    return _merge_auth_and_provider_headers(
+        auth_headers=auth_headers,
+        provider_headers=cast(Dict[str, str] | None, provider_headers),
+    )
 
   async def _execute_with_session(
       self,
@@ -417,6 +422,13 @@ class McpToolset(BaseToolset):
         logger.exception(
             f"Exception during MCP session execution: {error_message}: {e}"
         )
+        # Drop the session the server has forgotten, so the retry from
+        # @retry_on_errors builds a fresh one instead of being handed the
+        # same dead session back.
+        if _is_session_terminated_error(e):
+          self._mcp_session_manager._discard_session(  # pylint: disable=protected-access
+              session_headers, session=session
+          )
         raise ConnectionError(f"{error_message}: {e}") from e
       finally:
         self._mcp_session_manager._end_session_use(session_headers)  # pylint: disable=protected-access
@@ -510,7 +522,7 @@ class McpToolset(BaseToolset):
 
     # Apply filtering based on context and tool_filter. This runs on every call
     # even on a cache hit, so only the round trip is skipped.
-    tools = []
+    tools: List[BaseTool] = []
     for tool in mcp_tools:
       # Skip rather than let McpTool raise: one reserved name would otherwise
       # fail the whole listing and take the server's honest tools down with it.
@@ -522,7 +534,7 @@ class McpToolset(BaseToolset):
         )
         continue
 
-      mcp_tool = MCPTool(
+      mcp_tool = McpTool(
           mcp_tool=tool,
           mcp_session_manager=self._mcp_session_manager,
           auth_scheme=self._auth_scheme,
@@ -532,6 +544,7 @@ class McpToolset(BaseToolset):
           progress_callback=self._progress_callback
           if hasattr(self, "_progress_callback")
           else None,
+          propagate_grounding_metadata=self._propagate_grounding_metadata,
       )
 
       if self._is_tool_selected(mcp_tool, readonly_context):

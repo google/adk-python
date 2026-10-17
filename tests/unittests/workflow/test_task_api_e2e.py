@@ -355,14 +355,6 @@ async def test_chat_root_mixed_turn_with_two_regular_tools_and_task(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Task-mode wrapper does not dispatch task-delegation FCs (only the "
-        "chat-mode wrapper does), so a task-mode middle agent cannot delegate "
-        "to its task sub-agent.  Documented limitation."
-    ),
-    strict=True,
-)
 @pytest.mark.asyncio
 async def test_chat_root_with_nested_task_delegation(
     request: pytest.FixtureRequest,
@@ -618,6 +610,80 @@ async def test_chat_coordinator_resumes_unresolved_task_fc(
   } in finish_args, f"expected resumed task to finish; got {finish_args}"
 
 
+@pytest.mark.asyncio
+async def test_task_agent_ignores_sibling_instance_unresolved_task_fc(
+    request: pytest.FixtureRequest,
+):
+  """A task instance's pre-LLM scan skips a same-named sibling's pending FC."""
+  grandchild_model = testing_utils.MockModel.create(
+      responses=[_finish_part({"result": "leaf"})]
+  )
+  grandchild = LlmAgent(name="grandchild", model=grandchild_model, mode="task")
+  child = _make_task_agent(
+      name="child",
+      responses=[_finish_part({"result": "own work"})],
+      sub_agents=[grandchild],
+  )
+  root = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create(
+          responses=[_delegate_part("child", "new work"), "Done."]
+      ),
+      sub_agents=[child],
+  )
+
+  # Seed a delegation to grandchild authored by another live instance of
+  # `child` (a different delegating FC, hence a different isolation scope)
+  # that is still waiting for its own resolution.
+  from google.adk.sessions.in_memory_session_service import InMemorySessionService
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name=request.function.__name__, user_id="u"
+  )
+  await session_service.append_event(
+      session=session,
+      event=Event(
+          invocation_id="prior-inv",
+          author="child",
+          isolation_scope="fc-sibling-instance",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id="fc-sibling-grandchild",
+                          name="grandchild",
+                          args={"request": "sibling's leaf work"},
+                      )
+                  )
+              ],
+          ),
+      ),
+  )
+
+  from google.adk.runners import Runner
+
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = Runner(app=app, session_service=session_service)
+
+  events = []
+  async for ev in runner.run_async(
+      user_id="u",
+      session_id=session.id,
+      new_message=testing_utils.get_user_content("go"),
+  ):
+    events.append(ev)
+
+  # The new `child` instance finished its own task without adopting the
+  # sibling's grandchild delegation.
+  assert _collect_finish_outputs(events) == [{"result": "own work"}]
+  assert (
+      grandchild_model.response_index == -1
+  ), "grandchild must not be dispatched from a sibling instance's pending FC"
+  assert any("Done." in t for t in _get_text_responses(events))
+
+
 # ---------------------------------------------------------------------------
 # 9. Resumable task delegation: a task sub-agent that pauses for tool
 #    confirmation resumes without executing its parent's delegation FC.
@@ -829,3 +895,47 @@ async def test_chat_root_mixed_turn_with_long_running_tool_and_task_pauses(
   ]
   assert len(model_events) == 1
   assert "fc-lro-001" in model_events[0].long_running_tool_ids
+
+
+@pytest.mark.asyncio
+async def test_dynamic_run_node_isolates_peer_task_agents(
+    request: pytest.FixtureRequest,
+):
+  """Task agents invoked via bare ctx.run_node receive distinct node_path isolation scopes."""
+  alpha_model = testing_utils.MockModel.create(
+      responses=["ALPHA_SECRET_CONVERSATION", _finish_part({"result": "a_ok"})]
+  )
+  beta_model = testing_utils.MockModel.create(
+      responses=[_finish_part({"result": "b_ok"})]
+  )
+  alpha = LlmAgent(name="alpha", model=alpha_model, mode="task")
+  beta = LlmAgent(name="beta", model=beta_model, mode="task")
+
+  from google.adk.workflow import node as workflow_node
+  from google.adk.workflow._base_node import START
+  from google.adk.workflow._workflow import Workflow
+
+  @workflow_node(rerun_on_resume=True)
+  async def driver(ctx):
+    a_out = await ctx.run_node(alpha, node_input="start alpha")
+    b_out = await ctx.run_node(beta, node_input="start beta")
+    return {"a": a_out, "b": b_out}
+
+  wf = Workflow(name="wf", edges=[(START, driver)])
+  app = App(name=request.function.__name__, root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async(testing_utils.get_user_content("go"))
+
+  alpha_events = [e for e in runner.session.events if e.author == "alpha"]
+  beta_events = [e for e in runner.session.events if e.author == "beta"]
+  assert alpha_events
+  assert beta_events
+  assert {e.isolation_scope for e in alpha_events} == {"wf@1/driver@1/alpha@1"}
+  assert {e.isolation_scope for e in beta_events} == {"wf@1/driver@1/beta@1"}
+
+  beta_request = beta_model.requests[0]
+  rendered_beta_context = "\n".join(
+      p.text or "" for c in beta_request.contents or [] for p in c.parts or []
+  )
+  assert "ALPHA_SECRET_CONVERSATION" not in rendered_beta_context

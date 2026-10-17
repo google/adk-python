@@ -21,6 +21,8 @@ import logging
 from typing import AsyncGenerator
 from typing import ClassVar
 from typing import Type
+from typing import Union
+import warnings
 
 from typing_extensions import deprecated
 from typing_extensions import override
@@ -31,6 +33,7 @@ from ..features import FeatureName
 from ..tools.base_tool import BaseTool
 from ..utils.context_utils import Aclosing
 from ..utils.instructions_utils import InstructionProvider
+from ..workflow._base_node import BaseNode
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
@@ -38,13 +41,23 @@ from .invocation_context import InvocationContext
 from .llm_agent import LlmAgent
 from .llm_agent import ToolUnion
 from .readonly_context import ReadonlyContext
-from .sequential_agent_config import SequentialAgentConfig
+
+with warnings.catch_warnings():
+  # SequentialAgentConfig subclasses the deprecated BaseAgentConfig purely as
+  # an internal implementation detail, so this import alone should not warn
+  # applications that never touch the deprecated Agent Config APIs.
+  warnings.filterwarnings(
+      'ignore',
+      message=r'.*BaseAgentConfig is deprecated.*',
+      category=DeprecationWarning,
+  )
+  from .sequential_agent_config import SequentialAgentConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-def _tool_name(tool: ToolUnion) -> str | None:
-  if isinstance(tool, BaseTool):
+def _tool_name(tool: Union[ToolUnion, BaseNode]) -> str | None:
+  if isinstance(tool, (BaseTool, BaseNode)):
     return tool.name
   if callable(tool):
     name = getattr(tool, '__name__', None)

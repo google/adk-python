@@ -64,3 +64,19 @@ if TYPE_CHECKING:
 
 This works because `from __future__ import annotations` makes annotations
 strings (deferred evaluation), so the import is never needed at runtime.
+
+## Lazy Imports
+
+- From `google.genai`, import only `types` at module level. Import `errors`,
+  `Client` and the rest inside the function that uses them, unless a Pydantic
+  field annotation needs the name at runtime, as `Gemini.client` needs
+  `genai.Client`.
+- Never import an optional dependency (`anthropic`, `litellm`, a cloud client)
+  at module level in code that `from google.adk.agents import Agent` or
+  `from google.adk.runners import Runner` reaches.
+  `tests/unittests/test_import_loading.py` catches a new non-`google` package
+  on these paths; a `google.genai` or `google.cloud.*` addition needs a manual
+  check.
+- To export a name from `google.adk`, `google.adk.agents` or
+  `google.adk.workflow`, add it to the `TYPE_CHECKING` block, `_LAZY_MEMBERS`
+  and `__all__`.

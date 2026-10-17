@@ -290,7 +290,11 @@ def test_to_attributes_cache_creation(
 def test_subset_bucket_accessors(
     usage_metadata: types.GenerateContentResponseUsageMetadata,
 ):
-  """The cache_read / tool / reasoning buckets read their Gemini fields."""
+  """The subset buckets each read their own Gemini field.
+
+  `prompt_input` and `candidate_output` are the halves that pair with
+  `tool_input` and `reasoning_output`; ADK eval reports all four as a breakdown.
+  """
   usage_metadata.prompt_token_count = 100
   usage_metadata.tool_use_prompt_token_count = 20
   usage_metadata.candidates_token_count = 30
@@ -301,11 +305,15 @@ def test_subset_bucket_accessors(
   assert token_usage.cache_read_input_tokens == 60
   assert token_usage.tool_input_tokens == 20
   assert token_usage.reasoning_output_tokens == 15
+  assert token_usage.prompt_input_tokens == 100
+  assert token_usage.candidate_output_tokens == 30
 
   empty = _token_usage.TokenUsage.from_usage_metadata(None)
   assert empty.cache_read_input_tokens is None
   assert empty.tool_input_tokens is None
   assert empty.reasoning_output_tokens is None
+  assert empty.prompt_input_tokens is None
+  assert empty.candidate_output_tokens is None
 
 
 def test_invocation_totals_sum_every_bucket_across_calls():
@@ -340,6 +348,8 @@ def test_invocation_totals_sum_every_bucket_across_calls():
   assert totals.cache_read_input_tokens == calls * cached_content_tokens
   assert totals.reasoning_output_tokens == calls * thoughts_tokens
   assert totals.tool_input_tokens == calls * tool_use_prompt_tokens
+  assert totals.prompt_input_tokens == calls * prompt_tokens
+  assert totals.candidate_output_tokens == calls * candidates_tokens
   assert totals.total_tokens == want_input + want_output
 
 

@@ -168,9 +168,19 @@ class AgentEvaluator:
       eval_set_results_manager: Optional manager used to persist the eval set
         evaluation result as `*.evalset_result.json`.
     """
+    if num_runs < 1:
+      raise ValueError(f"`num_runs` must be at least 1, got {num_runs}.")
+
     if eval_set_results_manager is not None and not app_name:
       raise ValueError(
           "app_name is required when eval_set_results_manager is provided."
+      )
+
+    if not eval_set or not eval_set.eval_cases:
+      raise ValueError(
+          "No eval cases were evaluated, so there is nothing to report a"
+          " pass or a failure for. This happens when `eval_set` has no eval"
+          " cases."
       )
 
     if criteria:
@@ -331,6 +341,9 @@ class AgentEvaluator:
       eval_set_results_manager: Optional manager used to persist the eval set
         evaluation result as `*.evalset_result.json`.
     """
+    if num_runs < 1:
+      raise ValueError(f"`num_runs` must be at least 1, got {num_runs}.")
+
     if eval_set_results_manager is not None and not app_name:
       raise ValueError(
           "app_name is required when eval_set_results_manager is provided."
@@ -346,6 +359,12 @@ class AgentEvaluator:
             test_files.append(path.join(root, file))
     else:
       test_files = [eval_dataset_file_path_or_dir]
+
+    if not test_files:
+      raise ValueError(
+          "No `*.test.json` eval files found in"
+          f" {eval_dataset_file_path_or_dir}, so there is nothing to evaluate."
+      )
 
     initial_session = AgentEvaluator._get_initial_session(initial_session_file)
 
@@ -550,7 +569,7 @@ class AgentEvaluator:
       overall_eval_status: EvalStatus,
       overall_score: Optional[float],
       metric_name: str,
-      threshold: float,
+      threshold: Optional[float],
   ) -> None:
     try:
       import pandas as pd  # pylint: disable=g-import-not-at-top
@@ -841,25 +860,80 @@ class AgentEvaluator:
     ) in eval_metric_results.items():
       if not eval_metric_results_with_invocations:
         continue
-      threshold = _get_metric_threshold(
-          eval_metric_results_with_invocations[0].eval_metric_result
-      )
+
+      metric_result = eval_metric_results_with_invocations[0].eval_metric_result
       scores = [
           m.eval_metric_result.score
           for m in eval_metric_results_with_invocations
           if m.eval_metric_result.score is not None
       ]
+      overall_score = statistics.mean(scores) if scores else None
 
-      if scores:
-        overall_score = statistics.mean(scores)
-        overall_eval_status = (
-            EvalStatus.PASSED
-            if overall_score >= threshold
-            else EvalStatus.FAILED
+      # Informational metrics (e.g. the efficiency metrics) report a value but
+      # never pass or fail. Detect them by their INFORMATIONAL status, falling
+      # back to the absence of any threshold/criterion. Report their value but
+      # never count them as a failure.
+      is_informational = (
+          metric_result.eval_status == EvalStatus.INFORMATIONAL
+          or (
+              metric_result.criterion is None
+              and metric_result.threshold is None
+          )
+      )
+      if is_informational:
+        if print_detailed_results:
+          AgentEvaluator._print_details(
+              eval_metric_result_with_invocations=eval_metric_results_with_invocations,
+              overall_eval_status=EvalStatus.INFORMATIONAL,
+              overall_score=overall_score,
+              metric_name=metric_name,
+              threshold=None,
+          )
+        continue
+
+      threshold = _get_metric_threshold(metric_result)
+
+      # Determine this metric's pass/fail POLARITY (higher-is-better vs.
+      # lower-is-better) from each scored invocation's own (score, eval_status)
+      # pair -- set by the registered Evaluator itself (see
+      # LocalEvalService._evaluate_metric, which copies
+      # `PerInvocationResult.eval_status` verbatim onto each
+      # `EvalMetricResult`) -- rather than hardcoding a higher-is-better
+      # `>=` comparison for every metric uniformly, which is backwards for
+      # any metric an Evaluator defines as lower-is-better (e.g. a cost or
+      # latency metric, PASSED when `score <= threshold`).
+      # Use the inferred direction only when all scored invocations agree on
+      # it, and fall back to `>=` otherwise (e.g. when invocations sit at the
+      # threshold or a custom metric's status is not purely score-vs-threshold).
+      inferred_directions: set[bool] = set()
+      for (
+          eval_metric_result_with_invocation
+      ) in eval_metric_results_with_invocations:
+        result = eval_metric_result_with_invocation.eval_metric_result
+        if (
+            result.score is None
+            or result.score == threshold
+            or result.eval_status not in (EvalStatus.PASSED, EvalStatus.FAILED)
+        ):
+          continue
+        inferred_directions.add(
+            (result.score > threshold)
+            == (result.eval_status == EvalStatus.PASSED)
         )
-      else:
-        overall_score = None
+      higher_is_better = (
+          inferred_directions.pop() if len(inferred_directions) == 1 else True
+      )
+
+      if overall_score is None:
         overall_eval_status = EvalStatus.NOT_EVALUATED
+      elif (
+          overall_score >= threshold
+          if higher_is_better
+          else overall_score <= threshold
+      ):
+        overall_eval_status = EvalStatus.PASSED
+      else:
+        overall_eval_status = EvalStatus.FAILED
 
       # Gather all the failures.
       if overall_eval_status != EvalStatus.PASSED:

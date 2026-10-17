@@ -38,6 +38,9 @@ someone else's package on any machine that happened to have it installed.
 
 from __future__ import annotations
 
+from typing import Awaitable
+from typing import Callable
+
 from mcp import ClientSession as ClientSession
 from mcp import SamplingCapability as SamplingCapability
 from mcp import StdioServerParameters as StdioServerParameters
@@ -71,6 +74,22 @@ except ImportError:
 
   IS_MCP_SDK_V2 = False
 
+# Tries `server/discover` and falls back to `initialize`. SDK 2.x only exposes
+# this through its high-level `Client`, so we import the private function.
+# Separate try so that if it moves, we don't misdetect the SDK as 1.x.
+# `None` means connections use the legacy handshake.
+if IS_MCP_SDK_V2:
+  try:
+    from mcp.client._probe import negotiate_auto as _negotiate_auto
+  except ImportError:
+    _negotiate_auto = None
+else:
+  _negotiate_auto = None
+
+negotiate_auto: Callable[[ClientSession], Awaitable[None]] | None = (
+    _negotiate_auto
+)
+
 __all__ = [
     "IS_MCP_SDK_V2",
     "ClientSession",
@@ -86,6 +105,7 @@ __all__ = [
     "StdioServerParameters",
     "Tool",
     "create_mcp_http_client",
+    "negotiate_auto",
     "sse_client",
     "stdio_client",
     "streamable_http_client",

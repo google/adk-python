@@ -566,3 +566,243 @@ def test_create_task_store_raises_on_unknown_scheme(monkeypatch):
     service_factory._create_task_store_from_options(
         task_store_uri="unknown://foo",
     )
+
+
+# -- Agent Platform auto-configuration tests --
+
+
+def test_session_auto_configures_from_agent_engine_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Session service auto-configures when GOOGLE_CLOUD_AGENT_ENGINE_ID is set."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "12345")
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
+  expected = object()
+  registry.create_session_service.return_value = expected
+  monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
+
+  result = service_factory.create_session_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=False,
+  )
+
+  assert result is expected
+  registry.create_session_service.assert_called_once_with(
+      "agentengine://12345",
+      agents_dir=str(tmp_path),
+  )
+
+
+def test_session_auto_configures_with_default_use_local_storage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Auto-configuration applies with the default use_local_storage=True."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "12345")
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
+  expected = object()
+  registry.create_session_service.return_value = expected
+  monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
+
+  result = service_factory.create_session_service_from_options(
+      base_dir=tmp_path,
+  )
+
+  assert result is expected
+  registry.create_session_service.assert_called_once_with(
+      "agentengine://12345",
+      agents_dir=str(tmp_path),
+  )
+
+
+def test_session_auto_config_takes_precedence_over_force_local_storage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """Auto-configuration wins over ADK_FORCE_LOCAL_STORAGE, and warns."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "12345")
+  monkeypatch.setenv("ADK_FORCE_LOCAL_STORAGE", "1")
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
+  expected = object()
+  registry.create_session_service.return_value = expected
+  monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
+
+  caplog.set_level(logging.WARNING, logger=service_factory.logger.name)
+
+  result = service_factory.create_session_service_from_options(
+      base_dir=tmp_path,
+  )
+
+  assert result is expected
+  registry.create_session_service.assert_called_once_with(
+      "agentengine://12345",
+      agents_dir=str(tmp_path),
+  )
+  assert any(
+      record.levelname == "WARNING"
+      and "Ignoring ADK_FORCE_LOCAL_STORAGE" in record.getMessage()
+      for record in caplog.records
+  )
+
+
+def test_memory_auto_configures_from_agent_engine_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Memory service auto-configures when GOOGLE_CLOUD_AGENT_ENGINE_ID is set."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "12345")
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
+  expected = object()
+  registry.create_memory_service.return_value = expected
+  monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
+
+  result = service_factory.create_memory_service_from_options(
+      base_dir=tmp_path,
+  )
+
+  assert result is expected
+  registry.create_memory_service.assert_called_once_with(
+      "agentengine://12345",
+      agents_dir=str(tmp_path),
+  )
+
+
+def test_explicit_session_uri_takes_precedence_over_agent_engine_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Explicit --session_service_uri wins over GOOGLE_CLOUD_AGENT_ENGINE_ID."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "12345")
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
+  expected = object()
+  registry.create_session_service.return_value = expected
+  monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
+
+  result = service_factory.create_session_service_from_options(
+      base_dir=tmp_path,
+      session_service_uri="memory://",
+  )
+
+  assert result is expected
+  registry.create_session_service.assert_called_once_with(
+      "memory://",
+      agents_dir=str(tmp_path),
+  )
+
+
+def test_explicit_memory_uri_takes_precedence_over_agent_engine_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Explicit --memory_service_uri wins over GOOGLE_CLOUD_AGENT_ENGINE_ID."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "12345")
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
+  expected = object()
+  registry.create_memory_service.return_value = expected
+  monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
+
+  result = service_factory.create_memory_service_from_options(
+      base_dir=tmp_path,
+      memory_service_uri="rag://my-corpus",
+  )
+
+  assert result is expected
+  registry.create_memory_service.assert_called_once_with(
+      "rag://my-corpus",
+      agents_dir=str(tmp_path),
+  )
+
+
+def test_no_agent_engine_id_falls_through_to_in_memory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Without GOOGLE_CLOUD_AGENT_ENGINE_ID, services use in-memory defaults."""
+  monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
+
+  session_service = service_factory.create_session_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=False,
+  )
+  assert isinstance(session_service, InMemorySessionService)
+
+  memory_service = service_factory.create_memory_service_from_options(
+      base_dir=tmp_path,
+  )
+  assert isinstance(memory_service, InMemoryMemoryService)
+
+
+def test_session_auto_config_logs_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """Auto-configuration logs an informational message."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "67890")
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
+  registry.create_session_service.return_value = object()
+  monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
+
+  caplog.set_level(logging.INFO, logger=service_factory.logger.name)
+
+  service_factory.create_session_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=False,
+  )
+
+  assert "Auto-configuring session service" in caplog.text
+  assert "GOOGLE_CLOUD_AGENT_ENGINE_ID" in caplog.text
+
+
+def test_session_auto_config_falls_back_on_value_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """Session service falls back to in-memory when auto-config raises ValueError."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "12345")
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
+  registry.create_session_service.side_effect = ValueError(
+      "GOOGLE_CLOUD_PROJECT or GOOGLE_CLOUD_LOCATION not set."
+  )
+  monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
+
+  caplog.set_level(logging.WARNING, logger=service_factory.logger.name)
+
+  session_service = service_factory.create_session_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=False,
+  )
+
+  assert isinstance(session_service, InMemorySessionService)
+  assert (
+      "Failed to auto-configure Agent Platform Sessions service" in caplog.text
+  )
+
+
+def test_memory_auto_config_falls_back_on_value_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """Memory service falls back to in-memory when auto-config raises ValueError."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "12345")
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
+  registry.create_memory_service.side_effect = ValueError(
+      "GOOGLE_CLOUD_PROJECT or GOOGLE_CLOUD_LOCATION not set."
+  )
+  monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
+
+  caplog.set_level(logging.WARNING, logger=service_factory.logger.name)
+
+  memory_service = service_factory.create_memory_service_from_options(
+      base_dir=tmp_path,
+  )
+
+  assert isinstance(memory_service, InMemoryMemoryService)
+  assert (
+      "Failed to auto-configure Agent Platform Memory Bank service"
+      in caplog.text
+  )

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 from typing import Optional
@@ -30,6 +31,7 @@ from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactServ
 from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.flows.llm_flows.tools._thread_pool import _call_tool_in_thread_pool
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -39,6 +41,7 @@ from google.adk.runners import Runner
 import google.adk.runners as _runners_module
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils.variant_utils import GoogleLLMVariant
@@ -133,6 +136,9 @@ async def test_agent_tool_inherits_parent_app_name(monkeypatch):
         new_message: Optional[types.Content] = None,
         state_delta: Optional[dict[str, Any]] = None,
         run_config: Optional[RunConfig] = None,
+        yield_user_message: bool = False,
+        abort_signal: Optional[asyncio.Event] = None,
+        **kwargs,
     ):
       del (
           user_id,
@@ -141,6 +147,9 @@ async def test_agent_tool_inherits_parent_app_name(monkeypatch):
           new_message,
           state_delta,
           run_config,
+          yield_user_message,
+          abort_signal,
+          kwargs,
       )
       return _empty_async_generator()
 
@@ -227,8 +236,20 @@ async def _capture_nested_run_config(
         new_message: Optional[types.Content] = None,
         state_delta: Optional[dict[str, Any]] = None,
         run_config: Optional[RunConfig] = None,
+        yield_user_message: bool = False,
+        abort_signal: Optional[asyncio.Event] = None,
+        **kwargs,
     ):
-      del user_id, session_id, invocation_id, new_message, state_delta
+      del (
+          user_id,
+          session_id,
+          invocation_id,
+          new_message,
+          state_delta,
+          yield_user_message,
+          abort_signal,
+          kwargs,
+      )
       captured['run_config'] = run_config
       return _empty_async_generator()
 
@@ -319,6 +340,92 @@ async def test_agent_tool_keeps_unary_run_unchanged(monkeypatch):
   )
 
   assert nested_run_config.streaming_mode == StreamingMode.NONE
+
+
+async def test_agent_tool_forwards_parent_abort_signal(monkeypatch):
+  """Parent invocation's abort_signal is forwarded to child Runner.run_async."""
+  captured: dict[str, Any] = {}
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name: str,
+        agent: Agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      del app_name, artifact_service, memory_service, credential_service
+      self.agent = agent
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+
+    def run_async(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        invocation_id: Optional[str] = None,
+        new_message: Optional[types.Content] = None,
+        state_delta: Optional[dict[str, Any]] = None,
+        run_config: Optional[RunConfig] = None,
+        yield_user_message: bool = False,
+        abort_signal: Optional[asyncio.Event] = None,
+        **kwargs,
+    ):
+      del (
+          user_id,
+          session_id,
+          invocation_id,
+          new_message,
+          state_delta,
+          run_config,
+          yield_user_message,
+          kwargs,
+      )
+      captured['abort_signal'] = abort_signal
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  tool_agent = Agent(name='tool_agent', model='test-model')
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = Agent(name='root_agent', model='test-model', tools=[agent_tool])
+
+  parent_session_service = InMemorySessionService()
+  parent_session = await parent_session_service.create_session(
+      app_name='parent_app',
+      user_id='user',
+  )
+  invocation_context = InvocationContext(
+      artifact_service=InMemoryArtifactService(),
+      session_service=parent_session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      invocation_id='invocation-id',
+      agent=root_agent,
+      session=parent_session,
+  )
+  parent_signal = asyncio.Event()
+  invocation_context._attach_abort_signal(parent_signal)
+
+  await agent_tool.run_async(
+      args={'request': 'hello'},
+      tool_context=ToolContext(invocation_context),
+  )
+
+  assert captured['abort_signal'] is parent_signal
 
 
 def test_no_schema():
@@ -1338,6 +1445,215 @@ async def test_run_async_preserves_error_when_only_thought_parts():
   assert result == 'A2A request failed: 503'
 
 
+@mark.asyncio
+async def test_run_async_returns_empty_string_when_only_thought_parts():
+  """All-thought final content with no error_message returns ''."""
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='thinking', thought=True)],
+          ),
+      ),
+  ])
+  assert result == ''
+
+
+@mark.asyncio
+@mark.parametrize(
+    'empty_part',
+    [
+        types.Part(executable_code=types.ExecutableCode(code='')),
+        types.Part(code_execution_result=types.CodeExecutionResult(output='')),
+        types.Part(),
+    ],
+)
+async def test_run_async_skips_parts_without_text(empty_part: types.Part):
+  """A part with no text, code or output adds nothing to the result."""
+  result = await _run_agent_tool_with_parts(
+      [empty_part, types.Part(text='after')]
+  )
+  assert result == 'after'
+
+
+@mark.asyncio
+async def test_run_async_reports_error_when_wrapped_agent_pauses() -> None:
+  """A HITL pause (adk_request_confirmation) must not look like a success.
+
+  The nested run's session is thrown away once AgentTool.run_async returns,
+  so a pending long_running_tool_ids call can never be resumed. The caller
+  must see an explicit error instead of {"result": ""}, which would make its
+  model believe the pending action already completed.
+  """
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id='adk-123',
+                          name='adk_request_confirmation',
+                          args={},
+                      )
+                  )
+              ],
+          ),
+          long_running_tool_ids={'adk-123'},
+      ),
+  ])
+  assert result == (
+      "Error: agent 'inner_agent' stopped waiting on unresolved"
+      " long-running tool call(s) (pending call ids: ['adk-123']),"
+      ' which AgentTool cannot resume.'
+  )
+
+
+@mark.asyncio
+async def test_run_async_reports_error_when_llm_agent_requires_confirmation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """End-to-end confirmation pause in a wrapped LlmAgent surfaces an error."""
+  called = False
+
+  def delete_item(item_id: str) -> str:
+    nonlocal called
+    called = True
+    return f'deleted {item_id}'
+
+  inner_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(name='delete_item', args={'item_id': '42'}),
+      ]
+  )
+  inner_agent = LlmAgent(
+      name='inner_agent',
+      description='Deletes items',
+      model=inner_model,
+      tools=[FunctionTool(delete_item, require_confirmation=True)],
+  )
+  root_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(
+              name='inner_agent', args={'request': 'delete 42'}
+          ),
+          Part.from_text(
+              text='Could not delete item because confirmation is required.'
+          ),
+      ]
+  )
+  root_agent = LlmAgent(
+      name='root_agent',
+      model=root_model,
+      tools=[AgentTool(agent=inner_agent, skip_summarization=True)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  with caplog.at_level('WARNING', logger='google_adk'):
+    events = await runner.run_async('please delete 42')
+
+  assert not called
+  function_responses = [
+      fr
+      for event in events
+      for fr in event.get_function_responses()
+      if fr.name == 'inner_agent'
+  ]
+  assert len(function_responses) == 1
+  assert function_responses[0].response is not None
+  error_text = function_responses[0].response['result']
+  assert error_text.startswith(
+      "Error: agent 'inner_agent' stopped waiting on unresolved"
+      ' long-running tool call(s) (pending call ids: ['
+  )
+  assert events[-1].content and events[-1].content.parts
+  assert events[-1].content.parts[0].text == (
+      'Could not delete item because confirmation is required.'
+  )
+  assert any(
+      "Agent 'inner_agent' paused with unresolved long-running tool call(s)"
+      in record.getMessage()
+      for record in caplog.records
+  )
+
+
+@mark.asyncio
+async def test_run_async_returns_answer_after_long_running_tool_resolves() -> (
+    None
+):
+  """A long-running call answered in the same or a later event is not a pause.
+
+  An ordinary LongRunningFunctionTool that returns a truthy progress value
+  (e.g. {'status': 'pending'}) gets an auto-built function response in the
+  very same turn (see _caller.py), and A2A converters may aggregate both the
+  long-running call and its response onto a single Event. In both cases the
+  call is resolved before the run ends, so AgentTool must return the genuine
+  final answer instead of the error.
+  """
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name='slow_tool', args={}, id='adk-123'
+                      )
+                  )
+              ],
+          ),
+          long_running_tool_ids={'adk-123'},
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='slow_tool',
+                          response={'status': 'pending'},
+                          id='adk-123',
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name='slow_tool', args={}, id='adk-456'
+                      )
+                  ),
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='slow_tool',
+                          response={'status': 'done'},
+                          id='adk-456',
+                      )
+                  ),
+              ],
+          ),
+          long_running_tool_ids={'adk-456'},
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='final answer after pending tool')],
+          ),
+      ),
+  ])
+  assert result == 'final answer after pending tool'
+
+
 class TestAgentToolWithCompositeAgents:
   """Tests for AgentTool wrapping composite agents (SequentialAgent, etc.)."""
 
@@ -1742,7 +2058,20 @@ async def test_no_schema_args_handling(monkeypatch, args, expected_text):
         new_message=None,
         state_delta=None,
         run_config=None,
+        yield_user_message: bool = False,
+        abort_signal: Optional[asyncio.Event] = None,
+        **kwargs,
     ):
+      del (
+          user_id,
+          session_id,
+          invocation_id,
+          state_delta,
+          run_config,
+          yield_user_message,
+          abort_signal,
+          kwargs,
+      )
       captured['new_message'] = new_message
       return _empty_async_generator()
 
@@ -1936,7 +2265,20 @@ async def _run_agent_tool_and_capture_content(
         new_message=None,
         state_delta=None,
         run_config=None,
+        yield_user_message: bool = False,
+        abort_signal: Optional[asyncio.Event] = None,
+        **kwargs,
     ):
+      del (
+          user_id,
+          session_id,
+          invocation_id,
+          state_delta,
+          run_config,
+          yield_user_message,
+          abort_signal,
+          kwargs,
+      )
       new_message_holder.append(new_message)
       return _empty_async_generator()
 
@@ -2020,3 +2362,61 @@ async def test_run_async_input_schema_content_survives_node_validation(
   assert validate_node_data(
       _RoundTripInput, content, preserve_content=False
   ) == {'query': 'hello', 'limit': 5}
+
+
+class _SlowMockModel(testing_utils.MockModel):
+  """Answers after a delay, so the runner waits on the abort signal meanwhile."""
+
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ):
+    await asyncio.sleep(0.2)
+    async for response in super().generate_content_async(llm_request, stream):
+      yield response
+
+
+def _nested_llm_agent() -> LlmAgent:
+  # An LlmAgent, so the nested Runner takes the node path that awaits the
+  # abort signal.
+  return LlmAgent(
+      name='tool_agent',
+      model=_SlowMockModel.create(responses=['nested reply']),
+  )
+
+
+async def _caller_context_bound_to_this_loop(
+    tool_agent: BaseAgent,
+) -> InvocationContext:
+  """Returns a caller context whose abort signal is bound to the running loop."""
+  root_agent = Agent(
+      name='root_agent', model='test-model', tools=[AgentTool(agent=tool_agent)]
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=root_agent
+  )
+  # Await the signal once so it binds to this loop, as the caller's runner does.
+  with contextlib.suppress(asyncio.TimeoutError):
+    await asyncio.wait_for(
+        invocation_context._abort_signal.wait(),  # pylint: disable=protected-access
+        timeout=0.01,
+    )
+  return invocation_context
+
+
+@mark.asyncio
+async def test_agent_tool_in_tool_thread_pool_returns_nested_reply():
+  """In the tool thread pool, the nested run is not aborted by the caller's signal.
+
+  The pool runs the tool in a fresh event loop on a worker thread, where the
+  caller's abort signal cannot be awaited.
+  """
+  tool_agent = _nested_llm_agent()
+  invocation_context = await _caller_context_bound_to_this_loop(tool_agent)
+
+  result = await _call_tool_in_thread_pool(
+      AgentTool(agent=tool_agent),
+      {'request': 'hello'},
+      ToolContext(invocation_context),
+  )
+
+  assert result == 'nested reply'

@@ -23,7 +23,9 @@ from pydantic import BaseModel
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import BaseCriterion
+from .eval_metrics import DurationDetails
 from .eval_metrics import EvalStatus as EvalStatus
+from .eval_metrics import TokenUsageDetails
 from .eval_rubrics import RubricScore
 
 
@@ -50,6 +52,11 @@ class PerInvocationResult(BaseModel):
   score: Optional[float] = None
   eval_status: EvalStatus = EvalStatus.NOT_EVALUATED
   rubric_scores: Optional[list[RubricScore]] = None
+  token_usage_details: Optional[TokenUsageDetails] = None
+  """Per-type token counts, reported by the token usage metric."""
+
+  duration_details: Optional[DurationDetails] = None
+  """Where the seconds went, reported by the invocation duration metric."""
 
 
 class EvaluationResult(BaseModel):
@@ -64,6 +71,12 @@ class EvaluationResult(BaseModel):
 
   overall_rubric_scores: Optional[list[RubricScore]] = None
   """Overall rubric, based on each invocation."""
+
+  overall_token_usage_details: Optional[TokenUsageDetails] = None
+  """Per-type token counts, averaged over invocations."""
+
+  overall_duration_details: Optional[DurationDetails] = None
+  """Where the seconds went, averaged over invocations."""
 
 
 class Evaluator(ABC):

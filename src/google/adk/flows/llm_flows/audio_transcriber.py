@@ -21,4 +21,13 @@ existing imports working.
 
 from __future__ import annotations
 
+import warnings
+
 from ...live._audio_transcriber import AudioTranscriber as AudioTranscriber
+
+warnings.warn(
+    'google.adk.flows.llm_flows.audio_transcriber is deprecated; use'
+    ' google.adk.live._audio_transcriber instead.',
+    DeprecationWarning,
+    stacklevel=2,
+)

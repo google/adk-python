@@ -18,16 +18,21 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from collections.abc import Iterator
 import logging
 from typing import Any
 
+from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import PrivateAttr
 from typing_extensions import override
 
 from ..agents.context import Context
+from ..utils._schema_utils import _unwrap_content_payload
 from ._base_node import BaseNode
+from ._errors import NodeInterruptedError
+from ._errors import WorkflowConfigurationError
 from ._graph import NodeLike
 from ._retry_config import RetryConfig
 from .utils._workflow_graph_utils import build_node
@@ -37,6 +42,26 @@ logger = logging.getLogger('google_adk.' + __name__)
 # How long to wait for cancelled items to actually stop before giving up on
 # them, so an item that swallows cancellation cannot hang this node forever.
 _CANCELLED_ITEM_DRAIN_TIMEOUT_SECONDS = 5.0
+
+
+def _get_node_input_annotation(node: BaseNode) -> Any:
+  """Returns the input type annotation for the wrapped node, if any."""
+  schema = getattr(node, 'input_schema', None)
+  if schema not in (None, Any, object) and not isinstance(schema, dict):
+    return schema
+  type_hints = getattr(node, '_type_hints', None)
+  return type_hints.get('node_input') if isinstance(type_hints, dict) else None
+
+
+def _unwrap_content_input(
+    node_input: types.Content, inner_node: BaseNode
+) -> Any:
+  """Unwraps text/JSON payload from types.Content for parallel fan-out."""
+  return _unwrap_content_payload(
+      node_input,
+      _get_node_input_annotation(inner_node),
+      fan_out_list=True,
+  )
 
 
 class _ParallelWorker(BaseNode):
@@ -62,7 +87,9 @@ class _ParallelWorker(BaseNode):
       timeout: float | None = None,
   ):
     if node == 'START':
-      raise ValueError('ParallelWorker cannot wrap a START node.')
+      raise WorkflowConfigurationError(
+          'ParallelWorker cannot wrap a START node.'
+      )
     built_node = build_node(node)
     super().__init__(
         name=built_node.name,
@@ -71,11 +98,16 @@ class _ParallelWorker(BaseNode):
         timeout=timeout,
     )
     if max_parallel_workers is not None and max_parallel_workers < 1:
-      raise ValueError(
+      raise WorkflowConfigurationError(
           'max_parallel_workers must be greater than or equal to 1.'
       )
     self._node = built_node
     self.max_parallel_workers = max_parallel_workers
+
+  @override
+  def _iter_static_children(self) -> Iterator[BaseNode]:
+    """Yields the wrapped node."""
+    yield self._node
 
   @override
   async def _run_impl(
@@ -84,6 +116,9 @@ class _ParallelWorker(BaseNode):
       ctx: Context,
       node_input: Any,
   ) -> AsyncGenerator[Any, None]:
+    if isinstance(node_input, types.Content):
+      node_input = _unwrap_content_input(node_input, self._node)
+
     if not isinstance(node_input, list):
       # Wrap the single input in a list to allow processing.
       # This handles cases where the input is a single item.
@@ -96,13 +131,22 @@ class _ParallelWorker(BaseNode):
     results = [None] * len(node_input)
     pending_tasks: set[asyncio.Task[Any]] = set()
     input_index = 0
+    interrupted: NodeInterruptedError | None = None
 
     try:
-      while input_index < len(node_input) or pending_tasks:
-        # Check for any inputs waiting to be processed.
-        while input_index < len(node_input) and (
-            self.max_parallel_workers is None
-            or len(pending_tasks) < self.max_parallel_workers
+      while (
+          not interrupted and input_index < len(node_input)
+      ) or pending_tasks:
+        # Check for any inputs waiting to be processed. Once a worker has
+        # interrupted, stop scheduling new items and wait for in-flight
+        # sibling workers to finish.
+        while (
+            not interrupted
+            and input_index < len(node_input)
+            and (
+                self.max_parallel_workers is None
+                or len(pending_tasks) < self.max_parallel_workers
+            )
         ):
           item = node_input[input_index]
           task = asyncio.create_task(
@@ -133,7 +177,10 @@ class _ParallelWorker(BaseNode):
             # surface, otherwise asyncio reports the rest as never retrieved.
             exc = task.exception()
             if exc is not None:
-              if failure is None:
+              if isinstance(exc, NodeInterruptedError):
+                if interrupted is None:
+                  interrupted = exc
+              elif failure is None:
                 failure = exc
               continue
 
@@ -142,6 +189,8 @@ class _ParallelWorker(BaseNode):
           if failure is not None:
             # Items still in flight are cancelled and drained below.
             raise failure
+      if interrupted is not None:
+        raise interrupted
     finally:
       await self._drain_pending_items(pending_tasks)
 

@@ -20,6 +20,7 @@ import logging
 import os
 from pathlib import Path
 import sys
+from typing import cast
 from typing import Literal
 from typing import Optional
 from typing import Union
@@ -29,6 +30,7 @@ from typing_extensions import override
 from . import envs
 from ...agents.base_agent import BaseAgent
 from ...apps.app import App
+from ...workflow import BaseNode
 from .agent_loader import AgentLoader
 from .agent_loader import is_single_agent_directory
 from .agent_loader import SPECIAL_AGENTS_DIR
@@ -94,7 +96,8 @@ class NestedAgentLoader(AgentLoader):
   def list_agents(self) -> list[str]:
     """Lists all agents recursively across subdirectories (sorted alphabetically)."""
     if self._is_single_agent:
-      return [self._single_agent_name]
+      # Single-agent mode always sets the agent name.
+      return [cast(str, self._single_agent_name)]
     base_path = Path(self.agents_dir)
     try:
       if not base_path.exists() or not base_path.is_dir():
@@ -350,7 +353,7 @@ class NestedAgentLoader(AgentLoader):
       candidate = Path(agents_dir, expected_full_app_name.replace(".", "/"))
       origin_path = candidate if candidate.exists() else Path(agents_dir)
 
-    def _attach_metadata(target: Union[BaseAgent, App]) -> None:
+    def _attach_metadata(target: Union[BaseNode, App]) -> None:
       setattr(target, "_adk_origin_app_name", expected_full_app_name)
       setattr(target, "_adk_origin_path", origin_path)
 

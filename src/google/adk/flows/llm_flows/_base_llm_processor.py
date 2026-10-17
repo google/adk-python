@@ -32,6 +32,18 @@ if TYPE_CHECKING:
 class BaseLlmRequestProcessor(ABC):
   """Base class for LLM request processor."""
 
+  name: str = ""
+  """A stable identifier for this processor within a flow's request pipeline.
+
+  Declaring a name lets callers locate this processor by name (across
+  `request_processors` and `tool_request_processors`) instead of by list index
+  or private class reference. Built-in processors set this at the class level;
+  a processor built by a factory can also set it per instance.
+
+  Defaults to `""`, which means the processor is anonymous and is ignored by
+  name-based lookups.
+  """
+
   @abstractmethod
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
@@ -43,6 +55,14 @@ class BaseLlmRequestProcessor(ABC):
 
 class BaseLlmResponseProcessor(ABC):
   """Base class for LLM response processor."""
+
+  name: str = ""
+  """A stable identifier for this processor within `response_processors`.
+
+  See `BaseLlmRequestProcessor.name`. Request and response pipelines are
+  separate, so a response processor may share a name with a request processor
+  (for example, `code_execution` and `nl_planning`).
+  """
 
   @abstractmethod
   async def run_async(

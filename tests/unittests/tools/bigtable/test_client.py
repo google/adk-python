@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import typing
 from unittest import mock
 
 from google.adk.tools.bigtable import client
 from google.auth.credentials import Credentials
+from google.cloud.bigtable import data
 
 
 def test_get_bigtable_data_client():
@@ -45,6 +47,32 @@ def test_get_bigtable_admin_client():
     BigtableDataClient.assert_called_once_with(
         project="test-project",
         admin=True,
+        credentials=mock_creds,
+        client_info=mock.ANY,
+    )
+
+
+def test_get_bigtable_data_client_return_annotation_resolves():
+  """The data client return annotation must resolve to a real type."""
+  hints = typing.get_type_hints(client.get_bigtable_data_client)
+  assert hints["return"] is data.BigtableDataClient
+
+
+def test_get_bigtable_data_client_not_gated_by_bigtable_toolset():
+  """get_bigtable_data_client must not be gated by FeatureName.BIGTABLE_TOOLSET."""
+  from google.adk.features import FeatureName
+  from google.adk.features._feature_registry import temporary_feature_override
+
+  with mock.patch(
+      "google.cloud.bigtable.data.BigtableDataClient"
+  ) as MockBigtableDataClient:
+    mock_creds = mock.create_autospec(Credentials, instance=True)
+    with temporary_feature_override(FeatureName.BIGTABLE_TOOLSET, False):
+      client.get_bigtable_data_client(
+          project="test-project", credentials=mock_creds
+      )
+    MockBigtableDataClient.assert_called_once_with(
+        project="test-project",
         credentials=mock_creds,
         client_info=mock.ANY,
     )

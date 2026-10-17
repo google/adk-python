@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import sys
 from unittest.mock import ANY
 from unittest.mock import patch
 import warnings
 
 from google.adk.agents.run_config import RunConfig
+from google.adk.models._service_tier import ServiceTier
 from google.genai import types
 import pytest
 
@@ -219,3 +221,47 @@ def test_max_llm_calls_invalid_env_var_warning(monkeypatch):
     assert config.max_llm_calls == 500
     mock_warning.assert_called_once()
     assert "Invalid value for ADK_MAX_LLM_CALLS" in mock_warning.call_args[0][0]
+
+
+class TestServiceTier:
+  """Tests for the serving tier on RunConfig."""
+
+  def test_accepts_the_enum(self):
+    """The enum is the intended way to name a tier."""
+    config = RunConfig(service_tier=ServiceTier.DEFERRED)
+
+    assert config.service_tier == ServiceTier.DEFERRED
+
+  def test_enum_member_is_a_plain_string(self):
+    """Subclassing str means it reaches the API as the bare value."""
+    assert ServiceTier.DEFERRED == "deferred"
+    assert (
+        json.loads(
+            RunConfig(service_tier=ServiceTier.DEFERRED).model_dump_json()
+        )["service_tier"]
+        == "deferred"
+    )
+
+  def test_a_known_tier_written_as_a_string_stays_a_string(self):
+    """The string spelling is not coerced to the enum.
+
+    Pydantic matches the `str` arm of `ServiceTier | str` exactly rather than
+    promoting, so a caller who writes the tier out gets a plain `str` back.
+    Comparisons still hold either way because the enum subclasses `str`, and
+    the value sent to the API is the same.
+    """
+    config = RunConfig(service_tier="deferred")
+
+    assert isinstance(config.service_tier, str)
+    assert not isinstance(config.service_tier, ServiceTier)
+    assert config.service_tier == ServiceTier.DEFERRED
+
+  def test_accepts_an_unknown_tier_as_a_string(self):
+    """A tier the backend adds before ADK knows it still works."""
+    config = RunConfig(service_tier="some_future_tier")
+
+    assert config.service_tier == "some_future_tier"
+
+  def test_defaults_to_none(self):
+    """Unset means the model's default tier applies."""
+    assert RunConfig().service_tier is None

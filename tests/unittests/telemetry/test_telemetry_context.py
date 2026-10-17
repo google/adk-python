@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 import itertools
 import re
 from typing import Optional
@@ -28,6 +29,7 @@ from google.adk.telemetry import ContentCapturingMode
 from google.adk.telemetry import TelemetryConfig
 from google.adk.telemetry import tracing
 from google.adk.telemetry._experimental_semconv import set_operation_details_common_attributes
+from google.adk.telemetry.context import _ExperimentalFeature
 from google.adk.telemetry.context import ADK_TELEMETRY_IGNORE_RUN_CONFIG
 from google.adk.telemetry.tracing import trace_inference_result
 from google.genai.types import Part
@@ -49,6 +51,9 @@ _ENV_CAPTURE = 'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT'
 _ENV_ADK_SPAN_CAPTURE = 'ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS'
 _ENV_ADMIN_LOCK = ADK_TELEMETRY_IGNORE_RUN_CONFIG
 _ENV_ADK_EXPERIMENTAL_TELEMETRY = 'ADK_EXPERIMENTAL_TELEMETRY'
+_ENV_ADK_EXPERIMENTAL_FEATURES = 'ADK_EXPERIMENTAL_TELEMETRY_FEATURES'
+
+_ENV_SCHEMA_VERSION = 'ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN'
 
 _ALL_TELEMETRY_ENV_VARS = (
     _ENV_EXPERIMENTAL,
@@ -56,6 +61,8 @@ _ALL_TELEMETRY_ENV_VARS = (
     _ENV_ADK_SPAN_CAPTURE,
     _ENV_ADMIN_LOCK,
     _ENV_ADK_EXPERIMENTAL_TELEMETRY,
+    _ENV_ADK_EXPERIMENTAL_FEATURES,
+    _ENV_SCHEMA_VERSION,
 )
 
 
@@ -204,6 +211,7 @@ def test_telemetry_config_round_trips_through_json():
           genai_semconv_stability_opt_in='experimental',
           capture_message_content=ContentCapturingMode.SPAN_AND_EVENT,
           adk_experimental_telemetry_opt_in=True,
+          experimental_features_opt_in={'skills', 'workflow'},
       )
   )
   js = cfg.model_dump_json()
@@ -212,6 +220,11 @@ def test_telemetry_config_round_trips_through_json():
   assert isinstance(reloaded.telemetry, TelemetryConfig)
   assert isinstance(
       reloaded.telemetry.capture_message_content, ContentCapturingMode
+  )
+  # The feature set serializes as a JSON array and must come back a frozenset,
+  # not the list it was written as.
+  assert reloaded.telemetry.experimental_features_opt_in == frozenset(
+      {'skills', 'workflow'}
   )
 
 
@@ -296,7 +309,7 @@ def test_resolution_properties_are_static_once_constructed(
   one still is what keeps a single run whole: an ``os.environ`` change part way
   through cannot leave half its telemetry gated one way and half the other.
   """
-  _set_env(monkeypatch)
+  _set_env(monkeypatch, **{_ENV_SCHEMA_VERSION: '1'})
   cfg = TelemetryConfig()  # all fields unset => pure env-fallback.
   assert cfg.should_use_experimental_genai_semconv is False
   monkeypatch.setenv(_ENV_EXPERIMENTAL, 'gen_ai_latest_experimental')
@@ -332,7 +345,39 @@ def test_should_use_experimental_genai_semconv_resolution(
     expected: bool,
 ):
   """Per-request opt_in wins; otherwise the env CSV opt-in token decides."""
-  _set_env(monkeypatch, **{_ENV_EXPERIMENTAL: env_value})
+  _set_env(
+      monkeypatch,
+      **{_ENV_EXPERIMENTAL: env_value, _ENV_SCHEMA_VERSION: '1'},
+  )
+  cfg = TelemetryConfig(genai_semconv_stability_opt_in=opt_in)
+  assert cfg.should_use_experimental_genai_semconv is expected
+
+
+@pytest.mark.parametrize(
+    'opt_in,env_value,expected',
+    [
+        # The semconv-aligned schema emits the experimental semconv with
+        # nothing opting in: the stable one is what it drops.
+        (None, None, True),
+        (None, 'gen_ai_latest_experimental', True),
+        (None, 'http_latest', True),
+        # A per-request field still outranks the schema's default, which is
+        # the only way back to the stable semconv short of pinning the schema.
+        ('stable', None, False),
+        ('experimental', None, True),
+    ],
+)
+def test_should_use_experimental_genai_semconv_defaults_on_under_schema_v2(
+    monkeypatch: pytest.MonkeyPatch,
+    opt_in: Optional[str],
+    env_value: Optional[str],
+    expected: bool,
+):
+  """Under the semconv-aligned schema the env var can only opt further in."""
+  _set_env(
+      monkeypatch,
+      **{_ENV_EXPERIMENTAL: env_value, _ENV_SCHEMA_VERSION: '2'},
+  )
   cfg = TelemetryConfig(genai_semconv_stability_opt_in=opt_in)
   assert cfg.should_use_experimental_genai_semconv is expected
 
@@ -485,7 +530,7 @@ _EXPERIMENTAL_TELEMETRY_RESOLUTION_TABLE = [
 @pytest.mark.parametrize(
     'lock,opt_in,env_value,expected', _EXPERIMENTAL_TELEMETRY_RESOLUTION_TABLE
 )
-def test_should_record_experimental_telemetry_resolution(
+def test_experimental_telemetry_resolution(
     monkeypatch: pytest.MonkeyPatch,
     env_value: str | None,
     lock: str,
@@ -502,6 +547,104 @@ def test_should_record_experimental_telemetry_resolution(
   )
   cfg = TelemetryConfig(adk_experimental_telemetry_opt_in=opt_in)
   assert cfg.should_emit_experimental_telemetry is expected
+  assert cfg._experimental_feature_enabled('skills') is expected
+
+
+_EXPERIMENTAL_FEATURE_ENV_TABLE = [
+    # A named feature enables itself and nothing else.
+    (None, 'skills', 'skills', True),
+    (None, 'skills', 'workflow', False),
+    (None, 'skills,workflow', 'skills', True),
+    (None, 'skills,workflow', 'workflow', True),
+    # Case and whitespace around the separators are normalized away.
+    (None, ' Skills , Workflow ', 'skills', True),
+    (None, ' Skills , Workflow ', 'workflow', True),
+    # Unrecognized names are dropped without taking the rest of the list down.
+    (None, 'not_a_feature,skills', 'skills', True),
+    (None, 'not_a_feature', 'skills', False),
+    # A truthy blanket value covers every feature, named or not.
+    ('true', None, 'skills', True),
+    ('1', None, 'workflow', True),
+    ('true', None, 'mcp', True),
+    ('true', 'skills', 'workflow', True),
+    # Falsy and unrecognized blanket values leave the feature list in charge.
+    ('false', None, 'skills', False),
+    ('0', None, 'skills', False),
+    ('yes', None, 'skills', False),
+    ('false', 'skills', 'skills', True),
+    (None, None, 'skills', False),
+]
+
+
+@pytest.mark.parametrize(
+    'env_value,features_value,feature,expected', _EXPERIMENTAL_FEATURE_ENV_TABLE
+)
+def test_experimental_feature_enabled_env_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+    env_value: Optional[str],
+    features_value: Optional[str],
+    feature: _ExperimentalFeature,
+    expected: bool,
+):
+  """ADK_EXPERIMENTAL_TELEMETRY_FEATURES names features; ADK_EXPERIMENTAL_TELEMETRY enables all."""
+  _set_env(
+      monkeypatch,
+      **{
+          _ENV_ADK_EXPERIMENTAL_TELEMETRY: env_value,
+          _ENV_ADK_EXPERIMENTAL_FEATURES: features_value,
+      },
+  )
+  cfg = TelemetryConfig()
+  assert cfg._experimental_feature_enabled(feature) is expected
+
+
+def test_a_feature_list_is_not_a_blanket_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Naming features turns those on without flipping the master switch."""
+  _set_env(monkeypatch, **{_ENV_ADK_EXPERIMENTAL_FEATURES: 'skills'})
+  cfg = TelemetryConfig()
+  assert cfg._experimental_feature_enabled('skills') is True
+  assert cfg.should_emit_experimental_telemetry is False
+
+
+def test_an_unrecognized_feature_name_is_reported_once(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+  """Unrecognized feature names are logged only once."""
+  _set_env(monkeypatch, **{_ENV_ADK_EXPERIMENTAL_FEATURES: 'skils, , workflow'})
+  with caplog.at_level('WARNING', logger='google_adk'):
+    cfg = TelemetryConfig()
+    cfg = TelemetryConfig()
+
+  assert cfg._experimental_feature_enabled('workflow') is True
+  # The empty entry names no feature and is not a mistake worth reporting.
+  assert [r.getMessage() for r in caplog.records] == [
+      'Ignoring unrecognized experimental telemetry feature: skils'
+  ]
+
+
+def test_named_feature_leaves_the_other_features_off(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Naming one feature gates that feature only, not experimental telemetry at large."""
+  _set_env(monkeypatch, **{_ENV_ADK_EXPERIMENTAL_FEATURES: 'skills'})
+  cfg = TelemetryConfig()
+  assert cfg._experimental_feature_enabled('skills') is True
+  assert cfg._experimental_feature_enabled('workflow') is False
+  assert cfg._experimental_feature_enabled('mcp') is False
+
+
+def test_blanket_experimental_telemetry_enables_every_feature(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """The truthy spelling keeps working as an opt-in to all features."""
+  _set_env(monkeypatch, **{_ENV_ADK_EXPERIMENTAL_TELEMETRY: 'true'})
+  cfg = TelemetryConfig()
+  assert cfg._experimental_feature_enabled('skills') is True
+  assert cfg._experimental_feature_enabled('workflow') is True
+  assert cfg._experimental_feature_enabled('mcp') is True
 
 
 def test_admin_lock_disables_all_resolution_properties(
@@ -513,7 +656,7 @@ def test_admin_lock_disables_all_resolution_properties(
   (empty) env defaults across all properties. The legacy span knob still
   defaults to on (its env default), matching pre-CL behavior.
   """
-  _set_env(monkeypatch, **{_ENV_ADMIN_LOCK: '1'})
+  _set_env(monkeypatch, **{_ENV_ADMIN_LOCK: '1', _ENV_SCHEMA_VERSION: '1'})
   cfg = TelemetryConfig(
       genai_semconv_stability_opt_in='experimental',
       capture_message_content=ContentCapturingMode.SPAN_AND_EVENT,
@@ -526,6 +669,7 @@ def test_admin_lock_disables_all_resolution_properties(
   # Legacy span knob falls back to its env var, which defaults to on.
   assert cfg.should_add_content_to_legacy_spans is True
   assert cfg.should_emit_experimental_telemetry is False
+  assert cfg._experimental_feature_enabled('skills') is False
 
 
 def test_admin_lock_falls_back_to_env_not_per_request_field(
@@ -564,6 +708,233 @@ def test_admin_lock_falls_back_to_env_not_per_request_field(
   # Legacy span env explicitly set to false wins over the ignored field.
   assert cfg.should_add_content_to_legacy_spans is False
   assert cfg.should_emit_experimental_telemetry is True
+  assert cfg._experimental_feature_enabled('skills') is True
+
+
+# ---------------------------------------------------------------------------
+# TelemetryConfig.experimental_features_opt_in tests
+# ---------------------------------------------------------------------------
+
+
+def test_features_field_names_the_features_it_enables(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """The field turns on the features it names and leaves every other one off."""
+  _set_env(monkeypatch)
+  cfg = TelemetryConfig(experimental_features_opt_in={'skills'})
+  assert cfg._experimental_feature_enabled('skills') is True
+  assert cfg._experimental_feature_enabled('workflow') is False
+  assert cfg._experimental_feature_enabled('mcp') is False
+
+
+# (lock, opt_in, features_field, env_blanket, env_features, feature, expected)
+_FEATURES_FIELD_PRECEDENCE_TABLE = [
+    pytest.param(
+        None,
+        False,
+        {'skills'},
+        'true',
+        'skills',
+        'skills',
+        False,
+        id='blanket_field_off_beats_features_field',
+    ),
+    pytest.param(
+        None,
+        True,
+        frozenset(),
+        'false',
+        None,
+        'skills',
+        True,
+        id='blanket_field_on_beats_empty_features_field',
+    ),
+    pytest.param(
+        None,
+        True,
+        None,
+        'false',
+        None,
+        'skills',
+        True,
+        id='blanket_field_alone_with_features_field_unset',
+    ),
+    pytest.param(
+        None,
+        None,
+        {'skills'},
+        'true',
+        None,
+        'workflow',
+        False,
+        id='features_field_beats_env_blanket',
+    ),
+    pytest.param(
+        None,
+        None,
+        {'skills'},
+        'false',
+        'workflow',
+        'skills',
+        True,
+        id='features_field_beats_env_features',
+    ),
+    pytest.param(
+        None,
+        None,
+        {'skills'},
+        'false',
+        'workflow',
+        'workflow',
+        False,
+        id='features_field_replaces_env_features',
+    ),
+    pytest.param(
+        None,
+        None,
+        None,
+        'true',
+        None,
+        'skills',
+        True,
+        id='features_field_none_falls_through_to_env',
+    ),
+    pytest.param(
+        None,
+        None,
+        frozenset(),
+        'true',
+        None,
+        'skills',
+        True,
+        id='empty_features_field_is_not_an_opinion',
+    ),
+    pytest.param(
+        '1',
+        None,
+        {'skills'},
+        'false',
+        'workflow',
+        'skills',
+        False,
+        id='lock_ignores_features_field',
+    ),
+    pytest.param(
+        '1',
+        None,
+        {'skills'},
+        'false',
+        'workflow',
+        'workflow',
+        True,
+        id='lock_falls_back_to_env_features',
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    'lock,opt_in,features_field,env_blanket,env_features,feature,expected',
+    _FEATURES_FIELD_PRECEDENCE_TABLE,
+)
+def test_features_field_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+    lock: Optional[str],
+    opt_in: Optional[bool],
+    features_field: Optional[Iterable[str]],
+    env_blanket: Optional[str],
+    env_features: Optional[str],
+    feature: _ExperimentalFeature,
+    expected: bool,
+):
+  """Admin lock > blanket field > feature field > env vars > default."""
+  _set_env(
+      monkeypatch,
+      **{
+          _ENV_ADK_EXPERIMENTAL_TELEMETRY: env_blanket,
+          _ENV_ADK_EXPERIMENTAL_FEATURES: env_features,
+          _ENV_ADMIN_LOCK: lock,
+      },
+  )
+  cfg = TelemetryConfig(
+      adk_experimental_telemetry_opt_in=opt_in,
+      experimental_features_opt_in=features_field,
+  )
+  assert cfg._experimental_feature_enabled(feature) is expected
+
+
+_FEATURES_FIELD_COERCION_TABLE = [
+    pytest.param({'skills'}, frozenset({'skills'}), id='set'),
+    pytest.param(
+        ['skills', 'workflow'],
+        frozenset({'skills', 'workflow'}),
+        id='list',
+    ),
+    pytest.param(frozenset({'skills'}), frozenset({'skills'}), id='frozenset'),
+    pytest.param(
+        {' Skills ', 'WORKFLOW'},
+        frozenset({'skills', 'workflow'}),
+        id='case_and_whitespace',
+    ),
+    pytest.param(
+        {'skills', '', '  '}, frozenset({'skills'}), id='blank_entries'
+    ),
+    pytest.param([], None, id='empty_iterable'),
+    pytest.param(None, None, id='none_stays_none'),
+]
+
+
+@pytest.mark.parametrize('value,expected', _FEATURES_FIELD_COERCION_TABLE)
+def test_features_field_normalizes_its_value(
+    monkeypatch: pytest.MonkeyPatch,
+    value: Optional[Iterable[str]],
+    expected: Optional[frozenset[str]],
+):
+  """Any iterable of names is accepted and normalized like the env parser."""
+  _set_env(monkeypatch)
+  cfg = TelemetryConfig(experimental_features_opt_in=value)
+  assert cfg.experimental_features_opt_in == expected
+
+
+@pytest.mark.parametrize(
+    'value',
+    [
+        pytest.param('skills', id='bare_string'),
+        pytest.param(['skills', 1], id='non_string_entry'),
+    ],
+)
+def test_features_field_rejects_values_that_are_not_names(value: object):
+  """A bare string or a non-string entry raises instead of being coerced."""
+  with pytest.raises(ValidationError):
+    TelemetryConfig(experimental_features_opt_in=value)  # type: ignore[arg-type]
+
+
+def test_an_unrecognized_name_in_the_field_is_reported_once(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+  """Unrecognized names passed per request are dropped and logged once."""
+  _set_env(monkeypatch)
+  with caplog.at_level('WARNING', logger='google_adk'):
+    cfg = TelemetryConfig(
+        experimental_features_opt_in={'skills', 'skils_via_field'}
+    )
+    TelemetryConfig(experimental_features_opt_in={'skills', 'skils_via_field'})
+
+  # The recognized name survives its typo'd neighbor.
+  assert cfg.experimental_features_opt_in == frozenset({'skills'})
+  assert cfg._experimental_feature_enabled('skills') is True
+  assert [r.getMessage() for r in caplog.records] == [
+      'Ignoring unrecognized experimental telemetry feature: skils_via_field'
+  ]
+
+
+def test_all_features_unrecognized_results_in_none(
+    monkeypatch: pytest.LogCaptureFixture,
+):
+  """If all names are unrecognized, the field normalizes to None."""
+  _set_env(monkeypatch)
+  cfg = TelemetryConfig(experimental_features_opt_in={'skils_via_field'})
+  assert cfg.experimental_features_opt_in is None
 
 
 # ---------------------------------------------------------------------------
@@ -666,9 +1037,11 @@ def test_admin_lock_value_parsing(
 
   When locked, a per-request cfg opting in to experimental + EVENT_ONLY is
   ignored and the (empty) env fallback wins; when unlocked, the cfg wins.
-  Asserts across all five decision functions to pin the shared parsing.
+  Asserts across all six decision functions to pin the shared parsing.
   """
-  _set_env(monkeypatch, **{_ENV_ADMIN_LOCK: lock_value})
+  _set_env(
+      monkeypatch, **{_ENV_ADMIN_LOCK: lock_value, _ENV_SCHEMA_VERSION: '1'}
+  )
   cfg = TelemetryConfig(
       genai_semconv_stability_opt_in='experimental',
       capture_message_content=ContentCapturingMode.EVENT_ONLY,
@@ -681,6 +1054,7 @@ def test_admin_lock_value_parsing(
   # cfg disables span capture; when locked the env default (on) wins.
   assert cfg.should_add_content_to_legacy_spans is locked
   assert cfg.should_emit_experimental_telemetry is (not locked)
+  assert cfg._experimental_feature_enabled('skills') is (not locked)
 
 
 def _make_test_runner(
@@ -717,6 +1091,7 @@ def span_exporter(
       'start_as_current_span',
       real_tracer.start_as_current_span,
   )
+  monkeypatch.setattr(tracing.tracer, 'start_span', real_tracer.start_span)
   return exporter
 
 
@@ -1005,6 +1380,7 @@ async def test_runner_invocation_with_admin_lock_ignores_per_request_telemetry(
   """
   del span_exporter  # Wired up by fixture; not directly asserted on.
   monkeypatch.setenv(_ENV_ADMIN_LOCK, '1')
+  monkeypatch.setenv(_ENV_SCHEMA_VERSION, '1')
   monkeypatch.delenv(_ENV_EXPERIMENTAL, raising=False)
   runner = _make_test_runner()
   session = await runner.runner.session_service.create_session(
@@ -1079,6 +1455,7 @@ async def test_runner_invocation_with_capture_false_elides_legacy_span_attrs(
   """
   del log_collector  # Kept to match otel_logger wiring; not asserted on.
   monkeypatch.setenv(_ENV_ADK_SPAN_CAPTURE, 'true')
+  monkeypatch.setenv(_ENV_SCHEMA_VERSION, '1')
   runner = _make_test_runner()
   session = await runner.runner.session_service.create_session(
       app_name=runner.app_name, user_id='test_user'
@@ -1135,6 +1512,7 @@ async def test_runner_invocation_with_admin_lock_ignores_span_capture_override(
   """
   del log_collector
   monkeypatch.setenv(_ENV_ADMIN_LOCK, '1')
+  monkeypatch.setenv(_ENV_SCHEMA_VERSION, '1')
   monkeypatch.setenv(_ENV_ADK_SPAN_CAPTURE, 'false')
   runner = _make_test_runner()
   session = await runner.runner.session_service.create_session(
@@ -1172,7 +1550,6 @@ async def test_runner_invocation_with_admin_lock_ignores_span_capture_override(
 # The functional matrix only ever opts in by env var, so it catches neither.
 # ---------------------------------------------------------------------------
 
-_ENV_SCHEMA_VERSION = 'ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN'
 
 # Recorded whenever a workflow scope opts in, even at a count of zero, so its
 # presence reflects the resolved config alone and not what the model reported.

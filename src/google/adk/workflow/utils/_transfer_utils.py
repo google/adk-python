@@ -18,9 +18,23 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .._errors import WorkflowDataError
+
 if TYPE_CHECKING:
   from ...agents.base_agent import BaseAgent
   from ...agents.context import Context
+
+
+def _find_direct_sub_agent(
+    agent: BaseAgent | None, name: str
+) -> BaseAgent | None:
+  """Returns the direct sub-agent of the given agent with the given name."""
+  if agent is None:
+    return None
+  for sub_agent in agent.sub_agents:
+    if sub_agent.name == name:
+      return sub_agent
+  return None
 
 
 def resolve_and_derive_transfer_context(
@@ -41,48 +55,35 @@ def resolve_and_derive_transfer_context(
 
   Returns:
     A tuple of (target_agent, next_parent_context) or (None, None) if target not
-    found. If target is found but cannot be logically routed (unrelated transfer),
+    found. If target is found but cannot be logically routed (unrelated
+    transfer),
     returns (target_agent, None).
 
   Raises:
-    ValueError: If target_agent is the same as current_agent, or if
+    WorkflowDataError: If target_agent is the same as current_agent, or if
       current_agent forbids transferring to the target.
   """
-  target_agent = root_agent.find_agent(target_name)
-  if not target_agent:
-    return None, None
+  # Each routing case below picks the target out of the current agent's own
+  # children, parent or siblings. Searching the whole tree first and then
+  # comparing names would let an agent in an unrelated branch that happens to
+  # share the name be routed to instead.
 
   # Case 1: SELF (invalid transfer target)
-  if target_agent.name == current_agent.name:
-    raise ValueError(f"Agent '{target_name}' cannot transfer to itself.")
+  if target_name == current_agent.name:
+    raise WorkflowDataError(f"Agent '{target_name}' cannot transfer to itself.")
 
   # Case 2: Direct CHILD (nests deeper under the current context)
-  if (
-      target_agent.parent_agent
-      and target_agent.parent_agent.name == current_agent.name
-  ):
-    return target_agent, curr_ctx
+  if child_agent := _find_direct_sub_agent(current_agent, target_name):
+    return child_agent, curr_ctx
 
-  # Case 3: SIBLING (runs under the same parent context)
-  if (
-      target_agent.parent_agent
-      and current_agent.parent_agent
-      and target_agent.parent_agent.name == current_agent.parent_agent.name
-  ):
-    if getattr(current_agent, "disallow_transfer_to_peers", False):
-      raise ValueError(
-          f"Cannot transfer from '{current_agent.name}' to peer agent"
-          f" '{target_name}': disallow_transfer_to_peers is set."
-      )
-    return target_agent, curr_parent_ctx
+  parent_agent = current_agent.parent_agent
 
-  # Case 4: Direct PARENT (climbs up the context chain to find the parent's parent)
-  if (
-      current_agent.parent_agent
-      and current_agent.parent_agent.name == target_agent.name
-  ):
+  # Case 3: Direct PARENT (climbs up the context chain to find the parent's parent)
+  # Checked before the sibling case so that a parent holding a sub-agent named
+  # after itself still resolves as a parent transfer.
+  if parent_agent and parent_agent.name == target_name:
     if getattr(current_agent, "disallow_transfer_to_parent", False):
-      raise ValueError(
+      raise WorkflowDataError(
           f"Cannot transfer from '{current_agent.name}' to parent agent"
           f" '{target_name}': disallow_transfer_to_parent is set."
       )
@@ -90,14 +91,26 @@ def resolve_and_derive_transfer_context(
     curr: Context | None = curr_ctx
     while curr is not None and curr.node is not None:
       if curr.node.name == target_name:
-        return target_agent, curr.parent_ctx
+        return parent_agent, curr.parent_ctx
       curr = curr.parent_ctx
 
     # Root Coordinator / Bypassed parent fallback: returns the outermost root context of this turn
     root_ctx = curr_ctx
     while root_ctx.parent_ctx is not None and root_ctx.node is not None:
       root_ctx = root_ctx.parent_ctx
-    return target_agent, root_ctx
+    return parent_agent, root_ctx
 
-  # Fallback: target found but has no direct routing relationship (unrelated)
+  # Case 4: SIBLING (runs under the same parent context)
+  if sibling_agent := _find_direct_sub_agent(parent_agent, target_name):
+    if getattr(current_agent, "disallow_transfer_to_peers", False):
+      raise WorkflowDataError(
+          f"Cannot transfer from '{current_agent.name}' to peer agent"
+          f" '{target_name}': disallow_transfer_to_peers is set."
+      )
+    return sibling_agent, curr_parent_ctx
+
+  # Fallback: the target has no routing relationship with the current agent.
+  target_agent = root_agent.find_agent(target_name)
+  if not target_agent:
+    return None, None
   return target_agent, None

@@ -25,6 +25,7 @@ from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 # Added for the moved test
@@ -41,7 +42,6 @@ from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
 from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
@@ -95,10 +95,15 @@ class _FlakyNode(BaseNode):
     )
 
 
-async def _run_workflow(wf, message='start'):
+from .._invariants import InvariantPlugin
+
+
+async def _run_workflow(wf, message='start', *, check_invariants: bool = True):
   """Run a Workflow through Runner, return collected events."""
   ss = InMemorySessionService()
   runner = Runner(app_name='test', node=wf, session_service=ss)
+  if check_invariants:
+    runner.plugin_manager.plugins.insert(0, InvariantPlugin())
   session = await ss.create_session(app_name='test', user_id='u')
   msg = types.Content(parts=[types.Part(text=message)], role='user')
   events = []
@@ -1653,7 +1658,7 @@ async def test_retried_node_not_rerun_on_resume(
   assert flaky_in_graph.tracker['iteration_count'] == 2
 
   req_events = get_request_input_events(events)
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
   user_input = create_request_input_response(interrupt_id, {'ok': True})
   await runner.run_async(
       new_message=testing_utils.UserContent(user_input),

@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+from typing import AsyncGenerator
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.evaluation import evaluation_generator as evaluation_generator_module
 from google.adk.evaluation.app_details import AgentDetails
@@ -33,12 +35,15 @@ from google.adk.evaluation.evaluation_generator import EvaluationGenerator
 from google.adk.evaluation.request_intercepter_plugin import _RequestIntercepterPlugin
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulator
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
+from google.adk.evaluation.simulation.user_simulator import BaseUserSimulatorConfig
 from google.adk.evaluation.simulation.user_simulator import NextUserMessage
 from google.adk.evaluation.simulation.user_simulator import Status as UserSimulatorStatus
 from google.adk.evaluation.simulation.user_simulator import UserSimulator
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
@@ -104,7 +109,12 @@ class TestConvertEventsToEvalInvocation:
     assert invocation.invocation_id == "inv1"
     assert invocation.user_content.parts[0].text == "Hello"
     assert invocation.final_response.parts[0].text == "Hi there!"
-    assert len(invocation.intermediate_data.invocation_events) == 0
+    # The final-response event is kept so that its efficiency metadata
+    # survives, but its text is dropped to avoid duplicating the final
+    # response for judges that read the intermediate events.
+    events = invocation.intermediate_data.invocation_events
+    assert len(events) == 1
+    assert events[0].content is None
 
   def test_convert_keeps_text_response_over_trailing_audio(
       self,
@@ -132,8 +142,10 @@ class TestConvertEventsToEvalInvocation:
     invocation = invocations[0]
     assert invocation.final_response.parts[0].text == "Hello there."
     intermediate = invocation.intermediate_data.invocation_events
-    assert len(intermediate) == 1
-    assert intermediate[0].content.parts[0].inline_data.data == b"fake-audio"
+    assert len(intermediate) == 2
+    # The text event is the final response: kept in order, without its text.
+    assert intermediate[0].content is None
+    assert intermediate[1].content.parts[0].inline_data.data == b"fake-audio"
 
   def test_convert_single_turn_tool_call(
       self,
@@ -191,8 +203,10 @@ class TestConvertEventsToEvalInvocation:
     invocation = invocations[0]
     assert invocation.final_response.parts[0].text == "It is sunny in SF."
     events = invocation.intermediate_data.invocation_events
-    assert len(events) == 1
+    assert len(events) == 2
     assert events[0].content.parts[0].function_call.name == "get_weather"
+    # The final-response event is kept, without its text.
+    assert events[1].content is None
 
   def test_multi_turn(
       self,
@@ -266,11 +280,13 @@ class TestConvertEventsToEvalInvocation:
     assert invocation.final_response.parts[0].text == "All done."
     events = invocation.intermediate_data.invocation_events
 
-    assert len(events) == 4
+    assert len(events) == 5
     assert events[0].author == "root_agent"
     assert events[1].author == "sub_agent_1"
     assert events[2].author == "sub_agent_1"
     assert events[3].author == "sub_agent_2"
+    # The final-response event is kept, without its text.
+    assert events[4].content is None
 
   def test_convert_multi_agent_final_responses(
       self,
@@ -289,10 +305,13 @@ class TestConvertEventsToEvalInvocation:
     assert invocation.final_response.parts[0].text == "Second response"
 
     intermediate_events = invocation.intermediate_data.invocation_events
-    # agent1 is included because it is not the final_event (which is agent2)
-    assert len(intermediate_events) == 1
+    assert len(intermediate_events) == 2
+    # agent1 keeps its content because it is not the final event.
     assert intermediate_events[0].author == "agent1"
     assert intermediate_events[0].content.parts[0].text == "First response"
+    # agent2 is the final event: kept for its metadata, without its text.
+    assert intermediate_events[1].author == "agent2"
+    assert intermediate_events[1].content is None
 
   def test_convert_preserves_grounding_metadata_from_final_response(
       self,
@@ -977,6 +996,86 @@ class TestGenerateInferencesFromRootAgent:
     assert called_with_content.parts[0].text == "message 1"
 
   @pytest.mark.asyncio
+  async def test_records_a_duration_for_each_invocation(
+      self, mocker, mock_runner, mock_session_service
+  ):
+    """Each turn is timed while it runs and the durations reach the converter.
+
+    Timing is taken here rather than reconstructed from event timestamps
+    afterwards: an event is stamped when it is constructed, which for a model
+    call is before the request is even sent, so a span between such stamps
+    would omit the last call entirely.
+    """
+    mock_agent = mocker.MagicMock()
+    mock_user_sim = mocker.MagicMock(spec=UserSimulator)
+
+    async def get_next_user_message_side_effect(*args, **kwargs):
+      count = mock_user_sim.get_next_user_message.call_count
+      if count <= 2:
+        return NextUserMessage(
+            status=UserSimulatorStatus.SUCCESS,
+            user_message=types.Content(
+                parts=[types.Part(text=f"message {count}")]
+            ),
+        )
+      return NextUserMessage(status=UserSimulatorStatus.STOP_SIGNAL_DETECTED)
+
+    mock_user_sim.get_next_user_message = mocker.AsyncMock(
+        side_effect=get_next_user_message_side_effect
+    )
+
+    mock_generate_inferences = mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_for_single_user_invocation"
+    )
+    mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator._get_app_details_by_invocation_id"
+    )
+    mock_convert = mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator.convert_events_to_eval_invocations"
+    )
+
+    turns = iter(["inv1", "inv2"])
+
+    async def mock_generate_inferences_side_effect(
+        runner, user_id, session_id, user_content
+    ):
+      invocation_id = next(turns)
+      yield _build_event("user", user_content.parts, invocation_id)
+      yield _build_event("agent", [types.Part(text="ok")], invocation_id)
+
+    mock_generate_inferences.side_effect = mock_generate_inferences_side_effect
+
+    await EvaluationGenerator._generate_inferences_from_root_agent(
+        root_agent=mock_agent,
+        user_simulator=mock_user_sim,
+    )
+
+    durations = mock_convert.call_args.args[2]
+    model_durations = mock_convert.call_args.kwargs[
+        "model_durations_per_invocation"
+    ]
+    tool_durations = mock_convert.call_args.kwargs[
+        "tool_durations_per_invocation"
+    ]
+    # One entry per turn in each, keyed by that turn's invocation id.
+    for measured in (durations, model_durations, tool_durations):
+      assert set(measured) == {"inv1", "inv2"}
+    values = [
+        value
+        for measured in (durations, model_durations, tool_durations)
+        for value in measured.values()
+    ]
+    assert all(value >= 0 for value in values)
+    # Rounded to milliseconds rather than carrying the float's full, and
+    # meaningless, precision. A raw `time.monotonic()` difference would keep
+    # far more digits than this.
+    assert all(value == round(value, 3) for value in values)
+    # This run made no model or tool call, so the whole turn was the
+    # framework's own time -- a measured zero, not a missing measurement.
+    assert set(model_durations.values()) == {0.0}
+    assert set(tool_durations.values()) == {0.0}
+
+  @pytest.mark.asyncio
   async def test_pinned_session_id_reused_across_runs_no_collision(
       self, mocker, mock_runner
   ):
@@ -1235,10 +1334,10 @@ class TestLiveSessionCallbacks:
     mock_plugin_manager = mocker.MagicMock()
     mock_plugin_manager.run_before_model_callback = mocker.AsyncMock()
     mock_plugin_manager.run_after_model_callback = mocker.AsyncMock()
-    mock_runner._new_invocation_context_for_live.return_value.plugin_manager = (
+    mock_runner._new_invocation_context.return_value.plugin_manager = (
         mock_plugin_manager
     )
-    mock_runner._new_invocation_context_for_live.return_value.agent = mock_agent
+    mock_runner._new_invocation_context.return_value.agent = mock_agent
 
     # 2. Instantiate and enter _LiveSession
     live_session = _LiveSession(
@@ -1325,10 +1424,10 @@ class TestLiveSessionCallbacks:
     mock_plugin_manager = mocker.MagicMock()
     mock_plugin_manager.run_before_model_callback = mocker.AsyncMock()
     mock_plugin_manager.run_after_model_callback = mocker.AsyncMock()
-    mock_runner._new_invocation_context_for_live.return_value.plugin_manager = (
+    mock_runner._new_invocation_context.return_value.plugin_manager = (
         mock_plugin_manager
     )
-    mock_runner._new_invocation_context_for_live.return_value.agent = mock_agent
+    mock_runner._new_invocation_context.return_value.agent = mock_agent
 
     # 2. Instantiate and enter _LiveSession
     live_session = _LiveSession(
@@ -1403,7 +1502,7 @@ class TestLiveSessionNodeRouting:
     await live_session._consume_events()
 
     # The Agent-only driver must not be touched for a Workflow root.
-    mock_runner._new_invocation_context_for_live.assert_not_called()
+    mock_runner._new_invocation_context.assert_not_called()
     mock_runner.run_live.assert_called_once()
     call_kwargs = mock_runner.run_live.call_args.kwargs
     assert call_kwargs["user_id"] == "test_user"
@@ -1662,7 +1761,7 @@ class TestLiveSessionNodeAppDetails:
     mock_runner.agent = mock_workflow
     # `model_copy` carries the target agent onto the per-agent context so
     # `_record_app_details_for_agent` sees the right agent.
-    base_ic = mock_runner._new_invocation_context_for_live.return_value
+    base_ic = mock_runner._new_invocation_context.return_value
     base_ic.model_copy.side_effect = lambda update: mocker.MagicMock(
         agent=update["agent"]
     )
@@ -2080,3 +2179,193 @@ def test_generate_responses_from_session_reads_non_ascii_with_non_utf8_default(
 
   assert results[0][0]["query"] == non_ascii_text
   assert results[0][0]["response"] == "response " + non_ascii_text
+
+
+def test_convert_events_records_invocation_events_including_final_response():
+  """Invocation events capture metadata (usage/model) for efficiency.
+
+  This includes the final response event, whose metadata is preserved on
+  InvocationEvent while its text content is omitted to prevent duplication.
+  """
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.Content(parts=[types.Part(text="Hi")], role="user"),
+          timestamp=1000.0,
+      ),
+      Event(
+          invocation_id="inv1",
+          author="agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(name="tool1", args={})
+                  )
+              ]
+          ),
+          model_version="gemini-2.5-flash",
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=10,
+              candidates_token_count=5,
+              total_token_count=15,
+          ),
+      ),
+      # Tool-result event: framework produced, no model usage metadata.
+      Event(
+          invocation_id="inv1",
+          author="agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name="tool1", response={"result": "ok"}
+                      )
+                  )
+              ]
+          ),
+      ),
+      # Final response event: metadata is captured on InvocationEvent even
+      # though plain text content is omitted from intermediate events.
+      Event(
+          invocation_id="inv1",
+          author="agent",
+          content=types.Content(parts=[types.Part(text="All done.")]),
+          model_version="gemini-2.5-flash",
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=20,
+              candidates_token_count=8,
+              total_token_count=28,
+          ),
+      ),
+  ]
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+  assert len(invocations) == 1
+  invocation = invocations[0]
+  assert invocation.final_response == types.Content(
+      parts=[types.Part(text="All done.")]
+  )
+  invocation_events = invocation.intermediate_data.invocation_events
+  assert len(invocation_events) == 3
+  # First event: function call
+  assert invocation_events[0].content is not None
+  assert invocation_events[0].usage_metadata.total_token_count == 15
+  assert invocation_events[0].model_version == "gemini-2.5-flash"
+  # Second event: tool response
+  assert invocation_events[1].content is not None
+  assert invocation_events[1].usage_metadata is None
+  # Third event: final response (content omitted to prevent judge duplication)
+  assert invocation_events[2].content is None
+  assert invocation_events[2].usage_metadata.total_token_count == 28
+  assert invocation_events[2].model_version == "gemini-2.5-flash"
+
+
+def test_convert_events_empty_invocation_events_when_no_agent_events():
+  """invocation_events is empty for an invocation with no agent events."""
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.Content(parts=[types.Part(text="Hi")], role="user"),
+          timestamp=1000.0,
+      ),
+  ]
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+  assert len(invocations) == 1
+  assert invocations[0].intermediate_data.invocation_events == []
+
+
+@pytest.mark.asyncio
+async def test_tool_time_is_not_counted_as_model_time():
+  """A tool the model asked for is the tool's time, not the model's.
+
+  The flow runs that tool while the model's response stream is still open, so
+  timing the enclosing inference block would bill the tool's runtime to the
+  model and leave the tool at zero. Only an end-to-end run catches that -- the
+  interval arithmetic is correct either way -- so the split is asserted here
+  against costs planted in a fake model and a fake tool.
+
+  The bounds are deliberately loose: what is being pinned is which bucket the
+  sleep lands in, not how precisely it is measured.
+  """
+  tool_seconds = 0.2
+
+  async def slow_tool() -> str:
+    await asyncio.sleep(tool_seconds)
+    return "ok"
+
+  class _ToolThenAnswerModel(BaseLlm):
+    """Asks for the tool, then answers. Costs no measurable time itself."""
+
+    model: str = "fake"
+    calls: int = 0
+
+    @classmethod
+    def supported_models(cls) -> list[str]:
+      return ["fake"]
+
+    async def generate_content_async(
+        self, llm_request, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+      self.calls += 1
+      if self.calls == 1:
+        yield LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(
+                        function_call=types.FunctionCall(
+                            name="slow_tool", args={}
+                        )
+                    )
+                ],
+            )
+        )
+      else:
+        yield LlmResponse(
+            content=types.Content(role="model", parts=[types.Part(text="done")])
+        )
+
+  class _OneTurnUser(UserSimulator):
+
+    def __init__(self):
+      super().__init__(
+          config=BaseUserSimulatorConfig(),
+          config_type=BaseUserSimulatorConfig,
+      )
+      self._sent = False
+
+    async def get_next_user_message(self, events) -> NextUserMessage:
+      if self._sent:
+        return NextUserMessage(status=UserSimulatorStatus.STOP_SIGNAL_DETECTED)
+      self._sent = True
+      return NextUserMessage(
+          status=UserSimulatorStatus.SUCCESS,
+          user_message=types.Content(
+              role="user", parts=[types.Part(text="go")]
+          ),
+      )
+
+  invocations = await EvaluationGenerator._generate_inferences_from_root_agent(
+      root_agent=LlmAgent(
+          name="root", model=_ToolThenAnswerModel(), tools=[slow_tool]
+      ),
+      user_simulator=_OneTurnUser(),
+  )
+
+  (invocation,) = invocations
+  assert invocation.tool_duration >= tool_seconds * 0.75
+  # The whole point: the tool's sleep is absent from the model's figure.
+  assert invocation.model_duration < tool_seconds * 0.75
+  # Neither part may exceed the turn they are both drawn from. The three are
+  # rounded to milliseconds independently, so when both parts round up and the
+  # framework remainder is sub-millisecond they can land 1ms over the total;
+  # that tolerance is the same rounding the framework share is clamped for.
+  assert (
+      invocation.model_duration + invocation.tool_duration
+      <= invocation.duration + 0.001
+  )

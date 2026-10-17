@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-# Deliberately duplicated from `flows.llm_flows._invocation_utils`
+# Deliberately duplicated from `flows.llm_flows.core._utils`
 # rather than imported: `live` sits below `flows.llm_flows` in the
 # layering, and importing upward would put a cycle back in.
 def _require_agent_name(invocation_context: InvocationContext) -> str:

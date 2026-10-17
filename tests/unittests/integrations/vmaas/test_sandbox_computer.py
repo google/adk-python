@@ -14,18 +14,31 @@
 
 """Unit tests for the AgentEngineSandboxComputer class."""
 
+import asyncio
 import time
 import unittest
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+from google.adk.integrations.vmaas.sandbox_computer import _bound_resources
 from google.adk.integrations.vmaas.sandbox_computer import _STATE_KEY_AGENT_ENGINE_NAME
 from google.adk.integrations.vmaas.sandbox_computer import _STATE_KEY_SANDBOX_NAME
 from google.adk.integrations.vmaas.sandbox_computer import AgentEngineSandboxComputer
+from google.adk.sessions import Session
 from google.adk.sessions.state import State
 from google.adk.tools.computer_use.base_computer import ComputerEnvironment
 from google.adk.tools.computer_use.base_computer import ComputerState
+
+
+def _tool_context(session_id="session1", state=None):
+  """Returns a tool context for a session, with the given session state."""
+  tool_context = MagicMock()
+  tool_context.session = Session(
+      id=session_id, app_name="test_app", user_id="test_user"
+  )
+  tool_context.state = state if state is not None else {}
+  return tool_context
 
 
 class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
@@ -129,19 +142,29 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     )
     template_name = f"{agent_engine_name}/sandboxEnvironmentTemplates/789"
     computer = AgentEngineSandboxComputer(sandbox_template_name=template_name)
-    computer._session_state = {}
+    resources = {}
+    _bound_resources.set(resources)
 
     result = await computer._ensure_agent_engine()
 
     self.assertEqual(result, agent_engine_name)
     # Should not have created or stored a new engine.
-    self.assertNotIn(_STATE_KEY_AGENT_ENGINE_NAME, computer._session_state)
+    self.assertNotIn(_STATE_KEY_AGENT_ENGINE_NAME, resources)
 
   def test_init_with_vertexai_client(self):
     """Test initialization with provided vertexai client."""
     mock_client = MagicMock()
     computer = AgentEngineSandboxComputer(vertexai_client=mock_client)
     self.assertEqual(computer._client, mock_client)
+
+  @patch("agentplatform.Client")
+  def test_get_client_rejects_agentplatform_before_2_2(self, mock_client):
+    """Test _get_client raises ImportError on a pre-2.2 agentplatform."""
+    mock_client.return_value = MagicMock(spec=["agent_engines"])
+    computer = AgentEngineSandboxComputer(project_id=self.project_id)
+
+    with self.assertRaisesRegex(ImportError, "has no runtimes, sandboxes"):
+      computer._get_client()
 
   async def test_screen_size(self):
     """Test screen_size returns hardcoded size."""
@@ -162,21 +185,22 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     )
     sandbox_name = f"{agent_engine_name}/sandboxEnvironments/456"
     computer = AgentEngineSandboxComputer(sandbox_name=sandbox_name)
-    computer._session_state = {}
+    resources = {}
+    _bound_resources.set(resources)
 
     result = await computer._ensure_agent_engine()
 
     self.assertEqual(result, agent_engine_name)
-    # Should not have touched session state
-    self.assertNotIn(_STATE_KEY_AGENT_ENGINE_NAME, computer._session_state)
+    # Should not have touched the bound record
+    self.assertNotIn(_STATE_KEY_AGENT_ENGINE_NAME, resources)
 
-  async def test_ensure_agent_engine_from_session_state(self):
-    """Test _ensure_agent_engine uses session state value."""
+  async def test_ensure_agent_engine_from_bound_record(self):
+    """Test _ensure_agent_engine uses the bound record."""
     agent_engine_name = (
         "projects/test/locations/us-central1/reasoningEngines/123"
     )
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {_STATE_KEY_AGENT_ENGINE_NAME: agent_engine_name}
+    _bound_resources.set({_STATE_KEY_AGENT_ENGINE_NAME: agent_engine_name})
 
     result = await computer._ensure_agent_engine()
 
@@ -198,14 +222,13 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_to_thread.return_value = mock_engine
 
     computer = AgentEngineSandboxComputer(project_id=self.project_id)
-    computer._session_state = {}
+    resources = {}
+    _bound_resources.set(resources)
 
     result = await computer._ensure_agent_engine()
 
     self.assertEqual(result, new_engine_name)
-    self.assertEqual(
-        computer._session_state[_STATE_KEY_AGENT_ENGINE_NAME], new_engine_name
-    )
+    self.assertEqual(resources[_STATE_KEY_AGENT_ENGINE_NAME], new_engine_name)
 
   @patch("google.adk.integrations.vmaas.sandbox_computer.asyncio.to_thread")
   @patch.object(AgentEngineSandboxComputer, "_get_client")
@@ -223,7 +246,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_get_client.return_value = mock_client
 
     computer = AgentEngineSandboxComputer(sandbox_name=sandbox_name)
-    computer._session_state = {}
 
     result_name, result_sandbox = await computer._get_sandbox()
 
@@ -232,10 +254,10 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
 
   @patch("google.adk.integrations.vmaas.sandbox_computer.asyncio.to_thread")
   @patch.object(AgentEngineSandboxComputer, "_get_client")
-  async def test_get_sandbox_from_session_state(
+  async def test_get_sandbox_from_bound_record(
       self, mock_get_client, mock_to_thread
   ):
-    """Test _get_sandbox uses session state value."""
+    """Test _get_sandbox uses the bound record."""
     sandbox_name = "projects/test/sandboxEnvironments/123"
 
     mock_sandbox = MagicMock()
@@ -245,12 +267,59 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_get_client.return_value = mock_client
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {_STATE_KEY_SANDBOX_NAME: sandbox_name}
+    _bound_resources.set({_STATE_KEY_SANDBOX_NAME: sandbox_name})
 
     result_name, result_sandbox = await computer._get_sandbox()
 
     self.assertEqual(result_name, sandbox_name)
     self.assertEqual(result_sandbox, mock_sandbox)
+
+  @patch("google.adk.integrations.vmaas.sandbox_computer.asyncio.to_thread")
+  @patch.object(AgentEngineSandboxComputer, "_get_client")
+  async def test_get_sandbox_ignores_sandbox_name_in_session_state(
+      self, mock_get_client, mock_to_thread
+  ):
+    """Test _get_sandbox does not use a sandbox name found in session state."""
+    agent_engine_name = (
+        "projects/test/locations/us-central1/reasoningEngines/123"
+    )
+    created_sandbox_name = f"{agent_engine_name}/sandboxEnvironments/created"
+    other_sandbox_name = (
+        "projects/other/locations/us-central1/reasoningEngines/456"
+        "/sandboxEnvironments/789"
+    )
+
+    operation = MagicMock()
+    operation.response.name = created_sandbox_name
+    mock_to_thread.return_value = operation
+    mock_get_client.return_value = MagicMock()
+
+    computer = AgentEngineSandboxComputer(project_id=self.project_id)
+    await computer.prepare(
+        _tool_context(state={_STATE_KEY_SANDBOX_NAME: other_sandbox_name})
+    )
+
+    result_name, _ = await computer._get_sandbox()
+
+    self.assertEqual(result_name, created_sandbox_name)
+
+  async def test_prepare_keeps_resources_of_each_session_apart(self):
+    """Test prepare binds the resources of the invocation's own session."""
+    computer = AgentEngineSandboxComputer()
+    first_context = _tool_context(session_id="session1")
+    second_context = _tool_context(session_id="session2")
+
+    await computer.prepare(first_context)
+    _bound_resources.get()[_STATE_KEY_SANDBOX_NAME] = "sandbox1"
+    await computer.prepare(second_context)
+
+    self.assertEqual(_bound_resources.get(), {})
+
+    await computer.prepare(first_context)
+
+    self.assertEqual(
+        _bound_resources.get()[_STATE_KEY_SANDBOX_NAME], "sandbox1"
+    )
 
   async def test_get_access_token_cached(self):
     """Test _get_access_token uses cached token."""
@@ -308,7 +377,7 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     computer = AgentEngineSandboxComputer(
         service_account_email=self.service_account
     )
-    computer._session_state = state
+    await computer.prepare(_tool_context(state=state))
 
     result = await computer._get_access_token(sandbox_name)
 
@@ -330,7 +399,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_get_client.return_value = mock_client
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {}
 
     result = await computer.click_at(100, 200)
 
@@ -349,7 +417,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_get_client.return_value = mock_client
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {}
 
     result = await computer.hover_at(150, 250)
 
@@ -366,7 +433,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_get_client.return_value = mock_client
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {}
 
     result = await computer.type_text_at(
         100,
@@ -386,6 +452,27 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     self.assertIsInstance(result, ComputerState)
 
   @patch.object(AgentEngineSandboxComputer, "_get_sandbox_client")
+  async def test_type_text(self, mock_get_client):
+    """Test type_text method."""
+    mock_client = AsyncMock()
+    mock_client.type_text = AsyncMock()
+    mock_client.get_screenshot = AsyncMock(return_value=b"png_data")
+    mock_client.get_current_url = AsyncMock(return_value="https://example.com")
+    mock_get_client.return_value = mock_client
+
+    computer = AgentEngineSandboxComputer()
+
+    result = await computer.type_text("hello", press_enter=True)
+
+    mock_client.type_text.assert_called_once_with(
+        text="hello",
+        press_enter=True,
+    )
+    self.assertIsInstance(result, ComputerState)
+    self.assertEqual(result.screenshot, b"png_data")
+    self.assertEqual(result.url, "https://example.com")
+
+  @patch.object(AgentEngineSandboxComputer, "_get_sandbox_client")
   async def test_scroll_document(self, mock_get_client):
     """Test scroll_document method."""
     mock_client = AsyncMock()
@@ -395,7 +482,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_get_client.return_value = mock_client
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {}
 
     result = await computer.scroll_document("down")
 
@@ -413,7 +499,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_get_client.return_value = mock_client
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {}
 
     result = await computer.scroll_at(100, 200, "up", 500)
 
@@ -430,7 +515,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_get_client.return_value = mock_client
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {}
 
     result = await computer.navigate("https://newsite.com")
 
@@ -452,7 +536,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     computer = AgentEngineSandboxComputer(
         search_engine_url="https://www.google.com"
     )
-    computer._session_state = {}
 
     result = await computer.search()
 
@@ -469,7 +552,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_get_client.return_value = mock_client
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {}
 
     result = await computer.go_back()
 
@@ -486,7 +568,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_get_client.return_value = mock_client
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {}
 
     result = await computer.go_forward()
 
@@ -503,7 +584,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_get_client.return_value = mock_client
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {}
 
     result = await computer.key_combination(["control", "c"])
 
@@ -520,7 +600,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_get_client.return_value = mock_client
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {}
 
     result = await computer.drag_and_drop(10, 20, 100, 200)
 
@@ -536,7 +615,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_get_client.return_value = mock_client
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {}
 
     # Use a short wait time for testing
     start_time = time.time()
@@ -555,7 +633,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_get_client.return_value = mock_client
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {}
 
     result = await computer.current_state()
 
@@ -572,12 +649,92 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     mock_get_client.return_value = mock_client
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {}
 
     result = await computer.open_web_browser()
 
     # open_web_browser is a no-op for sandbox, just returns current state
     self.assertIsInstance(result, ComputerState)
+
+  @patch.object(AgentEngineSandboxComputer, "_get_client")
+  async def test_get_sandbox_without_prepare(self, mock_get_client):
+    """Test _get_sandbox fails when no session is bound."""
+    mock_get_client.return_value = MagicMock()
+    computer = AgentEngineSandboxComputer()
+
+    with self.assertRaises(ValueError):
+      await computer._get_sandbox()
+
+  @patch("google.adk.integrations.vmaas.sandbox_computer.asyncio.to_thread")
+  @patch.object(AgentEngineSandboxComputer, "_get_client")
+  async def test_concurrent_sessions_keep_their_own_sandbox(
+      self, mock_get_client, mock_to_thread
+  ):
+    """Test one computer shared by two sessions does not mix them up."""
+    mock_get_client.return_value = MagicMock()
+    mock_to_thread.side_effect = lambda _get, *, name: f"sandbox_object:{name}"
+    computer = AgentEngineSandboxComputer()
+    # Seed the token so the sandbox lookup is the only call to to_thread.
+    computer._access_token = "token"
+    computer._token_expiry = time.time() + 3600
+    for session_id in ("a", "b"):
+      await computer.prepare(_tool_context(session_id=session_id))
+      _bound_resources.get()[_STATE_KEY_SANDBOX_NAME] = f"sandbox_{session_id}"
+    both_prepared = asyncio.Event()
+
+    async def first_session():
+      await computer.prepare(_tool_context(session_id="a"))
+      await both_prepared.wait()
+      return await computer._get_sandbox_client()
+
+    async def second_session():
+      await computer.prepare(_tool_context(session_id="b"))
+      both_prepared.set()
+      return await computer._get_sandbox_client()
+
+    client_a, client_b = await asyncio.gather(first_session(), second_session())
+
+    self.assertEqual(client_a._sandbox, "sandbox_object:sandbox_a")
+    self.assertEqual(client_b._sandbox, "sandbox_object:sandbox_b")
+
+  @patch("google.adk.integrations.vmaas.sandbox_computer.asyncio.to_thread")
+  @patch.object(AgentEngineSandboxComputer, "_get_client")
+  async def test_sandbox_created_during_another_prepare_stays_with_its_session(
+      self, mock_get_client, mock_to_thread
+  ):
+    """Test a new sandbox is recorded for the session that created it."""
+    template_name = (
+        "projects/test/locations/us-central1/reasoningEngines/123"
+        "/sandboxEnvironmentTemplates/789"
+    )
+    second_prepared = asyncio.Event()
+
+    async def create_sandbox(*unused_args, **unused_kwargs):
+      await second_prepared.wait()
+      operation = MagicMock()
+      operation.response.name = "sandbox_a"
+      return operation
+
+    mock_get_client.return_value = MagicMock()
+    mock_to_thread.side_effect = create_sandbox
+    computer = AgentEngineSandboxComputer(sandbox_template_name=template_name)
+
+    async def first_session():
+      await computer.prepare(_tool_context(session_id="a"))
+      await computer._get_sandbox()
+
+    async def second_session():
+      await computer.prepare(_tool_context(session_id="b"))
+      second_prepared.set()
+
+    await asyncio.gather(first_session(), second_session())
+
+    self.assertEqual(
+        computer._resources_by_session[("test_app", "test_user", "a")],
+        {_STATE_KEY_SANDBOX_NAME: "sandbox_a"},
+    )
+    self.assertEqual(
+        computer._resources_by_session[("test_app", "test_user", "b")], {}
+    )
 
   async def test_initialize_is_noop(self):
     """Test initialize does nothing (lazy provisioning)."""
