@@ -177,7 +177,9 @@ class RubricBasedToolUseV1Evaluator(RubricBasedEvaluator):
       _: Optional[Invocation],
   ) -> str:
     """Returns the autorater prompt."""
-    self.create_effective_rubrics_list(actual_invocation.rubrics)
+    self.create_effective_rubrics_list(
+        actual_invocation.rubrics, actual_invocation
+    )
     user_input = get_text_from_content(actual_invocation.user_content)
     tool_usage = get_tool_calls_and_responses_as_json_str(
         actual_invocation.intermediate_data
@@ -185,7 +187,7 @@ class RubricBasedToolUseV1Evaluator(RubricBasedEvaluator):
 
     rubrics_text = "\n".join([
         f"*  [id: {r.rubric_id}] {r.rubric_content.text_property}"
-        for r in self.get_effective_rubrics_list()
+        for r in self.get_effective_rubrics_list(actual_invocation)
     ])
 
     app_details = actual_invocation.app_details

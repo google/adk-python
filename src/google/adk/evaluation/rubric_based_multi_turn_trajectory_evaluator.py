@@ -353,14 +353,16 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
       _: Optional[Invocation],
   ) -> str:
     """Returns the fully rendered validation prompt using locally configured rubrics."""
-    self.create_effective_rubrics_list(actual_invocation.rubrics)
+    self.create_effective_rubrics_list(
+        actual_invocation.rubrics, actual_invocation
+    )
     logger.debug(
         "format_auto_rater_prompt called (effective rubrics: %d)",
-        len(self.get_effective_rubrics_list()),
+        len(self.get_effective_rubrics_list(actual_invocation)),
     )
 
     rubrics_list = []
-    for r in self.get_effective_rubrics_list():
+    for r in self.get_effective_rubrics_list(actual_invocation):
       rubrics_dict = {
           "id": r.rubric_id,
           "property": r.rubric_content.text_property,

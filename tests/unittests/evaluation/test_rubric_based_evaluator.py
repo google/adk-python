@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import logging
+from typing import Optional
+from unittest import mock
 
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
@@ -1329,3 +1331,105 @@ class TestRubricBasedEvaluatorCollaborators:
         ("1", 1.0)
     ]
     assert auto_rater_score.score == 1.0
+
+
+class PerInvocationRubricsFakeEvaluator(RubricBasedEvaluator):
+  """Mirrors how the real rubric evaluators compute their prompt.
+
+  Unlike FakeRubricBasedEvaluator, this calls create_effective_rubrics_list
+  with the actual invocation, exactly as
+  RubricBasedFinalResponseQualityV1Evaluator and its siblings do.
+  """
+
+  def __init__(self, eval_metric: EvalMetric):
+    super().__init__(eval_metric, criterion_type=RubricsBasedCriterion)
+
+  def format_auto_rater_prompt(
+      self, actual: Invocation, expected: Optional[Invocation]
+  ) -> str:
+    self.create_effective_rubrics_list(actual.rubrics, actual)
+    rubric = self.get_effective_rubrics_list(actual)[0]
+    return (
+        f"ID: {rubric.rubric_id}\nProperty:"
+        f" {rubric.rubric_content.text_property}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_scores_each_invocation_against_its_own_rubrics():
+  """Regression test for per-invocation rubrics being clobbered.
+
+  format_auto_rater_prompt() for every invocation runs to completion before
+  any auto-rater response is converted back into a score (evaluate_invocations
+  formats all prompts up front, then gathers the async LLM calls). A
+  evaluator that kept the "effective rubrics" as single evaluator-wide state
+  would have it stuck on the last invocation's rubrics by the time any
+  response is converted, silently dropping the verdict for every other
+  invocation.
+  """
+  judge_model_options = JudgeModelOptions(
+      judge_model_config=None,
+      num_samples=1,
+  )
+  criterion = RubricsBasedCriterion(
+      threshold=0.5, judge_model_options=judge_model_options
+  )
+  metric = EvalMetric(
+      metric_name=PrebuiltMetrics.RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1.value,
+      threshold=0.5,
+      criterion=criterion,
+  )
+  evaluator = PerInvocationRubricsFakeEvaluator(metric)
+
+  async def mock_generate_content_async(llm_request):
+    # A real judge model answers based on the prompt it was given; echo the
+    # rubric identity the prompt asked about back as a "Yes" verdict.
+    prompt_text = llm_request.contents[0].parts[0].text
+    yield LlmResponse(
+        content=genai_types.Content(
+            parts=[
+                genai_types.Part(
+                    text=f"{prompt_text}\nRationale: fine\nVerdict: Yes"
+                )
+            ]
+        )
+    )
+
+  mock_judge_model = mock.MagicMock()
+  mock_judge_model.generate_content_async = mock_generate_content_async
+  evaluator._judge_model = mock_judge_model
+
+  actual_invocations = [
+      Invocation(
+          invocation_id="turn_1",
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="turn 1")]
+          ),
+          rubrics=[
+              Rubric(
+                  rubric_id="a",
+                  rubric_content=RubricContent(text_property="Property A"),
+              )
+          ],
+      ),
+      Invocation(
+          invocation_id="turn_2",
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="turn 2")]
+          ),
+          rubrics=[
+              Rubric(
+                  rubric_id="b",
+                  rubric_content=RubricContent(text_property="Property B"),
+              )
+          ],
+      ),
+  ]
+
+  result = await evaluator.evaluate_invocations(actual_invocations)
+
+  rubric_ids_by_invocation = [
+      [s.rubric_id for s in r.rubric_scores] if r.rubric_scores else []
+      for r in result.per_invocation_results
+  ]
+  assert rubric_ids_by_invocation == [["a"], ["b"]]
