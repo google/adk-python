@@ -24,6 +24,7 @@ from google.adk.cli.plugins.recordings_schema import ToolRecording
 from google.adk.cli.plugins.replay_plugin import ReplayConfigError
 from google.adk.cli.plugins.replay_plugin import ReplayPlugin
 from google.adk.cli.plugins.replay_plugin import ReplayVerificationError
+from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.base_tool import BaseTool
 from google.adk.utils.yaml_utils import dump_pydantic_to_yaml
 from google.genai import types
@@ -87,6 +88,7 @@ async def _make_invocation(
     user_message_index: int = 0,
     streaming_mode: Optional[str] = 'none',
     agent_names: tuple[str, ...] = ('agent_a',),
+    replay_tool_responses: Optional[dict[str, list[str]]] = None,
 ):
   """Builds one invocation plus a per-agent context sharing its session."""
   invocation_context = await testing_utils.create_invocation_context(
@@ -99,6 +101,8 @@ async def _make_invocation(
     }
     if streaming_mode is not None:
       config['streaming_mode'] = streaming_mode
+    if replay_tool_responses is not None:
+      config['replay_tool_responses'] = replay_tool_responses
     invocation_context.session.state['_adk_replay_config'] = config
 
   contexts = {agent_names[0]: CallbackContext(invocation_context)}
@@ -180,6 +184,166 @@ async def test_before_tool_still_executes_the_underlying_tool(tmp_path):
   )
 
   assert tool.live_calls == [{'sides': 6}]
+
+
+@pytest.mark.parametrize(
+    ('streaming_mode', 'file_name'),
+    [('none', _NON_STREAMING_FILE), ('sse', _STREAMING_FILE)],
+)
+async def test_selected_tool_uses_recorded_response_without_executing(
+    tmp_path, streaming_mode, file_name
+):
+  """Selected tools use the verified response without contacting a backend."""
+  _write_recordings(
+      tmp_path, [_recording(response={'result': 4})], file_name=file_name
+  )
+  plugin = ReplayPlugin()
+  invocation_context, contexts = await _make_invocation(
+      case_dir=tmp_path,
+      streaming_mode=streaming_mode,
+      replay_tool_responses={'agent_a': ['roll_die']},
+  )
+  tool = _SpyTool()
+
+  await plugin.before_run_callback(invocation_context=invocation_context)
+  replayed = await plugin.before_tool_callback(
+      tool=tool, tool_args={'sides': 6}, tool_context=contexts['agent_a']
+  )
+
+  assert replayed == {'result': 4}
+  assert tool.live_calls == []
+
+
+async def test_selected_tool_replays_repeated_calls_in_recorded_order(tmp_path):
+  """Repeated selected calls return their recorded responses in order."""
+  _write_recordings(
+      tmp_path,
+      [
+          _recording(response={'result': 4}),
+          _recording(response={'result': 7}, call_id='fc-2'),
+      ],
+  )
+  plugin = ReplayPlugin()
+  invocation_context, contexts = await _make_invocation(
+      case_dir=tmp_path,
+      replay_tool_responses={'agent_a': ['roll_die']},
+  )
+  tool = _SpyTool()
+
+  await plugin.before_run_callback(invocation_context=invocation_context)
+  first = await plugin.before_tool_callback(
+      tool=tool, tool_args={'sides': 6}, tool_context=contexts['agent_a']
+  )
+  second = await plugin.before_tool_callback(
+      tool=tool, tool_args={'sides': 6}, tool_context=contexts['agent_a']
+  )
+
+  assert [first, second] == [{'result': 4}, {'result': 7}]
+  assert tool.live_calls == []
+
+
+async def test_selection_is_scoped_to_agent(tmp_path):
+  """A tool selected for one agent still executes for a sibling agent."""
+  _write_recordings(
+      tmp_path,
+      [_recording(agent_name='agent_a'), _recording(agent_name='agent_b')],
+  )
+  plugin = ReplayPlugin()
+  invocation_context, contexts = await _make_invocation(
+      case_dir=tmp_path,
+      agent_names=('agent_a', 'agent_b'),
+      replay_tool_responses={'agent_a': ['roll_die']},
+  )
+  selected_tool = _SpyTool()
+  other_tool = _SpyTool()
+
+  await plugin.before_run_callback(invocation_context=invocation_context)
+  selected_result = await plugin.before_tool_callback(
+      tool=selected_tool,
+      tool_args={'sides': 6},
+      tool_context=contexts['agent_a'],
+  )
+  other_result = await plugin.before_tool_callback(
+      tool=other_tool,
+      tool_args={'sides': 6},
+      tool_context=contexts['agent_b'],
+  )
+
+  assert selected_result == other_result == {'result': 4}
+  assert selected_tool.live_calls == []
+  assert other_tool.live_calls == [{'sides': 6}]
+
+
+async def test_selected_tool_with_mismatched_args_never_executes(tmp_path):
+  """A mismatched recorded call fails before a selected tool runs."""
+  _write_recordings(tmp_path, [_recording(args={'sides': 6})])
+  plugin = ReplayPlugin()
+  invocation_context, contexts = await _make_invocation(
+      case_dir=tmp_path,
+      replay_tool_responses={'agent_a': ['roll_die']},
+  )
+  tool = _SpyTool()
+
+  await plugin.before_run_callback(invocation_context=invocation_context)
+  with pytest.raises(ReplayVerificationError, match='Tool args mismatch'):
+    await plugin.before_tool_callback(
+        tool=tool, tool_args={'sides': 20}, tool_context=contexts['agent_a']
+    )
+
+  assert tool.live_calls == []
+
+
+async def test_unknown_selected_tool_fails_before_agent_runs(tmp_path):
+  """A typo in the selection cannot silently leave a live tool enabled."""
+  _write_recordings(tmp_path, [_recording()])
+  plugin = ReplayPlugin()
+  invocation_context, _ = await _make_invocation(
+      case_dir=tmp_path,
+      replay_tool_responses={'agent_a': ['roll_dice']},
+  )
+
+  with pytest.raises(ReplayConfigError, match='agent_a.roll_dice'):
+    await plugin.before_run_callback(invocation_context=invocation_context)
+
+
+async def test_selected_tool_without_recorded_response_never_executes(tmp_path):
+  """A missing recorded response fails without falling back to a live tool."""
+  recording = _recording()
+  recording.tool_recording.tool_response = None
+  _write_recordings(tmp_path, [recording])
+  plugin = ReplayPlugin()
+  invocation_context, contexts = await _make_invocation(
+      case_dir=tmp_path,
+      replay_tool_responses={'agent_a': ['roll_die']},
+  )
+  tool = _SpyTool()
+
+  await plugin.before_run_callback(invocation_context=invocation_context)
+  with pytest.raises(ReplayVerificationError, match='no tool_response'):
+    await plugin.before_tool_callback(
+        tool=tool, tool_args={'sides': 6}, tool_context=contexts['agent_a']
+    )
+
+  assert tool.live_calls == []
+
+
+async def test_selected_agent_tool_is_rejected(tmp_path):
+  """AgentTool has different execution semantics and cannot be response-only."""
+  _write_recordings(tmp_path, [_recording(tool_name='child')])
+  plugin = ReplayPlugin()
+  invocation_context, contexts = await _make_invocation(
+      case_dir=tmp_path,
+      replay_tool_responses={'agent_a': ['child']},
+  )
+  child_tool = AgentTool(agent=testing_utils.create_test_agent(name='child'))
+
+  await plugin.before_run_callback(invocation_context=invocation_context)
+  with pytest.raises(ReplayConfigError, match='AgentTool'):
+    await plugin.before_tool_callback(
+        tool=child_tool,
+        tool_args={'sides': 6},
+        tool_context=contexts['agent_a'],
+    )
 
 
 async def test_before_run_reads_the_sse_file_in_sse_streaming_mode(tmp_path):
