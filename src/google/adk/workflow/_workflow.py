@@ -99,6 +99,14 @@ class _LoopState(DynamicNodeState):
   node_branches: dict[str, str] = field(default_factory=dict)
   """Cached static node branches."""
 
+  join_arrivals: dict[str, set[str]] = field(default_factory=dict)
+  """Predecessors that arrived since each wait-for-all node last fired.
+
+  Keyed by the wait-for-all node's name. Cleared when that node fires, so in
+  a loop it waits for every predecessor's next run instead of counting runs
+  left over from an earlier iteration.
+  """
+
   pending_tasks: dict[str, asyncio.Task[Context]] = field(default_factory=dict)
   """Running static node tasks."""
 
@@ -798,6 +806,8 @@ class Workflow(BaseNode):
       node_state.resume_inputs.clear()
     if child_ctx.output is not None:
       loop_state.node_outputs[node_name] = child_ctx.output
+    else:
+      loop_state.node_outputs.pop(node_name, None)
     loop_state.node_branches[node_name] = (
         child_ctx._invocation_context.branch or ""
     )
@@ -824,22 +834,26 @@ class Workflow(BaseNode):
   ) -> None:
     """Buffer a trigger for target_name once all predecessors have completed.
 
-    No-op while any predecessor is still outstanding.
+    No-op while any predecessor is still outstanding. Only runs completed
+    since target_name last fired count, so each firing consumes them.
     """
     graph = self._require_graph()
     predecessors = {
         e.from_node.name for e in graph.edges if e.to_node.name == target_name
     }
+    arrivals = loop_state.join_arrivals.get(target_name, set())
     # START never executes, so it is satisfied as soon as the workflow begins.
     if not all(
         p == START.name
         or (
-            loop_state.nodes.get(p)
+            p in arrivals
+            and loop_state.nodes.get(p)
             and loop_state.nodes[p].status == NodeStatus.COMPLETED
         )
         for p in predecessors
     ):
       return
+    loop_state.join_arrivals.pop(target_name, None)
 
     outputs = {p: loop_state.node_outputs.get(p) for p in predecessors}
     branches = [loop_state.node_branches.get(p, "") for p in predecessors]
@@ -870,6 +884,7 @@ class Workflow(BaseNode):
       target_node = self._get_static_node_by_name(target_name)
 
       if target_node._requires_all_predecessors:
+        loop_state.join_arrivals.setdefault(target_name, set()).add(node_name)
         self._buffer_barrier_trigger(loop_state, target_name)
       else:
         # Normal node logic

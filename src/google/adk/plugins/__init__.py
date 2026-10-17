@@ -23,6 +23,8 @@ from .plugin_manager import PluginManager
 if TYPE_CHECKING:
   from ..tools.model_consult._force_escalation_plugin import ForceEscalationPlugin
   from ..tools.model_consult._observability_plugin import ModelConsultObservabilityPlugin
+  from ._callback_helpers import ToolResultClassification
+  from ._callback_helpers import ToolResultClassifier
   from ._reflect_retry_model_plugin import ReflectAndRetryModelPlugin
   from ._tool_call_integrity_plugin import ToolCallIntegrityError
   from ._tool_call_integrity_plugin import ToolCallIntegrityPlugin
@@ -41,6 +43,8 @@ __all__ = [
     "ReflectAndRetryToolPlugin",
     "ToolCallIntegrityError",
     "ToolCallIntegrityPlugin",
+    "ToolResultClassification",
+    "ToolResultClassifier",
 ]
 
 _LAZY_MEMBERS: dict[str, str] = {
@@ -54,6 +58,8 @@ _LAZY_MEMBERS: dict[str, str] = {
     "ReflectAndRetryToolPlugin": "reflect_retry_tool_plugin",
     "ToolCallIntegrityError": "_tool_call_integrity_plugin",
     "ToolCallIntegrityPlugin": "_tool_call_integrity_plugin",
+    "ToolResultClassification": "_callback_helpers",
+    "ToolResultClassifier": "_callback_helpers",
 }
 
 
