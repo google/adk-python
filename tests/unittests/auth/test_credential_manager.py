@@ -1400,6 +1400,10 @@ class TestCredentialManager:
         manager._auth_config.auth_scheme.flows.authorizationCode.tokenUrl
         == "https://auth.example.com/token"
     )
+    assert manager._auth_config.auth_scheme.flows.authorizationCode.scopes == {
+        "read": "",
+        "write": "",
+    }
 
   @pytest.mark.asyncio
   async def test_populate_auth_scheme_fail(self, extended_oauth2_scheme):
