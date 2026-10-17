@@ -83,8 +83,7 @@ class BaseToolset(ABC):
     """
     self.tool_filter = tool_filter
     self.tool_name_prefix = tool_name_prefix
-    self._cached_invocation_id: Optional[str] = None
-    self._cached_prefixed_tools: Optional[list[BaseTool]] = None
+    self._cached_prefixed_tools: dict[Optional[str], list[BaseTool]] = {}
     self._use_invocation_cache = True
 
   @abstractmethod
@@ -138,16 +137,14 @@ class BaseToolset(ABC):
 
     if (
         self._use_invocation_cache
-        and self._cached_prefixed_tools is not None
-        and self._cached_invocation_id == invocation_id
+        and invocation_id in self._cached_prefixed_tools
     ):
-      return self._cached_prefixed_tools
+      return self._cached_prefixed_tools[invocation_id]
 
     tools = await self.get_tools(readonly_context)
 
     if not self.tool_name_prefix:
-      self._cached_invocation_id = invocation_id
-      self._cached_prefixed_tools = tools
+      self._cached_prefixed_tools[invocation_id] = tools
       return tools
 
     prefix = self.tool_name_prefix
@@ -184,8 +181,7 @@ class BaseToolset(ABC):
       )
       prefixed_tools.append(tool_copy)
 
-    self._cached_invocation_id = invocation_id
-    self._cached_prefixed_tools = prefixed_tools
+    self._cached_prefixed_tools[invocation_id] = prefixed_tools
     return prefixed_tools
 
   async def close(self) -> None:
@@ -197,6 +193,7 @@ class BaseToolset(ABC):
       should ensure that any open connections, files, or other managed
       resources are properly released to prevent leaks.
     """
+    self._cached_prefixed_tools.clear()
 
   @classmethod
   def from_config(
