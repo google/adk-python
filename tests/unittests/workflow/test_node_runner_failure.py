@@ -1345,3 +1345,40 @@ async def test_parent_node_plain_exception_retry_reruns_dynamic_children():
   assert child_runs == 3
   outputs = [e.output for e in events if e.output is not None]
   assert 'child_run_3' in outputs
+
+
+@pytest.mark.asyncio
+async def test_dynamic_function_node_retry_gets_fresh_arguments():
+  """A retried dynamic FunctionNode does not see arguments it mutated earlier."""
+  from google.adk.workflow import FunctionNode
+
+  seen = []
+
+  def child(items: list[int]) -> int:
+    seen.append(list(items))
+    items.append(99)
+    if len(seen) == 1:
+      raise CustomRetryableError('Child failed after changing its input')
+    return len(items)
+
+  child_node = FunctionNode(
+      func=child,
+      parameter_binding='node_input',
+      retry_config=RetryConfig(
+          max_attempts=2,
+          initial_delay=0.0,
+          jitter=0.0,
+          exceptions=[CustomRetryableError],
+      ),
+  )
+
+  @node(rerun_on_resume=True)
+  async def parent_node(ctx: Context):
+    return await ctx.run_node(child_node, node_input={'items': [1, 2]})
+
+  wf = Workflow(name='wf', edges=[(START, parent_node)])
+  events, _, _ = await _run_workflow(wf)
+
+  assert seen == [[1, 2], [1, 2]]
+  outputs = [e.output for e in events if e.output is not None]
+  assert 3 in outputs
