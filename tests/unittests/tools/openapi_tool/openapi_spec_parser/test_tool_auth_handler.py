@@ -14,13 +14,20 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+import json
+import threading
 import time
 from typing import Optional
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
+from urllib.parse import parse_qs
 
 from authlib.common.errors import AuthlibBaseError
+from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlowClientCredentials
+from fastapi.openapi.models import OAuthFlows
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.auth.auth_credential import AuthCredential
@@ -29,6 +36,7 @@ from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_schemes import AuthScheme
+from google.adk.auth.exchanger.base_credential_exchanger import CredentialExchangeError
 from google.adk.auth.refresher.oauth2_credential_refresher import OAuth2CredentialRefresher
 from google.adk.events.event import Event
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -44,6 +52,7 @@ from google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler import 
 from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel
 import pytest
+from requests import Response
 
 
 # Helper function to create a mock ToolContext
@@ -57,6 +66,172 @@ def create_mock_tool_context():
           session_service=InMemorySessionService(),
       ),
   )
+
+
+@pytest.fixture
+def client_credentials_case():
+  context = create_mock_tool_context()
+  scheme = OAuth2(
+      flows=OAuthFlows(
+          clientCredentials=OAuthFlowClientCredentials(
+              tokenUrl='https://token.example.test/token',
+              scopes={'read': 'Read'},
+          )
+      )
+  )
+  credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(client_id='client', client_secret='test-client-secret'),
+  )
+  return (
+      ToolAuthHandler.from_tool_context(context, scheme, credential),
+      context,
+      credential,
+  )
+
+
+@pytest.fixture
+def token_requests(monkeypatch):
+  calls = []
+
+  def send(session, request, **kwargs):
+    calls.append((request, threading.get_ident()))
+    response = Response()
+    response.status_code = 200
+    response.headers['Content-Type'] = 'application/json'
+    response._content = json.dumps({
+        'access_token': f'token-{len(calls)}',
+        'token_type': 'Bearer',
+        'expires_in': 3600,
+    }).encode()
+    response.request = request
+    return response
+
+  monkeypatch.setattr('requests.sessions.Session.send', send)
+  return calls
+
+
+async def test_client_credentials_exchange_without_user_authorization(
+    client_credentials_case, token_requests
+):
+  """Client credentials get a bearer token without asking for user consent."""
+  handler, context, configured = client_credentials_case
+
+  result = await handler.prepare_auth_credentials()
+
+  assert result.state == 'done'
+  assert result.auth_credential.http.credentials.token == 'token-1'
+  assert not context.actions.requested_auth_configs
+  request, thread_id = token_requests[0]
+  assert request.method == 'POST'
+  assert parse_qs(request.body)['grant_type'] == ['client_credentials']
+  assert thread_id != threading.get_ident()
+  assert configured.oauth2.access_token is None
+  assert configured.oauth2.client_secret == 'test-client-secret'
+  assert 'test-client-secret' not in json.dumps(context.state.to_dict())
+
+
+async def test_client_credentials_reuse_cached_token(
+    client_credentials_case, token_requests
+):
+  """A second preparation reuses the session's unexpired token."""
+  handler, context, _ = client_credentials_case
+  first = await handler.prepare_auth_credentials()
+  second = await handler.prepare_auth_credentials()
+
+  assert first.auth_credential == second.auth_credential
+  assert len(token_requests) == 1
+  assert not context.actions.requested_auth_configs
+
+
+async def test_expired_client_credentials_token_is_exchanged_again(
+    client_credentials_case, token_requests, monkeypatch
+):
+  """Expired client tokens are renewed with the client grant, not a login URL."""
+  handler, context, _ = client_credentials_case
+  await handler.prepare_auth_credentials()
+  later = time.time() + 7200
+  monkeypatch.setattr(time, 'time', lambda: later)
+
+  result = await handler.prepare_auth_credentials()
+
+  assert result.auth_credential.http.credentials.token == 'token-2'
+  assert len(token_requests) == 2
+  assert all(
+      parse_qs(r.body)['grant_type'] == ['client_credentials']
+      for r, _ in token_requests
+  )
+  assert not context.actions.requested_auth_configs
+
+
+@pytest.mark.parametrize('expired', [False, True])
+async def test_configured_client_token_respects_expiry(
+    client_credentials_case, token_requests, expired
+):
+  """A configured token is used while valid and replaced after expiry."""
+  handler, _, _ = client_credentials_case
+  handler.auth_credential.oauth2.access_token = 'configured'
+  handler.auth_credential.oauth2.expires_at = (
+      1 if expired else time.time() + 3600
+  )
+
+  result = await handler.prepare_auth_credentials()
+
+  assert result.auth_credential.http.credentials.token == (
+      'token-1' if expired else 'configured'
+  )
+  assert len(token_requests) == (1 if expired else 0)
+
+
+async def test_failed_client_exchange_does_not_request_user_consent(
+    client_credentials_case, monkeypatch
+):
+  """A failed server exchange is surfaced without falling back to a browser."""
+  handler, context, _ = client_credentials_case
+
+  def unavailable(*args, **kwargs):
+    raise ConnectionError('Token endpoint unavailable')
+
+  monkeypatch.setattr('requests.sessions.Session.send', unavailable)
+  with pytest.raises(
+      CredentialExchangeError, match='did not return an access token'
+  ):
+    await handler.prepare_auth_credentials()
+
+  assert not context.actions.requested_auth_configs
+  assert not context.state.to_dict()
+
+
+async def test_client_credentials_401_does_not_request_user_consent(
+    client_credentials_case, token_requests
+):
+  """A rejected token is discarded so a later call can obtain a new one."""
+  handler, context, _ = client_credentials_case
+  await handler.prepare_auth_credentials()
+
+  assert await handler.handle_unauthorized_error() == 'failed'
+  result = await handler.prepare_auth_credentials()
+  assert result.auth_credential.http.credentials.token == 'token-2'
+  assert not context.actions.requested_auth_configs
+
+
+@pytest.mark.parametrize('include_client_grant', [False, True])
+async def test_authorization_code_flow_still_requests_consent(
+    client_credentials_case, token_requests, include_client_grant
+):
+  """Authorization-code schemes keep their interactive flow, including mixed schemes."""
+  handler, context, _ = client_credentials_case
+  handler.auth_scheme.flows.authorizationCode = OAuthFlowAuthorizationCode(
+      authorizationUrl='https://auth.example.test/authorize',
+      tokenUrl='https://token.example.test/token',
+      scopes={'read': 'Read'},
+  )
+  if not include_client_grant:
+    handler.auth_scheme.flows.clientCredentials = None
+
+  assert (await handler.prepare_auth_credentials()).state == 'pending'
+  assert context.actions.requested_auth_configs
+  assert not token_requests
 
 
 # Test cases for OpenID Connect
