@@ -112,26 +112,55 @@ async def _env(tmp_path: Path):
 class TestReadFileTool:
   """Tests for ReadFileTool behavior."""
 
-  async def test_read_empty_file_without_line_range(
-      self, env: LocalEnvironment
+  @pytest.mark.parametrize('content', [b'', b'a\nb\n'])
+  @pytest.mark.parametrize(
+      'line_range',
+      [
+          {},
+          {'start_line': 1},
+          {'start_line': 0},
+          {'start_line': -1},
+          {'end_line': 0},
+          {'end_line': 5},
+          {'start_line': 1, 'end_line': 100},
+      ],
+  )
+  async def test_read_whole_file_with_equivalent_line_ranges(
+      self, env: LocalEnvironment, content: bytes, line_range: dict[str, int]
   ):
-    """Reading an existing empty file succeeds with empty content."""
+    """Equivalent whole-file ranges succeed for empty and nonempty files."""
+    await env.write_file('sample.txt', content)
+
+    result = await ReadFileTool(env).run_async(
+        args={'path': 'sample.txt', **line_range}, tool_context=None
+    )
+
+    expected = '' if not content else '     1\ta\n     2\tb\n'
+    assert result == {'status': 'ok', 'content': expected}
+
+  @pytest.mark.parametrize(
+      'line_range', [{'end_line': 1}, {'start_line': 1, 'end_line': 1}]
+  )
+  async def test_read_empty_file_through_first_line(
+      self, env: LocalEnvironment, line_range: dict[str, int]
+  ):
+    """An explicit first-line boundary also succeeds for an empty file."""
     await env.write_file('empty.txt', b'')
 
     result = await ReadFileTool(env).run_async(
-        args={'path': 'empty.txt'}, tool_context=None
+        args={'path': 'empty.txt', **line_range}, tool_context=None
     )
 
     assert result == {'status': 'ok', 'content': ''}
 
   @pytest.mark.parametrize(
       'line_range',
-      [{'start_line': 1}, {'end_line': 1}, {'start_line': 2}],
+      [{'start_line': 2}, {'start_line': 2, 'end_line': 100}, {'end_line': -1}],
   )
   async def test_read_empty_file_with_line_range_returns_error(
-      self, env: LocalEnvironment, line_range
+      self, env: LocalEnvironment, line_range: dict[str, int]
   ):
-    """An explicit line range still reports that an empty file has no lines."""
+    """Invalid ranges still report that an empty file has no lines."""
     await env.write_file('empty.txt', b'')
     start = line_range.get('start_line', 1)
 
