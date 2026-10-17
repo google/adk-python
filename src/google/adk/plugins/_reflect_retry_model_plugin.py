@@ -219,17 +219,16 @@ Formulate a new plan based on your analysis and try a corrected or different app
       llm_response: LlmResponse,
   ) -> LlmResponse | None:
     """Handles detected model errors by initiating retry logic."""
-    retry_response = await self._handle_model_retry(
+    # Without a retry this returns None, which leaves the error response
+    # unchanged. Returning the error response itself would stop the remaining
+    # plugins and the agent's after_model_callbacks.
+    return await self._handle_model_retry(
         callback_context=callback_context,
         llm_response=llm_response,
         error_type=llm_response.error_code,
         error_details=llm_response.error_message,
         finish_reason=llm_response.finish_reason,
     )
-    if retry_response is not None:
-      return retry_response
-
-    return llm_response
 
   async def _handle_model_retry(
       self,
