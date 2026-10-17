@@ -1893,6 +1893,40 @@ class TestMCPTool:
         }
     )
 
+  @pytest.mark.asyncio
+  async def test_run_async_impl_provider_survives_unusable_oauth_credential(
+      self,
+  ):
+    """An OAuth credential without a token must not replace provider auth."""
+    header_provider = Mock(
+        return_value={"Authorization": "Bearer provider-token"}
+    )
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        header_provider=header_provider,
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(access_token=None),
+    )
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+    tool_context = Mock(spec=ToolContext)
+    tool_context._invocation_context = Mock()
+
+    await tool._run_async_impl(
+        args={"param1": "test_value"},
+        tool_context=tool_context,
+        credential=credential,
+    )
+
+    self.mock_session_manager.create_session.assert_awaited_once_with(
+        headers={"Authorization": "Bearer provider-token"}
+    )
+
   def test_init_with_progress_callback(self):
     """Test initialization with progress_callback."""
 
