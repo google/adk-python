@@ -1252,6 +1252,69 @@ async def test_rerun_on_resume_node_continues_with_first_answer(
   assert capture.received_inputs == ['manual']
 
 
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_first_answer_node_not_rerun_by_later_resume(
+    request: pytest.FixtureRequest,
+    resumable: bool,
+):
+  """A node that continued with the first answer stays done on later resumes."""
+  side_effects = []
+
+  @node(rerun_on_resume=True)
+  def wait_for_either(ctx: Context):
+    for interrupt_id in ('approval', 'takeover'):
+      if interrupt_id in ctx.resume_inputs:
+        side_effects.append(interrupt_id)
+        yield Event(output=ctx.resume_inputs[interrupt_id])
+        return
+    yield RequestInput(interrupt_id='approval', message='Approve?')
+    yield RequestInput(interrupt_id='takeover', message='Take over?')
+
+  @node(rerun_on_resume=True)
+  def confirm(node_input: str, ctx: Context):
+    if 'confirm' in ctx.resume_inputs:
+      yield Event(output={'confirmed': node_input})
+      return
+    yield RequestInput(interrupt_id='confirm', message='Confirm?')
+
+  agent = Workflow(
+      name='test_first_answer_later_resume',
+      edges=[(START, wait_for_either, confirm)],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  inv_id = events1[0].invocation_id
+
+  # The approval interrupt is never answered.
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response('takeover', {'result': 'manual'})
+      ),
+      invocation_id=inv_id,
+  )
+  assert side_effects == ['takeover']
+
+  events3 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response('confirm', {'ok': True})
+      ),
+      invocation_id=inv_id,
+  )
+
+  assert side_effects == ['takeover']
+  outputs = [e.output for e in events3 if e.output is not None]
+  assert outputs[-1] == {'confirmed': 'manual'}
+
+
 # ---------------------------------------------------------------------------
 # unwrap_response tests
 # ---------------------------------------------------------------------------
