@@ -339,6 +339,11 @@ _STOP_REASON_MAPPING: dict[anthropic_types.StopReason, types.FinishReason] = {
     "refusal": types.FinishReason.SAFETY,
 }
 
+# Stop reasons that can cut a tool_use block off before its input is complete.
+_TRUNCATING_STOP_REASONS = frozenset(
+    {"max_tokens", "model_context_window_exceeded"}
+)
+
 
 def to_google_genai_finish_reason(
     anthropic_stop_reason: Optional[anthropic_types.StopReason],
@@ -356,7 +361,7 @@ def _truncated_tool_use_response(
     usage_metadata: types.GenerateContentResponseUsageMetadata,
     model_version: Optional[str],
 ) -> LlmResponse:
-  """Reports a response that max_tokens cut off inside a tool_use block.
+  """Reports a response that was cut off inside a tool_use block.
 
   The last tool call's input is incomplete, so no call from the response is
   returned: running one would act on arguments Claude never finished.
@@ -364,9 +369,9 @@ def _truncated_tool_use_response(
   return LlmResponse(
       error_code=types.FinishReason.MAX_TOKENS,
       error_message=(
-          "A tool call was cut off by the max_tokens limit before its"
-          " arguments were complete, so no tool call was returned. Increase"
-          " `max_output_tokens` and retry."
+          "A tool call was cut off by the max_tokens or context window limit"
+          " before its arguments were complete, so no tool call was returned."
+          " Increase `max_output_tokens` or shorten the context and retry."
       ),
       finish_reason=types.FinishReason.MAX_TOKENS,
       usage_metadata=usage_metadata,
@@ -875,7 +880,7 @@ def message_to_generate_content_response(
     )
 
   if (
-      message.stop_reason == "max_tokens"
+      message.stop_reason in _TRUNCATING_STOP_REASONS
       and message.content
       and message.content[-1].type == "tool_use"
   ):
@@ -1547,7 +1552,7 @@ class AnthropicLlm(BaseLlm):
         )
     )
     if (
-        stop_reason == "max_tokens"
+        stop_reason in _TRUNCATING_STOP_REASONS
         and all_indices
         and all_indices[-1] in tool_use_blocks
     ):

@@ -2848,8 +2848,13 @@ def test_message_to_generate_content_response_maps_finish_reason(
   assert response.finish_reason == expected_finish_reason
 
 
-def test_message_to_generate_content_response_reports_tool_use_cut_off_by_max_tokens():
-  """A tool_use cut off by max_tokens is reported, not returned as a call."""
+@pytest.mark.parametrize(
+    "stop_reason", ["max_tokens", "model_context_window_exceeded"]
+)
+def test_message_to_generate_content_response_reports_truncated_tool_use(
+    stop_reason,
+):
+  """A truncated tool_use is reported, not returned as a call."""
   message = anthropic_types.Message(
       id="msg_truncated",
       content=[
@@ -2865,7 +2870,7 @@ def test_message_to_generate_content_response_reports_tool_use_cut_off_by_max_to
       ],
       model="claude-sonnet-4-20250514",
       role="assistant",
-      stop_reason="max_tokens",
+      stop_reason=stop_reason,
       stop_sequence=None,
       type="message",
       usage=anthropic_types.Usage(
@@ -4395,9 +4400,12 @@ async def test_streaming_sets_finish_reason():
   assert final.finish_reason == types.FinishReason.MAX_TOKENS
 
 
+@pytest.mark.parametrize(
+    "stop_reason", ["max_tokens", "model_context_window_exceeded"]
+)
 @pytest.mark.asyncio
-async def test_streaming_tool_use_cut_off_by_max_tokens_is_reported():
-  """A streamed tool_use cut off by max_tokens ends in a MAX_TOKENS error."""
+async def test_streaming_truncated_tool_use_is_reported(stop_reason):
+  """A streamed tool_use cut off mid-input ends in a MAX_TOKENS error."""
   llm = AnthropicLlm(model="claude-sonnet-4-20250514")
   events = [
       MagicMock(
@@ -4424,7 +4432,7 @@ async def test_streaming_tool_use_cut_off_by_max_tokens_is_reported():
       ),
       MagicMock(
           type="message_delta",
-          delta=MagicMock(stop_reason="max_tokens"),
+          delta=MagicMock(stop_reason=stop_reason),
           usage=MagicMock(output_tokens=1),
       ),
       MagicMock(type="message_stop"),
