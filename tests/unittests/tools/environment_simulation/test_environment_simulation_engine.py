@@ -57,10 +57,21 @@ class TestEnvironmentSimulationEngineSimulate:
     result = await engine.simulate(mock_tool, {}, MagicMock())
     assert result is None
 
+  @pytest.mark.parametrize("response", [{}, {"injected": True}])
+  @pytest.mark.parametrize(
+      "mock_strategy_type",
+      [
+          MockStrategy.MOCK_STRATEGY_UNSPECIFIED,
+          MockStrategy.MOCK_STRATEGY_TOOL_SPEC,
+      ],
+  )
   async def test_injection_with_matching_args(
-      self, mock_create_strategy, mock_analyzer
+      self, mock_create_strategy, mock_analyzer, response, mock_strategy_type
   ):
     """Test that an injection is applied when match_args match."""
+    mock_create_strategy.return_value.mock = AsyncMock(
+        return_value={"mocked": True}
+    )
     config = EnvironmentSimulationConfig(
         tool_simulation_configs=[
             ToolSimulationConfig(
@@ -68,9 +79,10 @@ class TestEnvironmentSimulationEngineSimulate:
                 injection_configs=[
                     InjectionConfig(
                         match_args={"param": "value"},
-                        injected_response={"injected": True},
+                        injected_response=response,
                     )
                 ],
+                mock_strategy_type=mock_strategy_type,
             )
         ],
         simulation_model="test-model",
@@ -80,7 +92,8 @@ class TestEnvironmentSimulationEngineSimulate:
     mock_tool = MagicMock()
     mock_tool.name = "test_tool"
     result = await engine.simulate(mock_tool, {"param": "value"}, MagicMock())
-    assert result == {"injected": True}
+    assert result == response
+    mock_create_strategy.assert_not_called()
 
   async def test_injection_not_applied_with_mismatched_args(
       self, mock_create_strategy, mock_analyzer

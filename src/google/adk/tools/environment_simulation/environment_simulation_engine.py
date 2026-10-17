@@ -113,7 +113,7 @@ class EnvironmentSimulationEngine:
               ),
               "error_message": injection_config.injected_error.error_message,
           }
-        if injection_config.injected_response:
+        if injection_config.injected_response is not None:
           return injection_config.injected_response
 
     # If no injection was applied, fall back to the mock strategy.
