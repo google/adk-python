@@ -27,6 +27,8 @@ except ImportError:
   pass
 
 if TYPE_CHECKING:
+  from datetime import datetime
+
   from sqlalchemy.engine import Connection
   from sqlalchemy.engine import Engine
   from sqlalchemy.engine.reflection import Inspector
@@ -190,3 +192,24 @@ def get_db_schema_version(db_url: str) -> str:
     raise
   finally:
     engine.dispose()
+
+
+def v0_event_timestamp_to_epoch(value: datetime) -> float:
+  """Converts a v0 ``events.timestamp`` value to a POSIX timestamp.
+
+  Before 2.7.0, and on every 1.x release, ``v0.StorageEvent.from_event``
+  stored this column as a naive datetime in the writer's local time, so a naive
+  value is read as local time here. An aware value keeps its own tzinfo.
+
+  Both v0 migrations use this so they agree. It deliberately differs from
+  ``v0.StorageEvent.to_event``, which reads a naive value as UTC to match the
+  2.7.0+ writer; naive UTC rows written by 2.7.0 or later cannot be told apart
+  from naive local ones.
+
+  Args:
+    value: The stored ``events.timestamp`` value.
+
+  Returns:
+    The POSIX timestamp in seconds.
+  """
+  return value.timestamp()
