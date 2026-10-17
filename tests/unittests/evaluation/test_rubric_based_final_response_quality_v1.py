@@ -293,6 +293,41 @@ def test_format_auto_rater_prompt_with_app_details_empty_invocation_events(
   assert "I can only help with cooking." in prompt
 
 
+@pytest.mark.parametrize(
+    "agent_details",
+    [
+        {},
+        {
+            "other_agent": AgentDetails(
+                name="other_agent", instructions="Unrelated"
+            )
+        },
+    ],
+)
+def test_format_auto_rater_prompt_with_missing_agent_details(
+    evaluator: RubricBasedFinalResponseQualityV1Evaluator, agent_details
+):
+  """Callback responses remain evaluable without a captured model request."""
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="Show my account.")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Authentication required.")]
+      ),
+      app_details=AppDetails(agent_details=agent_details),
+      intermediate_data=InvocationEvents(
+          invocation_events=[InvocationEvent(author="my_agent", content=None)]
+      ),
+  )
+
+  prompt = evaluator.format_auto_rater_prompt(invocation, None)
+
+  assert "Authentication required." in prompt
+  assert "<developer_instructions>\n  \n  </developer_instructions>" in prompt
+  assert "Unrelated" not in prompt
+
+
 def test_format_auto_rater_prompt_with_app_details_no_intermediate_data(
     evaluator: RubricBasedFinalResponseQualityV1Evaluator,
 ):
