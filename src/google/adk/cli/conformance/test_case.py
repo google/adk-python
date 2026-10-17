@@ -59,6 +59,9 @@ class TestSpec(BaseModel):
   initial_state: dict[str, Any] = Field(default_factory=dict)
   """The initial state key-value pairs in the creation_session request."""
 
+  replay_tool_responses: dict[str, list[str]] = Field(default_factory=dict)
+  """Agent names and tools that use recorded responses during replay."""
+
   user_messages: list[UserMessage] = Field(default_factory=list)
   """Sequence of user messages to send to the agent during test execution."""
 
