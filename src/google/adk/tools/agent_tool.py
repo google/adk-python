@@ -229,6 +229,7 @@ class AgentTool(BaseTool):
   ) -> Any:
     from ..runners import Runner
     from ..sessions.in_memory_session_service import InMemorySessionService
+    from ..sessions.state import State
 
     if self.skip_summarization:
       tool_context.actions.skip_summarization = True
@@ -285,6 +286,14 @@ class AgentTool(BaseTool):
         k: v
         for k, v in tool_context.state.to_dict().items()
         if not k.startswith('_adk')  # Filter out adk internal states
+    }
+    # create_session drops temp: keys, since they are never stored. Hand them
+    # to the nested run as a state delta instead, the way run_async applies
+    # temp: state for one invocation.
+    temp_state = {
+        k: state_dict.pop(k)
+        for k in list(state_dict)
+        if k.startswith(State.TEMP_PREFIX)
     }
     session = await runner.session_service.create_session(
         app_name=child_app_name,
@@ -358,6 +367,7 @@ class AgentTool(BaseTool):
             user_id=session.user_id,
             session_id=session.id,
             new_message=content,
+            state_delta=temp_state or None,
             run_config=nested_run_config,
             abort_signal=abort_signal,
         )
