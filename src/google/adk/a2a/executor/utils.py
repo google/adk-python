@@ -13,7 +13,9 @@
 # limitations under the License.
 from __future__ import annotations
 
+import os
 from typing import Optional
+import uuid
 
 from a2a.server.agent_execution.context import RequestContext
 from a2a.server.events import Event as A2AEvent
@@ -26,6 +28,19 @@ from ...events.event import Event
 from ..converters.utils import _get_adk_metadata_key as _get_adk_metadata_key
 from .config import ExecuteInterceptor
 from .executor_context import ExecutorContext
+
+
+def failure_summary(error: Exception) -> tuple[str, str]:
+  """Returns an error id and the peer-facing text for an execution failure.
+
+  The exception text can carry paths, hostnames and credentials, so the peer
+  gets the id only. `ADK_A2A_DEBUG_ERRORS=1` appends the exception text.
+  """
+  error_id = uuid.uuid4().hex[:8]
+  text = f'Agent execution failed. (error_id: {error_id})'
+  if os.environ.get('ADK_A2A_DEBUG_ERRORS') == '1':
+    text = f'{text}: {type(error).__name__}: {error}'
+  return error_id, text
 
 
 async def _enqueue_canceled_task_event(
