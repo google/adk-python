@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import json
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -23,14 +24,17 @@ from a2a.server.events.event_queue import EventQueue
 from a2a.types import Message
 from a2a.types import Task
 from a2a.types import TaskArtifactUpdateEvent
+from a2a.types import TaskStatusUpdateEvent
 from google.adk.a2a import _compat
 from google.adk.a2a.agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from google.adk.a2a.converters.request_converter import AgentRunRequest
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutorConfig
 from google.adk.a2a.executor.config import ExecuteInterceptor
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.runners import RunConfig
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -132,6 +136,164 @@ class TestA2aAgentExecutor:
     """Helper to create async generator from items."""
     for item in items:
       yield item
+
+  @pytest.mark.parametrize(
+      "texts", [["answer"], ["progress", "answer"], ["answer", "answer"]]
+  )
+  @pytest.mark.parametrize("trailing_state_update", [False, True])
+  async def test_complete_text_is_sent_once(self, texts, trailing_state_update):
+    """Each complete message appears once, including identical messages."""
+
+    class TextAgent(BaseAgent):
+
+      async def _run_async_impl(self, ctx):
+        for text in texts:
+          yield Event(
+              author=self.name,
+              invocation_id=ctx.invocation_id,
+              content=Content(parts=[Part(text=text)]),
+              custom_metadata={"text": text},
+          )
+        if trailing_state_update:
+          yield Event(
+              author=self.name,
+              invocation_id=ctx.invocation_id,
+              actions=EventActions(state_delta={"done": True}),
+          )
+
+    runner = testing_utils.InMemoryRunner(
+        root_agent=TextAgent(name="remote")
+    ).runner
+    self.mock_context.call_context = None
+    self.mock_context.metadata = None
+
+    async def annotate_message(context, event, original_event):
+      if isinstance(event, TaskStatusUpdateEvent):
+        _compat.set_struct_metadata(event.status.message, {"source": "remote"})
+      return event
+
+    config = A2aAgentExecutorConfig(
+        execute_interceptors=[ExecuteInterceptor(after_event=annotate_message)]
+    )
+    async with runner:
+      await A2aAgentExecutor(runner=runner, config=config).execute(
+          self.mock_context, self.mock_event_queue
+      )
+
+    events = [
+        call.args[0]
+        for call in self.mock_event_queue.enqueue_event.call_args_list
+    ]
+    sent_texts = []
+    for event in events:
+      if isinstance(event, TaskStatusUpdateEvent):
+        if event.status.state == _compat.TS_SUBMITTED:
+          continue
+        message = _compat.normalize_message(event.status.message)
+        parts = message.parts if message else []
+      elif isinstance(event, TaskArtifactUpdateEvent):
+        parts = event.artifact.parts
+      else:
+        continue
+      sent_texts.extend(
+          _compat.part_text(part)
+          for part in parts
+          if _compat.is_text_part(part)
+      )
+    assert sent_texts == texts
+    assert isinstance(events[-2], TaskArtifactUpdateEvent)
+    assert events[-2].last_chunk
+    assert _get_meta_val(events[-2].artifact.metadata, "source") == "remote"
+    assert json.loads(
+        _get_meta_val(events[-2].metadata, "adk_custom_metadata")
+    ) == {"text": texts[-1]}
+    assert events[-1].status.state == _compat.TS_COMPLETED
+
+  @pytest.mark.parametrize("cancelled", [False, True])
+  async def test_text_before_interrupted_run_is_preserved(self, cancelled):
+    """An interrupted run still delivers its preceding text."""
+
+    class FailingAgent(BaseAgent):
+
+      async def _run_async_impl(self, ctx):
+        yield Event(
+            author=self.name,
+            invocation_id=ctx.invocation_id,
+            content=Content(parts=[Part(text="progress")]),
+        )
+        if cancelled:
+          raise asyncio.CancelledError()
+        raise ValueError("run failed")
+
+    runner = testing_utils.InMemoryRunner(
+        root_agent=FailingAgent(name="remote")
+    ).runner
+    self.mock_context.call_context = None
+    self.mock_context.metadata = None
+
+    async with runner:
+      executor = A2aAgentExecutor(runner=runner)
+      if cancelled:
+        with pytest.raises(asyncio.CancelledError):
+          await executor.execute(self.mock_context, self.mock_event_queue)
+      else:
+        await executor.execute(self.mock_context, self.mock_event_queue)
+
+    events = [
+        call.args[0]
+        for call in self.mock_event_queue.enqueue_event.call_args_list
+    ]
+    progress = events[-1] if cancelled else events[-2]
+    assert progress.status.state == _compat.TS_WORKING
+    assert _compat.part_text(progress.status.message.parts[0]) == "progress"
+    if cancelled:
+      assert all(
+          event.status.state != _compat.TS_FAILED
+          for event in events
+          if isinstance(event, TaskStatusUpdateEvent)
+      )
+    else:
+      assert events[-1].status.state == _compat.TS_FAILED
+    assert not any(
+        isinstance(event, TaskArtifactUpdateEvent) for event in events
+    )
+
+  async def test_partial_text_is_sent_before_the_next_event(self):
+    """Partial chunks remain available while the agent is still running."""
+    queue = self.mock_event_queue
+
+    class StreamingAgent(BaseAgent):
+
+      async def _run_async_impl(self, ctx):
+        yield Event(
+            author=self.name,
+            invocation_id=ctx.invocation_id,
+            content=Content(parts=[Part(text="part")]),
+            partial=True,
+        )
+        sent = queue.enqueue_event.call_args.args[0]
+        assert _compat.part_text(sent.status.message.parts[0]) == "part"
+        yield Event(
+            author=self.name,
+            invocation_id=ctx.invocation_id,
+            content=Content(parts=[Part(text="partial")]),
+        )
+
+    runner = testing_utils.InMemoryRunner(
+        root_agent=StreamingAgent(name="remote")
+    ).runner
+    self.mock_context.call_context = None
+    self.mock_context.metadata = None
+
+    async with runner:
+      await A2aAgentExecutor(runner=runner).execute(
+          self.mock_context, self.mock_event_queue
+      )
+
+    assert (
+        queue.enqueue_event.call_args.args[0].status.state
+        == _compat.TS_COMPLETED
+    )
 
   @pytest.mark.asyncio
   async def test_execute_success_new_task(self):
