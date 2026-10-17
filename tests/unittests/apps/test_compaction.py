@@ -33,6 +33,7 @@ from google.adk.flows.llm_flows import contents as _contents
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.tool_confirmation import ToolConfirmation
+from google.genai import errors as genai_errors
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
@@ -2362,15 +2363,23 @@ async def test_run_compaction_for_sliding_window_adds_summary_trace(
       summary_span.attributes['gen_ai.compaction.result_event_id']
       == 'compacted-event-id'
   )
+  assert 'error.type' not in summary_span.attributes
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'error, expected_error_type',
+    [
+        (RuntimeError('summarizer model is unavailable'), 'RuntimeError'),
+        (genai_errors.ClientError(429, {'message': 'quota exceeded'}), '429'),
+    ],
+)
 async def test_summarizer_failure_marks_the_compaction_span_as_error(
     span_exporter: InMemorySpanExporter,
+    error: Exception,
+    expected_error_type: str,
 ):
-  summarizer = _StubSummarizer(
-      None, error=RuntimeError('summarizer model is unavailable')
-  )
+  summarizer = _StubSummarizer(None, error=error)
   app = App(
       name='test',
       root_agent=Mock(spec=BaseAgent),
@@ -2406,7 +2415,8 @@ async def test_summarizer_failure_marks_the_compaction_span_as_error(
       if span.name == 'compact_events sliding_window'
   )
   assert summary_span.status.status_code == StatusCode.ERROR
-  assert summary_span.status.description == 'RuntimeError'
+  assert summary_span.status.description == type(error).__name__
+  assert summary_span.attributes['error.type'] == expected_error_type
 
 
 @pytest.mark.asyncio
