@@ -392,16 +392,20 @@ class BaseAgent(BaseNode, abc.ABC):
       node_input: Any,
   ) -> AsyncGenerator[Any, None]:
     """Runs the agent as a node."""
-    async for event in self.run_async(
-        parent_context=ctx.get_invocation_context()
-    ):
-      # Preserve author by setting it in context for NodeRunner
-      if event.author:
-        ctx.event_author = event.author
+    # Aclosing, so that closing the node early closes run_async with it: its
+    # finally blocks and after_agent_callback unwinding run before aclose()
+    # returns instead of being deferred to the asyncgen finalizer hook.
+    async with Aclosing(
+        self.run_async(parent_context=ctx.get_invocation_context())
+    ) as agen:
+      async for event in agen:
+        # Preserve author by setting it in context for NodeRunner
+        if event.author:
+          ctx.event_author = event.author
 
-      if not event.node_info.path and event.author == self.name:
-        event.node_info.path = ctx.node_path
-      yield event
+        if not event.node_info.path and event.author == self.name:
+          event.node_info.path = ctx.node_path
+        yield event
 
   @final
   async def run_live(

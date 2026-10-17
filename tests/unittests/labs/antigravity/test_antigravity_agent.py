@@ -1851,3 +1851,32 @@ async def test_absent_last_turn_usage_leaves_usage_metadata_none():
 
   assert len(events) == 1
   assert events[-1].usage_metadata is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('node_input', [None, 'Fix bug 42.'])
+async def test_run_impl_closes_run_async_when_consumer_stops_early(node_input):
+  cleaned_up = []
+
+  async def _run_async(self, parent_context):
+    try:
+      for index in range(3):
+        yield Event(
+            author=self.name,
+            invocation_id='inv',
+            content=genai_types.Content(
+                parts=[genai_types.Part(text=f'e{index}')]
+            ),
+        )
+    finally:
+      cleaned_up.append(True)
+
+  agent = AntigravityAgent(name='agy', config=_make_config())
+  ctx = await _node_ctx(agent=agent)
+
+  with patch.object(AntigravityAgent, 'run_async', _run_async):
+    agen = agent._run_impl(ctx=ctx, node_input=node_input)
+    await agen.__anext__()
+    await agen.aclose()
+
+  assert cleaned_up == [True]
