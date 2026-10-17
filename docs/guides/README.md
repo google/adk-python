@@ -25,7 +25,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [App](apps/app/index.md) - The top-level container binding a root agent to app-wide plugins and configuration.
 
 ### Artifacts
-* [BaseArtifactService](artifacts/artifact_service/index.md) - Storing binary payloads outside the conversation history, with versioning and user-scoped filenames.
+* [BaseArtifactService](artifacts/artifact_service/index.md) - Storing binary payloads outside the conversation history, with versioning, user-scoped filenames, and GCS URL generation.
 
 ### Auth
 * [AuthConfig and authenticated tools](auth/tool_auth/index.md) - Declaring the credentials a tool needs, and the pause-for-consent handshake.
