@@ -26,6 +26,7 @@ if TYPE_CHECKING:
   from .code_executor_context import CodeExecutorContext
   from .container_code_executor import ContainerCodeExecutor
   from .gke_code_executor import GkeCodeExecutor
+  from .smol_code_executor import SmolCodeExecutor
   from .vertex_ai_code_executor import VertexAiCodeExecutor
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -38,6 +39,7 @@ __all__ = [
     'VertexAiCodeExecutor',
     'ContainerCodeExecutor',
     'GkeCodeExecutor',
+    'SmolCodeExecutor',
     'AgentEngineSandboxCodeExecutor',
 ]
 
@@ -81,6 +83,10 @@ def __getattr__(name: str) -> object:
           'GkeCodeExecutor requires additional dependencies. '
           'Please install with: pip install "google-adk[extensions]"'
       ) from e
+  elif name == 'SmolCodeExecutor':
+    from .smol_code_executor import SmolCodeExecutor
+
+    return SmolCodeExecutor
   elif name == 'AgentEngineSandboxCodeExecutor':
     try:
       from .agent_engine_sandbox_code_executor import AgentEngineSandboxCodeExecutor
