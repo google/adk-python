@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from collections.abc import Iterator
 from dataclasses import dataclass
 from dataclasses import field
 import logging
@@ -29,6 +30,7 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 from pydantic import Field
+from typing_extensions import override
 
 from ..events._branch_path import _BranchPath
 from ..events._node_path_builder import _NodePathBuilder
@@ -215,6 +217,15 @@ class Workflow(BaseNode):
           " loop must not be entered without a compiled graph."
       )
     return self.graph
+
+  @override
+  def _iter_static_children(self) -> Iterator[BaseNode]:
+    """Yields direct static children (nodes in the compiled graph)."""
+    if self.graph is None:
+      return
+    for node in self.graph.nodes:
+      if node.name != START.name:
+        yield node
 
   # --- _run_impl: the orchestration loop ---
 

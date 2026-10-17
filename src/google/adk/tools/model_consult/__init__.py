@@ -17,9 +17,17 @@
 from ._context import ModelConsultContextConfig
 from ._force_escalation_plugin import ForceEscalationPlugin
 from ._model_consult_tool import ModelConsultTool
+from ._observability_plugin import ModelConsultObservabilityPlugin
+from ._observability_plugin import ModelConsultReport
+from ._observability_plugin import ModelConsultStats
+from ._observability_plugin import ModelConsultUsage
 
 __all__ = [
     'ForceEscalationPlugin',
     'ModelConsultContextConfig',
+    'ModelConsultObservabilityPlugin',
+    'ModelConsultReport',
+    'ModelConsultStats',
     'ModelConsultTool',
+    'ModelConsultUsage',
 ]
