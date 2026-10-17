@@ -57,6 +57,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.base_toolset import BaseToolset
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.workflow import BaseNode
 from google.adk.workflow import node
@@ -6743,6 +6744,86 @@ async def test_run_async_tool_error_in_root_parallel_agent_keeps_each_author():
     await _run_turn(runner, "s", "Run")
 
   assert await _kept_authors(runner, "fast_tool") == ["a", "b"]
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.parametrize("answer", ["new_message", "approve", "reject"])
+@pytest.mark.asyncio
+async def test_run_async_paused_single_turn_agent_returns_turn_to_delegator(
+    answer: str, resumable: bool
+):
+  """A single_turn agent paused on a confirmation does not take later turns."""
+  paid = []
+
+  def pay(amount: int) -> dict[str, int]:
+    """Pays an amount."""
+    paid.append(amount)
+    return {"paid": amount}
+
+  helper = LlmAgent(
+      name="helper",
+      mode="single_turn",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name="pay", args={"amount": 5}),
+              "Helper done",
+              "Helper chatting",
+          ]
+      ),
+      tools=[FunctionTool(pay, require_confirmation=True)],
+  )
+  root = LlmAgent(
+      name="root_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name="helper", args={"request": "pay 5"}
+              ),
+              "Root reply",
+              "Root thanks",
+          ]
+      ),
+      sub_agents=[helper],
+  )
+  runner = _abort_runner(root, resumable=resumable)
+
+  first, _ = await _run_turn(runner, "s", "Pay 5")
+  confirmation_id = next(
+      fc.id
+      for e in first
+      for fc in e.get_function_calls()
+      if fc.name == "adk_request_confirmation"
+  )
+  if answer == "new_message":
+    message = types.Content(role="user", parts=[types.Part(text="Weather?")])
+  else:
+    message = types.Content(
+        role="user",
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    id=confirmation_id,
+                    name="adk_request_confirmation",
+                    response={"confirmed": answer == "approve"},
+                )
+            )
+        ],
+    )
+  second = [
+      e
+      async for e in runner.run_async(
+          user_id=TEST_USER_ID, session_id="s", new_message=message
+      )
+  ]
+  third, _ = await _run_turn(runner, "s", "Thanks")
+
+  assert paid == ([5] if answer == "approve" else [])
+  assert _texts([e.content for e in second if e.author == "root_agent"]) == [
+      "Root reply"
+  ]
+  assert "Helper chatting" not in _texts([e.content for e in second + third])
+  assert _texts([e.content for e in third]) == ["Root thanks"]
+  assert {e.author for e in third if e.content} == {"root_agent"}
 
 
 if __name__ == "__main__":

@@ -29,6 +29,7 @@ from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.utils._agent_mode import AgentMode
 from google.genai import types
 import pytest
 
@@ -847,6 +848,64 @@ def test_find_agent_to_run_routes_task_agent_to_its_delegator(
   session = Session(id="s1", app_name="app", user_id="u1", events=events)
 
   assert _agent_router.find_agent_to_run(session, root) == helper
+
+
+@pytest.mark.parametrize("user_answers_call", [False, True])
+@pytest.mark.parametrize("delegator_name", ["root_agent", "helper"])
+@pytest.mark.parametrize(
+    "mode", ["single_turn", AgentMode.SINGLE_TURN], ids=["str", "enum"]
+)
+def test_find_agent_to_run_routes_single_turn_agent_to_its_delegator(
+    mode: str,
+    delegator_name: str,
+    user_answers_call: bool,
+):
+  """A turn left by a paused single_turn agent routes to its delegator."""
+  root = _MockLlmAgent("root_agent")
+  helper = _MockLlmAgent("helper", parent_agent=root)
+  root.sub_agents = [helper]
+  delegator = root if delegator_name == "root_agent" else helper
+  worker = _MockLlmAgent("worker", parent_agent=delegator)
+  worker.mode = mode
+  delegator.sub_agents = [*delegator.sub_agents, worker]
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="worker",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id="fc_1", name="adk_request_confirmation", args={}
+                      )
+                  )
+              ],
+          ),
+      )
+  ]
+  if user_answers_call:
+    events.append(
+        Event(
+            invocation_id="inv2",
+            author="user",
+            content=types.Content(
+                role="user",
+                parts=[
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            id="fc_1",
+                            name="adk_request_confirmation",
+                            response={"confirmed": True},
+                        )
+                    )
+                ],
+            ),
+        )
+    )
+  session = Session(id="s1", app_name="app", user_id="u1", events=events)
+
+  assert _agent_router.find_agent_to_run(session, root) == delegator
 
 
 def _transfer_events(
