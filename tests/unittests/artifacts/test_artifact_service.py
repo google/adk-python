@@ -1002,6 +1002,80 @@ async def test_list_keys_preserves_user_prefix(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_no_session_id_addresses_user_namespace(
+    service_type, artifact_service_factory
+):
+  """session_id=None reaches the user namespace, as the "user:" prefix does."""
+  artifact_service = artifact_service_factory(service_type)
+  app_name = "app0"
+  user_id = "user0"
+
+  version = await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=None,
+      filename="profile.txt",
+      artifact=types.Part.from_bytes(data=b"v0", mime_type="text/plain"),
+  )
+  assert version == 0
+
+  # A session reads it back through the "user:" prefix...
+  loaded = await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id="123",
+      filename="user:profile.txt",
+  )
+  assert loaded.inline_data.data == b"v0"
+
+  # ...and saving through the prefix adds a version to the same artifact.
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id="123",
+      filename="user:profile.txt",
+      artifact=types.Part.from_bytes(data=b"v1", mime_type="text/plain"),
+  )
+  assert await artifact_service.list_versions(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=None,
+      filename="profile.txt",
+  ) == [0, 1]
+  loaded = await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=None,
+      filename="profile.txt",
+  )
+  assert loaded.inline_data.data == b"v1"
+
+  await artifact_service.delete_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=None,
+      filename="profile.txt",
+  )
+  assert (
+      await artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id="123",
+          filename="user:profile.txt",
+      )
+      is None
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
 )
 async def test_list_artifact_versions_and_get_artifact_version(
