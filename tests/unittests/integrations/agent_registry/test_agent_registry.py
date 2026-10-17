@@ -276,6 +276,71 @@ class TestAgentRegistry:
       "google.adk.tools.mcp_tool.mcp_session_manager.MCPSessionManager.create_session",
       new_callable=AsyncMock,
   )
+  async def test_get_mcp_toolset_prefers_runtime_reference_uri(
+      self, mock_create_session, registry
+  ):
+    """destination ID should come from RuntimeReference.uri, not mcpServerId.
+
+    App Hub / Agent Platform Topology matches on the RuntimeReference URI
+    form, not the mcpServerId urn form, so the two must not be conflated.
+    """
+    # Arrange
+    mcp_server_name = "test-mcp-server"
+    mock_api_response = MagicMock()
+    mock_api_response.json.return_value = {
+        "displayName": "TestPrefix",
+        "mcpServerId": (
+            "urn:mcp:googleapis.com:projects:1234:locations:global:bigquery"
+        ),
+        "attributes": {
+            "agentregistry.googleapis.com/system/RuntimeReference": {
+                "uri": (
+                    "//agentregistry.googleapis.com/projects/1234/locations/"
+                    "global/services/bigquery"
+                ),
+            },
+        },
+        "interfaces": [{
+            "url": "https://mcp.com",
+            "protocolBinding": "JSONRPC",
+        }],
+    }
+    registry._session.get.return_value = mock_api_response
+
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    mock_session = AsyncMock(spec=ClientSession)
+    mock_create_session.return_value = mock_session
+
+    mock_session.list_tools.return_value = ListToolsResult(
+        tools=[
+            Tool(
+                name="tool1",
+                description="d1",
+                inputs={},
+                outputs={},
+                inputSchema={},
+            ),
+        ]
+    )
+
+    # Act
+    toolset = registry.get_mcp_toolset(mcp_server_name)
+    tools = await toolset.get_tools()
+
+    # Assert
+    assert len(tools) == 1
+    assert tools[0].custom_metadata.get(GCP_MCP_SERVER_DESTINATION_ID) == (
+        "//agentregistry.googleapis.com/projects/1234/locations/global/"
+        "services/bigquery"
+    )
+
+  @pytest.mark.asyncio
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager.MCPSessionManager.create_session",
+      new_callable=AsyncMock,
+  )
   async def test_get_mcp_toolset_handles_missing_destination_id(
       self, mock_create_session, registry
   ):
