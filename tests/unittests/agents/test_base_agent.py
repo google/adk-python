@@ -177,9 +177,8 @@ async def _create_parent_invocation_context(
 async def test_run_impl_closes_run_async_when_consumer_stops_early():
   """A consumer that stops early closes run_async before aclose() returns.
 
-  Leaving it to the asyncgen finalizer hook resumes the generator in a
-  different contextvars context, which breaks the OTel span teardown and the
-  after_agent_callback unwinding it is suspended in.
+  Otherwise run_async is left to the asyncgen finalizer hook, and its finally
+  blocks and after_agent_callback unwinding run at some later point.
   """
   cleaned_up = []
 

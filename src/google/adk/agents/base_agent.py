@@ -392,9 +392,9 @@ class BaseAgent(BaseNode, abc.ABC):
       node_input: Any,
   ) -> AsyncGenerator[Any, None]:
     """Runs the agent as a node."""
-    # Aclosing, so that a consumer that stops early closes run_async here
-    # rather than leaving it to the asyncgen finalizer hook, which resumes it
-    # in a different contextvars context and breaks its OTel span teardown.
+    # Aclosing, so that closing the node early closes run_async with it: its
+    # finally blocks and after_agent_callback unwinding run before aclose()
+    # returns instead of being deferred to the asyncgen finalizer hook.
     async with Aclosing(
         self.run_async(parent_context=ctx.get_invocation_context())
     ) as agen:
