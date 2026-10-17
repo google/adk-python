@@ -107,7 +107,7 @@ class TestContextCacheConfig:
 
     expected = (
         "ContextCacheConfig(cache_intervals=15, ttl=3600s, min_tokens=1024, "
-        "create_http_options=None)"
+        "create_http_options=None, static_cache_name=None)"
     )
     assert str(config) == expected
 
@@ -117,9 +117,16 @@ class TestContextCacheConfig:
 
     expected = (
         "ContextCacheConfig(cache_intervals=10, ttl=1800s, min_tokens=0, "
-        "create_http_options=None)"
+        "create_http_options=None, static_cache_name=None)"
     )
     assert str(config) == expected
+
+  def test_static_cache_name_configuration(self):
+    """Test configuring a static application-scoped cache name."""
+    config = ContextCacheConfig(
+        static_cache_name="cachedContents/enterprise-app-cache-123"
+    )
+    assert config.static_cache_name == "cachedContents/enterprise-app-cache-123"
 
   def test_pydantic_model_validation(self):
     """Test that Pydantic model validation works correctly."""
