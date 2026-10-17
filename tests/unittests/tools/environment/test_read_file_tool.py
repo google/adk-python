@@ -112,6 +112,39 @@ async def _env(tmp_path: Path):
 class TestReadFileTool:
   """Tests for ReadFileTool behavior."""
 
+  async def test_read_empty_file_without_line_range(
+      self, env: LocalEnvironment
+  ):
+    """Reading an existing empty file succeeds with empty content."""
+    await env.write_file('empty.txt', b'')
+
+    result = await ReadFileTool(env).run_async(
+        args={'path': 'empty.txt'}, tool_context=None
+    )
+
+    assert result == {'status': 'ok', 'content': ''}
+
+  @pytest.mark.parametrize(
+      'line_range',
+      [{'start_line': 1}, {'end_line': 1}, {'start_line': 2}],
+  )
+  async def test_read_empty_file_with_line_range_returns_error(
+      self, env: LocalEnvironment, line_range
+  ):
+    """An explicit line range still reports that an empty file has no lines."""
+    await env.write_file('empty.txt', b'')
+    start = line_range.get('start_line', 1)
+
+    result = await ReadFileTool(env).run_async(
+        args={'path': 'empty.txt', **line_range}, tool_context=None
+    )
+
+    assert result == {
+        'status': 'error',
+        'error': f'`start_line` {start} exceeds file length (0 lines).',
+        'total_lines': 0,
+    }
+
   @pytest.mark.asyncio
   async def test_read_file_with_line_range_returns_selected_lines(
       self, env: LocalEnvironment

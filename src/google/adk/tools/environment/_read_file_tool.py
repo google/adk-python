@@ -116,6 +116,8 @@ class ReadFileTool(BaseTool):
     try:
       # TODO: Avoid loading the entire file into memory to prevent OOM on large files.
       data_bytes = await self._environment.read_file(path)
+      if not data_bytes and start_line is None and end_line is None:
+        return {'status': 'ok', 'content': ''}
       # Slice data_bytes by line boundaries before decoding.
       lines_bytes = data_bytes.splitlines(keepends=True)
       total = len(lines_bytes)
