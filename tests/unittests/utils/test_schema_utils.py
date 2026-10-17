@@ -14,6 +14,7 @@
 
 """Tests for _schema_utils module."""
 
+from datetime import date
 import functools
 import inspect
 import signal
@@ -177,6 +178,18 @@ class TestValidateSchema:
     json_text = '{"name": "test", "optional_field": null}'
     result = validate_schema(ModelWithOptional, json_text)
     assert result == {"name": "test"}
+
+  @pytest.mark.parametrize("as_list", [False, True])
+  def test_structured_output_preserves_json_date(self, as_list):
+    class DatedOutput(BaseModel):
+      day: date
+      note: str | None = None
+
+    schema = list[DatedOutput] if as_list else DatedOutput
+    payload = '[{"day": "2026-10-17"}]' if as_list else '{"day": "2026-10-17"}'
+    expected = [{"day": "2026-10-17"}] if as_list else {"day": "2026-10-17"}
+
+    assert validate_schema(schema, payload) == expected
 
   def test_list_of_basemodel_schema(self):
     """Test validation with a list[BaseModel] schema."""

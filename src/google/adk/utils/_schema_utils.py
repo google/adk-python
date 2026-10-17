@@ -249,12 +249,16 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
 
   if is_basemodel_schema(schema):
     # For regular BaseModel, use model_validate_json
-    return schema.model_validate_json(json_text).model_dump(exclude_none=True)
+    return schema.model_validate_json(json_text).model_dump(
+        mode="json", exclude_none=True
+    )
   elif is_list_of_basemodel(schema):
     # For list[BaseModel], use TypeAdapter to validate
     type_adapter = TypeAdapter(schema)
     validated: list[Any] = type_adapter.validate_json(json_text)
-    return [item.model_dump(exclude_none=True) for item in validated]
+    return [
+        item.model_dump(mode="json", exclude_none=True) for item in validated
+    ]
   else:
     # For other schema types (list[str], dict, Schema, etc.),
     return _json_utils.safe_json_loads(json_text, context="schema value")
