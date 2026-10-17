@@ -104,18 +104,15 @@ def extract_single_invocation_info(
 class LocalEvalSamplerConfig(BaseModel):
   """Contains configuration options required by the LocalEvalServiceInterface."""
 
-  eval_config: EvalConfig = Field(  # type: ignore[call-overload]
-      required=True,
+  eval_config: EvalConfig = Field(
       description="The configuration for the evaluation.",
   )
 
-  app_name: str = Field(  # type: ignore[call-overload]
-      required=True,
+  app_name: str = Field(
       description="The app name to use for evaluation.",
   )
 
-  train_eval_set: str = Field(  # type: ignore[call-overload]
-      required=True,
+  train_eval_set: str = Field(
       description="The name of the eval set to use for optimization.",
   )
 
