@@ -572,7 +572,12 @@ class StreamingResponseAggregator:
     if not finish_reason and candidate:
       finish_reason = candidate.finish_reason
 
-    error_code = None
+    # Typed as Optional[str] to match LlmResponse.error_code. FinishReason and
+    # BlockedReason both subclass str, so both assignments below type-check.
+    # Without the annotation, mypy infers a Literal[FinishReason, ...] from the
+    # first branch and rejects the BlockedReason assignment, and that message's
+    # member order can flip when .mypy_cache is reused across CI runs.
+    error_code: Optional[str] = None
     error_message = None
     if finish_reason and finish_reason != types.FinishReason.STOP:
       error_code = finish_reason
