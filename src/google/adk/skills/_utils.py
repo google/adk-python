@@ -101,6 +101,16 @@ def _load_dir(directory: pathlib.Path) -> dict[str, Union[str, bytes]]:
     for file_path in directory.rglob("*"):
       if "__pycache__" in file_path.parts:
         continue
+      # A skill is free to ship a symlink inside references/, assets/, or
+      # scripts/ -- nothing in the SKILL.md format forbids it. rglob("*")
+      # does not recurse into a symlinked *directory* (that is pathlib's
+      # own default), but a symlink that is itself a *file* entry is still
+      # yielded here, and is_file()/read_text()/read_bytes() all follow it
+      # transparently. Skipping it here, before any of those calls, is what
+      # keeps a skill from reading a file that lives outside its own
+      # directory under an ordinary-looking resource name.
+      if file_path.is_symlink():
+        continue
       if file_path.is_file():
         relative_path = file_path.relative_to(directory)
         try:
