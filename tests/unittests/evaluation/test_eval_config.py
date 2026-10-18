@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from google.adk.evaluation.eval_config import _DEFAULT_EFFICIENCY_METRICS
 from google.adk.evaluation.eval_config import _DEFAULT_EVAL_CONFIG
+from google.adk.evaluation.eval_config import append_default_efficiency_metrics
 from google.adk.evaluation.eval_config import EvalConfig
 from google.adk.evaluation.eval_config import get_eval_metrics_from_config
 from google.adk.evaluation.eval_config import get_evaluation_criteria_or_default
@@ -194,6 +195,46 @@ def test_named_efficiency_metric_is_not_duplicated():
   names = [m.metric_name for m in eval_metrics]
   for metric_name in _DEFAULT_EFFICIENCY_METRICS:
     assert metric_name in names
+
+
+def test_append_default_efficiency_metrics_adds_them_to_a_plain_list():
+  """The Dev UI hands over a list, not a config, and must get them too."""
+  requested = [
+      EvalMetric(metric_name="tool_trajectory_avg_score", threshold=1.0)
+  ]
+
+  eval_metrics = append_default_efficiency_metrics(requested)
+
+  assert [m.metric_name for m in eval_metrics] == [
+      "tool_trajectory_avg_score",
+      *_DEFAULT_EFFICIENCY_METRICS,
+  ]
+  # Informational: appended without a threshold, so they never gate pass/fail.
+  appended = eval_metrics[1:]
+  assert all(m.threshold is None for m in appended)
+  assert all(m.criterion is None for m in appended)
+
+
+def test_append_default_efficiency_metrics_keeps_the_caller_entry():
+  """A metric the caller named is left alone, not replaced or duplicated.
+
+  The caller's entry is what carries the threshold that the metric later
+  rejects, so replacing it here would swallow the error.
+  """
+  caller_entry = EvalMetric(metric_name="token_usage_v1", threshold=1.0)
+
+  eval_metrics = append_default_efficiency_metrics([caller_entry])
+
+  assert [m.metric_name for m in eval_metrics].count("token_usage_v1") == 1
+  assert eval_metrics[0] is caller_entry
+
+
+def test_append_default_efficiency_metrics_does_not_mutate_its_argument():
+  requested = [EvalMetric(metric_name="safety_v1", threshold=0.5)]
+
+  append_default_efficiency_metrics(requested)
+
+  assert [m.metric_name for m in requested] == ["safety_v1"]
 
 
 def test_eval_metric_dump_preserves_concrete_criterion_fields():

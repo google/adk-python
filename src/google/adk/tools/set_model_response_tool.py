@@ -20,6 +20,7 @@ import inspect
 import types as typing_types
 from typing import Any
 from typing import cast
+from typing import Final
 from typing import get_args
 from typing import get_origin
 from typing import Optional
@@ -112,6 +113,9 @@ def _apply_nested_descriptions(prop: types.Schema, annotation: Any) -> None:
         _apply_nested_descriptions(prop, arg)
 
 
+_SET_MODEL_RESPONSE_TOOL_NAME: Final[str] = 'set_model_response'
+
+
 class SetModelResponseTool(BaseTool):
   """Internal tool used for output schema workaround.
 
@@ -119,6 +123,8 @@ class SetModelResponseTool(BaseTool):
   is configured alongside other tools. The model should use this tool to
   provide its final structured response instead of outputting text directly.
   """
+
+  NAME: Final[str] = _SET_MODEL_RESPONSE_TOOL_NAME
 
   def __init__(self, output_schema: SchemaType):
     """Initialize the tool with the expected output schema.
@@ -213,9 +219,10 @@ class SetModelResponseTool(BaseTool):
     setattr(set_model_response, '__signature__', new_sig)
 
     self.func = set_model_response
+    self.func.__name__ = self.NAME
 
     super().__init__(
-        name=self.func.__name__,
+        name=self.NAME,
         description=self.func.__doc__.strip() if self.func.__doc__ else '',
     )
 

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -35,6 +36,9 @@ from google.adk.a2a.converters.event_converter import convert_event_to_a2a_event
 from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import _internal_metadata
+from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
+from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
 from google.adk.events.event import Event
 from google.genai import types as genai_types
 import pytest
@@ -238,6 +242,43 @@ class TestEventConverter:
     # Check if error_code is in the result - it should be there since we set it
     if f"{ADK_METADATA_KEY_PREFIX}error_code" in result:
       assert result[f"{ADK_METADATA_KEY_PREFIX}error_code"] == "ERROR_001"
+
+  def test_get_context_metadata_omits_internal_custom_metadata(self):
+    """ADK-internal custom_metadata keys are not sent to remote agents."""
+    self.mock_event.custom_metadata = {
+        "keep": 1,
+        INTERNAL_METADATA_PREFIX + "stamp": "x",
+    }
+
+    with patch.object(_internal_metadata.logger, "debug") as debug:
+      result = _get_context_metadata(
+          self.mock_event, self.mock_invocation_context
+      )
+
+    debug.assert_not_called()
+
+    assert json.loads(result[f"{ADK_METADATA_KEY_PREFIX}custom_metadata"]) == {
+        "keep": 1
+    }
+
+  def test_get_context_metadata_drops_only_internal_custom_metadata(self):
+    self.mock_event.custom_metadata = {RESTORED_EVENT_KEY: True}
+
+    result = _get_context_metadata(
+        self.mock_event, self.mock_invocation_context
+    )
+
+    assert f"{ADK_METADATA_KEY_PREFIX}custom_metadata" not in result
+
+  def test_get_context_metadata_passes_stubbed_custom_metadata_through(self):
+    """A Mock event whose custom_metadata is not a dict does not break."""
+    self.mock_event.custom_metadata = Mock()
+
+    result = _get_context_metadata(
+        self.mock_event, self.mock_invocation_context
+    )
+
+    assert f"{ADK_METADATA_KEY_PREFIX}custom_metadata" in result
 
   def test_get_context_metadata_none_event(self):
     """Test context metadata creation with None event."""
@@ -738,6 +779,39 @@ class TestA2AToEventConverters:
       called_message = mock_convert_message.call_args[0][0]
       assert called_message.role == _compat.ROLE_AGENT
       assert called_message.parts == [artifact_part]
+
+  def test_convert_a2a_task_to_event_keeps_every_artifact(self):
+    """Every artifact on the task reaches the event, in task order.
+
+    A remote agent returns one artifact per non-partial event it produced,
+    so reading only the last artifact drops its earlier output.
+    """
+    first_part = _compat.make_text_part("first artifact")
+    second_part = _compat.make_text_part("second artifact")
+    third_part = _compat.make_text_part("third artifact")
+
+    mock_artifacts = []
+    for part in (first_part, second_part, third_part):
+      mock_artifact = Mock(spec=Artifact)
+      mock_artifact.parts = [part]
+      mock_artifacts.append(mock_artifact)
+
+    mock_task = Mock(spec=Task)
+    mock_task.artifacts = mock_artifacts
+    mock_task.status = None
+    mock_task.history = []
+
+    with patch(
+        "google.adk.a2a.converters.event_converter.convert_a2a_message_to_event"
+    ) as mock_convert_message:
+      mock_convert_message.return_value = Mock(spec=Event)
+
+      convert_a2a_task_to_event(
+          mock_task, "test-author", self.mock_invocation_context
+      )
+
+      called_message = mock_convert_message.call_args[0][0]
+      assert called_message.parts == [first_part, second_part, third_part]
 
   def test_convert_a2a_task_to_event_with_status_message(self):
     """Test convert_a2a_task_to_event with status message (no artifacts)."""

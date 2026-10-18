@@ -17,8 +17,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from collections.abc import Coroutine
-import inspect
 import logging
 from typing import Any
 from typing import Optional
@@ -27,15 +27,16 @@ from typing import TypeVar
 
 from google.genai import types
 
+from ....agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from ....events.event import Event
 from ....events.event_actions import EventActions
 from ....telemetry.tracing import trace_merged_tool_calls
 from ....telemetry.tracing import tracer
 from ....tools.base_tool import BaseTool
 from ....tools.tool_confirmation import ToolConfirmation
+from ....workflow._errors import NodeInterruptedError
 from ..core._utils import as_llm_agent as _as_llm_agent
 from ._caller import _execute_single_prepared_call_async
-from ._caller import _execute_single_prepared_call_live
 from ._caller import _prepare_single
 from ._caller import _PreparedFunctionCall
 
@@ -186,86 +187,30 @@ def _start_execute_task(
   return prepared_call.contextvars_snapshot.run(asyncio.create_task, coro)
 
 
+def _cancel_unfinished_tasks(tasks: list[asyncio.Task[Any]]) -> None:
+  """Cancels tasks that are still running and not already cancelling."""
+  for t in tasks:
+    if not t.done() and not t.cancelling():
+      t.cancel()
+
+
 async def _gather_or_cancel(tasks: list[asyncio.Task[_T]]) -> list[_T]:
-  """Awaits every task, cancelling the rest as soon as one of them fails."""
+  """Awaits every task; cancels and awaits the rest if one fails or the caller is cancelled or closed."""
+  gatherer = asyncio.gather(*tasks)
   try:
-    return list(await asyncio.gather(*tasks))
-  except Exception:
-    for t in tasks:
-      if not t.done():
-        t.cancel()
+    return list(await gatherer)
+  except GeneratorExit:
+    gatherer.cancel()
+    # Retrieve the exception so the abandoned gather future does not log
+    # "Future exception was never retrieved" at GC.
+    gatherer.add_done_callback(
+        lambda fut: fut.exception() if not fut.cancelled() else None
+    )
+    raise
+  except BaseException:
+    _cancel_unfinished_tasks(tasks)
     await asyncio.gather(*tasks, return_exceptions=True)
     raise
-
-
-def _is_streaming_tool(tool: BaseTool | None) -> bool:
-  """Checks if a tool is a streaming tool."""
-  if tool is None:
-    return False
-  return hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func)
-
-
-def _is_non_blocking_tool(tool: BaseTool | None) -> bool:
-  """Checks if a tool is non-blocking in live mode."""
-  if tool is None:
-    return False
-  if tool.behavior is not None:
-    return tool.behavior is types.Behavior.NON_BLOCKING
-  return tool.response_scheduling is not None
-
-
-async def _launch_non_blocking_call_live(
-    invocation_context: InvocationContext,
-    function_call: types.FunctionCall,
-    tool: BaseTool,
-    tools_dict: dict[str, BaseTool],
-    agent: LlmAgent,
-    active_tools_lock: asyncio.Lock,
-    live_session_id: str | None = None,
-) -> None:
-  """Runs a non-blocking live tool's prepare and execute in the background."""
-  task_key = f'{tool.name}_{function_call.id}'
-
-  async def _background_task() -> None:
-    try:
-      prepared_call = await _prepare_single(
-          invocation_context, function_call, tools_dict, agent
-      )
-      function_response_event = await _execute_single_prepared_call_live(
-          invocation_context, prepared_call, agent, active_tools_lock
-      )
-      if function_response_event:
-        if live_session_id is not None:
-          function_response_event.live_session_id = live_session_id
-        if invocation_context._event_queue is not None:
-          await invocation_context._enqueue_event(function_response_event)
-        elif invocation_context.session_service and invocation_context.session:
-          await invocation_context.session_service.append_event(
-              session=invocation_context.session,
-              event=function_response_event,
-          )
-        if (
-            invocation_context.live_request_queue
-            and function_response_event.content
-        ):
-          invocation_context.live_request_queue.send_content(
-              function_response_event.content
-          )
-    except Exception:
-      logger.exception('Error running non-blocking tool %s', tool.name)
-    finally:
-      async with active_tools_lock:
-        if (
-            invocation_context.active_non_blocking_tool_tasks
-            and task_key in invocation_context.active_non_blocking_tool_tasks
-        ):
-          del invocation_context.active_non_blocking_tool_tasks[task_key]
-
-  task = asyncio.create_task(_background_task())
-  async with active_tools_lock:
-    if invocation_context.active_non_blocking_tool_tasks is None:
-      invocation_context.active_non_blocking_tool_tasks = {}
-    invocation_context.active_non_blocking_tool_tasks[task_key] = task
 
 
 async def _prepare_function_calls(
@@ -302,33 +247,49 @@ async def _prepare_function_calls(
   return await _gather_or_cancel(tasks)
 
 
-async def _execute_prepared_function_calls_async(
+_KEPT_FUNCTION_RESPONSE_EVENT_ATTR = '_adk_kept_function_response_event'
+
+
+async def _execute_prepared_function_calls(
     invocation_context: InvocationContext,
     prepared_calls: list[_PreparedFunctionCall],
-    agent: LlmAgent,
+    *,
+    call_executor: Callable[
+        [_PreparedFunctionCall], Coroutine[Any, Any, Optional[Event]]
+    ],
+    live_session_id: Optional[str] = None,
 ) -> Optional[Event]:
-  """Runs the prepared calls in parallel and merges their response events."""
+  """Runs prepared calls in parallel and merges their response events."""
   if not prepared_calls:
     return None
 
   # Create tasks for parallel execution
   tasks = [
-      _start_execute_task(
-          prepared_call,
-          _execute_single_prepared_call_async(
-              invocation_context, prepared_call, agent
-          ),
-      )
+      _start_execute_task(prepared_call, call_executor(prepared_call))
       for prepared_call in prepared_calls
   ]
 
   # Wait for all tasks to complete
-  maybe_function_response_events = await _gather_or_cancel(tasks)
+  try:
+    maybe_function_response_events = await _gather_or_cancel(tasks)
+  except (Exception, NodeInterruptedError) as e:
+    # A call raised and its unfinished siblings were cancelled. Calls that had
+    # already finished may have had side effects, so keep their real results
+    # for the postprocessor to yield before the error unwinds the agent.
+    if (
+        kept_event := _keep_completed_responses(invocation_context, tasks)
+    ) is not None:
+      setattr(e, _KEPT_FUNCTION_RESPONSE_EVENT_ATTR, kept_event)
+    raise
 
   # Filter out None results
   function_response_events = [
       event for event in maybe_function_response_events if event is not None
   ]
+
+  if live_session_id is not None:
+    for event in function_response_events:
+      event.live_session_id = live_session_id
 
   if not function_response_events:
     return None
@@ -338,50 +299,86 @@ async def _execute_prepared_function_calls_async(
   )
 
 
-async def _execute_prepared_function_calls_live(
+def _keep_completed_responses(
     invocation_context: InvocationContext,
-    function_call_event: Event,
+    tasks: list[asyncio.Task[Optional[Event]]],
+) -> Optional[Event]:
+  """Keeps the responses of calls that finished before their batch ended early.
+
+  Only plain tool results are kept: a call that was cancelled, raised or
+  returned no event gets nothing. They are merged as a complete batch would
+  be and returned for the flow postprocessor to yield before re-raising. Live
+  mode and aborted invocations are skipped.
+  """
+  if (
+      invocation_context.live_request_queue is not None
+      or invocation_context.is_aborted
+  ):
+    return None
+  finished = [
+      t.result()
+      for t in tasks
+      if t.done() and not t.cancelled() and t.exception() is None
+  ]
+  completed = [
+      event
+      for event in finished
+      if event is not None and _is_plain_result(event)
+  ]
+  if not completed:
+    return None
+  return _merge_and_trace_function_response_events(
+      invocation_context, completed
+  )
+
+
+def _pop_kept_function_response_event(
+    error: BaseException,
+) -> Optional[Event]:
+  """Pops and returns any kept function response event attached to `error`."""
+  kept_event = getattr(error, _KEPT_FUNCTION_RESPONSE_EVENT_ATTR, None)
+  if isinstance(kept_event, Event):
+    delattr(error, _KEPT_FUNCTION_RESPONSE_EVENT_ATTR)
+    return kept_event
+  return None
+
+
+def _is_plain_result(event: Event) -> bool:
+  """True if the event is a tool result with no control-flow actions.
+
+  Besides the tool's state and artifact deltas, any action (a transfer, an
+  escalation, a confirmation or credential request whose tool has not run)
+  is an instruction the failed step never carried out, so it is not kept.
+  finish_task sets no action and is detected by name.
+  """
+  actions = event.actions.model_copy(
+      update={
+          'state_delta': {},
+          'artifact_delta': {},
+          'skip_summarization': None,
+          'render_ui_widgets': None,
+      }
+  )
+  if actions != EventActions():
+    return False
+  return not any(
+      response.name == FINISH_TASK_TOOL_NAME
+      for response in event.get_function_responses()
+  )
+
+
+async def _execute_prepared_function_calls_async(
+    invocation_context: InvocationContext,
     prepared_calls: list[_PreparedFunctionCall],
     agent: LlmAgent,
-    active_tools_lock: Optional[asyncio.Lock] = None,
-) -> Event | None:
-  """Runs the prepared live calls in parallel and merges their events."""
-  if not prepared_calls:
-    return None
-
-  if active_tools_lock is None:
-    active_tools_lock = asyncio.Lock()
-
-  # Create tasks for parallel execution
-  tasks = [
-      _start_execute_task(
-          prepared_call,
-          _execute_single_prepared_call_live(
-              invocation_context,
-              prepared_call,
-              agent,
-              active_tools_lock,
-          ),
-      )
-      for prepared_call in prepared_calls
-  ]
-
-  # Wait for all tasks to complete
-  maybe_function_response_events = await _gather_or_cancel(tasks)
-
-  # Filter out None results
-  function_response_events = [
-      event for event in maybe_function_response_events if event is not None
-  ]
-
-  for event in function_response_events:
-    event.live_session_id = function_call_event.live_session_id
-
-  if not function_response_events:
-    return None
-
-  return _merge_and_trace_function_response_events(
-      invocation_context, function_response_events
+) -> Optional[Event]:
+  """Runs the prepared calls in parallel and merges their response events."""
+  return await _execute_prepared_function_calls(
+      invocation_context,
+      prepared_calls,
+      call_executor=lambda prepared_call: _execute_single_prepared_call_async(
+          invocation_context, prepared_call, agent
+      ),
   )
 
 
@@ -413,42 +410,10 @@ async def handle_function_calls_live(
     tools_dict: dict[str, BaseTool],
 ) -> Event | None:
   """Calls the functions and returns the function response event."""
-  agent = _as_llm_agent(invocation_context)
-  active_tools_lock = asyncio.Lock()
+  from . import _live_caller
 
-  blocking_calls: list[types.FunctionCall] = []
-  for function_call in function_call_event.get_function_calls():
-    tool = tools_dict.get(function_call.name) if function_call.name else None
-    if not _is_streaming_tool(tool) and _is_non_blocking_tool(tool):
-      assert tool is not None
-      await _launch_non_blocking_call_live(
-          invocation_context=invocation_context,
-          function_call=function_call,
-          tool=tool,
-          tools_dict=tools_dict,
-          agent=agent,
-          active_tools_lock=active_tools_lock,
-          live_session_id=function_call_event.live_session_id,
-      )
-    else:
-      blocking_calls.append(function_call)
-
-  if not blocking_calls:
-    return None
-
-  # TODO: thread a ToolConfirmation dict through here so an approved tool can
-  # be re-executed in live mode. No confirmation ever reaches this path, so a
-  # confirmation-gated tool can only ever be refused, never resumed.
-  prepared_calls = await _prepare_function_calls(
-      invocation_context,
-      blocking_calls,
-      tools_dict,
-      agent,
-  )
-  return await _execute_prepared_function_calls_live(
-      invocation_context,
-      function_call_event,
-      prepared_calls,
-      agent,
-      active_tools_lock,
+  return await _live_caller.handle_function_calls_live(
+      invocation_context=invocation_context,
+      function_call_event=function_call_event,
+      tools_dict=tools_dict,
   )

@@ -185,7 +185,7 @@
               "gen_ai.operation.name": "execute_tool",
               "gen_ai.tool.description": "Echoes back its input.",
               "gen_ai.tool.name": "some_tool",
-              "gen_ai.tool.type": "MCPTool",
+              "gen_ai.tool.type": "McpTool",
               "gen_ai.agent.name": "some_root_agent",
               "gcp.vertex.agent.llm_request": "{}",
               "gcp.vertex.agent.llm_response": "{}",
@@ -465,7 +465,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent",
           "gen_ai.tool.name": "some_tool",
-          "gen_ai.tool.type": "MCPTool"
+          "gen_ai.tool.type": "McpTool"
         },
         "value": "PRESENT"
       }

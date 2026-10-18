@@ -44,6 +44,8 @@ A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL = 'function_call'
 A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE = 'function_response'
 A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT = 'code_execution_result'
 A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = 'executable_code'
+A2A_DATA_PART_METADATA_TYPE_TOOL_CALL = 'tool_call'
+A2A_DATA_PART_METADATA_TYPE_TOOL_RESPONSE = 'tool_response'
 A2A_DATA_PART_TEXT_MIME_TYPE = 'text/plain'
 A2A_DATA_PART_START_TAG = b'<a2a_datapart_json>'
 A2A_DATA_PART_END_TAG = b'</a2a_datapart_json>'
@@ -174,18 +176,19 @@ def convert_a2a_part_to_genai_part(
     meta_key = _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
     part_type = meta.get(meta_key) if meta else None
 
+    thought_signature = None
+    thought_sig_key = _get_adk_metadata_key('thought_signature')
+    if meta and thought_sig_key in meta:
+      sig_value = meta[thought_sig_key]
+      if isinstance(sig_value, bytes):
+        thought_signature = sig_value
+      elif isinstance(sig_value, str):
+        try:
+          thought_signature = base64.b64decode(sig_value)
+        except Exception:
+          logger.warning('Failed to decode thought_signature: %s', sig_value)
+
     if part_type == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL:
-      thought_signature = None
-      thought_sig_key = _get_adk_metadata_key('thought_signature')
-      if meta and thought_sig_key in meta:
-        sig_value = meta[thought_sig_key]
-        if isinstance(sig_value, bytes):
-          thought_signature = sig_value
-        elif isinstance(sig_value, str):
-          try:
-            thought_signature = base64.b64decode(sig_value)
-          except Exception:
-            logger.warning('Failed to decode thought_signature: %s', sig_value)
       return genai_types.Part(
           function_call=genai_types.FunctionCall.model_validate(
               data_dict, by_alias=True
@@ -199,6 +202,7 @@ def convert_a2a_part_to_genai_part(
           function_response=genai_types.FunctionResponse.model_validate(
               data_dict, by_alias=True
           ),
+          thought_signature=thought_signature,
           part_metadata=genai_metadata(meta),
       )
 
@@ -207,6 +211,7 @@ def convert_a2a_part_to_genai_part(
           code_execution_result=genai_types.CodeExecutionResult.model_validate(
               data_dict, by_alias=True
           ),
+          thought_signature=thought_signature,
           part_metadata=genai_metadata(meta),
       )
 
@@ -215,6 +220,25 @@ def convert_a2a_part_to_genai_part(
           executable_code=genai_types.ExecutableCode.model_validate(
               data_dict, by_alias=True
           ),
+          thought_signature=thought_signature,
+          part_metadata=genai_metadata(meta),
+      )
+
+    if part_type == A2A_DATA_PART_METADATA_TYPE_TOOL_CALL:
+      return genai_types.Part(
+          tool_call=genai_types.ToolCall.model_validate(
+              data_dict, by_alias=True
+          ),
+          thought_signature=thought_signature,
+          part_metadata=genai_metadata(meta),
+      )
+
+    if part_type == A2A_DATA_PART_METADATA_TYPE_TOOL_RESPONSE:
+      return genai_types.Part(
+          tool_response=genai_types.ToolResponse.model_validate(
+              data_dict, by_alias=True
+          ),
+          thought_signature=thought_signature,
           part_metadata=genai_metadata(meta),
       )
 
@@ -320,11 +344,13 @@ def convert_genai_part_to_a2a_part(
           A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT,
       ),
       ('executable_code', A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE),
+      ('tool_call', A2A_DATA_PART_METADATA_TYPE_TOOL_CALL),
+      ('tool_response', A2A_DATA_PART_METADATA_TYPE_TOOL_RESPONSE),
   ]:
     val = getattr(part, attr, None)
     if val is not None:
       meta = {_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY): type_key}
-      if attr == 'function_call' and part.thought_signature is not None:
+      if part.thought_signature is not None:
         meta[_get_adk_metadata_key('thought_signature')] = base64.b64encode(
             part.thought_signature
         ).decode('utf-8')

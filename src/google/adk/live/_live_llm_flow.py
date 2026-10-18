@@ -96,23 +96,26 @@ async def send_to_model(
 ) -> None:
   """Sends data to model."""
   run_config = _require_run_config(invocation_context)
-  audio_cache_manager = flow.audio_cache_manager
+  realtime_cache_manager = flow._realtime_cache_manager
   while True:
     live_request_queue = invocation_context.live_request_queue
     assert live_request_queue is not None
     live_request = await live_request_queue.get()
     # duplicate the live_request to all the active streams
+    active_streams = [
+        active.input_stream
+        for active in (
+            invocation_context._active_background_tools or {}
+        ).values()
+        if active.input_stream is not None
+    ]
     logger.debug(
-        'Sending live request %s to active streams: %s',
+        'Sending live request %s to %d active stream(s)',
         live_request,
-        invocation_context.active_streaming_tools,
+        len(active_streams),
     )
-    if invocation_context.active_streaming_tools:
-      for active_streaming_tool in (
-          invocation_context.active_streaming_tools
-      ).values():
-        if active_streaming_tool.stream:
-          active_streaming_tool.stream.send(live_request)
+    for stream in active_streams:
+      stream.send(live_request)
     # Yield to event loop for cooperative multitasking
     await asyncio.sleep(0)
 
@@ -152,15 +155,8 @@ async def send_to_model(
           types.LiveClientRealtimeInput(audio_stream_end=True)  # type: ignore[arg-type]
       )
     elif live_request.blob:
-      # Cache input audio chunks before flushing. The cache concatenates
-      # every chunk into one audio file, so other blobs (e.g. video frames)
-      # must stay out of it.
-      if (
-          run_config.save_live_blob
-          and live_request.blob.mime_type
-          and live_request.blob.mime_type.startswith('audio/')
-      ):
-        audio_cache_manager.cache_audio(
+      if run_config.save_live_blob:
+        realtime_cache_manager.cache_blob(
             invocation_context, live_request.blob, cache_type='input'
         )
 
@@ -178,7 +174,7 @@ async def send_to_model(
       # Persist user text content to session (similar to non-live mode)
       # Skip function responses - they are already handled separately
       if not is_function_response and not content.role:
-        content.role = 'user'
+        content = content.model_copy(update={'role': 'user'})
       if not is_function_response and not live_request.partial:
         user_content_event = Event(
             id=Event.new_id(),
@@ -209,9 +205,7 @@ async def send_to_model(
         ):
           await invocation_context._enqueue_event(blocked_event)
           continue
-      await llm_connection._send_content(
-          live_request.content, partial=live_request.partial
-      )
+      await llm_connection._send_content(content, partial=live_request.partial)
 
 
 async def receive_from_model(
@@ -222,7 +216,7 @@ async def receive_from_model(
 ) -> AsyncGenerator[Event, None]:
   """Receive data from model and process events using BaseLlmConnection."""
   run_config = _require_run_config(invocation_context)
-  audio_cache_manager = flow.audio_cache_manager
+  realtime_cache_manager = flow._realtime_cache_manager
 
   def get_author_for_event(llm_response: LlmResponse) -> str:
     """Get the author of the event.
@@ -314,25 +308,15 @@ async def receive_from_model(
             )
         ) as postprocess_agen:
           async for event in postprocess_agen:
-            # Cache output audio chunks from model responses
-            # TODO: support video data
             if (
                 run_config.save_live_blob
                 and event.content
                 and event.content.parts
             ):
               for part in event.content.parts:
-                if (
-                    part.inline_data
-                    and part.inline_data.mime_type
-                    and part.inline_data.mime_type.startswith('audio/')
-                ):
-                  audio_blob = types.Blob(
-                      data=part.inline_data.data,
-                      mime_type=part.inline_data.mime_type,
-                  )
-                  audio_cache_manager.cache_audio(
-                      invocation_context, audio_blob, cache_type='output'
+                if part.inline_data:
+                  realtime_cache_manager.cache_blob(
+                      invocation_context, part.inline_data, cache_type='output'
                   )
 
             yield event

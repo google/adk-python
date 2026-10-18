@@ -212,7 +212,7 @@ inference runs use.
 | `session_service` | `BaseSessionService \| None` | `None` | Sessions for the inference runs. Defaults to in-memory. |
 | `artifact_service` | `BaseArtifactService \| None` | `None` | Artifacts for the inference runs. Defaults to in-memory. |
 | `eval_set_results_manager` | `EvalSetResultsManager \| None` | `None` | Persists results. Nothing is written when omitted. |
-| `session_id_supplier` | `Callable[[], str]` | random `___eval___session___*` | Generates the session id for a case that does not pin one. |
+| `session_id_supplier` | `Callable[[], str]` | random `adk-eval-session-*` | Generates the session id for a case that does not pin one. |
 | `user_simulator_provider` | `UserSimulatorProvider \| None` | `None` | Builds the simulated user for a case that has a `conversation_scenario`. Pass one built from your `EvalConfig.user_simulator_config` to use those settings. |
 | `memory_service` | `BaseMemoryService \| None` | `None` | Memory service for the inference runs. |
 | `app` | `App \| None` | `None` | Keyword-only. Run inference through an `App` rather than a bare agent. |

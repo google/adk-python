@@ -14,14 +14,18 @@
 
 from __future__ import annotations
 
+import logging
 from unittest import mock
 
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.sessions.session import Session
 from google.adk.tools.bigtable import BigtableCredentialsConfig
 from google.adk.tools.bigtable import metadata_tool
 from google.adk.tools.bigtable import query_tool
+from google.adk.tools.bigtable.bigtable_toolset import _BigtableQueryTool
 from google.adk.tools.bigtable.bigtable_toolset import BigtableParameterizedViewTool
 from google.adk.tools.bigtable.bigtable_toolset import BigtableToolset
 from google.adk.tools.bigtable.bigtable_toolset import DEFAULT_BIGTABLE_TOOL_NAME_PREFIX
@@ -179,6 +183,99 @@ async def test_bigtable_toolset_query_tool_wrapped_custom_mapping():
   tool = parameterized_tools[0]
   assert isinstance(tool, BigtableParameterizedViewTool)
   assert tool.view_parameter_names == ["user_id"]
+
+
+@pytest.mark.asyncio
+async def test_bigtable_toolset_parameterized_view_replaces_query_tool():
+  """Test that the parameterized tool replaces the plain query tool."""
+  credentials_config = BigtableCredentialsConfig(
+      client_id="abc", client_secret="def"
+  )
+  toolset = BigtableToolset(
+      credentials_config=credentials_config,
+      view_parameter_names=["user_id"],
+  )
+
+  tools = await toolset.get_tools()
+
+  assert len(tools) == 7
+  expected_tool_names = set([
+      "list_instances",
+      "get_instance_info",
+      "list_tables",
+      "get_table_info",
+      "execute_sql_parameterized",
+      "list_clusters",
+      "get_cluster_info",
+  ])
+  actual_tool_names = set([tool.name for tool in tools])
+  assert actual_tool_names == expected_tool_names
+
+
+@pytest.mark.parametrize("json_schema", [True, False])
+@pytest.mark.asyncio
+async def test_bigtable_toolset_plain_query_tool_hides_view_parameters(
+    json_schema,
+):
+  """Test that the plain query tool does not declare _view_parameters."""
+  credentials_config = BigtableCredentialsConfig(
+      client_id="abc", client_secret="def"
+  )
+  toolset = BigtableToolset(credentials_config=credentials_config)
+
+  tools = await toolset.get_tools()
+  tool = next(tool for tool in tools if tool.name == "execute_sql")
+
+  with temporary_feature_override(
+      FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, json_schema
+  ):
+    declaration = tool._get_declaration()
+
+  properties = (
+      declaration.parameters_json_schema["properties"]
+      if declaration.parameters_json_schema
+      else declaration.parameters.properties
+  )
+  assert "_view_parameters" not in properties
+
+
+@pytest.mark.asyncio
+async def test_bigtable_plain_query_tool_drops_model_view_parameters():
+  """Test that the plain query tool strips a model-supplied _view_parameters."""
+
+  async def mock_execute_sql(query: str, _view_parameters=None):
+    return {"status": "SUCCESS", "_view_parameters": _view_parameters}
+
+  with mock.patch.object(query_tool, "execute_sql", mock_execute_sql):
+    tool = _BigtableQueryTool()
+
+  res = await tool._run_async_with_credential(
+      credentials=mock.create_autospec(Credentials, instance=True),
+      tool_settings=BigtableToolSettings(),
+      args={"query": "SELECT 1", "_view_parameters": {"user_id": "attacker"}},
+      tool_context=mock.create_autospec(ToolContext, instance=True),
+  )
+
+  assert res == {"status": "SUCCESS", "_view_parameters": None}
+
+
+@pytest.mark.asyncio
+async def test_bigtable_toolset_warns_when_tool_filter_drops_query_tool(caplog):
+  """Test that filtering on execute_sql with view parameters warns."""
+  credentials_config = BigtableCredentialsConfig(
+      client_id="abc", client_secret="def"
+  )
+  toolset = BigtableToolset(
+      credentials_config=credentials_config,
+      tool_filter=["execute_sql"],
+      view_parameter_names=["user_id"],
+  )
+
+  with caplog.at_level(logging.WARNING):
+    tools = await toolset.get_tools()
+
+  assert tools == []
+  assert "execute_sql_parameterized" in caplog.text
 
 
 @pytest.mark.asyncio

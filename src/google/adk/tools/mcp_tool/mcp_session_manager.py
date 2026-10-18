@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+import contextlib
 from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
 import contextvars
@@ -55,6 +56,13 @@ except ImportError:
     pass
 
   _AIO_SUPPORTED = False
+
+try:
+  import aiohttp.helpers
+  import yarl
+except ImportError:
+  aiohttp = None  # type: ignore[assignment]
+  yarl = None  # type: ignore[assignment]
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -664,12 +672,21 @@ class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
       # prevent aiohttp from forcibly closing the stream after sse_read_timeout.
       timeout_val = 0.0
 
+    proxy = proxy_auth = None
+    if aiohttp is not None and yarl is not None:
+      with contextlib.suppress(LookupError):
+        proxy, proxy_auth = await asyncio.to_thread(
+            aiohttp.helpers.get_env_proxy_for_url,
+            yarl.URL(str(request.url)),
+        )
     auth_response: Any = await self._auth_session.request(
         method=request.method,
         url=str(request.url),
         data=content if content else None,
         headers=headers_dict,
         timeout=timeout_val,
+        proxy=proxy,
+        proxy_auth=proxy_auth,
     )
 
     # google-auth-aio uses aiohttp internally, which automatically handles
@@ -993,28 +1010,36 @@ class MCPSessionManager:
         hasattr(self._connection_params, 'headers')
         and self._connection_params.headers
     ):
-      base_headers = self._connection_params.headers.copy()
+      base_headers = {
+          key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
+          for key, value in self._connection_params.headers.items()
+      }
 
     if additional_headers:
-      base_headers.update(additional_headers)
+      base_headers.update({
+          key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
+          for key, value in additional_headers.items()
+      })
 
-    return merge_tracking_headers({
-        key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
-        for key, value in base_headers.items()
-    })
+    return merge_tracking_headers(base_headers)
 
   def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
 
-    Reads two attributes ADK does not own: the SDK holds the transport streams
-    on the session privately, and each stream reports its own closed flag. A
-    session that lacks either one reads as connected rather than raising,
-    because a release is free to restructure both away and this probe is not
-    the only thing standing between a dead session and a caller.
+    Reads attributes ADK does not own, and where they hang moved between SDK
+    majors. On 1.x the session holds the transport streams and each stream
+    reports its own closed flag. On 2.x the transport moved behind a
+    dispatcher, which reports one closed flag of its own and need not hold
+    streams at all, so a session holding no streams is read there instead. A
+    session offering neither reads as connected rather than raising, because
+    a release is free to restructure them away and this probe is not the only
+    thing standing between a dead session and a caller.
 
     `create_session` pairs this with `SessionContext._is_task_alive`, which
-    ADK owns and which catches strictly more: a crashed transport can leave
-    the streams open while the task behind them is already dead. That pairing
+    ADK owns. Neither check subsumes the other: a crashed transport can
+    leave the streams open while the task behind them is already dead, and a
+    transport that closes under a live session leaves that task parked on
+    its close event, where only these flags report the death. That pairing
     runs under `_MCP_GRACEFUL_ERROR_HANDLING`, which is on by default. The
     kill switch drops it and leaves this probe on its own.
 
@@ -1027,6 +1052,16 @@ class MCPSessionManager:
     Returns:
         True if the session is known to be disconnected, False otherwise.
     """
+    if not hasattr(session, '_read_stream'):
+      dispatcher = getattr(session, '_dispatcher', None)
+      if not hasattr(dispatcher, '_closed'):
+        logger.debug(
+            'MCP session %s offers no closed flag to read, on itself or on a'
+            ' dispatcher; reading it as connected.',
+            type(session).__name__,
+        )
+        return False
+      return bool(getattr(dispatcher, '_closed', False))
     read_stream = getattr(session, '_read_stream', None)
     write_stream = getattr(session, '_write_stream', None)
     return bool(

@@ -21,12 +21,15 @@ from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.tools._node_tool import NodeTool
+from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.adk.workflow import JoinNode
 from google.adk.workflow import node
 from google.adk.workflow import START
@@ -35,8 +38,6 @@ from google.adk.workflow._function_node import FunctionNode
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
-from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
@@ -153,7 +154,7 @@ async def test_workflow_as_tool_hitl_resume(request: pytest.FixtureRequest):
   args = request_input_event.content.parts[0].function_call.args
   assert args['message'] == 'What is your name and age?'
 
-  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  [interrupt_id] = extract_event_interrupt_ids(request_input_event)
   invocation_id = request_input_event.invocation_id
 
   # Turn 2: Resume with the user input resolving the interrupt.
@@ -251,7 +252,7 @@ async def test_workflow_as_tool_hitl_resume_non_resumable_app(
   args = request_input_event.content.parts[0].function_call.args
   assert args['message'] == 'What is your name and age?'
 
-  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  [interrupt_id] = extract_event_interrupt_ids(request_input_event)
   invocation_id = request_input_event.invocation_id
 
   # Turn 2: Resume with the user input resolving the interrupt.
@@ -265,6 +266,18 @@ async def test_workflow_as_tool_hitl_resume_non_resumable_app(
 
   # Verify the tool workflow finished executing, returned the output,
   # and the parent agent LLM produced its final response.
+  tool_responses = [
+      part.function_response.response
+      for event in events2
+      if event.content and event.content.parts
+      for part in event.content.parts
+      if (
+          part.function_response
+          and part.function_response.name == 'collect_user_info_tool'
+      )
+  ]
+  assert tool_responses == [{'result': 'User Alice is 25 years old.'}]
+
   text_responses = [
       event.content.parts[0].text
       for event in events2
@@ -631,7 +644,7 @@ async def test_workflow_tool_with_dynamic_node_hitl_resume(
       events1, REQUEST_INPUT_FUNCTION_CALL_NAME
   )
   assert request_input_event is not None
-  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  [interrupt_id] = extract_event_interrupt_ids(request_input_event)
   invocation_id = request_input_event.invocation_id
 
   # Turn 2: Resume with the user input response.
@@ -747,7 +760,7 @@ async def test_workflow_as_tool_nested_hitl(request: pytest.FixtureRequest):
   args = request_input_event.content.parts[0].function_call.args
   assert args['message'] == 'Give me some input:'
 
-  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  [interrupt_id] = extract_event_interrupt_ids(request_input_event)
   invocation_id = request_input_event.invocation_id
 
   # Turn 2: Resume
@@ -868,7 +881,7 @@ async def test_workflow_as_tool_nested_multi_hitl(
       events1, REQUEST_INPUT_FUNCTION_CALL_NAME
   )
   assert request_input_event1 is not None
-  interrupt_id1 = get_request_input_interrupt_ids(request_input_event1)[0]
+  [interrupt_id1] = extract_event_interrupt_ids(request_input_event1)
   invocation_id = request_input_event1.invocation_id
 
   # Turn 2: Resume first HITL -> triggers second HITL
@@ -882,7 +895,7 @@ async def test_workflow_as_tool_nested_multi_hitl(
       events2, REQUEST_INPUT_FUNCTION_CALL_NAME
   )
   assert request_input_event2 is not None
-  interrupt_id2 = get_request_input_interrupt_ids(request_input_event2)[0]
+  [interrupt_id2] = extract_event_interrupt_ids(request_input_event2)
   assert interrupt_id1 != interrupt_id2
 
   # Turn 3: Resume second HITL -> finishes
@@ -1585,3 +1598,1122 @@ async def test_node_tool_synchronous_result_answers_the_call(
       if part.text
   ]
   assert texts == ['done']
+
+
+def _function_responses(events: list[Event]) -> list[Any]:
+  return [
+      part.function_response.response
+      for event in events
+      if event.content and event.content.parts
+      for part in event.content.parts
+      if part.function_response
+  ]
+
+
+class _TypedInput(BaseModel):
+  x: int
+
+
+@pytest.mark.asyncio
+async def test_node_tool_validation_error_returns_error_dict(
+    request: pytest.FixtureRequest,
+):
+  """Invalid LLM args yield an {'error': ...} response, like FunctionTool."""
+
+  def typed(node_input: _TypedInput) -> int:
+    return node_input.x
+
+  typed_node = FunctionNode(func=typed)
+  typed_node.input_schema = _TypedInput
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='typed', args={'x': 'abc'}),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[typed_node],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  responses = _function_responses(events)
+  assert len(responses) == 1
+  assert set(responses[0]) == {'error'}
+  assert 'argument validation errors' in responses[0]['error']
+
+
+@pytest.mark.asyncio
+async def test_node_tool_function_node_validation_error_returns_error_dict(
+    request: pytest.FixtureRequest,
+):
+  """FunctionNode tool returns {'error': ...} when arguments fail validation."""
+
+  def calculate(x: int) -> int:
+    return x
+
+  calc_node = FunctionNode(func=calculate)
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='calculate', args={'x': 'abc'}
+              ),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[calc_node],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  responses = _function_responses(events)
+  assert len(responses) == 1
+  assert set(responses[0]) == {'error'}
+  assert 'argument validation errors' in responses[0]['error']
+
+
+@pytest.mark.asyncio
+async def test_node_tool_failure_reaches_on_tool_error_callback(
+    request: pytest.FixtureRequest,
+):
+  """A failing node surfaces its original error to on_tool_error callbacks."""
+  seen_errors: list[Exception] = []
+
+  def boom(x: int) -> int:
+    raise ValueError(f'kaboom {x}')
+
+  def on_tool_error(tool, args, tool_context, error):
+    seen_errors.append(error)
+    return {'handled': True}
+
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='boom', args={'x': 1}),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[FunctionNode(func=boom)],
+      on_tool_error_callback=on_tool_error,
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  assert len(seen_errors) == 1
+  assert isinstance(seen_errors[0], ValueError)
+  assert str(seen_errors[0]) == 'kaboom 1'
+  assert _function_responses(events) == [{'handled': True}]
+
+
+@pytest.mark.asyncio
+async def test_node_tool_unhandled_failure_propagates(
+    request: pytest.FixtureRequest,
+):
+  """Without on_tool_error, a node failure propagates like a FunctionTool's."""
+
+  def boom(x: int) -> int:
+    raise ValueError(f'kaboom {x}')
+
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='boom', args={'x': 1}),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[FunctionNode(func=boom)],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  with pytest.raises(ValueError, match='kaboom 1'):
+    await runner.run_async(testing_utils.get_user_content('go'))
+
+
+@pytest.mark.asyncio
+async def test_node_tool_function_node_none_arg_for_non_optional_returns_error_dict(
+    request: pytest.FixtureRequest,
+):
+  """Passing None to a non-optional parameter returns validation error dict."""
+
+  def calculate(x: int) -> int:
+    return x
+
+  calc_node = FunctionNode(func=calculate)
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='calculate', args={'x': None}),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[calc_node],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  responses = _function_responses(events)
+  assert len(responses) == 1
+  assert set(responses[0]) == {'error'}
+  assert 'argument validation errors' in responses[0]['error']
+
+
+@pytest.mark.asyncio
+async def test_node_tool_function_node_missing_node_input_param_returns_error_dict(
+    request: pytest.FixtureRequest,
+):
+  """Missing a required node_input parameter returns validation error dict."""
+
+  def process(node_input: str) -> str:
+    return node_input
+
+  proc_node = FunctionNode(func=process)
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='process', args={}),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[proc_node],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  responses = _function_responses(events)
+  assert len(responses) == 1
+  assert set(responses[0]) == {'error'}
+  assert 'argument validation errors' in responses[0]['error']
+  assert 'Missing value for parameter "node_input"' in responses[0]['error']
+
+
+@pytest.mark.asyncio
+async def test_node_tool_non_dict_input_schema_happy_path(
+    request: pytest.FixtureRequest,
+):
+  """FunctionNode tool with non-dict input_schema successfully coerces node_input."""
+
+  def typed(node_input: _TypedInput) -> int:
+    return node_input.x * 2
+
+  typed_node = FunctionNode(func=typed)
+  typed_node.input_schema = _TypedInput
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='typed', args={'x': 21}),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[typed_node],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  responses = _function_responses(events)
+  assert responses == [{'result': 42}]
+
+
+@pytest.mark.asyncio
+async def test_node_tool_skip_summarization_returns_workflow_output_directly(
+    request: pytest.FixtureRequest,
+):
+  """Setting ctx.actions.skip_summarization=True inside a workflow node tool emits output directly as final text without a second LLM turn."""
+
+  def run_parallel_report(node_input: GreetRequest, ctx: Context) -> str:
+    ctx.actions.skip_summarization = True
+    return f'Exact workflow report for {node_input.request}'
+
+  sub_workflow = Workflow(
+      name='report_workflow',
+      description='Generates an exact report.',
+      input_schema=GreetRequest,
+      edges=[(START, run_parallel_report)],
+  )
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name='report_workflow',
+              args={'request': 'Project X'},
+          ),
+          types.Part.from_text(
+              text='Should never be reached because summarization is skipped.'
+          ),
+      ]
+  )
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=mock_model,
+      tools=[sub_workflow],
+  )
+
+  app = App(name=request.function.__name__, root_agent=parent_agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content('Report X'))
+
+  parent_final_events = [
+      e for e in events if e.author == 'parent_agent' and e.is_final_response()
+  ]
+  assert len(parent_final_events) == 1
+  last_event = events[-1]
+  assert last_event == parent_final_events[0]
+  assert last_event.actions.skip_summarization is True
+  assert any(p.function_response for p in last_event.content.parts)
+  text_parts = [p.text for p in last_event.content.parts if p.text]
+  assert text_parts == ['Exact workflow report for Project X']
+  assert len(mock_model.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_function_node_tool_skip_summarization_returns_output_directly(
+    request: pytest.FixtureRequest,
+):
+  """Setting ctx.actions.skip_summarization=True inside a @node tool emits output directly as final text."""
+
+  @node
+  def generate_report(project: str, ctx: Context) -> str:
+    """Generates a report for a project."""
+    ctx.actions.skip_summarization = True
+    return f'Report for {project}: Ready'
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name='generate_report',
+              args={'project': 'Apollo'},
+          ),
+          types.Part.from_text(
+              text='Should never be reached because summarization is skipped.'
+          ),
+      ]
+  )
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=mock_model,
+      tools=[generate_report],
+  )
+
+  app = App(name=request.function.__name__, root_agent=parent_agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(
+      testing_utils.get_user_content('Report Apollo')
+  )
+
+  last_event = events[-1]
+  assert last_event.author == 'parent_agent'
+  assert last_event.is_final_response()
+  assert last_event.actions.skip_summarization is True
+  text_parts = [p.text for p in last_event.content.parts if p.text]
+  assert text_parts == ['Report for Apollo: Ready']
+  assert len(mock_model.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_single_turn_workflow_agent_keeps_tool_response_after_tool_messages(
+    request: pytest.FixtureRequest,
+):
+  """A single_turn agent in a Workflow keeps its turn when a NodeTool publishes messages."""
+
+  @node
+  async def analyze(query: str):
+    yield Event(message=f'Starting {query}...')
+    yield Event(message=f'Finished {query}.')
+    yield {'rows': 42}
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name='analyze', args={'query': 'sales'}
+          ),
+          types.Part.from_text(text='All done.'),
+      ]
+  )
+  worker = LlmAgent(
+      name='worker', model=mock_model, tools=[NodeTool(node=analyze)]
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=Workflow(name='wf', edges=[(START, worker)]),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async(testing_utils.get_user_content('run sales'))
+
+  assert len(mock_model.requests) == 2
+  second_req = mock_model.requests[1].contents
+  parts = [p for c in second_req for p in c.parts or []]
+  assert any(p.text and 'run sales' in p.text for p in parts)
+  assert any(
+      p.function_call and p.function_call.name == 'analyze' for p in parts
+  )
+  assert any(
+      p.function_response and p.function_response.response == {'rows': 42}
+      for p in parts
+  )
+  assert '] said:' not in str(second_req)
+  assert 'Finished sales' not in str(second_req)
+
+
+@pytest.mark.asyncio
+async def test_root_agent_excludes_fan_out_messages_from_node_tool_workflow(
+    request: pytest.FixtureRequest,
+):
+  """Messages from fan-out branches inside a NodeTool workflow stay out of the caller's next turn."""
+
+  @node
+  async def branch_a():
+    yield Event(message='Branch A progress')
+    yield {'a': 1}
+
+  @node
+  async def branch_b():
+    yield Event(message='Branch B progress')
+    yield {'b': 2}
+
+  def combine(node_input: dict[str, Any]):
+    yield Event(
+        output=node_input['branch_a']['a'] + node_input['branch_b']['b']
+    )
+
+  join = JoinNode(name='join')
+  sub_wf = Workflow(
+      name='sub_wf',
+      edges=[
+          (START, branch_a),
+          (START, branch_b),
+          (branch_a, join),
+          (branch_b, join),
+          (join, combine),
+      ],
+  )
+  sub_wf.input_schema = DummyRequest
+  fan_out_tool = NodeTool(
+      node=sub_wf, name='fan_out_tool', description='Runs two branches.'
+  )
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name='fan_out_tool', args={}),
+          types.Part.from_text(text='Done.'),
+          types.Part.from_text(text='Still done.'),
+      ]
+  )
+  parent = LlmAgent(name='parent', model=mock_model, tools=[fan_out_tool])
+  app = App(name=request.function.__name__, root_agent=parent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content('run it'))
+
+  nested_leaves = {
+      e.branch.split('.')[-1] for e in events if e.branch and '.' in e.branch
+  }
+  assert {'branch_a@1', 'branch_b@1'} <= nested_leaves
+
+  await runner.run_async(testing_utils.get_user_content('and now?'))
+
+  assert len(mock_model.requests) == 3
+  next_turn_req = str(mock_model.requests[2].contents)
+  assert 'Branch A progress' not in next_turn_req
+  assert 'Branch B progress' not in next_turn_req
+  parts = [p for c in mock_model.requests[2].contents for p in c.parts or []]
+  assert any(
+      p.function_response and p.function_response.response == {'result': 3}
+      for p in parts
+  )
+
+
+@pytest.mark.asyncio
+async def test_agent_inside_node_tool_keeps_its_own_tool_history(
+    request: pytest.FixtureRequest,
+):
+  """An agent running on a NodeTool's branch still sees its own function calls."""
+
+  def add(a: int, b: int) -> int:
+    """Adds two numbers."""
+    return a + b
+
+  inner_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name='add', args={'a': 1, 'b': 2}),
+          types.Part.from_text(text='The sum is 3.'),
+      ]
+  )
+  inner = LlmAgent(name='inner', model=inner_model, tools=[add])
+  sub_wf = Workflow(name='sub_wf', edges=[(START, inner)])
+  sub_wf.input_schema = DummyRequest
+  sub_wf_tool = NodeTool(
+      node=sub_wf, name='sub_wf_tool', description='Adds numbers.'
+  )
+  parent = LlmAgent(
+      name='parent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='sub_wf_tool', args={'request': 'add 1 and 2'}
+              ),
+              types.Part.from_text(text='Done.'),
+          ]
+      ),
+      tools=[sub_wf_tool],
+  )
+  app = App(name=request.function.__name__, root_agent=parent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async(testing_utils.get_user_content('add 1 and 2'))
+
+  assert len(inner_model.requests) == 2
+  first_content = inner_model.requests[0].contents[0]
+  assert first_content.role == 'user'
+  assert 'add 1 and 2' in str(first_content)
+  assert '] said:' not in str(first_content)
+  second_parts = [
+      p for c in inner_model.requests[1].contents for p in c.parts or []
+  ]
+  assert any(
+      p.function_call and p.function_call.name == 'add' for p in second_parts
+  )
+  assert any(
+      p.function_response and p.function_response.response == {'result': 3}
+      for p in second_parts
+  )
+
+
+@pytest.mark.asyncio
+async def test_node_tool_repeated_calls_do_not_share_resume_input(
+    request: pytest.FixtureRequest,
+):
+  """A second call of the same NodeTool pauses for its own input instead of reusing the first call's resume input."""
+
+  async def ask_and_analyze(ctx: Context, query: str):
+    clarification = ctx.resume_inputs.get('clarify_region')
+    if clarification is None:
+      yield RequestInput(
+          interrupt_id='clarify_region', message=f'Which region for {query}?'
+      )
+      return
+    yield {'query': query, 'region': clarification['text']}
+
+  tool = NodeTool(FunctionNode(func=ask_and_analyze, name='ask_and_analyze'))
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='ask_and_analyze', args={'query': 'sales'}
+              ),
+              types.Part.from_function_call(
+                  name='ask_and_analyze', args={'query': 'marketing'}
+              ),
+              types.Part.from_text(text='Both analyzed.'),
+          ]
+      ),
+      tools=[tool],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('start'))
+  req1 = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  [req1_interrupt_id] = extract_event_interrupt_ids(req1)
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(req1_interrupt_id, {'text': 'APAC'})
+      ),
+      invocation_id=req1.invocation_id,
+  )
+  req2 = workflow_testing_utils.find_function_call_event(
+      events2, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+
+  assert req2 is not None
+  assert req1.node_info.path != req2.node_info.path
+  responses2 = [
+      p.function_response.response
+      for e in events2
+      for p in (e.content.parts if e.content and e.content.parts else [])
+      if p.function_response and p.function_response.name == 'ask_and_analyze'
+  ]
+  assert responses2 == [{'query': 'sales', 'region': 'APAC'}]
+
+
+@pytest.mark.asyncio
+async def test_node_tool_infers_workflow_schema_from_typed_start_node(
+    request: pytest.FixtureRequest,
+):
+  """NodeTool infers a Workflow's input_schema from its START successor node."""
+
+  def format_user(node_input: UserInfo) -> str:
+    return f'{node_input.name}:{node_input.age}'
+
+  wf = Workflow(name='format_user_wf', edges=[(START, format_user)])
+  tool = NodeTool(node=wf)
+  decl = tool._get_declaration()
+
+  assert decl is not None
+  assert decl.parameters_json_schema is not None
+  assert 'name' in decl.parameters_json_schema['properties']
+  assert 'age' in decl.parameters_json_schema['properties']
+  assert wf.input_schema is None
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='format_user_wf', args={'name': 'Alice', 'age': 30}
+              ),
+              types.Part.from_text(text='Done.'),
+          ]
+      ),
+      tools=[wf],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=parent_agent)
+  )
+  events = await runner.run_async(testing_utils.get_user_content('run'))
+  responses = [
+      p.function_response.response
+      for e in events
+      for p in (e.content.parts if e.content and e.content.parts else [])
+      if p.function_response and p.function_response.name == 'format_user_wf'
+  ]
+  assert responses == [{'result': 'Alice:30'}]
+
+
+@pytest.mark.asyncio
+async def test_node_tool_infers_zero_arg_workflow(
+    request: pytest.FixtureRequest,
+):
+  """NodeTool allows a Workflow whose START node does not consume node_input."""
+
+  def step_one(ctx: Context) -> str:
+    del ctx
+    return 'zero_arg_ok'
+
+  wf = Workflow(name='zero_arg_wf', edges=[(START, step_one)])
+  tool = NodeTool(node=wf)
+  decl = tool._get_declaration()
+
+  assert decl is not None
+  assert decl.parameters_json_schema is None
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='zero_arg_wf', args={}),
+              types.Part.from_text(text='Done.'),
+          ]
+      ),
+      tools=[wf],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=parent_agent)
+  )
+  events = await runner.run_async(testing_utils.get_user_content('run'))
+  responses = [
+      p.function_response.response
+      for e in events
+      for p in (e.content.parts if e.content and e.content.parts else [])
+      if p.function_response and p.function_response.name == 'zero_arg_wf'
+  ]
+  assert responses == [{'result': 'zero_arg_ok'}]
+
+
+def test_node_tool_infers_workflow_schema_from_agent_start_node():
+  """NodeTool infers a string request schema when a Workflow starts with an LlmAgent."""
+  agent_wf = Workflow(
+      name='agent_wf',
+      edges=[(START, LlmAgent(name='child', model='gemini-2.5-flash'))],
+  )
+  decl = NodeTool(node=agent_wf)._get_declaration()
+
+  assert decl is not None
+  assert decl.parameters_json_schema == {
+      'type': 'object',
+      'properties': {'request': {'type': 'string'}},
+      'required': ['request'],
+  }
+
+
+def test_node_tool_infers_workflow_schema_from_tool_start_node():
+  """NodeTool infers input_schema when a Workflow starts with a BaseTool."""
+
+  def lookup(city: str) -> str:
+    return city
+
+  tool_wf = Workflow(
+      name='tool_wf',
+      edges=[(START, FunctionTool(lookup))],
+  )
+  decl = NodeTool(node=tool_wf)._get_declaration()
+
+  assert decl is not None
+  assert decl.parameters_json_schema is not None
+  assert 'city' in decl.parameters_json_schema['properties']
+
+
+def test_node_tool_infers_workflow_schema_from_parallel_worker_start_node():
+  """NodeTool infers an array request schema when a Workflow starts with a parallel_worker node."""
+
+  @node(parallel_worker=True)
+  def double(node_input: int) -> int:
+    return node_input * 2
+
+  parallel_wf = Workflow(
+      name='parallel_wf',
+      edges=[(START, double)],
+  )
+  decl = NodeTool(node=parallel_wf)._get_declaration()
+
+  assert decl is not None
+  assert decl.parameters_json_schema == {
+      'type': 'object',
+      'properties': {
+          'request': {'type': 'array', 'items': {'type': 'integer'}},
+      },
+      'required': ['request'],
+  }
+
+
+@pytest.mark.asyncio
+async def test_node_tool_infers_workflow_schema_from_nested_workflow_start_node(
+    request: pytest.FixtureRequest,
+):
+  """NodeTool infers input_schema when a Workflow starts with a nested Workflow."""
+
+  def inner_step(node_input: UserInfo) -> str:
+    return f'nested:{node_input.name}:{node_input.age}'
+
+  inner_wf = Workflow(name='inner_wf', edges=[(START, inner_step)])
+  outer_wf = Workflow(name='outer_wf', edges=[(START, inner_wf)])
+
+  decl = NodeTool(node=outer_wf)._get_declaration()
+
+  assert decl is not None
+  assert decl.parameters_json_schema is not None
+  assert 'name' in decl.parameters_json_schema['properties']
+  assert 'age' in decl.parameters_json_schema['properties']
+  assert outer_wf.input_schema is None
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='outer_wf', args={'name': 'Bob', 'age': 25}
+              ),
+              types.Part.from_text(text='Done.'),
+          ]
+      ),
+      tools=[outer_wf],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=parent_agent)
+  )
+  events = await runner.run_async(testing_utils.get_user_content('run'))
+  responses = [
+      p.function_response.response
+      for e in events
+      for p in (e.content.parts if e.content and e.content.parts else [])
+      if p.function_response and p.function_response.name == 'outer_wf'
+  ]
+  assert responses == [{'result': 'nested:Bob:25'}]
+
+
+def test_node_tool_infers_workflow_schema_from_parallel_worker_types_schema():
+  """NodeTool infers array schema when a Workflow starts with a parallel_worker having a types.Schema."""
+
+  def step(node_input):
+    return node_input
+
+  sub_wf = Workflow(
+      name='sub_wf',
+      input_schema=types.Schema(type=types.Type.STRING),
+      edges=[(START, step)],
+  )
+  worker = node(sub_wf, parallel_worker=True)
+  parallel_wf = Workflow(
+      name='parallel_types_schema_wf',
+      edges=[(START, worker)],
+  )
+  decl = NodeTool(node=parallel_wf)._get_declaration()
+
+  assert decl is not None
+  assert decl.parameters_json_schema == {
+      'type': 'object',
+      'properties': {
+          'request': {'type': 'array', 'items': {'type': 'string'}},
+      },
+      'required': ['request'],
+  }
+
+
+class _OpaqueInput:
+  pass
+
+
+def _untyped_start_workflow() -> Workflow:
+  def untyped_step(node_input):
+    return node_input
+
+  return Workflow(name='untyped_wf', edges=[(START, untyped_step)])
+
+
+def _unserializable_hint_start_workflow() -> Workflow:
+  def opaque_step(node_input: _OpaqueInput) -> str:
+    return str(node_input)
+
+  return Workflow(name='opaque_wf', edges=[(START, opaque_step)])
+
+
+def _declarationless_tool_start_workflow() -> Workflow:
+  class _NoDeclTool(BaseTool):
+
+    def __init__(self):
+      super().__init__(name='no_decl', description='No declaration')
+
+  return Workflow(name='no_decl_wf', edges=[(START, _NoDeclTool())])
+
+
+def _conflicting_start_workflow() -> Workflow:
+  def step_a(node_input: UserInfo) -> str:
+    return node_input.name
+
+  def step_b(node_input: DummyRequest) -> str:
+    return node_input.request
+
+  return Workflow(name='conflicting_wf', edges=[(START, (step_a, step_b))])
+
+
+@pytest.mark.parametrize(
+    'wf_factory',
+    [
+        _untyped_start_workflow,
+        _unserializable_hint_start_workflow,
+        _declarationless_tool_start_workflow,
+        _conflicting_start_workflow,
+    ],
+    ids=[
+        'untyped_node_input',
+        'unserializable_type_hint',
+        'tool_without_declaration',
+        'conflicting_start_nodes',
+    ],
+)
+def test_node_tool_rejects_workflow_with_unresolvable_start_schema(wf_factory):
+  """NodeTool raises ValueError when a Workflow's START schema is missing, unserializable, or conflicting."""
+  wf = wf_factory()
+  with pytest.raises(ValueError, match='does not have an input_schema defined'):
+    NodeTool(node=wf)
+
+
+_ARG_ERROR = object()
+"""Expected response marker: the tool returned an argument-validation error."""
+
+
+def _compute(city: str, count: int = 10) -> str:
+  return f'{city}:{count}'
+
+
+def _node_input_entry_workflow() -> Workflow:
+  def compute(city: str, count: int) -> str:
+    return f'{city}:{count}'
+
+  entry = FunctionNode(func=compute, parameter_binding='node_input')
+  return Workflow(name='compute_wf', edges=[(START, entry)])
+
+
+def _defaults_entry_workflow() -> Workflow:
+  entry = FunctionNode(
+      func=_compute, name='compute', parameter_binding='node_input'
+  )
+  return Workflow(name='compute_wf', edges=[(START, entry)])
+
+
+def _primitive_request_workflow() -> Workflow:
+  def double(node_input: int) -> int:
+    return node_input * 2
+
+  return Workflow(name='double_wf', edges=[(START, double)])
+
+
+def _join_from_start_workflow() -> Workflow:
+  def compute(city: str, count: int) -> UserInfo:
+    return UserInfo(name=city, age=count)
+
+  entry = FunctionNode(func=compute, parameter_binding='node_input')
+  join_node = JoinNode(name='join_node')
+  return Workflow(
+      name='join_start_wf',
+      edges=[(START, entry), (START, join_node), (entry, join_node)],
+  )
+
+
+def _parallel_worker_workflow() -> Workflow:
+  entry = FunctionNode(
+      func=_compute, name='compute', parameter_binding='node_input'
+  )
+  return Workflow(
+      name='parallel_wf', edges=[(START, node(entry, parallel_worker=True))]
+  )
+
+
+def _parallel_start_workflow() -> Workflow:
+  def zero_arg() -> str:
+    return 'ok'
+
+  branch_a = FunctionNode(
+      func=_compute, name='compute', parameter_binding='node_input'
+  )
+  branch_b = FunctionNode(func=zero_arg, parameter_binding='node_input')
+  join_node = JoinNode(name='join_node')
+  return Workflow(
+      name='fanout_wf',
+      edges=[(START, (branch_a, branch_b)), ((branch_a, branch_b), join_node)],
+  )
+
+
+def _parallel_start_distinct_coercions_workflow() -> Workflow:
+  def as_str(count: str) -> str:
+    return f'str:{count}'
+
+  def as_int(count: int) -> int:
+    return count + 1
+
+  branch_str = FunctionNode(func=as_str, parameter_binding='node_input')
+  branch_int = FunctionNode(func=as_int, parameter_binding='node_input')
+  join_node = JoinNode(name='join_node')
+  return Workflow(
+      name='coercion_fanout_wf',
+      input_schema={
+          'type': 'object',
+          'properties': {'count': {'type': 'string'}},
+      },
+      edges=[
+          (START, (branch_str, branch_int)),
+          ((branch_str, branch_int), join_node),
+      ],
+  )
+
+
+def _dict_schema_state_node_input_workflow() -> Workflow:
+  def sum_scores(node_input: dict[str, int]) -> int:
+    assert all(isinstance(v, int) for v in node_input.values())
+    return sum(node_input.values())
+
+  return Workflow(
+      name='scores_wf',
+      input_schema={
+          'type': 'object',
+          'properties': {
+              'a': {'type': 'integer'},
+              'b': {'type': 'integer'},
+          },
+      },
+      edges=[(START, sum_scores)],
+  )
+
+
+@pytest.mark.parametrize(
+    ('wf_factory', 'calls'),
+    [
+        (
+            _node_input_entry_workflow,
+            [
+                ({'city': 'NYC', 'count': 'invalid'}, _ARG_ERROR),
+                ({'city': 'NYC'}, _ARG_ERROR),
+                ({'city': 'NYC', 'count': 3}, {'result': 'NYC:3'}),
+            ],
+        ),
+        (
+            _defaults_entry_workflow,
+            [
+                ({'city': 'NYC', 'count': '3'}, {'result': 'NYC:3'}),
+                ({'city': 'Tokyo'}, {'result': 'Tokyo:10'}),
+            ],
+        ),
+        (
+            _primitive_request_workflow,
+            [
+                ({}, _ARG_ERROR),
+                ({'request': None}, _ARG_ERROR),
+                ({'request': 'not_an_int'}, _ARG_ERROR),
+                ({'request': 21}, {'result': 42}),
+            ],
+        ),
+        (
+            _join_from_start_workflow,
+            [
+                ({'city': 'NYC', 'count': 'bad'}, _ARG_ERROR),
+                (
+                    {'city': 'NYC', 'count': 5},
+                    {
+                        START.name: {'city': 'NYC', 'count': 5},
+                        'compute': {'name': 'NYC', 'age': 5},
+                    },
+                ),
+            ],
+        ),
+        (
+            _parallel_worker_workflow,
+            [
+                ({'request': [{'city': 'NYC', 'count': 'bad'}]}, _ARG_ERROR),
+                (
+                    {
+                        'request': [
+                            {'city': 'NYC', 'count': '3'},
+                            {'city': 'Tokyo'},
+                        ]
+                    },
+                    {'result': ['NYC:3', 'Tokyo:10']},
+                ),
+            ],
+        ),
+        (
+            _parallel_start_workflow,
+            [
+                ({'city': 'NYC', 'count': 'bad'}, _ARG_ERROR),
+                ({'city': 'NYC'}, {'compute': 'NYC:10', 'zero_arg': 'ok'}),
+            ],
+        ),
+        (
+            _parallel_start_distinct_coercions_workflow,
+            [
+                ({'count': 'not_an_int'}, _ARG_ERROR),
+                ({'count': '3'}, {'as_str': 'str:3', 'as_int': 4}),
+            ],
+        ),
+        (
+            _dict_schema_state_node_input_workflow,
+            [
+                ({'a': 'not_an_int'}, _ARG_ERROR),
+                ({'a': '2', 'b': 3}, {'result': 5}),
+            ],
+        ),
+    ],
+    ids=[
+        'node_input_entry',
+        'coerces_and_fills_defaults',
+        'primitive_request',
+        'join_from_start_is_skipped',
+        'parallel_worker_items',
+        'parallel_start_validates_all_branches',
+        'parallel_start_distinct_coercions',
+        'dict_schema_state_node_input',
+    ],
+)
+@pytest.mark.asyncio
+async def test_node_tool_workflow_entry_args_are_validated_before_run(
+    request: pytest.FixtureRequest,
+    wf_factory: Any,
+    calls: list[tuple[dict[str, Any], Any]],
+):
+  """Bad tool args for a Workflow's START nodes come back as an error dict the model can retry on; good args are coerced and run."""
+  wf = wf_factory()
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name=wf.name, args=args)
+              for args, _ in calls
+          ]
+          + [types.Part.from_text(text='done')]
+      ),
+      tools=[wf],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  responses = _function_responses(events)
+  assert len(responses) == len(calls)
+  for response, (_, expected) in zip(responses, calls):
+    if expected is _ARG_ERROR:
+      assert 'argument validation errors' in response['error']
+    else:
+      assert response == expected
+
+
+@pytest.mark.asyncio
+async def test_node_tool_workflow_downstream_error_hits_on_tool_error(
+    request: pytest.FixtureRequest,
+):
+  """Errors raised past the entry node still reach on_tool_error, not the arg-validation error dict."""
+  seen_errors: list[Exception] = []
+
+  def step_one(node_input: UserInfo) -> str:
+    return node_input.name
+
+  def step_two(missing_state_var: str) -> str:
+    return missing_state_var
+
+  def on_tool_error(tool, args, tool_context, error):
+    del tool, args, tool_context
+    seen_errors.append(error)
+    return {'handled_internal_error': True}
+
+  wf = Workflow(
+      name='two_step_wf',
+      edges=[(START, step_one), (step_one, step_two)],
+  )
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='two_step_wf', args={'name': 'Alice', 'age': 30}
+              ),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[wf],
+      on_tool_error_callback=on_tool_error,
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  assert len(seen_errors) == 1
+  assert _function_responses(events) == [{'handled_internal_error': True}]

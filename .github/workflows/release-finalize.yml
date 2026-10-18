@@ -98,8 +98,15 @@ jobs:
           CUT_SHA=$(git merge-base "origin/$BASE_BRANCH" HEAD)
           echo "Release was cut from $BASE_BRANCH at: $CUT_SHA"
 
+          HAVE_SHA=$(jq -r '."last-release-sha" // ""' "$CONFIG_FILE")
+          if [ "$HAVE_SHA" = "$CUT_SHA" ]; then
+            echo "last-release-sha is already $CUT_SHA"
+            exit 0
+          fi
+
           jq --arg sha "$CUT_SHA" '. + {"last-release-sha": $sha}' \
-            "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+            "$CONFIG_FILE" > tmp.json
+          mv tmp.json "$CONFIG_FILE"
 
           git add "$CONFIG_FILE"
           git commit -m "chore: update last-release-sha for next $BASE_BRANCH release"

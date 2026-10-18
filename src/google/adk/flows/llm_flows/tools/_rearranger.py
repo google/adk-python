@@ -22,7 +22,6 @@ import logging
 from google.genai import types
 
 from ....events.event import Event
-from ._functions import _collect_function_call_ids
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -96,10 +95,22 @@ def merge_function_response_events(
   return merged_event
 
 
+def _is_stale_text_reply(event: Event, invocation_id: str) -> bool:
+  return bool(
+      event.invocation_id == invocation_id
+      and event.author != 'user'
+      and event.content
+      and event.content.role == 'model'
+      and not event.get_function_calls()
+      and not (event.actions and event.actions.compaction)
+      and any(part.text for part in event.content.parts or [])
+  )
+
+
 def rearrange_events_for_async_function_responses_in_history(
     events: list[Event],
 ) -> list[Event]:
-  """Rearrange the async function_response events in the history."""
+  """Rearrange async function responses and their model replies in history."""
   # A model may hand out the same function call id more than once in a session,
   # so an id on its own does not identify a single call. Each response is
   # attributed to the newest call that precedes it and carries the same id, and
@@ -114,7 +125,7 @@ def rearrange_events_for_async_function_responses_in_history(
     for function_call in event.get_function_calls():
       call_event_indices_by_id.setdefault(function_call.id, []).append(i)
 
-  response_event_index_by_call: dict[tuple[str | None, int], int] = {}
+  response_event_indices_by_call: dict[tuple[str | None, int], list[int]] = {}
   history_has_function_responses = False
   for i, event in enumerate(events):
     for function_response in event.get_function_responses():
@@ -127,15 +138,40 @@ def rearrange_events_for_async_function_responses_in_history(
       # that carries its id keeps the first, as it did before ids could repeat.
       preceding_calls = bisect_left(call_event_indices, i)
       owning_call_event_index = call_event_indices[max(preceding_calls - 1, 0)]
-      response_event_index_by_call[
-          (function_response.id, owning_call_event_index)
-      ] = i
+      call_key = (function_response.id, owning_call_event_index)
+      response_event_indices_by_call.setdefault(call_key, []).append(i)
 
   if not history_has_function_responses:
     return events
 
+  # Drop intermediate model text replies between consecutive updates of the
+  # same tool call within the same invocation.
+  # Caveat: Positional; drops any intervening text replies during parallel calls.
+  stale_model_event_indices: set[int] = set()
+  for response_event_indices in response_event_indices_by_call.values():
+    for cur_idx, next_idx in zip(
+        response_event_indices, response_event_indices[1:]
+    ):
+      if events[cur_idx].invocation_id != events[next_idx].invocation_id:
+        continue
+      if events[cur_idx].author != events[next_idx].author:
+        continue
+      if events[cur_idx].actions and (
+          events[cur_idx].actions.requested_tool_confirmations
+          or events[cur_idx].actions.requested_auth_configs
+      ):
+        continue
+      run = range(cur_idx + 1, next_idx)
+      if run and all(
+          _is_stale_text_reply(events[i], events[cur_idx].invocation_id)
+          for i in run
+      ):
+        stale_model_event_indices.update(run)
+
   result_events: list[Event] = []
   for i, event in enumerate(events):
+    if i in stale_model_event_indices:
+      continue
     if event.get_function_responses():
       # function_response should be handled together with function_call below.
       continue
@@ -143,11 +179,11 @@ def rearrange_events_for_async_function_responses_in_history(
 
       function_response_events_indices = set()
       for function_call in event.get_function_calls():
-        response_event_index = response_event_index_by_call.get(
+        response_indices = response_event_indices_by_call.get(
             (function_call.id, i)
         )
-        if response_event_index is not None:
-          function_response_events_indices.add(response_event_index)
+        if response_indices:
+          function_response_events_indices.add(response_indices[-1])
       result_events.append(event)
       if not function_response_events_indices:
         continue
@@ -181,8 +217,7 @@ def drop_orphaned_function_responses(
   outcome the same wherever it appears, and keeps unpaired results from being
   forwarded to providers that reject them.
 
-  Responses without an id are left alone: ids are stripped on the way out for
-  some model families, so a missing id does not imply a missing call.
+  Responses without a preceding matching function_call are dropped as orphans.
 
   Args:
     events: The events being assembled into request contents.
@@ -190,31 +225,44 @@ def drop_orphaned_function_responses(
   Returns:
     The events with orphaned function_response parts removed.
   """
-  call_ids = _collect_function_call_ids(events)
-
+  seen_call_ids: set[str] = set()
+  seen_idless_call_names: set[str] = set()
   orphaned_ids: list[str] = []
   result_events: list[Event] = []
   for event in events:
     parts = event.content.parts if event.content else None
-    if not parts or not event.get_function_responses():
+    if parts and event.get_function_responses():
+      kept_parts: list[types.Part] = []
+      for part in parts:
+        response = part.function_response
+        if response:
+          is_matched = (
+              response.id in seen_call_ids
+              if response.id
+              else (
+                  bool(response.name)
+                  and response.name in seen_idless_call_names
+              )
+          )
+          if not is_matched:
+            orphaned_ids.append(response.id or '<missing-id>')
+            continue
+        kept_parts.append(part)
+
+      if kept_parts:
+        if len(kept_parts) != len(parts):
+          event = event.model_copy(deep=True)
+          if event.content:
+            event.content.parts = kept_parts
+        result_events.append(event)
+    else:
       result_events.append(event)
-      continue
 
-    kept_parts: list[types.Part] = []
-    for part in parts:
-      response = part.function_response
-      if response and response.id and response.id not in call_ids:
-        orphaned_ids.append(response.id)
-        continue
-      kept_parts.append(part)
-
-    if not kept_parts:
-      continue
-    if len(kept_parts) != len(parts):
-      event = event.model_copy(deep=True)
-      if event.content:
-        event.content.parts = kept_parts
-    result_events.append(event)
+    for fc in event.get_function_calls():
+      if fc.id:
+        seen_call_ids.add(fc.id)
+      elif fc.name:
+        seen_idless_call_names.add(fc.name)
 
   if orphaned_ids:
     logger.warning(
@@ -308,6 +356,25 @@ def drop_orphaned_function_calls(
   return result_events
 
 
+def _find_owning_call_event_index(
+    history_events: list[Event],
+    response: types.FunctionResponse,
+) -> int:
+  for idx in range(len(history_events) - 1, -1, -1):
+    if any(
+        (bool(response.id) and c.id == response.id)
+        or (
+            not response.id
+            and not c.id
+            and bool(response.name)
+            and c.name == response.name
+        )
+        for c in history_events[idx].get_function_calls()
+    ):
+      return idx
+  return -1
+
+
 def rearrange_events_for_latest_function_response(
     events: list[Event],
 ) -> list[Event]:
@@ -317,87 +384,104 @@ def rearrange_events_for_latest_function_response(
   between the initial function_call and the latest function_response will be
   removed.
 
+  If the latest event carries function responses with no matching function
+  call in history (an orphaned FR), those responses are dropped and history
+  is rearranged from the remaining events.
+
   Args:
     events: A list of events.
 
   Returns:
     A list of events with the latest function_response rearranged.
   """
-  if len(events) < 2:
-    # No need to process, since there is no function_call.
+  events = drop_orphaned_function_responses(events)
+  if len(events) < 2 or not events[-1].get_function_responses():
     return events
 
-  function_responses = events[-1].get_function_responses()
-  if not function_responses:
-    # No need to process, since the latest event is not function_response.
+  trailing = events[-1]
+  parts = trailing.content.parts if trailing.content else None
+  if not parts:
     return events
 
-  function_responses_ids = set()
-  for function_response in function_responses:
-    function_responses_ids.add(function_response.id)
+  history_events = events[:-1]
+  parts_by_call_idx: dict[int, list[types.Part]] = {}
+  non_fr_parts: list[types.Part] = []
+  for part in parts:
+    if part.function_response:
+      call_idx = _find_owning_call_event_index(
+          history_events, part.function_response
+      )
+      if call_idx != -1:
+        parts_by_call_idx.setdefault(call_idx, []).append(part)
+    else:
+      non_fr_parts.append(part)
 
-  function_calls = events[-2].get_function_calls()
+  if not parts_by_call_idx:
+    return events
 
-  if function_calls:
-    for function_call in function_calls:
-      # The latest function_response is already matched
-      if function_call.id in function_responses_ids:
-        return events
+  latest_call_idx = max(parts_by_call_idx.keys())
+  parts_by_call_idx[latest_call_idx].extend(non_fr_parts)
 
-  function_call_event_idx = -1
-  # look for corresponding function call event reversely
-  for idx in range(len(events) - 2, -1, -1):
-    event = events[idx]
-    function_calls = event.get_function_calls()
-    if function_calls:
-      for function_call in function_calls:
-        if function_call.id in function_responses_ids:
-          function_call_event_idx = idx
-          function_call_ids = {
-              function_call.id for function_call in function_calls
-          }
-          # last response event should only contain the responses for the
-          # function calls in the same function call event
-          if not function_responses_ids.issubset(function_call_ids):
-            raise ValueError(
-                'Last response event should only contain the responses for the'
-                ' function calls in the same function call event. Function'
-                f' call ids found : {function_call_ids}, function response'
-                f' ids provided: {function_responses_ids}'
-            )
-          # collect all function responses from the function call event to
-          # the last response event
-          function_responses_ids = function_call_ids
-          break
+  if latest_call_idx == len(events) - 2 and len(parts_by_call_idx) == 1:
+    return events
 
-  if function_call_event_idx == -1:
-    logger.debug(
-        'No function call event found for function responses ids: %s in'
-        ' event list: %s',
-        function_responses_ids,
-        events,
+  def _merged_response_for_call(call_idx: int) -> Event:
+    split_event = trailing.model_copy(deep=True)
+    if split_event.content:
+      split_event.content.parts = parts_by_call_idx[call_idx]
+    intermediate: list[Event] = []
+    for ev_idx in range(call_idx + 1, len(events) - 1):
+      ev = events[ev_idx]
+      ev_parts = ev.content.parts if ev.content else None
+      if not ev_parts or not ev.get_function_responses():
+        continue
+      is_call_event = bool(ev.get_function_calls())
+      matched_parts = [
+          p
+          for p in ev_parts
+          if (
+              _find_owning_call_event_index(
+                  events[:ev_idx], p.function_response
+              )
+              == call_idx
+              if p.function_response
+              else not is_call_event
+          )
+      ]
+      if any(p.function_response for p in matched_parts):
+        if len(matched_parts) != len(ev_parts):
+          ev = ev.model_copy(deep=True)
+          if ev.content:
+            ev.content.parts = matched_parts
+        intermediate.append(ev)
+    all_resps = intermediate + [split_event]
+    return (
+        merge_function_response_events(all_resps)
+        if len(all_resps) > 1
+        else all_resps[0]
     )
-    raise ValueError(
-        'No function call event found for function responses ids:'
-        f' {function_responses_ids}'
-    )
 
-  # collect all function response between last function response event
-  # and function call event
-
-  function_response_events: list[Event] = []
-  for idx in range(function_call_event_idx + 1, len(events) - 1):
-    event = events[idx]
-    function_responses = event.get_function_responses()
-    if function_responses and any([
-        function_response.id in function_responses_ids
-        for function_response in function_responses
-    ]):
-      function_response_events.append(event)
-  function_response_events.append(events[-1])
-
-  result_events = events[: function_call_event_idx + 1]
-  result_events.append(merge_function_response_events(function_response_events))
+  result_events: list[Event] = []
+  for idx in range(latest_call_idx + 1):
+    ev = events[idx]
+    ev_parts = ev.content.parts if ev.content else None
+    if ev_parts and ev.get_function_responses():
+      kept_parts = [
+          p
+          for p in ev_parts
+          if not p.function_response
+          or _find_owning_call_event_index(events[:idx], p.function_response)
+          not in parts_by_call_idx
+      ]
+      if not any(p.function_response or p.function_call for p in kept_parts):
+        continue
+      if len(kept_parts) != len(ev_parts):
+        ev = ev.model_copy(deep=True)
+        if ev.content:
+          ev.content.parts = kept_parts
+    result_events.append(ev)
+    if idx in parts_by_call_idx:
+      result_events.append(_merged_response_for_call(idx))
 
   return result_events
 

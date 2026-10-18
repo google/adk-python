@@ -90,6 +90,7 @@ from google.genai.interactions import ThoughtSummaryDelta
 from google.genai.interactions import ToolParam
 from google.genai.interactions import UnknownStepDeltaData
 from google.genai.interactions import URLCitation
+from google.genai.interactions import Usage
 from google.genai.interactions import UserInputStepParam
 from google.genai.interactions import VideoContentParam
 from google.genai.interactions import VideoDelta
@@ -131,14 +132,33 @@ _POLL_MAX_DELAY_SECONDS = 30.0
 # across a long wait while still surfacing an endpoint that is truly down.
 _POLL_MAX_CONSECUTIVE_ERRORS = 5
 
-# Sampling knobs the interactions API applies, but that the installed
-# google-genai release does not declare on its request model. That model
-# discards keys it has no field for while serializing, so these never reach the
-# API and sending them is indistinguishable from never setting them.
-_UNDECLARED_SAMPLING_PARAMS = (
+# Sampling knobs the interactions API applies, but that only some google-genai
+# releases declare on the request model (2.26 added temperature and top_p).
+# That model discards keys it has no field for while serializing, so an
+# undeclared one never reaches the API and sending it is indistinguishable from
+# never setting it. The split is read from the installed release, because the
+# supported google-genai range spans releases on both sides of it. 2.26 already
+# marks both new fields deprecated on its GenerationConfig model, so a later
+# release may remove them again; they then fall back to being dropped with the
+# warning below.
+_CLIENT_DEPENDENT_SAMPLING_PARAMS = (
     'temperature',
     'top_p',
     'top_k',
+)
+_DECLARED_GENERATION_CONFIG_KEYS = (
+    GenerationConfigParam.__required_keys__
+    | GenerationConfigParam.__optional_keys__
+)
+_DECLARED_SAMPLING_PARAMS = tuple(
+    name
+    for name in _CLIENT_DEPENDENT_SAMPLING_PARAMS
+    if name in _DECLARED_GENERATION_CONFIG_KEYS
+)
+_UNDECLARED_SAMPLING_PARAMS = tuple(
+    name
+    for name in _CLIENT_DEPENDENT_SAMPLING_PARAMS
+    if name not in _DECLARED_GENERATION_CONFIG_KEYS
 )
 
 # Sampling knobs the interactions API itself rejects as unknown parameters.
@@ -740,18 +760,11 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
   return []
 
 
-def _usage_metadata_from_interaction(
-    interaction: Interaction,
+def _build_usage_metadata(
+    usage: Usage | None,
 ) -> types.GenerateContentResponseUsageMetadata | None:
-  """Build usage metadata from an interaction's usage, if present.
-
-  Shared by the non-streaming converter and the streaming final-event branch so
-  both surface token counts identically. ``InteractionSseEventInteraction`` (the
-  type carried by ``InteractionCompletedEvent``) also exposes ``usage``, so this
-  accepts either interaction type.
-  """
-  usage = interaction.usage
-  if not usage:
+  """Map Interactions API usage to genai usage metadata, if present."""
+  if usage is None:
     return None
   # Prefer the total the API reports: it also covers thought and tool-use
   # tokens, which input + output alone undercounts. Fall back to the sum only
@@ -764,6 +777,9 @@ def _usage_metadata_from_interaction(
   return types.GenerateContentResponseUsageMetadata(
       prompt_token_count=usage.total_input_tokens,
       candidates_token_count=usage.total_output_tokens,
+      cached_content_token_count=usage.total_cached_tokens,
+      thoughts_token_count=usage.total_thought_tokens,
+      tool_use_prompt_token_count=usage.total_tool_use_tokens,
       total_token_count=total_token_count,
   )
 
@@ -808,7 +824,7 @@ def convert_interaction_to_llm_response(
   if parts:
     content = types.Content(role='model', parts=parts)
 
-  usage_metadata = _usage_metadata_from_interaction(interaction)
+  usage_metadata = _build_usage_metadata(interaction.usage)
 
   # Determine finish reason based on status.
   # Interaction status can be: 'completed', 'requires_action', 'failed', or
@@ -826,6 +842,7 @@ def convert_interaction_to_llm_response(
       finish_reason=finish_reason,
       turn_complete=interaction.status in ('completed', 'requires_action'),
       interaction_id=interaction.id,
+      model_version=interaction.model,  # type: ignore[union-attr]
   )
 
 
@@ -854,6 +871,8 @@ class _StreamState:
       default_factory=list
   )
   search_entry_point: types.SearchEntryPoint | None = None
+  # Latest usage streamed in step delta metadata.
+  total_usage: Usage | None = None
 
 
 def _partial_part_response(
@@ -1198,6 +1217,8 @@ def convert_interaction_event_to_llm_response(
       )
 
   elif isinstance(event, StepDelta):
+    if event.metadata and event.metadata.total_usage is not None:
+      state.total_usage = event.metadata.total_usage
     delta = event.delta
 
     # Dispatch on the delta class, not on its ``type`` tag, so each handler can
@@ -1271,14 +1292,20 @@ def convert_interaction_event_to_llm_response(
       return LlmResponse(
           content=content,
           grounding_metadata=grounding_metadata,
-          usage_metadata=_usage_metadata_from_interaction(event.interaction),
+          usage_metadata=_build_usage_metadata(
+              event.interaction.usage or state.total_usage
+          ),
           partial=False,
           turn_complete=True,
           finish_reason=types.FinishReason.STOP,
           interaction_id=interaction_id,
+          model_version=event.interaction.model,
       )
     # No streaming parts or grounding collected: convert the final interaction.
-    return convert_interaction_to_llm_response(event.interaction)
+    response = convert_interaction_to_llm_response(event.interaction)
+    if response.usage_metadata is None:
+      response.usage_metadata = _build_usage_metadata(state.total_usage)
+    return response
 
   elif isinstance(event, Interaction):
     # Fallback for legacy interaction events without lifecycle
@@ -1340,6 +1367,12 @@ def build_generation_config(
     generation_config['stop_sequences'] = config.stop_sequences
   if config.seed is not None:
     generation_config['seed'] = config.seed
+  for name in _DECLARED_SAMPLING_PARAMS:
+    value = getattr(config, name)
+    if value is not None:
+      # Not a literal key: which of these the TypedDict declares depends on
+      # the installed google-genai.
+      generation_config[name] = value  # type: ignore[literal-required]
 
   undeclared = _unwarned_params_set_on(config, _UNDECLARED_SAMPLING_PARAMS)
   if undeclared:

@@ -32,6 +32,8 @@ from pydantic import ValidationError
 
 from ..agents.base_agent import BaseAgent
 from ..events._node_path_builder import _NodePathBuilder
+from ..utils._agent_mode import AgentMode
+from ..utils._agent_mode import DefaultLlmNodeMode
 from ._base_node import BaseNode
 from ._errors import DynamicNodeFailError
 from ._errors import NodeInterruptedError
@@ -117,6 +119,37 @@ class DynamicNodeState:
     counters = self.run_counters.setdefault(parent_path, {})
     counters[node_name] = counters.get(node_name, 0) + 1
     return str(counters[node_name])
+
+  def _counter_paths_under(self, parent_path: str) -> list[str]:
+    prefix = f'{parent_path}/' if parent_path else ''
+    return [
+        k
+        for k in self.run_counters
+        if k == parent_path or (prefix and k.startswith(prefix))
+    ]
+
+  def snapshot_counters(self, parent_path: str) -> dict[str, dict[str, int]]:
+    """Copy the sequential run counters under parent_path."""
+    return {
+        path: dict(self.run_counters[path])
+        for path in self._counter_paths_under(parent_path)
+    }
+
+  def reset_for_retry(
+      self,
+      parent_path: str,
+      snapshot: dict[str, dict[str, int]],
+  ) -> None:
+    """Rewind sequential run counters under parent_path before a parent retry.
+
+    The counters go back to ``snapshot``, taken when the failed attempt began,
+    so the retry replays that attempt's completed children. Rewinding further
+    would replay children from earlier attempts the parent already rejected.
+    """
+    for path in self._counter_paths_under(parent_path):
+      del self.run_counters[path]
+    for path, counters in snapshot.items():
+      self.run_counters[path] = dict(counters)
 
   def get_dynamic_tasks(self) -> list[asyncio.Task[Context]]:
     """Get all active dynamic node tasks."""
@@ -334,7 +367,7 @@ class DynamicNodeScheduler:
     node_path = str(base_path_builder.append(target_node_name, run_id))
     if (
         override_isolation_scope is None
-        and getattr(node, 'mode', None) == 'task'
+        and getattr(node, 'mode', None) == AgentMode.TASK
     ):
       override_isolation_scope = node_path
 
@@ -439,7 +472,7 @@ class DynamicNodeScheduler:
     result = check_interception(
         node=curr_node,
         recovered=run.recovered_state,
-        current_run=None if run.is_static else run,
+        current_run=run,
     )
 
     if not result.should_run:
@@ -680,7 +713,13 @@ async def run_node_internal(
         ' response.'
     )
 
-  built_node = build_node(node)
+  is_root_agent_run = (
+      ctx.parent_ctx is None and ctx.node is None and not ctx.node_path
+  )
+  default_llm_mode: DefaultLlmNodeMode = (
+      AgentMode.CHAT if is_root_agent_run else AgentMode.SINGLE_TURN
+  )
+  built_node = build_node(node, default_llm_mode=default_llm_mode)
 
   if isinstance(node, BaseAgent) and isinstance(built_node, BaseAgent):
     built_node.parent_agent = node.parent_agent
@@ -731,6 +770,8 @@ async def run_node_internal(
   )
 
   transfer_to_agent = child_ctx.actions.transfer_to_agent if child_ctx else None
+  if child_ctx and child_ctx.actions.skip_summarization:
+    ctx.actions.skip_summarization = True
 
   if not return_ctx:
     if child_ctx.error:

@@ -20,6 +20,7 @@ import socket
 from unittest import mock
 
 from google.adk.tools import load_web_page as load_web_page_module
+import google.adk.tools._url_validator as url_validator_module
 import pytest
 import requests
 
@@ -59,7 +60,7 @@ def _set_proxy_env(monkeypatch):
 
 def _mock_getaddrinfo(monkeypatch, *addresses: str):
   monkeypatch.setattr(
-      load_web_page_module.socket,
+      url_validator_module.socket,
       'getaddrinfo',
       mock.Mock(
           return_value=[
@@ -214,7 +215,7 @@ def test_load_web_page_allows_public_nat64_ip(monkeypatch):
 def test_load_web_page_blocks_private_hostname_targets(monkeypatch):
   _clear_proxy_env(monkeypatch)
   monkeypatch.setattr(
-      load_web_page_module.socket,
+      url_validator_module.socket,
       'getaddrinfo',
       mock.Mock(
           return_value=[(
@@ -247,7 +248,7 @@ def test_load_web_page_uses_proxy_for_unresolved_public_hostnames(monkeypatch):
   # Split-horizon DNS and egress-only networks leave the proxy as the only
   # resolver, so a local lookup failure must not block the request.
   monkeypatch.setattr(
-      load_web_page_module.socket,
+      url_validator_module.socket,
       'getaddrinfo',
       mock.Mock(side_effect=socket.gaierror('no such host')),
   )
@@ -326,7 +327,7 @@ def test_load_web_page_blocks_internal_hostnames_behind_a_proxy(
   """Internal names are rejected lexically, without relying on local DNS."""
   _set_proxy_env(monkeypatch)
   monkeypatch.setattr(
-      load_web_page_module.socket,
+      url_validator_module.socket,
       'getaddrinfo',
       mock.Mock(side_effect=AssertionError('unexpected local DNS lookup')),
   )
@@ -359,7 +360,7 @@ def test_load_web_page_fetches_public_urls_by_pinning_the_resolved_ip(
 ):
   _clear_proxy_env(monkeypatch)
   monkeypatch.setattr(
-      load_web_page_module.socket,
+      url_validator_module.socket,
       'getaddrinfo',
       mock.Mock(
           return_value=[(
@@ -412,7 +413,7 @@ def test_load_web_page_tries_another_resolved_address_after_connect_error(
 ):
   _clear_proxy_env(monkeypatch)
   monkeypatch.setattr(
-      load_web_page_module.socket,
+      url_validator_module.socket,
       'getaddrinfo',
       mock.Mock(
           return_value=[
@@ -480,7 +481,7 @@ def test_load_web_page_passes_timeout_to_pinned_session(monkeypatch):
   """Verify that the default timeout is passed to the pinned IP session."""
   _clear_proxy_env(monkeypatch)
   monkeypatch.setattr(
-      load_web_page_module.socket,
+      url_validator_module.socket,
       'getaddrinfo',
       mock.Mock(
           return_value=[(
@@ -530,7 +531,7 @@ def test_load_web_page_passes_timeout_to_proxied_get(monkeypatch):
   """Verify that the default timeout is passed to requests.get when proxy is used."""
   _set_proxy_env(monkeypatch)
   monkeypatch.setattr(
-      load_web_page_module.socket,
+      url_validator_module.socket,
       'getaddrinfo',
       mock.Mock(side_effect=socket.gaierror('no such host')),
   )
@@ -556,7 +557,7 @@ def test_load_web_page_returns_failure_on_timeout(monkeypatch):
   """Verify that a timeout exception is converted to a failed to fetch message."""
   _clear_proxy_env(monkeypatch)
   monkeypatch.setattr(
-      load_web_page_module.socket,
+      url_validator_module.socket,
       'getaddrinfo',
       mock.Mock(
           return_value=[(

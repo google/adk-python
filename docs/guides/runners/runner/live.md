@@ -143,5 +143,5 @@ async def fetch_stock_ticker(
 *   [Runner and InMemoryRunner](index.md) — Main guide on standard turn-based runner execution.
 *   [LiveRequestQueue](../../live/live_request_queue/index.md) — Guide on real-time input queueing, audio chunking, and non-blocking streaming tools.
 *   [App Container](../../apps/app/index.md) — Guide on bundling agents and plugins into an `App`.
-*   [Live Bidi Streaming Single Agent](../../../../contributing/samples/live/live_bidi_streaming_single_agent/agent.py) — Sample single-agent real-time streaming application.
-*   [Live Non-Blocking Tool Agent](../../../../contributing/samples/live/live_non_blocking_tool_agent/agent.py) — Sample agent using `LiveRequestQueue` in background tool callbacks.
+*   [Live Bidi Streaming Single Agent](../../../../contributing/samples/live/single_agent/agent.py) — Sample single-agent real-time streaming application.
+*   [Live Non-Blocking Tool Agent](../../../../contributing/samples/live/non_blocking_tool_agent/agent.py) — Sample agent using `LiveRequestQueue` in background tool callbacks.

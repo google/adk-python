@@ -74,9 +74,10 @@ Platform. If it is not provided, the tools attempt to use environment-specific
 defaults.
 
 The `bigquery_tool_config` controls the operational limits of the tools. For
-example, it defines the maximum number of rows a query can return and whether
-the agent is allowed to perform write operations. If this is omitted, the
-toolset uses a default `BigQueryToolConfig` instance.
+example, it defines the maximum number of rows a query can return,
+customer-managed encryption keys (`kms_key_name`), and whether the agent is
+allowed to perform write operations. If this is omitted, the toolset uses a
+default `BigQueryToolConfig` instance.
 
 ## Advanced applications
 
@@ -107,6 +108,11 @@ The toolset is limited to the specific operations defined in its internal tool
 modules, such as metadata inspection and SQL execution. It does not support
 every BigQuery API feature, such as managing IAM policies or creating
 reservation slots.
+
+The `kms_key_name` option on `BigQueryToolConfig` covers `SELECT` results only.
+BigQuery rejects a job-level key for DDL, DML, and multi-statement scripts, so
+those run without it, requiring a project default key under policies like
+`constraints/gcp.restrictNonCmekServices`.
 
 ## Related samples
 

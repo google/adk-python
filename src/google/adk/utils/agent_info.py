@@ -15,15 +15,19 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import Sequence
+from typing import Union
 
 from google.genai import types
 import pydantic
 
+from ..agents.llm_agent import _wrap_base_node_as_tool
 from ..agents.llm_agent import LlmAgent
 from ..agents.llm_agent import ToolUnion
 from ..tools.base_tool import BaseTool
 from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
+from ..workflow._base_node import BaseNode
 
 
 class AgentInfo(pydantic.BaseModel):
@@ -44,12 +48,16 @@ class AgentInfo(pydantic.BaseModel):
     return value
 
 
-async def get_tools_info(tools: list[ToolUnion]) -> list[Any]:
+async def get_tools_info(
+    tools: Sequence[Union[ToolUnion, BaseNode]],
+) -> list[Any]:
   """Returns the info for a given list of tools."""
   final_tools = []
   for tool in tools:
     if isinstance(tool, BaseTool):
       final_tools.append(tool)
+    elif isinstance(tool, BaseNode):
+      final_tools.append(_wrap_base_node_as_tool(tool))
     elif isinstance(tool, BaseToolset):
       # Await the async coroutine call natively!
       tools_res = await tool.get_tools()
@@ -68,7 +76,7 @@ async def get_agents_dict(agent: LlmAgent) -> dict[str, AgentInfo]:
   """Returns a dict with info for the agent and its sub-agents."""
   agents_dict = {}
 
-  async def _traverse(current_agent: LlmAgent):
+  async def _traverse(current_agent: LlmAgent) -> None:
     if current_agent.name in agents_dict:
       return
 

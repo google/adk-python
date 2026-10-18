@@ -175,6 +175,46 @@ def test_callable_spec_callable_class_doc():
   assert CallableSpec(UndocCallable()).doc == ""
 
 
+def _wrapped_with_doc(a: int, b: int) -> int:
+  """Wrapped function docstring."""
+  return a + b
+
+
+class _DocCallable:
+
+  def __call__(self, a: int, b: int) -> int:
+    """Call method docstring."""
+    return a + b
+
+
+_documented_partial = functools.partial(_wrapped_with_doc, 1)
+_documented_partial.__doc__ = "Partial docstring."
+
+
+@pytest.mark.parametrize(
+    ("partial_fn", "expected_doc"),
+    [
+        (
+            functools.partial(_wrapped_with_doc, 1),
+            "Wrapped function docstring.",
+        ),
+        (
+            functools.partial(_DocCallable(), 1),
+            "Call method docstring.",
+        ),
+        (
+            _documented_partial,
+            "Partial docstring.",
+        ),
+    ],
+)
+def test_callable_spec_partial_doc(
+    partial_fn: functools.partial[int], expected_doc: str
+) -> None:
+  """A partial resolves doc from the callable it wraps unless it has its own."""
+  assert CallableSpec(partial_fn).doc == expected_doc
+
+
 def test_callable_spec_raises_on_unintrospectable_callable():
   """CallableSpec raises ValueError when signature of unintrospectable callable is accessed."""
   spec = CallableSpec(dir)
@@ -307,3 +347,27 @@ def test_callable_spec_forward_ref_recovery():
     assert spec.type_hints == {"item": DeferredModel, "return": int}
   finally:
     globals().pop("DeferredModel", None)
+
+
+def test_callable_spec_is_generator_detects_sync_async_and_wrapped_generators():
+  """CallableSpec.is_generator inspects the invoked callable rather than following __wrapped__."""
+
+  def sync_gen(x: int = 1):
+    yield x
+
+  async def async_gen():
+    yield 1
+
+  @functools.wraps(sync_gen)
+  def list_wrapper(*args, **kwargs):
+    return list(sync_gen(*args, **kwargs))
+
+  def regular_fn():
+    return 1
+
+  assert CallableSpec(sync_gen).is_generator is True
+  assert CallableSpec(async_gen).is_generator is True
+  assert CallableSpec(functools.partial(sync_gen, 2)).is_generator is True
+  assert CallableSpec(list_wrapper).is_generator is False
+  assert CallableSpec(regular_fn).is_generator is False
+  assert CallableSpec(None).is_generator is False

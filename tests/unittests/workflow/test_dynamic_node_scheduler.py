@@ -34,6 +34,7 @@ from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeRun
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeState
+from google.adk.workflow._dynamic_node_scheduler import run_node_internal
 from google.adk.workflow._errors import WorkflowInvariantError
 from google.adk.workflow._node_state import NodeState
 from google.adk.workflow._node_state import NodeStatus
@@ -1139,10 +1140,10 @@ async def test_dynamic_node_state_maintains_independent_run_counters():
 async def test_static_and_dynamic_node_sharing_a_name_do_not_collide():
   """A static graph node and a dynamic node of the same name get distinct run IDs.
 
-  Both allocators -- `Workflow._next_run_id` for static graph nodes and
-  `DynamicNodeScheduler` for `ctx.run_node()` -- draw from the same
-  `_LoopState` counter, so two runs of the same name under one parent can no
-  longer be assigned the same run_id (and therefore the same node_path).
+  Both static graph nodes (`_LoopState.next_run_id`) and `DynamicNodeScheduler`
+  (`ctx.run_node()`) draw from the same `_LoopState` counter, so two runs of the
+  same name under one parent cannot be assigned the same run_id (and therefore
+  the same node_path).
   """
 
   class SimpleNode(BaseNode):
@@ -1163,9 +1164,7 @@ async def test_static_and_dynamic_node_sharing_a_name_do_not_collide():
   ctx._run_node_standalone = AsyncMock(return_value=mock_child_ctx)
 
   # The static graph node 'worker' runs first and takes run_id '1'.
-  static_run_id = Workflow._next_run_id(
-      loop_state, 'worker', parent_path=ctx.node_path
-  )
+  static_run_id = loop_state.next_run_id('worker', parent_path=ctx.node_path)
 
   # A dynamic node of the same name under the same parent continues the same
   # sequence instead of restarting at '1'.
@@ -1176,10 +1175,7 @@ async def test_static_and_dynamic_node_sharing_a_name_do_not_collide():
   assert dynamic_run_id == '2'
 
   # A later static run of the same name keeps advancing the shared counter.
-  assert (
-      Workflow._next_run_id(loop_state, 'worker', parent_path=ctx.node_path)
-      == '3'
-  )
+  assert loop_state.next_run_id('worker', parent_path=ctx.node_path) == '3'
   assert loop_state.run_counters[ctx.node_path] == {'worker': 3}
 
 
@@ -1568,3 +1564,54 @@ async def test_dynamic_node_scheduler_transfer_restores_use_as_output_on_hop_bac
   )
   # Hop 3 (child2 hopped back to parent_ctx): use_as_output restored to True!
   assert mock_standalone.call_args_list[1].kwargs['use_as_output'] is True
+
+
+@pytest.mark.asyncio
+async def test_run_node_internal_root_agent_defaults_to_chat_mode():
+  """run_node_internal defaults a root agent with mode=None to 'chat' mode."""
+  agent = LlmAgent(name='root_agent', rerun_on_resume=True)
+  assert agent.mode is None
+
+  ctx, _ = _make_parent_ctx()
+  ctx.parent_ctx = None
+  ctx.node = None
+  ctx.node_path = ''
+  ctx._node_rerun_on_resume = True
+  ctx._invocation_context.agent = agent
+
+  child_ctx = MagicMock(spec=Context)
+  child_ctx.error = None
+  child_ctx.interrupt_ids = set()
+  child_ctx.actions = EventActions()
+  child_ctx.output = 'ok'
+  ctx._run_node_standalone = AsyncMock(return_value=child_ctx)
+
+  await run_node_internal(ctx, agent, 'input', return_ctx=True)
+
+  built_node = ctx._run_node_standalone.call_args.args[0]
+  assert built_node.mode == 'chat'
+  assert agent.mode is None
+
+
+@pytest.mark.asyncio
+async def test_run_node_internal_child_node_defaults_to_single_turn_mode():
+  """run_node_internal defaults a child node with mode=None to 'single_turn' mode."""
+  agent = LlmAgent(name='child_agent', rerun_on_resume=True)
+  assert agent.mode is None
+
+  ctx, _ = _make_parent_ctx()
+  ctx.node_path = 'parent_node'
+  ctx._node_rerun_on_resume = True
+
+  child_ctx = MagicMock(spec=Context)
+  child_ctx.error = None
+  child_ctx.interrupt_ids = set()
+  child_ctx.actions = EventActions()
+  child_ctx.output = 'ok'
+  ctx._run_node_standalone = AsyncMock(return_value=child_ctx)
+
+  await run_node_internal(ctx, agent, 'input', return_ctx=True)
+
+  built_node = ctx._run_node_standalone.call_args.args[0]
+  assert built_node.mode == 'single_turn'
+  assert agent.mode is None

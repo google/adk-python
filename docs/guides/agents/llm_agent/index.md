@@ -155,7 +155,7 @@ Settings for binding capabilities, parsing input, and constraining output format
 
 | Member | Kind | Return or Signature | Description |
 | :--- | :--- | :--- | :--- |
-| `tools` | Field | `list[ToolUnion]` | Tools available to the agent (callables, `BaseTool`, `BaseToolset`, or `NodeTool`). |
+| `tools` | Field | `list[ToolUnion]` | Tools available to the agent (callables, `BaseTool`, `BaseToolset`, or `BaseNode`). |
 | `input_schema` | Field | `type[BaseModel] \| None` | Expected input schema when the agent is invoked as a tool. |
 | `output_schema` | Field | `SchemaType \| None` | Pydantic model or schema type enforcing structured output. |
 | `output_key` | Field | `str \| None` | Session state key where the final agent output is automatically stored. |

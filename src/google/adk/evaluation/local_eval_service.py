@@ -62,7 +62,12 @@ from .simulation.user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger("google_adk." + __name__)
 
-EVAL_SESSION_ID_PREFIX = "___eval___session___"
+# Note: must only contain lowercase letters, digits and hyphens, and start
+# and end with an alphanumeric character once the UUID is appended. Custom
+# session IDs are passed to the configured SessionService (e.g. Vertex
+# AiSessionService), which forwards them to remote backends such as Agent
+# Engine that enforce this constraint.
+EVAL_SESSION_ID_PREFIX = "adk-eval-session-"
 
 
 def _get_session_id() -> str:
@@ -445,6 +450,7 @@ class LocalEvalService(BaseEvalService):
     eval_metric_result_details = EvalMetricResultDetails(
         rubric_scores=evaluation_result.overall_rubric_scores,
         token_usage_details=evaluation_result.overall_token_usage_details,
+        duration_details=evaluation_result.overall_duration_details,
     )
     overall_eval_metric_results.append(
         EvalMetricResult(
@@ -511,6 +517,7 @@ class LocalEvalService(BaseEvalService):
       eval_metric_result_details = EvalMetricResultDetails(
           rubric_scores=invocation_result.rubric_scores,
           token_usage_details=invocation_result.token_usage_details,
+          duration_details=invocation_result.duration_details,
       )
       invocation.eval_metric_results.append(
           EvalMetricResult(

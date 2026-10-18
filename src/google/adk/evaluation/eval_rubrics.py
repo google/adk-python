@@ -25,10 +25,11 @@ class RubricContent(EvalBaseModel):
   """The content of a rubric."""
 
   text_property: Optional[str] = Field(
+      default=None,
       description=(
           "The property being evaluated. Example: \"The agent's response is"
           ' grammatically correct." '
-      )
+      ),
   )
 
 

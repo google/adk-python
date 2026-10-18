@@ -30,12 +30,11 @@ from . import functions as functions
 from ...agents.base_agent import BaseAgent
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
-from ...live import _live_llm_flow
-from ...live._audio_cache_manager import AudioCacheManager
 from ...live._flow_utils import DEFAULT_ENABLE_CACHE_STATISTICS as DEFAULT_ENABLE_CACHE_STATISTICS
 from ...live._flow_utils import DEFAULT_MAX_RECONNECT_ATTEMPTS as DEFAULT_MAX_RECONNECT_ATTEMPTS
 from ...live._flow_utils import DEFAULT_TASK_COMPLETION_DELAY as DEFAULT_TASK_COMPLETION_DELAY
 from ...live._flow_utils import DEFAULT_TRANSFER_AGENT_DELAY as DEFAULT_TRANSFER_AGENT_DELAY
+from ...live._realtime_cache_manager import RealtimeCacheManager as _RealtimeCacheManager
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
@@ -126,7 +125,10 @@ class BaseLlmFlow(ABC):
     self.response_processors: list[BaseLlmResponseProcessor] = []
 
     # Initialize configuration and managers
-    self.audio_cache_manager = AudioCacheManager()
+    self._realtime_cache_manager = _RealtimeCacheManager()
+    # Kept for backward compatibility. The flow itself reads
+    # `_realtime_cache_manager`, so reassigning this attribute has no effect.
+    self.audio_cache_manager = self._realtime_cache_manager
 
   def _request_processor_lists(
       self,
@@ -276,6 +278,8 @@ class BaseLlmFlow(ABC):
       invocation_context: InvocationContext,
   ) -> AsyncGenerator[Event, None]:
     """Runs the flow using live api."""
+    from ...live import _live_llm_flow
+
     async with Aclosing(
         _live_llm_flow.run_live_flow(self, invocation_context)
     ) as agen:
@@ -289,6 +293,8 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
   ) -> Optional[Event]:
     """Screens live user content with a before model callback."""
+    from ...live import _live_llm_flow
+
     return await _live_llm_flow.screen_live_user_content(
         self, invocation_context, content, llm_request
     )
@@ -300,6 +306,8 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
   ) -> None:
     """Sends data to model."""
+    from ...live import _live_llm_flow
+
     await _live_llm_flow.send_to_model(
         self, llm_connection, invocation_context, llm_request
     )
@@ -311,6 +319,8 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
   ) -> AsyncGenerator[Event, None]:
     """Receive data from model and process events using BaseLlmConnection."""
+    from ...live import _live_llm_flow
+
     async with Aclosing(
         _live_llm_flow.receive_from_model(
             self, llm_connection, invocation_context, llm_request
@@ -552,6 +562,8 @@ class BaseLlmFlow(ABC):
     Yields:
       A generator of events.
     """
+    from ...live import _live_llm_flow
+
     async with Aclosing(
         _live_llm_flow.postprocess_live_flow(
             self,

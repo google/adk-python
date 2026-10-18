@@ -24,6 +24,7 @@ from types import UnionType
 import typing
 from typing import Any
 from typing import List
+from typing import NoReturn
 from typing import Optional
 from typing import TYPE_CHECKING
 import warnings
@@ -824,20 +825,99 @@ def _set_enforce_yaml_key_denylist(value: bool) -> None:
   _ENFORCE_YAML_KEY_DENYLIST = value
 
 
-def _check_config_for_blocked_keys(node: Any, filename: str) -> None:
-  """Recursively check if the configuration contains any blocked keys."""
+def _validate_mcp_toolset_args(args: Any) -> None:
+  """Validates McpToolset args without resolving a code reference."""
+  from ..tools.mcp_tool.mcp_toolset import McpToolsetConfig
+
+  McpToolsetConfig.model_validate(args)
+
+
+# Entries in this set must be built-in tools whose validator treats the
+# YAML input as data only. The name is matched literally; it is never
+# imported or otherwise resolved from the configuration.
+_MCP_TOOLSET_NAMES = frozenset({
+    "MCPToolset",
+    "McpToolset",
+    "google.adk.tools.MCPToolset",
+    "google.adk.tools.McpToolset",
+    "google.adk.tools.mcp_tool.MCPToolset",
+    "google.adk.tools.mcp_tool.McpToolset",
+    "google.adk.tools.mcp_tool.mcp_toolset.MCPToolset",
+    "google.adk.tools.mcp_tool.mcp_toolset.McpToolset",
+})
+_BUILTIN_LLM_AGENT_NAMES = frozenset({
+    "Agent",
+    "LlmAgent",
+    "google.adk.agents.Agent",
+    "google.adk.agents.LlmAgent",
+    "google.adk.agents.llm_agent.Agent",
+    "google.adk.agents.llm_agent.LlmAgent",
+})
+
+
+def _raise_blocked_key(key: str, filename: str) -> NoReturn:
+  raise ValueError(
+      f"Blocked key {key!r} found in {filename!r}. "
+      f"The '{key}' field is not allowed in agent configurations "
+      "because it can execute arbitrary code."
+  )
+
+
+def _check_node_for_blocked_keys(node: Any, filename: str) -> None:
+  """Recursively checks a non-tool configuration node for blocked keys."""
   if isinstance(node, dict):
     for key, value in node.items():
       if key in _BLOCKED_YAML_KEYS:
-        raise ValueError(
-            f"Blocked key {key!r} found in {filename!r}. "
-            f"The '{key}' field is not allowed in agent configurations "
-            "because it can execute arbitrary code."
-        )
-      _check_config_for_blocked_keys(value, filename)
+        _raise_blocked_key(key, filename)
+      _check_node_for_blocked_keys(value, filename)
   elif isinstance(node, list):
     for item in node:
-      _check_config_for_blocked_keys(item, filename)
+      _check_node_for_blocked_keys(item, filename)
+
+
+def _check_tool_configs_for_blocked_keys(
+    tools: list[Any], filename: str
+) -> None:
+  """Checks tool configs, allowing args only for registered built-ins."""
+  for tool in tools:
+    if not isinstance(tool, dict):
+      _check_node_for_blocked_keys(tool, filename)
+      continue
+
+    tool_name = tool.get("name")
+    is_mcp_toolset = (
+        isinstance(tool_name, str) and tool_name in _MCP_TOOLSET_NAMES
+    )
+    for key, value in tool.items():
+      if key not in _BLOCKED_YAML_KEYS:
+        _check_node_for_blocked_keys(value, filename)
+        continue
+      if not is_mcp_toolset:
+        _raise_blocked_key(key, filename)
+      try:
+        _validate_mcp_toolset_args(value)
+      except (TypeError, ValueError) as e:
+        raise ValueError(
+            f"Invalid {key!r} for safe built-in tool {tool_name!r} "
+            f"in {filename!r}."
+        ) from e
+
+
+def _check_config_for_blocked_keys(node: Any, filename: str) -> None:
+  """Checks blocked keys with a narrow exception for safe built-in tools."""
+  if not isinstance(node, dict):
+    _check_node_for_blocked_keys(node, filename)
+    return
+
+  agent_class = node.get("agent_class", "LlmAgent")
+  is_builtin_llm_agent = (
+      isinstance(agent_class, str) and agent_class in _BUILTIN_LLM_AGENT_NAMES
+  )
+  for key, value in node.items():
+    if key == "tools" and is_builtin_llm_agent and isinstance(value, list):
+      _check_tool_configs_for_blocked_keys(value, filename)
+    else:
+      _check_node_for_blocked_keys({key: value}, filename)
 
 
 _ENFORCE_DENYLIST = True

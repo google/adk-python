@@ -104,7 +104,7 @@ def test_client(tmp_path):
       host="127.0.0.1",
       port=8000,
   )
-  return TestClient(app)
+  return TestClient(app, client=("127.0.0.1", 51234))
 
 
 def test_list_tests_empty(test_client):

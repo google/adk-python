@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+from collections.abc import Iterator
 import inspect
 import logging
 from typing import Any
@@ -33,7 +34,6 @@ from typing import TypeVar
 from typing import Union
 
 from google.genai import types
-from opentelemetry import context
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -42,15 +42,14 @@ from typing_extensions import deprecated
 from typing_extensions import override
 from typing_extensions import TypeAlias
 
+from ..events._node_path_builder import _NodePathBuilder
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..features import experimental
 from ..features import FeatureName
-from ..telemetry import _instrumentation
 from ..utils._callback_pipeline import _normalize_callbacks
 from ..utils._callback_pipeline import _run_callbacks
 from ..utils._callback_pipeline import _stop_on_truthy
-from ..utils._runner_utils import _with_caller_context
 from ..utils.context_utils import Aclosing
 from ..workflow import BaseNode
 from .base_agent_config import BaseAgentConfig as BaseAgentConfig
@@ -92,6 +91,42 @@ class BaseAgentState(BaseModel):
 
 
 AgentState = TypeVar('AgentState', bound=BaseAgentState)
+
+
+def _agent_state_key(ctx: Any, agent_name: str) -> str:
+  """Returns the key used to store agent state for `agent_name`."""
+  node_path = getattr(ctx, 'node_path', None)
+  if (
+      isinstance(node_path, str)
+      and node_path
+      and _NodePathBuilder.from_string(node_path).node_name == agent_name
+  ):
+    return node_path
+  return agent_name
+
+
+def _subtree_names(agent: Any, visited: set[int]) -> set[str]:
+  if agent is None or id(agent) in visited:
+    return set()
+  visited.add(id(agent))
+  children = getattr(agent, 'sub_agents', None)
+  sub = children if isinstance(children, (list, tuple)) else ()
+  name = getattr(agent, 'name', None)
+  return ({name} if isinstance(name, str) else set()) | {
+      n for c in sub for n in _subtree_names(c, visited)
+  }
+
+
+def _warn_duplicate_agent_names(duplicates: set[str]) -> None:
+  if not duplicates:
+    return
+  duplicate_names_str = ', '.join(f'`{name}`' for name in sorted(duplicates))
+  logger.warning(
+      'Found duplicate agent names: %s. '
+      'All agents in the tree must have unique names. '
+      'find_agent() returns the first match in a depth-first walk.',
+      duplicate_names_str,
+  )
 
 
 # TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
@@ -204,10 +239,20 @@ class BaseAgent(BaseNode, abc.ABC):
     Returns:
         The current state if exists; otherwise, None.
     """
-    if ctx.agent_states is None or self.name not in ctx.agent_states:
+    if ctx.agent_states is None:
       return None
-    else:
-      return state_type.model_validate(ctx.agent_states.get(self.name))
+    key = _agent_state_key(ctx, self.name)
+    raw_state = ctx.agent_states.get(key) if key in ctx.agent_states else None
+    if (
+        raw_state is None
+        and key != self.name
+        and key not in ctx.end_of_agents
+        and self.name in ctx.agent_states
+    ):
+      raw_state = ctx.agent_states.get(self.name)
+    if raw_state is None:
+      return None
+    return state_type.model_validate(raw_state)
 
   def _create_agent_state_event(
       self,
@@ -222,9 +267,20 @@ class BaseAgent(BaseNode, abc.ABC):
       An event with the current agent state set in the invocation context.
     """
     event_actions = EventActions()
-    if (agent_state := ctx.agent_states.get(self.name)) is not None:
+    key = _agent_state_key(ctx, self.name)
+    agent_state = ctx.agent_states.get(key)
+    if (
+        agent_state is None
+        and key != self.name
+        and key not in ctx.end_of_agents
+    ):
+      agent_state = ctx.agent_states.get(self.name)
+    if agent_state is not None:
       event_actions.agent_state = agent_state
-    if ctx.end_of_agents.get(self.name):
+    end_of_agent = ctx.end_of_agents.get(key)
+    if end_of_agent is None and key != self.name:
+      end_of_agent = ctx.end_of_agents.get(self.name)
+    if end_of_agent:
       event_actions.end_of_agent = True
     return Event(
         invocation_id=ctx.invocation_id,
@@ -373,54 +429,61 @@ class BaseAgent(BaseNode, abc.ABC):
       impl_fn: Callable[[InvocationContext], AsyncGenerator[Event, None]],
   ) -> AsyncGenerator[Event, None]:
     """Runs an agent implementation generator with full callback and trace lifecycle."""
-    caller_ctx = context.get_current()
+    from ..telemetry import _instrumentation
+
+    ctx = self._create_invocation_context(parent_context)
 
     async def _run() -> AsyncGenerator[Event, None]:
-      ctx = self._create_invocation_context(parent_context)
-      async with _instrumentation.record_agent_invocation(ctx, self):
-        before_callback_completed = False
-        after_callback_called = False
-        try:
-          event = await self._handle_before_agent_callback(ctx)
-          before_callback_completed = True
-          if event:
+      before_callback_completed = False
+      after_callback_called = False
+      try:
+        event = await self._handle_before_agent_callback(ctx)
+        before_callback_completed = True
+        if event:
+          yield event
+        if ctx.end_invocation:
+          return
+
+        async with Aclosing(impl_fn(ctx)) as agen:
+          async for event in agen:
             yield event
-          if ctx.end_invocation:
-            return
 
-          async with Aclosing(impl_fn(ctx)) as agen:
-            async for event in agen:
-              yield event
+        if ctx.end_invocation:
+          return
 
-          if ctx.end_invocation:
-            return
+        after_callback_called = True
+        if event := await self._handle_after_agent_callback(ctx):
+          yield event
+      except asyncio.CancelledError:
+        if (
+            before_callback_completed
+            and not after_callback_called
+            and not ctx.end_invocation
+        ):
+          try:
+            await self._handle_after_agent_callback(ctx)
+          except asyncio.CancelledError:
+            raise
+          except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                'after_agent_callback raised on cancellation;'
+                ' suppressing so original cancellation propagates.'
+            )
+        raise
+      except Exception as e:
+        await self._handle_agent_error_callback(ctx, e)
+        raise
 
-          after_callback_called = True
-          if event := await self._handle_after_agent_callback(ctx):
-            yield event
-        except asyncio.CancelledError:
-          if (
-              before_callback_completed
-              and not after_callback_called
-              and not ctx.end_invocation
-          ):
-            try:
-              await self._handle_after_agent_callback(ctx)
-            except asyncio.CancelledError:
-              raise
-            except Exception:  # pylint: disable=broad-except
-              logger.exception(
-                  'after_agent_callback raised on cancellation;'
-                  ' suppressing so original cancellation propagates.'
-              )
-          raise
-        except Exception as e:
-          await self._handle_agent_error_callback(ctx, e)
-          raise
-
-    async with Aclosing(_with_caller_context(_run(), caller_ctx)) as agen:
-      async for event in agen:
-        yield event
+    # The scope is entered out here rather than inside `_run`, so that its
+    # span is not opened and closed by whoever happens to drive the generator,
+    # and `stream_in_scope` attaches it only while `_run` is actually running
+    # (b/485899016).
+    async with _instrumentation.record_agent_invocation(ctx, self) as scope:
+      async with Aclosing(
+          _instrumentation.stream_in_scope(scope.otel_context, _run())
+      ) as agen:
+        async for event in agen:
+          yield event
 
   async def _run_async_impl(
       self, ctx: InvocationContext
@@ -489,6 +552,11 @@ class BaseAgent(BaseNode, abc.ABC):
         return result
     return None
 
+  @override
+  def _iter_static_children(self) -> Iterator[BaseNode]:
+    """Yields direct static children (sub-agents) of this agent."""
+    yield from self.sub_agents
+
   def _create_invocation_context(
       self, parent_context: InvocationContext
   ) -> InvocationContext:
@@ -531,7 +599,8 @@ class BaseAgent(BaseNode, abc.ABC):
       end_invocation_on_content: Whether returned content ends the invocation.
 
     Returns:
-      Optional[Event]: an event if a callback provides content or changed state.
+      Optional[Event]: an event if a callback provides content or changed state
+        or artifacts.
     """
     callback_context = CallbackContext(ctx)
 
@@ -557,13 +626,16 @@ class BaseAgent(BaseNode, abc.ABC):
           author=self.name,
           branch=ctx.branch,
           content=callback_content,
-          actions=callback_context._event_actions,
+          actions=callback_context.actions,
       )
       if end_invocation_on_content:
         ctx.end_invocation = True
       return ret_event
 
-    if callback_context.state.has_delta():
+    if (
+        callback_context.state.has_delta()
+        or callback_context._event_actions.artifact_delta
+    ):
       return Event(
           invocation_id=ctx.invocation_id,
           author=self.name,
@@ -582,7 +654,8 @@ class BaseAgent(BaseNode, abc.ABC):
       ctx: InvocationContext, the invocation context for this agent.
 
     Returns:
-      Optional[Event]: an event if callback provides content or changed state.
+      Optional[Event]: an event if a callback provides content or changed state
+        or artifacts.
     """
     return await self._handle_agent_callbacks(
         ctx,
@@ -601,7 +674,8 @@ class BaseAgent(BaseNode, abc.ABC):
         agent.
 
     Returns:
-      Optional[Event]: an event if callback provides content or changed state.
+      Optional[Event]: an event if a callback provides content or changed state
+        or artifacts.
     """
     return await self._handle_agent_callbacks(
         invocation_context,
@@ -642,6 +716,13 @@ class BaseAgent(BaseNode, abc.ABC):
   @override
   def model_post_init(self, __context: Any) -> None:
     super().model_post_init(__context)
+    # >= 2 branches already warned in validate_sub_agents_unique_names.
+    if (
+        isinstance(self.sub_agents, (list, tuple))
+        and sum(self.name in _subtree_names(c, set()) for c in self.sub_agents)
+        == 1
+    ):
+      _warn_duplicate_agent_names({self.name})
     self.__set_parent_agent_for_sub_agents()
 
   @field_validator('name', mode='after')
@@ -675,29 +756,13 @@ class BaseAgent(BaseNode, abc.ABC):
       The validated list of sub-agents.
 
     """
-    if not value:
-      return value
-
     seen_names: set[str] = set()
     duplicates: set[str] = set()
-
     for sub_agent in value:
-      name = sub_agent.name
-      if name in seen_names:
-        duplicates.add(name)
-      else:
-        seen_names.add(name)
-
-    if duplicates:
-      duplicate_names_str = ', '.join(
-          f'`{name}`' for name in sorted(duplicates)
-      )
-      logger.warning(
-          'Found duplicate sub-agent names: %s. '
-          'All sub-agents must have unique names.',
-          duplicate_names_str,
-      )
-
+      branch_names = _subtree_names(sub_agent, set())
+      duplicates |= seen_names & branch_names
+      seen_names |= branch_names
+    _warn_duplicate_agent_names(duplicates)
     return value
 
   def __set_parent_agent_for_sub_agents(self) -> BaseAgent:
