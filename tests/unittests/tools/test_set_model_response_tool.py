@@ -14,7 +14,9 @@
 
 """Tests for SetModelResponseTool."""
 
+from datetime import date
 import inspect
+import json
 from typing import Optional
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -22,6 +24,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.features._feature_registry import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.models._capabilities import LlmCapabilities
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_context import ToolContext
@@ -29,6 +32,63 @@ from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
 import pytest
+
+from .. import testing_utils
+
+
+@pytest.mark.parametrize('as_list', [False, True])
+@pytest.mark.parametrize('with_tools', [False, True])
+def test_runner_output_schema_with_tools_preserves_json_date(
+    as_list, with_tools
+):
+  """The fallback tool and native schema paths keep final output JSON-safe."""
+
+  class DatedOutput(BaseModel):
+    day: date
+    note: str | None = None
+
+  class FallbackModel(testing_utils.MockModel):
+
+    @property
+    def capabilities(self):
+      return LlmCapabilities(output_schema_and_tools=False)
+
+  def lookup(query: str) -> str:
+    return query
+
+  item = {'day': '2026-10-17'}
+  expected = [item] if as_list else item
+  response = (
+      types.Part.from_function_call(
+          name=SetModelResponseTool.NAME,
+          args={'items': [item]} if as_list else item,
+      )
+      if with_tools
+      else json.dumps(expected)
+  )
+  model = FallbackModel.create(responses=[response])
+  agent = LlmAgent(
+      name='dated',
+      model=model,
+      tools=[lookup] if with_tools else [],
+      output_schema=list[DatedOutput] if as_list else DatedOutput,
+      output_key='out',
+  )
+  runner = testing_utils.InMemoryRunner(agent)
+  events = runner.run('return the date')
+
+  assert not model.capabilities.output_schema_and_tools
+  assert (
+      SetModelResponseTool.NAME in model.requests[0].tools_dict
+  ) == with_tools
+  final = [event for event in events if event.is_final_response()][-1]
+  assert (
+      json.loads(
+          ''.join(part.text for part in final.content.parts if part.text)
+      )
+      == expected
+  )
+  assert runner.session.state['out'] == expected
 
 
 class PersonSchema(BaseModel):
