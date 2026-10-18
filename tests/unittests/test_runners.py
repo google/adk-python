@@ -1929,6 +1929,52 @@ class TestRunnerWithPlugins:
     runner.plugin_manager.close.assert_awaited_once()
 
   @pytest.mark.asyncio
+  async def test_runner_close_closes_toolsets_in_agent_inside_workflow_as_tool(
+      self,
+  ):
+    """Toolset in an agent inside a Workflow used as a tool is closed."""
+
+    class RecordingToolset(BaseToolset):
+
+      def __init__(self):
+        super().__init__()
+        self.closed = False
+
+      async def get_tools(self, readonly_context=None):
+        del readonly_context
+        return []
+
+      async def close(self) -> None:
+        self.closed = True
+
+    toolset = RecordingToolset()
+    mock_model = testing_utils.MockModel.create(responses=["hello"])
+    inner_agent = LlmAgent(
+        name="inner_agent", model=mock_model, tools=[toolset]
+    )
+    tool_workflow = Workflow(
+        name="tool_wf",
+        input_schema=str,
+        edges=[(START, inner_agent)],
+    )
+    root_agent = LlmAgent(
+        name="root_agent",
+        model=mock_model,
+        tools=[tool_workflow],
+    )
+    runner = Runner(
+        app_name="test_app",
+        agent=root_agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        auto_create_session=True,
+    )
+
+    assert not toolset.closed
+    await runner.close()
+    assert toolset.closed
+
+  @pytest.mark.asyncio
   async def test_runner_passes_plugin_close_timeout(self):
     """Test that runner passes plugin_close_timeout to PluginManager."""
     runner = Runner(

@@ -54,8 +54,9 @@ export.
 The second is `step_three`. The state key it names has to already be in state by
 the time it runs, because a parameter that is neither `ctx` nor `node_input` is
 looked up by name in `ctx.state`. If the key is missing and the parameter has no
-Python default, the node raises
-`ValueError: Missing value for parameter "user_name"` before the function body
+Python default, the node raises `WorkflowDataError`, a `ValueError` subclass,
+with `Missing value for parameter "user_name" of function "step_three". It was
+not found in ctx.state and has no default value.` before the function body
 executes at all. In this graph `step_two` is what puts the key there. When a
 parameter is genuinely optional, give it a default and the lookup stops being
 fatal.
@@ -123,7 +124,9 @@ Two options are the other way round. `@node` also takes `parallel_worker` and
 In the default `'state'` mode, a parameter named `node_input` receives the
 predecessor's output and every other parameter is looked up by name in
 `ctx.state`. A parameter that is in neither, and has no default, raises
-`ValueError: Missing value for parameter "<name>"` before the function body
+`WorkflowDataError`, a `ValueError` subclass, with
+`Missing value for parameter "<name>" of function "<node_name>". It was not
+found in ctx.state and has no default value.` before the function body
 runs.
 
 In `'node_input'` mode the predecessor's output is expected to be a dict (or a

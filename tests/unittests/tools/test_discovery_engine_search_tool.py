@@ -49,6 +49,71 @@ class TestDiscoveryEngineSearchTool:
         == "test_search_engine/servingConfigs/default_config"
     )
 
+  def test_init_with_custom_name_and_description(self) -> None:
+    """Test initialization with custom name and description."""
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        name="custom_search",
+        description="Custom search description.",
+    )
+    assert tool.name == "custom_search"
+    assert tool.description == "Custom search description."
+
+  def test_init_with_custom_name_only(self) -> None:
+    """Test initialization with custom name only."""
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        name="custom_search",
+    )
+    assert tool.name == "custom_search"
+    assert tool.description.startswith(
+        "Search through Vertex AI Search's discovery engine search API."
+    )
+
+  def test_init_with_custom_description_only(self) -> None:
+    """Test initialization with custom description only."""
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        description="Custom search description.",
+    )
+    assert tool.name == "discovery_engine_search"
+    assert tool.description == "Custom search description."
+
+  def test_get_declaration_with_custom_name_and_description(self) -> None:
+    """Test _get_declaration returns custom name and description."""
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        name="custom_search",
+        description="Custom search description.",
+    )
+    declaration = tool._get_declaration()
+    assert declaration is not None
+    assert declaration.name == "custom_search"
+    assert declaration.description == "Custom search description."
+
+  def test_get_declaration_default_name_and_description(self) -> None:
+    """Test _get_declaration returns default name and description."""
+    tool = DiscoveryEngineSearchTool(data_store_id="test_data_store")
+    declaration = tool._get_declaration()
+    assert declaration is not None
+    assert declaration.name == "discovery_engine_search"
+    assert declaration.description is not None
+    assert declaration.description.startswith(
+        "Search through Vertex AI Search's discovery engine search API."
+    )
+
+  def test_init_with_empty_name_and_description_uses_defaults(self) -> None:
+    """Empty name and description strings fall back to defaults."""
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        name="",
+        description="",
+    )
+    assert tool.name == "discovery_engine_search"
+    assert tool.description.startswith(
+        "Search through Vertex AI Search's discovery engine search API."
+    )
+
   def test_init_with_no_ids_raises_error(self):
     """Test that initialization with no IDs raises ValueError."""
     with pytest.raises(

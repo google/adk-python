@@ -55,12 +55,14 @@ class SemconvConfig:
   name: str
   semconv_opt_in: str | None
   capture_content: str | None
+  # Stable semconv is v1-only: v2 defaults to experimental.
+  schema_versions: tuple[Literal[1, 2], ...] = (1, 2)
 
 
 # The configurations exercised by every scenario.
 SEMCONV_CONFIGS: list[SemconvConfig] = [
-    SemconvConfig("stable-no-capture", None, "false"),
-    SemconvConfig("stable-capture", None, "true"),
+    SemconvConfig("stable-no-capture", None, "false", schema_versions=(1,)),
+    SemconvConfig("stable-capture", None, "true", schema_versions=(1,)),
     SemconvConfig("experimental-no-content", EXPERIMENTAL_OPT_IN, "no_content"),
     SemconvConfig("experimental-span-only", EXPERIMENTAL_OPT_IN, "span_only"),
     SemconvConfig("experimental-event-only", EXPERIMENTAL_OPT_IN, "event_only"),
@@ -81,7 +83,7 @@ def semconv_matrix(scenario: Scenario) -> list[FunctionalTestCase]:
           schema_version=schema_version,
       )
       for config in SEMCONV_CONFIGS
-      for schema_version in (1, 2)
+      for schema_version in config.schema_versions
   ]
 
 
@@ -126,11 +128,10 @@ RESOURCE_EXHAUSTED = genai_errors.ClientError(
 
 
 ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
-    # Opted in to what the ``stable-no-capture`` rows above run without, and
-    # named for them: those rows are this pair's opt-in-less twin, so the two
-    # goldens together are what pins the gate for this scenario.
+    # Opted in to ``adk.experimental.*`` telemetry; the ``*-no-capture`` rows
+    # above are the opt-in-less twins, so together they pin the gate.
     FunctionalTestCase(
-        test_id="experimental-telemetry-stable-no-capture-schema-v1",
+        test_id="experimental-telemetry-no-capture-schema-v1",
         scenario="agent",
         semconv_opt_in=None,
         capture_content="false",
@@ -138,7 +139,7 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         experimental_telemetry=True,
     ),
     FunctionalTestCase(
-        test_id="experimental-telemetry-stable-no-capture-schema-v2",
+        test_id="experimental-telemetry-no-capture-schema-v2",
         scenario="agent",
         semconv_opt_in=None,
         capture_content="false",
@@ -175,6 +176,15 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         schema_version=2,
         model_exception=ValueError("boom"),
     ),
+    # Opted in, the failed call also reports its completion details.
+    FunctionalTestCase(
+        test_id="inference-error-valueerror-span-and-event-schema-v2",
+        scenario="agent",
+        semconv_opt_in=EXPERIMENTAL_OPT_IN,
+        capture_content="span_and_event",
+        schema_version=2,
+        model_exception=ValueError("boom"),
+    ),
     # Tool failure: the inference succeeds and the tool it asked for raises,
     # so the failure has to show up on the tool span rather than the call.
     FunctionalTestCase(
@@ -182,6 +192,15 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         scenario="agent",
         semconv_opt_in=None,
         capture_content="false",
+        schema_version=2,
+        tool_exception=TOOL_ERROR,
+    ),
+    # With content on, the failed call reports its arguments but no result.
+    FunctionalTestCase(
+        test_id="tool-error-valueerror-span-only-schema-v2",
+        scenario="agent",
+        semconv_opt_in=None,
+        capture_content="span_only",
         schema_version=2,
         tool_exception=TOOL_ERROR,
     ),

@@ -109,11 +109,28 @@ from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..utils._telemetry_context import _get_telemetry_surface
 from ..version import __version__
+from ._callback_helpers import _classify_tool_result_error
+from ._callback_helpers import _imported_types
+from ._callback_helpers import _is_durable_node_error
+from ._callback_helpers import _is_instance
+from ._callback_helpers import _mark_tool_error_recorded
+from ._callback_helpers import _pop_tool_error_recorded
+from ._callback_helpers import _validate_tool_result_classifier
+from ._callback_helpers import ToolResultClassifier
 from .base_plugin import BasePlugin
 
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
   from ..events.event import Event
+
+# Defined in _callback_helpers, which the observability plugins share, and
+# still importable from this module: _LLM_RESPONSE_ERROR_CODES was defined
+# here, and ToolResultClassification is what a tool_result_classifier returns.
+# pylint: disable=unused-import
+from ._callback_helpers import _LLM_RESPONSE_ERROR_CODES  # noqa: F401
+from ._callback_helpers import ToolResultClassification  # noqa: F401
+
+# pylint: enable=unused-import
 
 logger: logging.Logger = logging.getLogger("google_adk." + __name__)
 
@@ -585,12 +602,6 @@ _GRPC_OUT_OF_RANGE = 11
 _GRPC_INTERNAL = 13
 _GRPC_UNAVAILABLE = 14
 
-_LLM_RESPONSE_ERROR_CODES = frozenset(
-    reason.value
-    for reason_type in (types.FinishReason, types.BlockedReason)
-    for reason in reason_type
-)
-
 
 # --- Helper Formatters ---
 def _enum_label(value: object) -> str:
@@ -680,6 +691,19 @@ def _find_transfer_target(agent: Any, agent_name: str) -> Any:
   return None
 
 
+_SKILL_TOOLSET_MODULE = "google.adk.tools.skill_toolset"
+# The tools SkillToolset itself provides to list, load and run skills. Tools
+# an application adds to a SkillToolset keep their own origin.
+_SKILL_TOOL_TYPE_NAMES = (
+    "ListSkillsTool",
+    "LoadSkillResourceTool",
+    "LoadSkillTool",
+    "RunSkillScriptTool",
+    "SearchSkillsTool",
+    "UnloadSkillTool",
+)
+
+
 def _get_tool_origin(
     tool: "BaseTool",
     tool_args: Optional[dict[str, Any]] = None,
@@ -704,7 +728,7 @@ def _get_tool_origin(
 
   Returns:
       One of LOCAL, MCP, A2A, SUB_AGENT, TRANSFER_AGENT,
-      TRANSFER_A2A, or UNKNOWN.
+      TRANSFER_A2A, TOOLBOX, SKILL, or UNKNOWN.
   """
   # Import lazily to avoid circular dependencies.
   # pylint: disable=g-import-not-at-top
@@ -750,6 +774,12 @@ def _get_tool_origin(
     return "SUB_AGENT"
   if isinstance(tool, FunctionTool):
     return "LOCAL"
+  if isinstance(tool, _imported_types("toolbox_adk", "ToolboxTool")):
+    return "TOOLBOX"
+  if isinstance(
+      tool, _imported_types(_SKILL_TOOLSET_MODULE, *_SKILL_TOOL_TYPE_NAMES)
+  ):
+    return "SKILL"
   return "UNKNOWN"
 
 
@@ -1733,7 +1763,8 @@ def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
 
   Raises:
       ValueError: If any batch, queue, duration, retry, or callback setting is
-        invalid.
+        invalid, or ``tool_result_classifier`` cannot be called as the plugin
+        calls it.
   """
   _require_count("batch_size", config.batch_size, 1)
   _require_finite("batch_flush_interval", config.batch_flush_interval, 0)
@@ -1793,6 +1824,7 @@ def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
         "on_schema_ready must be a synchronous callable or None, got"
         f" {config.on_schema_ready!r}."
     )
+  _validate_tool_result_classifier(config.tool_result_classifier)
 
 
 # Cloud Platform OAuth scope. Assembled from parts so this module does not
@@ -2118,8 +2150,20 @@ def _recursive_smart_truncate(
       # at the fallback. Progress includes SCALARS: a RootModel[str] dumps
       # to a plain string that may itself be a credential blob, and
       # falling through to the generic fallback bypassed blob redaction.
+      #
+      # model_dump is called with warnings=False: Pydantic still dumps a field
+      # whose value no longer matches its type, but otherwise first warns with
+      # a UserWarning that quotes the value, before any content_formatter
+      # runs. A Pydantic model whose model_dump is an override is not called,
+      # since the override may not pass the flag on to Pydantic's. It is
+      # recorded as a sentinel, as is a model_dump that fails or does not take
+      # the flag: reading the fields instead would record what it leaves out.
       try:
-        dumped = model_dump_fn()
+        if _is_instance(obj, BaseModel) and (
+            getattr(model_dump_fn, "__func__", None) is not BaseModel.model_dump
+        ):
+          return "[UNSUPPORTED_OBJECT]", True
+        dumped = model_dump_fn(warnings=False)
         if isinstance(
             dumped,
             (collections.abc.Mapping, list, tuple, str, bytes, bytearray),
@@ -2130,7 +2174,7 @@ def _recursive_smart_truncate(
         if dumped is None or isinstance(dumped, (int, float, bool)):
           return dumped, False
       except Exception:
-        pass
+        return "[UNSUPPORTED_OBJECT]", True
     elif dict_fn is not None and callable(dict_fn):
       # Pydantic v1 (same progress requirement as above, scalars included).
       try:
@@ -2559,6 +2603,23 @@ class BigQueryLoggerConfig:
         materialize a date-filtered slice of a view into a table once and
         evaluate that table. ``False`` (the default) creates no eval views; call
         ``create_eval_views()`` to create or refresh them on demand.
+      tool_result_classifier: Optional ``ToolResultClassifier``: a synchronous
+        callable that receives the keyword arguments ``tool``, ``tool_args``,
+        ``tool_context`` and ``result`` of each call that reaches
+        ``after_tool_callback``, and decides whether the result reports a
+        failure. Return a ``ToolResultClassification`` to record the call as
+        ``TOOL_ERROR`` (``status="ERROR"``) or as ``TOOL_COMPLETED``
+        (``status="OK"``), or ``None`` to leave it to the built-in rule, which
+        records as ``TOOL_ERROR`` a result whose top-level ``isError`` or
+        ``is_error`` is ``True``, such as an MCP ``CallToolResult``. It is not
+        called for a ``ReflectAndRetryToolPlugin`` answer, which stands for a
+        raised error and is always recorded as ``TOOL_ERROR``. The arguments
+        must not be modified; the model and the agent use them next. A
+        classifier is rejected when the plugin is created if it is a coroutine
+        or async generator function, if ``inspect`` cannot read its signature,
+        or if it cannot take those keyword arguments. One that raises an
+        ``Exception`` or returns anything else is skipped at run time: the
+        built-in rule applies, and the logged warning names only the tool.
   """
 
   enabled: bool = True
@@ -2653,6 +2714,8 @@ class BigQueryLoggerConfig:
   # Opt-in: also create the {view_prefix}_eval_session and
   # {view_prefix}_eval_turn agent evaluation views.
   create_eval_views: bool = False
+  # Application rules for tool results that report a failure without raising.
+  tool_result_classifier: Optional[ToolResultClassifier] = None
 
 
 # ==============================================================================
@@ -4020,7 +4083,11 @@ class HybridContentParser:
 
   def _serialize_part_model(self, value: Any) -> tuple[dict[str, Any], bool]:
     """Returns bounded JSON-native fields for a supported structured part."""
-    dumped = value.model_dump(exclude_none=True, mode="json")
+    # warnings=False: a field that no longer fits its type, even in a model
+    # nested in a function response, is otherwise quoted in a UserWarning.
+    # Pydantic serializes nested models itself, without calling their own
+    # model_dump.
+    dumped = value.model_dump(exclude_none=True, mode="json", warnings=False)
     sanitized, content_lost = _recursive_smart_truncate(dumped, self.max_length)
     if not isinstance(sanitized, dict):
       return {"value": "[UNSUPPORTED_OBJECT]"}, True
@@ -6012,6 +6079,27 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     - Or invoke the explicit classmethod:
         ``await
         BigQueryAgentAnalyticsPlugin.close_shared_background_transports()``
+
+  ### Plugin order
+  Register this plugin before plugins that answer or re-raise tool callbacks,
+  such as ``ReflectAndRetryToolPlugin``. ``PluginManager`` stops at the first
+  plugin that returns a value from a callback or raises, so a plugin ahead of
+  this one can keep a call's outcome from reaching it. With
+  ``ReflectAndRetryToolPlugin`` ahead, a call gets no outcome row when:
+
+  - the retry plugin re-raises once its retries run out
+    (``throw_exception_if_retry_exceeded`` defaults to True);
+  - the model calls a tool name that does not exist: the retry plugin answers
+    the lookup error, and ADK skips the after-tool callbacks for such a call;
+  - a subclass that overrides ``extract_error_from_result`` answers
+    ``after_tool_callback``.
+
+  Registered first, this plugin records each raised error once, as
+  ``TOOL_ERROR``, whatever later plugins do with it. A failure that only a
+  later plugin detects in a result, such as one an
+  ``extract_error_from_result`` override flags, is recorded as
+  ``TOOL_COMPLETED`` unless ``BigQueryLoggerConfig.tool_result_classifier``
+  flags the same result.
   """
 
   def __init__(
@@ -9027,7 +9115,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     node_info = getattr(event, "node_info", None)
     node_path = getattr(node_info, "path", "")
     if node_path and event.partial is not True:
-      if event.error_code and event.error_code not in _LLM_RESPONSE_ERROR_CODES:
+      if _is_durable_node_error(event):
         await self._log_event(
             "NODE_ERROR",
             callback_ctx,
@@ -9813,21 +9901,26 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> None:
     """Callback after tool execution.
 
+    A result that reports a failure is recorded as ``TOOL_ERROR``, the row
+    ``on_tool_error_callback`` writes for a raised error; see
+    ``_tool_result_error_message``. The result itself is left unchanged, and
+    the row leaves it out. The model still receives it, and a later
+    ``LLM_REQUEST`` row records it only in ``content_parts`` (as
+    ``part_attributes.function_response``), so only while
+    ``log_multi_modal_content`` is on and ``content_parts`` is not denied.
+
     Args:
         tool: The tool that was executed.
         tool_args: The arguments passed to the tool.
         tool_context: The tool context.
         result: The response from the tool.
     """
-    resp_truncated, is_truncated = _recursive_smart_truncate(
-        result, self.config.max_content_length
-    )
+    if _pop_tool_error_recorded(self, tool_context):
+      # on_tool_error_callback already recorded this call's failure and closed
+      # its span; the result is the answer a later plugin gave to the error.
+      return
+
     tool_origin = _get_tool_origin(tool, tool_args, tool_context)
-    content_dict = {
-        "tool": tool.name,
-        "result": resp_truncated,
-        "tool_origin": tool_origin,
-    }
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
 
@@ -9836,6 +9929,89 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         span_id_override=span_id,
         parent_span_id_override=parent_span_id,
     )
+    # The span is closed, so the call must get a row whatever its result holds.
+    # Classification runs none of the result's code and contains the failures
+    # of a classifier and of each built-in rule; this boundary backs all of
+    # them up by falling back to the TOOL_COMPLETED row of an unclassified
+    # result. The warning is constant because the exception can carry the
+    # result, and it is logged after the except block, because inside it a
+    # failing log handler would print that exception.
+    classification_failed = False
+    try:
+      error_message = self._tool_result_error_message(
+          tool=tool,
+          tool_args=tool_args,
+          tool_context=tool_context,
+          result=result,
+      )
+    except Exception:  # pylint: disable=broad-except
+      error_message = None
+      classification_failed = True
+    if classification_failed:
+      logger.warning(
+          "Could not classify the result of tool %s; recording it as"
+          " TOOL_COMPLETED.",
+          tool.name,
+      )
+    if error_message is not None:
+      # The content is what on_tool_error_callback records. The result stays
+      # out: its error text is tool output, and a content_formatter written
+      # for TOOL_COMPLETED rows would not scrub it from a TOOL_ERROR row.
+      # Serializing the arguments gets the boundary the result gets below:
+      # arguments that raise are recorded with the serializer's sentinel, and
+      # the constant warning is logged after the except block.
+      args_serialization_failed = False
+      try:
+        args_truncated, args_is_truncated = _recursive_smart_truncate(
+            tool_args, self.config.max_content_length
+        )
+      except Exception:  # pylint: disable=broad-except
+        args_truncated, args_is_truncated = "[UNSUPPORTED_OBJECT]", True
+        args_serialization_failed = True
+      if args_serialization_failed:
+        logger.warning(
+            "Could not serialize the arguments of tool %s; recording a"
+            " sentinel in their place.",
+            tool.name,
+        )
+      event_data.status = "ERROR"
+      event_data.error_message = error_message
+      await self._log_event(
+          "TOOL_ERROR",
+          tool_context,
+          raw_content={
+              "tool": tool.name,
+              "args": args_truncated,
+              "tool_origin": tool_origin,
+          },
+          is_truncated=args_is_truncated,
+          event_data=event_data,
+      )
+      return
+
+    # Serializing the result runs its code, which the classification never
+    # does, so it gets the same boundary: a result that raises is recorded
+    # with the sentinel the serializer writes for a result it rejects itself,
+    # and the constant warning is logged after the except block.
+    serialization_failed = False
+    try:
+      resp_truncated, is_truncated = _recursive_smart_truncate(
+          result, self.config.max_content_length
+      )
+    except Exception:  # pylint: disable=broad-except
+      resp_truncated, is_truncated = "[UNSUPPORTED_OBJECT]", True
+      serialization_failed = True
+    if serialization_failed:
+      logger.warning(
+          "Could not serialize the result of tool %s; recording a sentinel in"
+          " its place.",
+          tool.name,
+      )
+    content_dict = {
+        "tool": tool.name,
+        "result": resp_truncated,
+        "tool_origin": tool_origin,
+    }
     await self._log_event(
         "TOOL_COMPLETED",
         tool_context,
@@ -9862,6 +10038,71 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           is_truncated=args_is_truncated,
           event_data=EventData(extra_attributes={"source_tool": tool.name}),
       )
+
+  def _tool_result_error_message(
+      self,
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+      result: Any,
+  ) -> Optional[str]:
+    """Returns the error message to record for a tool result that failed.
+
+    Three checks run in turn, each on the entries ``_result_fields`` reads
+    without running any of the result's own code:
+
+    1. A ``ReflectAndRetryToolPlugin`` answer is a raised error, recorded as
+       ``TOOL_ERROR`` before the classifier runs: with this plugin registered
+       first, ``on_tool_error_callback`` records the same error without
+       consulting the classifier, so neither plugin order lets a classifier
+       hide it.
+    2. ``config.tool_result_classifier``. Its verdict is read inside the
+       ``Exception`` boundary that surrounds the call, so a classifier that
+       raises or returns anything but a readable ``ToolResultClassification``
+       or None is skipped, and the warning names only the tool: the exception,
+       its traceback and the returned value can all carry the result. A
+       returned awaitable is ignored too, once ``_release_awaitable`` has
+       closed it if it is a coroutine, or cancelled it and retrieved its
+       exception if it is an asyncio future or task, so that Python does not
+       warn about the coroutine and asyncio does not later log an exception
+       the future or task holds. A ``BaseException`` that is
+       not an ``Exception``, such as a cancellation, ``KeyboardInterrupt`` or
+       ``SystemExit``, propagates as it does from every callback of this
+       plugin, because absorbing it would keep a task or the process from
+       stopping.
+    3. A result whose top-level ``isError`` or ``is_error`` is exactly
+       ``True``: any dict, which covers an MCP ``CallToolResult`` dump, or an
+       MCP ``CallToolResult`` model.
+
+    Any other result succeeded, including one that merely has an
+    ``error_details`` key. The tools' own ``_detect_error_in_response`` hooks,
+    which set the OpenTelemetry ``error.type``, are not consulted. Several flag
+    any dict with a truthy ``error`` key, which a function tool may also return
+    as data, and a result they flagged would move from a ``TOOL_COMPLETED`` row
+    that carries it to a ``TOOL_ERROR`` row that leaves it out. Some of them
+    also match ADK's own error envelopes, such as ``GoogleTool``'s
+    ``{"status": "ERROR", "error_details": ...}``; the classifier can record
+    those as failures where that is wanted.
+
+    Args:
+        tool: The tool that produced the result.
+        tool_args: The arguments passed to the tool.
+        tool_context: The tool context.
+        result: The result the model receives.
+
+    Returns:
+        The message of a ``TOOL_ERROR`` row, or None to record the result as
+        ``TOOL_COMPLETED``.
+    """
+    return _classify_tool_result_error(
+        tool=tool,
+        tool_args=tool_args,
+        tool_context=tool_context,
+        result=result,
+        tool_result_classifier=self.config.tool_result_classifier,
+        log=logger,
+    )
 
   @_safe_callback
   async def on_tool_error_callback(
@@ -9891,6 +10132,16 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     }
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
+    # Read before the call is marked: after_tool_callback skips a marked call,
+    # so nothing that can fail may run between the mark and the row. An
+    # exception raised without a message, or whose message cannot be read,
+    # records its type name, which is what a ReflectAndRetryToolPlugin answer
+    # records for a message-less one.
+    try:
+      error_message = str(error) or type(error).__name__
+    except Exception:  # pylint: disable=broad-except
+      error_message = type(error).__name__
+    _mark_tool_error_recorded(self, tool_context)
 
     await self._log_event(
         "TOOL_ERROR",
@@ -9899,7 +10150,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         is_truncated=is_truncated,
         event_data=EventData(
             status="ERROR",
-            error_message=str(error),
+            error_message=error_message,
             latency_ms=duration,
             span_id_override=span_id,
             parent_span_id_override=parent_span_id,

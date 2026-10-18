@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from google.adk.workflow._base_node import _walk_static_nodes
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import find_static_node_path
 import pydantic
@@ -91,3 +92,62 @@ def test_base_node_rejects_non_identifier_name():
       pydantic.ValidationError, match='must be a valid Python identifier'
   ):
     BaseNode(name='invalid-node-name')
+
+
+class _Composite(BaseNode):
+  children: list[BaseNode] = Field(default_factory=list)
+
+  def _iter_static_children(self):
+    yield from self.children
+
+
+def test_base_node_iter_static_children_default_empty():
+  """A leaf BaseNode yields no static children by default."""
+  node = BaseNode(name='leaf')
+  assert list(node._iter_static_children()) == []
+
+
+def test_walk_static_nodes_pre_order_dfs():
+  """_walk_static_nodes visits nodes in pre-order depth-first order."""
+  c = _Composite(name='c')
+  d = _Composite(name='d')
+  b = _Composite(name='b', children=[c, d])
+  e = _Composite(name='e')
+  a = _Composite(name='a', children=[b, e])
+
+  nodes = list(_walk_static_nodes(a))
+  assert [n.name for n in nodes] == ['a', 'b', 'c', 'd', 'e']
+
+
+def test_walk_static_nodes_shared_node_in_dag():
+  """_walk_static_nodes deduplicates shared nodes in a DAG."""
+  shared = BaseNode(name='shared')
+  b = _Composite(name='b', children=[shared])
+  c = _Composite(name='c', children=[shared])
+  a = _Composite(name='a', children=[b, c])
+
+  nodes = list(_walk_static_nodes(a))
+  assert [n.name for n in nodes] == ['a', 'b', 'shared', 'c']
+  assert sum(1 for n in nodes if n.name == 'shared') == 1
+
+
+def test_walk_static_nodes_handles_cycles():
+  """_walk_static_nodes terminates cleanly when nodes form a cycle."""
+  a = _Composite(name='a')
+  b = _Composite(name='b')
+  a.children.append(b)
+  b.children.append(a)
+
+  nodes = list(_walk_static_nodes(a))
+  assert [n.name for n in nodes] == ['a', 'b']
+
+
+def test_find_static_node_path_traverses_iter_static_children():
+  """find_static_node_path resolves nodes yielded by _iter_static_children."""
+  from google.adk.workflow._base_node import START
+  from google.adk.workflow._workflow import Workflow
+
+  leaf = BaseNode(name='leaf')
+  wf = Workflow(name='wf', edges=[(START, leaf)])
+
+  assert find_static_node_path(wf, leaf) == 'wf/leaf'

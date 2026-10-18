@@ -350,6 +350,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
     # generation_trigger_config.
     if _should_use_generate_memories(custom_metadata):
       from ..dependencies._agentplatform import agentplatform
+      from ..utils._dependency import require_agentplatform_attributes
 
       direct_events = []
       for event in events_to_process:
@@ -363,6 +364,11 @@ class VertexAiMemoryBankService(BaseMemoryService):
           )
       if direct_events:
         api_client = self._get_api_client()
+        require_agentplatform_attributes(
+            agentplatform.types,
+            ('GenerateMemoriesConfig',),
+            'VertexAiMemoryBankService.add_events_to_memory (generate path)',
+        )
         config = _build_generate_memories_config(custom_metadata)
         operation = await _memories_api(api_client).generate(
             name='reasoningEngines/' + self._agent_engine_id,
@@ -486,8 +492,16 @@ class VertexAiMemoryBankService(BaseMemoryService):
       custom_metadata: Mapping[str, object] | None = None,
   ) -> None:
     """Adds direct memory items without server-side extraction."""
+    from ..dependencies._agentplatform import agentplatform
+    from ..utils._dependency import require_agentplatform_attributes
+
     normalized_memories = _normalize_memories_for_create(memories)
     api_client = self._get_api_client()
+    require_agentplatform_attributes(
+        agentplatform.types,
+        ('MemoryConfig',),
+        'VertexAiMemoryBankService.add_memory',
+    )
     for index, memory in enumerate(normalized_memories):
       memory_fact = _memory_entry_to_fact(memory, index=index)
       memory_metadata = _merge_custom_metadata_for_memory(
@@ -521,12 +535,20 @@ class VertexAiMemoryBankService(BaseMemoryService):
       custom_metadata: Mapping[str, object] | None = None,
   ) -> None:
     """Adds memories via generate API with direct_memories_source."""
+    from ..dependencies._agentplatform import agentplatform
+    from ..utils._dependency import require_agentplatform_attributes
+
     normalized_memories = _normalize_memories_for_create(memories)
     memory_texts = [
         _memory_entry_to_fact(m, index=i)
         for i, m in enumerate(normalized_memories)
     ]
     api_client = self._get_api_client()
+    require_agentplatform_attributes(
+        agentplatform.types,
+        ('GenerateMemoriesConfig',),
+        'VertexAiMemoryBankService.add_memory (consolidation path)',
+    )
     config = _build_generate_memories_config(custom_metadata)
     for memory_batch in _iter_memory_batches(memory_texts):
       operation = await _memories_api(api_client).generate(

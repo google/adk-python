@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import dataclasses
 from enum import Enum
 import functools
 import inspect
 from typing import Annotated
 from typing import Any
+from typing import Callable
 from typing import Optional
 from typing import Union
 from unittest import mock
@@ -258,6 +260,58 @@ async def test_run_async_without_tool_context_sync_func():
   args = {"arg1": "test_value_1", "arg2": "test_value_2"}
   result = await tool.run_async(args=args, tool_context=MagicMock())
   assert result == "test_value_1"
+
+
+def _sync_wrapper(func: Callable[..., Any]) -> Callable[..., Any]:
+  """A plain sync decorator, as commonly used for logging or retries."""
+
+  @functools.wraps(func)
+  def wrapper(*args: Any, **kwargs: Any) -> Any:
+    return func(*args, **kwargs)
+
+  return wrapper
+
+
+@_sync_wrapper
+async def async_function_behind_sync_wrapper(item: str) -> dict[str, Any]:
+  """Async function hidden behind a sync decorator."""
+  return {"item": item, "price": 3}
+
+
+@pytest.mark.asyncio
+async def test_run_async_awaits_async_function_behind_sync_wrapper(
+    mock_tool_context: ToolContext,
+) -> None:
+  """Test that run_async awaits the coroutine returned by a sync wrapper."""
+  tool = FunctionTool(async_function_behind_sync_wrapper)
+  result = await tool.run_async(
+      args={"item": "apple"}, tool_context=mock_tool_context
+  )
+  assert result == {"item": "apple", "price": 3}
+
+
+@pytest.mark.asyncio
+async def test_run_async_awaits_async_function_behind_sync_wrapper_with_runner(
+    mock_tool_context: ToolContext,
+) -> None:
+  """Test that the coroutine is awaited when a sync callable runner is bound."""
+  runner_calls: list[tuple[Callable[..., Any], dict[str, Any]]] = []
+
+  async def run_in_thread(
+      target: Callable[..., Any], args: dict[str, Any]
+  ) -> Any:
+    runner_calls.append((target, args))
+    return await asyncio.to_thread(target, **args)
+
+  tool = FunctionTool(async_function_behind_sync_wrapper)
+  with _use_sync_callable_runner(run_in_thread):
+    result = await tool.run_async(
+        args={"item": "apple"}, tool_context=mock_tool_context
+    )
+  assert runner_calls == [
+      (async_function_behind_sync_wrapper, {"item": "apple"})
+  ]
+  assert result == {"item": "apple", "price": 3}
 
 
 @pytest.mark.asyncio
@@ -2346,3 +2400,34 @@ async def test_partial_tool_with_context_parameter(mock_tool_context):
     with pytest.raises(pydantic.PydanticSchemaGenerationError):
       FunctionTool(bad_tool)._get_declaration()
   assert mock_unwrapped.call_count == 0
+
+
+def test_legacy_declaration_preserves_raw_routine_docstring():
+  """Legacy from_function_with_options preserves raw __doc__ on routines."""
+
+  def plain_tool(query: str) -> str:
+    """Plain tool summary.
+
+    Args:
+      query: Search query.
+    """
+    return query
+
+  def context_tool(query: str, tool_context: "ToolContext") -> str:
+    """Context tool summary.
+
+    Args:
+      query: Search query.
+      tool_context: Tool context.
+    """
+    del tool_context
+    return query
+
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False):
+    plain_decl = FunctionTool(plain_tool)._get_declaration()
+    assert plain_decl is not None
+    assert plain_decl.description == plain_tool.__doc__
+
+    context_decl = FunctionTool(context_tool)._get_declaration()
+    assert context_decl is not None
+    assert context_decl.description == context_tool.__doc__
