@@ -265,7 +265,8 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
           tools_parts.append(f"Agent: {agent_id}")
           if details.tool_declarations:
             for tool in details.tool_declarations:
-              for func in tool.function_declarations:
+              # Built-in tools such as google_search carry no declarations.
+              for func in tool.function_declarations or []:
                 tools_parts.append(f"- {func.name}: {func.description}")
 
     self._formatted_instructions = "\n\n".join(
