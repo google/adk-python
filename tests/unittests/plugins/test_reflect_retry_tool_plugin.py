@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import dataclasses
 from typing import Any
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import Mock
@@ -20,6 +21,7 @@ from unittest.mock import Mock
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.plugins.reflect_retry_tool_plugin import REFLECT_AND_RETRY_RESPONSE_TYPE
 from google.adk.plugins.reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
+from google.adk.plugins.reflect_retry_tool_plugin import ToolReflectionContext
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
@@ -729,3 +731,663 @@ class TestReflectAndRetryToolPlugin(IsolatedAsyncioTestCase):
         error=asyncio.CancelledError(),
     )
     self.assertIsNone(result)
+
+  async def test_tool_reflection_context_is_frozen_dataclass(self):
+    """ToolReflectionContext is an immutable frozen dataclass."""
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = ValueError("boom")
+
+    ctx = ToolReflectionContext(
+        tool_name="test_tool",
+        tool_args=sample_tool_args,
+        error=error,
+        error_details="ValueError: boom",
+        retry_count=1,
+        max_retries=3,
+        tool_context=mock_tool_context,
+    )
+
+    self.assertTrue(dataclasses.is_dataclass(ctx))
+    self.assertEqual(ctx.tool_name, "test_tool")
+    self.assertEqual(ctx.tool_args, sample_tool_args)
+    self.assertIs(ctx.error, error)
+    self.assertEqual(ctx.error_details, "ValueError: boom")
+    self.assertEqual(ctx.retry_count, 1)
+    self.assertEqual(ctx.max_retries, 3)
+    self.assertIs(ctx.tool_context, mock_tool_context)
+
+    with self.assertRaises((dataclasses.FrozenInstanceError, AttributeError)):
+      ctx.tool_name = "mutated"  # type: ignore[misc]
+
+  async def test_string_reflection_guidance_normal_retry(self):
+    """Static string reflection guidance overrides default guidance on retry."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = ValueError("Something failed")
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=2,
+        reflection_guidance="Static custom retry guidance.",
+    )
+
+    result = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+
+    self.assertIsNotNone(result)
+    self.assertEqual(result["response_type"], REFLECT_AND_RETRY_RESPONSE_TYPE)
+    self.assertEqual(result["error_type"], "ValueError")
+    self.assertEqual(result["error_details"], "Something failed")
+    self.assertEqual(result["retry_count"], 1)
+    self.assertEqual(
+        result["reflection_guidance"], "Static custom retry guidance."
+    )
+
+  async def test_string_retry_exceeded_guidance_when_limit_exceeded(self):
+    """Static retry exceeded guidance is returned when max retries exceeded."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = TimeoutError("Timed out")
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=1,
+        throw_exception_if_retry_exceeded=False,
+        retry_exceeded_guidance="Static custom exceeded guidance.",
+    )
+
+    first = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    self.assertIn("Reflection Guidance:", first["reflection_guidance"])
+    self.assertEqual(first["retry_count"], 1)
+
+    exceeded = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    self.assertIsNotNone(exceeded)
+    self.assertEqual(exceeded["retry_count"], 1)
+    self.assertEqual(
+        exceeded["reflection_guidance"], "Static custom exceeded guidance."
+    )
+    self.assertEqual(exceeded["error_type"], "TimeoutError")
+    self.assertEqual(exceeded["error_details"], "Timed out")
+
+  async def test_string_retry_exceeded_guidance_zero_retries(self):
+    """Static retry exceeded guidance returned on zero-retry without throwing."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = RuntimeError("Immediate fatal")
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=0,
+        throw_exception_if_retry_exceeded=False,
+        retry_exceeded_guidance="No retries allowed guidance.",
+    )
+
+    result = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+
+    self.assertIsNotNone(result)
+    self.assertEqual(result["retry_count"], 0)
+    self.assertEqual(
+        result["reflection_guidance"], "No retries allowed guidance."
+    )
+    self.assertEqual(result["error_type"], "RuntimeError")
+
+  async def test_sync_callable_provider_context_data_normal_retry(self):
+    """Sync callable guidance provider receives accurate ToolReflectionContext."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = ValueError("Invalid arg")
+
+    captured_ctx: list[ToolReflectionContext] = []
+
+    def provider(ctx: ToolReflectionContext) -> str:
+      captured_ctx.append(ctx)
+      return (
+          f"Retry {ctx.tool_name} attempt {ctx.retry_count}/{ctx.max_retries}"
+      )
+
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=3,
+        reflection_guidance=provider,
+    )
+
+    result = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+
+    self.assertEqual(len(captured_ctx), 1)
+    ctx = captured_ctx[0]
+    self.assertEqual(ctx.tool_name, "test_tool_id")
+    self.assertEqual(ctx.tool_args, sample_tool_args)
+    self.assertIs(ctx.error, error)
+    self.assertEqual(ctx.error_details, "ValueError: Invalid arg")
+    self.assertEqual(ctx.retry_count, 1)
+    self.assertEqual(ctx.max_retries, 3)
+    self.assertIs(ctx.tool_context, mock_tool_context)
+
+    self.assertEqual(
+        result["reflection_guidance"], "Retry test_tool_id attempt 1/3"
+    )
+
+  async def test_sync_callable_provider_context_data_exceeded_retry(self):
+    """Sync callable exceeded provider receives accurate context on exceeded."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = ConnectionError("Dropped")
+
+    captured_ctx: list[ToolReflectionContext] = []
+
+    def exceeded_provider(ctx: ToolReflectionContext) -> str:
+      captured_ctx.append(ctx)
+      return f"Exceeded {ctx.tool_name} count={ctx.retry_count}"
+
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=2,
+        throw_exception_if_retry_exceeded=False,
+        retry_exceeded_guidance=exceeded_provider,
+    )
+
+    for _ in range(2):
+      await plugin.on_tool_error_callback(
+          tool=mock_tool,
+          tool_args=sample_tool_args,
+          tool_context=mock_tool_context,
+          error=error,
+      )
+
+    result = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+
+    self.assertEqual(len(captured_ctx), 1)
+    ctx = captured_ctx[0]
+    self.assertEqual(ctx.tool_name, "test_tool_id")
+    self.assertEqual(ctx.retry_count, 2)
+    self.assertEqual(ctx.max_retries, 2)
+    self.assertEqual(
+        result["reflection_guidance"], "Exceeded test_tool_id count=2"
+    )
+
+  async def test_async_callable_provider_normal_and_exceeded(self):
+    """Async callable guidance providers are awaited properly."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = ValueError("Async test error")
+
+    async def async_retry(ctx: ToolReflectionContext) -> str:
+      await asyncio.sleep(0.001)
+      return f"Async retry for {ctx.tool_name}"
+
+    async def async_exceeded(ctx: ToolReflectionContext) -> str:
+      await asyncio.sleep(0.001)
+      return f"Async exceeded for {ctx.tool_name}"
+
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=1,
+        throw_exception_if_retry_exceeded=False,
+        reflection_guidance=async_retry,
+        retry_exceeded_guidance=async_exceeded,
+    )
+
+    first = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    self.assertEqual(
+        first["reflection_guidance"], "Async retry for test_tool_id"
+    )
+
+    second = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    self.assertEqual(
+        second["reflection_guidance"], "Async exceeded for test_tool_id"
+    )
+
+  async def test_subclass_override_build_reflection_guidance(self):
+    """Subclass overriding build_reflection_guidance generates custom guidance."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = ValueError("Hook test")
+
+    class HookPlugin(ReflectAndRetryToolPlugin):
+
+      async def build_reflection_guidance(
+          self, ctx: ToolReflectionContext
+      ) -> str:
+        return f"Hook reflection: {ctx.tool_name} attempt={ctx.retry_count}"
+
+    plugin = HookPlugin(max_retries=2)
+    result = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    self.assertEqual(
+        result["reflection_guidance"], "Hook reflection: test_tool_id attempt=1"
+    )
+
+  async def test_subclass_override_build_retry_exceeded_guidance(self):
+    """Subclass hook build_retry_exceeded_guidance operates on exceeded path."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = ValueError("Exceeded hook test")
+
+    class HookExceededPlugin(ReflectAndRetryToolPlugin):
+
+      async def build_retry_exceeded_guidance(
+          self, ctx: ToolReflectionContext
+      ) -> str:
+        return f"Hook exceeded: {ctx.tool_name} max={ctx.max_retries}"
+
+    plugin_zero = HookExceededPlugin(
+        max_retries=0, throw_exception_if_retry_exceeded=False
+    )
+    res_zero = await plugin_zero.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    self.assertEqual(
+        res_zero["reflection_guidance"], "Hook exceeded: test_tool_id max=0"
+    )
+
+    plugin_one = HookExceededPlugin(
+        max_retries=1, throw_exception_if_retry_exceeded=False
+    )
+    await plugin_one.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    res_exceeded = await plugin_one.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    self.assertEqual(
+        res_exceeded["reflection_guidance"], "Hook exceeded: test_tool_id max=1"
+    )
+
+  async def test_empty_string_guidance_is_valid(self):
+    """Empty strings are valid custom guidance and do not fall back."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = ValueError("Empty test")
+
+    plugin_empty_str = ReflectAndRetryToolPlugin(
+        max_retries=1,
+        reflection_guidance="",
+        retry_exceeded_guidance="",
+        throw_exception_if_retry_exceeded=False,
+    )
+    res1 = await plugin_empty_str.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    self.assertEqual(res1["reflection_guidance"], "")
+
+    res2 = await plugin_empty_str.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    self.assertEqual(res2["reflection_guidance"], "")
+
+    plugin_empty_callable = ReflectAndRetryToolPlugin(
+        max_retries=1,
+        reflection_guidance=lambda ctx: "",
+    )
+    res3 = await plugin_empty_callable.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    self.assertEqual(res3["reflection_guidance"], "")
+
+  async def test_reject_non_string_provider_results(self):
+    """Non-string results returned by providers or hooks raise TypeError."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = ValueError("Type test")
+
+    plugin_none = ReflectAndRetryToolPlugin(
+        max_retries=1,
+        reflection_guidance=lambda ctx: None,  # type: ignore[arg-type]
+    )
+    with self.assertRaises(TypeError):
+      await plugin_none.on_tool_error_callback(
+          tool=mock_tool,
+          tool_args=sample_tool_args,
+          tool_context=mock_tool_context,
+          error=error,
+      )
+
+    plugin_int = ReflectAndRetryToolPlugin(
+        max_retries=1,
+        reflection_guidance=lambda ctx: 12345,  # type: ignore[arg-type]
+    )
+    with self.assertRaises(TypeError):
+      await plugin_int.on_tool_error_callback(
+          tool=mock_tool,
+          tool_args=sample_tool_args,
+          tool_context=mock_tool_context,
+          error=error,
+      )
+
+    async def async_bad(ctx: ToolReflectionContext) -> int:
+      return 999
+
+    plugin_async_bad = ReflectAndRetryToolPlugin(
+        max_retries=1,
+        reflection_guidance=async_bad,  # type: ignore[arg-type]
+    )
+    with self.assertRaises(TypeError):
+      await plugin_async_bad.on_tool_error_callback(
+          tool=mock_tool,
+          tool_args=sample_tool_args,
+          tool_context=mock_tool_context,
+          error=error,
+      )
+
+    class BadHookPlugin(ReflectAndRetryToolPlugin):
+
+      async def build_reflection_guidance(
+          self, ctx: ToolReflectionContext
+      ) -> str:
+        return 42  # type: ignore[return-value]
+
+    with self.assertRaises(TypeError):
+      await BadHookPlugin().on_tool_error_callback(
+          tool=mock_tool,
+          tool_args=sample_tool_args,
+          tool_context=mock_tool_context,
+          error=error,
+      )
+
+  async def test_reject_non_string_non_callable_provider_instance(self):
+    """Non-string non-callable passed as provider raises TypeError."""
+    with self.assertRaises(TypeError):
+      ReflectAndRetryToolPlugin(
+          reflection_guidance=123  # type: ignore[arg-type]
+      )
+
+    with self.assertRaises(TypeError):
+      ReflectAndRetryToolPlugin(
+          retry_exceeded_guidance=["invalid"]  # type: ignore[arg-type]
+      )
+
+  async def test_propagate_provider_exceptions(self):
+    """Exceptions raised inside providers or subclass hooks propagate uncaught."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = ValueError("Initial error")
+
+    def sync_fail(ctx: ToolReflectionContext) -> str:
+      raise ArithmeticError("Sync provider explosion")
+
+    plugin_sync = ReflectAndRetryToolPlugin(
+        max_retries=2, reflection_guidance=sync_fail
+    )
+    with self.assertRaises(ArithmeticError) as cm_sync:
+      await plugin_sync.on_tool_error_callback(
+          tool=mock_tool,
+          tool_args=sample_tool_args,
+          tool_context=mock_tool_context,
+          error=error,
+      )
+    self.assertEqual(str(cm_sync.exception), "Sync provider explosion")
+
+    async def async_fail(ctx: ToolReflectionContext) -> str:
+      raise KeyError("Async provider explosion")
+
+    plugin_async = ReflectAndRetryToolPlugin(
+        max_retries=2, reflection_guidance=async_fail
+    )
+    with self.assertRaises(KeyError) as cm_async:
+      await plugin_async.on_tool_error_callback(
+          tool=mock_tool,
+          tool_args=sample_tool_args,
+          tool_context=mock_tool_context,
+          error=error,
+      )
+    self.assertIn("Async provider explosion", str(cm_async.exception))
+
+    class FailHookPlugin(ReflectAndRetryToolPlugin):
+
+      async def build_reflection_guidance(
+          self, ctx: ToolReflectionContext
+      ) -> str:
+        raise OSError("Hook explosion")
+
+    with self.assertRaises(OSError) as cm_hook:
+      await FailHookPlugin().on_tool_error_callback(
+          tool=mock_tool,
+          tool_args=sample_tool_args,
+          tool_context=mock_tool_context,
+          error=error,
+      )
+    self.assertEqual(str(cm_hook.exception), "Hook explosion")
+
+  async def test_await_provider_outside_tracker_lock(self):
+    """Async guidance providers are evaluated outside the failure tracker lock."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = ValueError("Lock check error")
+
+    plugin: ReflectAndRetryToolPlugin | None = None
+    lock_was_free = False
+    concurrent_lock_acquired = False
+
+    async def lock_checking_provider(ctx: ToolReflectionContext) -> str:
+      nonlocal lock_was_free, concurrent_lock_acquired
+      assert plugin is not None
+      lock_was_free = not plugin._lock.locked()
+      async with plugin._lock:
+        concurrent_lock_acquired = True
+      return "Lock check passed"
+
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=2, reflection_guidance=lock_checking_provider
+    )
+
+    result = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+
+    self.assertTrue(lock_was_free)
+    self.assertTrue(concurrent_lock_acquired)
+    self.assertEqual(result["reflection_guidance"], "Lock check passed")
+
+  async def test_throwing_mode_behavior(self):
+    """Throwing mode returns guidance on retry and raises on exceeded."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = ValueError("Mode test")
+
+    exceeded_called = False
+
+    def on_exceeded(ctx: ToolReflectionContext) -> str:
+      nonlocal exceeded_called
+      exceeded_called = True
+      return "Should not be called"
+
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=1,
+        throw_exception_if_retry_exceeded=True,
+        reflection_guidance="Retry custom",
+        retry_exceeded_guidance=on_exceeded,
+    )
+
+    res1 = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    self.assertEqual(res1["reflection_guidance"], "Retry custom")
+    self.assertFalse(exceeded_called)
+
+    with self.assertRaises(ValueError):
+      await plugin.on_tool_error_callback(
+          tool=mock_tool,
+          tool_args=sample_tool_args,
+          tool_context=mock_tool_context,
+          error=error,
+      )
+    self.assertFalse(exceeded_called)
+
+    zero_plugin = ReflectAndRetryToolPlugin(
+        max_retries=0,
+        throw_exception_if_retry_exceeded=True,
+        retry_exceeded_guidance=on_exceeded,
+    )
+    with self.assertRaises(ValueError):
+      await zero_plugin.on_tool_error_callback(
+          tool=mock_tool,
+          tool_args=sample_tool_args,
+          tool_context=mock_tool_context,
+          error=error,
+      )
+    self.assertFalse(exceeded_called)
+
+  async def test_exact_defaults_preserved_character_for_character(self):
+    """Exact default reflection and exceeded guidance strings match original."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    error = ValueError("Default check")
+
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=1, throw_exception_if_retry_exceeded=False
+    )
+
+    res_retry = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    self.assertIn(
+        "The call to tool `test_tool_id` failed.",
+        res_retry["reflection_guidance"],
+    )
+    self.assertIn("retry attempt **1 of 1**", res_retry["reflection_guidance"])
+    self.assertIn("ValueError: Default check", res_retry["reflection_guidance"])
+    self.assertEqual(res_retry["retry_count"], 1)
+    self.assertEqual(
+        res_retry["response_type"], REFLECT_AND_RETRY_RESPONSE_TYPE
+    )
+    self.assertEqual(res_retry["error_type"], "ValueError")
+    self.assertEqual(res_retry["error_details"], "Default check")
+
+    res_exceeded = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    self.assertIn(
+        "has failed consecutively 1 times and the retry limit has been"
+        " exceeded.",
+        res_exceeded["reflection_guidance"],
+    )
+    self.assertIn(
+        "Do not attempt to use the `test_tool_id` tool again for this task.",
+        res_exceeded["reflection_guidance"],
+    )
+    self.assertEqual(res_exceeded["retry_count"], 1)
+    self.assertEqual(
+        res_exceeded["response_type"], REFLECT_AND_RETRY_RESPONSE_TYPE
+    )
+    self.assertEqual(res_exceeded["error_type"], "ValueError")
+    self.assertEqual(res_exceeded["error_details"], "Default check")
+
+  async def test_custom_provider_with_extracted_error_from_result(self):
+    """Custom provider handles non-exception dict errors from after_tool."""
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+
+    captured_ctx: list[ToolReflectionContext] = []
+
+    def provider(ctx: ToolReflectionContext) -> str:
+      captured_ctx.append(ctx)
+      return f"Handled dict error with code: {ctx.error.get('code')}"
+
+    class CustomExtractor(ReflectAndRetryToolPlugin):
+
+      async def extract_error_from_result(
+          self, *, tool, tool_args, tool_context, result
+      ):
+        if isinstance(result, dict) and result.get("status") == "error":
+          return result
+        return None
+
+    plugin = CustomExtractor(max_retries=2, reflection_guidance=provider)
+    dict_error = {"status": "error", "code": "E1001", "msg": "Bad input"}
+
+    result = await plugin.after_tool_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        result=dict_error,
+    )
+
+    self.assertIsNotNone(result)
+    self.assertEqual(
+        result["reflection_guidance"], "Handled dict error with code: E1001"
+    )
+    self.assertEqual(result["error_type"], "ToolError")
+    self.assertEqual(result["error_details"], str(dict_error))
+    self.assertEqual(len(captured_ctx), 1)
+    self.assertEqual(captured_ctx[0].error, dict_error)
+    self.assertEqual(captured_ctx[0].error_details, str(dict_error))
