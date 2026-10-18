@@ -1067,3 +1067,16 @@ async def test_node_require_confirmation_runs_before_auth_gate(confirmed: bool):
   )
   assert calls == ["secret_key_123"]
   assert any(e.output == "authed_done" for e in events3)
+
+
+def test_node_iter_static_children_parallel_worker():
+  """Node._iter_static_children yields _inner_node when parallel_worker is True."""
+  node_inst = _CustomNode(name="subclass", parallel_worker=True)
+  children = list(node_inst._iter_static_children())
+  assert children == [node_inst._inner_node]
+
+
+def test_node_iter_static_children_plain_node():
+  """Node._iter_static_children yields nothing when parallel_worker is False."""
+  node_inst = _CustomNode(name="subclass", parallel_worker=False)
+  assert list(node_inst._iter_static_children()) == []

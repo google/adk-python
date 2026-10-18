@@ -128,6 +128,9 @@ class NodeRunner:
       ctx = self._create_child_context(
           resume_inputs, attempt_count=attempt_count
       )
+      # A retry after a dynamic child failure rewinds to this point, so it
+      # replays only the children this attempt completed.
+      counters_at_start = self._snapshot_dynamic_children(ctx)
       logger.debug("node %s started.", ctx.node_path)
       try:
         # Start the span within try-except block to record exceptions on the span
@@ -156,7 +159,7 @@ class NodeRunner:
             ctx._error_node_path = e.error_node_path
             logger.debug("node %s end.", ctx.node_path)
             return ctx
-          self._reset_dynamic_children_for_retry(ctx)
+          self._reset_dynamic_children_for_retry(ctx, counters_at_start)
         else:
           from ..events.event import Event
 
@@ -186,13 +189,30 @@ class NodeRunner:
       )
       attempt_count += 1
 
-  def _reset_dynamic_children_for_retry(self, ctx: Context) -> None:
-    """Resets dynamic child run counters under ctx before retrying the node."""
+  def _snapshot_dynamic_children(
+      self, ctx: Context
+  ) -> dict[str, dict[str, int]] | None:
+    """Copies dynamic child run counters under ctx as an attempt starts."""
+    if self._node.retry_config is None:
+      return None
     from ._dynamic_node_scheduler import DynamicNodeScheduler
 
     scheduler = ctx._workflow_scheduler
     if isinstance(scheduler, DynamicNodeScheduler):
-      scheduler._state.reset_for_retry(ctx.node_path)
+      return scheduler._state.snapshot_counters(ctx.node_path)
+    return None
+
+  def _reset_dynamic_children_for_retry(
+      self,
+      ctx: Context,
+      snapshot: dict[str, dict[str, int]] | None,
+  ) -> None:
+    """Rewinds dynamic child run counters under ctx before retrying the node."""
+    from ._dynamic_node_scheduler import DynamicNodeScheduler
+
+    scheduler = ctx._workflow_scheduler
+    if isinstance(scheduler, DynamicNodeScheduler) and snapshot is not None:
+      scheduler._state.reset_for_retry(ctx.node_path, snapshot)
 
   async def _attempt_retry(self, e: Exception, attempt_count: int) -> bool:
     """Checks if node should retry and sleeps if so."""

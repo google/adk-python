@@ -349,8 +349,8 @@ def test_record_tool_execution_duration_error_takes_precedence(
         ("claude-sonnet-4-5", "anthropic"),
         ("anthropic/claude-sonnet-4-5", "anthropic"),
         ("openai/gpt-4o", "openai"),
-        ("gemini-2.0-flash", "gemini"),
-        ("test-model", "gemini"),
+        ("gemini-2.0-flash", "gcp.gemini"),
+        ("test-model", "gcp.gemini"),
     ],
 )
 def test_record_client_operation_duration_provider_follows_model(
@@ -393,7 +393,7 @@ def test_record_client_operation_duration(mock_meter_setup):
   want_attributes = {
       "gen_ai.agent.name": "test_agent",
       "gen_ai.operation.name": "generate_content",
-      "gen_ai.provider.name": "gemini",
+      "gen_ai.provider.name": "gcp.gemini",
       "gen_ai.request.model": llm_request.model,
       "gen_ai.response.model": response.model_version,
   }
@@ -427,7 +427,7 @@ def test_record_client_token_usage(mock_meter_setup):
   base_attributes = {
       "gen_ai.agent.name": "test_agent",
       "gen_ai.operation.name": "generate_content",
-      "gen_ai.provider.name": "gemini",
+      "gen_ai.provider.name": "gcp.gemini",
       "gen_ai.request.model": "test-model",
       "gen_ai.response.model": "test-model-v1",
   }

@@ -44,6 +44,28 @@ from .refresher.credential_refresher_registry import CredentialRefresherRegistry
 logger = logging.getLogger("google_adk." + __name__)
 
 
+def _has_unredeemed_auth_code(credential: AuthCredential) -> bool:
+  """Whether the credential holds an authorization code that yielded no token.
+
+  Either the exchange never ran, because of missing client configuration or a
+  network error, or the server refused the code. The exchanger does not yet
+  distinguish those, so any unredeemed code is conservatively treated as
+  unusable and a new user consent flow is the only way forward.
+
+  TODO: separate deterministic configuration errors from invalid_grant in
+  OAuth2CredentialExchanger.
+  """
+  if credential.auth_type not in (
+      AuthCredentialTypes.OAUTH2,
+      AuthCredentialTypes.OPEN_ID_CONNECT,
+  ):
+    return False
+  oauth2 = credential.oauth2
+  if oauth2 is None or oauth2.access_token:
+    return False
+  return bool(oauth2.auth_code or oauth2.auth_response_uri)
+
+
 def _rehydrate_custom_scheme(
     scheme: CustomAuthScheme,
     supported_schemes: Sequence[type[CustomAuthScheme]],
@@ -277,6 +299,9 @@ class CredentialManager:
           == AuthCredentialTypes.SERVICE_ACCOUNT
       ):
         credential = await self._load_existing_credential(context)
+        if credential and _has_unredeemed_auth_code(credential):
+          # Otherwise a stored dead code shadows the fresh auth response below.
+          credential = None
 
       # Step 4: If no existing credential, load from auth response
       # TODO instead of load from auth response, we can store auth response in
@@ -309,6 +334,15 @@ class CredentialManager:
       was_refreshed = False
       if not was_exchanged:
         credential, was_refreshed = await self._refresh_credential(credential)
+
+      if _has_unredeemed_auth_code(credential):
+        logger.warning(
+            "Discarding the credential for auth scheme %s: its authorization"
+            " code was never exchanged for an access token. The user will be"
+            " asked to authorize again.",
+            type(self._auth_config.auth_scheme).__name__,
+        )
+        return None
 
       # Step 8: Save credential if it was modified
       if was_from_auth_response or was_exchanged or was_refreshed:

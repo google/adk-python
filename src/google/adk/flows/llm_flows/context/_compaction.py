@@ -16,9 +16,11 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 
+from ....apps.compaction import _get_compaction_ranges
 from ....apps.compaction import _has_token_threshold_config
 from ....apps.compaction import _run_compaction_for_token_threshold_config
 from ....events.event import Event
@@ -52,6 +54,7 @@ class CompactionRequestProcessor(BaseLlmRequestProcessor):
         agent=agent,
         agent_name=agent.name,
         current_branch=invocation_context.branch,
+        isolation_scope=invocation_context.isolation_scope,
     )
     if token_compacted:
       invocation_context.token_compaction_checked = True
@@ -86,41 +89,24 @@ def _process_compaction_events(
   # Overlaps are resolved by keeping only non-subsumed compaction summaries.
   # A summary event is materialized at its compaction end timestamp, and raw
   # events inside any kept compaction range are filtered out.
-  compaction_infos: list[tuple[int, float, float]] = []
-  for i, event in enumerate(events):
-    if not (event.actions and event.actions.compaction):
-      continue
-    compaction = event.actions.compaction
-    if (
-        compaction.start_timestamp is None
-        or compaction.end_timestamp is None
-        or compaction.compacted_content is None
-    ):
-      continue
-    compaction_infos.append(
-        (i, compaction.start_timestamp, compaction.end_timestamp)
-    )
-
-  subsumed_compaction_event_indexes: set[int] = set()
-  for event_index, start_ts, end_ts in compaction_infos:
-    for other_index, other_start, other_end in compaction_infos:
-      if other_index == event_index:
-        continue
-      if other_start <= start_ts and other_end >= end_ts:
-        if (
-            other_start < start_ts
-            or other_end > end_ts
-            or other_index > event_index
-        ):
-          subsumed_compaction_event_indexes.add(event_index)
-          break
-
-  compaction_ranges: list[tuple[float, float]] = []
+  compaction_infos = _get_compaction_ranges(events)
+  retained_indexes = {index for index, _, _ in compaction_infos}
+  # Union coverage for raw-event lookup, while keeping every non-subsumed
+  # summary separately. Partially overlapping summaries must both survive.
+  coverage: list[tuple[float, float]] = []
+  for start, end in sorted(
+      (start, end) for _, start, end in compaction_infos if start <= end
+  ):
+    if coverage and start <= coverage[-1][1]:
+      coverage[-1] = (coverage[-1][0], max(coverage[-1][1], end))
+    else:
+      coverage.append((start, end))
+  coverage_starts = [start for start, _ in coverage]
   processed_items: list[tuple[float, int, Event]] = []
 
   for i, event in enumerate(events):
     if event.actions and event.actions.compaction:
-      if i in subsumed_compaction_event_indexes:
+      if i not in retained_indexes:
         continue
       compaction = event.actions.compaction
       if (
@@ -129,9 +115,6 @@ def _process_compaction_events(
           or compaction.compacted_content is None
       ):
         continue
-      compaction_ranges.append(
-          (compaction.start_timestamp, compaction.end_timestamp)
-      )
       processed_items.append((
           compaction.end_timestamp,
           i,
@@ -140,16 +123,15 @@ def _process_compaction_events(
               author=agent_name or 'model',
               content=compaction.compacted_content,
               branch=event.branch,
+              isolation_scope=event.isolation_scope,
               invocation_id=event.invocation_id,
               actions=event.actions,
           ),
       ))
 
   def _is_timestamp_compacted(ts: float) -> bool:
-    for start_ts, end_ts in compaction_ranges:
-      if start_ts <= ts <= end_ts:
-        return True
-    return False
+    index = bisect_right(coverage_starts, ts) - 1
+    return index >= 0 and ts <= coverage[index][1]
 
   for i, event in enumerate(events):
     if event.actions and event.actions.compaction:

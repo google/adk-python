@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from google.adk import version
 from google.adk.telemetry import _adk_attributes
 from google.adk.telemetry import _hallucination
+from google.adk.telemetry import _schema_version
 from google.adk.telemetry import tracing
 from google.adk.telemetry._decorators import experimental_telemetry
 from google.adk.telemetry._token_usage import CACHE_READ_INPUT_TOKENS_MEANING
@@ -626,7 +627,12 @@ def record_client_token_usage(
 
 
 def _get_provider_name(model: str | None) -> str:
-  return tracing._resolve_gen_ai_system_name(model)
+  # Schema v1 keeps the `gen_ai.system` value (`gemini`) consumers pinned on.
+  if _schema_version.resolve_schema_version() < (
+      _schema_version.SCHEMA_VERSION_SEMCONV_ALIGNED
+  ):
+    return tracing._resolve_gen_ai_system_name(model)
+  return tracing._resolve_gen_ai_provider_name(model)
 
 
 def get_elapsed_s(

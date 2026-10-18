@@ -2843,3 +2843,183 @@ async def test_a_summary_that_grew_the_request_is_reported(
       if span.name == 'compact_events sliding_window'
   )
   assert span.attributes['gen_ai.compaction.prompt_chars_saved'] < 0
+
+
+@pytest.mark.asyncio
+async def test_sliding_window_compaction_excludes_isolated_scope_events():
+  """Sliding-window compaction skips events with a non-None isolation_scope."""
+  # Arrange
+  summarizer = _StubSummarizer(
+      _create_trace_compacted_event(
+          start_ts=1.0, end_ts=3.0, summary_text='root summary'
+      )
+  )
+  app = App(
+      name='test',
+      root_agent=Mock(spec=BaseAgent),
+      events_compaction_config=EventsCompactionConfig(
+          summarizer=summarizer, compaction_interval=2, overlap_size=0
+      ),
+  )
+  root_ev1 = _create_trace_test_event(
+      timestamp=1.0, invocation_id='inv1', text=_LONG_TURN
+  )
+  isolated_child_ev = _create_trace_test_event(
+      timestamp=2.0, invocation_id='inv1', text='secret isolated task step'
+  )
+  isolated_child_ev.isolation_scope = 'task-scope-1'
+  root_ev2 = _create_trace_test_event(
+      timestamp=3.0, invocation_id='inv2', text=_LONG_TURN
+  )
+  session = Session(
+      app_name='test',
+      user_id='u1',
+      id='session-id',
+      events=[root_ev1, isolated_child_ev, root_ev2],
+  )
+
+  # Act
+  yielded = [
+      event
+      async for event in _run_compaction_for_sliding_window(
+          app, session, AsyncMock(spec=BaseSessionService)
+      )
+  ]
+
+  # Assert
+  assert len(yielded) == 1
+  assert yielded[0].isolation_scope is None
+  assert summarizer.called_with_events == [root_ev1, root_ev2]
+
+
+@pytest.mark.asyncio
+async def test_token_threshold_compaction_scopes_to_target_isolation_scope():
+  """Token-threshold compaction filters by isolation_scope and stamps the summary."""
+  # Arrange
+  from google.adk.apps.compaction import _run_compaction_for_token_threshold_config
+
+  summarizer = _StubSummarizer(
+      _create_trace_compacted_event(
+          start_ts=2.0, end_ts=2.5, summary_text='child summary'
+      )
+  )
+  config = EventsCompactionConfig(
+      summarizer=summarizer, token_threshold=10, event_retention_size=1
+  )
+  root_ev = _create_trace_test_event(
+      timestamp=1.0, invocation_id='inv1', text=_LONG_TURN
+  )
+  child_ev1 = _create_trace_test_event(
+      timestamp=2.0, invocation_id='inv1', text=_LONG_TURN
+  )
+  child_ev1.isolation_scope = 'task-scope-1'
+  child_ev2 = _create_trace_test_event(
+      timestamp=2.5, invocation_id='inv1', text=_LONG_TURN
+  )
+  child_ev2.isolation_scope = 'task-scope-1'
+  child_ev3 = _create_trace_test_event(
+      timestamp=3.0, invocation_id='inv1', text=_LONG_TURN
+  )
+  child_ev3.isolation_scope = 'task-scope-1'
+  session = Session(
+      app_name='test',
+      user_id='u1',
+      id='session-id',
+      events=[root_ev, child_ev1, child_ev2, child_ev3],
+  )
+  session_service = AsyncMock(spec=BaseSessionService)
+
+  # Act
+  compacted = await _run_compaction_for_token_threshold_config(
+      config=config,
+      session=session,
+      session_service=session_service,
+      agent=Mock(spec=BaseAgent),
+      isolation_scope='task-scope-1',
+  )
+
+  # Assert
+  assert compacted is True
+  assert summarizer.called_with_events == [child_ev1, child_ev2]
+  appended_event = session_service.append_event.call_args.kwargs['event']
+  assert appended_event.isolation_scope == 'task-scope-1'
+
+
+def test_latest_prompt_token_count_includes_parent_task_delegation_input():
+  """Token estimation for a child isolation_scope includes the parent task FC args."""
+  # Arrange
+  from google.adk.apps.compaction import _latest_prompt_token_count
+
+  delegation_ev = Event(
+      invocation_id='inv-1',
+      author='coordinator',
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id='task-scope-1',
+                      name='sub_agent',
+                      args={'request': _LONG_TURN},
+                  )
+              )
+          ],
+      ),
+  )
+  child_ev = Event(
+      invocation_id='inv-1',
+      author='sub_agent',
+      isolation_scope='task-scope-1',
+      content=types.Content(
+          role='model',
+          parts=[types.Part.from_text(text='ok')],
+      ),
+  )
+
+  # Act
+  with_delegation = _latest_prompt_token_count(
+      [delegation_ev, child_ev],
+      agent_name='sub_agent',
+      isolation_scope='task-scope-1',
+  )
+  without_delegation = _latest_prompt_token_count(
+      [child_ev],
+      agent_name='sub_agent',
+      isolation_scope='task-scope-1',
+  )
+
+  # Assert
+  assert with_delegation is not None
+  assert without_delegation is not None
+  assert with_delegation > without_delegation
+
+
+def test_find_active_task_scope_ignores_compaction_events_with_synthetic_invocation_id():
+  """Compaction events stamped with isolation_scope do not revive aborted scopes."""
+  # Arrange
+  from google.adk import runners
+
+  child_ev = _create_trace_test_event(
+      timestamp=1.0, invocation_id='inv-aborted', text='paused step'
+  )
+  child_ev.isolation_scope = 'task-scope-1'
+  abort_ev = Event(
+      invocation_id='inv-aborted',
+      author='sub_agent',
+      isolation_scope='task-scope-1',
+      error_code='INVOCATION_ABORTED',
+  )
+  compaction_ev = _create_trace_compacted_event(
+      start_ts=1.0, end_ts=1.0, summary_text='summary'
+  )
+  compaction_ev.invocation_id = 'synthetic-compaction-inv'
+  compaction_ev.isolation_scope = 'task-scope-1'
+  session = Session(
+      app_name='test',
+      user_id='u1',
+      id='session-id',
+      events=[child_ev, abort_ev, compaction_ev],
+  )
+
+  # Act / Assert
+  assert runners._find_active_task_scope(session) is None

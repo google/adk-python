@@ -1348,6 +1348,47 @@ async def test_parent_node_plain_exception_retry_reruns_dynamic_children():
 
 
 @pytest.mark.asyncio
+async def test_parent_node_child_failure_retry_skips_rejected_child_result():
+  """A retry after a child failure does not replay a result the parent rejected.
+
+  Attempt 1 rejects the child's result by raising, attempt 2 fails inside the
+  child, and attempt 3 must run the child again instead of replaying the
+  result attempt 1 already rejected.
+  """
+  fetch_runs = 0
+
+  @node
+  async def fetch(ctx: Context):
+    nonlocal fetch_runs
+    fetch_runs += 1
+    if fetch_runs == 2:
+      raise CustomRetryableError('Fetch failed')
+    return f'fetch_{fetch_runs}'
+
+  @node(
+      rerun_on_resume=True,
+      retry_config=RetryConfig(
+          max_attempts=3,
+          initial_delay=0.0,
+          jitter=0.0,
+          exceptions=[CustomRetryableError],
+      ),
+  )
+  async def parent_node(ctx: Context):
+    res = await ctx.run_node(fetch)
+    if res == 'fetch_1':
+      raise CustomRetryableError('Parent rejected the first result')
+    return res
+
+  wf = Workflow(name='wf', edges=[(START, parent_node)])
+  events, _, _ = await _run_workflow(wf)
+
+  assert fetch_runs == 3
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'fetch_3' in outputs
+
+
+@pytest.mark.asyncio
 async def test_dynamic_function_node_retry_gets_fresh_arguments():
   """A retried dynamic FunctionNode does not see arguments it mutated earlier."""
   from google.adk.workflow import FunctionNode

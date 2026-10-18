@@ -2797,3 +2797,19 @@ async def test_workflow_abort_yields_abort_event_and_runs_after_run():
 
   assert [e.error_code for e in events] == ['INVOCATION_ABORTED']
   assert after_run_called is True
+
+
+def test_workflow_iter_static_children_yields_graph_nodes_without_start():
+  """Workflow._iter_static_children yields compiled graph nodes excluding START."""
+  node_a = BaseNode(name='a')
+  node_b = BaseNode(name='b')
+  wf = Workflow(name='my_wf', edges=[(START, node_a), (node_a, node_b)])
+
+  children = list(wf._iter_static_children())
+  assert [c.name for c in children] == ['a', 'b']
+
+
+def test_workflow_iter_static_children_empty_when_no_graph():
+  """Workflow._iter_static_children yields nothing when the workflow has no graph."""
+  wf = Workflow(name='empty_wf')
+  assert list(wf._iter_static_children()) == []

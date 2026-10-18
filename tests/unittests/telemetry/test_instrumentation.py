@@ -332,7 +332,7 @@ def _telemetry_fixture(monkeypatch: pytest.MonkeyPatch) -> _Telemetry:
   # The genai instrumentation library, when active, takes over the inference
   # span; pin it off so the tests exercise ADK's own path.
   monkeypatch.setattr(
-      "google.adk.telemetry.tracing._instrumented_with_opentelemetry_instrumentation_google_genai",
+      "google.adk.telemetry._genai_instrumentor.is_instrumented",
       lambda: False,
   )
   span_exporter = InMemorySpanExporter()
@@ -601,12 +601,13 @@ async def test_record_agent_invocation_reads_nothing_off_the_context(
 
 @pytest.mark.asyncio
 async def test_record_tool_execution_opens_named_execute_tool_span(
-    telemetry: _Telemetry,
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
 ):
   """The span is named after the tool and carries the tool identity, the
 
   arguments, and the response the caller handed back on the context.
   """
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "1")
   agent = _agent()
   ctx = await _invocation_context(agent)
   tool = _EchoTool(name="echo", description="echoes its input")
@@ -1506,7 +1507,7 @@ async def test_record_inference_telemetry_records_token_usage_per_direction(
   shared = {
       "gen_ai.agent.name": "root_agent",
       "gen_ai.operation.name": "generate_content",
-      "gen_ai.provider.name": "gemini",
+      "gen_ai.provider.name": "gcp.gemini",
       "gen_ai.request.model": "some-model",
       "gen_ai.response.model": "some-model-001",
   }
@@ -1546,7 +1547,7 @@ async def test_record_inference_telemetry_without_a_response_skips_token_usage(
   assert telemetry.point_attributes("gen_ai.client.operation.duration") == [{
       "gen_ai.agent.name": "root_agent",
       "gen_ai.operation.name": "generate_content",
-      "gen_ai.provider.name": "gemini",
+      "gen_ai.provider.name": "gcp.gemini",
       "gen_ai.request.model": "some-model",
   }]
 
@@ -1571,7 +1572,7 @@ async def test_record_inference_telemetry_failure_labels_operation_duration(
   assert telemetry.point_attributes("gen_ai.client.operation.duration") == [{
       "gen_ai.agent.name": "root_agent",
       "gen_ai.operation.name": "generate_content",
-      "gen_ai.provider.name": "gemini",
+      "gen_ai.provider.name": "gcp.gemini",
       "gen_ai.request.model": "some-model",
       "error.type": "ValueError",
   }]
@@ -1587,7 +1588,9 @@ async def test_record_llm_response_keeps_every_response_in_arrival_order(
   """
   agent = _agent()
   ctx = await _invocation_context(agent)
-  tel_ctx = _instrumentation.InferenceScope()
+  tel_ctx = _instrumentation.InferenceScope(
+      llm_request=LlmRequest(), user_id="u"
+  )
   first = _llm_response(partial=True, finish_reason=None)
   second = _llm_response()
 
@@ -1609,7 +1612,9 @@ async def test_record_llm_response_traces_the_result_onto_the_carried_span(
   """
   agent = _agent()
   ctx = await _invocation_context(agent)
-  tel_ctx = _instrumentation.InferenceScope()
+  tel_ctx = _instrumentation.InferenceScope(
+      llm_request=LlmRequest(), user_id="u"
+  )
 
   with tracing.tracer.start_as_current_span("test_span") as span:
     tel_ctx.span = span
