@@ -1427,3 +1427,42 @@ def test__load_skill_from_dir_skips_symlinked_resources(tmp_path):
   assert skill.resources.get_asset("ordinary.txt") == "ordinary content"
   assert skill.resources.get_asset("link") is None
   assert "link" not in skill.resources.assets
+
+
+def test__load_skill_from_dir_skips_symlinked_directory_contents(tmp_path):
+  """A symlinked directory inside assets/ is not recursed into."""
+  outside = tmp_path / "outside"
+  outside.mkdir()
+  (outside / "secret.txt").write_text("top-secret")
+
+  skill_dir = tmp_path / "test-skill"
+  assets_dir = skill_dir / "assets"
+  assets_dir.mkdir(parents=True)
+  (skill_dir / "SKILL.md").write_text(
+      "---\nname: test-skill\ndescription: Test description\n---\nBody"
+  )
+  os.symlink(outside, assets_dir / "link_dir")
+
+  skill = _load_skill_from_dir(skill_dir)
+
+  assert "link_dir/secret.txt" not in skill.resources.assets
+  for content in skill.resources.assets.values():
+    assert content != "top-secret"
+
+
+def test__load_skill_from_dir_skips_symlinked_resource_directory(tmp_path):
+  """assets/ itself being a symlink is treated as absent, not followed."""
+  outside = tmp_path / "outside"
+  outside.mkdir()
+  (outside / "secret.txt").write_text("top-secret")
+
+  skill_dir = tmp_path / "test-skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_text(
+      "---\nname: test-skill\ndescription: Test description\n---\nBody"
+  )
+  os.symlink(outside, skill_dir / "assets")
+
+  skill = _load_skill_from_dir(skill_dir)
+
+  assert skill.resources.assets == {}
