@@ -38,6 +38,7 @@ from .functional._digests import SpanDigest
 from .functional._recording import FunctionalTestCase
 from .functional_node_test_cases import ALL_NODE_CASES
 from .functional_test_cases import ALL_CASES
+from .functional_test_cases import GROUNDING_CASE
 from .functional_test_cases import MCP_CASE
 
 if TYPE_CHECKING:
@@ -45,7 +46,12 @@ if TYPE_CHECKING:
 
 # Every recorded case, so a property is asserted over the whole corpus rather
 # than the one scenario a test file happens to drive.
-_EVERY_CASE: list[FunctionalTestCase] = [*ALL_CASES, *ALL_NODE_CASES, MCP_CASE]
+_EVERY_CASE: list[FunctionalTestCase] = [
+    *ALL_CASES,
+    *ALL_NODE_CASES,
+    GROUNDING_CASE,
+    MCP_CASE,
+]
 
 # The operation each metric measures, named as the ``gen_ai.operation.name`` of
 # the span covering it. A metric point and that span describe one operation, so

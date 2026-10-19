@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import dataclasses
 from enum import Enum
 import functools
 import inspect
 from typing import Annotated
 from typing import Any
+from typing import Callable
 from typing import Optional
 from typing import Union
 from unittest import mock
@@ -258,6 +260,58 @@ async def test_run_async_without_tool_context_sync_func():
   args = {"arg1": "test_value_1", "arg2": "test_value_2"}
   result = await tool.run_async(args=args, tool_context=MagicMock())
   assert result == "test_value_1"
+
+
+def _sync_wrapper(func: Callable[..., Any]) -> Callable[..., Any]:
+  """A plain sync decorator, as commonly used for logging or retries."""
+
+  @functools.wraps(func)
+  def wrapper(*args: Any, **kwargs: Any) -> Any:
+    return func(*args, **kwargs)
+
+  return wrapper
+
+
+@_sync_wrapper
+async def async_function_behind_sync_wrapper(item: str) -> dict[str, Any]:
+  """Async function hidden behind a sync decorator."""
+  return {"item": item, "price": 3}
+
+
+@pytest.mark.asyncio
+async def test_run_async_awaits_async_function_behind_sync_wrapper(
+    mock_tool_context: ToolContext,
+) -> None:
+  """Test that run_async awaits the coroutine returned by a sync wrapper."""
+  tool = FunctionTool(async_function_behind_sync_wrapper)
+  result = await tool.run_async(
+      args={"item": "apple"}, tool_context=mock_tool_context
+  )
+  assert result == {"item": "apple", "price": 3}
+
+
+@pytest.mark.asyncio
+async def test_run_async_awaits_async_function_behind_sync_wrapper_with_runner(
+    mock_tool_context: ToolContext,
+) -> None:
+  """Test that the coroutine is awaited when a sync callable runner is bound."""
+  runner_calls: list[tuple[Callable[..., Any], dict[str, Any]]] = []
+
+  async def run_in_thread(
+      target: Callable[..., Any], args: dict[str, Any]
+  ) -> Any:
+    runner_calls.append((target, args))
+    return await asyncio.to_thread(target, **args)
+
+  tool = FunctionTool(async_function_behind_sync_wrapper)
+  with _use_sync_callable_runner(run_in_thread):
+    result = await tool.run_async(
+        args={"item": "apple"}, tool_context=mock_tool_context
+    )
+  assert runner_calls == [
+      (async_function_behind_sync_wrapper, {"item": "apple"})
+  ]
+  assert result == {"item": "apple", "price": 3}
 
 
 @pytest.mark.asyncio

@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from collections.abc import Iterator
 from collections.abc import Mapping
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
 from contextlib import ExitStack
@@ -85,6 +86,10 @@ from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED
+from ._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT
+from ._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT
+from ._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_SOURCE_URIS
+from ._adk_attributes import ADK_EXPERIMENTAL_GROUNDING_WEB_SEARCH_QUERIES
 from ._adk_attributes import ADK_SKILL_ADDITIONAL_TOOLS
 from ._decorators import experimental_telemetry
 from ._experimental_semconv import maybe_log_completion_details
@@ -651,6 +656,59 @@ def _set_context_cache_attributes(
   span.set_attributes(attributes)
 
 
+def _grounding_source_uris(
+    grounding_chunks: Sequence[types.GroundingChunk],
+) -> list[str]:
+  """Returns the distinct source URIs of the chunks, in first-seen order."""
+  uris: dict[str, None] = {}
+  for chunk in grounding_chunks:
+    candidates = (
+        chunk.web and chunk.web.uri,
+        chunk.retrieved_context and chunk.retrieved_context.uri,
+        chunk.maps and chunk.maps.uri,
+        # An image result's source is the page it came from, not the image.
+        chunk.image and chunk.image.source_uri,
+    )
+    for uri in candidates:
+      if uri:
+        uris[uri] = None
+  return list(uris)
+
+
+@experimental_telemetry(gate="grounding")
+def _set_grounding_attributes(
+    span: Span,
+    grounding_metadata: types.GroundingMetadata | None,
+    capture_content: bool,
+) -> None:
+  """Records what a built-in grounding tool did on the given span.
+
+  A built-in tool such as `google_search` runs inside the model call, so it
+  has no tool span of its own and the grounding metadata on the response is
+  the only record that it ran. The counts are always recorded. The queries
+  and the source URIs reveal what the user asked about, so they are recorded
+  only when `capture_content` is set.
+  """
+  if grounding_metadata is None:
+    return
+  web_search_queries = [
+      query for query in grounding_metadata.web_search_queries or () if query
+  ]
+  grounding_chunks = grounding_metadata.grounding_chunks or []
+  attributes: dict[str, AttributeValue] = {
+      ADK_EXPERIMENTAL_GROUNDING_QUERY_COUNT: len(set(web_search_queries)),
+      ADK_EXPERIMENTAL_GROUNDING_CHUNK_COUNT: len(grounding_chunks),
+  }
+  if capture_content:
+    if web_search_queries:
+      attributes[ADK_EXPERIMENTAL_GROUNDING_WEB_SEARCH_QUERIES] = (
+          web_search_queries
+      )
+    if source_uris := _grounding_source_uris(grounding_chunks):
+      attributes[ADK_EXPERIMENTAL_GROUNDING_SOURCE_URIS] = source_uris
+  span.set_attributes(attributes)
+
+
 def _start_call_llm_span(
     caller_context: otel_context.Context,
 ) -> Span | None:
@@ -751,6 +809,12 @@ def trace_call_llm(
   _set_usage_metadata_attributes(span, llm_response.usage_metadata)
   _set_context_cache_attributes(
       telemetry_config, span, getattr(llm_response, "cache_metadata", None)
+  )
+  _set_grounding_attributes(
+      telemetry_config,
+      span,
+      getattr(llm_response, "grounding_metadata", None),
+      telemetry_config.should_add_content_to_legacy_spans,
   )
   if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
@@ -1310,6 +1374,12 @@ def trace_inference_result(
   # required to carry the fields this function already read.
   _set_context_cache_attributes(
       telemetry_config, span, getattr(llm_response, "cache_metadata", None)
+  )
+  _set_grounding_attributes(
+      telemetry_config,
+      span,
+      getattr(llm_response, "grounding_metadata", None),
+      telemetry_config.should_add_content_to_experimental_spans,
   )
 
   if telemetry_config.should_use_experimental_genai_semconv and isinstance(
