@@ -21,6 +21,7 @@ from google.genai import types
 from typing_extensions import override
 
 from . import _memory_entry_utils
+from ..utils import content_utils
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
@@ -51,11 +52,9 @@ class PreloadMemoryTool(BaseTool):
       tool_context: ToolContext,
       llm_request: LlmRequest,
   ) -> None:
-    user_content = tool_context.user_content
-    if not user_content or not user_content.parts:
-      return
-
-    user_query = ' '.join(part.text for part in user_content.parts if part.text)
+    user_query = content_utils.extract_text_from_content(
+        tool_context.user_content, splitter=' '
+    )
     if not user_query:
       return
 

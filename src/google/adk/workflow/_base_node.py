@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import abc
 from collections.abc import AsyncGenerator
+from collections.abc import Iterator
 from typing import Any
 from typing import final
 from typing import TYPE_CHECKING
@@ -33,6 +34,7 @@ from ._retry_config import RetryConfig
 if TYPE_CHECKING:
   from ..agents.context import Context
   from ..events.event import Event
+  from ._graph import Edge
 
 
 # The `abc.ABC` base is load-bearing and must not be dropped. Subclasses
@@ -68,6 +70,10 @@ class BaseNode(BaseModel, abc.ABC):
 
   If True, the node reruns from scratch. If False, it completes immediately
   using the user's resuming input as the node's output.
+
+  A rerun node that raised several interrupts reruns as soon as any one of them
+  is answered, with the answers received so far in ``ctx.resume_inputs``. To
+  keep waiting for the rest, yield their interrupts again.
   """
 
   wait_for_output: bool = False
@@ -224,10 +230,57 @@ class BaseNode(BaseModel, abc.ABC):
     )
     yield  # AsyncGenerator requires at least one yield statement
 
+  def _iter_static_children(self) -> Iterator[BaseNode]:
+    """Yields direct static children declared on this node.
+
+    Private helper for internal ADK framework use only. Do not call or override
+    outside ADK.
+
+    A static child is declared on the node structure and runs within the same
+    application context (same Runner, session, and plugins). Nodes created
+    dynamically at runtime or executed in an isolated runner (e.g.
+    ``AgentTool``) are not static children.
+    """
+    return
+    yield
+
   @property
   def _requires_all_predecessors(self) -> bool:
     """If True, the node waits for all predecessors to complete before running."""
     return False
+
+  def _validate_outgoing_edges(self, edges: list[Edge]) -> None:
+    """Checks the node's outgoing edges when its graph is validated.
+
+    Override to reject wiring the node cannot serve, such as routes it never
+    emits, by raising ``GraphValidationError``. The default accepts any edges.
+
+    Args:
+      edges: Every edge in the graph whose ``from_node`` is this node.
+    """
+
+
+def _walk_static_nodes(root: BaseNode) -> Iterator[BaseNode]:
+  """Performs an iterative pre-order depth-first traversal of static nodes.
+
+  Private helper for internal ADK framework use only.
+
+  Yields ``root`` first, then each reachable static child discovered via
+  ``BaseNode._iter_static_children()``. Tracks visited nodes by identity
+  (``id()``) to avoid duplicate visits in directed acyclic graphs and prevent
+  infinite loops on cyclic references.
+  """
+  visited: set[int] = set()
+  stack: list[BaseNode] = [root]
+  while stack:
+    curr = stack.pop()
+    curr_id = id(curr)
+    if curr_id in visited:
+      continue
+    visited.add(curr_id)
+    yield curr
+    children = list(curr._iter_static_children())
+    stack.extend(reversed(children))
 
 
 def find_static_node_path(root: BaseNode, target: BaseNode) -> str | None:
@@ -238,8 +291,8 @@ def find_static_node_path(root: BaseNode, target: BaseNode) -> str | None:
   tree independently of any particular run. Returns ``None`` when ``target`` is
   not reachable from ``root``.
 
-  Children are discovered through the node's Pydantic fields, so nodes held in
-  a list or dict field are traversed as well.
+  Children are discovered via ``_iter_static_children()`` as well as the node's
+  Pydantic fields, so nodes held in a list or dict field are traversed as well.
   """
   visited: set[int] = set()
 
@@ -250,6 +303,11 @@ def find_static_node_path(root: BaseNode, target: BaseNode) -> str | None:
 
     if curr is target:
       return [curr.name]
+
+    for child in curr._iter_static_children():
+      path = _recurse(child)
+      if path:
+        return [curr.name] + path
 
     for _, val in curr:
       if isinstance(val, BaseNode):

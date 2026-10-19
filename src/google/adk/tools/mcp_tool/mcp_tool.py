@@ -48,9 +48,12 @@ from ...features import is_feature_enabled
 from ...flows.llm_flows.context._fencing import fence_schema_descriptions
 from ...flows.llm_flows.context._fencing import fence_tool_description
 from ...flows.llm_flows.context._fencing import TOOL_DESCRIPTION_PREAMBLE
+from ...utils._callable_utils import unwrap_callable
 from ...utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ...utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ...utils._sync_runner import _invoke_callable
+from ...utils._sync_runner import _is_async_callable
 from ...utils.context_utils import find_context_parameter
 # `is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)` gates the
 # error-boundary and transport-crash-detection behavior added in this module.
@@ -86,6 +89,24 @@ _RESERVED_TOOL_NAMES = frozenset({
 })
 
 _UNSET = object()
+
+
+def _merge_auth_and_provider_headers(
+    *,
+    auth_headers: dict[str, str] | None,
+    provider_headers: dict[str, str] | None,
+) -> dict[str, str]:
+  """Merges MCP session headers, with explicit auth taking precedence."""
+  headers = dict(provider_headers or {})
+  if auth_headers:
+    auth_header_names = {name.lower() for name in auth_headers}
+    headers = {
+        name: value
+        for name, value in headers.items()
+        if name.lower() not in auth_header_names
+    }
+    headers.update(auth_headers)
+  return headers
 
 
 # Values the server owns: free-form JSON, not model fields. A `_meta` inside
@@ -178,19 +199,6 @@ def _read_field(model: Any, *names: str) -> Any:
   raise AttributeError(
       f"{type(model).__name__} defines none of {names}. This usually means the"
       " installed MCP SDK renamed the field again."
-  )
-
-
-def _is_async_callable(target: Any) -> bool:
-  """Whether calling ``target`` returns a coroutine.
-
-  Functions are callable objects, but not all callable objects are functions:
-  ``iscoroutinefunction`` is False for an instance whose ``__call__`` is async,
-  so check that too.
-  """
-  return inspect.iscoroutinefunction(target) or (
-      hasattr(target, "__call__")
-      and inspect.iscoroutinefunction(target.__call__)
   )
 
 
@@ -510,11 +518,9 @@ class McpTool(BaseAuthenticatedTool):
       self, target: Callable[..., Any], args_to_call: dict[str, Any]
   ) -> Any:
     """Invokes a callable, handling both sync and async cases."""
-
-    if _is_async_callable(target):
-      return await target(**args_to_call)
-    else:
-      return target(**args_to_call)
+    return await _invoke_callable(
+        target, args_to_call, unwrapped=unwrap_callable(target)
+    )
 
   def _prepare_callable_args(
       self,
@@ -663,11 +669,10 @@ class McpTool(BaseAuthenticatedTool):
       if inspect.isawaitable(dynamic_headers):
         dynamic_headers = await dynamic_headers
 
-    headers: dict[str, str] = {}
-    if auth_headers:
-      headers.update(auth_headers)
-    if dynamic_headers:
-      headers.update(dynamic_headers)
+    headers = _merge_auth_and_provider_headers(
+        auth_headers=auth_headers,
+        provider_headers=cast(dict[str, str] | None, dynamic_headers),
+    )
     final_headers = headers if headers else None
 
     # Propagate trace context in the _meta field as sprcified by MCP protocol.

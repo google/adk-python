@@ -35,7 +35,8 @@ from ..features import FeatureName
 from ..features import is_feature_enabled
 from ..utils import _schema_utils
 from ..utils._callable_utils import CallableSpec
-from ..utils._sync_runner import _SYNC_CALLABLE_RUNNER
+from ..utils._callable_utils import unwrap_callable
+from ..utils._sync_runner import _invoke_callable
 from ..utils._sync_runner import _use_sync_callable_runner as _use_sync_callable_runner
 from ..utils.variant_utils import GoogleLLMVariant
 from ._automatic_function_calling_util import build_function_declaration
@@ -108,6 +109,10 @@ class FunctionTool(BaseTool):
     self._generator_node_cache: (
         tuple[tuple[str, Any, str], FunctionNode] | None
     ) = None
+    self._declaration_cache: dict[
+        tuple[tuple[str, ...], GoogleLLMVariant, bool],
+        types.FunctionDeclaration,
+    ] = {}
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -116,12 +121,31 @@ class FunctionTool(BaseTool):
     # `ignore_params` drops the function context and input_stream (for streaming
     # tools), which the model doesn't understand. Return a copy: the cached
     # declaration is shared and callers (e.g. toolset prefixing) mutate it.
-    declaration = _build_declaration_cached(
-        self.func,
-        tuple(self._ignore_params),
-        self._api_variant,
-        is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL),
+    ignore_params = tuple(self._ignore_params)
+    json_schema_enabled = is_feature_enabled(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL
     )
+    try:
+      hash(self.func)
+    except TypeError:
+      cache_key = (ignore_params, self._api_variant, json_schema_enabled)
+      cached = self._declaration_cache.get(cache_key)
+      if cached is None:
+        cached = _build_declaration_cached.__wrapped__(
+            self.func,
+            ignore_params,
+            self._api_variant,
+            json_schema_enabled,
+        )
+        self._declaration_cache[cache_key] = cached
+      declaration = cached
+    else:
+      declaration = _build_declaration_cached(
+          self.func,
+          ignore_params,
+          self._api_variant,
+          json_schema_enabled,
+      )
     return declaration.model_copy(deep=True)
 
   def _preprocess_args(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -270,17 +294,15 @@ class FunctionTool(BaseTool):
 
     # In live mode (bidirectional streaming), tools may accept an 'input_stream'
     # parameter (e.g., LiveRequestQueue) to receive real-time streaming data.
-    # When registered in _process_function_live_helper, the framework attaches
-    # the dedicated stream to invocation_context.active_streaming_tools[name].
-    # If the tool signature expects 'input_stream', we inject that active stream.
-    if "input_stream" in valid_params:
-      active_tools = tool_context._invocation_context.active_streaming_tools
-      if (
-          active_tools is not None
-          and self.name in active_tools
-          and active_tools[self.name].stream is not None
-      ):
-        args_to_call["input_stream"] = active_tools[self.name].stream
+    # _process_function_live_helper registers each call with its own stream,
+    # keyed by function call id; inject the stream of this call.
+    if "input_stream" in valid_params and tool_context.function_call_id:
+      active_tools = (
+          tool_context._invocation_context._active_background_tools or {}
+      )
+      active = active_tools.get(tool_context.function_call_id)
+      if active is not None and active.input_stream is not None:
+        args_to_call["input_stream"] = active.input_stream
     return {k: v for k, v in args_to_call.items() if k in valid_params}
 
   @override
@@ -327,13 +349,21 @@ class FunctionTool(BaseTool):
       return True
 
     # For callables without Python code objects (e.g. C builtins like bin):
+    # Traceback terminates in utils._sync_runner._invoke_callable (or
+    # FunctionTool._invoke_callable / invoke / run_async). We check both the
+    # code object and frame function name to confirm the TypeError originated at
+    # the invocation call-site.
     curr = tb
     while curr.tb_next:
       curr = curr.tb_next
-    return curr.tb_frame.f_code.co_name in (
-        "_invoke_callable",
-        "invoke",
-        "run_async",
+    return (
+        curr.tb_frame.f_code is _invoke_callable.__code__
+        or curr.tb_frame.f_code.co_name
+        in (
+            "_invoke_callable",
+            "invoke",
+            "run_async",
+        )
     )
 
   @override
@@ -493,20 +523,12 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
       self, target: Callable[..., Any], args_to_call: dict[str, Any]
   ) -> Any:
     """Invokes a callable, handling both sync and async cases."""
-
-    # Functions are callable objects, but not all callable objects are functions
-    # checking coroutine function is not enough. We also need to check whether
-    # Callable's __call__ function is a coroutine function
-    is_async = inspect.iscoroutinefunction(target) or (
-        hasattr(target, "__call__")
-        and inspect.iscoroutinefunction(target.__call__)
+    unwrapped = (
+        self._spec.unwrapped_func
+        if target is self.func
+        else unwrap_callable(target)
     )
-    if is_async:
-      return await target(**args_to_call)
-    runner = _SYNC_CALLABLE_RUNNER.get()
-    if runner is not None:
-      return await runner(target, args_to_call)
-    return target(**args_to_call)
+    return await _invoke_callable(target, args_to_call, unwrapped=unwrapped)
 
   def _get_mandatory_args(
       self,

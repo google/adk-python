@@ -944,6 +944,72 @@ async def test_generate_content_async_stream(gemini_llm, llm_request):
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_preserves_function_call_ids(
+    gemini_llm: Gemini, generate_content_response: types.GenerateContentResponse
+) -> None:
+  """generateContent preserves model function IDs for out-of-order pairing."""
+  fc1 = types.FunctionCall(
+      id="call_1598346",
+      name="get_weather",
+      args={"city": "Paris"},
+  )
+  fc2 = types.FunctionCall(
+      id="call_1598347",
+      name="get_weather",
+      args={"city": "Cairo"},
+  )
+  fr2 = types.FunctionResponse(
+      id="call_1598347",
+      name="get_weather",
+      response={"temp_c": 29},
+  )
+  fr1 = types.FunctionResponse(
+      id="call_1598346",
+      name="get_weather",
+      response={"temp_c": 11},
+  )
+  llm_request = LlmRequest(
+      model="gemini-2.5-flash",
+      contents=[
+          Content(
+              role="model",
+              parts=[
+                  Part(function_call=fc1),
+                  Part(function_call=fc2),
+              ],
+          ),
+          Content(
+              role="user",
+              parts=[
+                  Part(function_response=fr2),
+                  Part(function_response=fr1),
+              ],
+          ),
+      ],
+  )
+
+  with mock.patch.object(
+      gemini_llm.api_client.aio.models, "generate_content"
+  ) as mock_generate_content:
+    mock_generate_content.return_value = generate_content_response
+
+    _ = [
+        response
+        async for response in gemini_llm.generate_content_async(llm_request)
+    ]
+
+  sent_contents = mock_generate_content.call_args.kwargs["contents"]
+  assert [p.function_call.id for p in sent_contents[0].parts] == [
+      "call_1598346",
+      "call_1598347",
+  ]
+  assert [p.function_response.id for p in sent_contents[1].parts] == [
+      "call_1598347",
+      "call_1598346",
+  ]
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_stream_preserves_thinking_and_text_parts(
     gemini_llm, llm_request
 ):

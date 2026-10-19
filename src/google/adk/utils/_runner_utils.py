@@ -16,14 +16,76 @@
 
 from __future__ import annotations
 
+import contextvars
 import logging
+from typing import Any
+from typing import AsyncGenerator
+from typing import Awaitable
+from typing import cast
+from typing import Generator
 from typing import TYPE_CHECKING
+from typing import TypeVar
 
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
   from ..plugins.plugin_manager import PluginManager
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_T = TypeVar("_T")
+
+
+async def _stream_in_caller_scope(
+    agen: AsyncGenerator[_T, None],
+) -> AsyncGenerator[_T, None]:
+  """Iterates `agen`, running it only in its own copy of the caller context.
+
+  An async generator borrows the context of whoever resumes it, so what it
+  attaches across a yield leaks into its consumer, and a detach run by a
+  different resumer (another task, the GC) fails. Running it in its own
+  context, like a Task, fixes both.
+  """
+  ctx = contextvars.copy_context()
+  try:
+    while True:
+      try:
+        item = await _InContext(ctx, agen.__anext__())
+      except StopAsyncIteration:
+        return
+      yield item
+  finally:
+    await _InContext(ctx, agen.aclose())
+
+
+class _InContext(Awaitable[_T]):
+  """`await _InContext(ctx, x)` is `await x`, but every piece of x runs in `ctx`.
+
+  `ctx.run` is synchronous, so it cannot stay entered across an await without
+  every other task running in `ctx` too. Instead each piece of `x`, up to the
+  next future it waits on, runs in `ctx`, as asyncio does for a Task.
+  """
+
+  def __init__(self, ctx: contextvars.Context, awaitable: Awaitable[_T]):
+    self._ctx = ctx
+    self._awaitable = awaitable
+
+  def __await__(self) -> Generator[Any, Any, _T]:
+    coro = self._awaitable.__await__()
+    value: Any = None
+    error: BaseException | None = None
+    while True:
+      try:
+        if error is None:
+          waiting_on = self._ctx.run(coro.send, value)
+        else:
+          waiting_on = self._ctx.run(coro.throw, error)
+      except StopIteration as done:
+        return cast(_T, done.value)
+      try:
+        value, error = (yield waiting_on), None
+      except BaseException as e:  # pylint: disable=broad-exception-caught
+        # Cancelled while waiting: deliver it inside `ctx`.
+        value, error = None, e
 
 
 async def _notify_run_error(

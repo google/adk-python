@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from google.genai import types
+from pydantic import TypeAdapter
 from pydantic import ValidationError
 from typing_extensions import override
 
@@ -41,6 +42,26 @@ def _to_json_schema(schema: SchemaType) -> dict[str, Any]:
   return schema_to_json_schema(schema)
 
 
+def _start_entry_nodes(workflow: BaseNode) -> list[BaseNode]:
+  """START successors that receive the tool's input directly.
+
+  Wait-for-all nodes (e.g. ``JoinNode``) are excluded: a ``START -> JoinNode``
+  edge only registers START as one of the join's predecessors, so the join
+  neither contributes to the tool's input schema nor validates its arguments.
+  """
+  from ..workflow._base_node import START
+
+  graph = getattr(workflow, 'graph', None)
+  if graph is None:
+    return []
+  return [
+      e.to_node
+      for e in graph.edges
+      if e.from_node.name == START.name
+      and not e.to_node._requires_all_predecessors
+  ]
+
+
 def _resolve_node_input_schema(
     node: BaseNode,
 ) -> tuple[bool, SchemaType | None]:
@@ -54,7 +75,6 @@ def _resolve_node_input_schema(
     ambiguous.
   """
   from ..agents.llm_agent import LlmAgent
-  from ..workflow._base_node import START
   from ..workflow._function_node import FunctionNode
   from ..workflow._parallel_worker import _ParallelWorker
   from ..workflow._tool_node import _ToolNode
@@ -106,11 +126,7 @@ def _resolve_node_input_schema(
     return True, str
 
   if isinstance(node, Workflow):
-    if node.graph is None:
-      return False, None
-    start_nodes = [
-        e.to_node for e in node.graph.edges if e.from_node.name == START.name
-    ]
+    start_nodes = _start_entry_nodes(node)
     if not start_nodes:
       return False, None
 
@@ -176,6 +192,54 @@ def _build_node_declaration(
     decl.response_json_schema = _to_json_schema(output_schema)
 
   return decl
+
+
+def _arg_validation_error(name: str, detail: Any) -> dict[str, str]:
+  """Builds a tool argument validation error dict."""
+  return {
+      'error': (
+          f'Invoking `{name}()` failed due to argument validation'
+          f' errors:\n{detail}\nYou could retry calling this tool with'
+          ' corrected argument types.'
+      )
+  }
+
+
+def _validate_tool_input(node: BaseNode, data: Any) -> Any:
+  """Validates tool input against a node and its workflow entry nodes."""
+  from ..workflow._function_node import FunctionNode
+  from ..workflow._parallel_worker import _ParallelWorker
+  from ..workflow._workflow import Workflow
+
+  input_schema = getattr(node, 'input_schema', None)
+  if input_schema is not None and not isinstance(
+      input_schema, (dict, types.Schema)
+  ):
+    if data is None:
+      TypeAdapter(input_schema).validate_python(None)
+    return node._validate_input_data(data)
+
+  data = node._validate_input_data(data)
+  if (
+      isinstance(node, FunctionNode)
+      and node.parameter_binding != 'node_input'
+      and node.input_schema is None
+  ):
+    hint = node._type_hints.get('node_input')
+    if hint not in (None, Any, object):
+      return node._coerce_param('node_input', data, hint)
+  elif isinstance(node, _ParallelWorker):
+    items = data if isinstance(data, list) else [data]
+    validated = [_validate_tool_input(node._node, item) for item in items]
+    return validated if isinstance(data, list) else validated[0]
+  elif isinstance(node, Workflow):
+    validated = [
+        _validate_tool_input(n, data) for n in _start_entry_nodes(node)
+    ]
+    if len(validated) == 1:
+      return validated[0]
+
+  return data
 
 
 class NodeTool(BaseTool):
@@ -248,22 +312,20 @@ class NodeTool(BaseTool):
     input_schema = getattr(self.node, 'input_schema', None)
     schema = _to_json_schema(input_schema) if input_schema is not None else None
     if isinstance(schema, dict) and schema.get('type') != 'object':
+      if 'request' not in args:
+        return _arg_validation_error(
+            self.name, 'Missing required argument "request".'
+        )
       node_input = args.get('request')
     else:
       node_input = args
 
     try:
-      node_input = self.node._validate_input_data(node_input)
+      node_input = _validate_tool_input(self.node, node_input)
     except (ValidationError, WorkflowDataError) as e:
       # Same shape as FunctionTool's argument validation errors, so the
       # model can correct its arguments and retry.
-      return {
-          'error': (
-              f'Invoking `{self.name}()` failed due to argument validation'
-              f' errors:\n{e}\nYou could retry calling this tool with'
-              ' corrected argument types.'
-          )
-      }
+      return _arg_validation_error(self.name, e)
 
     res = await _run_node_in_tool_context(
         self.node,

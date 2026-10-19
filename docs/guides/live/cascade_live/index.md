@@ -124,9 +124,13 @@ class GuardrailedTTS(LiveEgress):
       yield event
 ```
 
+### Gemini speech transforms
+
+`GeminiSTT` and `GeminiTTS` in `google.adk.live` run speech recognition and synthesis on Gemini models, with the same credentials as a Gemini reasoner and no extra dependency. The [GeminiSTT](../gemini_stt/index.md) and [GeminiTTS](../gemini_tts/index.md) guides describe how each works and its options.
+
 ## Limitations
 
-- **Additive latency:** Unlike native S2S models where audio processing and generation occur in a single pass, cascaded pipelines execute in series (STT recognition, text reasoning, sentence buffering, and TTS synthesis). Time-to-first-audio is higher than native S2S.
+- **Additive latency:** Unlike native S2S models where audio processing and generation occur in a single pass, cascaded pipelines execute in series (STT recognition, text reasoning, sentence buffering, and TTS synthesis). Time-to-first-audio is higher than native S2S. Thinking adds to it before the reasoner writes its first word, so set the reasoner's thinking to its lowest level: with its default thinking level, `gemini-3.8-flash` took 2.6 to 5.0 seconds to its first token, against 1.2 to 1.5 seconds at `LOW`.
 - **VAD and endpointing tuning:** Turn boundaries are determined by the STT transform's VAD silence threshold. Fixed thresholds can cut off users who pause mid-sentence or introduce latency if the silence window is set too high.
 - **User speech during tool calls:** If the user finishes speaking after the model calls a tool but before the tool returns, the user's words are added to the conversation before the tool's result. The model then gets the tool call and its result out of order, and this turn and all later turns in the session fail.
 - **Client Acoustic Echo Cancellation (AEC):** If client audio plays over open speakers without hardware or software AEC, the microphone will pick up the agent's synthesized speech and transcribe it as user input, triggering an unintended barge-in cancellation.
@@ -134,4 +138,4 @@ class GuardrailedTTS(LiveEgress):
 
 ## Related samples
 
-- [Cascade Live Agent](../../../../contributing/samples/live/cascade/README.md) - Complete live voice agent using ElevenLabs Scribe v2 for STT, Gemini for reasoning and tool execution, and ElevenLabs Flash v2.5 for TTS.
+- [Cascade Live Agent](../../../../contributing/samples/live/cascade/README.md) - Complete live voice agent using Gemini for reasoning and tool execution, with Gemini or ElevenLabs for STT and TTS, picked by the `CASCADE_SPEECH_PROVIDER` environment variable.

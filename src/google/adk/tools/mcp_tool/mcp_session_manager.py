@@ -1010,15 +1010,18 @@ class MCPSessionManager:
         hasattr(self._connection_params, 'headers')
         and self._connection_params.headers
     ):
-      base_headers = self._connection_params.headers.copy()
+      base_headers = {
+          key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
+          for key, value in self._connection_params.headers.items()
+      }
 
     if additional_headers:
-      base_headers.update(additional_headers)
+      base_headers.update({
+          key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
+          for key, value in additional_headers.items()
+      })
 
-    return merge_tracking_headers({
-        key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
-        for key, value in base_headers.items()
-    })
+    return merge_tracking_headers(base_headers)
 
   def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
