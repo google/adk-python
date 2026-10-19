@@ -87,6 +87,7 @@ _OPERATION_BY_METRIC: dict[str, str] = {
     "adk.experimental.invoke_workflow.inference_calls": "invoke_workflow",
     "adk.experimental.invoke_workflow.tool_calls": "invoke_workflow",
     "adk.experimental.invoke_workflow.skill.loads": "invoke_workflow",
+    "adk.experimental.invoke_workflow.compactions": "invoke_workflow",
 }
 
 # Attributes that split a histogram into series rather than state a fact about
@@ -144,7 +145,9 @@ _CASES_MISSING_ERROR_TYPE: frozenset[str] = frozenset({
     "agent-inference-error-resource-exhausted-schema-v1",
     "agent-inference-error-resource-exhausted-schema-v2",
     "agent-inference-error-valueerror-schema-v2",
+    "agent-inference-error-valueerror-span-and-event-schema-v2",
     "agent-tool-error-valueerror-schema-v2",
+    "agent-tool-error-valueerror-span-only-schema-v2",
 })
 
 _MISSING_ERROR_TYPE_REASON: str = (

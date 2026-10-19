@@ -125,15 +125,21 @@ Note that `$vectorSearch` only filters on fields declared as filter fields in th
 | :--- | :--- | :--- | :--- |
 | `vertex_ai_embedding_model_name` | `str` | `"text-embedding-005"` | The Vertex AI model used to embed the query text. |
 | `vertex_ai_embedding_output_dimensionality` | `int \| None` | `None` | Length of the query embedding, for models that support shortening it. |
+| `use_mongodb_auto_embedding` | `bool` | `False` | Send the query text to Atlas as `query.text` and let Atlas embed it with the index's Voyage AI model (Automated Embedding, Preview), instead of calling the genai client. |
+| `mongodb_auto_embedding_model` | `str \| None` | `None` | Voyage AI model for auto-embedded queries, e.g. `"voyage-4"`. Must be compatible with the index's model; unset uses the index's model. |
 | `default_vector_index_name` | `str` | `"vector_index"` | Vector search index used when the model does not name one. |
 | `default_search_index_name` | `str` | `"default"` | Full-text search index used by hybrid search when the model does not name one. |
-| `default_embedding_field` | `str` | `"embedding"` | Document field holding the stored vectors. |
+| `default_embedding_field` | `str` | `"embedding"` | Document field searched by `$vectorSearch`: the field holding the stored vectors, or the `autoEmbed` text field when `use_mongodb_auto_embedding=True`. |
 | `default_limit` | `int` | `4` | Documents returned when the model does not ask for a number. |
 | `max_results` | `int` | `50` | Ceiling on the documents any one search returns. |
 | `default_num_candidates` | `int` | `100` | Nearest neighbors the vector search considers. |
 | `timeout_ms` | `int` | `60000` | Time limit for a single search operation. |
 
 The embedding model and its dimensionality have to match the vectors already in the collection. Similarity between vectors from two different models is a number without meaning, and nothing in MongoDB rejects the comparison as long as the lengths happen to agree, so a mismatch shows up as results that are merely unhelpful. Set `vertex_ai_embedding_output_dimensionality` when the stored vectors were produced with a truncated embedding, and leave it unset to take the model's native length.
+
+### Letting Atlas embed the query (Automated Embedding, Preview)
+
+Set `use_mongodb_auto_embedding=True` and the tools skip the genai call entirely: the query text goes to `$vectorSearch` as `query.text`, and Atlas generates the embedding with the Voyage AI model configured on the index. Point `default_embedding_field` (or per-call `embedding_field`) at the raw text field indexed as the `autoEmbed` type, which is what makes Atlas embed *documents* on write as well. The mode applies to both tools — hybrid search's vector arm switches with everything else — and `mongodb_auto_embedding_model` overrides the embedding model per query when a compatible one exists. Because no Google credentials are needed in this mode, it is the simpler deployment when the data already lives on Atlas; the default mode exists for collections whose vectors come from a Google model. Automated Embedding is a Preview feature available on MongoDB Atlas and on self-managed deployments running MongoDB 8.3+ with `mongot` 1.70.1+ and Voyage AI API keys [configured on `mongot`](https://www.mongodb.com/docs/search/self-managed/current/configuration/automated-embedding/).
 
 The three `default_*` names cover the common case where a database uses one naming convention throughout. The model can override each of them per call, which is what lets one toolset serve collections that index different fields.
 
@@ -196,4 +202,4 @@ toolset = MongoDbToolset(
 - Both tools read. There is no tool for inserting, updating, or deleting documents, and none for creating the indexes the searches depend on.
 - One toolset covers one database. Searching a second database means a second toolset.
 - Results are not paginated. A search returns its first `limit` documents, and asking for the next page means asking for a larger limit.
-- Every search embeds its query, which adds a Vertex AI round trip to each call and fails the call when embedding fails.
+- In the default embedding mode every search embeds its query through the genai client, which adds a Vertex AI round trip to each call and fails the call when embedding fails. With `use_mongodb_auto_embedding` the embedding happens inside Atlas instead.

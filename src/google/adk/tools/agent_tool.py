@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -44,6 +45,8 @@ from .tool_context import ToolContext
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 def _part_to_text(part: types.Part) -> str:
@@ -342,6 +345,14 @@ class AgentTool(BaseTool):
     last_content = None
     last_error_message = None
     last_grounding_metadata = None
+    # Long-running tool calls (adk_request_confirmation, adk_request_input, a
+    # remote agent's input_required, or an ordinary LongRunningFunctionTool)
+    # all set long_running_tool_ids on the event carrying the call. An ordinary
+    # LongRunningFunctionTool that returns a truthy value resolves in the very
+    # same run via an auto-built function response, whereas HITL or remote
+    # input_required pauses do not, so only a call id that is *never* answered
+    # by a function response before the run ends is actually still pending.
+    pending_tool_ids: set[str] = set()
     async with Aclosing(
         runner.run_async(
             user_id=session.user_id,
@@ -357,13 +368,36 @@ class AgentTool(BaseTool):
           tool_context.state.update(event.actions.state_delta)
         if event.error_message:
           last_error_message = event.error_message
+        if event.long_running_tool_ids:
+          pending_tool_ids |= event.long_running_tool_ids
         if event.content:
           last_content = event.content
           last_grounding_metadata = event.grounding_metadata
+          pending_tool_ids -= {
+              fr.id for fr in event.get_function_responses() if fr.id
+          }
 
     # Clean up runner resources (especially MCP sessions)
     # to avoid "Attempted to exit cancel scope in a different task" errors
     await runner.close()
+
+    if pending_tool_ids:
+      tool_context.actions.skip_summarization = False
+      sorted_ids = sorted(pending_tool_ids)
+      logger.warning(
+          'Agent %r paused with unresolved long-running tool call(s) %s, which'
+          ' AgentTool cannot resume because its nested session is discarded.'
+          ' Configure the agent under sub_agents (e.g. with'
+          " mode='single_turn' for LlmAgent) if it needs to pause and"
+          ' resume.',
+          self.agent.name,
+          sorted_ids,
+      )
+      return (
+          f'Error: agent {self.agent.name!r} stopped waiting on unresolved'
+          f' long-running tool call(s) (pending call ids: {sorted_ids}),'
+          ' which AgentTool cannot resume.'
+      )
 
     if last_content is None or last_content.parts is None:
       return last_error_message or ''

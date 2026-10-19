@@ -893,6 +893,47 @@ class TestScanNodeEvents:
     assert results["node_a@1"].resolved_responses == {"int-1": "answer-1"}
     assert results["node_b@1"].resolved_responses == {"int-2": "answer-2"}
 
+  def test_scan_reemitted_interrupt_id_clears_prior_resolution_on_same_owner(
+      self,
+  ):
+    """Re-emitting an already-resolved interrupt_id on the same owner marks it pending again."""
+    event_int_1 = Event(
+        node_info=NodeInfo(path="/wf@1/review@1"),
+        long_running_tool_ids={"review"},
+        invocation_id="test_id",
+    )
+    event_fr_1 = Event(
+        author="user",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="review",
+                        name="adk_request_input",
+                        response={"result": "revise"},
+                    )
+                )
+            ]
+        ),
+        invocation_id="test_id",
+    )
+    event_int_2 = Event(
+        node_info=NodeInfo(path="/wf@1/review@1"),
+        long_running_tool_ids={"review"},
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [event_int_1, event_fr_1, event_int_2],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert results["review@1"].interrupt_ids == {"review"}
+    assert results["review@1"].resolved_ids == set()
+    assert results["review@1"].resolved_responses == {}
+
 
 # --- is_terminal_event ---
 #

@@ -25,6 +25,7 @@ from ..errors.tool_execution_error import ToolExecutionError
 from ..examples import example_util
 from ..examples.base_example_provider import BaseExampleProvider
 from ..examples.example import Example
+from ..utils import content_utils
 from .base_tool import BaseTool
 from .tool_configs import BaseToolConfig
 from .tool_configs import ToolArgsConfig
@@ -55,20 +56,17 @@ class ExampleTool(BaseTool):
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
-    # Nothing to select when there is no user content.
-    user_content = tool_context.user_content
-    if not user_content:
+    if not tool_context.user_content or not tool_context.user_content.parts:
+      return
+    query = content_utils.extract_text_from_content(
+        tool_context.user_content, splitter=' '
+    )
+    if not query and isinstance(self.examples, BaseExampleProvider):
       return
 
-    parts = user_content.parts
-    if not parts or not parts[0].text:
-      return
-
-    llm_request.append_instructions([
-        example_util.build_example_si(
-            self.examples, parts[0].text, llm_request.model
-        )
-    ])
+    llm_request.append_instructions(
+        [example_util.build_example_si(self.examples, query, llm_request.model)]
+    )
 
   @override
   @classmethod

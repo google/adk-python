@@ -211,10 +211,15 @@ class AgentEngineSandboxComputer(BaseComputer):
     """Get or create the Agent Platform client."""
     if self._client is None:
       from ...dependencies._agentplatform import agentplatform
+      from ...utils._dependency import require_agentplatform_attributes
 
-      self._client = agentplatform.Client(
+      client = agentplatform.Client(
           project=self._project_id, location=self._location
       )
+      require_agentplatform_attributes(
+          client, ("runtimes", "sandboxes"), "AgentEngineSandboxComputer"
+      )
+      self._client = client
     return self._client
 
   async def _ensure_agent_engine(self) -> str:

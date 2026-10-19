@@ -34,6 +34,7 @@ from ...utils._schema_utils import schema_to_json_schema
 from .._errors import WorkflowDataError
 
 if TYPE_CHECKING:
+  from ...agents.context import Context
   from ...auth.auth_tool import AuthConfig
   from ...sessions.state import State
 
@@ -41,6 +42,11 @@ if TYPE_CHECKING:
 def confirmation_interrupt_id(node_path: str) -> str:
   """Returns the interrupt id of a node run's confirmation request."""
   return f'wf_tool_confirmation:{node_path}'
+
+
+def auth_interrupt_id(node_path: str) -> str:
+  """Returns the interrupt id of a node run's auth request."""
+  return f'wf_auth:{node_path}'
 
 
 def parse_tool_confirmation(response: Any) -> ToolConfirmation:
@@ -65,6 +71,35 @@ def parse_tool_confirmation(response: Any) -> ToolConfirmation:
     raise WorkflowDataError(
         f'Invalid tool confirmation response: {response!r}'
     ) from e
+
+
+def apply_confirmation_resume(ctx: Context) -> bool:
+  """Applies resumed tool confirmation input onto ctx if present."""
+  response = ctx.resume_inputs.get(confirmation_interrupt_id(ctx.node_path))
+  if response is None:
+    return False
+  ctx.tool_confirmation = parse_tool_confirmation(response)
+  return True
+
+
+def create_confirmation_request_input(
+    *,
+    node_path: str,
+    tool_name: str,
+    args: dict[str, Any],
+    hint: str | None = None,
+    confirmation_payload: Any = None,
+) -> RequestInput:
+  """Builds a RequestInput asking to approve or reject a tool call."""
+  payload: dict[str, Any] = {'tool_name': tool_name, 'args': args}
+  if confirmation_payload is not None:
+    payload['confirmation_payload'] = confirmation_payload
+  return RequestInput(
+      interrupt_id=confirmation_interrupt_id(node_path),
+      message=hint or f'Please approve or reject the tool call {tool_name}().',
+      payload=payload,
+      response_schema=ToolConfirmation,
+  )
 
 
 def create_request_input_event(request_input: RequestInput) -> Event:

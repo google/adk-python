@@ -44,6 +44,7 @@ from google.adk.cli.api_server import RunAgentRequest
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.cli.utils.base_agent_loader import _AgentLoadError
 from google.adk.errors.input_validation_error import InputValidationError
+from google.adk.errors.not_found_error import NotFoundError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
@@ -492,9 +493,9 @@ def mock_eval_set_results_manager():
 
     def get_eval_set_result(self, app_name, eval_set_result_id):
       if app_name not in eval_set_results:
-        raise ValueError(f"App {app_name} not found.")
+        raise NotFoundError(f"App {app_name} not found.")
       if eval_set_result_id not in eval_set_results[app_name]:
-        raise ValueError(
+        raise NotFoundError(
             f"Eval set result {eval_set_result_id} not found in app {app_name}."
         )
       return eval_set_results[app_name][eval_set_result_id]
@@ -4516,11 +4517,43 @@ def test_list_artifact_versions_metadata(
   assert data[1]["customMetadata"] == {"foo": "bar"}
 
 
-def test_get_eval_set_result_not_found(test_app):
+def test_get_eval_set_result_not_found(test_app, mock_eval_set_results_manager):
   """Test getting an eval set result that doesn't exist."""
-  url = "/apps/test_app_name/eval_results/test_eval_result_id_not_found"
+  mock_eval_set_results_manager.save_eval_set_result(
+      "test_app_name", "test_eval_set_id", []
+  )
+  url = "/dev/apps/test_app_name/eval-results/test_eval_result_id_not_found"
   response = test_app.get(url)
   assert response.status_code == 404
+  assert "test_eval_result_id_not_found" in response.json()["detail"]
+
+
+def test_get_eval_set_result_not_found_legacy_route(
+    test_app, mock_eval_set_results_manager
+):
+  """Test the legacy eval result route reports a missing result as 404."""
+  mock_eval_set_results_manager.save_eval_set_result(
+      "test_app_name", "test_eval_set_id", []
+  )
+  url = "/dev/apps/test_app_name/eval_results/test_eval_result_id_not_found"
+  response = test_app.get(url)
+  assert response.status_code == 404
+  assert "test_eval_result_id_not_found" in response.json()["detail"]
+
+
+def test_add_session_to_eval_set_with_missing_session(test_app):
+  """Test adding a nonexistent session to an eval set reports 404."""
+  url = "/dev/apps/test_app/eval-sets/test_eval_set_id/add-session"
+  response = test_app.post(
+      url,
+      json={
+          "evalId": "test_eval_case_id",
+          "sessionId": "session_that_does_not_exist",
+          "userId": "test_user",
+      },
+  )
+  assert response.status_code == 404
+  assert response.json()["detail"] == "Session not found"
 
 
 def test_list_metrics_info(builder_test_client):
@@ -5672,6 +5705,7 @@ def test_setup_gcp_telemetry_requests_cloud_platform_scope(monkeypatch):
   """
   from google.adk.cli.api_server import _setup_gcp_telemetry
   from google.adk.telemetry.google_cloud import _CLOUD_PLATFORM_SCOPE
+  from google.adk.telemetry.setup import OTelHooks
 
   auth_default = MagicMock(return_value=("creds", "project-id"))
   monkeypatch.setattr("google.auth.default", auth_default)
@@ -5684,7 +5718,7 @@ def test_setup_gcp_telemetry_requests_cloud_platform_scope(monkeypatch):
       lambda project_id: MagicMock(),
   )
   monkeypatch.setattr(
-      "google.adk.telemetry.setup.maybe_set_otel_providers",
+      "google.adk.cli.api_server.maybe_set_otel_providers",
       lambda **kwargs: None,
   )
   monkeypatch.setattr(
@@ -5692,7 +5726,7 @@ def test_setup_gcp_telemetry_requests_cloud_platform_scope(monkeypatch):
       lambda: None,
   )
 
-  _setup_gcp_telemetry()
+  _setup_gcp_telemetry(OTelHooks())
 
   auth_default.assert_called_once_with(scopes=[_CLOUD_PLATFORM_SCOPE])
 
@@ -6885,7 +6919,7 @@ def _readable_span(name, *, trace_id, span_id=1, attributes=None):
 
 
 def test_api_server_span_exporter_records_only_llm_and_tool_spans():
-  """Only call_llm / send_data / execute_tool* spans are kept, by event id."""
+  """Only LLM, send_data and execute_tool* spans are kept, by event id."""
   from google.adk.cli.api_server import ApiServerSpanExporter
   from opentelemetry.sdk.trace.export import SpanExportResult
 
@@ -6912,6 +6946,12 @@ def test_api_server_span_exporter_records_only_llm_and_tool_spans():
           attributes={"gcp.vertex.agent.event_id": "tool-event"},
       ),
       _readable_span(
+          "generate_content gemini-2.5-flash",
+          trace_id=15,
+          span_id=5,
+          attributes={"gcp.vertex.agent.event_id": "inference-event"},
+      ),
+      _readable_span(
           "invocation",
           trace_id=14,
           span_id=4,
@@ -6921,7 +6961,12 @@ def test_api_server_span_exporter_records_only_llm_and_tool_spans():
 
   assert exporter.export(spans) == SpanExportResult.SUCCESS
 
-  assert sorted(trace_dict) == ["data-event", "llm-event", "tool-event"]
+  assert sorted(trace_dict) == [
+      "data-event",
+      "inference-event",
+      "llm-event",
+      "tool-event",
+  ]
   # The exporter augments the span attributes with its trace/span identifiers,
   # which is what the /debug/trace endpoint hands back to the UI.
   assert trace_dict["llm-event"]["trace_id"] == 11
@@ -7041,6 +7086,7 @@ def test_setup_telemetry_guards_add_span_processor_on_non_sdk_provider(
   from unittest.mock import MagicMock
 
   from google.adk.cli.api_server import _setup_telemetry
+  from google.adk.telemetry.setup import OTelHooks
   from opentelemetry import trace
 
   non_sdk_provider = MagicMock(spec=trace.TracerProvider)
@@ -7048,7 +7094,10 @@ def test_setup_telemetry_guards_add_span_processor_on_non_sdk_provider(
   monkeypatch.setattr(trace, "get_tracer_provider", lambda: non_sdk_provider)
 
   exporter = MagicMock()
-  _setup_telemetry(otel_to_cloud=False, internal_exporters=[exporter])
+  _setup_telemetry(
+      otel_to_cloud=False,
+      internal_processors=OTelHooks(span_processors=[exporter]),
+  )
 
 
 def test_setup_telemetry_adds_span_processors_when_supported(monkeypatch):
@@ -7056,13 +7105,17 @@ def test_setup_telemetry_adds_span_processors_when_supported(monkeypatch):
   from unittest.mock import MagicMock
 
   from google.adk.cli.api_server import _setup_telemetry
+  from google.adk.telemetry.setup import OTelHooks
   from opentelemetry import trace
 
   provider = MagicMock()
   monkeypatch.setattr(trace, "get_tracer_provider", lambda: provider)
 
   exporter = MagicMock()
-  _setup_telemetry(otel_to_cloud=False, internal_exporters=[exporter])
+  _setup_telemetry(
+      otel_to_cloud=False,
+      internal_processors=OTelHooks(span_processors=[exporter]),
+  )
   provider.add_span_processor.assert_called_once_with(exporter)
 
 
@@ -7187,8 +7240,13 @@ def _installed_internal_exporters(
         mock_eval_set_results_manager,
         web=web,
     )
-  processors = mock_setup_telemetry.call_args.kwargs["internal_exporters"]
-  return [type(processor.span_exporter).__name__ for processor in processors]
+  hooks = mock_setup_telemetry.call_args.kwargs["internal_processors"]
+  if hooks is None:
+    return []
+  return [
+      type(processor.span_exporter).__name__
+      for processor in hooks.span_processors
+  ]
 
 
 def test_span_buffers_not_filled_when_web_disabled(
@@ -7293,6 +7351,106 @@ def test_dev_endpoint_rejects_app_name_that_is_not_an_identifier(
     assert "must be valid" in rejected.json()["detail"]
 
 
+def _create_builder_session(client, payload=None):
+  response = client.post(
+      "/apps/test_app/users/test_user/sessions", json=payload or {}
+  )
+  assert response.status_code == 200, response.text
+  return response.json()
+
+
+def test_dev_create_session_seeds_state_from_initial_state_file(
+    builder_test_client, tmp_path
+):
+  (tmp_path / "test_app").mkdir()
+  (tmp_path / "test_app" / "initial_state.json").write_text(
+      json.dumps({"city": "New York", "time": "10:30"}), encoding="utf-8"
+  )
+
+  session = _create_builder_session(builder_test_client)
+
+  assert session["state"] == {"city": "New York", "time": "10:30"}
+
+
+def test_dev_create_session_client_state_overrides_initial_state_file(
+    builder_test_client, tmp_path
+):
+  (tmp_path / "test_app").mkdir()
+  (tmp_path / "test_app" / "initial_state.json").write_text(
+      json.dumps({"city": "New York", "time": "10:30"}), encoding="utf-8"
+  )
+
+  session = _create_builder_session(
+      builder_test_client, {"state": {"city": "Paris", "mood": "calm"}}
+  )
+
+  assert session["state"] == {
+      "city": "Paris",
+      "time": "10:30",
+      "mood": "calm",
+  }
+
+
+def test_dev_create_session_without_initial_state_file_is_unchanged(
+    builder_test_client, tmp_path
+):
+  (tmp_path / "test_app").mkdir()
+
+  session = _create_builder_session(builder_test_client, {"state": {"a": 1}})
+
+  assert session["state"] == {"a": 1}
+
+
+@pytest.mark.parametrize("content", ["{not json", "[1, 2]", '"text"'])
+def test_dev_create_session_ignores_invalid_initial_state_file(
+    builder_test_client, tmp_path, content
+):
+  (tmp_path / "test_app").mkdir()
+  (tmp_path / "test_app" / "initial_state.json").write_text(
+      content, encoding="utf-8"
+  )
+
+  session = _create_builder_session(builder_test_client, {"state": {"a": 1}})
+
+  assert session["state"] == {"a": 1}
+
+
+def test_api_server_create_session_ignores_initial_state_file(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    test_session_info,
+    tmp_path,
+):
+  """Only the dev server reads initial_state.json."""
+  (tmp_path / test_session_info["app_name"]).mkdir()
+  (tmp_path / test_session_info["app_name"] / "initial_state.json").write_text(
+      json.dumps({"city": "New York"}), encoding="utf-8"
+  )
+  api_only_client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+      web=False,
+  )
+
+  response = api_only_client.post(
+      f"/apps/{test_session_info['app_name']}/users/"
+      f"{test_session_info['user_id']}/sessions",
+      json={},
+  )
+
+  assert response.status_code == 200
+  assert "city" not in response.json().get("state", {})
+
+
 #################################################
 # Eval endpoint plumbing
 #################################################
@@ -7355,10 +7513,6 @@ def test_add_session_to_eval_set_builds_eval_case_from_session(
   ] == ["what is 2+2?"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="add-session maps ValueError, but the managers raise NotFoundError",
-)
 def test_add_session_to_eval_set_unknown_eval_set_is_a_client_error(
     test_app, create_test_session
 ):
@@ -7374,7 +7528,7 @@ def test_add_session_to_eval_set_unknown_eval_set_is_a_client_error(
       },
   )
 
-  assert 400 <= response.status_code < 500
+  assert response.status_code == 404
 
 
 def test_get_eval_result_returns_saved_eval_set_result(
@@ -7474,6 +7628,47 @@ def test_agent_run_sse_deferred_without_streaming_is_allowed(
   response = test_app.post("/run_sse", json=payload)
 
   assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("url_prefix", "request_prefix", "mount_prefix"),
+    [
+        (None, "", None),
+        ("/adk", "", None),
+        ("/adk", "/adk", None),
+        ("/adk", "/adk", "/adk"),
+        ("/nested/adk", "", None),
+        ("/dev", "", None),
+        ("https://example.com/adk", "", None),
+    ],
+)
+def test_dev_ui_static_files_with_url_prefix(
+    tmp_path, url_prefix, request_prefix, mount_prefix
+):
+  """Static mounts support both stripped and retained proxy prefixes."""
+  app = get_fast_api_app(
+      agents_dir=str(tmp_path), web=True, url_prefix=url_prefix
+  )
+  server = Starlette(routes=[Mount(mount_prefix, app)]) if mount_prefix else app
+  client = TestClient(server)
+
+  index = client.get(request_prefix + "/dev-ui/")
+  assert index.status_code == 200
+  assert "text/html" in index.headers["content-type"]
+  favicon = client.get(request_prefix + "/dev-ui/adk_favicon.svg")
+  assert favicon.status_code == 200
+  assert "image/svg+xml" in favicon.headers["content-type"]
+  assert client.get(request_prefix + "/dev-ui/missing.js").status_code == 404
+  assert client.get(request_prefix + "/list-apps").status_code == 200
+  config = client.get(
+      request_prefix + "/dev-ui/assets/config/runtime-config.json"
+  )
+  assert config.status_code == 200
+  assert config.json()["backendUrl"] == (url_prefix or "")
+  docs = client.get(request_prefix + "/docs")
+  assert docs.status_code == 200
+  assert (app.root_path + "/openapi.json") in docs.text
+  assert client.get(request_prefix + "/openapi.json").status_code == 200
 
 
 def test_runtime_config_endpoint_shadows_static_file(tmp_path):

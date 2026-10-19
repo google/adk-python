@@ -41,8 +41,8 @@ dependencies = [
   "graphviz>=0.20.2,<1",
   "httpx>=0.27,<1",
   "jsonschema>=4.23,<5",
-  "opentelemetry-api>=1.39,<=1.42.1",
-  "opentelemetry-sdk>=1.39,<=1.42.1",
+  "opentelemetry-api>=1.39,<=1.44",
+  "opentelemetry-sdk>=1.39,<=1.44",
   "packaging>=21",
   "pydantic>=2.12,<3",
   "python-dotenv>=1,<2",
@@ -133,7 +133,7 @@ optional-dependencies.all = [
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
   "opentelemetry-exporter-otlp-proto-http>=1.36",
-  "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
+  "opentelemetry-instrumentation-google-genai>=0.7b1,<2",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
   "opentelemetry-instrumentation-httpx>=0.54b0,<1",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
@@ -301,7 +301,7 @@ optional-dependencies.opensandbox = [
   "opensandbox>=0.1.15,<0.2", # For OpenSandbox remote sandbox.
 ]
 optional-dependencies.otel-gcp = [
-  "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
+  "opentelemetry-instrumentation-google-genai>=0.7b1,<2",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
   "opentelemetry-instrumentation-httpx>=0.54b0,<1",
 ]
@@ -377,7 +377,7 @@ optional-dependencies.test = [
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
   "opentelemetry-exporter-otlp-proto-http>=1.36",
-  "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
+  "opentelemetry-instrumentation-google-genai>=0.7b1,<1",            # The telemetry functional goldens are recorded against 0.x.
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
   "pandas>=2.2.3",
   "pillow>=10.3",

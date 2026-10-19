@@ -25,6 +25,8 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.live import _live_llm_flow
+from google.adk.live._active_background_tool import ActiveBackgroundTool
+from google.adk.live._active_streaming_tool import ActiveStreamingTool
 from google.adk.live.live_request_queue import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -222,15 +224,55 @@ async def test_stop_background_tool_tasks_cancels_and_clears():
     await asyncio.sleep(100)
 
   task1 = asyncio.create_task(_long_task(), name='test_bg_task')
-  mock_active = mock.MagicMock(task=task1)
-  context.active_streaming_tools = {'stream_tool': mock_active}
-  context.active_non_blocking_tool_tasks = {'non_blocking_tool': task1}
+  task2 = asyncio.create_task(_long_task(), name='test_bg_task_2')
+  context._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='stream_tool',
+          function_call_id='call_1',
+          task=task1,
+          is_generator=True,
+      )
+  )
+  context._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='non_blocking_tool', function_call_id='call_2', task=task2
+      )
+  )
 
   await _live_llm_flow.stop_background_tool_tasks(context)
 
   assert task1.cancelled()
-  assert context.active_streaming_tools == {}
-  assert context.active_non_blocking_tool_tasks == {}
+  assert task2.cancelled()
+  assert not context._active_background_tools
+
+
+async def test_stop_background_tool_tasks_skips_cleared_tasks():
+  """An entry whose task was cleared is retired without being cancelled."""
+  context = _create_test_context()
+
+  async def _long_task():
+    await asyncio.sleep(100)
+
+  task = asyncio.create_task(_long_task())
+  context._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='stream_tool',
+          function_call_id='call_1',
+          task=None,
+          input_stream=LiveRequestQueue(),
+          is_generator=True,
+      )
+  )
+  context._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='non_blocking_tool', function_call_id='call_2', task=task
+      )
+  )
+
+  await _live_llm_flow.stop_background_tool_tasks(context)
+
+  assert task.cancelled()
+  assert not context._active_background_tools
 
 
 async def test_screen_live_user_content_returns_blocked_event():
@@ -286,7 +328,9 @@ async def test_stop_background_tool_tasks_uses_timeout():
     await asyncio.sleep(10)
 
   task = asyncio.create_task(_dummy())
-  context.active_non_blocking_tool_tasks = {'t': task}
+  context._add_background_tool(
+      ActiveBackgroundTool(tool_name='t', function_call_id='call_1', task=task)
+  )
 
   with (
       mock.patch.object(_flow_utils, '_TOOL_SHUTDOWN_TIMEOUT_SECONDS', 0.01),
@@ -323,15 +367,16 @@ async def test_send_to_model_uses_flow_realtime_cache_manager():
   """send_to_model accesses the realtime cache manager directly from the flow instance."""
   flow = _TestBaseLlmFlow()
   queue = LiveRequestQueue()
-  queue.send_realtime(types.Blob(mime_type='audio/pcm', data=b'audio_bytes'))
+  audio_blob = types.Blob(mime_type='audio/pcm', data=b'audio_bytes')
+  queue.send_realtime(audio_blob)
   context = _create_test_context(
       live_request_queue=queue, run_config=RunConfig(save_live_blob=True)
   )
   mock_connection = mock.AsyncMock()
 
   with mock.patch.object(
-      flow._realtime_cache_manager, 'cache_audio'
-  ) as mock_cache_audio:
+      flow._realtime_cache_manager, 'cache_blob'
+  ) as mock_cache_blob:
     # Run send_to_model briefly and cancel it after processing the queued item
     send_task = asyncio.create_task(
         _live_llm_flow.send_to_model(
@@ -345,7 +390,9 @@ async def test_send_to_model_uses_flow_realtime_cache_manager():
     except asyncio.CancelledError:
       pass
 
-  mock_cache_audio.assert_called_once()
+  mock_cache_blob.assert_called_once_with(
+      context, audio_blob, cache_type='input'
+  )
 
 
 async def test_send_to_model_caches_only_audio_blobs():
@@ -398,6 +445,36 @@ async def test_send_to_model_does_not_mutate_caller_content_role():
   assert content.role is None
   sent_content = mock_connection._send_content.await_args.args[0]
   assert sent_content.role == 'user'
+
+
+async def test_send_to_model_feeds_streams_set_through_deprecated_field():
+  """A stream registered through active_streaming_tools receives requests."""
+  flow = _TestBaseLlmFlow()
+  queue = LiveRequestQueue()
+  blob = types.Blob(mime_type='audio/pcm', data=b'audio_bytes')
+  queue.send_realtime(blob)
+  context = _create_test_context(live_request_queue=queue)
+  tool_stream = LiveRequestQueue()
+  with pytest.warns(DeprecationWarning):
+    context.active_streaming_tools = {
+        'stream_tool': ActiveStreamingTool(stream=tool_stream)
+    }
+
+  send_task = asyncio.create_task(
+      _live_llm_flow.send_to_model(
+          flow, mock.AsyncMock(), context, LlmRequest()
+      )
+  )
+  try:
+    forwarded = await asyncio.wait_for(tool_stream.get(), timeout=1)
+  finally:
+    send_task.cancel()
+    try:
+      await send_task
+    except asyncio.CancelledError:
+      pass
+
+  assert forwarded.blob == blob
 
 
 async def test_receive_from_model_caches_only_audio_blobs():

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import contextvars
+import inspect
 from typing import Any
 from typing import Awaitable
 from typing import Callable
@@ -52,3 +53,37 @@ def _use_sync_callable_runner(
     yield
   finally:
     _SYNC_CALLABLE_RUNNER.reset(token)
+
+
+def _is_async_callable(target: Any) -> bool:
+  """Returns whether calling ``target`` returns a coroutine."""
+  return inspect.iscoroutinefunction(target) or (
+      hasattr(target, "__call__")
+      and inspect.iscoroutinefunction(target.__call__)
+  )
+
+
+async def _invoke_callable(
+    target: Callable[..., Any],
+    kwargs: dict[str, Any],
+    *,
+    unwrapped: Callable[..., Any] | None = None,
+) -> Any:
+  """Invokes a sync or async callable, using the sync runner when configured.
+
+  Note:
+    The function name `_invoke_callable` is part of the traceback frame contract
+    checked by `FunctionTool._is_invocation_type_error` to detect call-site
+    TypeErrors for callables without Python code objects (e.g. C builtins).
+  """
+  check_target = unwrapped or target
+  if _is_async_callable(check_target):
+    return await target(**kwargs)
+  runner = _SYNC_CALLABLE_RUNNER.get()
+  if runner is not None:
+    result = await runner(target, kwargs)
+  else:
+    result = target(**kwargs)
+  if inspect.isawaitable(result):
+    return await result
+  return result
