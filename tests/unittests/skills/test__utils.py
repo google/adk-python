@@ -1400,3 +1400,52 @@ def test__validate_relative_resource_path_rejects_dot_prefixed_windows_drive():
   for unsafe_path in ("./C:/evil.py", ".\\C:\\evil.py", "./c:evil.py"):
     with pytest.raises(ValueError, match="Unsafe path"):
       _validate_relative_resource_path(unsafe_path)
+
+
+def test__load_skill_from_dir_defers_instructions_and_resources_until_accessed(
+    tmp_path,
+):
+  """L2 instructions and L3 resources are read on demand, not at load time."""
+  skill_dir = tmp_path / "lazy-skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_text(
+      "---\nname: lazy-skill\ndescription: Lazy desc\n---\nLazy instructions"
+  )
+  ref_dir = skill_dir / "references"
+  ref_dir.mkdir()
+  (ref_dir / "ref1.md").write_text("ref1 content")
+  (ref_dir / "ref2.md").write_text("ref2 content")
+  assets_dir = skill_dir / "assets"
+  assets_dir.mkdir()
+  (assets_dir / "asset1.txt").write_text("asset1 content")
+  scripts_dir = skill_dir / "scripts"
+  scripts_dir.mkdir()
+  (scripts_dir / "script1.sh").write_text("echo lazy")
+
+  read_files: list[str] = []
+  real_read_text = pathlib.Path.read_text
+
+  def tracking_read_text(self, *args, **kwargs):
+    read_files.append(self.name)
+    return real_read_text(self, *args, **kwargs)
+
+  with mock.patch.object(pathlib.Path, "read_text", tracking_read_text):
+    skill = _load_skill_from_dir(skill_dir)
+    assert skill.name == "lazy-skill"
+    assert skill.description == "Lazy desc"
+    assert read_files == []
+
+    # Listing references and assets does not read file contents.
+    assert sorted(skill.resources.list_references()) == ["ref1.md", "ref2.md"]
+    assert skill.resources.list_assets() == ["asset1.txt"]
+    assert read_files == []
+
+    # Fetching a single reference reads only that file and caches it.
+    assert skill.resources.get_reference("ref1.md") == "ref1 content"
+    assert skill.resources.get_reference("ref1.md") == "ref1 content"
+    assert read_files == ["ref1.md"]
+
+    # Accessing instructions reads SKILL.md on demand and caches it.
+    assert skill.instructions == "Lazy instructions"
+    assert skill.instructions == "Lazy instructions"
+    assert read_files == ["ref1.md", "SKILL.md"]
