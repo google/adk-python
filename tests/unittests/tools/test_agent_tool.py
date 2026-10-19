@@ -589,6 +589,11 @@ def test_agent_tool_reads_caller_temp_state(reader):
       seen[key] = tool_context.state.get(key)
     return 'read'
 
+  caller_deltas = []
+
+  def record_caller_delta(tool, args, tool_context, tool_response):
+    caller_deltas.append(dict(tool_context.actions.state_delta))
+
   class TicketInput(BaseModel):
     custom_input: str
 
@@ -633,11 +638,17 @@ def test_agent_tool_reads_caller_temp_state(reader):
       name='root_agent',
       model=mock_model,
       before_agent_callback=set_caller_state,
+      after_tool_callback=record_caller_delta,
       tools=[AgentTool(agent=tool_agent)],
   )
 
   runner = testing_utils.InMemoryRunner(root_agent)
   runner.run('test1')
+
+  # The seeded temp: keys are not echoed back into the caller's state by the
+  # state_delta that AgentTool forwards from the nested run.
+  assert len(caller_deltas) == 1
+  assert not any(key.startswith('temp:') for key in caller_deltas[0])
 
   if reader in ('callback', 'tool'):
     assert seen['temp:ticket'] == 'T-42'
