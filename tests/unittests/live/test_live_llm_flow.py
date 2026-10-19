@@ -367,15 +367,16 @@ async def test_send_to_model_uses_flow_realtime_cache_manager():
   """send_to_model accesses the realtime cache manager directly from the flow instance."""
   flow = _TestBaseLlmFlow()
   queue = LiveRequestQueue()
-  queue.send_realtime(types.Blob(mime_type='audio/pcm', data=b'audio_bytes'))
+  audio_blob = types.Blob(mime_type='audio/pcm', data=b'audio_bytes')
+  queue.send_realtime(audio_blob)
   context = _create_test_context(
       live_request_queue=queue, run_config=RunConfig(save_live_blob=True)
   )
   mock_connection = mock.AsyncMock()
 
   with mock.patch.object(
-      flow._realtime_cache_manager, 'cache_audio'
-  ) as mock_cache_audio:
+      flow._realtime_cache_manager, 'cache_blob'
+  ) as mock_cache_blob:
     # Run send_to_model briefly and cancel it after processing the queued item
     send_task = asyncio.create_task(
         _live_llm_flow.send_to_model(
@@ -389,7 +390,9 @@ async def test_send_to_model_uses_flow_realtime_cache_manager():
     except asyncio.CancelledError:
       pass
 
-  mock_cache_audio.assert_called_once()
+  mock_cache_blob.assert_called_once_with(
+      context, audio_blob, cache_type='input'
+  )
 
 
 async def test_send_to_model_caches_only_audio_blobs():

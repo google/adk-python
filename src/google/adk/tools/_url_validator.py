@@ -22,6 +22,9 @@ import socket
 from urllib.parse import ParseResult
 from urllib.parse import urlparse
 
+from requests.utils import get_environ_proxies
+from requests.utils import select_proxy
+
 _ALLOWED_URL_SCHEMES = frozenset({'http', 'https'})
 _DEFAULT_PORT_BY_SCHEME = {'http': 80, 'https': 443}
 # Hostnames that always designate the local machine or a metadata endpoint.
@@ -190,6 +193,11 @@ def _resolve_direct_addresses(hostname: str) -> tuple[_ResolvedAddress, ...]:
   if any(_is_blocked_address(address) for address in resolved_addresses):
     raise ValueError(f'Blocked host: {hostname}')
   return resolved_addresses
+
+
+def _get_proxy_url(url: str) -> str | None:
+  proxies = get_environ_proxies(url)
+  return select_proxy(url, proxies)
 
 
 def _reject_blocked_proxied_hostname(hostname: str) -> None:

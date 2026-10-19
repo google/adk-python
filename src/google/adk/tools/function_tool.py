@@ -109,6 +109,10 @@ class FunctionTool(BaseTool):
     self._generator_node_cache: (
         tuple[tuple[str, Any, str], FunctionNode] | None
     ) = None
+    self._declaration_cache: dict[
+        tuple[tuple[str, ...], GoogleLLMVariant, bool],
+        types.FunctionDeclaration,
+    ] = {}
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -117,12 +121,31 @@ class FunctionTool(BaseTool):
     # `ignore_params` drops the function context and input_stream (for streaming
     # tools), which the model doesn't understand. Return a copy: the cached
     # declaration is shared and callers (e.g. toolset prefixing) mutate it.
-    declaration = _build_declaration_cached(
-        self.func,
-        tuple(self._ignore_params),
-        self._api_variant,
-        is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL),
+    ignore_params = tuple(self._ignore_params)
+    json_schema_enabled = is_feature_enabled(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL
     )
+    try:
+      hash(self.func)
+    except TypeError:
+      cache_key = (ignore_params, self._api_variant, json_schema_enabled)
+      cached = self._declaration_cache.get(cache_key)
+      if cached is None:
+        cached = _build_declaration_cached.__wrapped__(
+            self.func,
+            ignore_params,
+            self._api_variant,
+            json_schema_enabled,
+        )
+        self._declaration_cache[cache_key] = cached
+      declaration = cached
+    else:
+      declaration = _build_declaration_cached(
+          self.func,
+          ignore_params,
+          self._api_variant,
+          json_schema_enabled,
+      )
     return declaration.model_copy(deep=True)
 
   def _preprocess_args(self, args: dict[str, Any]) -> dict[str, Any]:

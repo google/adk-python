@@ -222,6 +222,52 @@ class TestEnvironmentSimulationEngineSimulate:
     assert result2 == {"injected": True}
     mock_create_strategy.assert_not_called()
 
+  async def test_seeded_injection_draws_a_reproducible_sequence(
+      self, mock_create_strategy, mock_analyzer
+  ):
+    """Test that a seeded injection draws a new value on each matching call."""
+    del mock_analyzer
+    mock_strategy_instance = MagicMock()
+    mock_strategy_instance.mock = AsyncMock(return_value={"mocked": True})
+    mock_create_strategy.return_value = mock_strategy_instance
+    config = EnvironmentSimulationConfig(
+        tool_simulation_configs=[
+            ToolSimulationConfig(
+                tool_name="test_tool",
+                injection_configs=[
+                    InjectionConfig(
+                        injection_probability=0.3,
+                        random_seed=42,
+                        match_args={"target": True},
+                        injected_response={"injected": True},
+                    )
+                ],
+                mock_strategy_type=MockStrategy.MOCK_STRATEGY_TOOL_SPEC,
+            )
+        ],
+        simulation_model="test-model",
+        simulation_model_configuration=genai_types.GenerateContentConfig(),
+    )
+    mock_tool = MagicMock()
+    mock_tool.name = "test_tool"
+
+    async def run_pattern(interleave_non_matching):
+      engine = EnvironmentSimulationEngine(config)
+      pattern = []
+      for _ in range(50):
+        if interleave_non_matching:
+          await engine.simulate(mock_tool, {"target": False}, MagicMock())
+        result = await engine.simulate(mock_tool, {"target": True}, MagicMock())
+        pattern.append(result == {"injected": True})
+      return pattern
+
+    pattern = await run_pattern(interleave_non_matching=False)
+    assert any(pattern)
+    assert not all(pattern)
+    # A call that does not match draws nothing, so interleaving one leaves the
+    # matching calls on the same sequence.
+    assert await run_pattern(interleave_non_matching=True) == pattern
+
   async def test_injected_latency_awaits_asyncio_sleep(
       self, mock_create_strategy, mock_analyzer
   ):

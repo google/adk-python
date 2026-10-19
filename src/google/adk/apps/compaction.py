@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import AsyncGenerator
 
 from google.genai import types
@@ -198,53 +199,46 @@ def _count_chars_in_content(content: types.Content | None) -> int:
   return total_chars
 
 
-def _valid_compactions(
+def _get_compaction_ranges(
     events: list[Event],
-) -> list[tuple[int, float, float, Event]]:
-  """Returns compaction events with fully-defined compaction ranges."""
-  compactions: list[tuple[int, float, float, Event]] = []
-  for i, event in enumerate(events):
-    if not event.actions.compaction:
-      continue
-    compaction = event.actions.compaction
-    if (
-        compaction.start_timestamp is None
-        or compaction.end_timestamp is None
-        or compaction.compacted_content is None
-    ):
-      continue
-    compactions.append((
-        i,
-        compaction.start_timestamp,
-        compaction.end_timestamp,
-        event,
-    ))
-  return compactions
+) -> list[tuple[int, float, float]]:
+  """Return surviving (event index, start, end) ranges in event order.
 
+  A containing range supersedes its contained ranges; identical ranges keep
+  the latest event. Sorting by start, descending end and descending index puts
+  every possible containing range first, so one maximum end suffices.
 
-def _is_compaction_subsumed(
-    *,
-    start_timestamp: float,
-    end_timestamp: float,
-    event_index: int,
-    compactions: list[tuple[int, float, float, Event]],
-) -> bool:
-  """Returns True if a compaction range is fully contained by another.
+  Args:
+    events: Events whose valid compaction ranges should be considered.
 
-  If two compactions have identical ranges, the earlier event is treated as
-  subsumed by the later event.
+  Returns:
+    Non-subsumed ranges, preserving their original event order.
   """
-  for other_index, other_start, other_end, _ in compactions:
-    if other_index == event_index:
+  ranges: list[tuple[int, float, float]] = []
+  comparable: list[tuple[int, float, float]] = []
+  retained: set[int] = set()
+  for index, event in enumerate(events):
+    compaction = event.actions.compaction if event.actions else None
+    if compaction is None or compaction.compacted_content is None:
       continue
-    if other_start <= start_timestamp and other_end >= end_timestamp:
-      if (
-          other_start < start_timestamp
-          or other_end > end_timestamp
-          or other_index > event_index
-      ):
-        return True
-  return False
+    start, end = compaction.start_timestamp, compaction.end_timestamp
+    if start is None or end is None:
+      continue
+    item = (index, start, end)
+    ranges.append(item)
+    if math.isnan(start) or math.isnan(end):
+      # NaN bounds neither contain another range nor are contained by one.
+      retained.add(index)
+    else:
+      comparable.append(item)
+
+  comparable.sort(key=lambda item: (item[1], -item[2], -item[0]))
+  max_end: float | None = None
+  for index, _, end in comparable:
+    if max_end is None or end > max_end:
+      retained.add(index)
+      max_end = end
+  return [item for item in ranges if item[0] in retained]
 
 
 def _estimate_prompt_token_count(
@@ -252,6 +246,7 @@ def _estimate_prompt_token_count(
     events: list[Event],
     current_branch: str | None,
     agent_name: str,
+    isolation_scope: str | None = None,
 ) -> int | None:
   """Returns an approximate prompt token count from session events.
 
@@ -266,6 +261,7 @@ def _estimate_prompt_token_count(
       current_branch=current_branch,
       events=events,
       agent_name=agent_name,
+      isolation_scope=isolation_scope,
   )
   total_chars = 0
   for content in effective_contents:
@@ -283,6 +279,7 @@ def _latest_prompt_token_count(
     *,
     current_branch: str | None = None,
     agent_name: str = '',
+    isolation_scope: str | None = None,
 ) -> int | None:
   """Returns the most recently observed prompt token count, if available.
 
@@ -292,7 +289,8 @@ def _latest_prompt_token_count(
   turn ends in a small sub-agent otherwise measures that sub-agent forever and
   never reaches its threshold.
   """
-  for event in reversed(events):
+  scoped_events = [e for e in events if e.isolation_scope == isolation_scope]
+  for event in reversed(scoped_events):
     if event.actions and event.actions.compaction:
       # Counts at or before a summarization describe a prompt it replaced.
       break
@@ -306,26 +304,14 @@ def _latest_prompt_token_count(
       events=events,
       current_branch=current_branch,
       agent_name=agent_name,
+      isolation_scope=isolation_scope,
   )
 
 
 def _latest_compaction_event(events: list[Event]) -> Event | None:
   """Returns the latest non-subsumed compaction event by stream order."""
-  compactions = _valid_compactions(events)
-  latest_event = None
-  latest_index = -1
-  for event_index, start_ts, end_ts, event in compactions:
-    if _is_compaction_subsumed(
-        start_timestamp=start_ts,
-        end_timestamp=end_ts,
-        event_index=event_index,
-        compactions=compactions,
-    ):
-      continue
-    if event_index > latest_index:
-      latest_index = event_index
-      latest_event = event
-  return latest_event
+  ranges = _get_compaction_ranges(events)
+  return events[ranges[-1][0]] if ranges else None
 
 
 def _latest_compaction_end_timestamp(events: list[Event]) -> float:
@@ -486,6 +472,7 @@ def _events_to_compact_for_token_threshold(
         author='model',
         content=latest_compaction_event.actions.compaction.compacted_content,
         branch=latest_compaction_event.branch,
+        isolation_scope=latest_compaction_event.isolation_scope,
         invocation_id=Event.new_id(),
     )
     return [seed_event] + events_to_compact
@@ -680,6 +667,7 @@ async def _run_compaction_for_token_threshold_config(
     agent: BaseNode,
     agent_name: str = '',
     current_branch: str | None = None,
+    isolation_scope: str | None = None,
 ) -> bool:
   """Runs token-threshold compaction for a provided compaction config."""
   if not _has_token_threshold_config(config):
@@ -693,13 +681,16 @@ async def _run_compaction_for_token_threshold_config(
   # Drop rewound invocations so the summary covers only live events, consistent
   # with prompt building and sliding-window compaction (all route through
   # _apply_rewinds); otherwise rewound content would leak back into future
-  # prompts via the compaction summary.
-  events = _apply_rewinds(session.events)
+  # prompts via the compaction summary. Also filter by isolation_scope so
+  # isolated task/sub-agent events never leak into or out of another scope.
+  rewound_events = _apply_rewinds(session.events)
+  events = [e for e in rewound_events if e.isolation_scope == isolation_scope]
 
   prompt_token_count = _latest_prompt_token_count(
-      events,
+      rewound_events,
       current_branch=current_branch,
       agent_name=agent_name,
+      isolation_scope=isolation_scope,
   )
   if prompt_token_count is None or prompt_token_count < config.token_threshold:
     return False
@@ -728,6 +719,7 @@ async def _run_compaction_for_token_threshold_config(
       trigger='token_threshold',
   )
   if compaction_event:
+    compaction_event.isolation_scope = isolation_scope
     await session_service.append_event(session=session, event=compaction_event)
     logger.debug('Token-threshold event compactor finished.')
     return True
@@ -792,8 +784,11 @@ async def _run_compaction_for_sliding_window(
   # Drop rewound invocations first so the summary covers only live events. This
   # keeps the compactor consistent with prompt building (the contents processor
   # also applies rewinds); otherwise rewound content would leak back into future
-  # prompts via the compaction summary.
-  events = _apply_rewinds(session.events)
+  # prompts via the compaction summary. Also exclude isolated task/sub-agent
+  # events so their private turns do not leak into the root session summary.
+  events = [
+      e for e in _apply_rewinds(session.events) if e.isolation_scope is None
+  ]
   if not events:
     return
 

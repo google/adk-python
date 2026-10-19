@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
+from collections.abc import Mapping
+from contextvars import ContextVar
 import inspect
 import logging
 from typing import Any
@@ -38,6 +41,22 @@ from .bigtable_credentials import BigtableCredentialsConfig
 from .settings import BigtableToolSettings
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_view_param_error: ContextVar[list[Exception] | None] = ContextVar(
+    "_view_param_error", default=None
+)
+
+
+def _validate_view_parameters(view_parameters: object) -> None:
+  if (
+      view_parameters is not None
+      and not callable(view_parameters)
+      and not isinstance(view_parameters, Mapping)
+  ):
+    raise TypeError(
+        "view_parameters must be a Mapping, callable, or None, got"
+        f" {type(view_parameters).__name__}"
+    )
 
 
 class _BigtableQueryTool(GoogleTool):
@@ -74,9 +93,10 @@ class BigtableParameterizedViewTool(GoogleTool):
   """Wrapper FunctionTool for Bigtable execute_sql query tool that passes view parameters.
 
   This tool wraps the Bigtable query tool to automatically resolve and inject
-  parameters from the ToolContext (e.g. user_id) into the query's
-  view_parameters. The parameter names to resolve are configured via
-  view_parameter_names.
+  parameters into the query's `view_parameters`. Top-level `ToolContext`
+  attribute names (e.g. `user_id`) are configured via `view_parameter_names`,
+  and static or per-invocation resolved parameter values (e.g. `tenant_id`) are
+  configured via `view_parameters`.
 
   Example:
       If a parameterized view `purchase_history_pv` was created with the query:
@@ -87,6 +107,29 @@ class BigtableParameterizedViewTool(GoogleTool):
       pass it as `view_parameters={"user_id": user_id}`.
       This securely restricts query execution to the logged-in user's data
       without exposing the `user_id` parameter to the LLM.
+
+      Only names that resolve to an attribute of `tool_context` itself (such as
+      `user_id`) are honored by `view_parameter_names`. `tool_context.state` is
+      not consulted: state is writable by the caller, so a name that fell back
+      to state could be overridden to run the query in a different user's scope,
+      defeating the view's own row-level restriction. Additional parameters such
+      as `tenant_id` should be supplied via `view_parameters` from a trusted
+      source that the caller and model cannot write (for example, a lookup keyed
+      on `tool_context.user_id`), and never from `tool_context.state` or
+      `tool_context.custom_metadata`:
+
+      - Mapping: `view_parameters={"tenant_id": "tenant-abc"}`
+      - Mapping of callables:
+        `view_parameters={"tenant_id": lambda ctx: get_tenant(ctx.user_id)}`
+      - Callable receiving `ToolContext`:
+        `view_parameters=lambda ctx: {"tenant_id": get_tenant(ctx.user_id)}`
+
+  Attributes:
+    view_parameter_names: Parameter names to resolve from `tool_context`'s own
+      attributes (not `tool_context.state`) and pass into `view_parameters`.
+    view_parameters: Mapping of parameter values or per-value callables, or a
+      callable receiving `ToolContext` that returns a mapping of trusted
+      parameter values (or `None`) resolved per invocation.
   """
 
   def __init__(
@@ -96,6 +139,14 @@ class BigtableParameterizedViewTool(GoogleTool):
       credentials_config: BigtableCredentialsConfig | None = None,
       tool_settings: BigtableToolSettings | None = None,
       view_parameter_names: list[str] | None = None,
+      view_parameters: (
+          Mapping[str, Any]
+          | Callable[
+              [ToolContext],
+              Mapping[str, Any] | None | Awaitable[Mapping[str, Any] | None],
+          ]
+          | None
+      ) = None,
   ):
     """Initializes the BigtableParameterizedViewTool.
 
@@ -104,9 +155,26 @@ class BigtableParameterizedViewTool(GoogleTool):
         credentials_config: The credentials configuration.
         tool_settings: The tool settings.
         view_parameter_names: A list of parameter names to resolve from
-          tool_context and pass into view_parameters. This is configured on the
-          toolset (BigtableToolset) and forwarded here.
+          `tool_context`'s own attributes (such as `user_id`, not
+          `tool_context.state`) and pass into `view_parameters`. This is
+          configured on `BigtableToolset` and forwarded here.
+        view_parameters: A mapping of parameter values, a mapping of per-value
+          callables (sync or async), or a callable (sync or async) receiving
+          `ToolContext` that returns a mapping of parameter values (such as
+          `tenant_id`). Values must come from a source that the caller and model
+          cannot write (e.g. a lookup keyed on `ctx.user_id`), and must never be
+          read from `ctx.state` or `ctx.custom_metadata`. Keys from
+          `view_parameters` take precedence over and overwrite keys resolved
+          from `view_parameter_names` (including `user_id`). If a top-level
+          callable returns `None`, no parameters from `view_parameters` are
+          merged; any key whose value or per-value callable resolves to `None`
+          is omitted (and removes any value resolved from
+          `view_parameter_names`); if a top-level callable returns a
+          non-mapping value, a `TypeError` is raised. Any exception raised by a
+          resolver callable propagates to the caller and fails the tool
+          invocation.
     """
+    _validate_view_parameters(view_parameters)
     super().__init__(
         func=func,
         credentials_config=credentials_config,
@@ -118,8 +186,79 @@ class BigtableParameterizedViewTool(GoogleTool):
         " views to securely check permissions."
     )
     self.view_parameter_names = view_parameter_names
+    self.view_parameters = view_parameters
     # Exclude from being parsed and exposed to the LLM when generating tool schemas
     self._ignore_params.append("_view_parameters")
+
+  async def _resolve_view_parameters(
+      self, tool_context: ToolContext
+  ) -> dict[str, Any]:
+    view_params: dict[str, Any] = {}
+    for param_name in self.view_parameter_names or ():
+      if (val := getattr(tool_context, param_name, None)) is not None:
+        view_params[param_name] = val
+
+    if self.view_parameters is not None:
+      if callable(self.view_parameters):
+        resolved = self.view_parameters(tool_context)
+        if inspect.isawaitable(resolved):
+          resolved = await resolved
+        if resolved is not None:
+          if not isinstance(resolved, Mapping):
+            raise TypeError(
+                "view_parameters callable must return a Mapping or None,"
+                f" got {type(resolved).__name__}"
+            )
+          for k, val in resolved.items():
+            if val is not None:
+              view_params[k] = val
+            else:
+              view_params.pop(k, None)
+      elif isinstance(self.view_parameters, Mapping):
+        for k, v in self.view_parameters.items():
+          if callable(v):
+            val = v(tool_context)
+            if inspect.isawaitable(val):
+              val = await val
+          else:
+            val = v
+          if val is not None:
+            view_params[k] = val
+          else:
+            view_params.pop(k, None)
+      else:
+        raise TypeError(
+            "view_parameters must be a Mapping, callable, or None, got"
+            f" {type(self.view_parameters).__name__}"
+        )
+
+    for param_name in self.view_parameter_names or ():
+      if (
+          param_name not in view_params
+          and tool_context.state
+          and param_name in tool_context.state
+      ):
+        logger.warning(
+            "View parameter %r is no longer read from session state; pass"
+            " it via view_parameters instead.",
+            param_name,
+        )
+
+    return view_params
+
+  @override
+  async def run_async(
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
+    error_holder: list[Exception] = []
+    token = _view_param_error.set(error_holder)
+    try:
+      result = await super().run_async(args=args, tool_context=tool_context)
+    finally:
+      _view_param_error.reset(token)
+    if error_holder:
+      raise error_holder[0]
+    return result
 
   @override
   async def _run_async_with_credential(
@@ -130,18 +269,19 @@ class BigtableParameterizedViewTool(GoogleTool):
       tool_context: ToolContext,
   ) -> Any:
     args_to_call = args.copy()
+    args_to_call.pop("_view_parameters", None)
     signature = inspect.signature(self.func)
-    if "_view_parameters" in signature.parameters and self.view_parameter_names:
-      view_params = {}
-      for param_name in self.view_parameter_names:
-        # 1. Check if it's a strongly-typed top-level property (like 'user_id')
-        if (val := getattr(tool_context, param_name, None)) is not None:
-          view_params[param_name] = val
-        # 2. Fallback to checking application-level session state
-        elif tool_context.state and param_name in tool_context.state:
-          view_params[param_name] = tool_context.state[param_name]
-
-      args_to_call["_view_parameters"] = view_params
+    if "_view_parameters" in signature.parameters and (
+        self.view_parameter_names or self.view_parameters is not None
+    ):
+      try:
+        args_to_call["_view_parameters"] = await self._resolve_view_parameters(
+            tool_context
+        )
+      except Exception as ex:
+        if (error_holder := _view_param_error.get()) is not None:
+          error_holder.append(ex)
+        raise
     return await super()._run_async_with_credential(
         credentials, tool_settings, args_to_call, tool_context
     )
@@ -163,9 +303,33 @@ class BigtableToolset(BaseToolset):
     - bigtable_get_cluster_info
     - bigtable_execute_sql
 
-  When view_parameter_names is configured, bigtable_execute_sql is replaced by
-  bigtable_execute_sql_parameterized, which fills the view parameters in from
-  the tool context.
+  When view_parameter_names or view_parameters is configured,
+  bigtable_execute_sql is replaced by bigtable_execute_sql_parameterized, which
+  resolves view parameters from `tool_context`'s own attributes (such as
+  `user_id`, never session state `tool_context.state`) and from
+  `view_parameters`.
+
+  Attributes:
+    view_parameter_names: Optional list of parameter names to resolve from
+      `tool_context`'s own attributes (such as `user_id`, not
+      `tool_context.state`) and pass into `view_parameters` for parameterized
+      views.
+    view_parameters: Optional mapping of parameter values, mapping of per-value
+      callables (sync or async), or a callable (sync or async) receiving
+      `ToolContext` that returns a mapping of trusted parameter values (such as
+      `tenant_id`, or `None`) resolved per invocation for parameterized views:
+      - Mapping: `view_parameters={"tenant_id": "tenant-abc"}`
+      - Mapping of callables:
+        `view_parameters={"tenant_id": lambda ctx: get_tenant(ctx.user_id)}`
+      - Callable receiving `ToolContext`:
+        `view_parameters=lambda ctx: {"tenant_id": get_tenant(ctx.user_id)}`
+      Values must come from a source that the caller and model cannot write, and
+      never from `tool_context.state` or `tool_context.custom_metadata`. Keys
+      from `view_parameters` take precedence over keys resolved from
+      `view_parameter_names`; `None` returns or `None` values are omitted (and
+      remove any value resolved from `view_parameter_names`); a non-mapping
+      callable return raises `TypeError`; and any exception raised by a resolver
+      callable propagates to the caller and fails the tool invocation.
   """
 
   def __init__(
@@ -175,7 +339,16 @@ class BigtableToolset(BaseToolset):
       credentials_config: BigtableCredentialsConfig | None = None,
       bigtable_tool_settings: BigtableToolSettings | None = None,
       view_parameter_names: list[str] | None = None,
+      view_parameters: (
+          Mapping[str, Any]
+          | Callable[
+              [ToolContext],
+              Mapping[str, Any] | None | Awaitable[Mapping[str, Any] | None],
+          ]
+          | None
+      ) = None,
   ):
+    _validate_view_parameters(view_parameters)
     super().__init__(
         tool_filter=tool_filter,
         tool_name_prefix=DEFAULT_BIGTABLE_TOOL_NAME_PREFIX,
@@ -187,6 +360,7 @@ class BigtableToolset(BaseToolset):
         else BigtableToolSettings()
     )
     self.view_parameter_names = view_parameter_names
+    self.view_parameters = view_parameters
 
   def _is_tool_selected(
       self, tool: BaseTool, readonly_context: ReadonlyContext | None
@@ -203,16 +377,19 @@ class BigtableToolset(BaseToolset):
     return False
 
   def _warn_on_filtered_out_query_tool(self) -> None:
-    if not self.view_parameter_names or not isinstance(self.tool_filter, list):
+    if not (
+        self.view_parameter_names or self.view_parameters
+    ) or not isinstance(self.tool_filter, list):
       return
     if (
         "execute_sql" in self.tool_filter
         and "execute_sql_parameterized" not in self.tool_filter
     ):
       logger.warning(
-          "tool_filter names execute_sql, which view_parameter_names replaces"
-          " with execute_sql_parameterized, so no query tool is returned. Add"
-          " execute_sql_parameterized to tool_filter."
+          "tool_filter names execute_sql, which view_parameter_names or"
+          " view_parameters replaces with execute_sql_parameterized, so no"
+          " query tool is returned. Add execute_sql_parameterized to"
+          " tool_filter."
       )
 
   @override
@@ -237,13 +414,14 @@ class BigtableToolset(BaseToolset):
         for func in tool_functions
     ]
     # Registering both would let the model pick its own view parameters.
-    if self.view_parameter_names:
+    if self.view_parameter_names or self.view_parameters:
       all_tools.append(
           BigtableParameterizedViewTool(
               func=query_tool.execute_sql,
               credentials_config=self._credentials_config,
               tool_settings=self._tool_settings,
               view_parameter_names=self.view_parameter_names,
+              view_parameters=self.view_parameters,
           )
       )
     else:

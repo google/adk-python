@@ -260,12 +260,18 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
     return _json_utils.safe_json_loads(json_text, context="schema value")
 
 
+def _strip_annotated(tp: Any) -> Any:
+  """Returns the underlying type of an ``Annotated`` type, else ``tp``."""
+  return get_args(tp)[0] if get_origin(tp) is Annotated else tp
+
+
 def annotation_expects_str(annotated_type: Any) -> bool:
   """Returns True if the annotation expects ``str`` rather than JSON data."""
+  annotated_type = _strip_annotated(annotated_type)
   if annotated_type is str:
     return True
   if get_origin(annotated_type) in (Union, UnionType):
-    args = get_args(annotated_type)
+    args = [_strip_annotated(a) for a in get_args(annotated_type)]
     return any(annotation_expects_str(a) for a in args) and all(
         annotation_expects_str(a)
         or a is type(None)
@@ -277,6 +283,7 @@ def annotation_expects_str(annotated_type: Any) -> bool:
 
 def annotation_accepts_content(annotated_type: Any) -> bool:
   """Returns True if the annotation accepts ``types.Content`` as-is."""
+  annotated_type = _strip_annotated(annotated_type)
   if annotated_type in (Any, object, types.Content):
     return True
   if isinstance(annotated_type, type) and issubclass(
@@ -298,7 +305,7 @@ def _unwrap_content_payload(
   if not fan_out_list and annotation_expects_str(annotation):
     return extract_text_from_content(content)
   if not (
-      fan_out_list and annotation in (Any, object)
+      fan_out_list and _strip_annotated(annotation) in (Any, object)
   ) and annotation_accepts_content(annotation):
     return content
   if fan_out_list and (

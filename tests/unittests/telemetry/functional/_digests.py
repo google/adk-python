@@ -33,6 +33,8 @@ import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+  from collections.abc import Mapping
+
   from opentelemetry.sdk._logs import ReadableLogRecord
   from opentelemetry.sdk.metrics.export import MetricsData
   from opentelemetry.sdk.trace import ReadableSpan
@@ -71,6 +73,8 @@ JSON_ATTRIBUTE_KEYS: frozenset[str] = frozenset({
     "gen_ai.output.messages",
     "gen_ai.system_instructions",
     "gen_ai.tool.definitions",
+    "gen_ai.tool.call.arguments",
+    "gen_ai.tool.call.result",
 })
 
 
@@ -91,15 +95,22 @@ class LogDigest:
     return cls(
         event_name=log.log_record.event_name or "",
         body=_normalize(log.log_record.body),
-        attributes={
-            key: (
-                PRESENT
-                if key in NON_DETERMINISTIC_ATTRIBUTE_KEYS
-                else _normalize(value)
-            )
-            for key, value in (log.log_record.attributes or {}).items()
-        },
+        attributes=normalized_attributes(log.log_record.attributes or {}),
     )
+
+
+def normalized_attributes(
+    attributes: Mapping[str, object],
+) -> dict[str, object]:
+  """Normalizes log attributes: non-deterministic keys collapse to PRESENT."""
+  return {
+      key: (
+          PRESENT
+          if key in NON_DETERMINISTIC_ATTRIBUTE_KEYS
+          else _normalize(value)
+      )
+      for key, value in attributes.items()
+  }
 
 
 @dataclass(frozen=True)

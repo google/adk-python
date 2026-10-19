@@ -2847,9 +2847,14 @@ def _model_response_to_chunk(
           func_args = function_obj.get("arguments")
           func_index = tool_call.get("index", idx)
           tool_call_id = tool_call.get("id")
+          thought_signature = _extract_thought_signature_from_tool_call(
+              tool_call
+          )
 
-          # Ignore empty chunks that don't carry any information.
-          if not func_name and not func_args:
+          # Ignore empty chunks that don't carry any information. A chunk
+          # with only a signature still counts: the signature belongs to the
+          # call another chunk names.
+          if not func_name and not func_args and not thought_signature:
             continue
 
           yield FunctionChunk(
@@ -2857,9 +2862,7 @@ def _model_response_to_chunk(
               name=func_name,
               args=func_args,
               index=func_index,
-              thought_signature=_extract_thought_signature_from_tool_call(
-                  tool_call
-              ),
+              thought_signature=thought_signature,
           ), finish_reason
 
     if finish_reason and not (message_content or tool_calls or reasoning_parts):
@@ -3285,6 +3288,51 @@ def _to_litellm_response_format(
   }
 
 
+_ANTHROPIC_MIN_THINKING_BUDGET_TOKENS = 1024
+_ANTHROPIC_EFFORT_BUDGETS: dict[str, int] = {
+    "minimal": _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS,
+    "low": 1024,
+    "medium": 2048,
+    "high": 4096,
+}
+_CLAUDE_4_6_SUBSTRINGS = (
+    "opus-4-6",
+    "opus_4_6",
+    "opus-4.6",
+    "opus_4.6",
+    "sonnet-4-6",
+    "sonnet_4_6",
+    "sonnet-4.6",
+    "sonnet_4.6",
+)
+_CLAUDE_4_7_SUBSTRINGS = (
+    "opus-4-7",
+    "opus_4_7",
+    "opus-4.7",
+    "opus_4.7",
+)
+_GEMINI_MIN_THINKING_BUDGETS: dict[str, int] = {
+    "gemini-2.5-pro": 128,
+    "gemini-2.5-flash-lite": 512,
+}
+
+
+def _drop_params_rejected_by_anthropic_thinking(params: dict[str, Any]) -> None:
+  """Drops sampling params Anthropic rejects while thinking is enabled."""
+  thinking = params.get("thinking")
+  if params.get("reasoning_effort") in (None, "none") and not (
+      isinstance(thinking, dict)
+      and thinking.get("type") in ("enabled", "adaptive")
+  ):
+    return
+  if params.get("temperature") != 1:
+    params.pop("temperature", None)
+  params.pop("top_k", None)
+  top_p = params.get("top_p")
+  if top_p is not None and top_p < 0.95:
+    params.pop("top_p")
+
+
 async def _get_completion_inputs(
     llm_request: LlmRequest,
     model: str,
@@ -3292,6 +3340,8 @@ async def _get_completion_inputs(
     *,
     is_proxied: bool = False,
     custom_llm_provider: Optional[str] = None,
+    max_tokens: Optional[int] = None,
+    has_constructor_reasoning: bool = False,
 ) -> Tuple[
     List[Message],
     Optional[List[Dict[str, Any]]],
@@ -3307,6 +3357,9 @@ async def _get_completion_inputs(
     upload_params: Endpoint overrides forwarded to file uploads.
     is_proxied: Whether the request is routed through a LiteLLM Proxy.
     custom_llm_provider: The custom LLM provider if specified.
+    max_tokens: Fallback token limit (e.g. from the LiteLlm constructor).
+    has_constructor_reasoning: Whether the LiteLlm constructor set `thinking`
+      or `reasoning_effort`, which an include_thoughts-only request keeps.
 
   Returns:
     The litellm inputs (message list, tool dictionary, response format,
@@ -3401,6 +3454,186 @@ async def _get_completion_inputs(
       if key in config_dict:
         mapped_key = param_mapping.get(key, key)
         generation_params[mapped_key] = config_dict[key]
+
+    thinking_config = config_dict.get("thinking_config") or {}
+    stripped_model = _strip_proxy_prefix(model)
+    effective_custom_provider = (
+        custom_llm_provider
+        if custom_llm_provider
+        and custom_llm_provider.strip().lower() != _PROXY_PROVIDER
+        else None
+    )
+    if thinking_config and litellm.supports_reasoning(
+        model=stripped_model,
+        custom_llm_provider=effective_custom_provider,
+    ):
+      supported_params = (
+          litellm.get_supported_openai_params(
+              model=stripped_model,
+              custom_llm_provider=effective_custom_provider,
+          )
+          or ()
+      )
+      try:
+        model_info = litellm.get_model_info(
+            model=stripped_model,
+            custom_llm_provider=effective_custom_provider,
+        )
+      except Exception:
+        model_info = None
+      stripped_lower = stripped_model.lower()
+      is_anthropic = (
+          _is_anthropic_model(model)
+          or "claude" in stripped_lower
+          or bool(
+              effective_custom_provider
+              and _is_anthropic_route(effective_custom_provider, model)
+          )
+          or bool(
+              model_info and model_info.get("litellm_provider") == "anthropic"
+          )
+      )
+      is_claude_4_7 = is_anthropic and any(
+          sub in stripped_lower for sub in _CLAUDE_4_7_SUBSTRINGS
+      )
+      is_adaptive_anthropic = is_anthropic and (
+          is_claude_4_7
+          or any(sub in stripped_lower for sub in _CLAUDE_4_6_SUBSTRINGS)
+          or bool(model_info and model_info.get("supports_adaptive_thinking"))
+      )
+      is_gemini = is_gemini_model(stripped_lower)
+      is_gemini_3_or_newer = is_gemini and "gemini-3" in stripped_lower
+      effective_max_tokens = generation_params.get("max_completion_tokens")
+      if effective_max_tokens is None:
+        effective_max_tokens = max_tokens
+      thinking_level = thinking_config.get("thinking_level")
+      thinking_budget = thinking_config.get("thinking_budget")
+      include_thoughts = thinking_config.get("include_thoughts")
+      if thinking_level and thinking_level != "THINKING_LEVEL_UNSPECIFIED":
+        effort = str(getattr(thinking_level, "value", thinking_level)).lower()
+        if is_anthropic and not is_adaptive_anthropic:
+          effort_budget = _ANTHROPIC_EFFORT_BUDGETS.get(effort)
+          if (
+              effective_max_tokens is not None
+              and effective_max_tokens <= _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS
+          ):
+            pass
+          elif effort == "minimal" or (
+              effective_max_tokens is not None
+              and effort_budget is not None
+              and effective_max_tokens <= effort_budget
+          ):
+            if "thinking" in supported_params:
+              budget = (
+                  min(effort_budget, effective_max_tokens - 1)
+                  if effective_max_tokens is not None
+                  and effort_budget is not None
+                  else _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS
+              )
+              generation_params["thinking"] = {
+                  "type": "enabled",
+                  "budget_tokens": budget,
+              }
+          elif "reasoning_effort" in supported_params:
+            generation_params["reasoning_effort"] = effort
+        elif "reasoning_effort" in supported_params and (
+            effort != "minimal"
+            or "thinking" in supported_params
+            or (
+                model_info
+                and model_info.get("supports_minimal_reasoning_effort")
+            )
+        ):
+          generation_params["reasoning_effort"] = effort
+      elif thinking_budget == 0:
+        if "thinking" in supported_params and not is_gemini_3_or_newer:
+          if is_gemini:
+            if "gemini-2.5-pro" not in stripped_lower:
+              generation_params["thinking"] = {
+                  "type": "enabled",
+                  "budget_tokens": 0,
+              }
+          else:
+            generation_params["thinking"] = {"type": "disabled"}
+        elif "reasoning_effort" in supported_params and (
+            is_gemini_3_or_newer
+            or (model_info and model_info.get("supports_none_reasoning_effort"))
+        ):
+          generation_params["reasoning_effort"] = "none"
+      elif thinking_budget and thinking_budget > 0:
+        if (
+            "thinking" in supported_params
+            and not is_gemini_3_or_newer
+            and not is_claude_4_7
+        ):
+          min_budget = 0
+          if is_anthropic:
+            min_budget = _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS
+          elif is_gemini:
+            min_budget = next(
+                (
+                    floor
+                    for sub, floor in _GEMINI_MIN_THINKING_BUDGETS.items()
+                    if sub in stripped_lower
+                ),
+                0,
+            )
+          raw_budget: int = max(min_budget, thinking_budget)
+          budget_val: int | None = raw_budget
+          if is_anthropic and effective_max_tokens is not None:
+            budget_val = (
+                min(raw_budget, effective_max_tokens - 1)
+                if effective_max_tokens > _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS
+                else None
+            )
+          if budget_val is not None:
+            generation_params["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": budget_val,
+            }
+        elif "reasoning_effort" in supported_params:
+          if thinking_budget <= 1024:
+            generation_params["reasoning_effort"] = "low"
+          elif thinking_budget <= 2048:
+            generation_params["reasoning_effort"] = "medium"
+          else:
+            generation_params["reasoning_effort"] = "high"
+
+      if (
+          "thinking" not in generation_params
+          and "reasoning_effort" not in generation_params
+          and (
+              not thinking_level
+              or thinking_level == "THINKING_LEVEL_UNSPECIFIED"
+          )
+          and (thinking_budget is None or thinking_budget < 0)
+          and not has_constructor_reasoning
+      ):
+        if include_thoughts is True:
+          if "thinking" in supported_params and not is_gemini_3_or_newer:
+            if is_anthropic:
+              if is_claude_4_7:
+                generation_params["thinking"] = {"type": "adaptive"}
+              elif (
+                  effective_max_tokens is None
+                  or effective_max_tokens
+                  > _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS
+              ):
+                generation_params["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS,
+                }
+            else:
+              generation_params["thinking"] = {"type": "enabled"}
+        elif (
+            include_thoughts is False
+            and is_gemini
+            and "thinking" in supported_params
+        ):
+          generation_params["thinking"] = {"type": "disabled"}
+
+      if is_anthropic:
+        _drop_params_rejected_by_anthropic_thinking(generation_params)
 
     if not generation_params:
       generation_params = None
@@ -3847,6 +4080,10 @@ class LiteLlm(BaseLlm):
       logger.debug(_build_request_log(llm_request))
 
     effective_model = llm_request.model or self.model
+    custom_llm_provider = self._additional_args.get("custom_llm_provider")
+    constructor_max_tokens = self._additional_args.get("max_completion_tokens")
+    if constructor_max_tokens is None:
+      constructor_max_tokens = self._additional_args.get("max_tokens")
     messages, tools, response_format, generation_params, tool_choice = (
         await _get_completion_inputs(
             llm_request,
@@ -3857,15 +4094,18 @@ class LiteLlm(BaseLlm):
             is_proxied=_is_proxied_model(
                 effective_model, self._additional_args
             ),
-            custom_llm_provider=self._additional_args.get(
-                "custom_llm_provider"
+            custom_llm_provider=custom_llm_provider,
+            max_tokens=constructor_max_tokens,
+            has_constructor_reasoning=(
+                self._additional_args.get("thinking") is not None
+                or self._additional_args.get("reasoning_effort") is not None
             ),
         )
     )
     normalized_messages = _normalize_ollama_chat_messages(
         messages,
         model=effective_model,
-        custom_llm_provider=self._additional_args.get("custom_llm_provider"),
+        custom_llm_provider=custom_llm_provider,
     )
 
     if "functions" in self._additional_args:
@@ -3903,7 +4143,23 @@ class LiteLlm(BaseLlm):
       )
 
     if generation_params:
+      if "max_completion_tokens" in generation_params:
+        completion_args.pop("max_tokens", None)
+      if "thinking" in generation_params:
+        completion_args.pop("reasoning_effort", None)
+      if "reasoning_effort" in generation_params:
+        completion_args.pop("thinking", None)
       completion_args.update(generation_params)
+
+    if (
+        _is_anthropic_model(effective_model)
+        or "claude" in _strip_proxy_prefix(effective_model).lower()
+        or bool(
+            custom_llm_provider
+            and _is_anthropic_route(custom_llm_provider, effective_model)
+        )
+    ):
+      _drop_params_rejected_by_anthropic_thinking(completion_args)
 
     if tool_choice is not None:
       completion_args["tool_choice"] = tool_choice
@@ -3933,6 +4189,12 @@ class LiteLlm(BaseLlm):
       if http_opts.extra_body is not None:
         completion_args["extra_body"] = http_opts.extra_body
 
+    include_thoughts = (
+        llm_request.config.thinking_config.include_thoughts
+        if llm_request.config and llm_request.config.thinking_config
+        else None
+    )
+
     if stream:
       # Accumulate into lists and join once: `+=` on a closure cell or a dict
       # item does not get CPython's in-place unicode concat, so it would copy
@@ -3943,6 +4205,8 @@ class LiteLlm(BaseLlm):
       function_calls: dict[int, dict[str, Any]] = (
           {}
       )  # index -> {name, args_parts, id, thought_signature}
+      # Signatures that arrived before any chunk naming their call.
+      pending_signatures: dict[int, bytes] = {}
       tool_call_trackers: Dict[int, _BraceDepthTracker] = {}
       completion_args["stream"] = True
       completion_args["stream_options"] = {"include_usage": True}
@@ -3954,6 +4218,20 @@ class LiteLlm(BaseLlm):
       last_model_version: str | None = None
       fallback_index = 0
       multiple_choices_logged = False
+
+      def _finalized_thought_parts(
+          *, has_tool_calls: bool
+      ) -> list[types.Part] | None:
+        if not reasoning_parts:
+          return None
+        thought_parts = _aggregate_streaming_thought_parts(reasoning_parts)
+        if include_thoughts is False:
+          # Anthropic rejects a tool_use turn replayed without its signed
+          # thinking, so only tool-call turns keep it.
+          thought_parts = [
+              p for p in thought_parts if has_tool_calls and p.thought_signature
+          ]
+        return thought_parts or None
 
       def _finalize_tool_call_response(
           *, model_version: str, finish_reason: str
@@ -4035,10 +4313,8 @@ class LiteLlm(BaseLlm):
                 tool_calls=tool_calls,
             ),
             model_version=model_version,
-            thought_parts=(
-                _aggregate_streaming_thought_parts(reasoning_parts)
-                if reasoning_parts
-                else None
+            thought_parts=_finalized_thought_parts(
+                has_tool_calls=bool(tool_calls)
             ),
         )
         mapped_finish_reason = _map_finish_reason(finish_reason)
@@ -4061,11 +4337,7 @@ class LiteLlm(BaseLlm):
                 content=message_content,
             ),
             model_version=model_version,
-            thought_parts=(
-                _aggregate_streaming_thought_parts(reasoning_parts)
-                if reasoning_parts
-                else None
-            ),
+            thought_parts=_finalized_thought_parts(has_tool_calls=False),
         )
         mapped_finish_reason = _map_finish_reason(finish_reason)
         if _malformed_args_outrank_provider(
@@ -4082,6 +4354,7 @@ class LiteLlm(BaseLlm):
         text_parts.clear()
         reasoning_parts = []
         function_calls.clear()
+        pending_signatures.clear()
         tool_call_trackers.clear()
         # The reason belongs to the segment just finalized; carrying it into
         # the next one would stamp the wrong reason on the next response.
@@ -4117,14 +4390,35 @@ class LiteLlm(BaseLlm):
         for chunk, finish_reason in _model_response_to_chunk(part):
           if finish_reason:
             last_finish_reason = finish_reason
-          if isinstance(chunk, FunctionChunk):
-            index = chunk.index or fallback_index
+          if (
+              isinstance(chunk, FunctionChunk)
+              and not chunk.name
+              and not chunk.args
+              and chunk.thought_signature
+          ):
+            # Only a signature. Opening a call for it would send the model a
+            # call with no name, so attach it to the call at its own index
+            # (the fallback index may already point past that call), or hold
+            # it for the call that starts there next.
+            index = chunk.index if chunk.index is not None else fallback_index
+            signed_call = function_calls.get(index)
+            if signed_call is not None:
+              signed_call["thought_signature"] = chunk.thought_signature
+            else:
+              pending_signatures[index] = chunk.thought_signature
+          elif isinstance(chunk, FunctionChunk):
+            index = (
+                0
+                if chunk.index == 0
+                and not function_calls.get(0, {}).get("args_complete")
+                else (chunk.index or fallback_index)
+            )
             if index not in function_calls:
               function_calls[index] = {
                   "name": "",
                   "args_parts": [],
                   "id": None,
-                  "thought_signature": None,
+                  "thought_signature": pending_signatures.pop(index, None),
               }
 
             if chunk.name:
@@ -4145,6 +4439,7 @@ class LiteLlm(BaseLlm):
               if tracker.feed(chunk.args):
                 try:
                   json.loads("".join(args_parts))
+                  function_calls[index]["args_complete"] = True
                   fallback_index += 1
                 except json.JSONDecodeError:
                   pass
@@ -4191,11 +4486,14 @@ class LiteLlm(BaseLlm):
           elif isinstance(chunk, ReasoningChunk):
             if chunk.parts:
               reasoning_parts.extend(chunk.parts)
-              yield LlmResponse(
-                  content=types.Content(role="model", parts=list(chunk.parts)),
-                  partial=True,
-                  model_version=part.model,
-              )
+              if include_thoughts is not False:
+                yield LlmResponse(
+                    content=types.Content(
+                        role="model", parts=list(chunk.parts)
+                    ),
+                    partial=True,
+                    model_version=part.model,
+                )
           elif isinstance(chunk, UsageMetadataChunk):
             usage_metadata = types.GenerateContentResponseUsageMetadata(
                 prompt_token_count=chunk.prompt_tokens,
@@ -4331,7 +4629,21 @@ class LiteLlm(BaseLlm):
 
     else:
       response = await self.llm_client.acompletion(**completion_args)
-      yield _model_response_to_generate_content_response(response)
+      llm_response = _model_response_to_generate_content_response(response)
+      if (
+          include_thoughts is False
+          and llm_response.content
+          and llm_response.content.parts
+      ):
+        has_tool_calls = any(
+            p.function_call for p in llm_response.content.parts
+        )
+        llm_response.content.parts = [
+            p
+            for p in llm_response.content.parts
+            if not p.thought or (has_tool_calls and p.thought_signature)
+        ]
+      yield llm_response
 
   @classmethod
   @override

@@ -14,6 +14,8 @@
 
 
 import json
+import os
+import socket
 import ssl
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -38,6 +40,10 @@ from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.sessions.state import State
+from google.adk.tools import application_integration_tool
+from google.adk.tools.apihub_tool.apihub_toolset import APIHubToolset
+from google.adk.tools.apihub_tool.clients.apihub_client import BaseAPIHubClient
+from google.adk.tools.openapi_tool import OpenAPIToolset
 from google.adk.tools.openapi_tool.auth.auth_helpers import token_to_scheme_credential
 from google.adk.tools.openapi_tool.common.common import ApiParameter
 from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_spec_parser import OperationEndpoint
@@ -65,6 +71,29 @@ def mock_tool_context():
   mock_context.get_auth_response.return_value = {}
   mock_context.request_credential.return_value = {}
   return mock_context
+
+
+@pytest.fixture(autouse=True)
+def patch_dns(monkeypatch):
+  """Map example.com and other test hosts to safe public IPs."""
+  for env_var in list(os.environ):
+    if env_var.lower().endswith("_proxy"):
+      monkeypatch.delenv(env_var, raising=False)
+
+  original_getaddrinfo = socket.getaddrinfo
+
+  def fake_getaddrinfo(host, port, *args, **kwargs):
+    if host in (
+        "example.com",
+        "api.example.com",
+        "multi.example.com",
+        "two.example.com",
+        "localhost",
+    ):
+      return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0))]
+    return original_getaddrinfo(host, port, *args, **kwargs)
+
+  monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
 
 @pytest.fixture
@@ -2458,7 +2487,8 @@ class TestRestApiTool:
     assert result == {"result": "ok"}
     assert len(captured_requests) == 1
     sent_request = captured_requests[0]
-    assert str(sent_request.url) == "https://example.com/items/false"
+    assert str(sent_request.url) == "https://8.8.8.8/items/false"
+    assert sent_request.headers["Host"] == "example.com"
     assert sent_request.headers["X-Page-Size"] == "50"
     assert "X-Optional-Header" not in sent_request.headers
     assert sent_request.headers["cookie"] == "flags=true,false"
@@ -3577,3 +3607,770 @@ class TestRestApiToolAuthConfiguration:
     tool.configure_auth_credential(None)
 
     assert tool.auth_credential is None
+
+
+class TestRequestSsrfProtection:
+  """Tests for SSRF protection in RestApiTool."""
+
+  @staticmethod
+  def _make_tool(
+      base_url: str,
+      path: str = "/api",
+      *,
+      header_provider=None,
+      httpx_client_factory=None,
+      allow_private_network_access: bool = False,
+  ) -> RestApiTool:
+    parsed = ParsedOperation(
+        name="test_op",
+        description="Test operation",
+        endpoint=OperationEndpoint(
+            base_url=base_url,
+            path=path,
+            method="get",
+        ),
+        operation=Operation(operationId="testOp", responses={}),
+        parameters=[],
+        return_value=ApiParameter(
+            original_name="",
+            py_name="",
+            param_location="body",
+            param_schema=OpenAPISchema(type="object"),
+        ),
+    )
+    return RestApiTool.from_parsed_operation(
+        parsed,
+        header_provider=header_provider,
+        httpx_client_factory=httpx_client_factory,
+        allow_private_network_access=allow_private_network_access,
+    )
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_localhost(self, mock_tool_context):
+    tool = self._make_tool("http://localhost:8080", "/internal")
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+    assert "Blocked host" in response["error"]
+    assert tool._detect_error_in_response(response) == "HTTP_ERROR"
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_loopback(self, mock_tool_context):
+    tool = self._make_tool("http://127.0.0.1", "/internal")
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+    assert "Blocked host" in response["error"]
+    assert tool._detect_error_in_response(response) == "HTTP_ERROR"
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_metadata_endpoint(self, mock_tool_context):
+    tool = self._make_tool("http://169.254.169.254", "/latest/meta-data/")
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+    assert "Blocked host" in response["error"]
+    assert tool._detect_error_in_response(response) == "HTTP_ERROR"
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_private_ip(self, mock_tool_context):
+    tool = self._make_tool("http://10.0.0.1", "/admin")
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+    assert "Blocked host" in response["error"]
+    assert tool._detect_error_in_response(response) == "HTTP_ERROR"
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_file_scheme(self, mock_tool_context):
+    tool = self._make_tool("file://", "/etc/passwd")
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+    assert "Unsupported url scheme" in response["error"]
+    assert tool._detect_error_in_response(response) == "HTTP_ERROR"
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_ftp_scheme(self, mock_tool_context):
+    tool = self._make_tool("ftp://example.com", "/file")
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+    assert "Unsupported url scheme" in response["error"]
+    assert tool._detect_error_in_response(response) == "HTTP_ERROR"
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_missing_hostname(self, mock_tool_context):
+    tool = self._make_tool("http:///", "/path")
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+    assert "missing a hostname" in response["error"]
+    assert tool._detect_error_in_response(response) == "HTTP_ERROR"
+
+  @pytest.mark.asyncio
+  async def test_request_returns_error_on_unresolvable_host(
+      self, mock_tool_context, monkeypatch
+  ):
+    def fail_getaddrinfo(*args, **kwargs):
+      raise socket.gaierror(8, "nodename nor servname provided")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail_getaddrinfo)
+    tool = self._make_tool("https://nonexistent.example.com", "/api")
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+    assert "Unable to resolve host" in response["error"]
+    assert tool._detect_error_in_response(response) == "HTTP_ERROR"
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_rebinder_when_any_record_is_private(
+      self, mock_tool_context, monkeypatch
+  ):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+      if host == "rebinder.example.com":
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.4.4", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
+        ]
+      raise socket.gaierror(8, "no")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    tool = self._make_tool("https://rebinder.example.com", "/x")
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+    assert "Blocked host" in response["error"]
+    assert tool._detect_error_in_response(response) == "HTTP_ERROR"
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_internal_hostname(
+      self, mock_tool_context, monkeypatch
+  ):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+      if host == "internal.example.com":
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 0))]
+      raise socket.gaierror(8, "no")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    tool = self._make_tool("https://internal.example.com", "/admin")
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+    assert "Blocked host" in response["error"]
+    assert tool._detect_error_in_response(response) == "HTTP_ERROR"
+
+  @pytest.mark.asyncio
+  async def test_request_allows_public_url_and_pins_ip_host_and_sni(
+      self, mock_tool_context
+  ):
+    captured_request: list[httpx.Request] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+      captured_request.append(request)
+      return httpx.Response(200, json={"success": True})
+
+    transport = httpx.MockTransport(mock_handler)
+
+    def client_factory():
+      return httpx.AsyncClient(transport=transport)
+
+    tool = self._make_tool(
+        "https://api.example.com:8443",
+        "/api",
+        httpx_client_factory=client_factory,
+    )
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert response == {"success": True}
+    assert len(captured_request) == 1
+    sent = captured_request[0]
+    assert sent.url.host == "8.8.8.8"
+    assert sent.url.port == 8443
+    assert sent.headers["Host"] == "api.example.com:8443"
+    assert sent.extensions.get("sni_hostname") == "api.example.com"
+
+  @pytest.mark.asyncio
+  async def test_request_pins_ipv6_and_preserves_userinfo(
+      self, mock_tool_context, monkeypatch
+  ):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+      if host == "ipv6.example.com":
+        return [(
+            socket.AF_INET6,
+            socket.SOCK_STREAM,
+            6,
+            "",
+            ("2001:4860:4860::8888", 0),
+        )]
+      raise socket.gaierror(8, "no")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    captured_request: list[httpx.Request] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+      captured_request.append(request)
+      return httpx.Response(200, json={"success": True})
+
+    transport = httpx.MockTransport(mock_handler)
+
+    def client_factory():
+      return httpx.AsyncClient(transport=transport)
+
+    tool = self._make_tool(
+        "https://user:pass@ipv6.example.com",
+        "/api",
+        httpx_client_factory=client_factory,
+    )
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert response == {"success": True}
+    assert len(captured_request) == 1
+    sent = captured_request[0]
+    assert sent.url.host == "2001:4860:4860::8888"
+    assert sent.url.username == "user"
+    assert sent.url.password == "pass"
+    assert sent.headers["Host"] == "ipv6.example.com"
+
+  @pytest.mark.asyncio
+  async def test_request_overwrites_case_insensitive_host_header(
+      self, mock_tool_context
+  ):
+    captured_request: list[httpx.Request] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+      captured_request.append(request)
+      return httpx.Response(200, json={"success": True})
+
+    transport = httpx.MockTransport(mock_handler)
+
+    def client_factory():
+      return httpx.AsyncClient(transport=transport)
+
+    tool = self._make_tool(
+        "https://api.example.com",
+        "/api",
+        header_provider=lambda _ctx: {"host": "custom-host.com"},
+        httpx_client_factory=client_factory,
+    )
+    await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert len(captured_request) == 1
+    sent = captured_request[0]
+    assert sent.headers.get("host") == "api.example.com"
+    host_keys = [k for k in sent.headers.keys() if k.lower() == "host"]
+    assert len(host_keys) == 1
+
+  @pytest.mark.asyncio
+  async def test_request_tries_next_address_on_connect_failure(
+      self, mock_tool_context, monkeypatch
+  ):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+      if host == "two.example.com":
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.4.4", 0)),
+        ]
+      raise socket.gaierror(8, "no")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    seen_hosts: list[str] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+      seen_hosts.append(request.url.host)
+      if request.url.host == "8.8.8.8":
+        raise httpx.ConnectError("simulated connect failure")
+      return httpx.Response(200, json={"ok": True})
+
+    transport = httpx.MockTransport(mock_handler)
+
+    def client_factory():
+      return httpx.AsyncClient(transport=transport)
+
+    tool = self._make_tool(
+        "https://two.example.com",
+        "/path",
+        httpx_client_factory=client_factory,
+    )
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert response == {"ok": True}
+    assert seen_hosts == ["8.8.8.8", "8.8.4.4"]
+
+  @pytest.mark.asyncio
+  async def test_request_does_not_retry_on_read_timeout(
+      self, mock_tool_context, monkeypatch
+  ):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+      if host == "two.example.com":
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.4.4", 0)),
+        ]
+      raise socket.gaierror(8, "no")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    seen_hosts: list[str] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+      seen_hosts.append(request.url.host)
+      raise httpx.ReadTimeout("simulated read timeout")
+
+    transport = httpx.MockTransport(mock_handler)
+
+    def client_factory():
+      return httpx.AsyncClient(transport=transport)
+
+    tool = self._make_tool(
+        "https://two.example.com",
+        "/path",
+        httpx_client_factory=client_factory,
+    )
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert "ReadTimeout" in response["error"]
+    assert seen_hosts == ["8.8.8.8"]
+
+  @pytest.mark.asyncio
+  async def test_request_does_not_follow_redirects_when_client_enables_them(
+      self, mock_tool_context
+  ):
+    captured_request: list[httpx.Request] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+      captured_request.append(request)
+      return httpx.Response(
+          302,
+          headers={"Location": "http://127.0.0.1/internal"},
+          json={"redirected": False},
+      )
+
+    transport = httpx.MockTransport(mock_handler)
+
+    def client_factory():
+      return httpx.AsyncClient(transport=transport, follow_redirects=True)
+
+    tool = self._make_tool(
+        "https://api.example.com",
+        "/v1/resource",
+        httpx_client_factory=client_factory,
+    )
+    await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert len(captured_request) == 1
+
+  @pytest.mark.asyncio
+  async def test_request_with_proxy_skips_local_pinning(
+      self, mock_tool_context, monkeypatch
+  ):
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example.com:8080")
+    monkeypatch.setenv("NO_PROXY", "")
+
+    def fail_getaddrinfo(*args, **kwargs):
+      raise socket.gaierror(8, "nodename nor servname provided")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail_getaddrinfo)
+    captured_request: list[httpx.Request] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+      captured_request.append(request)
+      return httpx.Response(200, json={"proxied": True})
+
+    transport = httpx.MockTransport(mock_handler)
+
+    def client_factory():
+      return httpx.AsyncClient(transport=transport)
+
+    tool = self._make_tool(
+        "http://example.com",
+        "/path",
+        httpx_client_factory=client_factory,
+    )
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert response == {"proxied": True}
+    assert len(captured_request) == 1
+    assert captured_request[0].url.host == "example.com"
+
+  @pytest.mark.asyncio
+  async def test_request_with_proxy_blocks_hostname_resolving_to_blocked_ip(
+      self, mock_tool_context, monkeypatch
+  ):
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example.com:8080")
+    monkeypatch.setenv("NO_PROXY", "")
+
+    def fake_getaddrinfo(*args, **kwargs):
+      return [
+          (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 0))
+      ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    tool = self._make_tool(
+        "http://metadata.example.com",
+        "/latest/meta-data/",
+    )
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+    assert "Blocked host" in response["error"]
+    assert tool._detect_error_in_response(response) == "HTTP_ERROR"
+
+  @pytest.mark.asyncio
+  async def test_request_with_client_factory_proxy_skips_local_pinning(
+      self, mock_tool_context, monkeypatch
+  ):
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("http_proxy", raising=False)
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("https_proxy", raising=False)
+    monkeypatch.delenv("ALL_PROXY", raising=False)
+    monkeypatch.delenv("all_proxy", raising=False)
+
+    def fail_getaddrinfo(*args, **kwargs):
+      raise socket.gaierror(8, "nodename nor servname provided")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail_getaddrinfo)
+    captured_request: list[httpx.Request] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+      captured_request.append(request)
+      return httpx.Response(200, json={"proxied": True})
+
+    transport = httpx.MockTransport(mock_handler)
+
+    def client_factory():
+      return httpx.AsyncClient(
+          proxy="http://proxy.example.com:8080",
+          mounts={"all://": transport},
+          trust_env=False,
+      )
+
+    tool = self._make_tool(
+        "https://example.com",
+        "/path",
+        httpx_client_factory=client_factory,
+    )
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert response == {"proxied": True}
+    assert len(captured_request) == 1
+    assert captured_request[0].url.host == "example.com"
+
+  @pytest.mark.asyncio
+  async def test_request_with_trust_env_false_pins_ip_despite_http_proxy_env(
+      self, mock_tool_context, monkeypatch
+  ):
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example.com:8080")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.com:8080")
+    monkeypatch.setenv("NO_PROXY", "")
+    captured_request: list[httpx.Request] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+      captured_request.append(request)
+      return httpx.Response(200, json={"success": True})
+
+    transport = httpx.MockTransport(mock_handler)
+
+    def client_factory():
+      return httpx.AsyncClient(transport=transport, trust_env=False)
+
+    tool = self._make_tool(
+        "https://api.example.com:8443",
+        "/api",
+        httpx_client_factory=client_factory,
+    )
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert response == {"success": True}
+    assert len(captured_request) == 1
+    sent = captured_request[0]
+    assert sent.url.host == "8.8.8.8"
+    assert sent.url.port == 8443
+    assert sent.headers["Host"] == "api.example.com:8443"
+    assert sent.extensions.get("sni_hostname") == "api.example.com"
+
+  @pytest.mark.asyncio
+  async def test_request_allows_private_network_when_enabled(
+      self, mock_tool_context, monkeypatch
+  ):
+    captured_request = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+      captured_request.append(request)
+      return httpx.Response(200, json={"success": True})
+
+    transport = httpx.MockTransport(mock_handler)
+
+    def client_factory():
+      return httpx.AsyncClient(transport=transport)
+
+    # Localhost should be allowed and not rewritten to IP when
+    # allow_private_network_access=True.
+    tool = self._make_tool(
+        "http://localhost:8080",
+        "/internal",
+        httpx_client_factory=client_factory,
+        allow_private_network_access=True,
+    )
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+    assert response == {"success": True}
+    assert len(captured_request) == 1
+    assert captured_request[0].url.host == "localhost"
+
+    captured_request.clear()
+    # Private IP literal should be allowed when
+    # allow_private_network_access=True.
+    tool = self._make_tool(
+        "http://10.0.0.1",
+        "/admin",
+        httpx_client_factory=client_factory,
+        allow_private_network_access=True,
+    )
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+    assert response == {"success": True}
+    assert len(captured_request) == 1
+    assert captured_request[0].url.host == "10.0.0.1"
+
+    captured_request.clear()
+
+    # Unresolvable / DNS-less host (e.g. httpx.ASGITransport on
+    # http://testserver) should bypass DNS resolution and IP pinning when
+    # allow_private_network_access=True.
+    def fail_getaddrinfo(*args, **kwargs):
+      raise socket.gaierror(8, "nodename nor servname provided")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail_getaddrinfo)
+    tool = self._make_tool(
+        "http://testserver",
+        "/internal",
+        httpx_client_factory=client_factory,
+        allow_private_network_access=True,
+    )
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+    assert response == {"success": True}
+    assert len(captured_request) == 1
+    assert captured_request[0].url.host == "testserver"
+
+    captured_request.clear()
+
+    def redirect_handler(request: httpx.Request) -> httpx.Response:
+      captured_request.append(request)
+      if request.url.path == "/redirect":
+        return httpx.Response(
+            302,
+            headers={"Location": "http://localhost:8080/final"},
+        )
+      return httpx.Response(200, json={"redirected": True})
+
+    redirect_transport = httpx.MockTransport(redirect_handler)
+    redirect_tool = self._make_tool(
+        "http://localhost:8080",
+        "/redirect",
+        httpx_client_factory=lambda: httpx.AsyncClient(
+            transport=redirect_transport,
+            follow_redirects=True,
+        ),
+        allow_private_network_access=True,
+    )
+    response = await redirect_tool.call(args={}, tool_context=mock_tool_context)
+    assert response == {"redirected": True}
+    assert [r.url.path for r in captured_request] == ["/redirect", "/final"]
+
+  @pytest.mark.asyncio
+  async def test_openapi_toolset_forwards_allow_private_network_access(
+      self, mock_tool_context
+  ):
+    captured_request = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+      captured_request.append(request)
+      return httpx.Response(200, json={"ok": True})
+
+    transport = httpx.MockTransport(mock_handler)
+
+    def client_factory():
+      return httpx.AsyncClient(transport=transport)
+
+    spec_dict = {
+        "openapi": "3.0.0",
+        "info": {"title": "Local API", "version": "1.0.0"},
+        "servers": [{"url": "http://127.0.0.1:8081"}],
+        "paths": {
+            "/items": {
+                "get": {
+                    "operationId": "listItems",
+                    "responses": {"200": {"description": "OK"}},
+                }
+            }
+        },
+    }
+
+    default_toolset = OpenAPIToolset(
+        spec_dict=spec_dict,
+        httpx_client_factory=client_factory,
+    )
+    default_tool = default_toolset.get_tool("list_items")
+    assert default_tool is not None
+    default_response = await default_tool.call(
+        args={}, tool_context=mock_tool_context
+    )
+    assert "Blocked host" in default_response["error"]
+
+    private_toolset = OpenAPIToolset(
+        spec_dict=spec_dict,
+        httpx_client_factory=client_factory,
+        allow_private_network_access=True,
+    )
+    private_tool = private_toolset.get_tool("list_items")
+    assert private_tool is not None
+    response = await private_tool.call(args={}, tool_context=mock_tool_context)
+    assert response == {"ok": True}
+    assert len(captured_request) == 1
+    assert captured_request[0].url.host == "127.0.0.1"
+
+  @pytest.mark.asyncio
+  async def test_request_pins_idn_hostname_with_punycode_host_header(
+      self, mock_tool_context, monkeypatch
+  ):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+      if host == "xn--strae-oqa.example":
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0))]
+      raise socket.gaierror(8, "no")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    captured_request: list[httpx.Request] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+      captured_request.append(request)
+      return httpx.Response(200, json={"success": True})
+
+    transport = httpx.MockTransport(mock_handler)
+
+    def client_factory():
+      return httpx.AsyncClient(transport=transport)
+
+    tool = self._make_tool(
+        "https://straße.example:8443",
+        "/api",
+        httpx_client_factory=client_factory,
+    )
+    response = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert response == {"success": True}
+    assert len(captured_request) == 1
+    sent = captured_request[0]
+    assert sent.url.host == "8.8.8.8"
+    assert sent.url.port == 8443
+    assert sent.headers["Host"] == "xn--strae-oqa.example:8443"
+    assert sent.extensions.get("sni_hostname") == "xn--strae-oqa.example"
+
+  @pytest.mark.asyncio
+  async def test_apihub_toolset_forwards_allow_private_network_access(
+      self, mock_tool_context
+  ):
+    spec_str = json.dumps({
+        "openapi": "3.0.0",
+        "info": {"title": "Local API", "version": "1.0.0"},
+        "servers": [{"url": "http://127.0.0.1:8081"}],
+        "paths": {
+            "/items": {
+                "get": {
+                    "operationId": "listItems",
+                    "responses": {"200": {"description": "OK"}},
+                }
+            }
+        },
+    })
+
+    class _LocalAPIHubClient(BaseAPIHubClient):
+
+      def get_spec_content(self, _apihub_resource_name: str) -> str:
+        return spec_str
+
+    default_toolset = APIHubToolset(
+        apihub_resource_name="test_resource",
+        apihub_client=_LocalAPIHubClient(),
+    )
+    default_tools = await default_toolset.get_tools()
+    assert len(default_tools) == 1
+    assert default_tools[0]._allow_private_network_access is False
+    default_response = await default_tools[0].call(
+        args={}, tool_context=mock_tool_context
+    )
+    assert "Blocked host" in default_response["error"]
+
+    private_toolset = APIHubToolset(
+        apihub_resource_name="test_resource",
+        apihub_client=_LocalAPIHubClient(),
+        allow_private_network_access=True,
+    )
+    private_tools = await private_toolset.get_tools()
+    assert len(private_tools) == 1
+    assert private_tools[0]._allow_private_network_access is True
+
+  @pytest.mark.asyncio
+  async def test_app_integration_toolset_forwards_allow_private_network_access(
+      self,
+  ):
+    spec_dict = {
+        "openapi": "3.0.0",
+        "info": {"title": "Local API", "version": "1.0.0"},
+        "servers": [{"url": "http://127.0.0.1:8081"}],
+        "paths": {
+            "/items": {
+                "get": {
+                    "operationId": "listItems",
+                    "x-entity": "Items",
+                    "x-operation": "LIST_ENTITIES",
+                    "responses": {"200": {"description": "OK"}},
+                }
+            }
+        },
+    }
+
+    target_module = application_integration_tool.application_integration_toolset
+    toolset_cls = application_integration_tool.ApplicationIntegrationToolset
+    with (
+        patch.object(target_module, "IntegrationClient") as mock_integration,
+        patch.object(target_module, "ConnectionsClient") as mock_connections,
+    ):
+      integration_client = mock_integration.return_value
+      integration_client.get_openapi_spec_for_integration.return_value = (
+          spec_dict
+      )
+      integration_client.get_openapi_spec_for_connection.return_value = (
+          spec_dict
+      )
+      mock_connections.return_value.get_connection_details.return_value = {
+          "serviceName": "test-service",
+          "host": "127.0.0.1",
+          "name": "test-connection",
+      }
+
+      default_integration = toolset_cls(
+          "test-project",
+          "us-central1",
+          integration="test-integration",
+      )
+      default_integration_tools = await default_integration.get_tools()
+      assert len(default_integration_tools) == 1
+      assert default_integration_tools[0]._allow_private_network_access is False
+
+      private_integration = toolset_cls(
+          "test-project",
+          "us-central1",
+          integration="test-integration",
+          allow_private_network_access=True,
+      )
+      private_integration_tools = await private_integration.get_tools()
+      assert len(private_integration_tools) == 1
+      assert private_integration_tools[0]._allow_private_network_access is True
+
+      default_connection = toolset_cls(
+          "test-project",
+          "us-central1",
+          connection="test-connection",
+          entity_operations=["list"],
+      )
+      default_connection_tools = await default_connection.get_tools()
+      assert len(default_connection_tools) == 1
+      assert (
+          default_connection_tools[
+              0
+          ]._rest_api_tool._allow_private_network_access
+          is False
+      )
+
+      private_connection = toolset_cls(
+          "test-project",
+          "us-central1",
+          connection="test-connection",
+          entity_operations=["list"],
+          allow_private_network_access=True,
+      )
+      private_connection_tools = await private_connection.get_tools()
+      assert len(private_connection_tools) == 1
+      assert (
+          private_connection_tools[
+              0
+          ]._rest_api_tool._allow_private_network_access
+          is True
+      )

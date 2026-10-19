@@ -22,10 +22,9 @@ from urllib.parse import ParseResult
 
 import requests
 from requests.adapters import HTTPAdapter
-from requests.utils import get_environ_proxies
-from requests.utils import select_proxy
 
 from ._url_validator import _format_host
+from ._url_validator import _get_proxy_url
 from ._url_validator import _is_blocked_address
 from ._url_validator import _is_blocked_hostname
 from ._url_validator import _parse_ip_literal
@@ -100,11 +99,6 @@ class _PinnedAddressAdapter(HTTPAdapter):
 
 def _failed_to_fetch_message(url: str) -> str:
   return f'Failed to fetch url: {url}'
-
-
-def _get_proxy_url(url: str) -> str | None:
-  proxies = get_environ_proxies(url)
-  return select_proxy(url, proxies)
 
 
 def _declared_content_length(response: requests.Response) -> int:
