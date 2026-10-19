@@ -37,6 +37,7 @@ from ..evaluation.base_eval_service import InferenceResult
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import get_all_tool_calls
 from ..evaluation.eval_case import IntermediateDataType
+from ..evaluation.eval_metrics import DurationDetails
 from ..evaluation.eval_metrics import EvalMetric
 from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
@@ -283,6 +284,34 @@ def _echo_token_usage_details(details: TokenUsageDetails) -> None:
     click.echo(f"{label:<{_TOKEN_BREAKDOWN_LABEL_WIDTH}}{count}")
 
 
+# The duration parts to print. Unlike the token counts these do not nest --
+# they partition the turn -- so the parts are indented under the total simply
+# to show that they add back up to it. See `DurationDetails`.
+_DURATION_BREAKDOWN_ROWS = (
+    ("total_seconds", 1),
+    ("model_seconds", 2),
+    ("tool_seconds", 2),
+    ("framework_seconds", 2),
+)
+
+
+def _format_seconds(value: Optional[float]) -> str:
+  """Formats a duration, showing an unmeasured one as n/a rather than 0."""
+  return "n/a" if value is None else f"{value:g}s"
+
+
+def _echo_duration_details(details: DurationDetails) -> None:
+  """Prints where the turn's seconds went, indented under the total."""
+  click.echo("Duration breakdown:")
+  for field_name, depth in _DURATION_BREAKDOWN_ROWS:
+    # The heading already says these are durations, so the shared suffix is
+    # dropped from the label rather than repeated on every row.
+    name = field_name.removesuffix("_seconds").replace("_", " ")
+    label = f"{'  ' * depth}{name}:"
+    value = _format_seconds(getattr(details, field_name))
+    click.echo(f"{label:<{_TOKEN_BREAKDOWN_LABEL_WIDTH}}{value}")
+
+
 def _format_metric_cell(metric_result: EvalMetricResult) -> str:
   """Formats one metric's result for a cell of the invocation details table.
 
@@ -297,6 +326,21 @@ def _format_metric_cell(metric_result: EvalMetricResult) -> str:
   if score is None:
     return "n/a"
   if metric_result.metric_name == PrebuiltMetrics.INVOCATION_DURATION_V1.value:
+    duration_details = (
+        metric_result.details.duration_details
+        if metric_result.details
+        else None
+    )
+    if duration_details and duration_details.model_seconds is not None:
+      # Same idea as the token cell below: the full breakdown prints with the
+      # overall metrics, so per invocation the split is enough to see whether
+      # the turn was waiting on the model, in a tool, or in ADK.
+      return (
+          f"{score:.2f}s"
+          f" (model {_format_seconds(duration_details.model_seconds)},"
+          f" tool {_format_seconds(duration_details.tool_seconds)},"
+          f" framework {_format_seconds(duration_details.framework_seconds)})"
+      )
     return f"{score:.2f}s"
   token_details = (
       metric_result.details.token_usage_details
@@ -332,6 +376,8 @@ def pretty_print_eval_result(eval_result: EvalCaseResult) -> None:
     )
     if metric_result.details and metric_result.details.token_usage_details:
       _echo_token_usage_details(metric_result.details.token_usage_details)
+    if metric_result.details and metric_result.details.duration_details:
+      _echo_duration_details(metric_result.details.duration_details)
     if metric_result.details and metric_result.details.rubric_scores:
       click.echo("Rubric Scores:")
       rubrics = (

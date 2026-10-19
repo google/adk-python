@@ -21,6 +21,7 @@ from typing import Iterable
 from typing import Optional
 from unittest import mock
 
+import agentplatform
 from agentplatform import types as agentplatform_types
 from google.adk.events.event import Event
 from google.adk.memory import vertex_ai_memory_bank_service as memory_service_module
@@ -101,6 +102,44 @@ MOCK_SESSION = Session(
         ),
     ],
 )
+
+CREDENTIAL_TOKEN = 'test-access-token'
+
+CREDENTIAL_EXCHANGE_EVENTS = [
+    Event(
+        id='777',
+        invocation_id='789',
+        author='agent',
+        timestamp=34567,
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name='adk_request_credential',
+                        args={'authConfig': {'authScheme': {'type': 'oauth2'}}},
+                    )
+                )
+            ]
+        ),
+    ),
+    Event(
+        id='888',
+        invocation_id='789',
+        author='user',
+        timestamp=34568,
+        content=types.Content(
+            role='user',
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        name='adk_request_credential',
+                        response={'access_token': CREDENTIAL_TOKEN},
+                    )
+                )
+            ],
+        ),
+    ),
+]
 
 MOCK_SESSION_WITH_EMPTY_EVENTS = Session(
     app_name=MOCK_APP_NAME,
@@ -290,6 +329,73 @@ def mock_agentplatform_client():
     yield mock_async_client
 
 
+@pytest.fixture
+def agentplatform_before_2_2():
+  """Patches in an agentplatform whose types predate 2.2."""
+  sdk_before_2_2 = SimpleNamespace(
+      Client=agentplatform.Client,
+      types=SimpleNamespace(
+          AgentEngineMemoryConfig=object,
+          GenerateAgentEngineMemoriesConfig=object,
+          GenerateMemoriesRequestDirectContentsSourceEvent=SimpleNamespace,
+      ),
+  )
+  with mock.patch(
+      'google.adk.dependencies._agentplatform.agentplatform', sdk_before_2_2
+  ):
+    yield sdk_before_2_2
+
+
+@pytest.mark.parametrize(
+    'custom_metadata, expected_missing_type',
+    [
+        (None, 'MemoryConfig'),
+        ({'enable_consolidation': True}, 'GenerateMemoriesConfig'),
+    ],
+)
+@pytest.mark.asyncio
+async def test_add_memory_rejects_agentplatform_before_2_2(
+    mock_agentplatform_client,
+    agentplatform_before_2_2,
+    custom_metadata,
+    expected_missing_type,
+):
+  """add_memory raises ImportError instead of writing, on either write path."""
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with pytest.raises(ImportError, match='has no ' + expected_missing_type):
+    await memory_service.add_memory(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+        memories=[
+            MemoryEntry(content=types.Content(parts=[types.Part(text='f')]))
+        ],
+        custom_metadata=custom_metadata,
+    )
+
+  mock_agentplatform_client.memory_banks.memories.create.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_generate_path_rejects_agentplatform_before_2_2(
+    mock_agentplatform_client,
+    agentplatform_before_2_2,
+):
+  """The generate path raises ImportError instead of calling memories.generate."""
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with pytest.raises(ImportError, match='has no GenerateMemoriesConfig'):
+    await memory_service.add_events_to_memory(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+        events=[MOCK_SESSION.events[0]],
+        custom_metadata={'revision_labels': {'source': 'chat'}},
+    )
+
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_initialize_with_project_location_and_api_key_error():
   with pytest.raises(ValueError) as excinfo:
@@ -420,6 +526,59 @@ async def test_add_session_to_memory(mock_agentplatform_client):
   )
   assert source.events[1].event_id == '666'
   assert source.events[1].content.parts[0].function_call.name == 'test_function'
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_credential_events(
+    mock_agentplatform_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='333',
+      last_update_time=22333,
+      events=[MOCK_SESSION.events[0]] + CREDENTIAL_EXCHANGE_EVENTS,
+  )
+
+  await memory_service.add_session_to_memory(session)
+
+  # Allow the fire-and-forget task to complete.
+  await asyncio.sleep(0)
+
+  call_kwargs = (
+      mock_agentplatform_client.memory_banks.ingest_events.call_args.kwargs
+  )
+  source = call_kwargs['direct_contents_source']
+  assert [event.event_id for event in source.events] == ['444']
+  assert CREDENTIAL_TOKEN not in str(call_kwargs)
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_via_generate_skips_credential_events(
+    mock_agentplatform_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with mock.patch.object(
+      memory_service_module,
+      '_supports_generate_memories_metadata',
+      return_value=False,
+  ):
+    await memory_service.add_events_to_memory(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+        events=[MOCK_SESSION.events[0]] + CREDENTIAL_EXCHANGE_EVENTS,
+        custom_metadata={'ttl': '6000s'},
+    )
+
+  call_kwargs = (
+      mock_agentplatform_client.memory_banks.memories.generate.call_args.kwargs
+  )
+  source = call_kwargs['direct_contents_source']
+  assert len(source.events) == 1
+  assert source.events[0].content.parts[0].text == 'test_content'
+  assert CREDENTIAL_TOKEN not in str(call_kwargs)
 
 
 @pytest.mark.asyncio

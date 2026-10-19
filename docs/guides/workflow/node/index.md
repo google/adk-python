@@ -6,7 +6,7 @@ The `@node` decorator and `node()` function wrap Python functions, agents, tools
 
 A workflow graph accepts functions, agents, tools, and other workflows directly in its edges, wrapping each one with default settings as the graph is built. You reach for `node` or `Node` when those defaults are not enough:
 
-- **Configuring a function at definition time**: `@node(...)` attaches settings such as `timeout`, `retry_config`, `rerun_on_resume`, `parameter_binding`, and `parallel_worker` directly to a Python function.
+- **Configuring a function at definition time**: `@node(...)` attaches settings such as `timeout`, `retry_config`, `rerun_on_resume`, `require_confirmation`, `parameter_binding`, and `parallel_worker` directly to a Python function.
 - **Overriding settings or reusing a step across a graph**: Calling `node(step, name=..., timeout=...)` on an existing function, `Agent`, `BaseTool`, or `BaseNode` returns a configured copy, leaving the original untouched so it can be reused elsewhere in the same graph or in other workflows.
 - **Writing a reusable node class**: Subclassing `Node` and implementing `run_node_impl` gives your custom node class all [`BaseNode`](../base_node/index.md) settings plus [`parallel_worker`](../parallel_worker/index.md) support out of the box.
 
@@ -89,6 +89,7 @@ When `parallel_worker` is `False`, calling the node runs your `run_node_impl` as
 | `parallel_worker` | `bool` | `False` | Runs the node concurrently across each item of an input list. See [parallel worker mode](../parallel_worker/index.md). |
 | `max_parallel_workers` | `int \| None` | `None` | Maximum number of list items processed at once when `parallel_worker=True`. `None` places no cap on concurrency. |
 | `auth_config` | `AuthConfig \| None` | `None` | Requests user credentials before the function runs. Applies to callables and requires `rerun_on_resume=True`. |
+| `require_confirmation` | `bool \| Callable[..., bool] \| None` | `None` | Gates execution on user approval before the function runs, either unconditionally or when the predicate callable returns `True`. Automatically enables `rerun_on_resume=True` when not explicitly set. |
 | `parameter_binding` | `'state' \| 'node_input'` | `'state'` | How a wrapped function resolves parameters other than `ctx` and `node_input`. |
 
 ### `name`
@@ -97,7 +98,7 @@ Every distinct node in a workflow must have a unique name that is a valid Python
 
 ### `rerun_on_resume`
 
-Controls how the node behaves when a workflow resumes after pausing for human input or tool confirmation. Functions default to `False`, meaning the resuming input becomes the node's output without running the function body again. Setting `rerun_on_resume=True` re-executes the function from the start on resume, which is required whenever the node calls `ctx.run_node()`, yields a `RequestInput` and inspects `ctx.resume_inputs`, or uses `auth_config`.
+Controls how the node behaves when a workflow resumes after pausing for human input or tool confirmation. Functions default to `False`, meaning the resuming input becomes the node's output without running the function body again. Setting `rerun_on_resume=True` re-executes the function from the start on resume, which is required whenever the node calls `ctx.run_node()`, yields a `RequestInput` and inspects `ctx.resume_inputs`, or uses `auth_config`. When `require_confirmation` is set, `rerun_on_resume` defaults to `True` automatically.
 
 When `parallel_worker=True`, `rerun_on_resume` is forced to `True` automatically so the worker can re-collect completed item outputs from the event log on resume.
 
@@ -237,8 +238,8 @@ Because `PrefixNode` inherits from `Node` rather than `BaseNode`, passing `paral
 
 Keep the following constraints in mind when wrapping nodes with `node()` or subclassing `Node`:
 
-- **`node(existing_node)` without overrides does not copy the node.** When you pass a `BaseNode` to `node()` without setting `name`, `rerun_on_resume`, `retry_config`, `timeout`, or `parallel_worker=True`, `node()` returns the exact same instance. To use the same node at two places in one graph, you must pass a distinct `name` so a new copy is created and the two steps do not collide.
-- **`auth_config` and `parameter_binding` do not apply when wrapping an existing `BaseNode`, `BaseAgent`, or `BaseTool`.** Those two options are only consumed when `node()` wraps a plain Python callable into a `FunctionNode`. Passing them alongside an already-constructed `FunctionNode` or `Agent` has no effect.
+- **`node(existing_node)` without overrides does not copy the node.** When you pass a `BaseNode` to `node()` without setting `name`, `rerun_on_resume`, `retry_config`, `timeout`, `require_confirmation`, or `parallel_worker=True`, `node()` returns the exact same instance. To use the same node at two places in one graph, you must pass a distinct `name` so a new copy is created and the two steps do not collide.
+- **`auth_config`, `require_confirmation`, and `parameter_binding` only apply to function nodes.** `auth_config` and `parameter_binding` are only consumed when `node()` wraps a plain Python callable into a `FunctionNode`. `require_confirmation` applies to callables and existing `FunctionNode` instances (including a `NodeTool` wrapping a `FunctionNode`); passing `require_confirmation` when wrapping another `BaseNode` or `BaseTool` raises `WorkflowConfigurationError`.
 - **`parallel_worker` and `max_parallel_workers` are frozen on `Node` instances.** Both fields are declared with `frozen=True`, so mutating `my_node.parallel_worker = True` after construction raises a Pydantic validation error. Pass them to the constructor or to `node()`, or create a new instance with `model_copy(update={"parallel_worker": True})`.
 - **`run_node_impl` must be an async generator.** Even if your `Node` subclass emits only a single value, `run_node_impl` must be defined with `async def` and `yield` its output rather than using `return`. A `Node` subclass also receives raw `node_input` without automatic `types.Content`-to-`str` conversion unless you set `input_schema`.
 

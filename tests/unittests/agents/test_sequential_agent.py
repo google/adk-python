@@ -18,11 +18,13 @@ from typing import AsyncGenerator
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.agents.sequential_agent import SequentialAgentState
 from google.adk.apps import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.workflow import node
 from google.genai import types
 import pytest
 from typing_extensions import override
@@ -206,3 +208,44 @@ async def test_run_live(request: pytest.FixtureRequest):
 def test_deprecation_mentions_sub_agent_limitation():
   with pytest.warns(DeprecationWarning, match='sub-agent'):
     SequentialAgent(name='deprecated_sequential', sub_agents=[])
+
+
+@pytest.mark.asyncio
+async def test_run_live_dedupes_base_node_task_completed_tool(
+    request: pytest.FixtureRequest,
+):
+  """Does not append a duplicate task_completed tool when a BaseNode with that name is already present."""
+
+  class _LiveLlmSubAgent(LlmAgent):
+
+    @override
+    async def _run_live_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          author=self.name,
+          invocation_id=ctx.invocation_id,
+          content=types.Content(parts=[types.Part(text='live')]),
+      )
+
+  @node
+  def task_completed() -> str:
+    return 'done'
+
+  sub_agent = _LiveLlmSubAgent(
+      name='live_sub_agent',
+      instruction='initial',
+  )
+  sub_agent.tools.append(task_completed)
+  sequential_agent = SequentialAgent(
+      name='seq_agent',
+      sub_agents=[sub_agent],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, sequential_agent
+  )
+
+  _ = [e async for e in sequential_agent.run_live(parent_ctx)]
+
+  assert sub_agent.tools == [task_completed]
+  assert sub_agent.instruction == 'initial'

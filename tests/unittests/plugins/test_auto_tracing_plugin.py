@@ -659,6 +659,15 @@ def test_secret_named_key_is_masked_by_name():
   assert _SENTINEL_TOKEN not in rendered, rendered
   assert rendered == "{'access_token': <str>, 'expires_in': 3600}", rendered
 
+  rendered = auto_tracing_helpers.safe_repr(
+      {"X-Api-Key": _SENTINEL_TOKEN, "Accept": "application/json"},
+      auto_tracing_helpers.Caps(),
+  )
+  assert _SENTINEL_TOKEN not in rendered, rendered
+  assert (
+      rendered == "{'X-Api-Key': <str>, 'Accept': 'application/json'}"
+  ), rendered
+
 
 def test_secret_behind_private_attr_forces_summary():
   class _Store:
@@ -746,6 +755,11 @@ def test_cyclic_and_deep_values_are_bounded():
         ("tool_auth_config", True),
         ("authorization_url", False),
         ("cookiecutter", False),
+        ("X-Api-Key", True),
+        ("x-goog-api-key", True),
+        ("Proxy-Authorization", True),
+        ("Set-Cookie", True),
+        ("Content-Type", False),
     ],
 )
 def test_credential_arg_name_matching(name, expected):

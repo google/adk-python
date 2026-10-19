@@ -32,6 +32,9 @@ _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME = "GOOGLE_CLOUD_AGENT_ENGINE_ID"
 EVAL_CLIENT_LABEL = f"google-adk-eval/{version.__version__}"
 """Label used to denote calls emerging to external system as a part of Evals."""
 
+MODEL_CONSULT_CLIENT_LABEL = f"google-adk-model-consult/{version.__version__}"
+"""Label used to denote advisor LLM calls made by ModelConsultTool."""
+
 # The ContextVar holds client label collected for the current request.
 _LABEL_CONTEXT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_LABEL_CONTEXT", default=None

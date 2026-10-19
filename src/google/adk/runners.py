@@ -68,7 +68,7 @@ from .utils import _lazy
 from .utils._agent_mode import AgentMode as _AgentMode
 from .utils._debug_output import print_event
 from .utils._runner_utils import _notify_run_error
-from .utils._runner_utils import _with_caller_context
+from .workflow._base_node import _walk_static_nodes
 from .workflow._base_node import BaseNode
 
 if TYPE_CHECKING:
@@ -143,6 +143,8 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
 
   # Pass 2: Walk backward to find the latest active scope that is not finished.
   for event in reversed(live_events):
+    if event.actions and event.actions.compaction:
+      continue
     scope = event.isolation_scope
     if not scope:
       continue
@@ -335,14 +337,10 @@ class Runner:
         plugins=app.plugins, close_timeout=plugin_close_timeout
     )
     self.auto_create_session = auto_create_session
-    if self.agent is not None:
-      (
-          self._agent_origin_app_name,
-          self._agent_origin_dir,
-      ) = self._infer_agent_origin(cast(BaseAgent, self.agent))
-    else:
-      self._agent_origin_app_name = None
-      self._agent_origin_dir = None
+    (
+        self._agent_origin_app_name,
+        self._agent_origin_dir,
+    ) = self._infer_agent_origin(cast(BaseAgent, self.agent))
     self._app_name_alignment_hint: Optional[str] = None
     self._enforce_app_name_alignment()
     self._warn_uncached_agent_transfer()
@@ -839,31 +837,18 @@ class Runner:
               'Unexpected node event queue item:'
               f' {type(event_or_done).__name__}'
           )
-        event = event_or_done
-
-        async def _process_and_clear(invocation_context, ev_arg):
-          nonlocal event
-          ev = await self._process_event_with_plugin_callbacks(
-              invocation_context=invocation_context,
-              event=ev_arg,
-          )
-          if not ev.partial:
-            if (
-                ev.node_info
-                and ev.node_info.message_as_output
-                and ev.content is not None
-            ):
-              ev = ev.model_copy()
-              ev.output = None
-          event = ev
-          return ev
-
-        output_event = await _process_and_clear(
+        output_event = await self._process_event_with_plugin_callbacks(
             invocation_context=ic,
-            ev_arg=event,
+            event=event_or_done,
         )
-
-        if not event.partial:
+        if not output_event.partial:
+          if (
+              output_event.node_info
+              and output_event.node_info.message_as_output
+              and output_event.content is not None
+          ):
+            output_event = output_event.model_copy()
+            output_event.output = None
           await self.session_service.append_event(
               session=ic.session, event=output_event
           )
@@ -1273,143 +1258,141 @@ class Runner:
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
-      from opentelemetry import context
+      session = await self._get_or_create_session(
+          user_id=user_id,
+          session_id=session_id,
+          get_session_config=run_config.get_session_config,
+      )
 
-      from .telemetry import _instrumentation
-
-      caller_ctx_trace = context.get_current()
-      with _instrumentation.record_invocation(
-          entrypoint_node=root_agent,
-          conversation_id=session_id,
-          run_config=run_config,
-      ):
-        session = await self._get_or_create_session(
-            user_id=user_id,
-            session_id=session_id,
-            get_session_config=run_config.get_session_config,
+      if not invocation_id and new_message is None:
+        raise ValueError(
+            'Running an agent requires either a new_message or an '
+            'invocation_id to resume a previous invocation. '
+            f'Session: {session_id}, User: {user_id}'
         )
 
-        if not invocation_id and new_message is None:
-          raise ValueError(
-              'Running an agent requires either a new_message or an '
-              'invocation_id to resume a previous invocation. '
-              f'Session: {session_id}, User: {user_id}'
-          )
-
-        is_resumable = (
-            self.resumability_config and self.resumability_config.is_resumable
-        )
-        if not is_resumable and new_message is None:
+      is_resumable = (
+          self.resumability_config and self.resumability_config.is_resumable
+      )
+      if not is_resumable:
+        if new_message is None:
           raise ValueError(
               'Running an agent requires a new_message or a resumable app. '
               f'Session: {session_id}, User: {user_id}'
           )
-
-        if not is_resumable:
+        resolved_invocation_id = self._resolve_invocation_id_from_fr(
+            session, new_message, strict=False
+        )
+        if resolved_invocation_id is not None:
+          if invocation_id and invocation_id != resolved_invocation_id:
+            logger.warning(
+                'Provided invocation_id %s is ignored because new_message'
+                ' has a function response with invocation_id %s.',
+                invocation_id,
+                resolved_invocation_id,
+            )
+          invocation_id = resolved_invocation_id
+        invocation_context = await self._setup_context_for_new_invocation(
+            session=session,
+            new_message=new_message,
+            run_config=run_config,
+            state_delta=state_delta,
+            invocation_id=invocation_id,
+            abort_signal=abort_signal,
+        )
+      else:
+        invocation_id = self._resolve_invocation_id(
+            session, new_message, invocation_id
+        )
+        if not invocation_id:
           if new_message is None:
-            raise ValueError('A new message is required for a new invocation.')
-          resolved_invocation_id = self._resolve_invocation_id_from_fr(
-              session, new_message, strict=False
-          )
-          if resolved_invocation_id is not None:
-            if invocation_id and invocation_id != resolved_invocation_id:
-              logger.warning(
-                  'Provided invocation_id %s is ignored because new_message'
-                  ' has a function response with invocation_id %s.',
-                  invocation_id,
-                  resolved_invocation_id,
-              )
-            invocation_id = resolved_invocation_id
+            raise ValueError(
+                'A new message is required when no invocation can be resumed.'
+            )
           invocation_context = await self._setup_context_for_new_invocation(
               session=session,
               new_message=new_message,
               run_config=run_config,
               state_delta=state_delta,
-              invocation_id=invocation_id,
               abort_signal=abort_signal,
           )
         else:
-          invocation_id = self._resolve_invocation_id(
-              session, new_message, invocation_id
+          invocation_context = await self._setup_context_for_resumed_invocation(
+              session=session,
+              new_message=new_message,
+              invocation_id=invocation_id,
+              run_config=run_config,
+              state_delta=state_delta,
+              abort_signal=abort_signal,
           )
-          if not invocation_id:
-            if new_message is None:
-              raise ValueError(
-                  'A new message is required when no invocation can be resumed.'
-              )
-            invocation_context = await self._setup_context_for_new_invocation(
-                session=session,
-                new_message=new_message,
-                run_config=run_config,
-                state_delta=state_delta,
-                abort_signal=abort_signal,
-            )
-          else:
-            invocation_context = (
-                await self._setup_context_for_resumed_invocation(
-                    session=session,
-                    new_message=new_message,
-                    invocation_id=invocation_id,
-                    run_config=run_config,
-                    state_delta=state_delta,
-                    abort_signal=abort_signal,
-                )
-            )
-            active_agent = invocation_context.agent
-            if not isinstance(active_agent, BaseAgent):
-              raise RuntimeError(
-                  'Resumed agent execution has no active BaseAgent.'
-              )
-            if invocation_context.end_of_agents.get(active_agent.name):
-              # Directly return if the current agent in invocation context is
-              # already final.
-              return
-
-        invocation_context._abort_state.loop = asyncio.get_running_loop()  # pylint: disable=protected-access
-
-        async def execute(
-            ctx: InvocationContext,
-        ) -> AsyncGenerator[Event, None]:
-          if ctx.is_aborted:
-            return
-          active_agent = ctx.agent
+          active_agent = invocation_context.agent
           if not isinstance(active_agent, BaseAgent):
-            raise RuntimeError('Agent execution has no active BaseAgent.')
-          async with aclosing(active_agent.run_async(ctx)) as agen:
-            async for event in agen:
-              yield event
-              if ctx.is_aborted:
-                break
-
-        async with aclosing(
-            _with_caller_context(
-                self._exec_with_plugin(
-                    invocation_context=invocation_context,
-                    session=invocation_context.session,
-                    execute_fn=execute,
-                    is_live_call=False,
-                ),
-                caller_ctx_trace,
+            raise RuntimeError(
+                'Resumed agent execution has no active BaseAgent.'
             )
-        ) as agen:
+          if invocation_context.end_of_agents.get(active_agent.name):
+            # Directly return if the current agent in invocation context is
+            # already final.
+            return
+
+      invocation_context._abort_state.loop = asyncio.get_running_loop()  # pylint: disable=protected-access
+
+      async def execute(
+          ctx: InvocationContext,
+      ) -> AsyncGenerator[Event, None]:
+        if ctx.is_aborted:
+          return
+        active_agent = ctx.agent
+        if not isinstance(active_agent, BaseAgent):
+          raise RuntimeError('Agent execution has no active BaseAgent.')
+        async with aclosing(active_agent.run_async(ctx)) as agen:
           async for event in agen:
             yield event
-        if not invocation_context.is_aborted:
-          # Run compaction after all events are yielded from the agent.
-          # (We don't compact in the middle of an invocation, we only compact at
-          # the end of an invocation.)
-          await self._run_post_invocation_compaction(
+            if ctx.is_aborted:
+              break
+
+      async with aclosing(
+          self._exec_with_plugin(
+              invocation_context=invocation_context,
               session=invocation_context.session,
+              execute_fn=execute,
+              is_live_call=False,
           )
+      ) as agen:
+        async for event in agen:
+          yield event
+      if not invocation_context.is_aborted:
+        # Run compaction after all events are yielded from the agent.
+        # (We don't compact in the middle of an invocation, we only compact at
+        # the end of an invocation.)
+        await self._run_post_invocation_compaction(
+            session=invocation_context.session,
+        )
+
+    from .telemetry import _instrumentation
 
     # For BaseAgent root agents running via _run_with_trace, events flow
     # through _run_with_trace which breaks cleanly upon abort.
     # Note that BaseNode/Workflow root targets are routed earlier via
     # _run_node_async, where Workflow and NodeRunner manage task cancellation
     # and queue-draining internally.
-    async with aclosing(_run_with_trace(new_message, invocation_id)) as agen:
-      async for event in agen:
-        yield event
+    # The invocation scope is opened out here rather than inside the generator,
+    # so that its span is not opened and closed by whoever happens to drive the
+    # generator, and `stream_in_scope` attaches it only while the generator is
+    # actually running -- never across a yield (b/485899016).
+    with _instrumentation.record_invocation(
+        entrypoint_node=root_agent,
+        conversation_id=session_id,
+        run_config=run_config,
+    ) as (invocation_otel_context, _):
+      async with aclosing(
+          _instrumentation.stream_in_scope(
+              invocation_otel_context,
+              _run_with_trace(new_message, invocation_id),
+          )
+      ) as agen:
+        async for event in agen:
+          yield event
 
   async def rewind_async(
       self,
@@ -1421,15 +1404,23 @@ class Runner:
   ) -> None:
     """Rewinds the session to before the specified invocation.
 
+    Args:
+      user_id: The user ID of the session.
+      session_id: The session ID of the session.
+      rewind_before_invocation_id: The invocation ID to rewind to before.
+      run_config: Retained for backward compatibility. ``get_session_config``
+        is ignored because rewinds must replay state and artifact deltas from
+        the start of the session history.
+
     Raises:
       InvocationNotFoundError: If rewind_before_invocation_id does not match
         any event in the session.
     """
-    run_config = run_config or RunConfig()
+    if run_config and run_config.get_session_config:
+      logger.warning('rewind_async ignores run_config.get_session_config')
     session = await self._get_or_create_session(
         user_id=user_id,
         session_id=session_id,
-        get_session_config=run_config.get_session_config,
     )
     from .sessions import _rewind_utils
 
@@ -1602,17 +1593,11 @@ class Runner:
             author='model',
             content=early_exit_result,
         )
-        # Ensure the early-exit event also passes through on_event callbacks and metadata enrichment.
-        output_event = await self._process_event_with_plugin_callbacks(
-            invocation_context=invocation_context,
+        yield await self._process_and_append_event(
             event=early_exit_event,
+            invocation_context=invocation_context,
+            is_live_call=is_live_call,
         )
-        if self._should_append_event(output_event, is_live_call):
-          await self.session_service.append_event(
-              session=invocation_context.session,
-              event=output_event,
-          )
-        yield output_event
       else:
         # Step 2: Otherwise continue with normal execution
         async with aclosing(execute_fn(invocation_context)) as agen:
@@ -1825,22 +1810,9 @@ class Runner:
     """Returns whether chat-mode root LlmAgent uses the legacy sub-agent picker."""
     from .agents.llm_agent import LlmAgent  # pylint: disable=g-import-not-at-top
 
-    if (
-        not isinstance(self.agent, LlmAgent)
-        or (self.agent.mode or _AgentMode.CHAT) != _AgentMode.CHAT
-    ):
-      return False
-    remote_a2a_agent_class: tuple[Any, ...] = ()
-    try:
-      from .agents.remote_a2a_agent import RemoteA2aAgent  # pylint: disable=g-import-not-at-top
-
-      remote_a2a_agent_class = (RemoteA2aAgent,)
-    except ImportError:
-      pass
-    return not any(
-        isinstance(sa, (LlmAgent,) + remote_a2a_agent_class)
-        and getattr(sa, 'mode', None) == _AgentMode.TASK
-        for sa in self.agent.sub_agents or []
+    return (
+        isinstance(self.agent, LlmAgent)
+        and (self.agent.mode or _AgentMode.CHAT) == _AgentMode.CHAT
     )
 
   def _find_agent_to_run(
@@ -1855,6 +1827,9 @@ class Runner:
     - The root agent.
     - An LlmAgent who replied last and is capable to transfer to any other agent
       in the agent hierarchy.
+
+    An agent inside a task delegation is replaced by the agent that delegated
+    it.
 
     Args:
         session: The session to find the agent for.
@@ -2263,36 +2238,15 @@ class Runner:
   def _collect_toolset(
       self, root: BaseNode, visited: set[int] | None = None
   ) -> set[BaseToolset]:
+    del visited  # Retained for subclass override compatibility.
     if not isinstance(root, BaseNode):
       return set()
-    if visited is None:
-      visited = set()
-    root_id = id(root)
-    if root_id in visited:
-      return set()
-    visited.add(root_id)
-
     toolsets: set[BaseToolset] = set()
-    if hasattr(root, 'tools'):
-      for tool_union in getattr(root, 'tools', ()) or ():
-        if isinstance(tool_union, BaseToolset):
-          toolsets.add(tool_union)
-    if hasattr(root, 'sub_agents'):
-      for sub_agent in getattr(root, 'sub_agents', ()) or ():
-        toolsets.update(self._collect_toolset(sub_agent, visited))
-    if hasattr(root, 'graph') and getattr(root, 'graph', None):
-      graph = getattr(root, 'graph')
-      nodes = getattr(graph, 'nodes', None)
-      if nodes:
-        node_iter = nodes.values() if isinstance(nodes, dict) else nodes
-        for node in node_iter:
-          toolsets.update(self._collect_toolset(node, visited))
-    if hasattr(root, '_node') and getattr(root, '_node', None):
-      toolsets.update(self._collect_toolset(getattr(root, '_node'), visited))
-    if hasattr(root, '_inner_node') and getattr(root, '_inner_node', None):
-      toolsets.update(
-          self._collect_toolset(getattr(root, '_inner_node'), visited)
-      )
+    for node in _walk_static_nodes(root):
+      if hasattr(node, 'tools'):
+        for tool_union in getattr(node, 'tools', ()) or ():
+          if isinstance(tool_union, BaseToolset):
+            toolsets.add(tool_union)
     return toolsets
 
   async def _cleanup_toolsets(
@@ -2302,6 +2256,7 @@ class Runner:
     if not toolsets_to_close:
       return
 
+    cancelled_error = None
     # This maintains the same task context throughout cleanup
     for toolset in toolsets_to_close:
       cleanup_task = asyncio.create_task(
@@ -2352,24 +2307,46 @@ class Runner:
               type(toolset).__name__,
               close_error,
           )
-        raise
+        cancelled_error = e
       except Exception as e:
         logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
 
+    if cancelled_error is not None:
+      raise cancelled_error
+
   async def close(self) -> None:
-    """Closes the runner."""
+    """Closes the runner.
+
+    Raises:
+      asyncio.CancelledError: If closing was cancelled. The rest of the cleanup
+        still runs before it is re-raised, even if that cleanup fails.
+      RuntimeError: If one or more plugins failed to close.
+    """
     logger.info('Closing runner...')
-    # Close Toolsets
-    if self.agent is not None:
-      await self._cleanup_toolsets(self._collect_toolset(self.agent))
+    cancelled_error = None
+    try:
+      # Close Toolsets
+      if self.agent is not None:
+        await self._cleanup_toolsets(self._collect_toolset(self.agent))
+    except asyncio.CancelledError as e:
+      cancelled_error = e
 
-    # Close Plugins
-    if self.plugin_manager:
-      await self.plugin_manager.close()
-
-    # Close Session Service
-    if self.session_service:
-      await self.session_service.flush()
+    try:
+      # Close Plugins
+      if self.plugin_manager:
+        await self.plugin_manager.close()
+    except asyncio.CancelledError as e:
+      cancelled_error = e
+    finally:
+      try:
+        # Close Session Service
+        if self.session_service:
+          await self.session_service.flush()
+      except asyncio.CancelledError as e:
+        cancelled_error = e
+      finally:
+        if cancelled_error is not None:
+          raise cancelled_error
 
     logger.info('Runner closed.')
 

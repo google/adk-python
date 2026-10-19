@@ -306,15 +306,41 @@ class _FailingNode(BaseNode):
     yield  # pylint: disable=unreachable
 
 
+class _EchoLiveNode(BaseNode):
+  """A non-agent root node that yields one event."""
+
+  ran: bool = False
+
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Any, None]:
+    self.ran = True
+    yield Event(author=self.name)
+
+
 class _RecordingPlugin(BasePlugin):
 
-  def __init__(self):
+  def __init__(self, early_exit_content: types.Content | None = None):
     super().__init__(name="recording")
+    self.early_exit_content = early_exit_content
+    self.call_order: list[str] = []
     self.errors: list[Exception] = []
+
+  async def before_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> types.Content | None:
+    self.call_order.append("before_run")
+    return self.early_exit_content
+
+  async def after_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    self.call_order.append("after_run")
 
   async def on_run_error_callback(
       self, *, invocation_context: InvocationContext, error: Exception
   ) -> None:
+    self.call_order.append("on_run_error")
     self.errors.append(error)
 
 
@@ -349,6 +375,69 @@ async def test_run_node_live_notifies_plugins_when_the_root_node_fails():
       pass
 
   assert [str(e) for e in plugin.errors] == ["root node exploded"]
+  assert plugin.call_order == ["before_run", "on_run_error"]
+
+
+@pytest.mark.asyncio
+async def test_run_node_live_halts_when_before_run_callback_returns_content():
+  """Returning Content from before_run_callback halts run_node_live early."""
+  early_content = types.Content(
+      role="model", parts=[types.Part(text="blocked by plugin")]
+  )
+  plugin = _RecordingPlugin(early_exit_content=early_content)
+  node = _EchoLiveNode(name="root_node")
+  runner = Runner(
+      app=App(name="test_app", root_agent=node, plugins=[plugin]),
+      session_service=InMemorySessionService(),
+  )
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+
+  events = [
+      e
+      async for e in _runner_utils.run_node_live(
+          runner, session=session, live_request_queue=LiveRequestQueue()
+      )
+  ]
+
+  assert node.ran is False
+  assert len(events) == 1
+  assert events[0].content == early_content
+  assert [e.content for e in session.events] == [early_content]
+  assert plugin.call_order == ["before_run", "after_run"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close_early", [False, True])
+async def test_run_node_live_runs_before_and_after_run_callbacks(
+    close_early: bool,
+):
+  """Normal completion and early generator close dispatch before/after_run."""
+  plugin = _RecordingPlugin()
+  node = _EchoLiveNode(name="root_node")
+  runner = Runner(
+      app=App(name="test_app", root_agent=node, plugins=[plugin]),
+      session_service=InMemorySessionService(),
+  )
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+
+  events = []
+  async with contextlib.aclosing(
+      _runner_utils.run_node_live(
+          runner, session=session, live_request_queue=LiveRequestQueue()
+      )
+  ) as agen:
+    async for e in agen:
+      events.append(e)
+      if close_early:
+        break
+
+  assert node.ran is True
+  assert any(e.author == "root_node" for e in events)
+  assert plugin.call_order == ["before_run", "after_run"]
 
 
 @pytest.mark.asyncio

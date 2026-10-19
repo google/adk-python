@@ -465,9 +465,7 @@ async def test_workflow_pause_and_resume_parent_interruption(
       name=request.function.__name__,
       root_agent=wf,
   )
-  # invariants: off because mode='task' parent_agent does not intercept
-  # _TaskAgentTool sub-agent FunctionCalls (dropped by _rearranger.py).
-  runner = testing_utils.InMemoryRunner(app=app, check_invariants=False)
+  runner = testing_utils.InMemoryRunner(app=app)
 
   # Run 1: Should pause on LRO
   events1 = await runner.run_async(testing_utils.get_user_content('start'))
@@ -507,7 +505,6 @@ async def test_workflow_pause_and_resume_parent_interruption(
   assert any('Parent all done' in t for t in content_texts)
 
 
-@pytest.mark.xfail(reason='Task agents cannot have sub-agents in workflow')
 @pytest.mark.asyncio
 async def test_workflow_pause_and_resume_child_interruption(
     request: pytest.FixtureRequest,
@@ -540,7 +537,6 @@ async def test_workflow_pause_and_resume_child_interruption(
   )
   parent_model = testing_utils.MockModel.create(
       responses=[
-          call_child,
           call_child,
           'Parent all done',
       ]

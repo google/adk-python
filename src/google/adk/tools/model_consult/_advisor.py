@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from collections.abc import Iterator
 from collections.abc import Sequence
+import contextlib
 import copy
 from dataclasses import dataclass
 import logging
@@ -35,9 +37,12 @@ from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ...models.registry import LLMRegistry
+from ...telemetry import _genai_instrumentor
 from ...telemetry import _metrics
-from ...telemetry import tracing
 from ...telemetry._token_usage import TokenUsage
+from ...telemetry.context import TelemetryConfig
+from ...utils._client_labels_utils import client_label_context
+from ...utils._client_labels_utils import MODEL_CONSULT_CLIENT_LABEL
 from ...utils.model_name_utils import is_gemini_model
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -205,6 +210,17 @@ def resolve_advisor_llm(model: str | BaseLlm) -> BaseLlm:
   )
 
 
+@contextlib.contextmanager
+def _advisor_client_label_context() -> Iterator[None]:
+  """Enters `client_label_context` when allowed by the active context."""
+  with contextlib.ExitStack() as stack:
+    try:
+      stack.enter_context(client_label_context(MODEL_CONSULT_CLIENT_LABEL))
+    except ValueError:
+      pass
+    yield
+
+
 def _build_request(
     *,
     llm: BaseLlm,
@@ -258,35 +274,36 @@ async def _collect(
   last_usage_meta: types.GenerateContentResponseUsageMetadata | None = None
 
   try:
-    async for response in response_gen:
-      responses.append(response)
-      if response.model_version:
-        model_version = response.model_version
-      if response.finish_reason:
-        finish_reason = response.finish_reason
-      elif _hit_output_cap(response.error_code):
-        finish_reason = types.FinishReason.MAX_TOKENS
-      if response.usage_metadata is not None:
-        # Take the last reading rather than summing across yields: adapters
-        # report cumulative token counts on the final non-partial response.
-        last_usage_meta = response.usage_metadata
-      if (
-          response.error_code
-          and not _hit_output_cap(response.error_code)
-          and not _hit_output_cap(response.finish_reason)
-      ):
-        raise AdvisorError(
-            f'Advisor ({llm.model}) returned error {response.error_code}: '
-            f'{response.error_message or "no message"}'
-        )
-      if response.partial:
-        continue
-      if response.content and response.content.parts:
-        for part in response.content.parts:
-          if getattr(part, 'thought', False):
-            continue
-          if part.text:
-            text_chunks.append(part.text)
+    with _advisor_client_label_context():
+      async for response in response_gen:
+        responses.append(response)
+        if response.model_version:
+          model_version = response.model_version
+        if response.finish_reason:
+          finish_reason = response.finish_reason
+        elif _hit_output_cap(response.error_code):
+          finish_reason = types.FinishReason.MAX_TOKENS
+        if response.usage_metadata is not None:
+          # Take the last reading rather than summing across yields: adapters
+          # report cumulative token counts on the final non-partial response.
+          last_usage_meta = response.usage_metadata
+        if (
+            response.error_code
+            and not _hit_output_cap(response.error_code)
+            and not _hit_output_cap(response.finish_reason)
+        ):
+          raise AdvisorError(
+              f'Advisor ({llm.model}) returned error {response.error_code}: '
+              f'{response.error_message or "no message"}'
+          )
+        if response.partial:
+          continue
+        if response.content and response.content.parts:
+          for part in response.content.parts:
+            if getattr(part, 'thought', False):
+              continue
+            if part.text:
+              text_chunks.append(part.text)
   finally:
     await response_gen.aclose()
 
@@ -306,9 +323,8 @@ def _record_telemetry(
   """Emits standard ADK OpenTelemetry client duration and token metrics."""
   try:
     # pylint: disable=protected-access
-    if (
-        tracing._instrumented_with_opentelemetry_instrumentation_google_genai()
-        and is_gemini_model(request.model)
+    if is_gemini_model(request.model) and _genai_instrumentor.records_inference(
+        TelemetryConfig()
     ):
       return
 

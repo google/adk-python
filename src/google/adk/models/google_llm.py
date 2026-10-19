@@ -294,8 +294,14 @@ class Gemini(BaseLlm):
       if logger.isEnabledFor(logging.DEBUG):
         logger.debug(_build_request_log(llm_request))
 
+      from ..telemetry._genai_instrumentor import maybe_without_genai_instrumentation
+
+      api_models = self.api_client.aio.models
+
       if stream:
-        responses = await self.api_client.aio.models.generate_content_stream(
+        responses = await maybe_without_genai_instrumentation(
+            api_models.generate_content_stream
+        )(
             model=model,
             contents=cast(list[types.ContentUnion], llm_request.contents),
             config=llm_request.config,
@@ -352,7 +358,9 @@ class Gemini(BaseLlm):
           yield close_result
 
       else:
-        response = await self.api_client.aio.models.generate_content(
+        response = await maybe_without_genai_instrumentation(
+            api_models.generate_content
+        )(
             model=model,
             contents=cast(list[types.ContentUnion], llm_request.contents),
             config=llm_request.config,
@@ -650,9 +658,14 @@ class Gemini(BaseLlm):
 
       return wait_5_seconds
 
+    wait_tool = llm_request.tools_dict.get('wait')
     await ComputerUseToolset.adapt_computer_use_tool(
-        'wait', convert_wait_to_wait_5_seconds, llm_request
+        'wait',
+        convert_wait_to_wait_5_seconds,
+        llm_request,
     )
+    if wait_tool is not None and 'wait_5_seconds' in llm_request.tools_dict:
+      llm_request.tools_dict['wait'] = wait_tool
 
   async def _preprocess_request(self, llm_request: LlmRequest) -> None:
     from ..tools import load_artifacts_tool  # pylint: disable=import-outside-toplevel

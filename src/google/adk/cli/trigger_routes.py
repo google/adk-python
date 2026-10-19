@@ -58,7 +58,9 @@ from ..events.event import Event
 from ..utils.context_utils import Aclosing
 
 if TYPE_CHECKING:
-  from .adk_web_server import AdkWebServer
+  from collections.abc import Sequence
+
+  from .api_server import ApiServer
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -319,7 +321,7 @@ class TriggerRouter:
       exponential backoff + jitter
   """
 
-  DEFAULT_TRIGGER_SOURCES = []
+  DEFAULT_TRIGGER_SOURCES: list[str] = []
   """Trigger sources registered when ``trigger_sources`` is not specified.
   By default, no triggers are registered to require explicit opt-in via CLI.
   """
@@ -328,9 +330,9 @@ class TriggerRouter:
 
   def __init__(
       self,
-      adk_web_server: "AdkWebServer",
+      adk_web_server: ApiServer,
       *,
-      trigger_sources: Optional[list[str]] = None,
+      trigger_sources: Optional[Sequence[str]] = None,
       max_concurrent: int = DEFAULT_MAX_CONCURRENT,
       max_retries: int = DEFAULT_MAX_RETRIES,
       retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY,

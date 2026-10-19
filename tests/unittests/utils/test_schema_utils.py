@@ -19,10 +19,12 @@ import inspect
 import signal
 import time
 from typing import Annotated
+from typing import Any
 from typing import Optional
 
 from google.adk.utils._callable_utils import get_type_hints_cached
 from google.adk.utils._schema_utils import _strip_json_code_fence
+from google.adk.utils._schema_utils import _unwrap_content_payload
 from google.adk.utils._schema_utils import get_list_inner_type
 from google.adk.utils._schema_utils import is_basemodel_schema
 from google.adk.utils._schema_utils import is_list_of_basemodel
@@ -300,6 +302,39 @@ class TestValidateSchema:
 class TestValidateNodeData:
   """Tests for validate_node_data function."""
 
+  @pytest.mark.parametrize("with_media", [False, True])
+  @pytest.mark.parametrize("preserve_content", [False, True])
+  @pytest.mark.parametrize("schema", [str, SampleModel, str | SampleModel])
+  def test_content_thoughts_are_excluded_from_validated_text(
+      self, schema, preserve_content, with_media
+  ):
+    """Only answer text is validated or returned as a typed node payload."""
+    answer = "hello" if schema is str else '{"name": "test", "value": 42}'
+    media = (
+        [types.Part(inline_data=types.Blob(data=b"img", mime_type="image/png"))]
+        if with_media
+        else []
+    )
+    data = types.Content(
+        role="model",
+        parts=[
+            *media,
+            types.Part(text="Let me think first.", thought=True),
+            types.Part(text=answer),
+        ],
+    )
+
+    result = validate_node_data(schema, data, preserve_content=preserve_content)
+
+    if preserve_content:
+      assert result == types.Content(
+          role="model", parts=[*media, types.Part(text=answer)]
+      )
+    else:
+      assert result == (
+          answer if schema is str else {"name": "test", "value": 42}
+      )
+
   def test_none_schema_or_data_returns_data(self):
     """Bypasses validation if schema or data is None."""
     assert validate_node_data(None, "some_data") == "some_data"
@@ -318,6 +353,53 @@ class TestValidateNodeData:
         types.Content, types.Content(role="user", parts=[])
     )
     assert result == {"role": "user", "parts": []}
+
+  @pytest.mark.parametrize(
+      "schema",
+      [
+          Annotated[types.Content, "content"],
+          Annotated[types.Content, "content"] | None,
+      ],
+  )
+  def test_annotated_content_schema_preserves_content(self, schema):
+    """Content annotations keep the message instead of parsing its text."""
+    data = types.Content(role="user", parts=[types.Part(text='{"value": 42}')])
+
+    assert validate_node_data(schema, data) == data.model_dump(
+        exclude_none=True
+    )
+
+  def test_annotated_string_schema_enforces_constraints(self):
+    """Text conversion still validates the metadata on the string schema."""
+    data = types.Content(parts=[types.Part(text="1")])
+
+    with pytest.raises(ValidationError, match="at least 2 characters"):
+      validate_node_data(Annotated[str, Field(min_length=2)], data)
+
+  @pytest.mark.parametrize(
+      "schema",
+      [
+          str | Annotated[types.Content, "content"],
+          Annotated[str, "text"] | Annotated[types.Content, "content"],
+      ],
+  )
+  def test_union_with_annotated_content_arm_expects_text(self, schema):
+    """An Annotated Content arm does not stop a str union from taking text."""
+    data = types.Content(parts=[types.Part(text='{"value": 42}')])
+
+    assert validate_node_data(schema, data) == '{"value": 42}'
+
+  @pytest.mark.parametrize(
+      "annotation", [Annotated[Any, "x"], Annotated[object, "x"]]
+  )
+  def test_fan_out_with_annotated_any_parses_list(self, annotation):
+    """Annotated Any fans out a JSON list like plain Any does."""
+    data = types.Content(parts=[types.Part(text="[1, 2]")])
+
+    assert _unwrap_content_payload(data, annotation, fan_out_list=True) == [
+        1,
+        2,
+    ]
 
   def test_plain_basemodel_schema_validates_raw_dict(self):
     """Validates raw dict data against BaseModel schema."""

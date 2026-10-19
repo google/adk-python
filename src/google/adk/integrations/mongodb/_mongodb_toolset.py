@@ -119,6 +119,12 @@ class MongoDbToolset(BaseToolset):
       )
       agent = Agent(model="gemini-3.5-flash", tools=[toolset])
       ```
+
+  When constructed with `connection_string` and no `genai_client`, the toolset
+  is picklable, so the agent can ship to Agent Engine (which packages apps with
+  cloudpickle): the live `MongoClient` is dropped at pickle time and rebuilt
+  from the connection string on the runtime. A toolset built with a
+  caller-owned `mongo_client` or `genai_client` cannot be pickled.
   """
 
   def __init__(
@@ -174,8 +180,39 @@ class MongoDbToolset(BaseToolset):
       raise ValueError(
           "Either `connection_string` or `mongo_client` must be provided."
       )
+    self._connection_string = connection_string
     self._database_name = database_name
     self._genai_client = genai_client
+
+  def __getstate__(self) -> dict[str, Any]:
+    """Drops the unpicklable client so the toolset can ship to Agent Engine.
+
+    Agent Engine packages the app with cloudpickle; neither a MongoClient
+    (sockets, locks, background threads) nor a genai Client (httpx pools)
+    crosses that boundary. The MongoClient is rebuilt from the connection
+    string on restore, and a caller-owned `mongo_client` or `genai_client`
+    raises `TypeError`.
+    """
+    state = _client.drop_client_for_pickle(
+        self.__dict__, owns_client=self._owns_client, owner="MongoDbToolset"
+    )
+    if self._genai_client is not None:
+      raise TypeError(
+          "MongoDbToolset cannot be pickled when constructed with"
+          " `genai_client`: a caller-owned client cannot be rebuilt on the"
+          " destination."
+      )
+    # Caches hold tool instances that reference the dropped client.
+    state["_cached_invocation_id"] = None
+    state["_cached_prefixed_tools"] = None
+    return state
+
+  def __setstate__(self, state: dict[str, Any]) -> None:
+    self.__dict__.update(state)
+    assert self._connection_string is not None
+    self._client = _client.get_mongo_client(
+        self._connection_string, timeout_ms=self._settings.timeout_ms
+    )
 
   @override
   async def get_tools(
