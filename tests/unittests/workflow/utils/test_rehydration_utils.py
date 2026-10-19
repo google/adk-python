@@ -80,7 +80,7 @@ class TestUnwrapResponse:
     assert _unwrap_response(None) is None
 
   def test_json_string_parsed_to_dict(self):
-    """Web frontend sends {"result": '{"approved": false}'}."""
+    """Web frontend sends {"result": '{"approved": false}'} ."""
     assert _unwrap_response({"result": '{"approved": false}'}) == {
         "approved": False
     }
@@ -472,6 +472,82 @@ class TestScanNodeEvents:
     # Assert
     assert "/wf@1/node_a@1" in results
     assert results["/wf@1/node_a@1"].output == "node_a output"
+
+  def test_scan_does_not_misattribute_reused_interrupt_id_to_completed_run(
+      self,
+  ):
+    # https://github.com/google/adk-python/issues/7609
+    # A dynamic node may reuse its interrupt id across loop iterations. When
+    # the later iteration raises the same id, the scan for the earlier,
+    # already-completed run must not attribute the later response to it:
+    # that would clear its output and rerun it with the wrong answer.
+    base_path = "root/loop@1/gate@run0"
+    event_int_0 = Event(
+        node_info=NodeInfo(path=base_path),
+        long_running_tool_ids={"approve"},
+        invocation_id="test_id",
+    )
+    event_answer_0 = Event(
+        author="user",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="approve",
+                        name="adk_request_input",
+                        response={"answer": "first"},
+                    )
+                )
+            ]
+        ),
+        invocation_id="test_id",
+    )
+    event_output_0 = Event(
+        node_info=NodeInfo(path=base_path),
+        output="first",
+        invocation_id="test_id",
+    )
+    # Same interrupt id, raised by the later run of the same node. This run
+    # is outside the scanned path, but its interrupt must still claim the id
+    # so the answer meant for it is not handed to the completed run above.
+    event_int_1 = Event(
+        node_info=NodeInfo(path="root/loop@1/gate@run1"),
+        long_running_tool_ids={"approve"},
+        invocation_id="test_id",
+    )
+    event_answer_1 = Event(
+        author="user",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="approve",
+                        name="adk_request_input",
+                        response={"answer": "second"},
+                    )
+                )
+            ]
+        ),
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [
+            event_int_0,
+            event_answer_0,
+            event_output_0,
+            event_int_1,
+            event_answer_1,
+        ],
+        base_path,
+        invocation_id="test_id",
+        group_by_direct_child=False,
+    )
+
+    state = results[base_path]
+    assert state.output == "first"
+    assert state.resolved_ids == {"approve"}
+    assert state.resolved_responses == {"approve": {"answer": "first"}}
 
   def test_scan_validates_and_coerces_response_against_schema(self):
     """Scanning validates and coerces user response data against the provided schema."""
