@@ -114,7 +114,6 @@ async def compute_artifact_delta_for_rewind(
     if vt == vn:
       continue
 
-    rewind_artifact_delta[filename] = vn + 1
     artifact: types.Part
     if vt is None:
       # Artifact did not exist at rewind point. Mark it as inaccessible.
@@ -140,7 +139,7 @@ async def compute_artifact_delta_for_rewind(
         artifact = artifact_util._new_rewind_tombstone()
       else:
         artifact = loaded_artifact
-    await artifact_service.save_artifact(
+    rewind_artifact_delta[filename] = await artifact_service.save_artifact(
         app_name=app_name,
         user_id=session.user_id,
         session_id=session.id,

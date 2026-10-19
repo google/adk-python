@@ -446,6 +446,85 @@ class TestMCPSessionManager:
     assert merged["user-agent"].startswith("google-adk/")
     assert merged["user-agent"].endswith(" my-app/1.0")
 
+  @pytest.mark.parametrize(
+      "base_headers, additional",
+      [
+          (
+              {
+                  "user-agent": "base-client/1",
+                  "x-goog-api-client": "base-sdk/1",
+                  "X-Custom": "base",
+              },
+              {
+                  "user-agent": "extra-client/1",
+                  "x-goog-api-client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+          (
+              {
+                  "User-Agent": "base-client/1",
+                  "X-Goog-Api-Client": "base-sdk/1",
+                  "X-Custom": "base",
+              },
+              {
+                  "user-agent": "extra-client/1",
+                  "x-goog-api-client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+          (
+              {
+                  "user-agent": "base-client/1",
+                  "x-goog-api-client": "base-sdk/1",
+                  "X-Custom": "base",
+              },
+              {
+                  "User-Agent": "extra-client/1",
+                  "X-Goog-Api-Client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+          (
+              {
+                  "User-Agent": "base-client/1",
+                  "user-agent": "base-client/2",
+                  "X-Goog-Api-Client": "base-sdk/1",
+                  "x-goog-api-client": "base-sdk/2",
+                  "X-Custom": "base",
+              },
+              {
+                  "User-Agent": "extra-client/1",
+                  "X-Goog-Api-Client": "extra-sdk/1",
+                  "X-Custom": "extra",
+              },
+          ),
+      ],
+  )
+  def test_merge_headers_additional_overrides_base_tracking_headers(
+      self, base_headers, additional
+  ):
+    """Additional tracking headers replace base ones regardless of casing."""
+    original_base = base_headers.copy()
+    original_additional = additional.copy()
+    manager = MCPSessionManager(
+        SseConnectionParams(url="https://example.com/mcp", headers=base_headers)
+    )
+
+    merged = manager._merge_headers(additional)
+
+    assert merged == merge_tracking_headers({
+        "user-agent": "extra-client/1",
+        "x-goog-api-client": "extra-sdk/1",
+        "X-Custom": "extra",
+    })
+    assert "base-client/" not in merged["user-agent"]
+    assert merged["user-agent"].endswith(" extra-client/1")
+    assert "base-sdk/" not in merged["x-goog-api-client"]
+    assert merged["x-goog-api-client"].endswith(" extra-sdk/1")
+    assert base_headers == original_base
+    assert additional == original_additional
+
   def test_is_session_disconnected(self):
     """Test session disconnection detection."""
     manager = MCPSessionManager(self.mock_stdio_connection_params)

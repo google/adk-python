@@ -22,6 +22,7 @@ from pathlib import Path
 import re
 import sys
 from typing import Any
+from typing import cast
 from typing import Literal
 from typing import Optional
 from typing import Union
@@ -85,7 +86,7 @@ class AgentLoader(BaseAgentLoader):
   def _init_agent_mode(self, agents_path: Path) -> None:
     if is_single_agent_directory(agents_path):
       self._is_single_agent = True
-      self._single_agent_name = agents_path.name
+      self._single_agent_name: Optional[str] = agents_path.name
       self.agents_dir = str(agents_path.parent)
     else:
       self._is_single_agent = False
@@ -478,7 +479,8 @@ class AgentLoader(BaseAgentLoader):
   def list_agents(self) -> list[str]:
     """Lists all agents available in the agent loader (sorted alphabetically)."""
     if self._is_single_agent:
-      return [self._single_agent_name]
+      # Single-agent mode always sets the agent name.
+      return [cast(str, self._single_agent_name)]
     base_path = Path.cwd() / self.agents_dir
     agent_names = [
         x

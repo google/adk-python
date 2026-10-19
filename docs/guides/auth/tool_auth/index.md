@@ -180,7 +180,10 @@ sequenceDiagram
     nothing pauses. Otherwise it checks the credential service, then the auth
     response in session state, then whether the scheme is a client-credentials
     flow needing no user at all. For an authorization-code flow with nothing
-    stored, it returns `None`.
+    stored, it returns `None`. It also returns `None` when an authorization
+    code fails its token exchange: a newly received callback credential is not
+    stored, and an already-stored credential with an unredeemed code is ignored
+    in memory until a new consent round overwrites it.
 2.  The tool calls `request_credential`. `AuthHandler.generate_auth_request`
     builds the authorization URL for OAuth2 and OIDC schemes and writes it to
     `exchanged_auth_credential.oauth2.auth_uri`, with the `state` and, when

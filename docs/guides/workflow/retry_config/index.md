@@ -39,7 +39,7 @@ async def call_unstable_api(node_input: str):
 
 When a node with a `RetryConfig` raises an exception, five things happen in order.
 
-1. **Exception matching.** The exception's class name is checked against `RetryConfig.exceptions`. When `exceptions` is left as `None`, which is the default, every exception matches.
+1. **Exception matching.** Every class in the raised exception's inheritance hierarchy, `type(exception).__mro__` excluding `object`, has its class name checked against `RetryConfig.exceptions`. When `exceptions` is left as `None`, which is the default, every exception matches.
 2. **Attempt count check.** The node is retried only while `attempt_count` is below `max_attempts`. That counter starts at 1 for the original run, so `max_attempts=3` buys you the original plus two retries.
 3. **Delay calculation.** The base delay grows exponentially with the number of attempts already made, as `initial_delay * backoff_factor ** (attempt - 1)`.
 4. **Capping, then jitter.** If `jitter` is greater than 0.0, the base delay is first capped at `max_delay / (1 + jitter)`, and a random offset is then drawn uniformly from `-jitter * delay` to `+jitter * delay`. The order matters and it is deliberate. Capping afterwards would still hold the ceiling, but it would collapse every overshooting draw onto exactly `max_delay`, firing at one instant the very retries that jitter exists to spread out. With the defaults of `jitter=1.0` and `max_delay=60.0`, the pre-jitter delay therefore never exceeds 30 seconds, and the widest positive draw lands on 60. The result is then clamped to be non-negative and capped at `max_delay` once more.
@@ -76,7 +76,7 @@ retry_config = RetryConfig(
 )
 ```
 
-A class you pass is normalized to its `__name__` at validation time, and matching at retry time compares `type(exception).__name__` against that list. **The match is on the exact class name, not `isinstance`.** Listing `ConnectionError` therefore does not retry a `ConnectionResetError`, and listing `Exception` retries nothing at all. Name every concrete class you want to catch, or leave `exceptions` as `None` to retry on everything.
+A class you pass is normalized to its `__name__` at validation time, and matching at retry time checks the `__name__` of every class in `type(exception).__mro__`, except `object`, against that list. **Subclasses therefore match a base class you list:** naming `ConnectionError` also retries `ConnectionResetError`, and naming `Exception` retries every `Exception` subclass. Because matching compares unqualified class names, a string name such as `"TimeoutError"` matches any exception class or base class with that `__name__`, regardless of which module defines it.
 
 ### Retrying a nested workflow
 

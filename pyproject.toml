@@ -24,6 +24,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
   "Topic :: Software Development :: Libraries :: Python Modules",
   # List of https://pypi.org/classifiers/
   "Typing :: Typed",
@@ -36,12 +37,12 @@ dependencies = [
   "cryptography>=42",
   "fastapi>=0.133,<1",
   "google-auth[pyopenssl]>=2.47",
-  "google-genai>=2.19,<3",
+  "google-genai>=2.30,<3",
   "graphviz>=0.20.2,<1",
   "httpx>=0.27,<1",
   "jsonschema>=4.23,<5",
-  "opentelemetry-api>=1.39,<=1.42.1",
-  "opentelemetry-sdk>=1.39,<=1.42.1",
+  "opentelemetry-api>=1.39,<=1.44",
+  "opentelemetry-sdk>=1.39,<=1.44",
   "packaging>=21",
   "pydantic>=2.12,<3",
   "python-dotenv>=1,<2",
@@ -132,7 +133,7 @@ optional-dependencies.all = [
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
   "opentelemetry-exporter-otlp-proto-http>=1.36",
-  "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
+  "opentelemetry-instrumentation-google-genai>=0.7b1,<2",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
   "opentelemetry-instrumentation-httpx>=0.54b0,<1",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
@@ -300,7 +301,7 @@ optional-dependencies.opensandbox = [
   "opensandbox>=0.1.15,<0.2", # For OpenSandbox remote sandbox.
 ]
 optional-dependencies.otel-gcp = [
-  "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
+  "opentelemetry-instrumentation-google-genai>=0.7b1,<2",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
   "opentelemetry-instrumentation-httpx>=0.54b0,<1",
 ]
@@ -376,7 +377,7 @@ optional-dependencies.test = [
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
   "opentelemetry-exporter-otlp-proto-http>=1.36",
-  "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
+  "opentelemetry-instrumentation-google-genai>=0.7b1,<1",            # The telemetry functional goldens are recorded against 0.x.
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
   "pandas>=2.2.3",
   "pillow>=10.3",
@@ -447,6 +448,10 @@ ignore-words-list = "hel,serie,strin,te,rouge,unparseable,re-use,re-used,lamda,a
 # fixtures, bundled JS/source maps, and the vendored CLI browser bundle are
 # generated or data files, not prose we own.
 skip = "*CHANGELOG.md,*.lock,*.ipynb,*.json,*.js,*.map,*/cli/browser/*,constraints-*.txt"
+
+[tool.pyproject-fmt]
+# Highest Python version that pyproject-fmt writes into the classifiers.
+max_supported_python = "3.15"
 
 [tool.mypy]
 mypy_path = [ "src" ]

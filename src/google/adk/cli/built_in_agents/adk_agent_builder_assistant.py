@@ -26,7 +26,7 @@ from typing import Union
 from google.adk.agents import LlmAgent
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.models import BaseLlm
-from google.adk.tools import FunctionTool
+from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 
 from .tools.cleanup_unused_files import cleanup_unused_files

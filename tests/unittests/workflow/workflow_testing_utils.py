@@ -31,10 +31,10 @@ from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.adk.workflow import BaseNode
 from google.adk.workflow._graph import RouteValue
-from google.adk.workflow.utils._workflow_hitl_utils import has_auth_request_function_call
-from google.adk.workflow.utils._workflow_hitl_utils import has_request_input_function_call
 from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
@@ -326,12 +326,28 @@ def simplify_events_with_node_and_agent_state(
 
 def get_request_input_events(events: list[Any]) -> list[Any]:
   """Returns a list of request input events from the given list of events."""
-  return [e for e in events if has_request_input_function_call(e)]
+  return [
+      e
+      for e in events
+      if isinstance(e, Event)
+      and any(
+          fc.name == REQUEST_INPUT_FUNCTION_CALL_NAME
+          for fc in e.get_function_calls()
+      )
+  ]
 
 
 def get_auth_request_events(events: list[Any]) -> list[Any]:
   """Returns a list of auth credential request events from the given list."""
-  return [e for e in events if has_auth_request_function_call(e)]
+  return [
+      e
+      for e in events
+      if isinstance(e, Event)
+      and any(
+          fc.name == REQUEST_EUC_FUNCTION_CALL_NAME
+          for fc in e.get_function_calls()
+      )
+  ]
 
 
 def get_output_events(events: list[Any], output: Any = None) -> list[Any]:

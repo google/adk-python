@@ -137,6 +137,11 @@ def is_artifact_ref(artifact: types.Part) -> bool:
   )
 
 
+_REWIND_TOMBSTONE = types.Part(
+    inline_data=types.Blob(mime_type="application/octet-stream", data=b"")
+)
+
+
 def _new_rewind_tombstone() -> types.Part:
   """Returns the part a session rewind saves to remove an artifact.
 
@@ -152,9 +157,7 @@ def _new_rewind_tombstone() -> types.Part:
   Returns:
       A new marker part, safe for the caller to store or modify.
   """
-  return types.Part(
-      inline_data=types.Blob(mime_type="application/octet-stream", data=b"")
-  )
+  return _REWIND_TOMBSTONE.model_copy(deep=True)
 
 
 def _is_rewind_tombstone(artifact: types.Part) -> bool:
@@ -167,7 +170,7 @@ def _is_rewind_tombstone(artifact: types.Part) -> bool:
       True if the part equals the marker from ``_new_rewind_tombstone``, False
       otherwise.
   """
-  return artifact == _new_rewind_tombstone()
+  return artifact == _REWIND_TOMBSTONE
 
 
 def validate_artifact_reference_scope(
@@ -282,7 +285,7 @@ def validate_path_segment(value: str, field_name: str) -> None:
       is an absolute path / starts with a slash, is drive-qualified, or contains
       slashes along with reserved path segments.
   """
-  if not value:
+  if not value or (isinstance(value, str) and not value.strip()):
     raise input_validation_error.InputValidationError(
         f"{field_name} must not be empty."
     )

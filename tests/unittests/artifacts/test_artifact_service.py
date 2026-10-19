@@ -994,6 +994,11 @@ async def test_list_keys_preserves_user_prefix(
   expected_keys = ["user:document.pdf", "user:image.png", "session_file.txt"]
   assert sorted(artifact_keys) == sorted(expected_keys)
 
+  user_only_keys = await artifact_service.list_artifact_keys(
+      app_name=app_name, user_id=user_id, session_id=None
+  )
+  assert sorted(user_only_keys) == ["user:document.pdf", "user:image.png"]
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -1192,6 +1197,39 @@ async def test_get_artifact_version_out_of_index(
       session_id=session_id,
       filename=filename,
       version=3,
+  )
+  # The version one past the last is out of range too.
+  assert not await artifact_service.get_artifact_version(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=1,
+  )
+  assert not await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=1,
+  )
+  first_version = await artifact_service.get_artifact_version(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=0,
+  )
+  assert first_version.version == 0
+  assert (
+      await artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=filename,
+          version=0,
+      )
+      == artifact
   )
 
 
@@ -2023,6 +2061,8 @@ INVALID_PATH_SEGMENT_CASES = (
     (".", "must not contain traversal segments"),
     ("null\x00byte", "must not contain null bytes"),
     ("", "must not be empty"),
+    ("   ", "must not be empty"),
+    ("\t\n", "must not be empty"),
     ("/etc/passwd", "must not be an absolute path or start with a slash"),
     ("/leading/slash", "must not be an absolute path or start with a slash"),
     (
@@ -4068,3 +4108,62 @@ async def test_list_artifact_keys_survives_metadata_path_shadowed_by_dir(
   # The shadowed artifact has no readable metadata, so it is listed by its
   # scope-relative path rather than dropped or raised on.
   assert keys == ["user:a"]
+
+
+@pytest.mark.parametrize("filename", ["report.txt", "user:report.txt"])
+@pytest.mark.parametrize("metadata_bytes", [b"\xff", b"{"])
+async def test_list_artifact_keys_survives_malformed_metadata(
+    tmp_path: Path, filename: str, metadata_bytes: bytes
+) -> None:
+  """Malformed metadata does not prevent listing other saved artifacts."""
+  service = FileArtifactService(root_dir=tmp_path)
+  await service.save_artifact(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename=filename,
+      artifact=types.Part(text="report"),
+  )
+  metadata_path = next(tmp_path.rglob("metadata.json"))
+  metadata_path.write_bytes(metadata_bytes)
+  await service.save_artifact(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="healthy.txt",
+      artifact=types.Part(text="healthy"),
+  )
+
+  keys = await service.list_artifact_keys(
+      app_name="app", user_id="user", session_id="session"
+  )
+
+  assert keys == sorted([filename, "healthy.txt"])
+
+
+@pytest.mark.parametrize("metadata_bytes", [b"\xff", b"{"])
+async def test_load_artifact_survives_malformed_metadata_on_binary_payload(
+    tmp_path: Path, metadata_bytes: bytes
+) -> None:
+  """Loading a binary artifact with unreadable metadata returns None."""
+  service = FileArtifactService(root_dir=tmp_path)
+  await service.save_artifact(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="blob.bin",
+      artifact=types.Part.from_bytes(
+          data=b"\xff", mime_type="application/octet-stream"
+      ),
+  )
+  metadata_path = next(tmp_path.rglob("metadata.json"))
+  metadata_path.write_bytes(metadata_bytes)
+
+  loaded = await service.load_artifact(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="blob.bin",
+  )
+
+  assert loaded is None

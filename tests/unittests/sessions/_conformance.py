@@ -140,13 +140,6 @@ BACKENDS = [
     _Backend(
         'redis',
         _make_redis,
-        divergences={
-            'test_append_event_to_unknown_session_raises_session_not_found': (
-                'Redis writes the session key unconditionally on append, so'
-                ' appending to a session it has never stored creates one'
-                ' instead of raising.'
-            ),
-        },
     ),
     _Backend('per_agent_database', _make_per_agent_database),
 ]

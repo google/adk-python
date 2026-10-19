@@ -126,6 +126,25 @@ class Invocation(EvalBaseModel):
   constructed, which for a model call is before the request is even sent.
   """
 
+  model_duration: Optional[float] = None
+  """Of `duration`, the seconds with at least one model call in flight.
+
+  Measured from the interval each model call occupied, with concurrent calls
+  counted once, so this is how long the turn spent awaiting a model rather
+  than the sum of how long each call took. Set under the same conditions as
+  `duration` and None otherwise.
+  """
+
+  tool_duration: Optional[float] = None
+  """Of `duration`, the seconds inside a tool but not awaiting a model.
+
+  Time a tool spent awaiting a model -- an `AgentTool` runs model calls inside
+  its own tool interval -- is excluded here and reported as `model_duration`
+  instead, so the two never double count. What is left of `duration` after both
+  is the framework's own time. Set under the same conditions as `duration` and
+  None otherwise.
+  """
+
   rubrics: Optional[list[Rubric]] = Field(
       default=None,
   )

@@ -303,6 +303,36 @@ async def test_run_cli_save_session(
 
 
 @pytest.mark.asyncio
+async def test_run_cli_save_session_raises_when_session_is_gone(
+    fake_agent, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """run_cli raises a clear error if the session vanished before saving."""
+  parent_dir, folder_name = fake_agent
+  responses = iter(["exit", "sess123"])
+  monkeypatch.setattr("builtins.input", lambda *_a, **_k: next(responses))
+
+  class _ForgetfulSessionService(InMemorySessionService):
+
+    async def get_session(self, **kwargs: Any) -> Session | None:
+      return None
+
+  monkeypatch.setattr(
+      cli,
+      "create_session_service_from_options",
+      lambda **_: _ForgetfulSessionService(),
+  )
+
+  with pytest.raises(ValueError, match="not found"):
+    await cli.run_cli(
+        agent_parent_dir=str(parent_dir),
+        agent_folder_name=folder_name,
+        input_file=None,
+        saved_session_file=None,
+        save_session=True,
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_cli_resume_strips_internal_metadata_and_marks_events_restored(
     fake_agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

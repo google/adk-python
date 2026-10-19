@@ -2249,6 +2249,130 @@ async def test_parallel_single_turn_nodes_isolate_tool_calls_and_responses(
   ] == [{'result': 'ack:TOKEN_B'}]
 
 
+@pytest.mark.parametrize('include_contents', ['none', 'default'])
+@pytest.mark.parametrize(
+    'branch_mode', ['shared_parent_branch', 'mixed_sub_branch']
+)
+@pytest.mark.asyncio
+async def test_parallel_single_turn_nodes_in_branches_do_not_anchor_on_sibling_reply(
+    request: pytest.FixtureRequest,
+    include_contents: str,
+    branch_mode: str,
+):
+  """Parallel single_turn nodes on shared or sub-branches do not anchor on a sibling's model reply."""
+  a_finished = _asyncio.Event()
+
+  async def after_a(callback_context):
+    del callback_context
+    a_finished.set()
+
+  async def wait_for_a_finish(callback_context):
+    del callback_context
+    await _asyncio.wait_for(a_finished.wait(), timeout=5.0)
+    await _asyncio.sleep(0)
+
+  model_a = _testing_utils.MockModel.create(responses=['REPLY_FROM_A'])
+  model_b = _testing_utils.MockModel.create(responses=['REPLY_FROM_B'])
+  worker_a = LlmAgent(
+      name='worker_a',
+      model=model_a,
+      instruction='Worker A.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents=include_contents,
+      after_agent_callback=after_a,
+  )
+  worker_b = LlmAgent(
+      name='worker_b',
+      model=model_b,
+      instruction='Worker B.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents=include_contents,
+      before_agent_callback=wait_for_a_finish,
+  )
+
+  @node(rerun_on_resume=True)
+  async def fanout(ctx: Context) -> dict[str, Any]:
+    if branch_mode == 'shared_parent_branch':
+      res_a, res_b = await _asyncio.gather(
+          ctx.run_node(
+              worker_a,
+              node_input='SECRET_FOR_A',
+              run_id='a',
+              override_branch='parent@1',
+          ),
+          ctx.run_node(
+              worker_b,
+              node_input='SECRET_FOR_B',
+              run_id='b',
+              override_branch='parent@1',
+          ),
+      )
+    else:
+      res_a, res_b = await _asyncio.gather(
+          ctx.run_node(
+              worker_a,
+              node_input='SECRET_FOR_A',
+              run_id='a',
+              use_sub_branch=False,
+          ),
+          ctx.run_node(
+              worker_b,
+              node_input='SECRET_FOR_B',
+              run_id='b',
+              use_sub_branch=True,
+          ),
+      )
+    return {'a': res_a, 'b': res_b}
+
+  wf = Workflow(name='parallel_branch_wf', edges=[(START, fanout)])
+  runner = _new_workflow_runner(wf, request.function.__name__)
+
+  await runner.run_async(_testing_utils.get_user_content('root prompt'))
+
+  assert len(model_b.requests) == 1
+  texts_b = [p.text for p in _request_parts(model_b.requests[0]) if p.text]
+  assert any('SECRET_FOR_B' in t for t in texts_b)
+  assert not any('SECRET_FOR_A' in t for t in texts_b)
+  assert not any('REPLY_FROM_A' in t for t in texts_b)
+
+
+@pytest.mark.asyncio
+async def test_single_turn_sub_agent_with_default_contents_sees_parent_history(
+    request: pytest.FixtureRequest,
+):
+  """A single_turn sub-agent with include_contents='default' sees parent chat history."""
+  verifier_model = _testing_utils.MockModel.create(responses=['verified'])
+  verifier = LlmAgent(
+      name='verifier',
+      description='Verifies drafts.',
+      model=verifier_model,
+      instruction='Verify draft.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents='default',
+  )
+  call_verifier = types.Part.from_function_call(
+      name='verifier', args={'request': 'check draft'}
+  )
+  editor_model = _testing_utils.MockModel.create(
+      responses=['PARENT_DRAFT_V1', call_verifier, 'done']
+  )
+  editor = LlmAgent(
+      name='editor',
+      model=editor_model,
+      instruction='Edit draft.',
+      sub_agents=[verifier],
+  )
+  runner = _new_workflow_runner(editor, request.function.__name__)
+
+  await runner.run_async(_testing_utils.get_user_content('write draft'))
+  await runner.run_async(_testing_utils.get_user_content('now verify it'))
+
+  assert len(verifier_model.requests) == 1
+  texts = [p.text for p in _request_parts(verifier_model.requests[0]) if p.text]
+  assert any('PARENT_DRAFT_V1' in t for t in texts)
+  assert any('check draft' in t for t in texts)
+
+
 @pytest.mark.asyncio
 async def test_sequential_single_turn_nodes_receive_predecessor_only_via_node_input(
     request: pytest.FixtureRequest,
@@ -2290,6 +2414,86 @@ async def test_sequential_single_turn_nodes_receive_predecessor_only_via_node_in
   texts_b = [p.text for p in _request_parts(model_b.requests[0]) if p.text]
   assert any('EXPLICIT_NODE_INPUT_FOR_B' in t for t in texts_b)
   assert not any('STEP_A_HISTORY_ONLY_REPLY' in t for t in texts_b)
+
+
+@pytest.mark.parametrize('use_sub_branch', [True, False])
+@pytest.mark.asyncio
+async def test_single_turn_child_node_sees_ancestor_history_with_or_without_sub_branch(
+    request: pytest.FixtureRequest,
+    use_sub_branch: bool,
+):
+  """A single_turn child node with include_contents='default' sees ancestor node history whether branched or unbranched, while excluding sibling node events."""
+  sibling_finished = _asyncio.Event()
+
+  model_sibling = _testing_utils.MockModel.create(
+      responses=['SIBLING_ONLY_REPLY']
+  )
+  model_target = _testing_utils.MockModel.create(responses=['TARGET_REPLY'])
+
+  async def after_sibling(callback_context):
+    del callback_context
+    sibling_finished.set()
+
+  async def wait_for_sibling(callback_context):
+    del callback_context
+    await _asyncio.wait_for(sibling_finished.wait(), timeout=5.0)
+    await _asyncio.sleep(0)
+
+  sibling_agent = LlmAgent(
+      name='sibling_agent',
+      model=model_sibling,
+      instruction='Sibling.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents='default',
+      after_agent_callback=after_sibling,
+  )
+  target_agent = LlmAgent(
+      name='target_agent',
+      model=model_target,
+      instruction='Target.',
+      mode=AgentMode.SINGLE_TURN,
+      include_contents='default',
+      before_agent_callback=wait_for_sibling,
+  )
+
+  @node(rerun_on_resume=True)
+  async def parent_node(ctx: Context):
+    yield Event(
+        author='parent_node',
+        content=types.Content(
+            role='model',
+            parts=[types.Part.from_text(text='ANCESTOR_CONTEXT_FACT')],
+        ),
+    )
+    res_a, res_b = await _asyncio.gather(
+        ctx.run_node(
+            sibling_agent,
+            node_input='SIBLING_INPUT',
+            run_id='a',
+            use_sub_branch=use_sub_branch,
+        ),
+        ctx.run_node(
+            target_agent,
+            node_input='TARGET_INPUT',
+            run_id='b',
+            use_sub_branch=use_sub_branch,
+        ),
+    )
+    yield {'a': res_a, 'b': res_b}
+
+  wf = Workflow(name='ancestor_consistency_wf', edges=[(START, parent_node)])
+  runner = _new_workflow_runner(wf, request.function.__name__)
+
+  await runner.run_async(_testing_utils.get_user_content('root prompt'))
+
+  assert len(model_target.requests) == 1
+  texts_target = [
+      p.text for p in _request_parts(model_target.requests[0]) if p.text
+  ]
+  assert any('ANCESTOR_CONTEXT_FACT' in t for t in texts_target)
+  assert any('TARGET_INPUT' in t for t in texts_target)
+  assert not any('SIBLING_INPUT' in t for t in texts_target)
+  assert not any('SIBLING_ONLY_REPLY' in t for t in texts_target)
 
 
 @pytest.mark.asyncio

@@ -84,6 +84,31 @@ async def test_base_agent_as_node_run():
   assert ctx.event_author == 'sub_agent'
 
 
+class _PresetPathAgent(BaseAgent):
+
+  async def _run_async_impl(
+      self, ctx: BaseInvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    yield Event(author=self.name, node_path='custom/existing@1')
+
+
+@pytest.mark.asyncio
+async def test_base_agent_as_node_keeps_preset_node_path():
+  """An agent's own event that already has a node path keeps it."""
+  agent = _PresetPathAgent(name='preset_agent')
+  session = Session(app_name='test', user_id='user', id='session')
+  ic = BaseInvocationContext(
+      invocation_id='inv',
+      session=session,
+      session_service=InMemorySessionService(),
+  )
+  ctx = Context(ic, node_path='wf')
+
+  events = [e async for e in agent.run(ctx=ctx, node_input=None)]
+
+  assert events[0].node_info.path == 'custom/existing@1'
+
+
 @pytest.mark.asyncio
 async def test_run_async_with_agent_nodes(request: pytest.FixtureRequest):
   """BaseAgent nodes emit content events through the workflow."""
