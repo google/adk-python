@@ -85,6 +85,9 @@ class ApiParameter(BaseModel):
   type_value: object = Field(default=None, init_var=False)
   type_hint: str | None = Field(default=None, init_var=False)
   required: bool = False
+  # OpenAPI serialization of the value; None means the location's default.
+  style: str | None = None
+  explode: bool | None = None
 
   def model_post_init(self, _: Any) -> None:
     if not self.py_name:
