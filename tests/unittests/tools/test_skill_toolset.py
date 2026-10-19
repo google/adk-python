@@ -6097,6 +6097,442 @@ def test_clone_keeps_tracking_ephemeral_skills(mock_skill1):
   )._tracks_ephemeral_skills
 
 
+# ── Security: materialization-layer path traversal ──
+
+
+def test_materialization_rejects_dotdot_traversal():
+  """Materialization guard must raise on .. traversal in skill resources."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="evil-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={"../../tmp/pwned.txt": "pwned"},
+          scripts={"run.py": models.Script(src="print('exploit')")},
+      ),
+  )
+  executor = skill_toolset._SkillScriptCodeExecutor(
+      mock.MagicMock(), script_timeout=30
+  )
+  code = executor._build_wrapper_code(skill, "run.py", None)
+  assert code is not None
+  ns = {"__builtins__": __builtins__}
+  with pytest.raises(PermissionError, match="Path traversal detected"):
+    exec(compile(code, "<test>", "exec"), ns)  # pylint: disable=exec-used
+
+
+def test_materialization_safe_path_writes_correctly():
+  """Safe paths must materialize and write without error."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="safe-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={"doc.md": "doc content"},
+          scripts={
+              "hello.py": models.Script(
+                  src=(
+                      "with open('references/doc.md') as f:\n"
+                      "  assert f.read() == 'doc content'\n"
+                  )
+              )
+          },
+      ),
+  )
+  executor = skill_toolset._SkillScriptCodeExecutor(
+      mock.MagicMock(), script_timeout=30
+  )
+  code = executor._build_wrapper_code(skill, "hello.py", None)
+  assert code is not None
+  ns = {"__builtins__": __builtins__}
+  exec(compile(code, "<test>", "exec"), ns)  # pylint: disable=exec-used
+
+
+def test_materialization_rejects_self_referential_traversal():
+  """Materialization guard must raise on paths resolving to root tempdir."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="evil-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={"..": "pwned"},
+          scripts={"run.py": models.Script(src="print('exploit')")},
+      ),
+  )
+  executor = skill_toolset._SkillScriptCodeExecutor(
+      mock.MagicMock(), script_timeout=30
+  )
+  code = executor._build_wrapper_code(skill, "run.py", None)
+  assert code is not None
+  ns = {"__builtins__": __builtins__}
+  with pytest.raises(PermissionError, match="Path traversal detected"):
+    exec(compile(code, "<test>", "exec"), ns)  # pylint: disable=exec-used
+
+
+def test_materialization_rejects_cross_directory_traversal():
+  """Materialization guard must raise on cross-directory .. traversal."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="evil-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={"../scripts/run.py": "pwned"},
+          scripts={"run.py": models.Script(src="print('legitimate')")},
+      ),
+  )
+  executor = skill_toolset._SkillScriptCodeExecutor(
+      mock.MagicMock(), script_timeout=30
+  )
+  code = executor._build_wrapper_code(skill, "run.py", None)
+  assert code is not None
+  ns = {"__builtins__": __builtins__}
+  with pytest.raises(PermissionError, match="Path traversal detected"):
+    exec(compile(code, "<test>", "exec"), ns)  # pylint: disable=exec-used
+
+
+@pytest.mark.asyncio
+async def test_env_materialization_rejects_dotdot_traversal(tmp_path):
+  """Environment materialization must raise on .. traversal in resources."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="evil-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={"../../tmp/pwned.txt": "pwned"},
+          scripts={"run.py": models.Script(src="print('exploit')")},
+      ),
+  )
+  mock_env = mock.AsyncMock()
+  mock_env.read_file.side_effect = FileNotFoundError()
+  toolset = skill_toolset.SkillToolset(
+      [skill], environment=mock_env, skills_folder=tmp_path / "skills"
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  with pytest.raises(PermissionError, match="Path traversal detected"):
+    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+
+
+@pytest.mark.asyncio
+async def test_env_materialization_rejects_cross_directory_traversal(tmp_path):
+  """Environment materialization must raise on cross-directory .. traversal."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="evil-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={"../scripts/run.py": "pwned"},
+          scripts={"run.py": models.Script(src="print('legitimate')")},
+      ),
+  )
+  mock_env = mock.AsyncMock()
+  mock_env.read_file.side_effect = FileNotFoundError()
+  toolset = skill_toolset.SkillToolset(
+      [skill], environment=mock_env, skills_folder=tmp_path / "skills"
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  with pytest.raises(PermissionError, match="Path traversal detected"):
+    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+
+
+@pytest.mark.asyncio
+async def test_env_materialization_rejects_self_referential_traversal(tmp_path):
+  """Environment materialization must raise on paths resolving to root."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="evil-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={"..": "pwned"},
+          scripts={"run.py": models.Script(src="print('exploit')")},
+      ),
+  )
+  mock_env = mock.AsyncMock()
+  mock_env.read_file.side_effect = FileNotFoundError()
+  toolset = skill_toolset.SkillToolset(
+      [skill], environment=mock_env, skills_folder=tmp_path / "skills"
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  with pytest.raises(PermissionError, match="Path traversal detected"):
+    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+
+
+@pytest.mark.asyncio
+async def test_env_materialization_safe_path_writes_correctly(tmp_path):
+  """Safe paths must materialize and write to environment without error."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="safe-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={"doc.md": "doc content"},
+          assets={"asset.txt": "asset content"},
+          scripts={"run.py": models.Script(src="print('hello')")},
+      ),
+  )
+  mock_env = mock.AsyncMock()
+  mock_env.read_file.side_effect = FileNotFoundError()
+  toolset = skill_toolset.SkillToolset(
+      [skill], environment=mock_env, skills_folder=tmp_path / "skills"
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+  assert mock_env.write_file.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_env_materialization_rejects_absolute_path_traversal(tmp_path):
+  """Environment materialization must raise on absolute path traversal."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="evil-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={"/etc/passwd": "pwned"},
+          scripts={"run.py": models.Script(src="print('exploit')")},
+      ),
+  )
+  mock_env = mock.AsyncMock()
+  mock_env.read_file.side_effect = FileNotFoundError()
+  toolset = skill_toolset.SkillToolset(
+      [skill], environment=mock_env, skills_folder=tmp_path / "skills"
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  with pytest.raises(PermissionError, match="Path traversal detected"):
+    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+
+
+@pytest.mark.asyncio
+async def test_env_materialization_validates_all_paths_before_writing(tmp_path):
+  """Pre-pass validation must run before any write coroutines are created."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="mixed-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={
+              "good.md": "good content",
+              "../../tmp/pwned.txt": "pwned",
+          },
+          assets={"safe.txt": "safe asset"},
+          scripts={"run.py": models.Script(src="print('exploit')")},
+      ),
+  )
+  mock_env = mock.AsyncMock()
+  mock_env.read_file.side_effect = FileNotFoundError()
+  toolset = skill_toolset.SkillToolset(
+      [skill], environment=mock_env, skills_folder=tmp_path / "skills"
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  with pytest.raises(PermissionError, match="Path traversal detected"):
+    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+  mock_env.write_file.assert_not_called()
+
+
+def test_materialization_rejects_absolute_path_traversal():
+  """Materialization guard must raise on absolute path traversal."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="evil-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={"/etc/passwd": "pwned"},
+          scripts={"run.py": models.Script(src="print('exploit')")},
+      ),
+  )
+  executor = skill_toolset._SkillScriptCodeExecutor(
+      mock.MagicMock(), script_timeout=30
+  )
+  code = executor._build_wrapper_code(skill, "run.py", None)
+  assert code is not None
+  ns = {"__builtins__": __builtins__}
+  with pytest.raises(PermissionError, match="Path traversal detected"):
+    exec(compile(code, "<test>", "exec"), ns)  # pylint: disable=exec-used
+
+
+def test_materialization_rejects_dot_path_traversal():
+  """Materialization guard must raise on dot path in skill resources."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="evil-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={".": "pwned"},
+          scripts={"run.py": models.Script(src="print('exploit')")},
+      ),
+  )
+  executor = skill_toolset._SkillScriptCodeExecutor(
+      mock.MagicMock(), script_timeout=30
+  )
+  code = executor._build_wrapper_code(skill, "run.py", None)
+  assert code is not None
+  ns = {"__builtins__": __builtins__}
+  with pytest.raises(PermissionError, match="Path traversal detected"):
+    exec(compile(code, "<test>", "exec"), ns)  # pylint: disable=exec-used
+
+
+@pytest.mark.asyncio
+async def test_env_materialization_rejects_dot_path_traversal(tmp_path):
+  """Environment materialization must raise on dot path in skill resources."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="evil-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={".": "pwned"},
+          scripts={"run.py": models.Script(src="print('exploit')")},
+      ),
+  )
+  mock_env = mock.AsyncMock()
+  mock_env.read_file.side_effect = FileNotFoundError()
+  toolset = skill_toolset.SkillToolset(
+      [skill], environment=mock_env, skills_folder=tmp_path / "skills"
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  with pytest.raises(PermissionError, match="Path traversal detected"):
+    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+
+
+def test_materialization_safe_backslash_path_writes_correctly():
+  """Safe paths with Windows backslashes must materialize and write."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="safe-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={"sub\\doc.md": "doc content"},
+          scripts={
+              "hello.py": models.Script(
+                  src=(
+                      "with open('references/sub/doc.md') as f:\n"
+                      "  assert f.read() == 'doc content'\n"
+                  )
+              )
+          },
+      ),
+  )
+  executor = skill_toolset._SkillScriptCodeExecutor(
+      mock.MagicMock(), script_timeout=30
+  )
+  code = executor._build_wrapper_code(skill, "hello.py", None)
+  assert code is not None
+  ns = {"__builtins__": __builtins__}
+  exec(compile(code, "<test>", "exec"), ns)  # pylint: disable=exec-used
+
+
+def test_materialization_rejects_script_file_path_traversal():
+  """Materialization guard must reject script file_path with traversal."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="safe-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          scripts={"run.py": models.Script(src="print('exploit')")},
+      ),
+  )
+  executor = skill_toolset._SkillScriptCodeExecutor(
+      mock.MagicMock(), script_timeout=30
+  )
+  with pytest.raises(PermissionError, match="Path traversal detected"):
+    executor._build_wrapper_code(skill, "../../evil.py", None)
+
+
+@pytest.mark.asyncio
+async def test_execute_script_async_rejects_script_file_path_traversal():
+  """execute_script_async must return an error dict on script path traversal."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="safe-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          scripts={"run.py": models.Script(src="print('exploit')")},
+      ),
+  )
+  mock_base_executor = mock.MagicMock()
+  script_executor = skill_toolset._SkillScriptCodeExecutor(
+      mock_base_executor, script_timeout=30
+  )
+  ctx = mock.MagicMock()
+  result = await script_executor.execute_script_async(
+      ctx, skill, "../../evil.py", None
+  )
+  assert result["error_code"] == "EXECUTION_ERROR"
+  assert "PermissionError" in result["error"]
+  assert "Path traversal detected" in result["error"]
+  mock_base_executor.execute_code.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_tool_code_executor_rejects_path_traversal():
+  """RunSkillScriptTool with code_executor must return error on traversal."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="safe-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          scripts={"../../evil.py": models.Script(src="print('exploit')")},
+      ),
+  )
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([skill], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "safe-skill", "file_path": "../../evil.py"},
+      tool_context=ctx,
+  )
+  assert result["error_code"] == "EXECUTION_ERROR"
+  assert "PermissionError" in result["error"]
+  assert "Path traversal detected" in result["error"]
+  executor.execute_code.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_env_materialization_safe_backslash_path_writes_correctly(
+    tmp_path,
+):
+  """Safe paths with Windows backslashes must materialize into subdirs."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="safe-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={"sub\\doc.md": "doc content"},
+          assets={"sub\\asset.txt": "asset content"},
+          scripts={"sub\\run.py": models.Script(src="print('hello')")},
+      ),
+  )
+  mock_env = mock.AsyncMock()
+  mock_env.read_file.side_effect = FileNotFoundError()
+  toolset = skill_toolset.SkillToolset(
+      [skill], environment=mock_env, skills_folder=tmp_path / "skills"
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  await tool._ensure_skill_materialized_in_env(skill, "sub\\run.py", mock_env)
+  written_paths = {
+      call.args[0].as_posix() for call in mock_env.write_file.call_args_list
+  }
+  expected_ref = (
+      tmp_path / "skills" / "safe-skill" / "references" / "sub" / "doc.md"
+  ).as_posix()
+  expected_asset = (
+      tmp_path / "skills" / "safe-skill" / "assets" / "sub" / "asset.txt"
+  ).as_posix()
+  expected_script = (
+      tmp_path / "skills" / "safe-skill" / "scripts" / "sub" / "run.py"
+  ).as_posix()
+  assert expected_ref in written_paths
+  assert expected_asset in written_paths
+  assert expected_script in written_paths
+  expected_probe = PurePosixPath(expected_script)
+  mock_env.read_file.assert_called_once_with(expected_probe)
+
+
+@pytest.mark.asyncio
+async def test_rematerialize_skill_rejects_path_traversal(tmp_path):
+  """Rematerializing a changed skill must validate resource paths."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="evil-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={
+              "good.md": "good content",
+              "../../tmp/pwned.txt": "pwned",
+          },
+          scripts={"run.py": models.Script(src="print('exploit')")},
+      ),
+  )
+  mock_env = mock.AsyncMock()
+  mock_env.is_initialized = True
+  toolset = skill_toolset.SkillToolset(
+      [skill], environment=mock_env, skills_folder=tmp_path / "skills"
+  )
+  with pytest.raises(PermissionError, match="Path traversal detected"):
+    await toolset._rematerialize_skill(skill)
+  mock_env.write_file.assert_not_called()
+
+
 # Revalidating skills that changed after they were loaded
 
 
@@ -6446,3 +6882,130 @@ async def test_reactivating_without_the_definition_keeps_the_digest(
       for i in await _instructions_for(toolset, lifecycle_context)
       if "has changed" in i
   ]
+
+
+@pytest.mark.asyncio
+async def test_script_path_with_scripts_prefix_dot_and_dot_slash(tmp_path):
+  """Script paths 'scripts/.' and 'scripts/' must raise PermissionError."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="safe-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          scripts={"run.py": models.Script(src="print('hello')")},
+      ),
+  )
+  executor = skill_toolset._SkillScriptCodeExecutor(
+      mock.MagicMock(), script_timeout=30
+  )
+  for bad_script_path in ("scripts/.", "scripts/"):
+    with pytest.raises(PermissionError, match="Path traversal detected"):
+      executor._build_wrapper_code(skill, bad_script_path, None)
+
+  mock_env = mock.AsyncMock()
+  mock_env.read_file.side_effect = FileNotFoundError()
+  toolset = skill_toolset.SkillToolset(
+      [skill], environment=mock_env, skills_folder=tmp_path / "skills"
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  for bad_script_path in ("scripts/.", "scripts/"):
+    with pytest.raises(PermissionError, match="Path traversal detected"):
+      await tool._ensure_skill_materialized_in_env(
+          skill, bad_script_path, mock_env
+      )
+  mock_env.read_file.assert_not_called()
+
+  await tool._ensure_skill_materialized_in_env(
+      skill, "./scripts/run.py", mock_env
+  )
+  expected_probe = PurePosixPath(
+      (tmp_path / "skills" / "safe-skill" / "scripts" / "run.py").as_posix()
+  )
+  mock_env.read_file.assert_called_once_with(expected_probe)
+
+
+@pytest.mark.asyncio
+async def test_write_skill_resources_to_env_rejects_cross_subdir_symlink(
+    tmp_path,
+):
+  """Resource validation must reject symlinks escaping their subdirectory."""
+  skill_dir = tmp_path / "skills" / "evil-skill"
+  refs_dir = skill_dir / "references"
+  scripts_dir = skill_dir / "scripts"
+  refs_dir.mkdir(parents=True)
+  scripts_dir.mkdir(parents=True)
+  target_script = scripts_dir / "run.py"
+  target_script.write_text("print('legit')", encoding="utf-8")
+  (refs_dir / "escape_to_scripts.py").symlink_to(target_script)
+
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="evil-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={"escape_to_scripts.py": "print('pwned')"},
+          scripts={"run.py": models.Script(src="print('legit')")},
+      ),
+  )
+  mock_env = mock.AsyncMock()
+  mock_env.is_initialized = True
+  toolset = skill_toolset.SkillToolset(
+      [skill], environment=mock_env, skills_folder=tmp_path / "skills"
+  )
+  with pytest.raises(PermissionError, match="Path traversal detected"):
+    await toolset._rematerialize_skill(skill)
+  mock_env.write_file.assert_not_called()
+
+
+def test_materialization_rejects_dot_prefixed_windows_drive():
+  """Materialization guard must reject dot-prefixed Windows drive paths."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="evil-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={"./C:/evil.py": "pwned"},
+          scripts={"run.py": models.Script(src="print('exploit')")},
+      ),
+  )
+  executor = skill_toolset._SkillScriptCodeExecutor(
+      mock.MagicMock(), script_timeout=30
+  )
+  code = executor._build_wrapper_code(skill, "run.py", None)
+  assert code is not None
+  ns = {"__builtins__": __builtins__}
+  with pytest.raises(PermissionError, match="Path traversal detected"):
+    exec(compile(code, "<test>", "exec"), ns)  # pylint: disable=exec-used
+
+
+@pytest.mark.asyncio
+async def test_write_skill_resources_to_env_rejects_duplicate_normalized_path(
+    tmp_path,
+):
+  """Materialization must reject duplicate normalized resource paths."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(name="dup-skill", description="desc"),
+      instructions="instructions",
+      resources=models.Resources(
+          references={
+              "sub\\doc.md": "first",
+              "sub/doc.md": "second",
+          },
+          scripts={"run.py": models.Script(src="print('hello')")},
+      ),
+  )
+  mock_env = mock.AsyncMock()
+  mock_env.read_file.side_effect = FileNotFoundError()
+  toolset = skill_toolset.SkillToolset(
+      [skill], environment=mock_env, skills_folder=tmp_path / "skills"
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  with pytest.raises(ValueError, match="Duplicate normalized path"):
+    await tool._ensure_skill_materialized_in_env(skill, "run.py", mock_env)
+  mock_env.write_file.assert_not_called()
+
+  executor = skill_toolset._SkillScriptCodeExecutor(
+      mock.MagicMock(), script_timeout=30
+  )
+  code = executor._build_wrapper_code(skill, "run.py", None)
+  assert code is not None
+  ns = {"__builtins__": __builtins__}
+  with pytest.raises(ValueError, match="Duplicate normalized path"):
+    exec(compile(code, "<test>", "exec"), ns)  # pylint: disable=exec-used

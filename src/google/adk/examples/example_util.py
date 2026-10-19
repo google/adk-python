@@ -18,14 +18,10 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
-from typing import TYPE_CHECKING
 from typing import Union
 
 from .base_example_provider import BaseExampleProvider
 from .example import Example
-
-if TYPE_CHECKING:
-  from ..sessions.session import Session
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -93,27 +89,6 @@ def convert_examples_to_text(
     examples_str += output
 
   return f"{_EXAMPLES_INTRO}{examples_str}{_EXAMPLES_END}"
-
-
-def _get_latest_message_from_user(session: "Session") -> str:
-  """Gets the latest message from the user.
-
-  Returns:
-    The latest message from the user. If not found, returns an empty string.
-  """
-  events = session.events
-  if not events:
-    return ""
-
-  event = events[-1]
-  if event.author == "user" and not event.get_function_responses():
-    content = event.content
-    if content is not None and content.parts and content.parts[0].text:
-      return content.parts[0].text
-    else:
-      logger.warning("No message from user for fetching example.")
-
-  return ""
 
 
 def build_example_si(

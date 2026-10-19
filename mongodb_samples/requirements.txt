@@ -1,0 +1,3 @@
+google-adk[mongodb]
+dnspython
+google-cloud-aiplatform[adk,agent_engines]

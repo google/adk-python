@@ -32,6 +32,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.registry import LLMRegistry
 from google.adk.planners.built_in_planner import BuiltInPlanner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools import discovery_engine_search_tool
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.enterprise_search_tool import EnterpriseWebSearchTool
 from google.adk.tools.function_tool import FunctionTool
@@ -616,6 +617,181 @@ class TestCanonicalTools:
     ):
       with pytest.raises(ImportError, match='google-adk\\[gcp\\]'):
         await agent.canonical_tools(ctx)
+
+  @mock.patch(
+      'google.auth.default',
+      mock.MagicMock(return_value=('credentials', 'project')),
+  )
+  async def test_handle_vais_with_other_tools_custom_name_description(
+      self,
+  ) -> None:
+    """Test VertexAiSearchTool forwards custom name and description."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            self._my_tool,
+            VertexAiSearchTool(
+                data_store_id='test_data_store_id',
+                bypass_multi_tools_limit=True,
+                name='custom_search',
+                description='Custom search description.',
+            ),
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 2
+    assert tools[0].name == '_my_tool'
+    assert tools[0].__class__.__name__ == 'FunctionTool'
+    assert tools[1].name == 'custom_search'
+    assert tools[1].description == 'Custom search description.'
+    assert tools[1].__class__.__name__ == 'DiscoveryEngineSearchTool'
+    llm_request = LlmRequest()
+    llm_request.append_tools(tools)
+    assert 'custom_search' in llm_request.tools_dict
+    assert llm_request.tools_dict['custom_search'] is tools[1]
+    assert llm_request.config.tools is not None
+    tool_cfg = llm_request.config.tools[0]
+    assert isinstance(tool_cfg, types.Tool)
+    assert tool_cfg.function_declarations is not None
+    declarations = {
+        d.name: d.description for d in tool_cfg.function_declarations
+    }
+    assert declarations.get('custom_search') == 'Custom search description.'
+
+  @mock.patch(
+      'google.auth.default',
+      mock.MagicMock(return_value=('credentials', 'project')),
+  )
+  async def test_handle_vais_with_other_tools_explicit_default_name(
+      self,
+  ) -> None:
+    """Explicit name='vertex_ai_search' is preserved when swapped."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            self._my_tool,
+            VertexAiSearchTool(
+                data_store_id='test_data_store_id',
+                bypass_multi_tools_limit=True,
+                name='vertex_ai_search',
+            ),
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 2
+    assert tools[1].name == 'vertex_ai_search'
+    assert tools[1].__class__.__name__ == 'DiscoveryEngineSearchTool'
+
+  @mock.patch(
+      'google.auth.default',
+      mock.MagicMock(return_value=('credentials', 'project')),
+  )
+  async def test_handle_vais_with_other_tools_custom_description_only(
+      self,
+  ) -> None:
+    """Test that custom description is forwarded when name is not provided."""
+    custom_desc = 'Search the internal knowledge base for product information.'
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            self._my_tool,
+            VertexAiSearchTool(
+                data_store_id='test_data_store_id',
+                bypass_multi_tools_limit=True,
+                description=custom_desc,
+            ),
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 2
+    assert tools[0].name == '_my_tool'
+    assert tools[1].name == 'discovery_engine_search'
+    assert tools[1].description == custom_desc
+    assert tools[1].__class__.__name__ == 'DiscoveryEngineSearchTool'
+    llm_request = LlmRequest()
+    llm_request.append_tools(tools)
+    assert 'discovery_engine_search' in llm_request.tools_dict
+    assert llm_request.tools_dict['discovery_engine_search'] is tools[1]
+    assert llm_request.config.tools is not None
+    tool_cfg = llm_request.config.tools[0]
+    assert isinstance(tool_cfg, types.Tool)
+    assert tool_cfg.function_declarations is not None
+    declarations = {
+        d.name: d.description for d in tool_cfg.function_declarations
+    }
+    assert declarations.get('discovery_engine_search') == custom_desc
+
+  @mock.patch(
+      'google.auth.default',
+      mock.MagicMock(return_value=('credentials', 'project')),
+  )
+  async def test_handle_vais_with_other_tools_preserves_optional_fields(
+      self,
+  ) -> None:
+    """Test optional VertexAiSearchTool fields are forwarded on swap."""
+    data_store_specs = [
+        types.VertexAISearchDataStoreSpec(data_store='test_data_store')
+    ]
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            self._my_tool,
+            VertexAiSearchTool(
+                search_engine_id='test_search_engine_id',
+                data_store_specs=data_store_specs,
+                filter='test_filter',
+                max_results=5,
+                bypass_multi_tools_limit=True,
+            ),
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 2
+    assert isinstance(
+        tools[1], discovery_engine_search_tool.DiscoveryEngineSearchTool
+    )
+    assert (
+        tools[1]._serving_config
+        == 'test_search_engine_id/servingConfigs/default_config'
+    )
+    assert tools[1]._search_engine_id == 'test_search_engine_id'
+    assert tools[1]._data_store_specs == data_store_specs
+    assert tools[1]._filter == 'test_filter'
+    assert tools[1]._max_results == 5
+
+  async def test_handle_vais_no_bypass_custom_name_description(self) -> None:
+    """Custom name and description set BaseTool fields when bypass=False."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            VertexAiSearchTool(
+                data_store_id='test_data_store_id',
+                bypass_multi_tools_limit=False,
+                name='custom_search',
+                description='Custom search description.',
+            ),
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 1
+    assert tools[0].name == 'custom_search'
+    assert tools[0].description == 'Custom search description.'
+    assert tools[0].__class__.__name__ == 'VertexAiSearchTool'
 
   async def test_handle_vais_with_other_tools_no_bypass(self):
     """Test that VertexAiSearchTool is not replaced."""
@@ -1205,3 +1381,35 @@ async def test_canonical_live_model_async_matches_the_property():
   assert (
       await agent.canonical_live_model_async(ctx) is agent.canonical_live_model
   )
+
+
+def test_llm_agent_iter_static_children_sub_agents_and_node_tools():
+  """LlmAgent._iter_static_children yields sub-agents and NodeTool/BaseNode tools."""
+  from google.adk.tools.agent_tool import AgentTool
+  from google.adk.workflow import BaseNode
+  from google.adk.workflow import START
+  from google.adk.workflow import Workflow
+
+  sub_agent = LlmAgent(name='sub')
+  wf_as_tool = Workflow(
+      name='tool_wf',
+      input_schema=str,
+      edges=[(START, BaseNode(name='wf_node'))],
+  )
+  agent_tool_agent = LlmAgent(name='standalone_agent')
+  agent_tool = AgentTool(agent=agent_tool_agent)
+  standalone_node = BaseNode(name='appended_node')
+
+  def my_tool():
+    pass
+
+  parent = LlmAgent(
+      name='parent',
+      sub_agents=[sub_agent],
+      tools=[wf_as_tool, agent_tool, my_tool],
+  )
+  parent.tools.append(standalone_node)
+
+  children = list(parent._iter_static_children())
+  assert [c.name for c in children] == ['sub', 'tool_wf', 'appended_node']
+  assert agent_tool_agent not in children

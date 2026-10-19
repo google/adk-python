@@ -89,6 +89,10 @@ from ..evaluation.eval_metrics import EvalStatus
 from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
+from ..sessions.session import Session
+from ..telemetry._web_ui import ui_telemetry_from_otel
+from ..telemetry._web_ui import WebUiLogExporter
+from ..telemetry._web_ui import WebUiSpan
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
 from ._dev_deploy import register_dev_deploy_endpoints
@@ -108,6 +112,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
+_INITIAL_STATE_FILENAME = "initial_state.json"
 _PROCESS_TERMINATION_GRACE_SECONDS = 0.5
 _PROCESS_TERMINATOR_TIMEOUT_SECONDS = 1.0
 _TEST_OUTPUT_CHUNK_BYTES = 64 * 1024
@@ -534,6 +539,55 @@ class DevServer(ApiServer):
 
     return str(resolved_path)
 
+  def _load_initial_state(self, app_name: str) -> dict[str, Any]:
+    """Reads the optional ``initial_state.json`` next to an agent.
+
+    The file is read on every call, so edits apply to the next session without
+    restarting the server. A missing, unreadable or malformed file yields an
+    empty state rather than failing session creation.
+    """
+    try:
+      path = Path(self._get_agent_dir(app_name)) / _INITIAL_STATE_FILENAME
+    except HTTPException:
+      return {}
+    if not path.is_file():
+      return {}
+    try:
+      with open(path, "r", encoding="utf-8") as f:
+        initial_state = json.load(f)
+    except (OSError, ValueError) as e:
+      logger.warning("Ignoring %s: %s", path, e)
+      return {}
+    if not isinstance(initial_state, dict):
+      logger.warning("Ignoring %s: expected a JSON object", path)
+      return {}
+    return initial_state
+
+  async def _create_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str] = None,
+      state: Optional[dict[str, Any]] = None,
+  ) -> Session:
+    """Creates a session seeded from the agent's ``initial_state.json``.
+
+    State supplied by the caller takes precedence over the file's values, key by
+    key. Only explicit session creation is seeded; a session that the runner
+    creates itself (``--auto_create_session``) is not. ``app:`` and ``user:``
+    keys in the file follow the usual state scoping.
+    """
+    initial_state = self._load_initial_state(app_name)
+    if initial_state:
+      state = {**initial_state, **(state or {})}
+    return await super()._create_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        state=state,
+    )
+
   def _get_test_file_path(self, *, app_name: str, test_name: str) -> str:
     """Resolves a test file to a path inside the app's own tests directory.
 
@@ -581,6 +635,7 @@ class DevServer(ApiServer):
       app: FastAPI,
       trace_dict: dict[str, dict[str, AttributeValue]],
       memory_exporter: Any,
+      log_exporter: WebUiLogExporter,
       web_assets_dir: Optional[str] = None,
   ) -> None:
     """Register all development-only endpoints.
@@ -928,22 +983,13 @@ class DevServer(ApiServer):
         "/dev/apps/{app_name}/debug/trace/session/{session_id}",
         tags=[TAG_DEBUG],
     )
-    async def get_session_trace(app_name: str, session_id: str) -> Any:
+    async def get_session_trace(
+        app_name: str, session_id: str
+    ) -> list[WebUiSpan]:
       spans = memory_exporter.get_finished_spans(session_id)
       if not spans:
         return []
-      return [
-          {
-              "name": s.name,
-              "span_id": s.context.span_id,
-              "trace_id": s.context.trace_id,
-              "start_time": s.start_time,
-              "end_time": s.end_time,
-              "attributes": dict(s.attributes),
-              "parent_span_id": s.parent.span_id if s.parent else None,
-          }
-          for s in spans
-      ]
+      return ui_telemetry_from_otel(spans, log_exporter.get_finished_logs())
 
     if web_assets_dir:
       # TODO: remove this endpoint once build_graph_image is completed
@@ -1215,8 +1261,8 @@ class DevServer(ApiServer):
                 )
             )
         )
-      except ValueError as ve:
-        raise HTTPException(status_code=404, detail=str(ve)) from ve
+      except (NotFoundError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
       except ValidationError as ve:
         raise HTTPException(status_code=500, detail=str(ve)) from ve
 
@@ -1270,7 +1316,8 @@ class DevServer(ApiServer):
       session = await self.session_service.get_session(
           app_name=app_name, user_id=req.user_id, session_id=req.session_id
       )
-      assert session, "Session not found."
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
 
       # Convert the session data to eval invocations
       invocations = evals.convert_session_to_eval_invocations(session)
@@ -1295,6 +1342,8 @@ class DevServer(ApiServer):
         self.eval_sets_manager.add_eval_case(
             app_name, eval_set_id, new_eval_case
         )
+      except NotFoundError as nfe:
+        raise HTTPException(status_code=404, detail=str(nfe)) from nfe
       except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve)) from ve
 
@@ -1542,8 +1591,8 @@ class DevServer(ApiServer):
                 )
             )
         )
-      except ValueError as ve:
-        raise HTTPException(status_code=404, detail=str(ve)) from ve
+      except (NotFoundError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
       except ValidationError as ve:
         raise HTTPException(status_code=500, detail=str(ve)) from ve
 
@@ -1777,7 +1826,11 @@ class DevServer(ApiServer):
 
     web_assets_dir = kwargs.get("web_assets_dir", None)
     self._register_dev_endpoints(
-        app, self._trace_dict, self._memory_exporter, web_assets_dir
+        app,
+        self._trace_dict,
+        self._memory_exporter,
+        self._log_exporter,
+        web_assets_dir,
     )
 
     return app

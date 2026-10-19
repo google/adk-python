@@ -96,11 +96,15 @@ async def test_vector_search_auto_embedding_sends_query_text(mock_embed_query):
 
   assert result["status"] == "SUCCESS"
   mock_embed_query.assert_not_called()
-  stage = _aggregate_pipeline(client)[0]["$vectorSearch"]
+  pipeline = _aggregate_pipeline(client)
+  stage = pipeline[0]["$vectorSearch"]
   assert stage["query"] == {"text": _QUERY}
   assert "queryVector" not in stage
   # No model override: the index's own embedding model is used.
   assert "model" not in stage
+  assert pipeline[1:] == [
+      {"$addFields": {"search_score": {"$meta": "vectorSearchScore"}}}
+  ]
 
 
 async def test_vector_search_auto_embedding_with_model(mock_embed_query):
@@ -122,6 +126,30 @@ async def test_vector_search_auto_embedding_with_model(mock_embed_query):
   stage = _aggregate_pipeline(client)[0]["$vectorSearch"]
   assert stage["query"] == {"text": _QUERY}
   assert stage["model"] == "voyage-4"
+
+
+async def test_vector_search_query_vector_omits_auto_embedding_model(
+    mock_embed_query,
+):
+  """Default queryVector mode omits model even when configured in settings."""
+  client = _make_client()
+
+  await _search_tool.vector_search(
+      collection_name="test_coll",
+      query=_QUERY,
+      client=client,
+      database_name="test_db",
+      settings=MongoDbToolSettings(
+          use_mongodb_auto_embedding=False,
+          mongodb_auto_embedding_model="voyage-4",
+      ),
+  )
+
+  _assert_embedded(mock_embed_query, _QUERY, "text-embedding-005")
+  stage = _aggregate_pipeline(client)[0]["$vectorSearch"]
+  assert stage["queryVector"] == _EMBEDDING
+  assert "query" not in stage
+  assert "model" not in stage
 
 
 async def test_hybrid_search_auto_embedding_vector_arm(mock_embed_query):
@@ -147,6 +175,10 @@ async def test_hybrid_search_auto_embedding_vector_arm(mock_embed_query):
   # The full-text arm is unaffected by the embedding mode.
   full_text_arm = pipeline[0]["$rankFusion"]["input"]["pipelines"]["full_text"]
   assert full_text_arm[0]["$search"]["text"]["query"] == _QUERY
+  assert pipeline[1:] == [
+      {"$limit": 4},
+      {"$addFields": {"search_score": {"$meta": "score"}}},
+  ]
 
 
 async def test_vector_search_uses_settings_defaults(mock_embed_query):

@@ -1058,7 +1058,7 @@ def _stage_extra_packages(
     requested_extra_packages: Sequence[tuple[str, str]],
     build_context: str,
     *,
-    reserved_names: Sequence[str],
+    reserved_names: Sequence[str] = ('Dockerfile',),
 ) -> list[str]:
   """Copies extra packages into the container build context.
 
@@ -1089,7 +1089,8 @@ def _stage_extra_packages(
           f'extra_packages entry has a conflicting name: {base}'
       )
     if os.path.isdir(pkg_src):
-      shutil.copytree(pkg_src, dst, dirs_exist_ok=True)
+      ignore_func = _get_ignore_patterns_func(pkg_src)
+      shutil.copytree(pkg_src, dst, ignore=ignore_func, dirs_exist_ok=True)
     else:
       shutil.copy2(pkg_src, dst)
     staged_extra_packages.append(base)
@@ -1324,6 +1325,7 @@ def to_cloud_run(
     trigger_oidc_service_accounts: str | None = None,
     extra_gcloud_args: tuple[str, ...] | None = None,
     with_cloud_run_sandbox: bool = False,
+    extra_packages: list[str] | None = None,
 ) -> None:
   """Deploys an agent to Google Cloud Run (deprecated)."""
   warnings.warn(
@@ -1359,6 +1361,7 @@ def to_cloud_run(
       env=(),
       extra_gcloud_args=extra_gcloud_args,
       with_cloud_run_sandbox=with_cloud_run_sandbox,
+      extra_packages=extra_packages,
   )
 
 
@@ -2187,10 +2190,10 @@ spec:
     )
     click.echo('  - Applying Kubernetes manifest...')
     result = subprocess.run(
-        ['kubectl', 'apply', '-f', temp_folder],
+        ['kubectl', 'apply', '-f', deployment_yaml_path],
         check=True,
-        capture_output=True,  # <-- Add this
-        text=True,  # <-- Add this
+        capture_output=True,
+        text=True,
     )
 
     # 2. Print the captured output line by line

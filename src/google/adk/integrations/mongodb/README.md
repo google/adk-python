@@ -2,7 +2,7 @@
 
 This integration connects the Google Agent Development Kit (ADK) to MongoDB.
 It provides search tools agents can call, plus MongoDB-backed session
-persistence. It works with MongoDB Atlas and self-managed MongoDB 8.0+
+persistence. It works with MongoDB Atlas and self-managed MongoDB 8.2+
 deployments.
 
 ## Features
@@ -42,8 +42,8 @@ pip install "pymongo>=4.9,<5"
 
 | Component | Requirement |
 | :--- | :--- |
-| `mongodb_vector_search` | A **vector search index** on the collection (MongoDB Atlas or MongoDB 8.0+). |
-| `mongodb_hybrid_search` | A **vector search index** and a **full-text search index** on the collection, and a deployment that supports `$rankFusion` (MongoDB Atlas or MongoDB 8.0+). |
+| `mongodb_vector_search` | A **vector search index** on the collection, and a deployment that supports `$vectorSearch` (MongoDB Atlas 6.0.11+/7.0.2+, or self-managed MongoDB 8.2+). |
+| `mongodb_hybrid_search` | A **vector search index** and a **full-text search index** on the collection, and a deployment that supports `$rankFusion` (MongoDB Atlas 8.0+). |
 | `MongoDbSessionService` | Any MongoDB deployment reachable by PyMongo (no search indexes needed). |
 
 ## Quick Start: Search Tools
@@ -93,7 +93,7 @@ are supported, selected with `MongoDbToolSettings.use_mongodb_auto_embedding`:
 | Mode | Flag | How it works | Requirements |
 | :--- | :--- | :--- | :--- |
 | **Google embedding models** (default) | `use_mongodb_auto_embedding=False` | The toolset embeds the query through the genai client using `vertex_ai_embedding_model_name` (default `text-embedding-005`) and sends the vector as `queryVector`. | Google credentials for the embedding API; stored document embeddings produced by the same model. |
-| **MongoDB Automated Embedding** (Atlas Preview) | `use_mongodb_auto_embedding=True` | The raw query text goes to `$vectorSearch` as `query.text`, and Atlas generates the embedding with the Voyage AI model configured on the index. The genai client is never called. | Atlas deployment; the searched field indexed as the `autoEmbed` type. Optionally set `mongodb_auto_embedding_model` (e.g. `"voyage-4"`) to override the index's model per query. |
+| **MongoDB Automated Embedding** (Preview) | `use_mongodb_auto_embedding=True` | The raw query text goes to `$vectorSearch` as `query.text`, and MongoDB generates the embedding with the Voyage AI model configured on the index. The genai client is never called. | MongoDB Atlas or self-managed MongoDB 8.3+ with `mongot` 1.70.1+ and Voyage AI API keys configured on `mongot`; the searched field indexed as the `autoEmbed` type. Optionally set `mongodb_auto_embedding_model` (e.g. `"voyage-4"`) to override the index's model per query. |
 
 ```python
 from google.adk.integrations.mongodb import MongoDbToolset
@@ -111,14 +111,17 @@ auto_toolset = MongoDbToolset(
     database_name="products_db",
     settings=MongoDbToolSettings(
         use_mongodb_auto_embedding=True,
+        default_embedding_field="description",  # the autoEmbed text field
         mongodb_auto_embedding_model="voyage-4",  # optional
     ),
 )
 ```
 
-Automated Embedding is an Atlas
-[Preview feature](https://www.mongodb.com/docs/preview-features/) and is not
-available on self-managed deployments.
+Automated Embedding is a
+[Preview feature](https://www.mongodb.com/docs/preview-features/) available on
+MongoDB Atlas and on self-managed deployments running MongoDB 8.3+ with
+`mongot` 1.70.1+ and Voyage AI API keys
+[configured on `mongot`](https://www.mongodb.com/docs/search/self-managed/current/configuration/automated-embedding/).
 
 ## Quick Start: Session Service
 
@@ -242,7 +245,7 @@ Creating and dropping **search indexes** is an administrative action, not
 something the tools do at run time — run setup with a separate user holding
 the `createSearchIndexes`, `listSearchIndexes`, and `dropSearchIndexes`
 actions (on Atlas, the built-in `Project Data Access Admin` role covers
-this), and keep those privileges off the runtime user above.
+this), and keep those privileges off the runtime users above.
 
 ### The model chooses the collection
 
@@ -283,11 +286,13 @@ agent = Agent(
 | :--- | :--- | :--- | :--- |
 | `default_vector_index_name` | `str` | `"vector_index"` | Name of the vector search index to query. |
 | `default_search_index_name` | `str` | `"default"` | Name of the full-text search index used by hybrid search. |
-| `default_embedding_field` | `str` | `"embedding"` | Document field that stores embedding vectors. |
+| `default_embedding_field` | `str` | `"embedding"` | Document field searched by `$vectorSearch`: the field storing embedding vectors, or the `autoEmbed` text field when `use_mongodb_auto_embedding=True`. |
 | `default_limit` | `int` | `4` | Default number of documents returned by a search operation. |
 | `max_results` | `int` | `50` | Maximum number of documents a search operation may return. |
 | `default_num_candidates` | `int` | `100` | Default number of nearest neighbors considered by vector search. |
+| `timeout_ms` | `int` | `60000` | Time limit in milliseconds for a single search operation. |
 | `vertex_ai_embedding_model_name` | `str` | `"text-embedding-005"` | Google embedding model used for query vectors (default mode). |
+| `vertex_ai_embedding_output_dimensionality` | `int \| None` | `None` | Length of the query embedding, for models that support shortening it. |
 | `use_mongodb_auto_embedding` | `bool` | `False` | Send query text to Atlas and let it embed (Automated Embedding, Preview) instead of calling a Google model. |
 | `mongodb_auto_embedding_model` | `str \| None` | `None` | Voyage AI model for auto-embedded queries; defaults to the index's model. |
 

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import atexit
 import gc
 import json
@@ -1097,15 +1098,26 @@ def test_client_creation_registers_atexit_cleanup():
     mock_register.assert_called_once_with(local_client._atexit_callback)
 
 
+def _unregister_calls_for(mock_unregister, callback):
+  # Other clients can be garbage collected while the global function is patched.
+  return [
+      call
+      for call in mock_unregister.call_args_list
+      if call.args and call.args[0] is callback
+  ]
+
+
 def test_close_unregisters_atexit_cleanup():
   local_client = CompletionsHTTPClient(base_url='https://localhost')
   _ = local_client._client
   callback = local_client._atexit_callback
   with mock.patch(
-      'google.adk.models.apigee_llm.atexit.unregister'
+      'google.adk.models.apigee_llm.atexit.unregister', wraps=atexit.unregister
   ) as mock_unregister:
     local_client.close()
-    mock_unregister.assert_called_once_with(callback)
+    assert _unregister_calls_for(mock_unregister, callback) == [
+        mock.call(callback)
+    ]
 
 
 @pytest.mark.asyncio
@@ -1114,20 +1126,67 @@ async def test_aclose_unregisters_atexit_cleanup():
   _ = local_client._client
   callback = local_client._atexit_callback
   with mock.patch(
-      'google.adk.models.apigee_llm.atexit.unregister'
+      'google.adk.models.apigee_llm.atexit.unregister', wraps=atexit.unregister
   ) as mock_unregister:
     await local_client.aclose()
-    mock_unregister.assert_called_once_with(callback)
+    assert _unregister_calls_for(mock_unregister, callback) == [
+        mock.call(callback)
+    ]
   assert local_client._client.is_closed
+
+
+@pytest.mark.asyncio
+async def test_aclose_preserves_live_peer_during_other_client_collection():
+  """Closing one client preserves another client's pool and exit handler."""
+  live_peer = CompletionsHTTPClient(base_url='https://localhost')
+  live_httpx_client = live_peer._client
+  live_callback = live_peer._atexit_callback
+
+  old_client = CompletionsHTTPClient(base_url='https://localhost')
+  _ = old_client._client
+  old_callback = old_client._atexit_callback
+  old_client._cycle = old_client
+  old_ref = weakref.ref(old_client)
+
+  local_client = CompletionsHTTPClient(base_url='https://localhost')
+  _ = local_client._client
+  callback = local_client._atexit_callback
+  with mock.patch(
+      'google.adk.models.apigee_llm.atexit.unregister', wraps=atexit.unregister
+  ) as mock_unregister:
+    del old_client
+    gc.collect()
+    await local_client.aclose()
+
+    assert old_ref() is None
+    assert _unregister_calls_for(mock_unregister, old_callback) == [
+        mock.call(old_callback)
+    ]
+    assert _unregister_calls_for(mock_unregister, callback) == [
+        mock.call(callback)
+    ]
+    assert _unregister_calls_for(mock_unregister, live_callback) == []
+    assert not live_httpx_client.is_closed
+
+  await live_peer.aclose()
+  # Let the background aclose() task scheduled by old_client.__del__() during
+  # gc.collect() run before the test's event loop closes.
+  await asyncio.sleep(0)
 
 
 def test_close_without_client_does_not_touch_atexit():
   local_client = CompletionsHTTPClient(base_url='https://localhost')
   with mock.patch(
-      'google.adk.models.apigee_llm.atexit.unregister'
+      'google.adk.models.apigee_llm.atexit.unregister',
+      wraps=atexit.unregister,
   ) as mock_unregister:
     local_client.close()
-    mock_unregister.assert_not_called()
+    assert (
+        _unregister_calls_for(
+            mock_unregister, getattr(local_client, '_atexit_callback', None)
+        )
+        == []
+    )
 
 
 def test_atexit_registration_does_not_pin_client():
@@ -1166,13 +1225,18 @@ async def test_cleanup_client_retains_pending_task():
   local_client = CompletionsHTTPClient(base_url='https://localhost')
   httpx_client = local_client._client
 
-  apigee_llm._CLEANUP_TASKS.clear()
   CompletionsHTTPClient._cleanup_client(httpx_client)
 
   # While the aclose() task is pending it must be held in the module-level set
   # so it is not garbage collected before it completes.
-  assert len(apigee_llm._CLEANUP_TASKS) == 1
-  task = next(iter(apigee_llm._CLEANUP_TASKS))
+  client_tasks = [
+      t
+      for t in apigee_llm._CLEANUP_TASKS
+      if getattr(t.get_coro(), 'cr_frame', None) is not None
+      and t.get_coro().cr_frame.f_locals.get('self') is httpx_client
+  ]
+  assert len(client_tasks) == 1
+  task = client_tasks[0]
   await task
-  assert apigee_llm._CLEANUP_TASKS == set()
+  assert task not in apigee_llm._CLEANUP_TASKS
   assert httpx_client.is_closed

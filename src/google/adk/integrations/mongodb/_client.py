@@ -60,3 +60,38 @@ def get_mongo_client(
       driver=DriverInfo(name="adk-mongodb-tool", version=version.__version__),
       **options,
   )
+
+
+def drop_client_for_pickle(
+    state: dict[str, Any], *, owns_client: bool, owner: str
+) -> dict[str, Any]:
+  """Returns a picklable copy of an instance dict holding a MongoClient.
+
+  A MongoClient wraps sockets, locks and background threads, none of which
+  survive pickling — and pickling is how Agent Engine ships an app to the
+  runtime (cloudpickle). The client is dropped here and rebuilt from the
+  stored `_connection_string` when the object is restored on the destination.
+
+  Args:
+      state: The instance `__dict__` to make picklable.
+      owns_client: Whether the instance created its client from
+        `connection_string` (True) or received it via `mongo_client` (False).
+      owner: Class name used in the error message.
+
+  Returns:
+      A copy of `state` with `_client` set to None.
+
+  Raises:
+      TypeError: If the client was caller-provided (`mongo_client=`), because
+        it cannot be rebuilt on the destination.
+  """
+  if not owns_client:
+    raise TypeError(
+        f"{owner} cannot be pickled when constructed with `mongo_client`: a"
+        " caller-owned client cannot be rebuilt on the destination. Construct"
+        " it with `connection_string` when it must cross a pickle boundary"
+        " (e.g. Agent Engine deployments)."
+    )
+  state = dict(state)
+  state["_client"] = None
+  return state

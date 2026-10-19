@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from collections.abc import Iterator
 import logging
 from typing import Any
 
@@ -102,6 +103,11 @@ class _ParallelWorker(BaseNode):
       )
     self._node = built_node
     self.max_parallel_workers = max_parallel_workers
+
+  @override
+  def _iter_static_children(self) -> Iterator[BaseNode]:
+    """Yields the wrapped node."""
+    yield self._node
 
   @override
   async def _run_impl(

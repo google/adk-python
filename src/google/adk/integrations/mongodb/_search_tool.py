@@ -296,8 +296,9 @@ async def vector_search(
         the search. Higher values improve recall at the cost of latency.
       index_name (str): The name of the vector search index to query. Defaults
         to the toolset settings.
-      embedding_field (str): The document field that stores the embedding
-        vectors. Defaults to the toolset settings.
+      embedding_field (str): The document field searched by `$vectorSearch`
+        (the field storing embedding vectors, or the `autoEmbed` text field
+        when auto-embedding is enabled). Defaults to the toolset settings.
       output_fields (list[str]): The document fields to return in the results.
         By default all fields except the embedding vector are returned. The
         `_id` and the `search_score` are always included.
@@ -426,8 +427,9 @@ async def hybrid_search(
         Defaults to the toolset settings.
       search_index_name (str): The name of the full-text search index to
         query. Defaults to the toolset settings.
-      embedding_field (str): The document field that stores the embedding
-        vectors. Defaults to the toolset settings.
+      embedding_field (str): The document field searched by `$vectorSearch`
+        (the field storing embedding vectors, or the `autoEmbed` text field
+        when auto-embedding is enabled). Defaults to the toolset settings.
       vector_weight (float): The weight of the vector search ranking in the
         fused score. Defaults to 1.0. Must not be negative.
       text_weight (float): The weight of the full-text search ranking in the

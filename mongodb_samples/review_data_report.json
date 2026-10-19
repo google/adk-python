@@ -1,0 +1,314 @@
+{
+  "queries": [
+    {
+      "app": "mongodb_samples",
+      "query": "I need a cordless vacuum that handles pet hair",
+      "expected": "Robot Vacuum Pro",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Robot Vacuum Pro",
+        "Steam Mop Elite",
+        "Noise-Cancel Headphones"
+      ],
+      "ok": true,
+      "latency_s": 5.8
+    },
+    {
+      "app": "mongodb_samples",
+      "query": "Which espresso machine has a milk frother?",
+      "expected": "Espresso Maker Barista",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Espresso Maker Barista",
+        "Smart Speaker Mini",
+        "Air Fryer Max"
+      ],
+      "ok": true,
+      "latency_s": 5.5
+    },
+    {
+      "app": "mongodb_samples",
+      "query": "What do you have for camping in the rain?",
+      "expected": "Camping Tent 4P",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Camping Tent 4P",
+        "Hiking Backpack 40L",
+        "Dog Chew Toy Set"
+      ],
+      "ok": true,
+      "latency_s": 5.5
+    },
+    {
+      "app": "mongodb_samples",
+      "query": "Looking for headphones with long battery life",
+      "expected": "Noise-Cancel Headphones",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Noise-Cancel Headphones",
+        "Hiking Backpack 40L",
+        "Smart Speaker Mini"
+      ],
+      "ok": true,
+      "latency_s": 4.5
+    },
+    {
+      "app": "mongodb_samples",
+      "query": "What's a good gift for a cat owner?",
+      "expected": "Cat Scratching Tower",
+      "tools": [
+        "mongodb_vector_search"
+      ],
+      "top_hits": [
+        "Cat Scratching Tower",
+        "Robot Vacuum Pro",
+        "Dog Chew Toy Set"
+      ],
+      "ok": true,
+      "latency_s": 6.3
+    },
+    {
+      "app": "mongodb_samples",
+      "query": "Something lightweight for weekend hiking",
+      "expected": "Hiking Backpack 40L",
+      "tools": [
+        "mongodb_vector_search"
+      ],
+      "top_hits": [
+        "Hiking Backpack 40L",
+        "Camping Tent 4P",
+        "Steam Mop Elite"
+      ],
+      "ok": true,
+      "latency_s": 6.6
+    },
+    {
+      "app": "mongodb_samples",
+      "query": "Do you have kitchen appliances for frying without oil?",
+      "expected": "Air Fryer Max",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Steam Mop Elite",
+        "Robot Vacuum Pro",
+        "Dog Chew Toy Set"
+      ],
+      "ok": true,
+      "latency_s": 7.1
+    },
+    {
+      "app": "mongodb_samples",
+      "query": "What can clean hardwood floors without chemicals?",
+      "expected": "Steam Mop Elite",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Steam Mop Elite",
+        "Robot Vacuum Pro",
+        "Espresso Maker Barista"
+      ],
+      "ok": true,
+      "latency_s": 4.9
+    },
+    {
+      "app": "mongodb_samples",
+      "query": "I need a smart speaker for my kitchen",
+      "expected": "Smart Speaker Mini",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Smart Speaker Mini",
+        "Robot Vacuum Pro",
+        "Dog Chew Toy Set"
+      ],
+      "ok": true,
+      "latency_s": 6.3
+    },
+    {
+      "app": "mongodb_samples",
+      "query": "Toys for a dog that chews through everything",
+      "expected": "Dog Chew Toy Set",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Dog Chew Toy Set",
+        "Cat Scratching Tower",
+        "Robot Vacuum Pro"
+      ],
+      "ok": true,
+      "latency_s": 6.2
+    },
+    {
+      "app": "mongodb_samples_google",
+      "query": "I need a cordless vacuum that handles pet hair",
+      "expected": "Robot Vacuum Pro",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Robot Vacuum Pro",
+        "Steam Mop Elite",
+        "Cat Scratching Tower"
+      ],
+      "ok": true,
+      "latency_s": 5.5
+    },
+    {
+      "app": "mongodb_samples_google",
+      "query": "Which espresso machine has a milk frother?",
+      "expected": "Espresso Maker Barista",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Espresso Maker Barista",
+        "Smart Speaker Mini",
+        "Air Fryer Max"
+      ],
+      "ok": true,
+      "latency_s": 6.2
+    },
+    {
+      "app": "mongodb_samples_google",
+      "query": "What do you have for camping in the rain?",
+      "expected": "Camping Tent 4P",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Camping Tent 4P",
+        "Hiking Backpack 40L",
+        "Smart Speaker Mini"
+      ],
+      "ok": true,
+      "latency_s": 7.2
+    },
+    {
+      "app": "mongodb_samples_google",
+      "query": "Looking for headphones with long battery life",
+      "expected": "Noise-Cancel Headphones",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Noise-Cancel Headphones",
+        "Hiking Backpack 40L",
+        "Smart Speaker Mini"
+      ],
+      "ok": true,
+      "latency_s": 8.2
+    },
+    {
+      "app": "mongodb_samples_google",
+      "query": "What's a good gift for a cat owner?",
+      "expected": "Cat Scratching Tower",
+      "tools": [
+        "mongodb_vector_search"
+      ],
+      "top_hits": [
+        "Cat Scratching Tower",
+        "Dog Chew Toy Set",
+        "Robot Vacuum Pro"
+      ],
+      "ok": true,
+      "latency_s": 6.4
+    },
+    {
+      "app": "mongodb_samples_google",
+      "query": "Something lightweight for weekend hiking",
+      "expected": "Hiking Backpack 40L",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Hiking Backpack 40L",
+        "Steam Mop Elite",
+        "Dog Chew Toy Set"
+      ],
+      "ok": true,
+      "latency_s": 7.1
+    },
+    {
+      "app": "mongodb_samples_google",
+      "query": "Do you have kitchen appliances for frying without oil?",
+      "expected": "Air Fryer Max",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Steam Mop Elite",
+        "Robot Vacuum Pro",
+        "Dog Chew Toy Set"
+      ],
+      "ok": false,
+      "latency_s": 6.7
+    },
+    {
+      "app": "mongodb_samples_google",
+      "query": "What can clean hardwood floors without chemicals?",
+      "expected": "Steam Mop Elite",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Steam Mop Elite",
+        "Robot Vacuum Pro",
+        "Cat Scratching Tower"
+      ],
+      "ok": true,
+      "latency_s": 6.0
+    },
+    {
+      "app": "mongodb_samples_google",
+      "query": "I need a smart speaker for my kitchen",
+      "expected": "Smart Speaker Mini",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Smart Speaker Mini",
+        "Robot Vacuum Pro",
+        "Dog Chew Toy Set"
+      ],
+      "ok": true,
+      "latency_s": 5.0
+    },
+    {
+      "app": "mongodb_samples_google",
+      "query": "Toys for a dog that chews through everything",
+      "expected": "Dog Chew Toy Set",
+      "tools": [
+        "mongodb_hybrid_search"
+      ],
+      "top_hits": [
+        "Dog Chew Toy Set",
+        "Cat Scratching Tower",
+        "Air Fryer Max"
+      ],
+      "ok": true,
+      "latency_s": 5.6
+    }
+  ],
+  "collection_counts": {
+    "sessions": 29,
+    "events": 114,
+    "app_states": 3,
+    "user_states": 27,
+    "memories": 58,
+    "memories_vector": 43,
+    "products": 10,
+    "products_google": 10
+  }
+}

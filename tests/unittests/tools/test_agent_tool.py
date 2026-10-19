@@ -41,6 +41,7 @@ from google.adk.runners import Runner
 import google.adk.runners as _runners_module
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils.variant_utils import GoogleLLMVariant
@@ -1474,6 +1475,183 @@ async def test_run_async_skips_parts_without_text(empty_part: types.Part):
       [empty_part, types.Part(text='after')]
   )
   assert result == 'after'
+
+
+@mark.asyncio
+async def test_run_async_reports_error_when_wrapped_agent_pauses() -> None:
+  """A HITL pause (adk_request_confirmation) must not look like a success.
+
+  The nested run's session is thrown away once AgentTool.run_async returns,
+  so a pending long_running_tool_ids call can never be resumed. The caller
+  must see an explicit error instead of {"result": ""}, which would make its
+  model believe the pending action already completed.
+  """
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id='adk-123',
+                          name='adk_request_confirmation',
+                          args={},
+                      )
+                  )
+              ],
+          ),
+          long_running_tool_ids={'adk-123'},
+      ),
+  ])
+  assert result == (
+      "Error: agent 'inner_agent' stopped waiting on unresolved"
+      " long-running tool call(s) (pending call ids: ['adk-123']),"
+      ' which AgentTool cannot resume.'
+  )
+
+
+@mark.asyncio
+async def test_run_async_reports_error_when_llm_agent_requires_confirmation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """End-to-end confirmation pause in a wrapped LlmAgent surfaces an error."""
+  called = False
+
+  def delete_item(item_id: str) -> str:
+    nonlocal called
+    called = True
+    return f'deleted {item_id}'
+
+  inner_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(name='delete_item', args={'item_id': '42'}),
+      ]
+  )
+  inner_agent = LlmAgent(
+      name='inner_agent',
+      description='Deletes items',
+      model=inner_model,
+      tools=[FunctionTool(delete_item, require_confirmation=True)],
+  )
+  root_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(
+              name='inner_agent', args={'request': 'delete 42'}
+          ),
+          Part.from_text(
+              text='Could not delete item because confirmation is required.'
+          ),
+      ]
+  )
+  root_agent = LlmAgent(
+      name='root_agent',
+      model=root_model,
+      tools=[AgentTool(agent=inner_agent, skip_summarization=True)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  with caplog.at_level('WARNING', logger='google_adk'):
+    events = await runner.run_async('please delete 42')
+
+  assert not called
+  function_responses = [
+      fr
+      for event in events
+      for fr in event.get_function_responses()
+      if fr.name == 'inner_agent'
+  ]
+  assert len(function_responses) == 1
+  assert function_responses[0].response is not None
+  error_text = function_responses[0].response['result']
+  assert error_text.startswith(
+      "Error: agent 'inner_agent' stopped waiting on unresolved"
+      ' long-running tool call(s) (pending call ids: ['
+  )
+  assert events[-1].content and events[-1].content.parts
+  assert events[-1].content.parts[0].text == (
+      'Could not delete item because confirmation is required.'
+  )
+  assert any(
+      "Agent 'inner_agent' paused with unresolved long-running tool call(s)"
+      in record.getMessage()
+      for record in caplog.records
+  )
+
+
+@mark.asyncio
+async def test_run_async_returns_answer_after_long_running_tool_resolves() -> (
+    None
+):
+  """A long-running call answered in the same or a later event is not a pause.
+
+  An ordinary LongRunningFunctionTool that returns a truthy progress value
+  (e.g. {'status': 'pending'}) gets an auto-built function response in the
+  very same turn (see _caller.py), and A2A converters may aggregate both the
+  long-running call and its response onto a single Event. In both cases the
+  call is resolved before the run ends, so AgentTool must return the genuine
+  final answer instead of the error.
+  """
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name='slow_tool', args={}, id='adk-123'
+                      )
+                  )
+              ],
+          ),
+          long_running_tool_ids={'adk-123'},
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='slow_tool',
+                          response={'status': 'pending'},
+                          id='adk-123',
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name='slow_tool', args={}, id='adk-456'
+                      )
+                  ),
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='slow_tool',
+                          response={'status': 'done'},
+                          id='adk-456',
+                      )
+                  ),
+              ],
+          ),
+          long_running_tool_ids={'adk-456'},
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='final answer after pending tool')],
+          ),
+      ),
+  ])
+  assert result == 'final answer after pending tool'
 
 
 class TestAgentToolWithCompositeAgents:

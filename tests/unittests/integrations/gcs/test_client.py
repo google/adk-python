@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
 from unittest import mock
 
 from google.adk.integrations.gcs import client
 from google.auth.credentials import Credentials
+import google.cloud
 from google.cloud import storage
 import google.oauth2.credentials
+import pytest
 
 
 def test_get_gcs_client():
@@ -67,3 +70,14 @@ def test_get_gcs_client_returns_a_new_client_per_call():
 
     assert client1 is not client2
     assert MockGCSClient.call_count == 2
+
+
+def test_get_gcs_client_raises_descriptive_error_without_storage(monkeypatch):
+  """Test the missing-dependency error names the extra to install."""
+  # `from google.cloud import X` short-circuits on the parent attribute.
+  monkeypatch.delattr(google.cloud, "storage", raising=False)
+  monkeypatch.setitem(sys.modules, "google.cloud.storage", None)
+  mock_creds = mock.create_autospec(Credentials, instance=True)
+
+  with pytest.raises(ImportError, match=r"google-adk\[gcp\]"):
+    client.get_gcs_client(credentials=mock_creds)
