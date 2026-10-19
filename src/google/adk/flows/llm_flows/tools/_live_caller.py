@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING
 from google.genai import types
 
 from ....events.event import Event
-from ....live._active_streaming_tool import ActiveStreamingTool
+from ....live._active_background_tool import ActiveBackgroundTool
 from ....live.live_request_queue import LiveRequestQueue
 from ....tools.base_tool import BaseTool
 from ....tools.function_tool import FunctionTool
@@ -170,44 +170,44 @@ async def _process_function_live_helper(
     function_name = function_args['function_name']
     if not isinstance(function_name, str):
       raise ValueError('stop_streaming requires a string function_name.')
-    active_tasks = invocation_context.active_streaming_tools
-    active_task = (
-        active_tasks[function_name].task
-        if active_tasks and function_name in active_tasks
-        else None
-    )
-    task = active_task if active_task and not active_task.done() else None
+    # Parallel calls to the same tool each have an entry; stop them all.
+    running = {
+        entry.function_call_id: entry.task
+        for entry in (
+            invocation_context._active_background_tools or {}
+        ).values()
+        if entry.is_generator
+        and entry.tool_name == function_name
+        and entry.task is not None
+        and not entry.task.done()
+    }
 
-    if task:
-      task.cancel()
-      # Wait for the task to be cancelled
-      await asyncio.wait([task], timeout=1.0)
-      # Log the specific condition
-      if task.cancelled():
-        logging.info('Task %s was cancelled successfully', function_name)
-      elif task.done():
-        if exc := task.exception():
+    if running:
+      for task in running.values():
+        task.cancel()
+      # Wait for the tasks to be cancelled
+      await asyncio.wait(running.values(), timeout=1.0)
+      # A task cancelled before it first ran never reaches its own `finally`,
+      # so drop the entries of the finished tasks here.
+      active_tools = invocation_context._active_background_tools or {}
+      for function_call_id, task in running.items():
+        if task.done():
+          active_tools.pop(function_call_id, None)
+      for task in running.values():
+        if task.done() and not task.cancelled() and (exc := task.exception()):
           raise exc
-        logging.info('Task %s completed during cancellation', function_name)
+      if all(task.done() for task in running.values()):
+        logging.info('Tasks of %s were cancelled successfully', function_name)
+        function_response = {
+            'status': f'Successfully stopped streaming function {function_name}'
+        }
       else:
         logging.warning(
-            'Task %s might still be running after cancellation timeout',
+            'Tasks of %s might still be running after cancellation timeout',
             function_name,
         )
         function_response = {
             'status': f'The task is not cancelled yet for {function_name}.'
-        }
-      if not function_response:
-        # Clean up the reference
-        if (
-            invocation_context.active_streaming_tools
-            and function_name in invocation_context.active_streaming_tools
-        ):
-          invocation_context.active_streaming_tools[function_name].task = None
-          invocation_context.active_streaming_tools[function_name].stream = None
-
-        function_response = {
-            'status': f'Successfully stopped streaming function {function_name}'
         }
     else:
       function_response = {
@@ -219,6 +219,9 @@ async def _process_function_live_helper(
     # for streaming tool use case
     # we require the function to be an async generator function
     streaming_tool = cast('FunctionTool', tool)
+    function_call_id = _require_function_call_id(
+        tool_context.function_call_id, tool.name
+    )
 
     async def run_tool_and_update_queue(
         tool: FunctionTool,
@@ -227,6 +230,9 @@ async def _process_function_live_helper(
     ) -> None:
       live_request_queue = invocation_context.live_request_queue
       if live_request_queue is None:
+        (invocation_context._active_background_tools or {}).pop(
+            function_call_id, None
+        )
         raise RuntimeError('Streaming tools require a live request queue.')
       try:
         res = await _call_tool_async(
@@ -281,38 +287,40 @@ async def _process_function_live_helper(
             tool_context.function_call_id,
         )
         live_request_queue.send_content(error_content, partial=False)
+      finally:
+        (invocation_context._active_background_tools or {}).pop(
+            function_call_id, None
+        )
 
     # TODO: resolve `require_confirmation` before spawning the task. The
     # confirmation request is recorded on `tool_context.actions` by the
     # background task while the caller builds the response event, and nothing
     # orders the two, so the request can be missing from the emitted event.
-    task = asyncio.create_task(
-        run_tool_and_update_queue(streaming_tool, function_args, tool_context)
-    )
 
-    if invocation_context.active_streaming_tools is None:
-      invocation_context.active_streaming_tools = {}
-    if tool.name in invocation_context.active_streaming_tools:
-      invocation_context.active_streaming_tools[tool.name].task = task
-    else:
-      # Register the streaming tool lazily when the model calls it.
-      invocation_context.active_streaming_tools[tool.name] = (
-          ActiveStreamingTool(task=task)
-      )
-      logger.debug('Lazily registered streaming tool: %s', tool.name)
-
-    # For input-streaming tools (those with `input_stream:
-    # LiveRequestQueue`), create a dedicated LiveRequestQueue so
-    # _send_to_model starts duplicating data to it. This also
-    # handles re-invocation after stop_streaming reset .stream
-    # to None.
+    # For input-streaming tools (those with `input_stream: LiveRequestQueue`),
+    # create a dedicated LiveRequestQueue that _send_to_model copies live
+    # requests into. It must exist before the task first runs, since the tool
+    # receives it as an argument.
     sig = inspect.signature(streaming_tool.func)
+    input_stream = None
     if 'input_stream' in sig.parameters and _is_live_request_queue_annotation(
         sig.parameters['input_stream']
     ):
-      invocation_context.active_streaming_tools[tool.name].stream = (
-          LiveRequestQueue()
-      )
+      input_stream = LiveRequestQueue()
+    task = asyncio.create_task(
+        run_tool_and_update_queue(streaming_tool, function_args, tool_context)
+    )
+    # Registered before the task first runs (nothing awaits in between), so its
+    # `finally` always finds the entry it removes.
+    invocation_context._add_background_tool(
+        ActiveBackgroundTool(
+            tool_name=tool.name,
+            function_call_id=function_call_id,
+            task=task,
+            input_stream=input_stream,
+            is_generator=True,
+        )
+    )
 
     # Immediately return a pending response.
     # This is required by current live model.
@@ -383,6 +391,25 @@ def _is_non_blocking_tool(tool: BaseTool | None) -> bool:
   return tool.response_scheduling is not None
 
 
+def _require_function_call_id(
+    function_call_id: Optional[str], tool_name: str
+) -> str:
+  """Returns the id a background tool call is tracked by.
+
+  Args:
+    function_call_id: The id of the call, if it has one.
+    tool_name: The name of the called tool, for the error message.
+
+  Raises:
+    ValueError: The call has no id. The live flow gives every function call
+      the model makes an id (`populate_client_function_call_id`) before it
+      handles the call.
+  """
+  if not function_call_id:
+    raise ValueError(f'The live call to {tool_name} has no function call id.')
+  return function_call_id
+
+
 async def _launch_non_blocking_call_live(
     invocation_context: InvocationContext,
     function_call: types.FunctionCall,
@@ -392,7 +419,7 @@ async def _launch_non_blocking_call_live(
     live_session_id: str | None = None,
 ) -> None:
   """Runs a non-blocking live tool's prepare and execute in the background."""
-  task_key = f'{tool.name}_{function_call.id}'
+  function_call_id = _require_function_call_id(function_call.id, tool.name)
 
   async def _background_task() -> None:
     try:
@@ -422,16 +449,20 @@ async def _launch_non_blocking_call_live(
     except Exception:
       logger.exception('Error running non-blocking tool %s', tool.name)
     finally:
-      if (
-          invocation_context.active_non_blocking_tool_tasks
-          and task_key in invocation_context.active_non_blocking_tool_tasks
-      ):
-        del invocation_context.active_non_blocking_tool_tasks[task_key]
+      (invocation_context._active_background_tools or {}).pop(
+          function_call_id, None
+      )
 
+  # Registered before the task first runs (nothing awaits in between), so its
+  # `finally` always finds the entry it removes.
   task = asyncio.create_task(_background_task())
-  if invocation_context.active_non_blocking_tool_tasks is None:
-    invocation_context.active_non_blocking_tool_tasks = {}
-  invocation_context.active_non_blocking_tool_tasks[task_key] = task
+  invocation_context._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name=tool.name,
+          function_call_id=function_call_id,
+          task=task,
+      )
+  )
 
 
 async def _execute_prepared_function_calls_live(

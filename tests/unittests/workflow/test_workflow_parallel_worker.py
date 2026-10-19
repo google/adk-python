@@ -1571,3 +1571,11 @@ async def test_parallel_worker_fans_out_json_list_without_thoughts(
       if structured
       else ['first', 'second']
   )
+
+
+def test_parallel_worker_iter_static_children():
+  """_ParallelWorker._iter_static_children yields the wrapped node."""
+  inner = BaseNode(name='wrapped_node')
+  worker = ParallelWorker(node=inner)
+  children = list(worker._iter_static_children())
+  assert children == [inner]

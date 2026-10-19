@@ -44,6 +44,7 @@ from ...models.llm_response import LlmResponse
 from ...plugins.base_plugin import BasePlugin
 from ...tools.base_tool import BaseTool
 from ...tools.tool_context import ToolContext
+from ...utils import _mtls_utils
 from ._config import ModelArmorConfig
 
 try:
@@ -474,8 +475,12 @@ def _extract_tool_result_text(result: Any) -> Optional[str]:
 
 
 def _regional_endpoint(location: str) -> str:
-  """Builds the Model Armor regional endpoint for a location."""
-  return f'modelarmor.{location}.rep.googleapis.com'
+  """Returns the regional Model Armor endpoint, the mTLS one if enabled."""
+  return _mtls_utils.get_api_endpoint(
+      location=location,
+      default_template='modelarmor.{location}.rep.googleapis.com',
+      mtls_template='modelarmor.{location}.rep.mtls.googleapis.com',
+  )
 
 
 def _shared_template_location(*template_names: Optional[str]) -> str:

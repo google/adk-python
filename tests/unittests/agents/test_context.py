@@ -631,6 +631,47 @@ class TestContextMemoryMethods:
           ]
       )
 
+  async def test_delete_memory_success(self, mock_invocation_context):
+    """Tests that delete_memory forwards the memory ID to the service."""
+    memory_service = AsyncMock()
+    mock_invocation_context.memory_service = memory_service
+
+    context = Context(mock_invocation_context)
+    await context.delete_memory(memory_id="mem-123")
+
+    memory_service.delete_memory.assert_called_once_with(
+        app_name=mock_invocation_context.app_name,
+        user_id=mock_invocation_context.user_id,
+        memory_id="mem-123",
+    )
+
+  async def test_delete_memory_no_service_raises(self, mock_invocation_context):
+    """Tests that delete_memory raises ValueError when no service."""
+    mock_invocation_context.memory_service = None
+
+    context = Context(mock_invocation_context)
+    with pytest.raises(
+        ValueError,
+        match=r"Cannot delete memory: memory service is not available\.",
+    ):
+      await context.delete_memory(memory_id="mem-123")
+
+  async def test_delete_memory_accepts_none_default(
+      self, mock_invocation_context
+  ):
+    """Tests that delete_memory defaults memory_id to None when omitted."""
+    memory_service = AsyncMock()
+    mock_invocation_context.memory_service = memory_service
+
+    context = Context(mock_invocation_context)
+    await context.delete_memory()
+
+    memory_service.delete_memory.assert_called_once_with(
+        app_name=mock_invocation_context.app_name,
+        user_id=mock_invocation_context.user_id,
+        memory_id=None,
+    )
+
 
 class TestContextAddUiWidget:
   """Test render_ui_widget method in Context."""

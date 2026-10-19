@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from collections.abc import Callable
+from collections.abc import Iterator
 from collections.abc import Mapping
 from typing import Any
 from typing import Literal
@@ -249,6 +250,12 @@ class Node(base_node.BaseNode):
       copied.rerun_on_resume = copied._inner_node.rerun_on_resume
 
     return copied
+
+  @override
+  def _iter_static_children(self) -> Iterator[base_node.BaseNode]:
+    """Yields the inner node if configured as a parallel worker."""
+    if self._inner_node is not None:
+      yield self._inner_node
 
   async def run_node_impl(
       self, *, ctx: Context, node_input: Any

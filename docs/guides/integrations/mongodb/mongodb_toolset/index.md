@@ -129,7 +129,7 @@ Note that `$vectorSearch` only filters on fields declared as filter fields in th
 | `mongodb_auto_embedding_model` | `str \| None` | `None` | Voyage AI model for auto-embedded queries, e.g. `"voyage-4"`. Must be compatible with the index's model; unset uses the index's model. |
 | `default_vector_index_name` | `str` | `"vector_index"` | Vector search index used when the model does not name one. |
 | `default_search_index_name` | `str` | `"default"` | Full-text search index used by hybrid search when the model does not name one. |
-| `default_embedding_field` | `str` | `"embedding"` | Document field holding the stored vectors. |
+| `default_embedding_field` | `str` | `"embedding"` | Document field searched by `$vectorSearch`: the field holding the stored vectors, or the `autoEmbed` text field when `use_mongodb_auto_embedding=True`. |
 | `default_limit` | `int` | `4` | Documents returned when the model does not ask for a number. |
 | `max_results` | `int` | `50` | Ceiling on the documents any one search returns. |
 | `default_num_candidates` | `int` | `100` | Nearest neighbors the vector search considers. |
@@ -139,7 +139,7 @@ The embedding model and its dimensionality have to match the vectors already in 
 
 ### Letting Atlas embed the query (Automated Embedding, Preview)
 
-Set `use_mongodb_auto_embedding=True` and the tools skip the genai call entirely: the query text goes to `$vectorSearch` as `query.text`, and Atlas generates the embedding with the Voyage AI model configured on the index. The searched field must be indexed as the `autoEmbed` type, which is what makes Atlas embed *documents* on write as well. The mode applies to both tools — hybrid search's vector arm switches with everything else — and `mongodb_auto_embedding_model` overrides the embedding model per query when a compatible one exists. Because no Google credentials are needed in this mode, it is the simpler deployment when the data already lives on Atlas; the default mode exists for collections whose vectors come from a Google model. Automated Embedding is an Atlas Preview feature and is not available on self-managed deployments.
+Set `use_mongodb_auto_embedding=True` and the tools skip the genai call entirely: the query text goes to `$vectorSearch` as `query.text`, and Atlas generates the embedding with the Voyage AI model configured on the index. Point `default_embedding_field` (or per-call `embedding_field`) at the raw text field indexed as the `autoEmbed` type, which is what makes Atlas embed *documents* on write as well. The mode applies to both tools — hybrid search's vector arm switches with everything else — and `mongodb_auto_embedding_model` overrides the embedding model per query when a compatible one exists. Because no Google credentials are needed in this mode, it is the simpler deployment when the data already lives on Atlas; the default mode exists for collections whose vectors come from a Google model. Automated Embedding is a Preview feature available on MongoDB Atlas and on self-managed deployments running MongoDB 8.3+ with `mongot` 1.70.1+ and Voyage AI API keys [configured on `mongot`](https://www.mongodb.com/docs/search/self-managed/current/configuration/automated-embedding/).
 
 The three `default_*` names cover the common case where a database uses one naming convention throughout. The model can override each of them per call, which is what lets one toolset serve collections that index different fields.
 

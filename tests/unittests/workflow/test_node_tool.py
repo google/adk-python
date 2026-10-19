@@ -2443,3 +2443,277 @@ def test_node_tool_rejects_workflow_with_unresolvable_start_schema(wf_factory):
   wf = wf_factory()
   with pytest.raises(ValueError, match='does not have an input_schema defined'):
     NodeTool(node=wf)
+
+
+_ARG_ERROR = object()
+"""Expected response marker: the tool returned an argument-validation error."""
+
+
+def _compute(city: str, count: int = 10) -> str:
+  return f'{city}:{count}'
+
+
+def _node_input_entry_workflow() -> Workflow:
+  def compute(city: str, count: int) -> str:
+    return f'{city}:{count}'
+
+  entry = FunctionNode(func=compute, parameter_binding='node_input')
+  return Workflow(name='compute_wf', edges=[(START, entry)])
+
+
+def _defaults_entry_workflow() -> Workflow:
+  entry = FunctionNode(
+      func=_compute, name='compute', parameter_binding='node_input'
+  )
+  return Workflow(name='compute_wf', edges=[(START, entry)])
+
+
+def _primitive_request_workflow() -> Workflow:
+  def double(node_input: int) -> int:
+    return node_input * 2
+
+  return Workflow(name='double_wf', edges=[(START, double)])
+
+
+def _join_from_start_workflow() -> Workflow:
+  def compute(city: str, count: int) -> UserInfo:
+    return UserInfo(name=city, age=count)
+
+  entry = FunctionNode(func=compute, parameter_binding='node_input')
+  join_node = JoinNode(name='join_node')
+  return Workflow(
+      name='join_start_wf',
+      edges=[(START, entry), (START, join_node), (entry, join_node)],
+  )
+
+
+def _parallel_worker_workflow() -> Workflow:
+  entry = FunctionNode(
+      func=_compute, name='compute', parameter_binding='node_input'
+  )
+  return Workflow(
+      name='parallel_wf', edges=[(START, node(entry, parallel_worker=True))]
+  )
+
+
+def _parallel_start_workflow() -> Workflow:
+  def zero_arg() -> str:
+    return 'ok'
+
+  branch_a = FunctionNode(
+      func=_compute, name='compute', parameter_binding='node_input'
+  )
+  branch_b = FunctionNode(func=zero_arg, parameter_binding='node_input')
+  join_node = JoinNode(name='join_node')
+  return Workflow(
+      name='fanout_wf',
+      edges=[(START, (branch_a, branch_b)), ((branch_a, branch_b), join_node)],
+  )
+
+
+def _parallel_start_distinct_coercions_workflow() -> Workflow:
+  def as_str(count: str) -> str:
+    return f'str:{count}'
+
+  def as_int(count: int) -> int:
+    return count + 1
+
+  branch_str = FunctionNode(func=as_str, parameter_binding='node_input')
+  branch_int = FunctionNode(func=as_int, parameter_binding='node_input')
+  join_node = JoinNode(name='join_node')
+  return Workflow(
+      name='coercion_fanout_wf',
+      input_schema={
+          'type': 'object',
+          'properties': {'count': {'type': 'string'}},
+      },
+      edges=[
+          (START, (branch_str, branch_int)),
+          ((branch_str, branch_int), join_node),
+      ],
+  )
+
+
+def _dict_schema_state_node_input_workflow() -> Workflow:
+  def sum_scores(node_input: dict[str, int]) -> int:
+    assert all(isinstance(v, int) for v in node_input.values())
+    return sum(node_input.values())
+
+  return Workflow(
+      name='scores_wf',
+      input_schema={
+          'type': 'object',
+          'properties': {
+              'a': {'type': 'integer'},
+              'b': {'type': 'integer'},
+          },
+      },
+      edges=[(START, sum_scores)],
+  )
+
+
+@pytest.mark.parametrize(
+    ('wf_factory', 'calls'),
+    [
+        (
+            _node_input_entry_workflow,
+            [
+                ({'city': 'NYC', 'count': 'invalid'}, _ARG_ERROR),
+                ({'city': 'NYC'}, _ARG_ERROR),
+                ({'city': 'NYC', 'count': 3}, {'result': 'NYC:3'}),
+            ],
+        ),
+        (
+            _defaults_entry_workflow,
+            [
+                ({'city': 'NYC', 'count': '3'}, {'result': 'NYC:3'}),
+                ({'city': 'Tokyo'}, {'result': 'Tokyo:10'}),
+            ],
+        ),
+        (
+            _primitive_request_workflow,
+            [
+                ({}, _ARG_ERROR),
+                ({'request': None}, _ARG_ERROR),
+                ({'request': 'not_an_int'}, _ARG_ERROR),
+                ({'request': 21}, {'result': 42}),
+            ],
+        ),
+        (
+            _join_from_start_workflow,
+            [
+                ({'city': 'NYC', 'count': 'bad'}, _ARG_ERROR),
+                (
+                    {'city': 'NYC', 'count': 5},
+                    {
+                        START.name: {'city': 'NYC', 'count': 5},
+                        'compute': {'name': 'NYC', 'age': 5},
+                    },
+                ),
+            ],
+        ),
+        (
+            _parallel_worker_workflow,
+            [
+                ({'request': [{'city': 'NYC', 'count': 'bad'}]}, _ARG_ERROR),
+                (
+                    {
+                        'request': [
+                            {'city': 'NYC', 'count': '3'},
+                            {'city': 'Tokyo'},
+                        ]
+                    },
+                    {'result': ['NYC:3', 'Tokyo:10']},
+                ),
+            ],
+        ),
+        (
+            _parallel_start_workflow,
+            [
+                ({'city': 'NYC', 'count': 'bad'}, _ARG_ERROR),
+                ({'city': 'NYC'}, {'compute': 'NYC:10', 'zero_arg': 'ok'}),
+            ],
+        ),
+        (
+            _parallel_start_distinct_coercions_workflow,
+            [
+                ({'count': 'not_an_int'}, _ARG_ERROR),
+                ({'count': '3'}, {'as_str': 'str:3', 'as_int': 4}),
+            ],
+        ),
+        (
+            _dict_schema_state_node_input_workflow,
+            [
+                ({'a': 'not_an_int'}, _ARG_ERROR),
+                ({'a': '2', 'b': 3}, {'result': 5}),
+            ],
+        ),
+    ],
+    ids=[
+        'node_input_entry',
+        'coerces_and_fills_defaults',
+        'primitive_request',
+        'join_from_start_is_skipped',
+        'parallel_worker_items',
+        'parallel_start_validates_all_branches',
+        'parallel_start_distinct_coercions',
+        'dict_schema_state_node_input',
+    ],
+)
+@pytest.mark.asyncio
+async def test_node_tool_workflow_entry_args_are_validated_before_run(
+    request: pytest.FixtureRequest,
+    wf_factory: Any,
+    calls: list[tuple[dict[str, Any], Any]],
+):
+  """Bad tool args for a Workflow's START nodes come back as an error dict the model can retry on; good args are coerced and run."""
+  wf = wf_factory()
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name=wf.name, args=args)
+              for args, _ in calls
+          ]
+          + [types.Part.from_text(text='done')]
+      ),
+      tools=[wf],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  responses = _function_responses(events)
+  assert len(responses) == len(calls)
+  for response, (_, expected) in zip(responses, calls):
+    if expected is _ARG_ERROR:
+      assert 'argument validation errors' in response['error']
+    else:
+      assert response == expected
+
+
+@pytest.mark.asyncio
+async def test_node_tool_workflow_downstream_error_hits_on_tool_error(
+    request: pytest.FixtureRequest,
+):
+  """Errors raised past the entry node still reach on_tool_error, not the arg-validation error dict."""
+  seen_errors: list[Exception] = []
+
+  def step_one(node_input: UserInfo) -> str:
+    return node_input.name
+
+  def step_two(missing_state_var: str) -> str:
+    return missing_state_var
+
+  def on_tool_error(tool, args, tool_context, error):
+    del tool, args, tool_context
+    seen_errors.append(error)
+    return {'handled_internal_error': True}
+
+  wf = Workflow(
+      name='two_step_wf',
+      edges=[(START, step_one), (step_one, step_two)],
+  )
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='two_step_wf', args={'name': 'Alice', 'age': 30}
+              ),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[wf],
+      on_tool_error_callback=on_tool_error,
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  assert len(seen_errors) == 1
+  assert _function_responses(events) == [{'handled_internal_error': True}]
