@@ -26,6 +26,7 @@ from google.adk.utils._callback_pipeline import _normalize_callbacks
 from google.adk.utils._callback_pipeline import _run_callbacks
 from google.adk.utils._callback_pipeline import _stop_on_non_none
 from google.adk.utils._callback_pipeline import _stop_on_truthy
+from google.genai import errors as genai_errors
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -497,20 +498,40 @@ async def test_callback_span_covers_the_awaited_result(spans):
   assert not child.attributes
 
 
-async def test_callback_error_is_recorded_and_propagated(spans):
+@pytest.mark.parametrize('telemetry_enabled', [False, True])
+@pytest.mark.parametrize('is_async', [False, True], ids=['sync', 'async'])
+@pytest.mark.parametrize(
+    'error,expected_error_type',
+    [
+        (ValueError('callback failed'), 'ValueError'),
+        (genai_errors.ClientError(429, {'message': 'quota exceeded'}), '429'),
+    ],
+)
+async def test_callback_error_is_recorded_and_propagated(
+    spans, monkeypatch, telemetry_enabled, is_async, error, expected_error_type
+):
   """Tracing records a failure without replacing the callback's exception."""
-  error = ValueError('callback failed')
+  monkeypatch.setenv('ADK_EXPERIMENTAL_TELEMETRY', str(telemetry_enabled))
 
   def callback():
     raise error
 
-  with pytest.raises(ValueError) as caught:
-    await _run_callbacks([callback], _stop_on_truthy)
+  async def async_callback():
+    raise error
+
+  with pytest.raises(type(error)) as caught:
+    await _run_callbacks(
+        [async_callback if is_async else callback], _stop_on_truthy
+    )
 
   assert caught.value is error
-  (span,) = spans.get_finished_spans()
-  assert span.status.status_code == StatusCode.ERROR
-  assert span.events[0].name == 'exception'
+  finished_spans = spans.get_finished_spans()
+  assert len(finished_spans) == int(telemetry_enabled)
+  if telemetry_enabled:
+    (span,) = finished_spans
+    assert span.status.status_code == StatusCode.ERROR
+    assert span.events[0].name == 'exception'
+    assert span.attributes['error.type'] == expected_error_type
 
 
 @pytest.mark.parametrize('stop_condition', [_stop_on_truthy, _stop_on_non_none])
@@ -586,6 +607,7 @@ async def test_cancelling_callback_ends_its_span(spans):
   (span,) = spans.get_finished_spans()
   assert span.end_time is not None
   assert span.status.status_code == StatusCode.UNSET
+  assert 'error.type' not in span.attributes
 
 
 async def test_callable_object_has_a_named_span(spans):

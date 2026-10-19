@@ -94,6 +94,8 @@ async def _run_callbacks(
 
   Experimental telemetry records a child span for each executed callback.
   """
+  from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
+
   from ..agents.context import Context
   from ..telemetry import tracing
 
@@ -122,12 +124,17 @@ async def _run_callbacks(
         if telemetry_config.should_emit_experimental_telemetry
         else nullcontext()
     )
-    with scope:
-      callback_result = _invoke_callback(callback, *args, **kwargs)
-      if inspect.isawaitable(callback_result):
-        result = await callback_result
-      else:
-        result = callback_result
+    with scope as span:
+      try:
+        callback_result = _invoke_callback(callback, *args, **kwargs)
+        if inspect.isawaitable(callback_result):
+          result = await callback_result
+        else:
+          result = callback_result
+      except Exception as error:
+        if span is not None:
+          span.set_attribute(ERROR_TYPE, tracing.resolve_error_type(error))
+        raise
     if _stop_condition(result):
       return result
   return result
