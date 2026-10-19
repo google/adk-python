@@ -14,6 +14,10 @@
 
 from __future__ import annotations
 
+import re
+
+_WINDOWS_DRIVE_RE = re.compile(r"[A-Za-z]:")
+
 
 def validate_path_segment(value: str, field_name: str) -> None:
   """Rejects values that could alter a filesystem path.
@@ -24,7 +28,7 @@ def validate_path_segment(value: str, field_name: str) -> None:
 
   Raises:
     ValueError: If the value contains path separators, traversal segments, or
-      null bytes.
+      null bytes, or is drive-qualified.
   """
   if not value:
     raise ValueError(f"{field_name} must not be empty.")
@@ -34,6 +38,8 @@ def validate_path_segment(value: str, field_name: str) -> None:
     raise ValueError(
         f"{field_name} {value!r} must not contain path separators."
     )
+  if _WINDOWS_DRIVE_RE.match(value):
+    raise ValueError(f"{field_name} {value!r} must not be drive-qualified.")
   if value in (".", ".."):
     raise ValueError(
         f"{field_name} {value!r} must not contain traversal segments."

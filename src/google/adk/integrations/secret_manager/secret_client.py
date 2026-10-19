@@ -17,9 +17,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from google.api_core.gapic_v1 import client_info
 from google.auth import default as default_service_credential
-from google.cloud import secretmanager
 from google.oauth2 import credentials as user_credentials
 from google.oauth2 import service_account
 
@@ -27,6 +25,11 @@ from ... import version
 from ...utils import _mtls_utils
 
 USER_AGENT = f"google-adk/{version.__version__}"
+
+_SECRET_MANAGER_REQUIRED = (
+    "Secret Manager support requires google-cloud-secret-manager. "
+    "Install it with: pip install 'google-adk[gcp]'."
+)
 
 _DEFAULT_REGIONAL_ENDPOINT_TEMPLATE = (
     "secretmanager.{location}.rep.googleapis.com"
@@ -70,12 +73,19 @@ class SecretManagerClient:
           Manager service. If not provided, the global endpoint is used.
 
     Raises:
+        ImportError: If `google-cloud-secret-manager` is not installed.
         ValueError: If both `service_account_json` and `auth_token` are
             provided, if `service_account_json` is not valid JSON, or if
             neither is provided and Application Default Credentials cannot be
             resolved.
         google.auth.exceptions.GoogleAuthError: If authentication fails.
     """
+    try:
+      from google.api_core.gapic_v1 import client_info  # pylint: disable=g-import-not-at-top
+      from google.cloud import secretmanager  # pylint: disable=g-import-not-at-top
+    except ImportError as e:
+      raise ImportError(_SECRET_MANAGER_REQUIRED) from e
+
     if service_account_json and auth_token:
       raise ValueError(
           "Must provide either 'service_account_json' or 'auth_token', not"

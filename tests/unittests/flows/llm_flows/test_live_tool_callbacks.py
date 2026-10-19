@@ -552,22 +552,12 @@ async def test_live_non_blocking_tool_before_tool_callback_raising_does_not_kill
   assert result_event is None
 
   # Wait for background task to finish.
-  task = (
-      invocation_context.active_non_blocking_tool_tasks.get(
-          f"{tool.name}_{fc.id}"
-      )
-      if invocation_context.active_non_blocking_tool_tasks
-      else None
-  )
-  if task:
-    await task
+  active = (invocation_context._active_background_tools or {}).get(fc.id)
+  if active:
+    await active.task
 
   assert "Error running non-blocking tool" in caplog.text
-  assert not (
-      invocation_context.active_non_blocking_tool_tasks
-      and f"{tool.name}_{fc.id}"
-      in invocation_context.active_non_blocking_tool_tasks
-  )
+  assert fc.id not in (invocation_context._active_background_tools or {})
 
 
 _live_ambient_value: contextvars.ContextVar[str] = contextvars.ContextVar(

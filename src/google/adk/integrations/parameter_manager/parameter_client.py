@@ -17,9 +17,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from google.api_core.gapic_v1 import client_info
 from google.auth import default as default_service_credential
-from google.cloud import parametermanager_v1
 from google.oauth2 import credentials as user_credentials
 from google.oauth2 import service_account
 
@@ -27,6 +25,11 @@ from ... import version
 from ...utils._mtls_utils import get_api_endpoint
 
 USER_AGENT = f"google-adk/{version.__version__}"
+
+_PARAMETER_MANAGER_REQUIRED = (
+    "Parameter Manager support requires google-cloud-parametermanager. "
+    "Install it with: pip install 'google-adk[gcp]'."
+)
 
 _DEFAULT_REGIONAL_ENDPOINT_TEMPLATE = (
     "parametermanager.{location}.rep.googleapis.com"
@@ -69,10 +72,17 @@ class ParameterManagerClient:
           Manager service. If not provided, the global endpoint is used.
 
     Raises:
+        ImportError: If `google-cloud-parametermanager` is not installed.
         ValueError: If both 'service_account_json' and 'auth_token' are
         provided. Also raised if the 'service_account_json' is not valid JSON.
         google.auth.exceptions.GoogleAuthError: If authentication fails.
     """
+    try:
+      from google.api_core.gapic_v1 import client_info  # pylint: disable=g-import-not-at-top
+      from google.cloud import parametermanager_v1  # pylint: disable=g-import-not-at-top
+    except ImportError as e:
+      raise ImportError(_PARAMETER_MANAGER_REQUIRED) from e
+
     if service_account_json and auth_token:
       raise ValueError(
           "Must provide either 'service_account_json' or 'auth_token', not"
@@ -140,6 +150,8 @@ class ParameterManagerClient:
         google.api_core.exceptions.GoogleAPIError: If the Parameter Manager API
             returns an error (e.g., parameter not found, permission denied).
     """
+    from google.cloud import parametermanager_v1  # pylint: disable=g-import-not-at-top
+
     request = parametermanager_v1.RenderParameterVersionRequest(
         name=resource_name
     )

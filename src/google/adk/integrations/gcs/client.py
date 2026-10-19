@@ -14,24 +14,44 @@
 
 from __future__ import annotations
 
-import google.api_core.client_info
+from typing import TYPE_CHECKING
+
 from google.auth.credentials import Credentials
-from google.cloud import storage
 
 from ... import version
 
+if TYPE_CHECKING:
+  import google.api_core.client_info
+  from google.cloud import storage
+
 USER_AGENT = f"adk-gcs-tool google-adk/{version.__version__}"
+
+_STORAGE_REQUIRED = (
+    "GCS tools require google-cloud-storage. "
+    "Install it with: pip install 'google-adk[gcp]'."
+)
 
 
 def _get_client_info() -> google.api_core.client_info.ClientInfo:
   """Get client info."""
+  import google.api_core.client_info  # pylint: disable=g-import-not-at-top
+
   return google.api_core.client_info.ClientInfo(user_agent=USER_AGENT)
 
 
 def get_gcs_client(
     *, credentials: Credentials, project: str | None = None
 ) -> storage.Client:
-  """Get a GCS client."""
+  """Get a GCS client.
+
+  Raises:
+    ImportError: If `google-cloud-storage` is not installed.
+  """
+  try:
+    from google.cloud import storage  # pylint: disable=g-import-not-at-top
+  except ImportError as e:
+    raise ImportError(_STORAGE_REQUIRED) from e
+
   kwargs = {
       "credentials": credentials,
       "client_info": _get_client_info(),

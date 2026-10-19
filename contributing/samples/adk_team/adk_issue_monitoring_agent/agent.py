@@ -46,17 +46,28 @@ PROMPT_TEMPLATE = load_prompt_template("PROMPT_INSTRUCTION.txt")
 
 
 def flag_issue_as_spam(
-    item_number: int, detection_reason: str
+    item_number: int,
+    detection_reason: str,
+    is_original_issue: bool = False,
 ) -> dict[str, Any]:
-  """
-  Flags an issue as spam by adding a label and leaving a comment for maintainers.
-  Includes idempotency checks to avoid duplicate POST actions.
+  """Flags spam detected in an issue thread.
+
+  Leaves an alert comment for maintainers, and adds the spam label ONLY if the
+  original issue description itself is spam. If only a reply comment in the
+  thread is spam, alerts maintainers with a comment without applying the spam
+  label to the entire issue.
 
   Args:
       item_number (int): The GitHub issue number.
       detection_reason (str): The explanation of what the spam is.
+      is_original_issue (bool): Set to True if and only if the original issue
+        description itself is spam. Defaults to False when only a reply comment
+        contains spam.
   """
-  logger.info(f"Flagging #{item_number} as SPAM. Reason: {detection_reason}")
+  logger.info(
+      f"Flagging spam on #{item_number}"
+      f" (is_original_issue={is_original_issue}). Reason: {detection_reason}"
+  )
 
   label_url = (
       f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}/labels"
@@ -67,9 +78,15 @@ def flag_issue_as_spam(
 
   safe_reason = detection_reason.replace("```", "'''")
 
+  scope_note = (
+      "suspected spam issue description was detected."
+      if is_original_issue
+      else "suspected spam comment was detected in this thread."
+  )
+
   alert_body = (
       f"{BOT_ALERT_SIGNATURE}\n"
-      "@maintainers, a suspected spam comment was detected in this thread.\n\n"
+      f"@maintainers, a {scope_note}\n\n"
       "**Reason:**\n"
       f"```text\n{safe_reason}\n```"
   )
@@ -87,20 +104,21 @@ def flag_issue_as_spam(
         BOT_ALERT_SIGNATURE in c.get("body", "") for c in comments
     )
 
-    if is_labeled and is_commented:
-      logger.info(f"#{item_number} is already labeled and commented. Skipping.")
-    elif is_labeled and not is_commented:
+    if not is_commented:
       post_request(comment_url, {"body": alert_body})
       logger.info(f"Successfully posted spam alert comment to #{item_number}.")
-    elif not is_labeled and is_commented:
+
+    # Only apply the spam label to the entire issue if the original issue itself is spam.
+    if is_original_issue and not is_labeled:
       post_request(label_url, {"labels": [SPAM_LABEL_NAME]})
       logger.info(
           f"Successfully added '{SPAM_LABEL_NAME}' label to #{item_number}."
       )
-    else:
-      post_request(label_url, {"labels": [SPAM_LABEL_NAME]})
-      post_request(comment_url, {"body": alert_body})
-      logger.info(f"Successfully fully flagged #{item_number}.")
+    elif not is_original_issue:
+      logger.info(
+          f"Spam detected only in comment on #{item_number}; omitted"
+          f" '{SPAM_LABEL_NAME}' issue label."
+      )
 
     return {"status": "success", "message": "Maintainers alerted successfully."}
 

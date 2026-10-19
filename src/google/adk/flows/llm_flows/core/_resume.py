@@ -173,7 +173,10 @@ def _find_answer_event(
       if (
           (fr.id is not None and fr.id in call_ids)
           or (fr.id is None and fr.name in call_names)
-          or (fr.name in hitl_names and _branch_carries_call(ev.branch, calls))
+          or (
+              (fr.name in hitl_names or ev.author == 'user')
+              and _branch_carries_call(ev.branch, calls)
+          )
       ):
         return ev
   return events[-1]
@@ -207,29 +210,36 @@ def _needs_call_replay(
 
 
 def _unexecuted_calls_event(
-    call_event: Event, later_events: list[Event]
+    call_event: Event,
+    later_events: list[Event],
+    *,
+    include_interrupted_calls: bool = False,
 ) -> Event | None:
   """`call_event` cut down to the calls that never ran, or None if all did.
 
-  A call ran when a response in `later_events` carries its id. Responses with
-  no id each match one remaining same-name call, in call order. Long-running
-  calls (the call event's interrupt ids) are also skipped: a long-running
-  tool that returns `None` writes no response event when it starts, so a
-  missing response means the call is still awaiting its external result rather
-  than never having run. None is also returned once the agent has written any
-  event with content after `call_event`: tool responses and auth or
-  confirmation requests are only written after the whole batch ran, so a call
-  still missing its response then ran and lost it, or is pending.
+  A call ran when a response in `later_events` carries its id and name.
+  Responses with no id each match one remaining same-name call, in call order.
+  When `include_interrupted_calls` is False, long-running calls (the call
+  event's interrupt ids) are also skipped because a long-running tool that
+  returns `None` writes no response event when it starts, and `None` is returned
+  once the agent has written any subsequent event on the same branch after
+  `call_event`.
   """
-  if any(
-      ev.author == call_event.author and ev.content is not None
+  if not include_interrupted_calls and any(
+      ev.author == call_event.author
+      and ev.branch == call_event.branch
+      and ev.content is not None
       for ev in later_events
   ):
     return None
   responses = [fr for ev in later_events for fr in ev.get_function_responses()]
-  answered_ids = {fr.id for fr in responses if fr.id is not None}
+  answered_calls = {(fr.id, fr.name) for fr in responses if fr.id is not None}
   answered_names = Counter(fr.name for fr in responses if fr.id is None)
-  lro_ids = extract_event_interrupt_ids(call_event)
+  lro_ids = (
+      set()
+      if include_interrupted_calls
+      else extract_event_interrupt_ids(call_event)
+  )
   if call_event.content is None:
     return None
   parts = []
@@ -237,7 +247,7 @@ def _unexecuted_calls_event(
   for part in call_event.content.parts or []:
     if (call := part.function_call) is None:
       parts.append(part)
-    elif call.id in answered_ids or call.id in lro_ids:
+    elif (call.id, call.name) in answered_calls or call.id in lro_ids:
       # Explicit IDs take precedence without consuming a name-only response.
       continue
     elif answered_names[call.name]:
@@ -247,6 +257,8 @@ def _unexecuted_calls_event(
       has_unexecuted_call = True
   if not has_unexecuted_call:
     return None
+  if len(parts) == len(call_event.content.parts or []):
+    return call_event
   return call_event.model_copy(
       update={'content': call_event.content.model_copy(update={'parts': parts})}
   )
@@ -367,7 +379,12 @@ def decide_resume(
     if not from_sub_branch and (lro_unanswered or call_unanswered):
       pause = invocation_context.is_resumable
     elif _needs_call_replay(call_names, answers, from_sub_branch):
-      return ResumeDecision(ResumeAction.REPLAY_CALLS, call_event)
+      if unexecuted := _unexecuted_calls_event(
+          call_event,
+          events[call_idx + 1 :],
+          include_interrupted_calls=True,
+      ):
+        return ResumeDecision(ResumeAction.REPLAY_CALLS, unexecuted)
     elif not (lro_ids - answered_ids) and (
         unexecuted := _unexecuted_calls_event(
             call_event, events[call_idx + 1 :]

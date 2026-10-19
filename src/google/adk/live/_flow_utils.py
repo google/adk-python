@@ -94,13 +94,8 @@ async def stop_background_tool_tasks(
 ) -> None:
   """Cancels the background tool tasks this live run started.
 
-  A live run starts two kinds of tools as bare asyncio tasks: streaming
-  tools (``active_streaming_tools``) and non-blocking tools
-  (``active_non_blocking_tool_tasks``). Nothing tied either to the lifetime
-  of the run that started it — only an explicit ``stop_streaming`` call ever
-  cancelled one — so a tool kept running after its agent was done, feeding
-  function responses into a live request queue that by then belonged to
-  another agent, or to nobody at all.
+  A live run starts two kinds of tools as bare asyncio tasks, streaming
+  tools and non-blocking tools, and registers both on the invocation context.
 
   The tools stop when the run that started them ends, whether that is a
   handoff to another agent, ``task_completed``, the connection closing, or
@@ -112,52 +107,42 @@ async def stop_background_tool_tasks(
   ``_TOOL_SHUTDOWN_TIMEOUT_SECONDS`` is logged and left behind rather than
   stalling the handoff or the caller's teardown on it.
   """
-  tasks = [
+  pending = [
       active.task
-      for active in (invocation_context.active_streaming_tools or {}).values()
-      if active.task is not None
+      for active in (invocation_context._active_background_tools or {}).values()
+      if active.task is not None and not active.task.done()
   ]
-  tasks.extend(
-      (invocation_context.active_non_blocking_tool_tasks or {}).values()
-  )
-  pending = [task for task in tasks if not task.done()]
-  if not pending:
-    return
-
-  timeout = _TOOL_SHUTDOWN_TIMEOUT_SECONDS
-  logger.debug('Stopping %d background tool task(s).', len(pending))
-  for task in pending:
-    task.cancel()
-  stopped, still_running = await asyncio.wait(pending, timeout=timeout)
-  for task in still_running:
-    logger.warning(
-        'Tool task %s ignored cancellation and outlives its agent.',
-        task.get_name(),
+  if pending:
+    logger.debug('Stopping %d background tool task(s).', len(pending))
+    for task in pending:
+      task.cancel()
+    stopped, still_running = await asyncio.wait(
+        pending, timeout=_TOOL_SHUTDOWN_TIMEOUT_SECONDS
     )
-  for task in stopped:
-    # A tool reports its own failures to the model, so an exception here is
-    # unexpected. Retrieve it anyway: an unread one is reported by asyncio
-    # itself, out of context, when the task is garbage collected.
-    if not task.cancelled() and task.exception() is not None:
-      logger.error(
-          'Tool task %s failed.', task.get_name(), exc_info=task.exception()
+    for task in still_running:
+      logger.warning(
+          'Tool task %s ignored cancellation and outlives its agent.',
+          task.get_name(),
       )
+    for task in stopped:
+      # A tool reports its own failures to the model, so an exception here is
+      # unexpected. Retrieve it anyway: an unread one is reported by asyncio
+      # itself, out of context, when the task is garbage collected.
+      if not task.cancelled() and task.exception() is not None:
+        logger.error(
+            'Tool task %s failed.', task.get_name(), exc_info=task.exception()
+        )
 
   # Retire the registry entries: the run is over, so nothing it started is
-  # current any more, whether or not the task honored the cancellation.
-  # (``stop_streaming`` blanks an entry's fields and keeps the key, because
-  # the model it answers to is still running and may ask again. Here nobody
-  # is coming back for it.) Letting go of the streams is what matters most:
-  # ``_send_to_model`` copies every live request into each registered
-  # stream, so one left behind by a tool that no longer reads it grows for
-  # as long as the session lasts, an entry per audio chunk the user speaks.
-  if invocation_context.active_streaming_tools:
-    invocation_context.active_streaming_tools.clear()
-  # A non-blocking tool drops its own entry in its `finally`, so that one is
-  # usually empty already; it has something to remove only when the task
-  # never got there, because it ignored the cancellation or died first.
-  if invocation_context.active_non_blocking_tool_tasks:
-    invocation_context.active_non_blocking_tool_tasks.clear()
+  # current any more, whether or not the task honored the cancellation. A tool
+  # drops its own entry when it finishes, so what is left here belongs to a
+  # task that ignored the cancellation or was cancelled before it first ran.
+  # Letting go of the streams is what matters most: ``_send_to_model`` copies
+  # every live request into each registered stream, so one left behind by a
+  # tool that no longer reads it grows for as long as the session lasts, an
+  # entry per audio chunk the user speaks.
+  if invocation_context._active_background_tools:
+    invocation_context._active_background_tools.clear()
 
 
 async def handle_control_event_flush(

@@ -572,3 +572,36 @@ class TestRealtimeCacheManager:
     assert len(events) == 1
     assert events[0].author == 'my_test_agent'  # Agent name, not 'model'
     assert events[0].content.role == 'model'  # Role is still 'model'
+
+  @pytest.mark.asyncio
+  async def test_cache_blob_routes_audio_and_skips_non_audio(self):
+    """Verifies cache_blob routes audio/* blobs and skips non-audio blobs."""
+    ctx = await testing_utils.create_invocation_context(
+        testing_utils.create_test_agent()
+    )
+    in_audio = types.Blob(data=b'user_pcm', mime_type='audio/pcm')
+    out_audio = types.Blob(data=b'model_wav', mime_type='audio/wav;rate=24000')
+    self.manager.cache_blob(ctx, in_audio, 'input')
+    self.manager.cache_blob(ctx, out_audio, 'output')
+    self.manager.cache_blob(
+        ctx, types.Blob(data=b'jpg', mime_type='image/jpeg'), 'input'
+    )
+    self.manager.cache_blob(
+        ctx, types.Blob(data=b'mp4', mime_type='video/mp4'), 'output'
+    )
+    self.manager.cache_blob(ctx, types.Blob(data=b'raw'), 'input')
+
+    assert [e.data for e in ctx.input_realtime_cache] == [in_audio]
+    assert [e.data for e in ctx.output_realtime_cache] == [out_audio]
+
+  @pytest.mark.asyncio
+  async def test_cache_blob_caches_a_copy_of_the_blob(self):
+    """Later changes to the caller's blob don't change the cached copy."""
+    ctx = await testing_utils.create_invocation_context(
+        testing_utils.create_test_agent()
+    )
+    blob = types.Blob(data=b'chunk_1', mime_type='audio/pcm')
+    self.manager.cache_blob(ctx, blob, 'input')
+    blob.data = b'chunk_2'
+
+    assert [e.data.data for e in ctx.input_realtime_cache] == [b'chunk_1']
