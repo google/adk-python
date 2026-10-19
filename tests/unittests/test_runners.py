@@ -6748,11 +6748,16 @@ async def test_run_async_tool_error_in_root_parallel_agent_keeps_each_author():
 
 @pytest.mark.parametrize("resumable", [False, True])
 @pytest.mark.parametrize("answer", ["new_message", "approve", "reject"])
+@pytest.mark.parametrize("delegator", ["root", "nested_chat"])
 @pytest.mark.asyncio
 async def test_run_async_paused_single_turn_agent_returns_turn_to_delegator(
-    answer: str, resumable: bool
+    delegator: str, answer: str, resumable: bool
 ):
-  """A single_turn agent paused on a confirmation does not take later turns."""
+  """A single_turn agent paused on a confirmation does not take later turns.
+
+  The caller that delegated to it gets the turn back, and its result comes
+  back to the caller as the response to the caller's original call.
+  """
   paid = []
 
   def pay(amount: int) -> dict[str, int]:
@@ -6772,22 +6777,47 @@ async def test_run_async_paused_single_turn_agent_returns_turn_to_delegator(
       ),
       tools=[FunctionTool(pay, require_confirmation=True)],
   )
-  root = LlmAgent(
-      name="root_agent",
-      model=testing_utils.MockModel.create(
-          responses=[
-              types.Part.from_function_call(
-                  name="helper", args={"request": "pay 5"}
-              ),
-              "Root reply",
-              "Root thanks",
-          ]
-      ),
-      sub_agents=[helper],
+  caller_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name="helper", args={"request": "pay 5"}
+          ),
+          "Caller reply",
+          "Caller thanks",
+      ]
   )
+  if delegator == "root":
+    caller = LlmAgent(
+        name="root_agent", model=caller_model, sub_agents=[helper]
+    )
+    root = caller
+  else:
+    # A chat sub-agent the root transferred to delegates to the helper.
+    caller = LlmAgent(
+        name="coordinator", model=caller_model, sub_agents=[helper]
+    )
+    root = LlmAgent(
+        name="root_agent",
+        model=testing_utils.MockModel.create(
+            responses=[
+                types.Part.from_function_call(
+                    name="transfer_to_agent", args={"agent_name": "coordinator"}
+                ),
+                "Root reply",
+            ]
+        ),
+        sub_agents=[caller],
+    )
   runner = _abort_runner(root, resumable=resumable)
 
   first, _ = await _run_turn(runner, "s", "Pay 5")
+  helper_call_id = next(
+      fc.id
+      for e in first
+      if e.author == caller.name
+      for fc in e.get_function_calls()
+      if fc.name == "helper"
+  )
   confirmation_id = next(
       fc.id
       for e in first
@@ -6818,12 +6848,45 @@ async def test_run_async_paused_single_turn_agent_returns_turn_to_delegator(
   third, _ = await _run_turn(runner, "s", "Thanks")
 
   assert paid == ([5] if answer == "approve" else [])
-  assert _texts([e.content for e in second if e.author == "root_agent"]) == [
-      "Root reply"
+  assert _texts([e.content for e in second if e.author == caller.name]) == [
+      "Caller reply"
   ]
   assert "Helper chatting" not in _texts([e.content for e in second + third])
-  assert _texts([e.content for e in third]) == ["Root thanks"]
-  assert {e.author for e in third if e.content} == {"root_agent"}
+  assert _texts([e.content for e in third]) == ["Caller thanks"]
+  assert {e.author for e in third if e.content} == {caller.name}
+
+  # The helper's result comes back to the caller once, under the caller's
+  # original call id, and reaches the caller's next model request.
+  helper_responses = [
+      fr
+      for e in second
+      if e.author == caller.name
+      for fr in e.get_function_responses()
+      if fr.name == "helper"
+  ]
+  next_request = caller_model.requests[1]
+  request_responses = [
+      p.function_response
+      for c in next_request.contents
+      for p in c.parts or []
+      if p.function_response and p.function_response.name == "helper"
+  ]
+  request_calls = [
+      p.function_call
+      for c in next_request.contents
+      for p in c.parts or []
+      if p.function_call
+  ]
+  if answer == "new_message":
+    assert helper_responses == []
+    assert request_responses == []
+    assert request_calls == []  # no dangling call reaches the model
+  else:
+    assert [fr.id for fr in helper_responses] == [helper_call_id]
+    assert helper_responses[0].response == {"result": "Helper done"}
+    assert [fr.response for fr in request_responses] == [
+        {"result": "Helper done"}
+    ]
 
 
 if __name__ == "__main__":
