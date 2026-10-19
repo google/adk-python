@@ -120,15 +120,36 @@ class DynamicNodeState:
     counters[node_name] = counters.get(node_name, 0) + 1
     return str(counters[node_name])
 
-  def reset_for_retry(self, parent_path: str) -> None:
-    """Reset sequential run counters under parent_path before a parent retry."""
+  def _counter_paths_under(self, parent_path: str) -> list[str]:
     prefix = f'{parent_path}/' if parent_path else ''
-    for path in [
+    return [
         k
         for k in self.run_counters
         if k == parent_path or (prefix and k.startswith(prefix))
-    ]:
+    ]
+
+  def snapshot_counters(self, parent_path: str) -> dict[str, dict[str, int]]:
+    """Copy the sequential run counters under parent_path."""
+    return {
+        path: dict(self.run_counters[path])
+        for path in self._counter_paths_under(parent_path)
+    }
+
+  def reset_for_retry(
+      self,
+      parent_path: str,
+      snapshot: dict[str, dict[str, int]],
+  ) -> None:
+    """Rewind sequential run counters under parent_path before a parent retry.
+
+    The counters go back to ``snapshot``, taken when the failed attempt began,
+    so the retry replays that attempt's completed children. Rewinding further
+    would replay children from earlier attempts the parent already rejected.
+    """
+    for path in self._counter_paths_under(parent_path):
       del self.run_counters[path]
+    for path, counters in snapshot.items():
+      self.run_counters[path] = dict(counters)
 
   def get_dynamic_tasks(self) -> list[asyncio.Task[Context]]:
     """Get all active dynamic node tasks."""

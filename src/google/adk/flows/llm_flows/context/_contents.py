@@ -447,12 +447,27 @@ def _filter_single_turn_node_events(
     *,
     is_single_turn: bool,
     node_path: str | None,
+    allow_ancestor_node_paths: bool = False,
 ) -> list[Event]:
-  """Retains only root and own-subtree events for an unbranched single-turn node."""
-  if current_branch is not None or not is_single_turn or not node_path:
+  """Retains only visible branch and node-hierarchy events for a single-turn node."""
+  if not is_single_turn:
     return events
+  filtered = [
+      e for e in events if _is_event_belongs_to_branch(current_branch, e)
+  ]
+  if not node_path:
+    return filtered
   self_path = _NodePathBuilder.from_string(node_path)
-  return [e for e in events if self_path.includes_node_path(e.node_info.path)]
+  if allow_ancestor_node_paths:
+    return [
+        e
+        for e in filtered
+        if self_path.includes_node_path(e.node_info.path)
+        or self_path.is_descendant_of(
+            _NodePathBuilder.from_string(e.node_info.path)
+        )
+    ]
+  return [e for e in filtered if self_path.includes_node_path(e.node_info.path)]
 
 
 def _get_contents(
@@ -499,6 +514,7 @@ def _get_contents(
       _apply_rewinds(events),
       is_single_turn=is_single_turn,
       node_path=node_path,
+      allow_ancestor_node_paths=True,
   )
   tool_call_ids = _collect_function_call_ids(rewind_filtered_events)
 

@@ -75,7 +75,12 @@ class MongoDbToolSettings(BaseModel):
   """Default name of the full-text search index used by hybrid search."""
 
   default_embedding_field: str = "embedding"
-  """Default document field that stores embedding vectors."""
+  """Default document field searched by `$vectorSearch`.
+
+  In the default mode this is the field storing embedding vectors. With
+  `use_mongodb_auto_embedding=True` it is the raw text field indexed as
+  `autoEmbed`.
+  """
 
   default_limit: int = Field(default=4, gt=0)
   """Default number of documents returned by a search operation."""

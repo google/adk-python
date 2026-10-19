@@ -21,6 +21,7 @@ from typing import Iterable
 from typing import Optional
 from unittest import mock
 
+import agentplatform
 from agentplatform import types as agentplatform_types
 from google.adk.events.event import Event
 from google.adk.memory import vertex_ai_memory_bank_service as memory_service_module
@@ -326,6 +327,73 @@ def mock_agentplatform_client():
 
     mock_client_constructor.return_value = mock_client
     yield mock_async_client
+
+
+@pytest.fixture
+def agentplatform_before_2_2():
+  """Patches in an agentplatform whose types predate 2.2."""
+  sdk_before_2_2 = SimpleNamespace(
+      Client=agentplatform.Client,
+      types=SimpleNamespace(
+          AgentEngineMemoryConfig=object,
+          GenerateAgentEngineMemoriesConfig=object,
+          GenerateMemoriesRequestDirectContentsSourceEvent=SimpleNamespace,
+      ),
+  )
+  with mock.patch(
+      'google.adk.dependencies._agentplatform.agentplatform', sdk_before_2_2
+  ):
+    yield sdk_before_2_2
+
+
+@pytest.mark.parametrize(
+    'custom_metadata, expected_missing_type',
+    [
+        (None, 'MemoryConfig'),
+        ({'enable_consolidation': True}, 'GenerateMemoriesConfig'),
+    ],
+)
+@pytest.mark.asyncio
+async def test_add_memory_rejects_agentplatform_before_2_2(
+    mock_agentplatform_client,
+    agentplatform_before_2_2,
+    custom_metadata,
+    expected_missing_type,
+):
+  """add_memory raises ImportError instead of writing, on either write path."""
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with pytest.raises(ImportError, match='has no ' + expected_missing_type):
+    await memory_service.add_memory(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+        memories=[
+            MemoryEntry(content=types.Content(parts=[types.Part(text='f')]))
+        ],
+        custom_metadata=custom_metadata,
+    )
+
+  mock_agentplatform_client.memory_banks.memories.create.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_generate_path_rejects_agentplatform_before_2_2(
+    mock_agentplatform_client,
+    agentplatform_before_2_2,
+):
+  """The generate path raises ImportError instead of calling memories.generate."""
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with pytest.raises(ImportError, match='has no GenerateMemoriesConfig'):
+    await memory_service.add_events_to_memory(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+        events=[MOCK_SESSION.events[0]],
+        custom_metadata={'revision_labels': {'source': 'chat'}},
+    )
+
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
 
 
 @pytest.mark.asyncio

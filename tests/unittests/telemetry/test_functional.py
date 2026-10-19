@@ -18,6 +18,7 @@ from typing import Any
 from typing import AsyncGenerator
 
 from google.adk.models.llm_response import LlmResponse
+from google.adk.telemetry import _genai_instrumentor
 from google.adk.telemetry import tracing
 from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
@@ -38,6 +39,7 @@ from .functional.scenarios.mcp import build_mcp_test_runner
 from .functional.scenarios.mcp import FakeMcpSession
 from .functional.scenarios.telemetry_setup import _PATCHED_COUNTERS
 from .functional.scenarios.telemetry_setup import _PATCHED_HISTOGRAMS
+from .functional.scenarios.telemetry_setup import ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN
 from .functional.scenarios.telemetry_setup import CAPTURE_CONTENT
 from .functional.scenarios.telemetry_setup import CounterSpec
 from .functional.scenarios.telemetry_setup import EXPERIMENTAL_OPT_IN
@@ -200,11 +202,21 @@ async def test_exception_preserves_attributes(
   )
 
 
+@pytest.mark.parametrize(
+    "semconv_opt_in,adk_records",
+    [
+        (EXPERIMENTAL_OPT_IN, False),
+        (None, True),
+    ],
+    ids=["experimental_defers_to_instrumentor", "stable_is_recorded_by_adk"],
+)
 @pytest.mark.asyncio
-async def test_no_generate_content_for_gemini_model_when_already_instrumented(
+async def test_who_records_the_inference_when_already_instrumented(
     monkeypatch: pytest.MonkeyPatch,
+    semconv_opt_in: str | None,
+    adk_records: bool,
 ) -> None:
-  """Tests that generate_content span is not created if already instrumented."""
+  """Which of ADK and the instrumentor records the inference."""
   span_exporter = InMemorySpanExporter()
   install_telemetry(
       monkeypatch,
@@ -212,11 +224,14 @@ async def test_no_generate_content_for_gemini_model_when_already_instrumented(
       InMemoryLogRecordExporter(),
       InMemoryMetricReader(),
   )
+  if semconv_opt_in is None:
+    monkeypatch.delenv(OTEL_OPT_IN, raising=False)
+    monkeypatch.setenv(ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN, "1")
+  else:
+    monkeypatch.setenv(OTEL_OPT_IN, semconv_opt_in)
 
   monkeypatch.setattr(
-      tracing,
-      "_instrumented_with_opentelemetry_instrumentation_google_genai",
-      lambda: True,
+      "google.adk.telemetry._genai_instrumentor.is_instrumented", lambda: True
   )
   monkeypatch.setattr(
       tracing,
@@ -226,26 +241,24 @@ async def test_no_generate_content_for_gemini_model_when_already_instrumented(
 
   _ = await run_agent_scenario(build_test_runner(mock_test_model()))
 
+  # `MockModel` never reaches the wrapped SDK, so these spans are ADK's.
   spans = span_exporter.get_finished_spans()
-  assert not any(span.name.startswith("generate_content") for span in spans)
+  recorded_natively = any(
+      span.name.startswith("generate_content") for span in spans
+  )
+  assert recorded_natively == adk_records
 
 
-def test_instrumented_with_opentelemetry_instrumentation_google_genai():
+def test_is_instrumented():
   instrumentor = GoogleGenAiSdkInstrumentor()
 
-  assert (
-      not tracing._instrumented_with_opentelemetry_instrumentation_google_genai()
-  )
+  assert not _genai_instrumentor.is_instrumented()
   try:
     instrumentor.instrument()
-    assert (
-        tracing._instrumented_with_opentelemetry_instrumentation_google_genai()
-    )
+    assert _genai_instrumentor.is_instrumented()
   finally:
     instrumentor.uninstrument()
-  assert (
-      not tracing._instrumented_with_opentelemetry_instrumentation_google_genai()
-  )
+  assert not _genai_instrumentor.is_instrumented()
 
 
 def test_instrumented_detection_normalizes_windows_path_separators(
@@ -262,10 +275,10 @@ def test_instrumented_detection_normalizes_windows_path_separators(
     __wrapped__ = object()
 
   monkeypatch.setattr(
-      tracing.Models, "generate_content", _FakeInstrumentedFunction
+      _genai_instrumentor.Models, "generate_content", _FakeInstrumentedFunction
   )
 
-  assert tracing._instrumented_with_opentelemetry_instrumentation_google_genai()
+  assert _genai_instrumentor.is_instrumented()
 
 
 # ---------------------------------------------------------------------------

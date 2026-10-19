@@ -20,6 +20,7 @@ from typing import Callable
 from unittest import mock
 
 from fastapi.openapi.models import HTTPBearer
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.run_config import ToolThreadPoolConfig
@@ -2389,10 +2390,10 @@ async def test_non_blocking_tool_handled_asynchronously():
       invocation_context, event, {tool.name: tool}
   )
   assert result is None
-  # Verify strong reference is kept in active_non_blocking_tool_tasks while running
-  assert invocation_context.active_non_blocking_tool_tasks is not None
-  task_key = f'{tool.name}_fc_non_blocking'
-  assert task_key in invocation_context.active_non_blocking_tool_tasks
+  # Verify a strong reference to the task is kept while it runs
+  assert 'fc_non_blocking' in (
+      invocation_context._active_background_tools or {}
+  )
 
   # Wait for the background task to complete and push to the queue
   contents = await _drain_live_function_responses(
@@ -2408,7 +2409,9 @@ async def test_non_blocking_tool_handled_asynchronously():
   invocation_context._enqueue_event.assert_awaited_once()
   # Give event loop a tick for finally block to clean up the completed task
   await asyncio.sleep(0)
-  assert task_key not in invocation_context.active_non_blocking_tool_tasks
+  assert 'fc_non_blocking' not in (
+      invocation_context._active_background_tools or {}
+  )
 
 
 async def test_non_blocking_tool_exception_handling_and_cleanup():
@@ -2443,17 +2446,17 @@ async def test_non_blocking_tool_exception_handling_and_cleanup():
       invocation_context, event, {tool.name: tool}
   )
   assert result is None
-  task_key = f'{tool.name}_fc_failing_non_blocking'
-  assert (
-      invocation_context.active_non_blocking_tool_tasks
-      and task_key in invocation_context.active_non_blocking_tool_tasks
+  assert 'fc_failing_non_blocking' in (
+      invocation_context._active_background_tools or {}
   )
 
   # Allow background task to execute and raise its exception
   await asyncio.sleep(0.1)
   # Give event loop a tick for finally block to clean up the completed task
   await asyncio.sleep(0)
-  assert task_key not in invocation_context.active_non_blocking_tool_tasks
+  assert 'fc_failing_non_blocking' not in (
+      invocation_context._active_background_tools or {}
+  )
 
 
 async def test_parallel_non_blocking_tools():
@@ -2499,11 +2502,10 @@ async def test_parallel_non_blocking_tools():
       invocation_context, event, {tool1.name: tool1, tool2.name: tool2}
   )
   assert result is None
-  assert len(invocation_context.active_non_blocking_tool_tasks) == 2
-  key1 = f'{tool1.name}_fc_1'
-  key2 = f'{tool2.name}_fc_2'
-  assert key1 in invocation_context.active_non_blocking_tool_tasks
-  assert key2 in invocation_context.active_non_blocking_tool_tasks
+  assert {
+      active.function_call_id
+      for active in (invocation_context._active_background_tools or {}).values()
+  } == {'fc_1', 'fc_2'}
 
   contents = await _drain_live_function_responses(
       invocation_context.live_request_queue, count=2
@@ -2517,7 +2519,7 @@ async def test_parallel_non_blocking_tools():
   assert invocation_context._enqueue_event.await_count == 2
 
   await asyncio.sleep(0)
-  assert len(invocation_context.active_non_blocking_tool_tasks) == 0
+  assert not invocation_context._active_background_tools
 
 
 @pytest.mark.asyncio
@@ -2553,6 +2555,83 @@ async def test_streaming_tool_with_input_stream_e2e_live():
   function_response = contents[0].parts[0].function_response
   assert function_response.response == {'result': 'streamed_hello'}
   assert function_response.id == 'fc_input_stream'
+
+
+@pytest.mark.asyncio
+async def test_parallel_calls_to_one_streaming_tool_run_and_stop_together():
+  """Parallel calls to one streaming tool each get a stream; stop ends both.
+
+  Setup: an input-streaming tool, called twice in one model turn.
+  Act: run both calls, then call stop_streaming for the tool.
+  Assert:
+    - Each call is registered under its own call id with its own stream.
+    - stop_streaming cancels both and leaves nothing registered.
+  """
+  streams: dict[str, LiveRequestQueue] = {}
+
+  async def watch(val: str, input_stream: LiveRequestQueue):
+    streams[val] = input_stream
+    yield f'watching_{val}'
+    await asyncio.sleep(100)
+
+  def stop_streaming(function_name: str) -> None:
+    del function_name
+
+  tool = FunctionTool(watch)
+  stop_tool = FunctionTool(stop_streaming)
+  tools_dict = {tool.name: tool, stop_tool.name: stop_tool}
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool, stop_tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  def _event(*function_calls: types.FunctionCall) -> Event:
+    return Event(
+        invocation_id=invocation_context.invocation_id,
+        author=agent.name,
+        content=types.Content(
+            parts=[types.Part(function_call=fc) for fc in function_calls]
+        ),
+    )
+
+  await handle_function_calls_live(
+      invocation_context,
+      _event(
+          types.FunctionCall(name=tool.name, args={'val': 'a'}, id='fc_a'),
+          types.FunctionCall(name=tool.name, args={'val': 'b'}, id='fc_b'),
+      ),
+      tools_dict,
+  )
+  await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=2
+  )
+
+  entry_a = invocation_context._active_background_tools['fc_a']
+  entry_b = invocation_context._active_background_tools['fc_b']
+  assert entry_a.input_stream is streams['a']
+  assert entry_b.input_stream is streams['b']
+  assert streams['a'] is not streams['b']
+
+  stop_response = await handle_function_calls_live(
+      invocation_context,
+      _event(
+          types.FunctionCall(
+              name='stop_streaming',
+              args={'function_name': tool.name},
+              id='fc_stop',
+          )
+      ),
+      tools_dict,
+  )
+
+  assert stop_response.get_function_responses()[0].response == {
+      'status': f'Successfully stopped streaming function {tool.name}'
+  }
+  assert entry_a.task.cancelled()
+  assert entry_b.task.cancelled()
+  assert not invocation_context._active_background_tools
 
 
 @pytest.mark.asyncio
@@ -2680,7 +2759,15 @@ async def test_streaming_tool_raising_reports_error_e2e_live():
       content=types.Content(parts=[types.Part(function_call=function_call)]),
   )
 
-  await handle_function_calls_live(invocation_context, event, {tool.name: tool})
+  with mock.patch.object(
+      InvocationContext,
+      '_add_background_tool',
+      autospec=True,
+      side_effect=InvocationContext._add_background_tool,
+  ) as add_background_tool:
+    await handle_function_calls_live(
+        invocation_context, event, {tool.name: tool}
+    )
   contents = await _drain_live_function_responses(
       invocation_context.live_request_queue, count=1
   )
@@ -2693,9 +2780,12 @@ async def test_streaming_tool_raising_reports_error_e2e_live():
   assert 'sensitive_detail' not in function_response.response['error']
   assert function_response.id == 'fc_raises'
   # The task completes instead of dying with an unretrieved exception.
-  task = invocation_context.active_streaming_tools[tool.name].task
+  task = add_background_tool.call_args.args[1].task
+  await asyncio.wait([task], timeout=1.0)
   assert task.done()
   assert task.exception() is None
+  # A finished tool unregisters itself.
+  assert 'fc_raises' not in (invocation_context._active_background_tools or {})
 
 
 def _model_call_event(invocation_id: str, call_id: str) -> Event:

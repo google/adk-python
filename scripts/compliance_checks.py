@@ -21,6 +21,7 @@ This script is used as a pre-commit hook and in CI to enforce coding standards.
 import argparse
 import ast
 import os
+import pathlib
 import re
 import sys
 
@@ -52,6 +53,66 @@ _EXCLUDED_FROM_MTLS = {
     'tests/unittests/tools/test_base_google_credentials_manager.py',
     'tests/unittests/workflow/utils/test_workflow_hitl_utils.py',
 }
+
+# Files that still import the legacy label-only decorators from
+# google.adk.utils.feature_decorator. A file belongs here only while it still
+# imports that module; once its units graduate or move to a FeatureName, drop
+# its entry so the check applies again. Do not add new files to this list. New
+# code gates features with the decorators in google.adk.features.
+_LEGACY_FEATURE_DECORATOR_USERS = {
+    'src/google/adk/a2a/experimental.py',
+    'src/google/adk/apps/_configs.py',
+    'src/google/adk/apps/base_events_summarizer.py',
+    'src/google/adk/auth/auth_schemes.py',
+    'src/google/adk/auth/credential_manager.py',
+    'src/google/adk/auth/credential_service/base_credential_service.py',
+    'src/google/adk/auth/credential_service/in_memory_credential_service.py',
+    'src/google/adk/auth/credential_service/session_state_credential_service.py',
+    'src/google/adk/auth/exchanger/base_credential_exchanger.py',
+    'src/google/adk/auth/exchanger/credential_exchanger_registry.py',
+    'src/google/adk/auth/exchanger/oauth2_credential_exchanger.py',
+    'src/google/adk/auth/oauth2_credential_util.py',
+    'src/google/adk/auth/oauth2_discovery.py',
+    'src/google/adk/auth/refresher/base_credential_refresher.py',
+    'src/google/adk/auth/refresher/credential_refresher_registry.py',
+    'src/google/adk/auth/refresher/oauth2_credential_refresher.py',
+    'src/google/adk/cli/api_server.py',
+    'src/google/adk/cli/utils/agent_loader.py',
+    'src/google/adk/environment/_base_environment.py',
+    'src/google/adk/environment/_local_environment.py',
+    'src/google/adk/evaluation/final_response_match_v2.py',
+    'src/google/adk/evaluation/hallucinations_v1.py',
+    'src/google/adk/evaluation/llm_as_judge.py',
+    'src/google/adk/evaluation/local_eval_service.py',
+    'src/google/adk/evaluation/metric_evaluator_registry.py',
+    'src/google/adk/evaluation/rubric_based_evaluator.py',
+    'src/google/adk/evaluation/rubric_based_final_response_quality_v1.py',
+    'src/google/adk/evaluation/rubric_based_tool_use_quality_v1.py',
+    'src/google/adk/evaluation/simulation/_llm_audio_user_simulator.py',
+    'src/google/adk/evaluation/simulation/llm_backed_user_simulator.py',
+    'src/google/adk/evaluation/simulation/per_turn_user_simulator_quality_v1.py',
+    'src/google/adk/evaluation/simulation/static_user_simulator.py',
+    'src/google/adk/evaluation/simulation/user_simulator.py',
+    'src/google/adk/evaluation/simulation/user_simulator_provider.py',
+    'src/google/adk/models/gemini_context_cache_manager.py',
+    'src/google/adk/optimization/gepa_root_agent_optimizer.py',
+    'src/google/adk/optimization/gepa_root_agent_prompt_optimizer.py',
+    'src/google/adk/tools/environment/_edit_file_tool.py',
+    'src/google/adk/tools/environment/_environment_toolset.py',
+    'src/google/adk/tools/environment/_execute_tool.py',
+    'src/google/adk/tools/environment/_read_file_tool.py',
+    'src/google/adk/tools/environment/_write_file_tool.py',
+    'src/google/adk/utils/cache_performance_analyzer.py',
+}
+
+# The legacy module itself and its own tests, which are not users of it.
+_LEGACY_FEATURE_DECORATOR_HOME = {
+    'src/google/adk/utils/feature_decorator.py',
+    'tests/unittests/utils/test_feature_decorator.py',
+}
+
+_LEGACY_FEATURE_DECORATOR_PACKAGE = 'google.adk.utils'
+_LEGACY_FEATURE_DECORATOR_MODULE = 'google.adk.utils.feature_decorator'
 
 
 def check_logger(content: str) -> bool:
@@ -110,6 +171,79 @@ def check_mtls(content: str, filename: str) -> bool:
   if non_scope_urls:
     return '.mtls.googleapis.com' in content
   return True
+
+
+def _package_of(filename: str) -> list[str] | None:
+  """The dotted package a file under src/ belongs to, as a list of names.
+
+  Returns None for files outside src/, whose relative imports cannot reach
+  google.adk.
+  """
+  parts = pathlib.PurePosixPath(filename).parts
+  for i in range(len(parts) - 1):
+    if parts[i] == 'src' and parts[i + 1] == 'google':
+      # A module and an __init__.py both resolve relative imports against the
+      # directory they sit in.
+      return list(parts[i + 1 : -1])
+  return None
+
+
+def _resolve_import_from(node: ast.ImportFrom, filename: str) -> str | None:
+  """The absolute module a `from ... import` statement imports from."""
+  if not node.level:
+    return node.module
+  package = _package_of(filename)
+  if package is None or node.level - 1 > len(package):
+    return None
+  base = package[: len(package) - (node.level - 1)]
+  return '.'.join(base + ([node.module] if node.module else []))
+
+
+def _imports_legacy_feature_decorator(content: str, filename: str) -> bool:
+  """Reports whether a file imports google.adk.utils.feature_decorator.
+
+  Relative imports are resolved against the file's package, so
+  `from .feature_decorator import experimental` inside src/google/adk/utils/
+  counts as well as the absolute and parenthesized spellings.
+  """
+  try:
+    tree = ast.parse(content)
+  except SyntaxError:
+    # The formatter and the type checker both report syntax errors already.
+    return False
+  for node in ast.walk(tree):
+    if isinstance(node, ast.Import):
+      if any(
+          alias.name == _LEGACY_FEATURE_DECORATOR_MODULE
+          or alias.name.startswith(_LEGACY_FEATURE_DECORATOR_MODULE + '.')
+          for alias in node.names
+      ):
+        return True
+    elif isinstance(node, ast.ImportFrom):
+      module = _resolve_import_from(node, filename)
+      if module == _LEGACY_FEATURE_DECORATOR_MODULE:
+        return True
+      if module == _LEGACY_FEATURE_DECORATOR_PACKAGE and any(
+          alias.name == 'feature_decorator' for alias in node.names
+      ):
+        return True
+  return False
+
+
+def check_legacy_feature_decorator_import(content: str, filename: str) -> bool:
+  """Reports whether a file stays off the legacy feature decorators.
+
+  The decorators in google.adk.utils.feature_decorator share their names with
+  the registry-backed ones in google.adk.features but take a message instead
+  of a FeatureName, so importing the wrong one compiles and quietly leaves the
+  unit ungated.
+  """
+  if (
+      filename in _LEGACY_FEATURE_DECORATOR_USERS
+      or filename in _LEGACY_FEATURE_DECORATOR_HOME
+  ):
+    return True
+  return not _imports_legacy_feature_decorator(content, filename)
 
 
 # Methods on a FastAPI app or router that register a request handler.
@@ -235,6 +369,14 @@ def main() -> None:
       print(
           f'❌ {f}: Found an internal shortlink, which resolves for nobody'
           ' reading this repository. Say what it says in plain words instead.'
+      )
+      failed = True
+
+    if not check_legacy_feature_decorator_import(content, f):
+      print(
+          f'❌ {f}: Imports the legacy label-only decorators from'
+          ' google.adk.utils.feature_decorator. Gate new features with'
+          ' the decorators in google.adk.features, which take a FeatureName.'
       )
       failed = True
 

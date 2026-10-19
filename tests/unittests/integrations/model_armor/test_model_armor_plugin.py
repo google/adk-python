@@ -30,6 +30,7 @@ from google.adk.integrations.model_armor._plugin import _shared_template_locatio
 from google.adk.integrations.model_armor._plugin import _TOOL_OUTPUT_CHUNK_OVERLAP_CHARS
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.utils import _mtls_utils
 from google.auth.credentials import AnonymousCredentials
 from google.cloud import modelarmor_v1
 from google.genai import types
@@ -550,12 +551,31 @@ async def test_fully_screened_clean_content_passes_through():
 # --- Regional endpoint ------------------------------------------------------
 
 
-def test_regional_endpoint_format():
-  """The host pattern Model Armor serves regional traffic on."""
-  assert (
-      _regional_endpoint('us-central1')
-      == 'modelarmor.us-central1.rep.googleapis.com'
-  )
+@pytest.mark.parametrize(
+    ('mtls_setting', 'cert_available', 'expected'),
+    [
+        ('never', True, 'modelarmor.us-central1.rep.googleapis.com'),
+        ('auto', False, 'modelarmor.us-central1.rep.googleapis.com'),
+        ('auto', True, 'modelarmor.us-central1.rep.mtls.googleapis.com'),
+        ('always', False, 'modelarmor.us-central1.rep.mtls.googleapis.com'),
+    ],
+)
+def test_regional_endpoint_follows_mtls_setting(
+    monkeypatch, mtls_setting, cert_available, expected
+):
+  """The regional endpoint is the mTLS one if mTLS is enabled."""
+  monkeypatch.setenv('GOOGLE_API_USE_MTLS_ENDPOINT', mtls_setting)
+  with (
+      mock.patch.object(
+          _mtls_utils, 'use_client_cert_effective', return_value=cert_available
+      ),
+      mock.patch.object(
+          _mtls_utils.mtls,
+          'has_default_client_cert_source',
+          return_value=cert_available,
+      ),
+  ):
+    assert _regional_endpoint('us-central1') == expected
 
 
 @pytest.mark.asyncio

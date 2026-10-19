@@ -35,6 +35,7 @@ from ....telemetry import _instrumentation
 from ....utils._callback_pipeline import _run_callbacks
 from ....utils._callback_pipeline import _stop_on_non_none
 from ....utils._callback_pipeline import _stop_on_truthy
+from ....utils._runner_utils import _stream_in_caller_scope
 from ....utils.context_utils import Aclosing
 from ._utils import as_llm_agent as _as_llm_agent
 
@@ -379,7 +380,7 @@ async def run_and_handle_error(
         error=error,
     )
 
-  try:
+  async def _record_responses() -> AsyncGenerator[LlmResponse, None]:
     async with _instrumentation.record_inference_telemetry(
         llm_request,
         invocation_context,
@@ -390,6 +391,17 @@ async def run_and_handle_error(
           async for llm_response in timed:
             tel_ctx.record_llm_response(invocation_context, llm_response)
             yield llm_response
+
+  try:
+    # The inference scope stays current across yields, but only in the
+    # generator's own context, so it never leaks into the consumer.
+    # `_stream_in_caller_scope` closes `responses` in that context first.
+    async with (
+        Aclosing(_record_responses()) as responses,
+        Aclosing(_stream_in_caller_scope(responses)) as agen,
+    ):
+      async for llm_response in agen:
+        yield llm_response
   except Exception as model_error:
     with _model_callback_context(
         invocation_context, model_response_event

@@ -68,6 +68,7 @@ from .utils import _lazy
 from .utils._agent_mode import AgentMode as _AgentMode
 from .utils._debug_output import print_event
 from .utils._runner_utils import _notify_run_error
+from .workflow._base_node import _walk_static_nodes
 from .workflow._base_node import BaseNode
 
 if TYPE_CHECKING:
@@ -142,6 +143,8 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
 
   # Pass 2: Walk backward to find the latest active scope that is not finished.
   for event in reversed(live_events):
+    if event.actions and event.actions.compaction:
+      continue
     scope = event.isolation_scope
     if not scope:
       continue
@@ -1381,7 +1384,7 @@ class Runner:
         entrypoint_node=root_agent,
         conversation_id=session_id,
         run_config=run_config,
-    ) as invocation_otel_context:
+    ) as (invocation_otel_context, _):
       async with aclosing(
           _instrumentation.stream_in_scope(
               invocation_otel_context,
@@ -2235,36 +2238,15 @@ class Runner:
   def _collect_toolset(
       self, root: BaseNode, visited: set[int] | None = None
   ) -> set[BaseToolset]:
+    del visited  # Retained for subclass override compatibility.
     if not isinstance(root, BaseNode):
       return set()
-    if visited is None:
-      visited = set()
-    root_id = id(root)
-    if root_id in visited:
-      return set()
-    visited.add(root_id)
-
     toolsets: set[BaseToolset] = set()
-    if hasattr(root, 'tools'):
-      for tool_union in getattr(root, 'tools', ()) or ():
-        if isinstance(tool_union, BaseToolset):
-          toolsets.add(tool_union)
-    if hasattr(root, 'sub_agents'):
-      for sub_agent in getattr(root, 'sub_agents', ()) or ():
-        toolsets.update(self._collect_toolset(sub_agent, visited))
-    if hasattr(root, 'graph') and getattr(root, 'graph', None):
-      graph = getattr(root, 'graph')
-      nodes = getattr(graph, 'nodes', None)
-      if nodes:
-        node_iter = nodes.values() if isinstance(nodes, dict) else nodes
-        for node in node_iter:
-          toolsets.update(self._collect_toolset(node, visited))
-    if hasattr(root, '_node') and getattr(root, '_node', None):
-      toolsets.update(self._collect_toolset(getattr(root, '_node'), visited))
-    if hasattr(root, '_inner_node') and getattr(root, '_inner_node', None):
-      toolsets.update(
-          self._collect_toolset(getattr(root, '_inner_node'), visited)
-      )
+    for node in _walk_static_nodes(root):
+      if hasattr(node, 'tools'):
+        for tool_union in getattr(node, 'tools', ()) or ():
+          if isinstance(tool_union, BaseToolset):
+            toolsets.add(tool_union)
     return toolsets
 
   async def _cleanup_toolsets(
@@ -2274,6 +2256,7 @@ class Runner:
     if not toolsets_to_close:
       return
 
+    cancelled_error = None
     # This maintains the same task context throughout cleanup
     for toolset in toolsets_to_close:
       cleanup_task = asyncio.create_task(
@@ -2324,24 +2307,46 @@ class Runner:
               type(toolset).__name__,
               close_error,
           )
-        raise
+        cancelled_error = e
       except Exception as e:
         logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
 
+    if cancelled_error is not None:
+      raise cancelled_error
+
   async def close(self) -> None:
-    """Closes the runner."""
+    """Closes the runner.
+
+    Raises:
+      asyncio.CancelledError: If closing was cancelled. The rest of the cleanup
+        still runs before it is re-raised, even if that cleanup fails.
+      RuntimeError: If one or more plugins failed to close.
+    """
     logger.info('Closing runner...')
-    # Close Toolsets
-    if self.agent is not None:
-      await self._cleanup_toolsets(self._collect_toolset(self.agent))
+    cancelled_error = None
+    try:
+      # Close Toolsets
+      if self.agent is not None:
+        await self._cleanup_toolsets(self._collect_toolset(self.agent))
+    except asyncio.CancelledError as e:
+      cancelled_error = e
 
-    # Close Plugins
-    if self.plugin_manager:
-      await self.plugin_manager.close()
-
-    # Close Session Service
-    if self.session_service:
-      await self.session_service.flush()
+    try:
+      # Close Plugins
+      if self.plugin_manager:
+        await self.plugin_manager.close()
+    except asyncio.CancelledError as e:
+      cancelled_error = e
+    finally:
+      try:
+        # Close Session Service
+        if self.session_service:
+          await self.session_service.flush()
+      except asyncio.CancelledError as e:
+        cancelled_error = e
+      finally:
+        if cancelled_error is not None:
+          raise cancelled_error
 
     logger.info('Runner closed.')
 

@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import mimetypes
+import os
 from pathlib import Path
 from pathlib import PurePosixPath
 from pathlib import PureWindowsPath
@@ -49,6 +50,7 @@ from ..features import is_feature_enabled
 from ..skills import models
 from ..skills import prompt
 from ..skills import SkillRegistry
+from ..skills._utils import _validate_relative_resource_path
 from ..telemetry import _hallucination
 from ..telemetry import _instrumentation
 from ..utils import instructions_utils
@@ -455,10 +457,57 @@ def _skill_content_hash(skill: models.Skill) -> str:
   return hasher.hexdigest()
 
 
+def _validate_skill_subpath(
+    path: str,
+    *,
+    base_dir: Path | None = None,
+    sub_dir: str | None = None,
+    strip_sub_dir: bool = False,
+) -> str:
+  """Validates a relative skill resource path and optional base containment."""
+  if strip_sub_dir and sub_dir is not None:
+    posix_path = path.replace("\\", "/")
+    while posix_path.startswith("./"):
+      posix_path = posix_path[2:]
+    prefix = f"{sub_dir}/"
+    if posix_path.startswith(prefix):
+      posix_path = posix_path[len(prefix) :]
+    path = posix_path
+  try:
+    normalized = _validate_relative_resource_path(path)
+  except ValueError as e:
+    raise PermissionError(f"Path traversal detected: {path!r}") from e
+  if base_dir is not None:
+    effective_base = base_dir / sub_dir if sub_dir is not None else base_dir
+    real_base = os.path.realpath(effective_base.as_posix())
+    target = effective_base / normalized
+    safe_target = os.path.realpath(target.as_posix())
+    if (
+        safe_target == real_base
+        or os.path.commonpath([real_base, safe_target]) != real_base
+    ):
+      raise PermissionError(f"Path traversal detected: {path!r}")
+  return normalized
+
+
 async def _write_skill_resources_to_env(
     skill: models.Skill, skill_dir: Path, env: BaseEnvironment
 ) -> None:
   """Writes every resource of a skill into its folder in the environment."""
+  for sub_dir, names in (
+      ("references", skill.resources.list_references()),
+      ("assets", skill.resources.list_assets()),
+      ("scripts", skill.resources.list_scripts()),
+  ):
+    seen_paths: set[str] = set()
+    for name in names:
+      normalized = _validate_skill_subpath(
+          name, base_dir=skill_dir, sub_dir=sub_dir
+      )
+      if normalized in seen_paths:
+        raise ValueError(f"Duplicate normalized path detected: {normalized!r}")
+      seen_paths.add(normalized)
+
   write_tasks = []
 
   def _write(*path_parts: str, content: str | bytes) -> None:
@@ -466,7 +515,11 @@ async def _write_skill_resources_to_env(
         env.write_file(
             cast(
                 Path,
-                PurePosixPath(skill_dir.joinpath(*path_parts).as_posix()),
+                PurePosixPath(
+                    skill_dir.joinpath(
+                        *(p.replace("\\", "/") for p in path_parts)
+                    ).as_posix()
+                ),
             ),
             content,
         )
@@ -1234,17 +1287,48 @@ import sys
 import json as _json
 import subprocess
 import runpy
+from pathlib import PurePosixPath
+from pathlib import PureWindowsPath
 _files = {files_dict!r}
 def _materialize_and_run():
   _orig_cwd = os.getcwd()
   with tempfile.TemporaryDirectory() as td:
+    _real_base = os.path.realpath(td)
+    _seen_paths = set()
     for rel_path, content in _files.items():
-      norm_rel = os.path.normpath(rel_path)
-      if norm_rel.startswith('..') or os.path.isabs(norm_rel):
+      posix_rel = rel_path.replace('\\\\', '/')
+      _sub_dir, _sep, name = posix_rel.partition('/')
+      if not _sep:
+        name = _sub_dir
+      p = PurePosixPath(name)
+      normalized = p.as_posix()
+      if (
+          not normalized
+          or normalized == '.'
+          or p.is_absolute()
+          or '..' in p.parts
+          or PureWindowsPath(name).is_absolute()
+          or bool(PureWindowsPath(name).drive)
+          or PureWindowsPath(normalized).is_absolute()
+          or bool(PureWindowsPath(normalized).drive)
+      ):
         raise PermissionError(
-            'Path traversal blocked in skill file: ' + rel_path
+            f'Path traversal detected: {{rel_path!r}}'
         )
-      full_path = os.path.join(os.path.abspath(td), norm_rel)
+      _safe = os.path.realpath(os.path.join(td, posix_rel))
+      if (
+          _safe == _real_base
+          or os.path.commonpath([_real_base, _safe]) != _real_base
+      ):
+        raise PermissionError(
+            f'Path traversal detected: {{rel_path!r}}'
+        )
+      if _safe in _seen_paths:
+        raise ValueError(
+            f'Duplicate normalized path detected: {{normalized!r}}'
+        )
+      _seen_paths.add(_safe)
+      full_path = _safe
       os.makedirs(os.path.dirname(full_path), exist_ok=True)
       mode = 'wb' if isinstance(content, bytes) else 'w'
       with open(full_path, mode,
@@ -1413,23 +1497,23 @@ _materialize_and_run()
         When generated files are saved, also includes ``saved_artifacts``.
         When generated files are skipped, also includes ``skipped_artifacts``.
     """
-    code = self._build_wrapper_code(
-        skill, file_path, script_args, short_options, positional_args
-    )
-    if code is None:
-      if "." in file_path:
-        ext_msg = f"'.{file_path.rsplit('.', 1)[-1]}'"
-      else:
-        ext_msg = "(no extension)"
-      return {
-          "error": (
-              f"Unsupported script type {ext_msg}."
-              " Supported types: .py, .sh, .bash"
-          ),
-          "error_code": "UNSUPPORTED_SCRIPT_TYPE",
-      }
-
     try:
+      code = self._build_wrapper_code(
+          skill, file_path, script_args, short_options, positional_args
+      )
+      if code is None:
+        if "." in file_path:
+          ext_msg = f"'.{file_path.rsplit('.', 1)[-1]}'"
+        else:
+          ext_msg = "(no extension)"
+        return {
+            "error": (
+                f"Unsupported script type {ext_msg}."
+                " Supported types: .py, .sh, .bash"
+            ),
+            "error_code": "UNSUPPORTED_SCRIPT_TYPE",
+        }
+
       # Execute the self-contained script using the underlying executor
       result = await asyncio.to_thread(
           self._base_executor.execute_code,
@@ -1602,12 +1686,15 @@ _materialize_and_run()
       nonce: str | None = None,
   ) -> str | None:
     """Builds a self-extracting Python script."""
-    ext = ""
-    if "." in file_path:
-      ext = file_path.rsplit(".", 1)[-1].lower()
+    normalized_file = _validate_skill_subpath(
+        file_path, sub_dir="scripts", strip_sub_dir=True
+    )
 
-    if not file_path.startswith("scripts/"):
-      file_path = f"scripts/{file_path}"
+    ext = ""
+    if "." in normalized_file:
+      ext = normalized_file.rsplit(".", 1)[-1].lower()
+
+    file_path = f"scripts/{normalized_file}"
 
     files_dict = {}
     for ref_name in skill.resources.list_references():
@@ -1995,11 +2082,10 @@ class RunSkillScriptTool(BaseTool):
           "skills_folder is not set and no environment working_dir available."
       )
     skill_dir = skills_folder / skill.name
-    if not file_path.startswith("scripts/"):
-      rel_script = f"scripts/{file_path}"
-    else:
-      rel_script = file_path
-    script_path = skill_dir / rel_script
+    normalized_file = _validate_skill_subpath(
+        file_path, base_dir=skill_dir, sub_dir="scripts", strip_sub_dir=True
+    )
+    script_path = skill_dir / "scripts" / normalized_file
 
     try:
       await env.read_file(cast(Path, PurePosixPath(script_path.as_posix())))

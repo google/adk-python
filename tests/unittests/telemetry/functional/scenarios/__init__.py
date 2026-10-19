@@ -29,6 +29,8 @@ one module each:
   its instrumentation already active.
 * ``mcp``: the same agent, with its tool served over (fake) MCP.
 * ``skill``: the skill-loading agent.
+* ``compaction``: the same two graphs, run over a session that already holds
+  history, under an app configured to compact it.
 """
 
 from __future__ import annotations
@@ -47,6 +49,8 @@ Scenario = Literal[
     "agent_tool",
     "nested_agents_in_workflow",
     "streaming",
+    "conversational_agent_compaction",
+    "workflow_compaction",
 ]
 
 __all__ = ["Scenario"]

@@ -76,13 +76,57 @@ def _get_credential_id(credentials: typing.Any) -> str:
   ):
     return "ComputeEngineCredentials"
 
+  module_name = getattr(credentials.__class__, "__module__", "")
+
+  # Impersonated credentials act as the target service account, but the source
+  # principal, scopes, delegates, and subject also determine what the
+  # credential asserts.
+  if module_name == "google.auth.impersonated_credentials":
+    target = getattr(credentials, "service_account_email", None)
+    source = getattr(credentials, "_source_credentials", None)
+    if target is not None and source is not None:
+      scopes = tuple(getattr(credentials, "_target_scopes", None) or ())
+      delegates = tuple(getattr(credentials, "_delegates", None) or ())
+      subject = getattr(credentials, "_subject", None)
+      return (
+          f"Impersonated:{target}:{_get_credential_id(source)}"
+          f":{scopes}:{delegates}:{subject}"
+      )
+    return str(id(credentials))
+
+  # Handle external account credentials (Workload Identity, Pluggable, etc.)
+  # before service_account_email because WIF credentials with SA impersonation
+  # also expose service_account_email.
+  if getattr(credentials, "_audience", None) is not None:
+    audience = credentials._audience
+    source = getattr(credentials, "_credential_source", None)
+    supplier = getattr(credentials, "_subject_token_supplier", None) or getattr(
+        credentials, "_aws_security_credentials_supplier", None
+    )
+    sa_email = getattr(credentials, "service_account_email", None)
+    scopes = tuple(getattr(credentials, "_scopes", None) or ())
+
+    if source is not None:
+      if isinstance(source, dict):
+        source_str = str(sorted(source.items()))
+      else:
+        source_str = str(source)
+      return f"ExternalAccount:{audience}:{source_str}:{sa_email}:{scopes}"
+    elif supplier is not None:
+      return (
+          f"ExternalAccount:{audience}:supplier:{id(supplier)}"
+          f":{sa_email}:{scopes}"
+      )
+    return str(id(credentials))
+
   sa_email = getattr(credentials, "service_account_email", None)
   if sa_email is not None:
-    # This covers both standard ServiceAccountCredentials and ImpersonatedCredentials
-    return str(sa_email)
+    # This covers standard ServiceAccountCredentials.
+    scopes = tuple(getattr(credentials, "_scopes", None) or ())
+    subject = getattr(credentials, "_subject", None)
+    return f"{sa_email}:{scopes}:{subject}"
 
   # Handle User Credentials (like local ADC) using refresh token hash
-  module_name = getattr(credentials.__class__, "__module__", "")
   if (
       module_name.startswith("google.oauth2.credentials")
       and getattr(credentials, "refresh_token", None) is not None
@@ -103,21 +147,6 @@ def _get_credential_id(credentials: typing.Any) -> str:
       else:
         boundary_str = str(boundary_json)
       return f"Downscoped:{source_id}:{boundary_str}"
-
-  # Handle external account credentials (Workload Identity, Pluggable, etc.)
-  if getattr(credentials, "_audience", None) is not None:
-    audience = credentials._audience
-    source = getattr(credentials, "_credential_source", None)
-    supplier = getattr(credentials, "_subject_token_supplier", None)
-
-    if source is not None:
-      if isinstance(source, dict):
-        source_str = str(sorted(source.items()))
-      else:
-        source_str = str(source)
-      return f"ExternalAccount:{audience}:{source_str}"
-    elif supplier is not None:
-      return f"ExternalAccount:{audience}:supplier:{id(supplier)}"
 
   return str(id(credentials))
 

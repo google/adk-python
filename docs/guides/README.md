@@ -65,6 +65,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [Live model callbacks](flows/llm_flows/base_llm_flow/live_model_callbacks.md) - Inspecting or blocking content on a live bidirectional session.
 
 ### Integrations
+* [AgentEngineEnvironment](integrations/vmaas/agent_engine_environment/index.md) - Running agent code in an Agent Engine sandbox in your Google Cloud project, which pauses between uses instead of being deleted.
 * [BigQueryToolset](integrations/bigquery/bigquery_toolset/index.md) - Exploring and querying BigQuery, and the write_mode setting that decides what the agent may change.
 * [CrewaiTool](integrations/crewai/crewai_tool/index.md) - Wrapping a CrewAI tool so an ADK agent can call it.
 * [DaytonaEnvironment](integrations/daytona/daytona_environment/index.md) - Running agent code in a Daytona hosted sandbox instead of on your machine.
@@ -78,10 +79,13 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Labs
 * [AntigravityAgent](labs/antigravity/index.md) - Runs a Google Antigravity SDK agent as an ADK agent node.
+* [ClassifierNode](labs/classifiers/classifier_node/index.md) - Routing a workflow on a classifier's answer to one `Choice` or `Binary` question.
 
 ### Live
 * [Live tools](live/tools/index.md) - Asynchronous background execution and response scheduling for Gemini Live agents.
 * [CascadeLive](live/cascade_live/index.md) - A live-composing model wrapping a text reasoner in speech-to-text and text-to-speech transforms.
+* [GeminiSTT](live/gemini_stt/index.md) - Recognizing a CascadeLive agent's user speech with Gemini streaming transcription, and when the user's turn ends.
+* [GeminiTTS](live/gemini_tts/index.md) - Speaking a CascadeLive agent's replies with Gemini text-to-speech, sentence by sentence and without gaps.
 * [LiveRequestQueue](live/live_request_queue/index.md) - Streaming content, realtime audio, and stream control signals to live agents.
 
 ### Memory
@@ -99,6 +103,8 @@ This directory contains specific developer guides for the ADK Python implementat
 * [BasePlanner](planners/planner/index.md) - Guiding model execution with structured planning instructions, thinking configurations, and Plan-Re-Act thought tagging.
 
 ### Plugins
+* [ForceEscalationPlugin](tools/model_consult/force_escalation_plugin/index.md) - Enforcing deterministic first-turn, repeated-tool-call, and pre-tool gating escalations to ModelConsultTool.
+* [ModelConsultObservabilityPlugin](tools/model_consult/observability_plugin/index.md) - Measuring ModelConsultTool escalations, advisor and executor tokens, latency, and estimated cost for every invocation.
 * [ReflectAndRetryModelPlugin](plugins/reflect_retry_model_plugin/index.md) - Self-healing, concurrent-safe error recovery for model failures.
 * [ReflectAndRetryToolPlugin](plugins/reflect_retry_tool_plugin/index.md) - Self-healing, concurrent-safe error recovery for tool failures.
 * [ToolCallIntegrityPlugin](plugins/tool_call_integrity_plugin/index.md) - Optional HMAC integrity check for stored function call arguments.

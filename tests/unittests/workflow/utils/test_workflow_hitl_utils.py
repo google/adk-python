@@ -25,15 +25,85 @@ from google.adk.auth.auth_handler import AuthHandler
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.request_input import RequestInput
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.workflow.utils._rehydration_utils import _ChildScanState
+from google.adk.workflow.utils._workflow_hitl_utils import apply_confirmation_resume
+from google.adk.workflow.utils._workflow_hitl_utils import auth_interrupt_id
+from google.adk.workflow.utils._workflow_hitl_utils import confirmation_interrupt_id
 from google.adk.workflow.utils._workflow_hitl_utils import create_auth_request_event
+from google.adk.workflow.utils._workflow_hitl_utils import create_confirmation_request_input
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_event
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
 from google.adk.workflow.utils._workflow_hitl_utils import has_auth_credential
 from google.adk.workflow.utils._workflow_hitl_utils import process_auth_resume
 from google.genai import types
 import pytest
+
+
+def test_interrupt_id_helpers():
+  """Interrupt ID helpers prefix node_path with their respective namespaces."""
+  assert (
+      confirmation_interrupt_id("wf@1/node@1")
+      == "wf_tool_confirmation:wf@1/node@1"
+  )
+  assert auth_interrupt_id("wf@1/node@1") == "wf_auth:wf@1/node@1"
+
+
+def test_apply_confirmation_resume():
+  """apply_confirmation_resume sets ctx.tool_confirmation when resumed."""
+  ctx = MagicMock()
+  ctx.node_path = "wf@1/node@1"
+  ctx.tool_confirmation = None
+  ctx.resume_inputs = {}
+
+  assert apply_confirmation_resume(ctx) is False
+  assert ctx.tool_confirmation is None
+
+  ctx.resume_inputs = {
+      "wf_tool_confirmation:wf@1/node@1": {
+          "confirmed": True,
+          "payload": {"note": "approved"},
+      }
+  }
+  assert apply_confirmation_resume(ctx) is True
+  assert ctx.tool_confirmation == ToolConfirmation(
+      confirmed=True, payload={"note": "approved"}
+  )
+
+
+def test_create_confirmation_request_input():
+  """create_confirmation_request_input builds a ToolConfirmation RequestInput."""
+  default_req = create_confirmation_request_input(
+      node_path="wf@1/node@1",
+      tool_name="delete_item",
+      args={"item_id": 42},
+  )
+  assert default_req.interrupt_id == "wf_tool_confirmation:wf@1/node@1"
+  assert (
+      default_req.message
+      == "Please approve or reject the tool call delete_item()."
+  )
+  assert default_req.payload == {
+      "tool_name": "delete_item",
+      "args": {"item_id": 42},
+  }
+  assert default_req.response_schema is ToolConfirmation
+
+  custom_req = create_confirmation_request_input(
+      node_path="wf@1/node@1",
+      tool_name="delete_item",
+      args={"item_id": 42},
+      hint="Confirm deletion?",
+      confirmation_payload={"reason": "required"},
+  )
+  assert custom_req.message == "Confirm deletion?"
+  assert custom_req.payload == {
+      "tool_name": "delete_item",
+      "args": {"item_id": 42},
+      "confirmation_payload": {"reason": "required"},
+  }
+
 
 # --- create_request_input_event ---
 

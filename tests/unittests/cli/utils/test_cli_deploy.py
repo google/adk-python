@@ -483,7 +483,12 @@ def test_to_gke_happy_path(
   )
 
   apply_args = run_recorder.calls[2][0][0]
-  expected_apply_args = ["kubectl", "apply", "-f", str(tmp_path)]
+  expected_apply_args = [
+      "kubectl",
+      "apply",
+      "-f",
+      str(tmp_path / "deployment.yaml"),
+  ]
   assert apply_args == expected_apply_args
 
   deployment_yaml_path = tmp_path / "deployment.yaml"
@@ -670,6 +675,107 @@ def test_to_gke_extra_packages_deployment_yaml_name_raises(
     )
 
   assert "conflicting name" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("reserved_name", ["Dockerfile", "deployment.yaml"])
+def test_to_gke_extra_packages_reserved_name_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+    reserved_name: str,
+) -> None:
+  """A package basename colliding with Dockerfile or deployment.yaml raises."""
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+  src_dir = agent_dir(False, False)
+  reserved_pkg = tmp_path / reserved_name
+  reserved_pkg.mkdir()
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_gke(
+        agent_folder=str(src_dir),
+        project="gke-proj",
+        region="us-east1",
+        cluster_name="cluster",
+        service_name="svc",
+        app_name="agent",
+        temp_folder=str(tmp_path / "deployment"),
+        port=8080,
+        trace_to_cloud=False,
+        otel_to_cloud=False,
+        with_ui=False,
+        log_level="info",
+        adk_version="2.7.1",
+        extra_packages=[str(reserved_pkg)],
+    )
+
+  assert "conflicting name" in str(exc_info.value)
+
+
+def test_to_gke_applies_deployment_yaml_directly(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """`to_gke` must apply deployment.yaml directly, not the whole temp folder."""
+  src_dir = agent_dir(False, False)
+  deployment_dir = tmp_path / "deployment"
+  extra_yaml = tmp_path / "config.yaml"
+  extra_yaml.write_text("foo: bar\n")
+
+  applied_files: list[str] = []
+
+  def mock_subprocess_run(*args, **kwargs):
+    command_list = args[0]
+    if command_list[:2] == ["kubectl", "apply"]:
+      applied_files.append(command_list[command_list.index("-f") + 1])
+      return types.SimpleNamespace(stdout="deployment created")
+    return None
+
+  monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="gke-proj",
+      region="us-east1",
+      cluster_name="cluster",
+      service_name="svc",
+      app_name="agent",
+      temp_folder=str(deployment_dir),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      adk_version="2.7.1",
+      extra_packages=[str(extra_yaml)],
+  )
+
+  assert len(applied_files) == 1
+  assert applied_files[0] == str(deployment_dir / "deployment.yaml")
+
+
+def test_stage_extra_packages_filters_ignored_patterns(tmp_path: Path) -> None:
+  """Directory extra_packages should respect .gitignore patterns."""
+  pkg_dir = tmp_path / "my_package"
+  pkg_dir.mkdir()
+  (pkg_dir / "module.py").write_text("X = 1\n")
+  (pkg_dir / ".gitignore").write_text("ignored.py\n*.tmp\n")
+  (pkg_dir / "ignored.py").write_text("SECRET = 2\n")
+  (pkg_dir / "temp.tmp").write_text("TEMP\n")
+  staging_dir = tmp_path / "staging"
+  staging_dir.mkdir()
+
+  staged = cli_deploy._stage_extra_packages(
+      [(str(pkg_dir), str(tmp_path))],
+      str(staging_dir),
+  )
+
+  assert staged == ["my_package"]
+  staged_pkg = staging_dir / "my_package"
+  assert (staged_pkg / "module.py").is_file()
+  assert not (staged_pkg / "ignored.py").exists()
+  assert not (staged_pkg / "temp.tmp").exists()
 
 
 def test_to_gke_uses_gcloud_cmd_on_windows(

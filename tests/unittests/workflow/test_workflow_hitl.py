@@ -1053,29 +1053,13 @@ async def test_rerun_with_multiple_hitl_and_outputs(
   assert node_b.received_inputs == ['final_output']
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        False,
-        pytest.param(
-            True,
-            marks=pytest.mark.xfail(
-                reason=(
-                    'A rerun_on_resume node is re-run as soon as one interrupt'
-                    ' resolves instead of waiting for all pending interrupts;'
-                    ' fixing this needs a change to the shared replay'
-                    ' interception logic.'
-                )
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
-async def test_rerun_on_resume_waits_for_all_interrupts(
+async def test_rerun_on_resume_reruns_when_any_interrupt_resolves(
     request: pytest.FixtureRequest,
     resumable: bool,
 ):
-  """Tests that a rerun_on_resume node is not rerun until all pending interrupts are resolved."""
+  """A rerun_on_resume node reruns when any of its interrupts is answered."""
 
   class _SimultaneousInputsNode(BaseNode):
     """A node that requests multiple inputs simultaneously."""
@@ -1161,7 +1145,7 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
         'req2',
     }
 
-  # Run 2: provide only req1 — node should stay WAITING, NOT rerun.
+  # Run 2: provide only req1 — the node reruns and asks for req2 again.
   events2 = await runner.run_async(
       new_message=testing_utils.UserContent(
           create_request_input_response('req1', {'text': 'response 1'})
@@ -1174,7 +1158,6 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
       )
   )
 
-  # Node should remain WAITING with req2 still pending.
   if resumable:
     final_state2 = simplified2[-1][1]
     assert final_state2['nodes']['NodeA']['status'] == (
@@ -1182,14 +1165,9 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
     )
     assert final_state2['nodes']['NodeA']['interrupts'] == ['req2']
 
-  # The node should NOT have produced any RequestInput or data output in resumable mode.
-  # In non-resumable mode, it re-yields the pending interrupt 'req2'.
   req_events2 = workflow_testing_utils.get_request_input_events(events2)
-  if resumable:
-    assert len(req_events2) == 0
-  else:
-    assert len(req_events2) == 1
-    assert extract_event_interrupt_ids(req_events2[0]) == {'req2'}
+  assert len(req_events2) == 1
+  assert extract_event_interrupt_ids(req_events2[0]) == {'req2'}
 
   # Run 3: provide req2 — now all interrupts resolved, node should rerun.
   events3 = await runner.run_async(
@@ -1226,6 +1204,52 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
       'input1': 'response 1',
       'input2': 'response 2',
   }
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_rerun_on_resume_node_continues_with_first_answer(
+    request: pytest.FixtureRequest,
+    resumable: bool,
+):
+  """A node waiting on alternative inputs continues with the first answer."""
+
+  @node(rerun_on_resume=True)
+  def wait_for_either(ctx: Context):
+    for interrupt_id in ('approval', 'takeover'):
+      if interrupt_id in ctx.resume_inputs:
+        yield Event(output=ctx.resume_inputs[interrupt_id])
+        return
+    yield RequestInput(interrupt_id='approval', message='Approve?')
+    yield RequestInput(interrupt_id='takeover', message='Take over?')
+
+  capture = InputCapturingNode(name='capture')
+  agent = Workflow(
+      name='test_first_answer',
+      edges=[(START, wait_for_either, capture)],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  assert len(workflow_testing_utils.get_request_input_events(events1)) == 2
+  inv_id = events1[0].invocation_id
+
+  # The approval interrupt is never answered.
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response('takeover', {'result': 'manual'})
+      ),
+      invocation_id=inv_id,
+  )
+  assert not workflow_testing_utils.get_request_input_events(events2)
+  assert capture.received_inputs == ['manual']
 
 
 # ---------------------------------------------------------------------------
