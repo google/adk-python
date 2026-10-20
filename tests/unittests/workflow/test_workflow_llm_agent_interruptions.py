@@ -505,7 +505,6 @@ async def test_workflow_pause_and_resume_parent_interruption(
   assert any('Parent all done' in t for t in content_texts)
 
 
-@pytest.mark.xfail(reason='Task agents cannot have sub-agents in workflow')
 @pytest.mark.asyncio
 async def test_workflow_pause_and_resume_child_interruption(
     request: pytest.FixtureRequest,
@@ -538,7 +537,6 @@ async def test_workflow_pause_and_resume_child_interruption(
   )
   parent_model = testing_utils.MockModel.create(
       responses=[
-          call_child,
           call_child,
           'Parent all done',
       ]

@@ -40,6 +40,7 @@ from google.adk.skills._utils import _load_skill_from_zip_bytes
 from google.adk.skills._utils import _MAX_ZIP_ENTRIES
 from google.adk.skills._utils import _MAX_ZIP_UNCOMPRESSED_BYTES
 from google.adk.skills._utils import _read_skill_properties
+from google.adk.skills._utils import _validate_relative_resource_path
 from google.adk.skills._utils import _validate_skill_dir
 import pytest
 
@@ -629,6 +630,12 @@ def test__load_skill_from_zip_bytes_keeps_binary_resources():
   assert skill.resources.list_scripts() == ["script1.sh"]
 
 
+def test__load_skill_from_zip_bytes_rejects_malformed_archive():
+  """Tests that non-zip bytes passed to the loader raise ValueError."""
+  with pytest.raises(ValueError, match="Skill archive is malformed"):
+    _load_skill_from_zip_bytes(b"not a valid zip archive")
+
+
 def test__load_skill_from_zip_bytes_rejects_oversized_archive():
   """Tests that an archive declaring too much decompressed data is refused."""
 
@@ -1103,3 +1110,293 @@ async def test_list_skills_in_gcs_dir_async(mock_client_class):
   skills = await _list_skills_in_gcs_dir_async("my-bucket", "skills/")
   assert "my-skill" in skills
   assert skills["my-skill"].name == "my-skill"
+
+
+# ── Security: path traversal prevention ──
+
+
+@mock.patch("google.cloud.storage.Client")
+def test__load_skill_from_gcs_dir_rejects_dotdot_traversal(mock_client_class):
+  """Ingestion layer must reject blob names containing .. sequences."""
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  def mock_blob_side_effect(path):
+    m = mock.MagicMock()
+    if path.endswith("SKILL.md"):
+      m.exists.return_value = True
+      m.download_as_text.return_value = (
+          "---\nname: my-skill\ndescription: Test\n---\nBody"
+      )
+    else:
+      m.exists.return_value = False
+    return m
+
+  mock_bucket.blob.side_effect = mock_blob_side_effect
+
+  def list_blobs_side_effect(prefix=None):
+    m = mock.MagicMock()
+    m.name = prefix + "../../../../tmp/malicious.py"
+    m.download_as_text.return_value = "malicious content"
+    return [m]
+
+  mock_bucket.list_blobs.side_effect = list_blobs_side_effect
+
+  with pytest.raises(ValueError, match="Unsafe path"):
+    _load_skill_from_gcs_dir("my-bucket", "my-skill")
+
+
+@mock.patch("google.cloud.storage.Client")
+def test__load_skill_from_gcs_dir_rejects_absolute_path(mock_client_class):
+  """Ingestion layer must reject blob names that resolve to absolute paths."""
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  def mock_blob_side_effect(path):
+    m = mock.MagicMock()
+    if path.endswith("SKILL.md"):
+      m.exists.return_value = True
+      m.download_as_text.return_value = (
+          "---\nname: my-skill\ndescription: Test\n---\nBody"
+      )
+    else:
+      m.exists.return_value = False
+    return m
+
+  mock_bucket.blob.side_effect = mock_blob_side_effect
+
+  def list_blobs_side_effect(prefix=None):
+    m = mock.MagicMock()
+    m.name = prefix + "/etc/passwd"
+    m.download_as_text.return_value = "root:x:0:0"
+    return [m]
+
+  mock_bucket.list_blobs.side_effect = list_blobs_side_effect
+
+  with pytest.raises(ValueError, match="Unsafe path"):
+    _load_skill_from_gcs_dir("my-bucket", "my-skill")
+
+
+@mock.patch("google.cloud.storage.Client")
+def test__load_skill_from_gcs_dir_rejects_duplicate_normalized_path(
+    mock_client_class,
+):
+  """Ingestion layer must reject two blobs that normalize to the same path."""
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  def mock_blob_side_effect(path):
+    m = mock.MagicMock()
+    if path.endswith("SKILL.md"):
+      m.exists.return_value = True
+      m.download_as_text.return_value = (
+          "---\nname: my-skill\ndescription: Test\n---\nBody"
+      )
+    else:
+      m.exists.return_value = False
+    return m
+
+  mock_bucket.blob.side_effect = mock_blob_side_effect
+
+  def list_blobs_side_effect(prefix=None):
+    if "references" in prefix:
+      blob1 = mock.MagicMock()
+      blob1.name = prefix + "doc.md"
+      blob1.download_as_text.return_value = "first"
+      blob2 = mock.MagicMock()
+      blob2.name = prefix + "doc.md"
+      blob2.download_as_text.return_value = "second"
+      return [blob1, blob2]
+    return []
+
+  mock_bucket.list_blobs.side_effect = list_blobs_side_effect
+
+  with pytest.raises(ValueError, match="Duplicate normalized path"):
+    _load_skill_from_gcs_dir("my-bucket", "my-skill")
+
+
+@mock.patch("google.cloud.storage.Client")
+def test__load_skill_from_gcs_dir_safe_path_succeeds(mock_client_class):
+  """Clean blob names must pass ingestion and load correctly (happy path)."""
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  def mock_blob_side_effect(path):
+    m = mock.MagicMock()
+    if path.endswith("SKILL.md"):
+      m.exists.return_value = True
+      m.download_as_text.return_value = (
+          "---\nname: my-skill\ndescription: Test\n---\nBody"
+      )
+    else:
+      m.exists.return_value = False
+    return m
+
+  mock_bucket.blob.side_effect = mock_blob_side_effect
+
+  def list_blobs_side_effect(prefix=None):
+    if "references" in prefix:
+      m = mock.MagicMock()
+      m.name = prefix + "safe_doc.md"
+      m.download_as_text.return_value = "safe content"
+      return [m]
+    return []
+
+  mock_bucket.list_blobs.side_effect = list_blobs_side_effect
+
+  skill = _load_skill_from_gcs_dir("my-bucket", "my-skill")
+  assert skill.name == "my-skill"
+  assert skill.resources.get_reference("safe_doc.md") == "safe content"
+
+
+def test__validate_relative_resource_path_safe_paths():
+  """Clean relative paths must be normalized and returned."""
+  assert _validate_relative_resource_path("doc.md") == "doc.md"
+  assert _validate_relative_resource_path("sub/doc.md") == "sub/doc.md"
+  assert _validate_relative_resource_path("sub/./doc.md") == "sub/doc.md"
+  assert _validate_relative_resource_path("sub\\doc.md") == "sub/doc.md"
+
+
+@pytest.mark.parametrize(
+    "unsafe_path",
+    [
+        "/etc/passwd",
+        "../doc.md",
+        "references/a/..",
+        "references/a/../../evil.py",
+        "references\\a\\..\\..\\evil.py",
+        "references\\..\\evil.py",
+        "\\etc\\passwd",
+        "C:\\evil.py",
+        "C:/evil.py",
+        "c:evil.py",
+        "",
+        ".",
+    ],
+)
+def test__validate_relative_resource_path_rejects_unsafe_paths(unsafe_path):
+  """Unsafe paths must raise ValueError."""
+  with pytest.raises(ValueError, match="Unsafe path"):
+    _validate_relative_resource_path(unsafe_path)
+
+
+@pytest.mark.parametrize(
+    "bad_name",
+    [
+        "references/a/..",
+        "references/a/../../evil.py",
+        "../evil.txt",
+    ],
+)
+def test__load_skill_from_zip_bytes_rejects_dotdot_traversal(bad_name):
+  """Zip ingestion must reject member names with directory traversal."""
+  zip_buffer = io.BytesIO()
+  with zipfile.ZipFile(zip_buffer, "w") as z:
+    z.writestr(
+        "SKILL.md",
+        "---\nname: my-skill\ndescription: A skill\n---\nBody instructions",
+    )
+    z.writestr(bad_name, "exploit")
+
+  with pytest.raises(ValueError, match="Dangerous zip entry"):
+    _load_skill_from_zip_bytes(zip_buffer.getvalue())
+
+
+def test__load_skill_from_zip_bytes_rejects_backslash_traversal():
+  """Zip ingestion must reject member names with backslash traversal."""
+  zip_buffer = io.BytesIO()
+  with zipfile.ZipFile(zip_buffer, "w") as z:
+    z.writestr(
+        "SKILL.md",
+        "---\nname: my-skill\ndescription: A skill\n---\nBody instructions",
+    )
+    z.writestr("references\\a\\..\\..\\evil.py", "exploit")
+
+  with pytest.raises(ValueError, match="Dangerous zip entry"):
+    _load_skill_from_zip_bytes(zip_buffer.getvalue())
+
+
+def test__load_skill_from_zip_bytes_rejects_duplicate_normalized_path():
+  """Zip ingestion must reject two entries that normalize to the same path."""
+  zip_buffer = io.BytesIO()
+  with zipfile.ZipFile(zip_buffer, "w") as z:
+    z.writestr(
+        "SKILL.md",
+        "---\nname: my-skill\ndescription: A skill\n---\nBody instructions",
+    )
+    z.writestr("references/doc.md", "first")
+    z.writestr("references/./doc.md", "second")
+
+  with pytest.raises(ValueError, match="Duplicate normalized path"):
+    _load_skill_from_zip_bytes(zip_buffer.getvalue())
+
+
+@mock.patch("google.cloud.storage.Client")
+def test__load_skill_from_gcs_dir_ignores_directory_markers(mock_client_class):
+  """Ingestion layer must ignore GCS directory marker blobs ending in '/'."""
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  def mock_blob_side_effect(path):
+    m = mock.MagicMock()
+    if path.endswith("SKILL.md"):
+      m.exists.return_value = True
+      m.download_as_text.return_value = (
+          "---\nname: my-skill\ndescription: Test\n---\nBody"
+      )
+    else:
+      m.exists.return_value = False
+    return m
+
+  mock_bucket.blob.side_effect = mock_blob_side_effect
+
+  def list_blobs_side_effect(prefix=None):
+    if "references" in prefix:
+      dir_blob = mock.MagicMock()
+      dir_blob.name = prefix + "sub/"
+      dir_blob.download_as_text.return_value = ""
+      file_blob = mock.MagicMock()
+      file_blob.name = prefix + "sub/doc.md"
+      file_blob.download_as_text.return_value = "content"
+      return [dir_blob, file_blob]
+    return []
+
+  mock_bucket.list_blobs.side_effect = list_blobs_side_effect
+
+  skill = _load_skill_from_gcs_dir("my-bucket", "my-skill")
+  assert "sub" not in skill.resources.references
+  assert skill.resources.get_reference("sub/doc.md") == "content"
+
+
+def test__load_skill_from_zip_bytes_ignores_root_directory_entry():
+  """Zip ingestion must bypass safe root directory entry './'."""
+  zip_buffer = io.BytesIO()
+  with zipfile.ZipFile(zip_buffer, "w") as z:
+    z.writestr("./", "")
+    z.writestr("references/", "")
+    z.writestr(
+        "SKILL.md",
+        "---\nname: my-skill\ndescription: A skill\n---\nBody instructions",
+    )
+    z.writestr("references/doc.md", "doc content")
+
+  skill = _load_skill_from_zip_bytes(zip_buffer.getvalue())
+  assert skill.name == "my-skill"
+  assert skill.resources.get_reference("doc.md") == "doc content"
+
+
+def test__validate_relative_resource_path_rejects_dot_prefixed_windows_drive():
+  """Dot-prefixed Windows drive paths must be rejected after normalization."""
+  for unsafe_path in ("./C:/evil.py", ".\\C:\\evil.py", "./c:evil.py"):
+    with pytest.raises(ValueError, match="Unsafe path"):
+      _validate_relative_resource_path(unsafe_path)

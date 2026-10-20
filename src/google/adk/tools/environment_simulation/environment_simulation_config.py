@@ -62,7 +62,10 @@ class InjectionConfig(BaseModel):
   the interceptor is applied as after tool callback."""
 
   random_seed: Optional[int] = None
-  """The random seed to use for this injection."""
+  """Seeds this injection's own generator once when the plugin or callback is
+  created. A call draws the next value only when it matches this injection and
+  no earlier injection answered it, and one plugin's sequence is shared by
+  every session it serves. None draws from a shared unseeded generator."""
 
   injected_error: Optional[InjectedError] = None
   """The injected error."""

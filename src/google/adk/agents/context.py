@@ -21,7 +21,6 @@ from collections.abc import Sequence
 from typing import Any
 from typing import TYPE_CHECKING
 
-from opentelemetry import context as context_api
 from typing_extensions import override
 
 from .readonly_context import ReadonlyContext
@@ -185,6 +184,8 @@ class Context(ReadonlyContext):
 
     self._event_author = parent_ctx.event_author if parent_ctx else ''
 
+    from opentelemetry import context as context_api
+
     self._telemetry_context = TelemetryContext(
         otel_context=context_api.get_current()
     )
@@ -296,6 +297,7 @@ class Context(ReadonlyContext):
   @property
   def actions(self) -> EventActions:
     """The event actions for the current context."""
+    self._state._record_nested_writes()  # pylint: disable=protected-access
     return self._event_actions
 
   @property
@@ -837,6 +839,27 @@ class Context(ReadonlyContext):
         app_name=self._invocation_context.app_name,
         user_id=self._invocation_context.user_id,
         query=query,
+    )
+
+  async def delete_memory(
+      self,
+      memory_id: str | None = None,
+  ) -> None:
+    """Removes a memory item by its id for the current user.
+
+    Args:
+      memory_id: The ID of the memory entry to delete.
+
+    Raises:
+      ValueError: If memory service is not available.
+    """
+    service = self._require_memory_service(
+        'Cannot delete memory: memory service is not available.'
+    )
+    await service.delete_memory(
+        app_name=self._invocation_context.app_name,
+        user_id=self._invocation_context.user_id,
+        memory_id=memory_id,
     )
 
   # ============================================================================

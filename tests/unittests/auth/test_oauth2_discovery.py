@@ -210,6 +210,29 @@ class TestOAuth2Discovery:
 
   @patch("httpx.AsyncClient.get")
   @pytest.mark.asyncio
+  async def test_discover_auth_server_metadata_issuer_trailing_slash(
+      self,
+      mock_get,
+      auth_server_metadata,
+  ):
+    """Test issuer match tolerates a trailing slash on the returned issuer.
+
+    Some servers (e.g. FastMCP with GoogleProvider) return an issuer with a
+    trailing slash even though the requested issuer_url has none.
+    """
+
+    auth_server_metadata.issuer = "https://auth.example.com/"
+    mock_get.side_effect = [
+        self.mock_success_response(auth_server_metadata),
+    ]
+    discovery_manager = OAuth2DiscoveryManager()
+    result = await discovery_manager.discover_auth_server_metadata(
+        "https://auth.example.com"
+    )
+    assert result == auth_server_metadata
+
+  @patch("httpx.AsyncClient.get")
+  @pytest.mark.asyncio
   async def test_discover_resource_metadata_failed(
       self,
       mock_get,

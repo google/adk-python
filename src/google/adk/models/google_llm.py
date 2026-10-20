@@ -41,6 +41,7 @@ from typing_extensions import override
 from google import genai
 
 from ..utils._event_loop_cache import PerLoopCachedProperty
+from ..utils._gcp_metadata import get_gcp_client_defaults
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.context_utils import Aclosing
@@ -293,8 +294,14 @@ class Gemini(BaseLlm):
       if logger.isEnabledFor(logging.DEBUG):
         logger.debug(_build_request_log(llm_request))
 
+      from ..telemetry._genai_instrumentor import maybe_without_genai_instrumentation
+
+      api_models = self.api_client.aio.models
+
       if stream:
-        responses = await self.api_client.aio.models.generate_content_stream(
+        responses = await maybe_without_genai_instrumentation(
+            api_models.generate_content_stream
+        )(
             model=model,
             contents=cast(list[types.ContentUnion], llm_request.contents),
             config=llm_request.config,
@@ -309,7 +316,11 @@ class Gemini(BaseLlm):
         aggregator = StreamingResponseAggregator()
         multiple_candidates_logged = False
         last_usage_metadata = None
-        async with Aclosing(responses) as agen:
+        # genai implements generate_content_stream as an async generator.
+        response_stream = cast(
+            AsyncGenerator[types.GenerateContentResponse, None], responses
+        )
+        async with Aclosing(response_stream) as agen:
           async for response in agen:
             if logger.isEnabledFor(logging.DEBUG):
               logger.debug(_build_response_log(response))
@@ -351,7 +362,9 @@ class Gemini(BaseLlm):
           yield close_result
 
       else:
-        response = await self.api_client.aio.models.generate_content(
+        response = await maybe_without_genai_instrumentation(
+            api_models.generate_content
+        )(
             model=model,
             contents=cast(list[types.ContentUnion], llm_request.contents),
             config=llm_request.config,
@@ -452,6 +465,8 @@ class Gemini(BaseLlm):
       kwargs['enterprise'] = True
 
     client_kwargs = getattr(self, 'client_kwargs', None)
+    if not self.model.startswith('projects/'):
+      kwargs.update(get_gcp_client_defaults(client_kwargs))
     if client_kwargs:
       kwargs.update(client_kwargs)
 
@@ -519,6 +534,8 @@ class Gemini(BaseLlm):
       kwargs['enterprise'] = True
 
     client_kwargs = getattr(self, 'client_kwargs', None)
+    if not self.model.startswith('projects/'):
+      kwargs.update(get_gcp_client_defaults(client_kwargs))
     if client_kwargs:
       kwargs.update(client_kwargs)
 
@@ -645,9 +662,14 @@ class Gemini(BaseLlm):
 
       return wait_5_seconds
 
+    wait_tool = llm_request.tools_dict.get('wait')
     await ComputerUseToolset.adapt_computer_use_tool(
-        'wait', convert_wait_to_wait_5_seconds, llm_request
+        'wait',
+        convert_wait_to_wait_5_seconds,
+        llm_request,
     )
+    if wait_tool is not None and 'wait_5_seconds' in llm_request.tools_dict:
+      llm_request.tools_dict['wait'] = wait_tool
 
   async def _preprocess_request(self, llm_request: LlmRequest) -> None:
     from ..tools import load_artifacts_tool  # pylint: disable=import-outside-toplevel

@@ -17,6 +17,7 @@
 import os
 from unittest import mock
 
+from google.adk.models.llm_response import LlmResponse
 from google.adk.telemetry import _hallucination
 from google.adk.telemetry import _metrics
 from google.adk.telemetry import _token_usage
@@ -349,8 +350,8 @@ def test_record_tool_execution_duration_error_takes_precedence(
         ("claude-sonnet-4-5", "anthropic"),
         ("anthropic/claude-sonnet-4-5", "anthropic"),
         ("openai/gpt-4o", "openai"),
-        ("gemini-2.0-flash", "gemini"),
-        ("test-model", "gemini"),
+        ("gemini-2.0-flash", "gcp.gemini"),
+        ("test-model", "gcp.gemini"),
     ],
 )
 def test_record_client_operation_duration_provider_follows_model(
@@ -393,7 +394,7 @@ def test_record_client_operation_duration(mock_meter_setup):
   want_attributes = {
       "gen_ai.agent.name": "test_agent",
       "gen_ai.operation.name": "generate_content",
-      "gen_ai.provider.name": "gemini",
+      "gen_ai.provider.name": "gcp.gemini",
       "gen_ai.request.model": llm_request.model,
       "gen_ai.response.model": response.model_version,
   }
@@ -427,7 +428,7 @@ def test_record_client_token_usage(mock_meter_setup):
   base_attributes = {
       "gen_ai.agent.name": "test_agent",
       "gen_ai.operation.name": "generate_content",
-      "gen_ai.provider.name": "gemini",
+      "gen_ai.provider.name": "gcp.gemini",
       "gen_ai.request.model": "test-model",
       "gen_ai.response.model": "test-model-v1",
   }
@@ -456,6 +457,45 @@ def test_record_client_token_usage(mock_meter_setup):
   assert output_call[1]["attributes"] == base_attributes | {
       "gen_ai.token.type": "output"
   }
+
+
+def test_record_client_token_usage_keeps_usage_before_trailing_response(
+    mock_meter_setup,
+):
+  """Usage reported before the last response of a call is still recorded.
+
+  A LiteLlm stream cut off by max_tokens inside a tool call yields the text
+  with the usage, then an error response that carries none.
+  """
+  llm_request = mock.MagicMock(model="test-model")
+  responses = [
+      LlmResponse(
+          content=types.ModelContent("Let me check the weather."),
+          finish_reason=types.FinishReason.MAX_TOKENS,
+          model_version="test-model-v1",
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=120, candidates_token_count=40
+          ),
+      ),
+      LlmResponse(
+          finish_reason=types.FinishReason.MAX_TOKENS,
+          model_version="test-model-v1",
+      ),
+  ]
+
+  _metrics.record_client_token_usage(
+      agent_name="test_agent",
+      llm_request=llm_request,
+      responses=responses,
+  )
+
+  recorded = {
+      kwargs["attributes"]["gen_ai.token.type"]: args[0]
+      for args, kwargs in mock_meter_setup[
+          "client_token_usage"
+      ].record.call_args_list
+  }
+  assert recorded == {"input": 120, "output": 40}
 
 
 @pytest.fixture(name="call_count_histograms")
@@ -670,8 +710,8 @@ def test_record_skill_script_execution(skill_script_counter):
   assert args[0] == 1
   assert kwargs["attributes"] == {
       "gen_ai.agent.name": "test_agent",
-      "adk.experimental.skill.name": "my_skill",
-      "adk.experimental.skill.script.path": "scripts/run.py",
+      "gen_ai.skill.name": "my_skill",
+      "gen_ai.skill.resource.name": "scripts/run.py",
       "adk.experimental.skill.script.ended_with_error": False,
   }
 
@@ -692,7 +732,7 @@ def test_record_skill_script_execution_collapses_the_exit_code_to_a_flag(
   _, kwargs = skill_script_counter.add.call_args
   attributes = kwargs["attributes"]
   assert attributes["adk.experimental.skill.script.ended_with_error"] is True
-  assert "adk.experimental.skill.script.exit_code" not in attributes
+  assert "process.exit.code" not in attributes
 
 
 def test_record_skill_script_execution_with_unconfirmed_names(
@@ -710,8 +750,8 @@ def test_record_skill_script_execution_with_unconfirmed_names(
   _, kwargs = skill_script_counter.add.call_args
   assert kwargs["attributes"] == {
       "gen_ai.agent.name": "test_agent",
-      "adk.experimental.skill.name": "<hallucinated>",
-      "adk.experimental.skill.script.path": "<hallucinated>",
+      "gen_ai.skill.name": "<hallucinated>",
+      "gen_ai.skill.resource.name": "<hallucinated>",
       "adk.experimental.skill.script.ended_with_error": False,
   }
 
@@ -738,7 +778,7 @@ def test_record_skill_load(skill_loads_counter):
   assert args[0] == 1
   assert kwargs["attributes"] == {
       "gen_ai.agent.name": "test_agent",
-      "adk.experimental.skill.name": "my_skill",
+      "gen_ai.skill.name": "my_skill",
   }
 
 
@@ -755,7 +795,7 @@ def test_record_skill_load_that_resolved_nothing(skill_loads_counter):
   _, kwargs = skill_loads_counter.add.call_args
   assert kwargs["attributes"] == {
       "gen_ai.agent.name": "test_agent",
-      "adk.experimental.skill.name": "<hallucinated>",
+      "gen_ai.skill.name": "<hallucinated>",
       "error.type": "SKILL_NOT_FOUND",
   }
 
@@ -842,3 +882,67 @@ def test_record_invoke_workflow_skill_loads_of_a_workflow_that_loaded_nothing(
       },
       0,
   )]
+
+
+@pytest.fixture(name="invoke_workflow_compactions")
+def _invoke_workflow_compactions(monkeypatch):
+  """Redirects the per-workflow compaction histogram."""
+  histogram = mock.MagicMock(spec=metrics.Histogram)
+  monkeypatch.setattr(_metrics, "_invoke_workflow_compactions", histogram)
+  return histogram
+
+
+def test_record_invoke_workflow_compactions(invoke_workflow_compactions):
+  """The workflow total carries both names, and no agent dimension."""
+  _metrics.record_invoke_workflow_compactions(
+      _gates_on("compaction", "workflow"),
+      root_agent_name="root_agent",
+      workflow_name="specialist",
+      count=2,
+      nested=False,
+  )
+
+  assert _recorded(invoke_workflow_compactions) == [(
+      {
+          "adk.experimental.root_agent.name": "root_agent",
+          "gen_ai.workflow.name": "specialist",
+      },
+      2,
+  )]
+
+
+def test_record_invoke_workflow_compactions_of_a_turn_that_compacted_nothing(
+    invoke_workflow_compactions,
+):
+  """Zero is the measurement the share of compacting turns divides by."""
+  _metrics.record_invoke_workflow_compactions(
+      _gates_on("compaction", "workflow"),
+      root_agent_name="root_agent",
+      workflow_name=None,
+      count=0,
+      nested=True,
+  )
+
+  assert _recorded(invoke_workflow_compactions) == [(
+      {
+          "adk.experimental.root_agent.name": "root_agent",
+          "gen_ai.workflow.nested": True,
+      },
+      0,
+  )]
+
+
+@pytest.mark.parametrize("gate", ["workflow", "compaction"])
+def test_record_invoke_workflow_compactions_needs_both_gates(
+    invoke_workflow_compactions, gate: _ExperimentalFeature
+):
+  """Neither gate alone opts in to compaction counts."""
+  _metrics.record_invoke_workflow_compactions(
+      _gates_on(gate),
+      root_agent_name="root_agent",
+      workflow_name="specialist",
+      count=2,
+      nested=False,
+  )
+
+  assert not _recorded(invoke_workflow_compactions)

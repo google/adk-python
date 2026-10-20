@@ -24,7 +24,9 @@ from ....agents.invocation_context import InvocationContext
 from ....events.event import Event
 from ....models.llm_request import LlmRequest
 from ....utils.context_utils import Aclosing
+from ....workflow._errors import NodeInterruptedError
 from ..prompt import _schema as _output_schema_processor
+from ..tools._batch_executor import _pop_kept_function_response_event
 from ._utils import require_agent as _require_agent
 
 
@@ -59,15 +61,31 @@ def get_agent_to_run(
   return agent_to_run
 
 
+def _has_settled_responses(function_response_event: Event) -> bool:
+  """Returns whether any response in the event is not awaiting confirmation."""
+  awaiting_ids = function_response_event.actions.requested_tool_confirmations
+  return any(
+      fr.id not in awaiting_ids
+      for fr in function_response_event.get_function_responses()
+  )
+
+
 async def postprocess_handle_function_calls_async(
     invocation_context: InvocationContext,
     function_call_event: Event,
     llm_request: LlmRequest,
 ) -> AsyncGenerator[Event, None]:
   """Executes function calls and emits auth, confirmation, schema, and transfer events."""
-  if function_response_event := await functions.handle_function_calls_async(
-      invocation_context, function_call_event, llm_request.tools_dict
-  ):
+  try:
+    function_response_event = await functions.handle_function_calls_async(
+        invocation_context, function_call_event, llm_request.tools_dict
+    )
+  except (Exception, NodeInterruptedError) as e:
+    kept_event = _pop_kept_function_response_event(e)
+    if kept_event is not None and not invocation_context.is_aborted:
+      yield kept_event
+    raise
+  if function_response_event:
     auth_event = functions.generate_auth_event(
         invocation_context, function_response_event
     )
@@ -81,10 +99,18 @@ async def postprocess_handle_function_calls_async(
         invocation_context, function_call_event, function_response_event
     )
     if tool_confirmation_event:
-      yield tool_confirmation_event
-
-    # Always yield the function response event first
-    yield function_response_event
+      if _has_settled_responses(function_response_event):
+        # Yield settled sibling responses before the confirmation pause so
+        # callers stopping at `tool_confirmation_event` still persist them.
+        function_response_event.actions.skip_summarization = None
+        yield function_response_event
+        yield tool_confirmation_event
+      else:
+        yield tool_confirmation_event
+        yield function_response_event
+    else:
+      # Always yield the function response event first
+      yield function_response_event
 
     # Check if this is a set_model_response function response
     if json_response := _output_schema_processor.get_structured_model_response(

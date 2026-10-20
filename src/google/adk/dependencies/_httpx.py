@@ -37,11 +37,12 @@ from ._mcp import IS_MCP_SDK_V2
 
 # A type checker always takes the `httpx` branch. Only one flavor is installed
 # where it runs, and an import it cannot resolve becomes `Any` -- so following
-# the other branch drops every annotation here and rejects the two transports in
-# `mcp_session_manager` that subclass one. Both libraries present the same API to
-# ADK, and `httpx` is the one the lockfile resolves. The cost is that nothing is
-# ever checked against `httpx2`, so a divergence between the two is invisible to
-# the checker; the tests catch that instead, running against a real 2.x install.
+# the other branch drops every annotation here and rejects `PortableTimeout`
+# below and the two transports in `mcp_session_manager` that subclass one. Both
+# libraries present the same API to ADK, and `httpx` is the one the lockfile
+# resolves. The cost is that nothing is ever checked against `httpx2`, so a
+# divergence between the two is invisible to the checker; the tests catch that
+# instead, running against a real 2.x install.
 if TYPE_CHECKING or not IS_MCP_SDK_V2:
   from httpx import AsyncBaseTransport as AsyncBaseTransport
   from httpx import AsyncByteStream as AsyncByteStream
@@ -65,6 +66,31 @@ else:
   from httpx2 import Timeout as Timeout
   from httpx2 import URL as URL
 
+
+class PortableTimeout(Timeout, tuple[float | None, ...]):
+  """A `Timeout` the other httpx major accepts as readily as this one.
+
+  Which major the names above bind follows the installed SDK, while a caller's
+  client factory is written against one major and stays there. So a timeout
+  handed to such a factory can reach the wrong constructor. Each major's
+  `Timeout` recognizes its own class, falls back to a four-item tuple, and
+  otherwise stores whatever it was handed whole as all four fields. A foreign
+  `Timeout` therefore lands in that last branch and only fails much later, as
+  arithmetic on the first request. Being both classes at once, this takes the
+  first branch at home and the tuple branch abroad, and loses nothing either
+  way.
+  """
+
+  def __new__(cls, timeout: Timeout) -> PortableTimeout:
+    # Reaches `tuple.__new__` by MRO; naming `tuple` drops its item type.
+    return super().__new__(
+        cls, (timeout.connect, timeout.read, timeout.write, timeout.pool)
+    )
+
+  def __init__(self, timeout: Timeout):
+    super().__init__(timeout)
+
+
 __all__ = [
     "URL",
     "AsyncBaseTransport",
@@ -73,6 +99,7 @@ __all__ = [
     "Auth",
     "HTTPStatusError",
     "Headers",
+    "PortableTimeout",
     "Request",
     "Response",
     "Timeout",

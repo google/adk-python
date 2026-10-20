@@ -51,6 +51,8 @@ import random
 import re
 import threading
 import time
+from types import CoroutineType
+from types import GeneratorType
 from types import MappingProxyType
 from types import TracebackType
 from typing import Any
@@ -86,6 +88,7 @@ from google.cloud.bigquery_storage_v1.services.big_query_write.async_client impo
 import google.cloud.storage as cloud_storage
 from google.genai import types
 from opentelemetry import trace
+from pydantic import BaseModel
 
 try:
   import pyarrow as pa
@@ -101,13 +104,33 @@ from ..models.llm_response import LlmResponse
 from ..platform.thread import create_thread
 from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
-from ..utils._telemetry_context import _is_visual_builder
+from ..utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
+from ..utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ..utils._telemetry_context import _get_telemetry_surface
 from ..version import __version__
+from ._callback_helpers import _classify_tool_result_error
+from ._callback_helpers import _imported_types
+from ._callback_helpers import _is_durable_node_error
+from ._callback_helpers import _is_instance
+from ._callback_helpers import _mark_tool_error_recorded
+from ._callback_helpers import _pop_tool_error_recorded
+from ._callback_helpers import _validate_tool_result_classifier
+from ._callback_helpers import ToolResultClassifier
 from .base_plugin import BasePlugin
 
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
   from ..events.event import Event
+
+# Defined in _callback_helpers, which the observability plugins share, and
+# still importable from this module: _LLM_RESPONSE_ERROR_CODES was defined
+# here, and ToolResultClassification is what a tool_result_classifier returns.
+# pylint: disable=unused-import
+from ._callback_helpers import _LLM_RESPONSE_ERROR_CODES  # noqa: F401
+from ._callback_helpers import ToolResultClassification  # noqa: F401
+
+# pylint: enable=unused-import
 
 logger: logging.Logger = logging.getLogger("google_adk." + __name__)
 
@@ -133,18 +156,18 @@ class _ClientInfoFactory(Protocol):
 _CLIENT_INFO_FACTORY = cast(_ClientInfoFactory, gapic_client_info.ClientInfo)
 
 _HITL_EVENT_MAP = MappingProxyType({
-    "adk_request_credential": "HITL_CREDENTIAL_REQUEST",
-    "adk_request_confirmation": "HITL_CONFIRMATION_REQUEST",
-    "adk_request_input": "HITL_INPUT_REQUEST",
+    REQUEST_EUC_FUNCTION_CALL_NAME: "HITL_CREDENTIAL_REQUEST",
+    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME: "HITL_CONFIRMATION_REQUEST",
+    REQUEST_INPUT_FUNCTION_CALL_NAME: "HITL_INPUT_REQUEST",
 })
 
 # Reverse of _HITL_EVENT_MAP for the long-running-tool pause_kind
 # discriminator. The id→name lookup routes ``adk_request_credential``
 # → ``hitl_credential`` etc.; everything else is ``tool``.
 _HITL_PAUSE_KIND_MAP = MappingProxyType({
-    "adk_request_credential": "hitl_credential",
-    "adk_request_confirmation": "hitl_confirmation",
-    "adk_request_input": "hitl_input",
+    REQUEST_EUC_FUNCTION_CALL_NAME: "hitl_credential",
+    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME: "hitl_confirmation",
+    REQUEST_INPUT_FUNCTION_CALL_NAME: "hitl_input",
 })
 
 
@@ -341,7 +364,11 @@ def _register_thread_for_debugging(name: str) -> None:
 
 
 # Module-level registry of shared _LoopState instances hosted on _BG_LOOP.
-# Keyed by (table_key, credentials_key) where table_key is "project.dataset.table".
+# Keyed by (table_key, credentials_key) where table_key is
+# "project.dataset.table". When the plugin carries a construction-time
+# surface, credentials_key is itself wrapped as (credentials_key, surface) so
+# that plugins with different attribution never share a writer; an unlabeled
+# plugin keeps the bare credentials_key.
 _BG_LOOP_STATES: dict[tuple[str, Any], _LoopState] = {}
 _BG_LOOP_STATES_LOCK = threading.RLock()
 _BG_LOOP_STATE_FUTURES: dict[
@@ -571,18 +598,22 @@ def _safe_callback(
 _GRPC_DEADLINE_EXCEEDED = 4
 _GRPC_NOT_FOUND = 5
 _GRPC_ALREADY_EXISTS = 6
+_GRPC_PERMISSION_DENIED = 7
 _GRPC_OUT_OF_RANGE = 11
 _GRPC_INTERNAL = 13
 _GRPC_UNAVAILABLE = 14
 
-_LLM_RESPONSE_ERROR_CODES = frozenset(
-    reason.value
-    for reason_type in (types.FinishReason, types.BlockedReason)
-    for reason in reason_type
-)
-
 
 # --- Helper Formatters ---
+def _enum_label(value: object) -> str:
+  """Returns an enum's value or the value itself as a label, else 'unknown'."""
+  if value is None:
+    return "unknown"
+  if isinstance(value, enum.Enum):
+    return str(value.value) or "unknown"
+  return str(value) or "unknown"
+
+
 def _format_content(
     content: Optional[types.Content], *, max_len: int = 5000
 ) -> tuple[str, bool]:
@@ -590,26 +621,46 @@ def _format_content(
 
   Args:
       content: The content to format.
-      max_len: Maximum length for text parts.
+      max_len: Maximum length for text, code, and execution output parts.
 
   Returns:
       A tuple of (formatted_string, is_truncated).
   """
+  # NOTE: Keep these part prefixes ("text: '...'", "call: ...", "resp: ...",
+  # "Executable code (...): ...", "Code execution result (...): ...", "other")
+  # and the " | " delimiter in sync with the ``response_events`` CTE in
+  # ``_EVAL_VIEW_CTES_SQL`` and
+  # ``TestEvalViews.test_eval_response_text_patterns_unwrap_format_content``.
   if content is None or not content.parts:
     return "None", False
   parts = []
   truncated = False
   for p in content.parts:
     if p.text:
-      if max_len != -1 and len(p.text) > max_len:
-        parts.append(f"text: '{p.text[:max_len]}...'")
+      sanitized_text, text_truncated = _sanitize_sensitive_text(p.text, max_len)
+      if text_truncated:
         truncated = True
-      else:
-        parts.append(f"text: '{p.text}'")
+      parts.append(f"text: '{sanitized_text}'")
     elif p.function_call:
       parts.append(f"call: {p.function_call.name}")
     elif p.function_response:
       parts.append(f"resp: {p.function_response.name}")
+    elif p.executable_code:
+      lang = _enum_label(p.executable_code.language)
+      code = p.executable_code.code or ""
+      sanitized_code, code_truncated = _sanitize_sensitive_text(code, max_len)
+      if code_truncated:
+        truncated = True
+      parts.append(f"Executable code ({lang}): {sanitized_code}")
+    elif p.code_execution_result:
+      outcome = _enum_label(p.code_execution_result.outcome)
+      output = p.code_execution_result.output or ""
+      sanitized_output, output_truncated = _sanitize_sensitive_text(
+          output, max_len
+      )
+      if output_truncated:
+        truncated = True
+      parts.append(f"Code execution result ({outcome}): {sanitized_output}")
     else:
       parts.append("other")
   return " | ".join(parts), truncated
@@ -641,6 +692,19 @@ def _find_transfer_target(agent: Any, agent_name: str) -> Any:
   return None
 
 
+_SKILL_TOOLSET_MODULE = "google.adk.tools.skill_toolset"
+# The tools SkillToolset itself provides to list, load and run skills. Tools
+# an application adds to a SkillToolset keep their own origin.
+_SKILL_TOOL_TYPE_NAMES = (
+    "ListSkillsTool",
+    "LoadSkillResourceTool",
+    "LoadSkillTool",
+    "RunSkillScriptTool",
+    "SearchSkillsTool",
+    "UnloadSkillTool",
+)
+
+
 def _get_tool_origin(
     tool: "BaseTool",
     tool_args: Optional[dict[str, Any]] = None,
@@ -665,7 +729,7 @@ def _get_tool_origin(
 
   Returns:
       One of LOCAL, MCP, A2A, SUB_AGENT, TRANSFER_AGENT,
-      TRANSFER_A2A, or UNKNOWN.
+      TRANSFER_A2A, TOOLBOX, SKILL, or UNKNOWN.
   """
   # Import lazily to avoid circular dependencies.
   # pylint: disable=g-import-not-at-top
@@ -711,6 +775,12 @@ def _get_tool_origin(
     return "SUB_AGENT"
   if isinstance(tool, FunctionTool):
     return "LOCAL"
+  if isinstance(tool, _imported_types("toolbox_adk", "ToolboxTool")):
+    return "TOOLBOX"
+  if isinstance(
+      tool, _imported_types(_SKILL_TOOLSET_MODULE, *_SKILL_TOOL_TYPE_NAMES)
+  ):
+    return "SKILL"
   return "UNKNOWN"
 
 
@@ -1007,6 +1077,261 @@ def _sanitize_sensitive_text(text: str, max_len: int) -> tuple[str, bool]:
 # raises: the formatter is a privacy/redaction boundary, so failure must
 # never fall back to the unformatted payload.
 _FORMATTER_FAILED_SENTINEL = "[FORMATTER_FAILED]"
+
+# CPython's Py_TPFLAGS_HEAPTYPE: set on every class created at runtime and
+# clear on static types compiled into C, whose names cannot be reassigned.
+_PY_TPFLAGS_HEAPTYPE = 1 << 9
+
+# type's own descriptors. Calling them directly reads a class's flags, name,
+# and MRO without running code the class controls: an ordinary attribute read
+# goes through the metaclass, whose hooks can lie or raise anything, including
+# BaseException subclasses that the plugin's boundaries deliberately let pass.
+_TYPE_FLAGS = type.__dict__["__flags__"]
+_TYPE_NAME = type.__dict__["__name__"]
+_TYPE_MRO = type.__dict__["__mro__"]
+
+# Runtime-created classes that a formatter commonly raises or returns, each
+# with a fixed label. Labels are never read from the class, because a class
+# created at runtime can be renamed.
+_TRUSTED_CLASS_LABELS: tuple[tuple[type, str], ...] = (
+    (LlmRequest, "LlmRequest"),
+    (types.Content, "Content"),
+    (types.Part, "Part"),
+    (BaseModel, "BaseModel"),
+    (api_exceptions.GoogleAPICallError, "GoogleAPICallError"),
+)
+
+
+def _trusted_class_label(cls: type) -> Optional[str]:
+  """Returns a label for ``cls`` that no runtime data can have chosen.
+
+  Only static types compiled into C, whose names are fixed when the
+  interpreter or extension is built, and the classes in
+  ``_TRUSTED_CLASS_LABELS`` have one. Any other class can be created at
+  runtime by ``type(name, bases, namespace)`` with a name taken from the
+  content a formatter was protecting, bound into a module under that name, or
+  renamed, so its name is never trusted, wherever it is defined.
+
+  Args:
+    cls: The class to label.
+
+  Returns:
+    The label, or None when ``cls`` has none.
+  """
+  for trusted, label in _TRUSTED_CLASS_LABELS:
+    if cls is trusted:
+      return label
+  if not _TYPE_FLAGS.__get__(cls) & _PY_TPFLAGS_HEAPTYPE:
+    name: str = _TYPE_NAME.__get__(cls)
+    return name
+  return None
+
+
+def _formatter_failure_message(cls: type, *, raised: bool) -> str:
+  """Describes a content_formatter failure for the error_message column.
+
+  The class is named only by a trusted label, and a class without one by its
+  nearest ancestor that has one. The exception's message, args, and traceback
+  are never used: they can embed the content the formatter was protecting.
+  Only type's own descriptors are read, so no code the class controls runs.
+
+  Args:
+    cls: The class of the exception the formatter raised, or of the value it
+      returned when ``raised`` is False.
+    raised: Whether the formatter raised rather than returned a value.
+
+  Returns:
+    A fixed-shape message such as ``content_formatter raised ImportError`` or
+    ``content_formatter returned unsupported type <subclass of LlmRequest>``,
+    with ``<unknown class>`` in place of the label when the class cannot be
+    read at all.
+  """
+  outcome = "raised" if raised else "returned unsupported type"
+  try:
+    for depth, ancestor in enumerate(_TYPE_MRO.__get__(cls)):
+      label = _trusted_class_label(ancestor)
+      if label is not None:
+        if depth == 0:
+          return f"content_formatter {outcome} {label}"
+        return f"content_formatter {outcome} <subclass of {label}>"
+  except Exception:
+    # type's descriptors run no hooks but can still raise: they first check
+    # that the metaclass is a subtype of type by walking the metaclass's own
+    # MRO, which a meta-metaclass can rewrite after the class exists.
+    pass
+  return f"content_formatter {outcome} <unknown class>"
+
+
+# Upper bounds on the rendered debug traceback appended to the warning: each
+# part (one frame, or the exception line) is capped first, then the whole.
+_MAX_FORMATTER_TRACEBACK_PART_CHARS = 1024
+_MAX_FORMATTER_TRACEBACK_CHARS = 4096
+_FORMATTER_TRACEBACK_CUT = "\n... [traceback truncated]"
+
+
+def _render_formatter_traceback(error: BaseException) -> str:
+  """Renders a content_formatter exception's traceback for debug logging.
+
+  Rendering runs code the exception's class controls: its ``__str__`` and the
+  attribute hooks that expose its traceback and chained exceptions. Whatever
+  that code raises, of any type, yields a constant placeholder instead, for
+  the reasons given in ``_settle_formatter_outcome``, so the warning is
+  still logged.
+
+  Each part of the rendering, a frame or the exception line, is first cut to
+  ``_MAX_FORMATTER_TRACEBACK_PART_CHARS`` and marked with ``...``, so that a
+  long message cannot fill the kept tail. A rendering still longer than
+  ``_MAX_FORMATTER_TRACEBACK_CHARS`` then keeps only its first and last
+  halves of that budget, with a truncation marker between them, so that one
+  failure cannot flood the log and the innermost frames and the exception
+  line, which Python prints last, are kept.
+
+  Args:
+    error: The exception the formatter raised.
+
+  Returns:
+    The rendered traceback, or ``[traceback could not be rendered]``.
+  """
+  try:
+    rendered = "".join(
+        part
+        if len(part) <= _MAX_FORMATTER_TRACEBACK_PART_CHARS
+        else part[:_MAX_FORMATTER_TRACEBACK_PART_CHARS] + "...\n"
+        for part in traceback_module.format_exception(error)
+    ).rstrip("\n")
+  except BaseException:
+    return "[traceback could not be rendered]"
+  # join() always returns an exact str, so measuring and slicing it runs no
+  # code the exception controls.
+  if len(rendered) > _MAX_FORMATTER_TRACEBACK_CHARS:
+    half = _MAX_FORMATTER_TRACEBACK_CHARS // 2
+    return rendered[:half] + _FORMATTER_TRACEBACK_CUT + "\n" + rendered[-half:]
+  return rendered
+
+
+def _natively_parsed(formatted: Any, result_type: type) -> bool:
+  """Whether the parser logs a formatter result of this real type natively.
+
+  Identity and conditional formatters legitimately return these shapes. Model
+  shapes must be the EXACT class, compared by identity: a subclass can
+  override an attribute the parser reads, and an equality check would run the
+  result class's metaclass. str, dict, and list subclasses are admitted,
+  because the parser routes them through its hardened recursive sanitizer.
+  Only ``result_type``, the result's real type, is consulted: ``isinstance``
+  would fall back to the object's own ``__class__`` and run its code.
+
+  Args:
+    formatted: What the formatter returned.
+    result_type: ``type(formatted)``.
+
+  Returns:
+    Whether ``formatted`` can be logged as it is.
+  """
+  return (
+      formatted is None
+      or issubclass(result_type, (str, dict, list))
+      or result_type is types.Content
+      or result_type is types.Part
+      or result_type is LlmRequest
+  )
+
+
+def _settle_formatter_outcome(
+    formatted: Any,
+    failure: Optional[Exception],
+    *,
+    event_type: str,
+    debug: bool,
+) -> tuple[Any, Optional[str]]:
+  """Decides what the row logs after the content_formatter call, fail closed.
+
+  These steps happen behind this one boundary:
+  - judging a returned result by its real type;
+  - closing a rejected coroutine or generator;
+  - naming the failed class;
+  - rendering the debug traceback;
+  - emitting the warning through whatever filters and handlers are
+    configured.
+
+  An ``Exception`` raised by any of them is contained here, and the outcome
+  falls back to the sentinel and a constant note, so no error while
+  describing a failed or rejected result can drop the row or leave the
+  sentinel out. A result the parser logs natively leaves unchanged, and the
+  parser's own boundary, which catches Exception only, applies to it.
+
+  Code that the failed class or the rejected result controls runs only while
+  the traceback is rendered and while a rejected coroutine or generator is
+  closed. Those two steps contain anything they raise, ``BaseException``
+  included, so that the content under redaction cannot end the agent run.
+  Everywhere else only this module's code and the application's own log
+  filters and handlers run, so a ``KeyboardInterrupt``, ``SystemExit``, or
+  ``asyncio.CancelledError`` raised there propagates, and no row is written.
+
+  Args:
+    formatted: What the formatter returned; ignored when ``failure`` is set.
+    failure: The exception the formatter raised, or None if it returned.
+    event_type: The type of the event being logged.
+    debug: Whether to append the rendered traceback to the warning.
+
+  Returns:
+    ``(formatted, None)`` when the parser can log the result as it is; a str
+    subclass is normalized to the exact built-in. Otherwise
+    ``(_FORMATTER_FAILED_SENTINEL, note)``, where ``note`` is the text for
+    the error_message column.
+  """
+  outcome = "raised" if failure is not None else "returned unsupported type"
+  note = f"content_formatter {outcome} <unknown class>"
+  try:
+    if failure is not None:
+      failed_type: type = type(failure)
+    else:
+      failed_type = type(formatted)
+      if _natively_parsed(formatted, failed_type):
+        if failed_type is not str and issubclass(failed_type, str):
+          formatted = str.__str__(formatted)
+        return formatted, None
+      # A non-native result would reach the parser's str() fallback, where
+      # a payload-controlled __str__ can republish the content, so it is
+      # rejected. Close a coroutine first: released unstarted, it warns
+      # "coroutine '<name>' was never awaited", and the formatter can set
+      # that name from the content. A generator is closed too, so that its
+      # cleanup code runs here, contained, rather than at collection.
+      try:
+        if failed_type is CoroutineType:
+          CoroutineType.close(formatted)
+        elif failed_type is GeneratorType:
+          GeneratorType.close(formatted)
+      except BaseException:
+        # Closing ran the result's own code, which the content under
+        # redaction may control, so even an interrupt it raises is
+        # contained rather than allowed to end the agent run.
+        pass
+    note = _formatter_failure_message(failed_type, raised=failure is not None)
+    if failure is None:
+      logger.warning(
+          "Content formatter returned an unsupported result type for"
+          " event %s; writing sentinel instead of original content.",
+          event_type,
+      )
+    elif debug:
+      logger.warning(
+          "Content formatter failed for event %s; writing sentinel"
+          " instead of original content. Debug traceback:\n%s",
+          event_type,
+          _render_formatter_traceback(failure),
+      )
+    else:
+      logger.warning(
+          "Content formatter failed for event %s; writing sentinel"
+          " instead of original content.",
+          event_type,
+      )
+  except Exception:
+    # Nothing is reported: the logger may be what failed, and the exception
+    # can carry the content.
+    pass
+  return _FORMATTER_FAILED_SENTINEL, note
+
 
 # Recursion bound for _recursive_smart_truncate: id()-based cycle detection
 # cannot catch graphs that create new objects per access (Mock-like duck
@@ -1423,6 +1748,13 @@ def _require_finite(name: str, value: Any, minimum_exclusive: float) -> float:
   return float(value)
 
 
+def _is_async_callable(fn: object) -> bool:
+  """Returns whether ``fn`` is a coroutine function or async callable object."""
+  return inspect.iscoroutinefunction(fn) or inspect.iscoroutinefunction(
+      getattr(fn, "__call__", None)
+  )
+
+
 def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
   """Validates runtime settings at construction time.
 
@@ -1431,8 +1763,9 @@ def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
   every batch is dropped without a single attempt.
 
   Raises:
-      ValueError: If any batch, queue, duration, or retry setting is
-        invalid.
+      ValueError: If any batch, queue, duration, retry, or callback setting is
+        invalid, or ``tool_result_classifier`` cannot be called as the plugin
+        calls it.
   """
   _require_count("batch_size", config.batch_size, 1)
   _require_finite("batch_flush_interval", config.batch_flush_interval, 0)
@@ -1476,6 +1809,23 @@ def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
         "retry_config.max_delay must be >= initial_delay, got"
         f" max_delay={retry.max_delay} initial_delay={retry.initial_delay}."
     )
+  if config.on_schema_error is not None and (
+      not callable(config.on_schema_error)
+      or _is_async_callable(config.on_schema_error)
+  ):
+    raise ValueError(
+        "on_schema_error must be a synchronous callable or None, got"
+        f" {config.on_schema_error!r}."
+    )
+  if config.on_schema_ready is not None and (
+      not callable(config.on_schema_ready)
+      or _is_async_callable(config.on_schema_ready)
+  ):
+    raise ValueError(
+        "on_schema_ready must be a synchronous callable or None, got"
+        f" {config.on_schema_ready!r}."
+    )
+  _validate_tool_result_classifier(config.tool_result_classifier)
 
 
 # Cloud Platform OAuth scope. Assembled from parts so this module does not
@@ -1801,8 +2151,20 @@ def _recursive_smart_truncate(
       # at the fallback. Progress includes SCALARS: a RootModel[str] dumps
       # to a plain string that may itself be a credential blob, and
       # falling through to the generic fallback bypassed blob redaction.
+      #
+      # model_dump is called with warnings=False: Pydantic still dumps a field
+      # whose value no longer matches its type, but otherwise first warns with
+      # a UserWarning that quotes the value, before any content_formatter
+      # runs. A Pydantic model whose model_dump is an override is not called,
+      # since the override may not pass the flag on to Pydantic's. It is
+      # recorded as a sentinel, as is a model_dump that fails or does not take
+      # the flag: reading the fields instead would record what it leaves out.
       try:
-        dumped = model_dump_fn()
+        if _is_instance(obj, BaseModel) and (
+            getattr(model_dump_fn, "__func__", None) is not BaseModel.model_dump
+        ):
+          return "[UNSUPPORTED_OBJECT]", True
+        dumped = model_dump_fn(warnings=False)
         if isinstance(
             dumped,
             (collections.abc.Mapping, list, tuple, str, bytes, bytearray),
@@ -1813,7 +2175,7 @@ def _recursive_smart_truncate(
         if dumped is None or isinstance(dumped, (int, float, bool)):
           return dumped, False
       except Exception:
-        pass
+        return "[UNSUPPORTED_OBJECT]", True
     elif dict_fn is not None and callable(dict_fn):
       # Pydantic v1 (same progress requirement as above, scalars included).
       try:
@@ -2091,7 +2453,26 @@ class BigQueryLoggerConfig:
         arriving during the 30-second rotation backoff are also dropped. The
         unconditional ``event_id`` column remains the deduplication key for
         default-mode writes.
-      content_formatter: Optional custom formatter for content.
+      content_formatter: Optional custom formatter for content, called as
+        ``content_formatter(content, event_type)``. It is treated as a
+        redaction boundary, so a failure never falls back to the original
+        content: if it raises an ``Exception``, or returns anything other
+        than ``None``, a ``str``, ``dict``, or ``list`` (or a subclass of
+        one), or an exact ``types.Content``, ``types.Part``, or
+        ``LlmRequest``, the row is written with content
+        ``[FORMATTER_FAILED]``, the ``formatter_failed`` counter of
+        ``get_drop_stats()`` is incremented, and ``error_message`` names the
+        failure by class only, for example ``content_formatter raised
+        ImportError``. Only built-in types and a few trusted classes are
+        named; any other class is described by its nearest named ancestor,
+        for example ``content_formatter raised <subclass of ValueError>``.
+        An event that already carries an ``error_message``, such as a
+        ``TOOL_ERROR``, keeps it first, followed by ``; `` and the formatter
+        failure. The row's ``status`` is unchanged, so an otherwise
+        successful event keeps ``status`` ``'OK'``. BigQuery Agent Analytics
+        SDK queries such as ``ERROR_SQL_PREDICATE`` treat any non-null
+        ``error_message`` as an error, so such a row still marks its session
+        ``has_error``.
       gcs_bucket_name: GCS bucket for offloading large content.
       connection_id: BigQuery connection ID for ObjectRef columns.
       log_session_metadata: Whether to log session metadata.
@@ -2108,12 +2489,12 @@ class BigQueryLoggerConfig:
         ``False`` (the default) emits no ``attributes.otel``. Has no effect when
         ``attributes`` is projected out via ``payload_column_denylist``.
       custom_metadata_allowlist: Keys to capture from ``event.custom_metadata``
-        into ``attributes.custom_metadata.*``. Entries are exact keys, or
-        explicit prefix patterns ending in ``*`` (e.g. ``"a2a:*"``). ``None`` /
-        empty preserves today's behavior (only the built-in ``a2a:*`` path
-        runs). Captured values pass the same safety pipeline (truncation,
-        sensitive-key redaction, circular-reference handling) as all other
-        logged content.
+        or ``llm_response.custom_metadata`` into
+        ``attributes.custom_metadata.*``. Entries are exact keys, or explicit
+        prefix patterns ending in ``*`` (e.g. ``"a2a:*"``). ``None`` / empty
+        preserves today's behavior (only the built-in ``a2a:*`` path runs).
+        Captured values pass the same safety pipeline (truncation, sensitive-key
+        redaction, circular-reference handling) as all other logged content.
       payload_column_denylist: Payload columns to project OUT of the table at
         write time. Only the projectable payload columns ``content`` /
         ``content_parts`` / ``attributes`` / ``latency_ms`` may be listed;
@@ -2144,6 +2525,102 @@ class BigQueryLoggerConfig:
       credentials_identifier: Optional explicit string identifier to
         disambiguate or share background loop states across plugin instances
         with equivalent credential identities.
+      debug_content_formatter_errors: When ``True``, the traceback of an
+        exception raised by ``content_formatter`` is rendered, with each
+        frame and the exception line cut to 1024 characters and the whole
+        cut to its first and last 2048 characters when longer than 4096, and
+        appended to the formatter-failure warning that this module's Python
+        logger emits, to debug the formatter locally.
+        The traceback can embed the unformatted content the formatter was
+        protecting, and it reaches every log handler the process has
+        configured, so enable it only where that content may be seen. It is
+        never written to BigQuery: the row's ``error_message`` still names
+        only the exception class. ``False`` (the default) logs a constant
+        message with no traceback.
+      on_schema_error: Optional synchronous callback invoked with the triggering
+        exception each time the table readiness pass fails to read, create, or
+        upgrade the BigQuery table. It runs on a worker thread, not the event
+        loop, and fires at most once per readiness pass, so it may be called
+        repeatedly while setup retries; keep it fast and non-blocking. Once a
+        pass completes with ``True`` (see ``on_schema_ready``), later setups of
+        the same plugin, including after ``close()``, after a fork, and in
+        copies pickled afterwards, skip the pass, so neither callback fires
+        again and later table outages surface only as append-time drops. Later
+        setups run the pass again only if the setup awaiting that pass was
+        cancelled, or after a ``create_analytics_views()`` call tries to create
+        the views and one fails; a call that creates every view makes later
+        setups skip the pass, and that call's own view creation never invokes
+        either callback. This callback is not invoked for analytics-view
+        creation failures or label-only ``update_table`` refresh failures (those
+        are logged and swallowed without raising). Exceptions it raises are
+        logged and suppressed so the original exception still propagates. If the
+        plugin is serialized with the standard ``pickle`` module, the callback
+        must be picklable (e.g. a module-level function; lambdas and closures
+        fail with standard ``pickle``, and bound methods pickle their instance).
+      on_schema_ready: Optional synchronous no-arg callback invoked each time
+        the table readiness pass completes with ``True`` (i.e. the table exists
+        or was created/upgraded and all requested views succeeded; not called
+        when view creation returns ``False`` or when an exception is raised).
+        After such a pass, later setups of the same plugin, including after
+        ``close()``, after a fork, and in copies pickled afterwards, skip the
+        pass, so neither callback fires again and later table outages surface
+        only as append-time drops. Later setups run the pass again only if the
+        setup awaiting that pass was cancelled, or after a
+        ``create_analytics_views()`` call tries to create the views and one
+        fails; a call that creates every view makes later setups skip the pass,
+        and that call's own view creation never invokes either callback. It runs
+        on a worker thread, not the event loop; keep it fast and non-blocking.
+        Exceptions it raises are logged and suppressed. If the plugin is
+        serialized with the standard ``pickle`` module, the callback must be
+        picklable (e.g. a module-level function; lambdas and closures fail with
+        standard ``pickle``, and bound methods pickle their instance).
+      create_eval_views: When ``True``, also create the
+        ``{view_prefix}_eval_session`` (one row per session) and
+        ``{view_prefix}_eval_turn`` (one row per invocation) views, whose
+        ``trace`` column holds a ``google.cloud.aiplatform.v1beta1.AgentData``
+        JSON trace for agent evaluation. Both views also have
+        guardrail columns (error and truncation flags, tool-call and token
+        totals) and ``eval_ready``, which requires a finished turn (both
+        ``INVOCATION_COMPLETED`` and an ``AGENT_RESPONSE`` with non-empty
+        text) with non-empty user text; in the session view, every turn must
+        be ready, except that a paused turn (one that logged ``TOOL_PAUSED`` or
+        a ``HITL_*_REQUEST`` event and ``INVOCATION_COMPLETED`` without
+        ``AGENT_RESPONSE`` text) followed by the ``function_response`` turn that
+        resumes it needs no reply, and that resumption turn needs no user text.
+        Independent of ``create_views``. The traces are rebuilt from the
+        ``content`` column and require ``USER_MESSAGE_RECEIVED``,
+        ``AGENT_STARTING``, ``LLM_REQUEST``, ``TOOL_STARTING``,
+        ``TOOL_COMPLETED``, ``TOOL_PAUSED``, ``AGENT_TRANSFER``,
+        ``AGENT_RESPONSE``, ``INVOCATION_COMPLETED``, ``HITL_*_REQUEST``, and
+        ``HITL_*_REQUEST_COMPLETED`` events, so denying ``content`` via
+        ``payload_column_denylist`` or filtering out any of those events via
+        ``event_denylist`` / ``event_allowlist`` is rejected at construction.
+        Any custom ``content_formatter`` must preserve the JSON keys consumed
+        by the evaluation views (``$.text_summary``, ``$.response``,
+        ``$.tool``, ``$.args``, and ``$.result``). The views aggregate per
+        session or turn, so filtering them on ``session_start_timestamp`` or
+        ``turn_start_timestamp`` does not prune the events table's ``timestamp``
+        partitions: every query scans the whole table. For large tables,
+        materialize a date-filtered slice of a view into a table once and
+        evaluate that table. ``False`` (the default) creates no eval views; call
+        ``create_eval_views()`` to create or refresh them on demand.
+      tool_result_classifier: Optional ``ToolResultClassifier``: a synchronous
+        callable that receives the keyword arguments ``tool``, ``tool_args``,
+        ``tool_context`` and ``result`` of each call that reaches
+        ``after_tool_callback``, and decides whether the result reports a
+        failure. Return a ``ToolResultClassification`` to record the call as
+        ``TOOL_ERROR`` (``status="ERROR"``) or as ``TOOL_COMPLETED``
+        (``status="OK"``), or ``None`` to leave it to the built-in rule, which
+        records as ``TOOL_ERROR`` a result whose top-level ``isError`` or
+        ``is_error`` is ``True``, such as an MCP ``CallToolResult``. It is not
+        called for a ``ReflectAndRetryToolPlugin`` answer, which stands for a
+        raised error and is always recorded as ``TOOL_ERROR``. The arguments
+        must not be modified; the model and the agent use them next. A
+        classifier is rejected when the plugin is created if it is a coroutine
+        or async generator function, if ``inspect`` cannot read its signature,
+        or if it cannot take those keyword arguments. One that raises an
+        ``Exception`` or returns anything else is skipped at run time: the
+        built-in rule applies, and the logged warning names only the tool.
   """
 
   enabled: bool = True
@@ -2229,6 +2706,17 @@ class BigQueryLoggerConfig:
   # flush_on_run_end is False.
   use_dedicated_background_loop: Optional[bool] = None
   credentials_identifier: Optional[str] = None
+  # Opt-in: append a failing content_formatter's rendered traceback to the
+  # local formatter-failure warning. The traceback can embed the unformatted
+  # content; see the class docstring before enabling it.
+  debug_content_formatter_errors: bool = False
+  on_schema_error: Optional[Callable[[Exception], None]] = None
+  on_schema_ready: Optional[Callable[[], None]] = None
+  # Opt-in: also create the {view_prefix}_eval_session and
+  # {view_prefix}_eval_turn agent evaluation views.
+  create_eval_views: bool = False
+  # Application rules for tool results that report a failure without raising.
+  tool_result_classifier: Optional[ToolResultClassifier] = None
 
 
 # ==============================================================================
@@ -2635,7 +3123,9 @@ class BatchProcessor:
     self._pending_finalize_streams: set[str] = set()
     self._finalize_lock = asyncio.Lock()
 
-    self._visual_builder = _is_visual_builder.get()
+    # Ambient default for direct construction; _build_loop_state overwrites
+    # this unconditionally (including clearing back to None on _BG_LOOP).
+    self._surface = _get_telemetry_surface()
 
     self._queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(
         maxsize=queue_max_size
@@ -2670,6 +3160,8 @@ class BatchProcessor:
         "shutdown_timeout": 0,
         "shutdown_cancelled": 0,
         "offset_conflict": 0,
+        "permission_denied": 0,
+        "not_found": 0,
     }
 
   def _record_drop(self, reason: str, count: int = 1) -> int:
@@ -2765,6 +3257,13 @@ class BatchProcessor:
         cancelled from outside (e.g. a host close timeout).
       ``offset_conflict``: a committed stream rejected its offset, or a
         replacement stream could not be created before the next batch.
+      ``permission_denied``: BigQuery Write API rejected the append due to
+        missing write permission (HTTP 403 / gRPC PERMISSION_DENIED).
+      ``not_found``: BigQuery Write API reported that the destination table,
+        dataset, or stream was not found (HTTP 404 / gRPC NOT_FOUND). Only
+        recorded in default stream mode; in ``exactly_once_delivery`` mode,
+        a NOT_FOUND is treated as an offset conflict and counted under
+        ``offset_conflict``.
 
     Returns:
         A copy of the per-reason drop counters.
@@ -3041,8 +3540,8 @@ class BatchProcessor:
       serialized_batch = arrow_batch.serialize().to_pybytes()
 
       trace_id_prefix = (
-          "google-adk-bq-logger-visual-builder"
-          if self._visual_builder
+          f"google-adk-bq-logger-{self._surface}"
+          if self._surface
           else "google-adk-bq-logger"
       )
 
@@ -3115,6 +3614,30 @@ class BatchProcessor:
                   self._desync_stream()
                   self._record_drop("offset_conflict", len(rows))
                   return
+              if error_code == _GRPC_PERMISSION_DENIED:
+                logger.error(
+                    "BigQuery Write API permission denied: %s. %d row(s)"
+                    " dropped.",
+                    error_message,
+                    len(rows),
+                )
+                if self.exactly_once_delivery and had_ambiguous_send:
+                  self._desync_stream()
+                self._record_drop("permission_denied", len(rows))
+                return
+              # In exactly_once_delivery mode, _GRPC_NOT_FOUND is already
+              # handled above as an offset_conflict, so this not_found
+              # branch only executes in default stream mode, where
+              # committed-stream rotation (_desync_stream) does not apply.
+              if error_code == _GRPC_NOT_FOUND:
+                logger.error(
+                    "BigQuery Write API stream or table not found: %s. %d"
+                    " row(s) dropped.",
+                    error_message,
+                    len(rows),
+                )
+                self._record_drop("not_found", len(rows))
+                return
               if error_code in [
                   _GRPC_DEADLINE_EXCEEDED,
                   _GRPC_INTERNAL,
@@ -3164,6 +3687,14 @@ class BatchProcessor:
         self._record_drop("unexpected_error", len(rows))
         logger.error("Unexpected BigQuery Write API error: %s", e)
         return
+      except api_exceptions.Forbidden as e:
+        if self.exactly_once_delivery and had_ambiguous_send:
+          self._desync_stream()
+        self._record_drop("permission_denied", len(rows))
+        logger.error(
+            "BigQuery Write API permission denied (Dropping batch): %s", e
+        )
+        return
       except (api_exceptions.NotFound, api_exceptions.OutOfRange) as e:
         if self.exactly_once_delivery:
           self._desync_stream()
@@ -3171,6 +3702,14 @@ class BatchProcessor:
           logger.warning(
               "BigQuery committed stream rejected offset %s: %s",
               offset_for_batch,
+              e,
+          )
+          return
+        if isinstance(e, api_exceptions.NotFound):
+          self._record_drop("not_found", len(rows))
+          logger.error(
+              "BigQuery Write API stream or table not found (Dropping"
+              " batch): %s",
               e,
           )
           return
@@ -3594,7 +4133,11 @@ class HybridContentParser:
 
   def _serialize_part_model(self, value: Any) -> tuple[dict[str, Any], bool]:
     """Returns bounded JSON-native fields for a supported structured part."""
-    dumped = value.model_dump(exclude_none=True, mode="json")
+    # warnings=False: a field that no longer fits its type, even in a model
+    # nested in a function response, is otherwise quoted in a UserWarning.
+    # Pydantic serializes nested models itself, without calling their own
+    # model_dump.
+    dumped = value.model_dump(exclude_none=True, mode="json", warnings=False)
     sanitized, content_lost = _recursive_smart_truncate(dumped, self.max_length)
     if not isinstance(sanitized, dict):
       return {"value": "[UNSUPPORTED_OBJECT]"}, True
@@ -4225,7 +4768,8 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
           mode="NULLABLE",
           description=(
               "Diagnostic message for errors and model termination details;"
-              " may be populated on LLM_RESPONSE rows whose status is 'OK'."
+              " may be populated on rows whose status is 'OK', such as"
+              " LLM_RESPONSE rows and rows whose content_formatter failed."
           ),
       ),
       bigquery.SchemaField(
@@ -4409,7 +4953,22 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
     ],
     "AGENT_STARTING": [
-        "JSON_VALUE(content, '$.text_summary') AS agent_instruction",
+        # Most string instructions are stored as a JSON string scalar, so fall
+        # back to the document root when there is no text_summary key, while
+        # filtering out historical callable reprs ("<function ...",
+        # "<bound method ...", "<... at 0x...>", "functools.partial(...)").
+        (
+            "COALESCE(JSON_VALUE(content, '$.text_summary'),"
+            " IF(REGEXP_CONTAINS(JSON_VALUE(content, '$'),"
+            " r'^(?:<(?:function|bound method) |<.+ at"
+            " 0x[0-9a-fA-F]+>|functools\\.partial\\()'), NULL,"
+            " JSON_VALUE(content, '$'))) AS agent_instruction"
+        ),
+        "JSON_VALUE(attributes, '$.instruction_source') AS instruction_source",
+        "JSON_VALUE(attributes, '$.static_instruction') AS static_instruction",
+        "JSON_VALUE(attributes, '$.agent_description') AS agent_description",
+        "JSON_VALUE(attributes, '$.model') AS model",
+        "JSON_QUERY(attributes, '$.sub_agents') AS sub_agents",
     ],
     "AGENT_COMPLETED": [
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
@@ -4545,6 +5104,903 @@ WHERE
   event_type = '{event_type}'
 """
 
+# The eval views rebuild event rows into the
+# ``google.cloud.aiplatform.v1beta1.AgentData`` JSON in a ``trace`` column
+# for agent evaluation:
+# - USER_MESSAGE_RECEIVED becomes user text; TOOL_STARTING and HITL_*_REQUEST
+#   a function_call; AGENT_TRANSFER a ``transfer_to_agent`` function_call; and
+#   TOOL_COMPLETED and HITL_*_REQUEST_COMPLETED a function_response whose
+#   non-object result is wrapped as ``{"result": ...}``.  The transfer and
+#   ``adk_request_*`` HITL tools' own TOOL_STARTING and TOOL_COMPLETED rows
+#   are skipped: AGENT_TRANSFER, logged after both, carries the handoff, and
+#   HITL_*_REQUEST and HITL_*_REQUEST_COMPLETED carry the HITL request and
+#   the completion that resumes it.
+# - Model text comes from AGENT_RESPONSE (which strips thought parts).
+#   Terminal LLM_RESPONSE rows carry a ``finish_reason`` or ``cache_type``
+#   attribute and streamed partial chunks carry neither, so token totals
+#   prefer terminal rows, which keeps streamed usage from being counted
+#   twice.
+# - ``_format_content`` renders text parts as ``text: '...'`` joined by
+#   `` | ``; ``response_events`` strips that ``_format_content`` wrapper
+#   back to plain text (kept in sync with ``_format_content`` by
+#   ``TestEvalViews.test_eval_response_text_patterns_unwrap_format_content``).
+#   Any other ``_format_content`` output (``None``, or one with a non-text
+#   part such as ``call: ...`` or ``other``) gives a NULL ``response_text``;
+#   a response in another shape, such as the JSON args of a
+#   ``final_response_tool_names`` tool, is kept as is.
+# - ``trace`` holds only ``agents`` and ``turns``, and every nested object uses
+#   proto field names only, because unknown fields are rejected.
+# - No output column is named ``status``, avoiding collisions with
+#   downstream evaluation output schemas.
+# - Tool metrics (``tool_call_count``, ``distinct_tools_used`` and the
+#   consecutive-call columns) skip the ``transfer_to_agent`` tool, whose
+#   handoff the trace carries as the AGENT_TRANSFER function_call.  Two calls
+#   are identical when their tool name and args match; ``tool_call_island``
+#   numbers each run of consecutive identical calls, and ``has_tool_loop``
+#   means a run of 3 or more.
+# - ``eval_ready`` needs user text, a finished turn and at least one trace
+#   event: user input with no text (image-only or offloaded to GCS) leaves
+#   the judge without a prompt. In ``eval_session``, a paused turn (one that
+#   logged ``TOOL_PAUSED`` or a ``HITL_*_REQUEST`` event and
+#   ``INVOCATION_COMPLETED`` without ``AGENT_RESPONSE`` text) and the
+#   ``function_response`` turn that resumes it in the next invocation also
+#   satisfy ``session_turn_eval_ready``; a turn that merely ended without a
+#   reply is not paused.
+# - Every column is aggregated per session or turn, so filters on the output
+#   timestamps cannot prune the events table's ``timestamp`` partitions.
+_EVAL_VIEW_REQUIRED_EVENTS = frozenset({
+    "USER_MESSAGE_RECEIVED",
+    "AGENT_STARTING",
+    "LLM_REQUEST",
+    "TOOL_STARTING",
+    "TOOL_COMPLETED",
+    "TOOL_PAUSED",
+    "AGENT_TRANSFER",
+    "HITL_CREDENTIAL_REQUEST",
+    "HITL_CONFIRMATION_REQUEST",
+    "HITL_INPUT_REQUEST",
+    "HITL_CREDENTIAL_REQUEST_COMPLETED",
+    "HITL_CONFIRMATION_REQUEST_COMPLETED",
+    "HITL_INPUT_REQUEST_COMPLETED",
+    "AGENT_RESPONSE",
+    "INVOCATION_COMPLETED",
+})
+
+_EVAL_VIEW_CTES_SQL = """\
+WITH
+  raw_events AS (
+    SELECT
+      timestamp,
+      event_id,
+      event_type,
+      agent,
+      session_id,
+      invocation_id,
+      user_id,
+      content,
+      {content_parts_column},
+      {attributes_column},
+      {latency_ms_column},
+      status,
+      error_message,
+      is_truncated
+    FROM
+      `{full_table_id}`
+    WHERE
+      session_id IS NOT NULL
+      AND invocation_id IS NOT NULL
+  ),
+  typed_events AS (
+    SELECT
+      *,
+      COALESCE(
+        agent, JSON_VALUE(attributes, '$.root_agent_name'), 'root_agent'
+      ) AS author,
+      JSON_VALUE(content, '$.tool') AS tool_name,
+      TO_JSON_STRING(JSON_QUERY(content, '$.args')) AS tool_args_json,
+      CASE
+        WHEN event_type != 'USER_MESSAGE_RECEIVED' THEN NULL
+        WHEN COALESCE(ARRAY_LENGTH(content_parts), 0) > 0 THEN (
+          SELECT
+            STRING_AGG(p.text, '\\n' ORDER BY p.part_index)
+          FROM
+            UNNEST(content_parts) AS p
+          WHERE
+            p.mime_type = 'text/plain'
+            AND COALESCE(p.storage_mode, 'INLINE') = 'INLINE'
+            AND COALESCE(p.part_attributes, '{{}}') = '{{}}'
+            AND p.text IS NOT NULL
+            AND p.text NOT IN ('', '[BINARY DATA]', '[UPLOAD FAILED]')
+        )
+        WHEN NOT REGEXP_CONTAINS(
+          COALESCE(
+            JSON_VALUE(content, '$.text_summary'),
+            JSON_VALUE(content, '$'),
+            ''
+          ),
+          r'^Function response: '
+        ) THEN NULLIF(
+          COALESCE(
+            JSON_VALUE(content, '$.text_summary'), JSON_VALUE(content, '$')
+          ),
+          ''
+        )
+        ELSE NULL
+      END AS message_text,
+      (
+        event_type = 'USER_MESSAGE_RECEIVED'
+        AND (
+          REGEXP_CONTAINS(
+            COALESCE(
+              JSON_VALUE(content, '$.text_summary'),
+              JSON_VALUE(content, '$'),
+              ''
+            ),
+            r'^Function response: '
+          )
+          OR EXISTS(
+            SELECT 1
+            FROM UNNEST(content_parts) AS p
+            WHERE
+              JSON_QUERY(p.part_attributes, '$.function_response')
+              IS NOT NULL
+          )
+        )
+      ) AS is_function_response,
+      IF(
+        event_type = 'AGENT_RESPONSE',
+        COALESCE(
+          JSON_VALUE(content, '$.response'),
+          IF(
+            JSON_TYPE(JSON_QUERY(content, '$.response'))
+              IN ('object', 'array'),
+            TO_JSON_STRING(JSON_QUERY(content, '$.response')),
+            NULL
+          )
+        ),
+        NULL
+      ) AS formatted_response,
+      (
+        event_type = 'LLM_RESPONSE'
+        AND (
+          JSON_VALUE(attributes, '$.finish_reason') IS NOT NULL
+          OR JSON_VALUE(attributes, '$.cache_type') IS NOT NULL
+        )
+      ) AS is_final_llm_response,
+      SAFE_CAST(JSON_VALUE(content, '$.usage.total') AS INT64) AS usage_total,
+      SAFE_CAST(JSON_VALUE(content, '$.usage.prompt') AS INT64)
+        AS usage_prompt,
+      SAFE_CAST(JSON_VALUE(content, '$.usage.completion') AS INT64)
+        AS usage_completion,
+      SAFE_CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms
+    FROM
+      raw_events
+  ),
+  response_events AS (
+    SELECT
+      *,
+      (
+        event_type = 'TOOL_STARTING'
+        AND COALESCE(tool_name, '') != 'transfer_to_agent'
+      ) AS is_tool_call,
+      CASE
+        WHEN
+          REGEXP_CONTAINS(formatted_response, r"(?s)^text: '.*'$")
+          AND NOT REGEXP_CONTAINS(
+            formatted_response,
+            r" [|] (?:call: |resp: |Executable code |Code execution result )"
+          )
+          AND NOT REGEXP_CONTAINS(formatted_response, r" [|] other(?: [|] |$)")
+          THEN NULLIF(
+            REGEXP_REPLACE(
+              REGEXP_REPLACE(formatted_response, r"^text: '|'$", ''),
+              r"' [|] text: '",
+              CHR(10)
+            ),
+            ''
+          )
+        WHEN
+          NOT REGEXP_CONTAINS(
+            formatted_response,
+            r"^(?:call: |resp: |Executable code |Code execution result )"
+          )
+          AND NOT REGEXP_CONTAINS(
+            formatted_response, r"^(?:None$|text: '|other(?: [|] |$))"
+          )
+          THEN NULLIF(formatted_response, '')
+      END AS response_text
+    FROM
+      typed_events
+  ),
+  annotated_events AS (
+    SELECT
+      *,
+      (
+        COUNTIF(is_final_llm_response)
+          OVER (PARTITION BY session_id, invocation_id)
+      ) > 0 AS turn_has_final_llm_response,
+      ROW_NUMBER() OVER (
+        PARTITION BY session_id, invocation_id, is_tool_call
+        ORDER BY timestamp, event_id
+      ) - ROW_NUMBER() OVER (
+        PARTITION BY
+          session_id, invocation_id, is_tool_call, tool_name, tool_args_json
+        ORDER BY timestamp, event_id
+      ) AS tool_call_island
+    FROM
+      response_events
+  ),
+  trace_events AS (
+    SELECT
+      session_id,
+      invocation_id,
+      timestamp,
+      event_id,
+      event_type,
+      user_id,
+      agent,
+      JSON_VALUE(attributes, '$.root_agent_name') AS root_agent_name,
+      status,
+      error_message,
+      is_truncated,
+      message_text,
+      response_text,
+      is_function_response,
+      is_tool_call,
+      IF(is_tool_call, NULLIF(tool_name, ''), NULL) AS invoked_tool_name,
+      IF(
+        is_tool_call,
+        COUNT(*) OVER (
+          PARTITION BY
+            session_id,
+            invocation_id,
+            is_tool_call,
+            tool_name,
+            tool_args_json,
+            tool_call_island
+        ),
+        NULL
+      ) AS tool_call_run_length,
+      (
+        event_type = 'LLM_RESPONSE'
+        AND (is_final_llm_response OR NOT turn_has_final_llm_response)
+      ) AS is_usage_row,
+      usage_total,
+      usage_prompt,
+      usage_completion,
+      total_ms,
+      CASE
+        WHEN event_type = 'USER_MESSAGE_RECEIVED' THEN 1
+        WHEN
+          event_type IN (
+            'TOOL_STARTING',
+            'HITL_CREDENTIAL_REQUEST',
+            'HITL_CONFIRMATION_REQUEST',
+            'HITL_INPUT_REQUEST'
+          )
+          THEN 2
+        WHEN event_type = 'AGENT_TRANSFER' THEN 3
+        WHEN
+          event_type IN (
+            'TOOL_COMPLETED',
+            'HITL_CREDENTIAL_REQUEST_COMPLETED',
+            'HITL_CONFIRMATION_REQUEST_COMPLETED',
+            'HITL_INPUT_REQUEST_COMPLETED'
+          )
+          THEN 4
+        ELSE 5
+      END AS event_seq,
+      CASE event_type
+        WHEN 'USER_MESSAGE_RECEIVED' THEN 'user'
+        WHEN 'AGENT_TRANSFER'
+          THEN COALESCE(JSON_VALUE(content, '$.from_agent'), author)
+        ELSE author
+      END AS event_author,
+      CASE
+        WHEN event_type = 'USER_MESSAGE_RECEIVED' AND message_text IS NOT NULL
+          THEN JSON_OBJECT(
+            'role', 'user',
+            'parts', JSON_ARRAY(JSON_OBJECT('text', message_text))
+          )
+        WHEN
+          (
+            is_tool_call
+            AND COALESCE(tool_name, '') NOT IN (
+              'adk_request_credential',
+              'adk_request_confirmation',
+              'adk_request_input'
+            )
+          )
+          OR event_type IN (
+            'HITL_CREDENTIAL_REQUEST',
+            'HITL_CONFIRMATION_REQUEST',
+            'HITL_INPUT_REQUEST'
+          )
+          THEN JSON_OBJECT(
+            'role', 'model',
+            'parts', JSON_ARRAY(
+              JSON_OBJECT(
+                'function_call', JSON_OBJECT(
+                  'name', COALESCE(tool_name, ''),
+                  'args', IF(
+                    JSON_TYPE(JSON_QUERY(content, '$.args')) = 'object',
+                    JSON_QUERY(content, '$.args'),
+                    JSON_OBJECT()
+                  )
+                )
+              )
+            )
+          )
+        WHEN event_type = 'AGENT_TRANSFER'
+          THEN JSON_OBJECT(
+            'role', 'model',
+            'parts', JSON_ARRAY(
+              JSON_OBJECT(
+                'function_call', JSON_OBJECT(
+                  'name', 'transfer_to_agent',
+                  'args', JSON_OBJECT(
+                    'agent_name',
+                    COALESCE(JSON_VALUE(content, '$.to_agent'), '')
+                  )
+                )
+              )
+            )
+          )
+        WHEN
+          (
+            event_type = 'TOOL_COMPLETED'
+            AND COALESCE(tool_name, '') NOT IN (
+              'transfer_to_agent',
+              'adk_request_credential',
+              'adk_request_confirmation',
+              'adk_request_input'
+            )
+          )
+          OR event_type IN (
+            'HITL_CREDENTIAL_REQUEST_COMPLETED',
+            'HITL_CONFIRMATION_REQUEST_COMPLETED',
+            'HITL_INPUT_REQUEST_COMPLETED'
+          )
+          THEN JSON_OBJECT(
+            'role', 'user',
+            'parts', JSON_ARRAY(
+              JSON_OBJECT(
+                'function_response', JSON_OBJECT(
+                  'name', COALESCE(tool_name, ''),
+                  'response', IF(
+                    JSON_TYPE(JSON_QUERY(content, '$.result')) = 'object',
+                    JSON_QUERY(content, '$.result'),
+                    JSON_OBJECT('result', JSON_QUERY(content, '$.result'))
+                  )
+                )
+              )
+            )
+          )
+        WHEN event_type = 'AGENT_RESPONSE' AND response_text IS NOT NULL
+          THEN JSON_OBJECT(
+            'role', 'model',
+            'parts', JSON_ARRAY(JSON_OBJECT('text', response_text))
+          )
+      END AS event_content
+    FROM
+      annotated_events
+  ),
+  turn_rollup AS (
+    SELECT
+      session_id,
+      invocation_id,
+      ARRAY_AGG(
+        user_id IGNORE NULLS ORDER BY timestamp LIMIT 1
+      )[SAFE_OFFSET(0)] AS user_id,
+      ARRAY_AGG(
+        root_agent_name IGNORE NULLS ORDER BY timestamp LIMIT 1
+      )[SAFE_OFFSET(0)] AS first_root_agent_name,
+      ARRAY_AGG(
+        agent IGNORE NULLS ORDER BY timestamp LIMIT 1
+      )[SAFE_OFFSET(0)] AS first_agent,
+      MIN(timestamp) AS turn_start_timestamp,
+      MAX(timestamp) AS turn_end_timestamp,
+      COUNTIF(is_tool_call) AS tool_call_count,
+      COUNTIF(event_type = 'TOOL_ERROR') AS tool_error_count,
+      COUNTIF(event_type = 'LLM_ERROR') AS llm_error_count,
+      COUNTIF(event_type = 'AGENT_ERROR') AS agent_error_count,
+      COALESCE(
+        LOGICAL_OR(
+          status = 'ERROR'
+          OR (COALESCE(status, '') != 'OK' AND error_message IS NOT NULL)
+          OR (event_type = 'LLM_RESPONSE' AND error_message IS NOT NULL)
+        ),
+        FALSE
+      ) AS has_error,
+      LOGICAL_OR(COALESCE(is_truncated, FALSE)) AS has_truncated_content,
+      COALESCE(MAX(tool_call_run_length), 0) >= 3 AS has_tool_loop,
+      COALESCE(MAX(tool_call_run_length), 0)
+        AS max_consecutive_identical_tool_calls,
+      COALESCE(
+        ARRAY_AGG(
+          DISTINCT invoked_tool_name IGNORE NULLS ORDER BY invoked_tool_name
+        ),
+        ARRAY<STRING>[]
+      ) AS distinct_tools_used,
+      COALESCE(SUM(IF(is_usage_row, usage_prompt, NULL)), 0)
+        AS total_prompt_tokens,
+      COALESCE(SUM(IF(is_usage_row, usage_completion, NULL)), 0)
+        AS total_completion_tokens,
+      COALESCE(SUM(IF(is_usage_row, usage_total, NULL)), 0) AS total_tokens,
+      COALESCE(
+        MAX(IF(event_type = 'INVOCATION_COMPLETED', total_ms, NULL)),
+        MAX(IF(event_type = 'AGENT_COMPLETED', total_ms, NULL))
+      ) AS turn_latency_ms,
+      (
+        COUNTIF(event_type = 'INVOCATION_COMPLETED') > 0
+        AND COUNTIF(
+          event_type = 'AGENT_RESPONSE' AND response_text IS NOT NULL
+        ) = 0
+        AND COUNTIF(
+          event_type IN (
+            'TOOL_PAUSED',
+            'HITL_CREDENTIAL_REQUEST',
+            'HITL_CONFIRMATION_REQUEST',
+            'HITL_INPUT_REQUEST'
+          )
+        ) > 0
+      ) AS is_paused,
+      (
+        COUNTIF(event_type = 'INVOCATION_COMPLETED') > 0
+        AND COUNTIF(
+          event_type = 'AGENT_RESPONSE' AND response_text IS NOT NULL
+        ) > 0
+      ) AS is_complete,
+      COUNTIF(
+        event_type = 'USER_MESSAGE_RECEIVED' AND message_text IS NOT NULL
+      ) > 0 AS has_user_message,
+      COUNTIF(is_function_response) > 0 AS has_function_response,
+      ARRAY_AGG(
+        IF(
+          event_content IS NULL,
+          NULL,
+          JSON_OBJECT(
+            'author', event_author,
+            'content', event_content,
+            'event_time',
+            FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', timestamp)
+          )
+        )
+        IGNORE NULLS
+        ORDER BY timestamp, event_seq, event_id
+      ) AS events
+    FROM
+      trace_events
+    GROUP BY
+      session_id,
+      invocation_id
+  ),
+  turns AS (
+    SELECT
+      *,
+      COALESCE(first_root_agent_name, first_agent) AS root_agent,
+      ROW_NUMBER() OVER (
+        PARTITION BY session_id
+        ORDER BY turn_start_timestamp, invocation_id
+      ) - 1 AS turn_index,
+      IF(
+        COALESCE(ARRAY_LENGTH(events), 0) > 0, TO_JSON(events), JSON_ARRAY()
+      ) AS events_json,
+      (
+        has_user_message
+        AND is_complete
+        AND COALESCE(ARRAY_LENGTH(events), 0) > 0
+      ) AS eval_ready,
+      (
+        (
+          has_user_message
+          OR (
+            has_function_response
+            AND COALESCE(
+              LAG(is_paused) OVER (
+                PARTITION BY session_id
+                ORDER BY turn_start_timestamp, invocation_id
+              ),
+              FALSE
+            )
+          )
+        )
+        AND (
+          is_complete
+          OR (
+            is_paused
+            AND COALESCE(
+              LEAD(has_function_response) OVER (
+                PARTITION BY session_id
+                ORDER BY turn_start_timestamp, invocation_id
+              ),
+              FALSE
+            )
+          )
+        )
+        AND COALESCE(ARRAY_LENGTH(events), 0) > 0
+      ) AS session_turn_eval_ready
+    FROM
+      turn_rollup
+  ),
+  agent_rows AS (
+    SELECT
+      session_id,
+      invocation_id,
+      agent AS agent_id,
+      timestamp,
+      IF(
+        event_type = 'AGENT_STARTING',
+        COALESCE(
+          JSON_VALUE(content, '$.text_summary'),
+          IF(
+            REGEXP_CONTAINS(
+              JSON_VALUE(content, '$'),
+              r'^(?:<(?:function|bound method) |<.+ at 0x[0-9a-fA-F]+>|functools\\.partial\\()'
+            ),
+            NULL,
+            JSON_VALUE(content, '$')
+          ),
+          JSON_VALUE(attributes, '$.static_instruction')
+        ),
+        NULL
+      ) AS instruction,
+      IF(
+        event_type = 'AGENT_STARTING',
+        JSON_VALUE(attributes, '$.agent_description'),
+        NULL
+      ) AS description,
+      IF(
+        event_type = 'AGENT_STARTING'
+        AND JSON_TYPE(JSON_QUERY(attributes, '$.sub_agents')) = 'array',
+        JSON_QUERY(attributes, '$.sub_agents'),
+        NULL
+      ) AS sub_agents,
+      IF(
+        event_type = 'LLM_REQUEST'
+        AND JSON_TYPE(JSON_QUERY(attributes, '$.tools')) = 'array',
+        JSON_QUERY(attributes, '$.tools'),
+        NULL
+      ) AS tool_declarations
+    FROM
+      raw_events
+    WHERE
+      agent IS NOT NULL
+  ),
+  agent_latest AS (
+    SELECT
+      {scope_columns},
+      agent_id,
+      ARRAY_AGG(
+        instruction IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
+      )[SAFE_OFFSET(0)] AS instruction,
+      ARRAY_AGG(
+        description IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
+      )[SAFE_OFFSET(0)] AS description,
+      ARRAY_AGG(
+        sub_agents IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
+      )[SAFE_OFFSET(0)] AS sub_agents,
+      ARRAY_AGG(
+        tool_declarations IGNORE NULLS ORDER BY timestamp DESC LIMIT 1
+      )[SAFE_OFFSET(0)] AS tool_declarations
+    FROM
+      agent_rows
+    GROUP BY
+      {scope_columns},
+      agent_id
+  ),
+  agent_tool_declarations AS (
+    SELECT
+      {scope_columns},
+      agent_id,
+      ARRAY_AGG(
+        IF(
+          JSON_TYPE(JSON_QUERY(declaration, '$.parameters')) = 'object',
+          JSON_OBJECT(
+            'name', JSON_VALUE(declaration, '$.name'),
+            'description',
+            COALESCE(JSON_VALUE(declaration, '$.description'), ''),
+            'parameters_json_schema', JSON_QUERY(declaration, '$.parameters')
+          ),
+          JSON_OBJECT(
+            'name', JSON_VALUE(declaration, '$.name'),
+            'description',
+            COALESCE(JSON_VALUE(declaration, '$.description'), '')
+          )
+        )
+        ORDER BY declaration_offset
+      ) AS function_declarations
+    FROM
+      agent_latest,
+      UNNEST(JSON_QUERY_ARRAY(tool_declarations)) AS declaration
+        WITH OFFSET AS declaration_offset
+    WHERE
+      JSON_VALUE(declaration, '$.name') IS NOT NULL
+    GROUP BY
+      {scope_columns},
+      agent_id
+  ),
+  agent_configs AS (
+    SELECT
+      {scope_columns},
+      agent_id,
+      JSON_OBJECT(
+        'agent_id', agent_id,
+        'instruction', COALESCE(instruction, ''),
+        'description', COALESCE(description, ''),
+        'sub_agents', COALESCE(sub_agents, JSON_ARRAY()),
+        'tools', IF(
+          function_declarations IS NULL,
+          JSON_ARRAY(),
+          JSON_ARRAY(
+            JSON_OBJECT(
+              'function_declarations', TO_JSON(function_declarations)
+            )
+          )
+        )
+      ) AS agent_config
+    FROM
+      agent_latest
+    LEFT JOIN
+      agent_tool_declarations
+      USING ({scope_columns}, agent_id)
+  ),
+  agent_maps AS (
+    SELECT
+      {scope_columns},
+      JSON_OBJECT(
+        ARRAY_AGG(agent_id ORDER BY agent_id),
+        ARRAY_AGG(agent_config ORDER BY agent_id)
+      ) AS agents
+    FROM
+      agent_configs
+    GROUP BY
+      {scope_columns}
+  )"""
+
+_EVAL_SESSION_VIEW_SQL_TEMPLATE = """\
+CREATE OR REPLACE VIEW `{view_ref}` AS
+{ctes},
+  session_rollup AS (
+    SELECT
+      session_id,
+      ARRAY_AGG(
+        user_id IGNORE NULLS ORDER BY turn_start_timestamp LIMIT 1
+      )[SAFE_OFFSET(0)] AS user_id,
+      COALESCE(
+        ARRAY_AGG(
+          first_root_agent_name IGNORE NULLS
+          ORDER BY turn_start_timestamp
+          LIMIT 1
+        )[SAFE_OFFSET(0)],
+        ARRAY_AGG(
+          first_agent IGNORE NULLS ORDER BY turn_start_timestamp LIMIT 1
+        )[SAFE_OFFSET(0)]
+      ) AS root_agent,
+      MIN(turn_start_timestamp) AS session_start_timestamp,
+      MAX(turn_end_timestamp) AS session_end_timestamp,
+      COUNT(DISTINCT invocation_id) AS turn_count,
+      SUM(tool_call_count) AS tool_call_count,
+      SUM(tool_error_count) AS tool_error_count,
+      SUM(llm_error_count) AS llm_error_count,
+      SUM(agent_error_count) AS agent_error_count,
+      LOGICAL_OR(has_error) AS has_error,
+      LOGICAL_OR(has_truncated_content) AS has_truncated_content,
+      LOGICAL_OR(has_tool_loop) AS has_tool_loop,
+      MAX(max_consecutive_identical_tool_calls)
+        AS max_consecutive_identical_tool_calls,
+      ARRAY_CONCAT_AGG(distinct_tools_used) AS tools_used_by_turn,
+      SUM(total_prompt_tokens) AS total_prompt_tokens,
+      SUM(total_completion_tokens) AS total_completion_tokens,
+      SUM(total_tokens) AS total_tokens,
+      SUM(turn_latency_ms) AS total_latency_ms,
+      LOGICAL_AND(session_turn_eval_ready) AS eval_ready,
+      ARRAY_AGG(
+        JSON_OBJECT(
+          'turn_index', turn_index,
+          'turn_id', invocation_id,
+          'events', events_json
+        )
+        ORDER BY turn_index
+      ) AS turn_traces
+    FROM
+      turns
+    GROUP BY
+      session_id
+  )
+SELECT
+  s.session_id AS session_id,
+  s.user_id AS user_id,
+  s.root_agent AS root_agent,
+  s.session_start_timestamp AS session_start_timestamp,
+  s.session_end_timestamp AS session_end_timestamp,
+  s.turn_count AS turn_count,
+  s.tool_call_count AS tool_call_count,
+  s.tool_error_count AS tool_error_count,
+  s.llm_error_count AS llm_error_count,
+  s.agent_error_count AS agent_error_count,
+  s.has_error AS has_error,
+  s.has_truncated_content AS has_truncated_content,
+  s.has_tool_loop AS has_tool_loop,
+  s.max_consecutive_identical_tool_calls
+    AS max_consecutive_identical_tool_calls,
+  ARRAY(
+    SELECT DISTINCT tool FROM UNNEST(s.tools_used_by_turn) AS tool ORDER BY tool
+  ) AS distinct_tools_used,
+  s.total_prompt_tokens AS total_prompt_tokens,
+  s.total_completion_tokens AS total_completion_tokens,
+  s.total_tokens AS total_tokens,
+  s.total_latency_ms AS total_latency_ms,
+  s.eval_ready AS eval_ready,
+  JSON_OBJECT(
+    'agents', COALESCE(m.agents, JSON_OBJECT()),
+    'turns', TO_JSON(s.turn_traces)
+  ) AS trace
+FROM
+  session_rollup AS s
+LEFT JOIN
+  agent_maps AS m
+  ON m.session_id = s.session_id
+"""
+
+_EVAL_TURN_VIEW_SQL_TEMPLATE = """\
+CREATE OR REPLACE VIEW `{view_ref}` AS
+{ctes}
+SELECT
+  t.session_id AS session_id,
+  t.invocation_id AS invocation_id,
+  t.turn_index AS turn_index,
+  t.user_id AS user_id,
+  t.root_agent AS root_agent,
+  t.turn_start_timestamp AS turn_start_timestamp,
+  t.turn_end_timestamp AS turn_end_timestamp,
+  t.tool_call_count AS tool_call_count,
+  t.tool_error_count AS tool_error_count,
+  t.llm_error_count AS llm_error_count,
+  t.agent_error_count AS agent_error_count,
+  t.has_error AS has_error,
+  t.has_truncated_content AS has_truncated_content,
+  t.has_tool_loop AS has_tool_loop,
+  t.max_consecutive_identical_tool_calls
+    AS max_consecutive_identical_tool_calls,
+  t.distinct_tools_used AS distinct_tools_used,
+  t.total_prompt_tokens AS total_prompt_tokens,
+  t.total_completion_tokens AS total_completion_tokens,
+  t.total_tokens AS total_tokens,
+  t.turn_latency_ms AS turn_latency_ms,
+  t.eval_ready AS eval_ready,
+  JSON_OBJECT(
+    'agents', COALESCE(m.agents, JSON_OBJECT()),
+    'turns', JSON_ARRAY(
+      JSON_OBJECT(
+        'turn_index', 0,
+        'turn_id', t.invocation_id,
+        'events', t.events_json
+      )
+    )
+  ) AS trace
+FROM
+  turns AS t
+LEFT JOIN
+  agent_maps AS m
+  ON m.session_id = t.session_id AND m.invocation_id = t.invocation_id
+"""
+
+
+def _eval_view_dataset_ref(
+    full_table_id: str, denied_columns: frozenset[str]
+) -> str:
+  """Validates the eval view inputs and returns the table's dataset ref."""
+  if "content" in denied_columns:
+    raise ValueError(
+        "Cannot build eval view SQL when 'content' is in"
+        " payload_column_denylist."
+    )
+  dataset_ref, _, table = full_table_id.rpartition(".")
+  if not dataset_ref or not table:
+    raise ValueError(
+        "full_table_id must be a dataset-qualified table name such as"
+        f" 'project.dataset.table'; got {full_table_id!r}."
+    )
+  return dataset_ref
+
+
+def _build_eval_view_ctes(
+    full_table_id: str, denied_columns: frozenset[str], scope_columns: str
+) -> str:
+  """Returns the CTE chain shared by the eval session and turn views.
+
+  Args:
+    full_table_id: The events table.
+    denied_columns: Payload columns projected out of the table.  A denied
+      ``content_parts``, ``attributes``, or ``latency_ms`` column reads as an
+      empty array or NULL JSON, so the SQL never references it.
+    scope_columns: The columns that scope ``trace.agents``: ``session_id``
+      for the session view, ``session_id, invocation_id`` for the turn view.
+  """
+  return _EVAL_VIEW_CTES_SQL.format(
+      full_table_id=full_table_id,
+      content_parts_column=(
+          "ARRAY<STRUCT<part_index INT64, mime_type STRING, text STRING,"
+          " part_attributes STRING, storage_mode STRING>>[] AS content_parts"
+          if "content_parts" in denied_columns
+          else "content_parts"
+      ),
+      attributes_column=(
+          "CAST(NULL AS JSON) AS attributes"
+          if "attributes" in denied_columns
+          else "attributes"
+      ),
+      latency_ms_column=(
+          "CAST(NULL AS JSON) AS latency_ms"
+          if "latency_ms" in denied_columns
+          else "latency_ms"
+      ),
+      scope_columns=scope_columns,
+  )
+
+
+def _build_eval_session_view_sql(
+    full_table_id: str,
+    view_prefix: str = "v",
+    denied_columns: frozenset[str] = frozenset(),
+) -> str:
+  """Builds the ``{view_prefix}_eval_session`` view DDL.
+
+  The view has one row per session.  Its ``trace`` column is an ``AgentData``
+  object holding every turn of the session, numbered from 0 in start order.
+
+  Args:
+    full_table_id: The events table as ``project.dataset.table``.  The view is
+      created in the same dataset.
+    view_prefix: Prefix for the view name.
+    denied_columns: Payload columns projected out of the table.
+
+  Returns:
+    A ``CREATE OR REPLACE VIEW`` statement.
+
+  Raises:
+    ValueError: ``content`` is denied, or ``full_table_id`` has no dataset.
+  """
+  dataset_ref = _eval_view_dataset_ref(full_table_id, denied_columns)
+  return _EVAL_SESSION_VIEW_SQL_TEMPLATE.format(
+      view_ref=f"{dataset_ref}.{view_prefix}_eval_session",
+      ctes=_build_eval_view_ctes(full_table_id, denied_columns, "session_id"),
+  )
+
+
+def _build_eval_turn_view_sql(
+    full_table_id: str,
+    view_prefix: str = "v",
+    denied_columns: frozenset[str] = frozenset(),
+) -> str:
+  """Builds the ``{view_prefix}_eval_turn`` view DDL.
+
+  The view has one row per ``(session_id, invocation_id)`` turn.  Its
+  ``trace`` column is an ``AgentData`` object whose ``turns`` array holds only
+  that turn, with ``turn_index`` 0 as single-turn metrics require; the
+  ``turn_index`` column keeps the turn's position in its session.
+
+  Args:
+    full_table_id: The events table as ``project.dataset.table``.  The view is
+      created in the same dataset.
+    view_prefix: Prefix for the view name.
+    denied_columns: Payload columns projected out of the table.
+
+  Returns:
+    A ``CREATE OR REPLACE VIEW`` statement.
+
+  Raises:
+    ValueError: ``content`` is denied, or ``full_table_id`` has no dataset.
+  """
+  dataset_ref = _eval_view_dataset_ref(full_table_id, denied_columns)
+  return _EVAL_TURN_VIEW_SQL_TEMPLATE.format(
+      view_ref=f"{dataset_ref}.{view_prefix}_eval_turn",
+      ctes=_build_eval_view_ctes(
+          full_table_id, denied_columns, "session_id, invocation_id"
+      ),
+  )
+
 
 # ==============================================================================
 # MAIN PLUGIN
@@ -4589,6 +6045,10 @@ class EventData:
   # like ``JSON_VALUE(attributes, '$.adk.function_call_id')`` lands at
   # the right JSON path.
   adk_extras: dict[str, Any] = field(default_factory=dict)
+  # Dedicated custom metadata dictionary (e.g. from LlmResponse.custom_metadata
+  # on terminal LLM_RESPONSE rows). When set, takes precedence over
+  # getattr(source_event, "custom_metadata", None).
+  custom_metadata: Optional[collections.abc.Mapping[str, Any]] = None
 
 
 async def _close_write_transport_helper(
@@ -4669,6 +6129,27 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     - Or invoke the explicit classmethod:
         ``await
         BigQueryAgentAnalyticsPlugin.close_shared_background_transports()``
+
+  ### Plugin order
+  Register this plugin before plugins that answer or re-raise tool callbacks,
+  such as ``ReflectAndRetryToolPlugin``. ``PluginManager`` stops at the first
+  plugin that returns a value from a callback or raises, so a plugin ahead of
+  this one can keep a call's outcome from reaching it. With
+  ``ReflectAndRetryToolPlugin`` ahead, a call gets no outcome row when:
+
+  - the retry plugin re-raises once its retries run out
+    (``throw_exception_if_retry_exceeded`` defaults to True);
+  - the model calls a tool name that does not exist: the retry plugin answers
+    the lookup error, and ADK skips the after-tool callbacks for such a call;
+  - a subclass that overrides ``extract_error_from_result`` answers
+    ``after_tool_callback``.
+
+  Registered first, this plugin records each raised error once, as
+  ``TOOL_ERROR``, whatever later plugins do with it. A failure that only a
+  later plugin detects in a result, such as one an
+  ``extract_error_from_result`` override flags, is recorded as
+  ``TOOL_COMPLETED`` unless ``BigQueryLoggerConfig.tool_result_classifier``
+  flags the same result.
   """
 
   def __init__(
@@ -4740,11 +6221,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           " metadata would be dropped. Remove 'attributes' from"
           " payload_column_denylist or clear custom_metadata_allowlist."
       )
+    # The eval views rebuild AgentData traces from the content column and
+    # require the core turn lifecycle events.
+    if self.config.create_eval_views:
+      self._validate_eval_view_config(from_init=True)
 
     self.table_id = table_id or self.config.table_id
     self.location = location
 
-    self._visual_builder = _is_visual_builder.get()
+    self._surface = _get_telemetry_surface()
 
     _validate_runtime_config(self.config)
 
@@ -4805,6 +6290,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         if self._custom_credentials or self.credentials_identifier
         else None
     )
+    if self._surface:
+      creds_key = (creds_key, self._surface)
     return (f"{self.project_id}.{self.dataset_id}.{self.table_id}", creds_key)
 
   def _use_dedicated_loop(self) -> bool:
@@ -4977,7 +6464,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       return _format_content(content, max_len=self.config.max_content_length)
     except Exception as e:
       logger.warning("Content formatter failed: %s", e)
-      return "[FORMATTING FAILED]", False
+      return "[FORMATTING FAILED]", True
 
   async def _close_write_transport(self, write_client: Any) -> None:
     """Best-effort bounded close for a BigQuery write-client transport."""
@@ -5043,9 +6530,32 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         else None
     )
 
+    # Resolve the surface to stamp on this _LoopState:
+    # - Shared loop (loop is not _BG_LOOP): the state lives in the per-instance
+    #   self._loop_state_by_loop dict, so when __init__ captured nothing we may
+    #   safely fall back to the ambient ContextVars and pin that for the life
+    #   of this (plugin, loop) pair. This recovers api_server's per-request
+    #   _is_visual_builder.set(True), which runs after get_runner_async() has
+    #   already constructed the plugin (safe when each app gets its own plugin
+    #   instance, as with plugins.yaml or class-form --extra_plugins; a single
+    #   instance shared across apps via instance-form --extra_plugins pins the
+    #   first request's surface for all apps, matching the pre-existing
+    #   trace_id behavior).
+    # - Dedicated background loop (loop is _BG_LOOP): the state is published
+    #   into the process-global _BG_LOOP_STATES cache under _get_bg_loop_key(),
+    #   which encodes only the construction-time self._surface. Falling back to
+    #   an ambient request context here would cache a surface-specific state
+    #   under a surface-neutral key and cross-attribute rows from other plugin
+    #   instances sharing the same table and credentials.
+    effective_surface = (
+        self._surface
+        if loop is _BG_LOOP
+        else (self._surface or _get_telemetry_surface())
+    )
+
     user_agents = [f"google-adk-bq-logger/{__version__}"]
-    if self._visual_builder:
-      user_agents.append(f"google-adk-visual-builder/{__version__}")
+    if effective_surface:
+      user_agents.append(f"google-adk-{effective_surface}/{__version__}")
 
     client_info = _CLIENT_INFO_FACTORY(user_agent=" ".join(user_agents))
 
@@ -5087,6 +6597,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           ),
           loop=loop,
       )
+      # Assign unconditionally (including None on _BG_LOOP): BatchProcessor
+      # reads the ambient ContextVar in __init__, which (a) the caller may
+      # already have reset before this lazy build, and (b) on _BG_LOOP would
+      # taint the process-global _BG_LOOP_STATES entry cached under a
+      # surface-neutral key if guarded on a truthy effective_surface (see
+      # test_dedicated_bg_loop_ignores_post_construction_ambient_surface).
+      batch_processor._surface = effective_surface
     except BaseException:
       # The write client already exists but no _LoopState can own it yet.
       await self._close_write_transport(write_client)
@@ -5559,6 +7076,44 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     await self._get_loop_state(claimed_generation=claimed_generation)
 
+  def _notify_schema_error(self, exc: Exception) -> None:
+    """Invokes ``config.on_schema_error(exc)`` if configured."""
+    callback = self.config.on_schema_error
+    if callback is None:
+      return
+    try:
+      result = callback(exc)
+      if inspect.iscoroutine(result):
+        result.close()
+        logger.warning(
+            "BigQueryLoggerConfig.on_schema_error returned a coroutine;"
+            " callback must be synchronous."
+        )
+    except Exception:  # pylint: disable=broad-exception-caught
+      logger.warning(
+          "Exception raised by BigQueryLoggerConfig.on_schema_error callback",
+          exc_info=True,
+      )
+
+  def _notify_schema_ready(self) -> None:
+    """Invokes ``config.on_schema_ready()`` if configured."""
+    callback = self.config.on_schema_ready
+    if callback is None:
+      return
+    try:
+      result = callback()
+      if inspect.iscoroutine(result):
+        result.close()
+        logger.warning(
+            "BigQueryLoggerConfig.on_schema_ready returned a coroutine;"
+            " callback must be synchronous."
+        )
+    except Exception:  # pylint: disable=broad-exception-caught
+      logger.warning(
+          "Exception raised by BigQueryLoggerConfig.on_schema_ready callback",
+          exc_info=True,
+      )
+
   def _ensure_schema_exists(self) -> bool:
     """Ensures the BigQuery table exists with the correct schema.
 
@@ -5579,13 +7134,28 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         or created, or a required schema upgrade failed.
     """
     client = self._require_client()
+    self._require_schema()
+    try:
+      ready = self._ensure_schema_exists_impl(client)
+    except Exception as e:
+      self._notify_schema_error(e)
+      raise
+    if ready:
+      self._notify_schema_ready()
+    return ready
+
+  def _ensure_schema_exists_impl(self, client: bigquery.Client) -> bool:
+    """Table readiness pass; see ``_ensure_schema_exists``."""
     try:
       existing_table = client.get_table(self.full_table_id)
       if self.config.auto_schema_upgrade:
         self._maybe_upgrade_schema(existing_table)
+      views_ok = True
       if self.config.create_views:
-        return self._create_analytics_views()
-      return True
+        views_ok = self._create_analytics_views() and views_ok
+      if self.config.create_eval_views:
+        views_ok = self._create_eval_views() and views_ok
+      return views_ok
     except cloud_exceptions.NotFound:
       logger.info("Table %s not found, creating table.", self.full_table_id)
       tbl = bigquery.Table(self.full_table_id, schema=self._schema)
@@ -5617,9 +7187,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             exc_info=True,
         )
         raise
+      views_ok = True
       if self.config.create_views:
-        return self._create_analytics_views()
-      return True
+        views_ok = self._create_analytics_views() and views_ok
+      if self.config.create_eval_views:
+        views_ok = self._create_eval_views() and views_ok
+      return views_ok
     except Exception as e:
       # Fail setup: swallowing control-plane errors here let
       # the plugin mark itself started against a missing/unready table.
@@ -5864,9 +7437,124 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           "Plugin initialization failed; cannot create analytics views."
       ) from self._startup_error
     loop = asyncio.get_running_loop()
-    self._schema_ready = await loop.run_in_executor(
+    created = await loop.run_in_executor(
         self._executor, self._create_analytics_views
     )
+    if not created:
+      self._schema_ready = False
+
+  def _validate_eval_view_config(self, *, from_init: bool = False) -> None:
+    """Validates the logger config for evaluation view creation."""
+    prefix = (
+        "BigQueryLoggerConfig.create_eval_views=True cannot be used"
+        if from_init
+        else "Cannot create eval views"
+    )
+    if "content" in self._denied_columns:
+      raise ValueError(
+          f"{prefix} when 'content' is in payload_column_denylist, because"
+          " AgentData trace reconstruction requires the 'content' column."
+      )
+    denied_events = (
+        set(self.config.event_denylist or ()) & _EVAL_VIEW_REQUIRED_EVENTS
+    )
+    if denied_events:
+      raise ValueError(
+          f"{prefix} when required events are in event_denylist:"
+          f" {sorted(denied_events)}."
+      )
+    if self.config.event_allowlist:
+      missing_events = _EVAL_VIEW_REQUIRED_EVENTS - set(
+          self.config.event_allowlist
+      )
+      if missing_events:
+        raise ValueError(
+            f"{prefix} unless event_allowlist includes all required events;"
+            f" missing: {sorted(missing_events)}."
+        )
+
+  def _create_eval_views(self) -> bool:
+    """Creates the agent evaluation session and turn views (idempotent).
+
+    Creates ``{view_prefix}_eval_session`` and ``{view_prefix}_eval_turn``
+    with ``CREATE OR REPLACE VIEW``, so it is safe to call repeatedly.
+    Errors are logged but never raised.
+
+    Returns:
+      True if both views were created, False if either of them failed.
+    """
+    client = self._require_client()
+    full_table_id = f"{self.project_id}.{self.dataset_id}.{self.table_id}"
+    created_all = True
+    for view_suffix, build_view_sql in (
+        ("eval_session", _build_eval_session_view_sql),
+        ("eval_turn", _build_eval_turn_view_sql),
+    ):
+      view_name = self.config.view_prefix + "_" + view_suffix
+      try:
+        sql = build_view_sql(
+            full_table_id,
+            view_prefix=self.config.view_prefix,
+            denied_columns=self._denied_columns,
+        )
+        client.query(sql).result()
+      except cloud_exceptions.Conflict:
+        logger.debug(
+            "View %s was updated concurrently by another process.",
+            view_name,
+        )
+      except Exception as e:
+        created_all = False
+        logger.error(
+            "Failed to create view %s: %s",
+            view_name,
+            e,
+            exc_info=True,
+        )
+    return created_all
+
+  async def create_eval_views(self) -> None:
+    """Public async helper to (re-)create the agent evaluation views.
+
+    Creates ``{view_prefix}_eval_session`` and ``{view_prefix}_eval_turn``
+    even when ``config.create_eval_views`` is False, for example to refresh
+    them on demand.  Ensures the plugin is initialized before attempting
+    view creation.
+
+    The views rebuild ``AgentData`` traces from ``content`` and require
+    ``USER_MESSAGE_RECEIVED``, ``AGENT_STARTING``, ``LLM_REQUEST``,
+    ``TOOL_STARTING``, ``TOOL_COMPLETED``, ``TOOL_PAUSED``, ``AGENT_TRANSFER``,
+    ``AGENT_RESPONSE``, ``INVOCATION_COMPLETED``, ``HITL_*_REQUEST``, and
+    ``HITL_*_REQUEST_COMPLETED`` events.  Any custom ``content_formatter`` must
+    preserve ``$.text_summary``, ``$.response``, ``$.tool``, ``$.args``, and
+    ``$.result``.
+
+    The views aggregate per session or turn, so a filter on their
+    ``session_start_timestamp`` or ``turn_start_timestamp`` column does not
+    prune the events table's ``timestamp`` partitions: every query over
+    them scans the whole table.  For large tables, materialize a
+    date-filtered slice of a view into a table once and evaluate that table.
+
+    Raises:
+      ValueError: ``'content'`` is in ``payload_column_denylist``, or
+        ``event_denylist`` / ``event_allowlist`` filters out a required event.
+      RuntimeError: The plugin failed to initialize.
+    """
+    self._validate_eval_view_config()
+    await self._ensure_started()
+    if not self._started:
+      raise RuntimeError(
+          "Plugin initialization failed; cannot create eval views."
+      ) from self._startup_error
+    loop = asyncio.get_running_loop()
+    created = await loop.run_in_executor(
+        self._executor, self._create_eval_views
+    )
+    # Success leaves _schema_ready alone, because the memo also covers the
+    # analytics views that this call does not refresh. Failure clears it so
+    # the next setup pass retries the views.
+    if not created:
+      self._schema_ready = False
 
   @staticmethod
   def _schedule_remote_drain(
@@ -6302,6 +7990,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state.setdefault("_schema_ready", False)
     state.setdefault("_loop_state_futures", {})
     state.setdefault("_builder_waiters", {})
+    # Migrate the legacy _visual_builder flag onto _surface. Handle an
+    # explicit "_surface": None as unset so the legacy flag is never dropped.
+    legacy_visual_builder = state.pop("_visual_builder", False)
+    if state.get("_surface") is None:
+      state["_surface"] = "visual-builder" if legacy_visual_builder else None
     state.setdefault(
         "_custom_credentials", state.get("_credentials") is not None
     )
@@ -7031,7 +8724,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> bool:
     """Captures allowlisted ``custom_metadata`` into ``attributes``.
 
-    Reads ``event.custom_metadata`` from the row's source Event, keeps only
+    Reads ``event.custom_metadata`` from the row's source Event or
+    ``llm_response.custom_metadata`` from event_data, keeps only
     allowlisted keys, runs them through the shared safety pipeline
     (truncation + sensitive-key redaction + circular-reference handling),
     and writes the result under ``attributes['custom_metadata']``.
@@ -7039,12 +8733,19 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     The built-in ``a2a:*`` handling in ``on_event_callback`` is unaffected;
     this is purely additive under a separate namespace.
 
+    Args:
+      event_data: Event payload container holding custom metadata or source
+        event.
+      attributes: Attributes dictionary to receive the allowlisted custom
+        metadata map.
+
     Returns:
         True if any captured value was truncated (so the caller can flip
         ``is_truncated``).
     """
-    source = event_data.source_event
-    meta = getattr(source, "custom_metadata", None) if source else None
+    meta = event_data.custom_metadata
+    if meta is None and event_data.source_event:
+      meta = getattr(event_data.source_event, "custom_metadata", None)
     if not meta:
       return False
     captured = {
@@ -7140,55 +8841,48 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         is_truncated = True
 
     timestamp = datetime.now(timezone.utc)
+    formatter_error: Optional[str] = None
     if self.config.content_formatter:
+      formatted: Any = None
+      failure: Optional[Exception] = None
       try:
         formatted = self.config.content_formatter(raw_content, event_type)
-        if isinstance(formatted, str):
-          if type(formatted) is not str:
-            # Normalize str subclasses to the exact built-in.
-            formatted = str.__str__(formatted)
-        elif formatted is not None and not (
-            # Every shape the parser handles NATIVELY: identity and
-            # conditional formatters legitimately return these, and the
-            # Str/Content/None-only gate destroyed untransformed
-            # LlmRequest/dict/list events.
-            # Model shapes require the EXACT class: a subclass can
-            # override an attribute the parser reads OUTSIDE this
-            # boundary and raise a payload-bearing exception into the
-            # safe callback's traceback log. dict/list subclasses stay isinstance-based — the
-            # parser routes them through the hardened recursive
-            # sanitizer, whose protocol boundary already fails closed.
-            type(formatted) in (types.Content, types.Part, LlmRequest)
-            or isinstance(formatted, (dict, list))
-        ):
-          # The formatter is typed Any: a non-native result would reach
-          # the parser's unconditional str(content) fallback OUTSIDE this
-          # fail-closed boundary, where a payload-controlled __str__ can
-          # republish the original content or raise into the safe
-          # callback's traceback log. The
-          # message is CONSTANT: even a class NAME can be payload-derived
-          # via type(name, ...).
-          logger.warning(
-              "Content formatter returned an unsupported result type for"
-              " event %s; writing sentinel instead of original content.",
-              event_type,
-          )
-          formatted = _FORMATTER_FAILED_SENTINEL
-          self._count_local_drop("formatter_failed")
-        raw_content = formatted
-      except Exception:
+      except Exception as e:
         # Fail CLOSED: the formatter is a redaction/privacy
         # boundary, so its failure must never fall back to the unformatted
-        # payload. The log message is CONSTANT — the exception message and
-        # traceback can embed the protected content, and even the class
-        # NAME can be payload-derived via type(name, ...).
-        logger.warning(
-            "Content formatter failed for event %s; writing sentinel"
-            " instead of original content.",
-            event_type,
-        )
-        raw_content = _FORMATTER_FAILED_SENTINEL
+        # payload. The exception message and traceback can embed the
+        # protected content, and even the class NAME can be payload-derived
+        # via type(name, ...), so the failure is only ever named by a
+        # trusted class label, and its traceback is logged only when
+        # debug_content_formatter_errors opts in.
+        failure = e
+      # Everything after the call runs behind _settle_formatter_outcome's
+      # one boundary: judging the result, closing a rejected coroutine,
+      # naming the class, and logging. It runs after the except block, so
+      # the formatter's exception is no longer the one being handled.
+      raw_content, formatter_error = _settle_formatter_outcome(
+          formatted,
+          failure,
+          event_type=event_type,
+          debug=self.config.debug_content_formatter_errors,
+      )
+      if formatter_error is not None:
         self._count_local_drop("formatter_failed")
+      # The except clause would have dropped this reference itself: the
+      # exception's traceback holds this frame, which holds the exception.
+      formatted = failure = None
+
+    # The event's own diagnostic (e.g. a TOOL_ERROR's exception text) stays
+    # first and intact so an error row keeps its primary cause; a formatter
+    # failure is appended after it. The note skips the bounded sanitizer
+    # above: it is fixed text and a trusted class label, never free text.
+    error_message = event_data.error_message
+    if formatter_error is not None:
+      error_message = (
+          f"{error_message}; {formatter_error}"
+          if error_message
+          else formatter_error
+      )
 
     trace_id, span_id, parent_span_id = self._resolve_ids(
         event_data, callback_context
@@ -7261,9 +8955,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     attributes = self._enrich_attributes(event_data, callback_context)
 
     # Capture allowlisted custom_metadata into attributes.custom_metadata.
-    # Runs for every row emitted from a source Event (incl. AGENT_RESPONSE,
-    # which does not otherwise read custom_metadata), through the same safety
-    # pipeline. Truncation here also flips is_truncated.
+    # Runs for every row emitted with custom_metadata or from a source Event
+    # (incl. AGENT_RESPONSE, which does not otherwise read custom_metadata, and
+    # terminal LLM_RESPONSE rows), through the same safety pipeline.
+    # Truncation here also flips is_truncated.
     if self._custom_metadata_exact or self._custom_metadata_prefixes:
       meta_truncated = self._capture_custom_metadata(event_data, attributes)
       is_truncated = is_truncated or meta_truncated
@@ -7305,7 +9000,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "attributes": attributes_json,
         "latency_ms": latency_json,
         "status": event_data.status,
-        "error_message": event_data.error_message,
+        "error_message": error_message,
         "is_truncated": is_truncated,
     }
 
@@ -7470,7 +9165,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     node_info = getattr(event, "node_info", None)
     node_path = getattr(node_info, "path", "")
     if node_path and event.partial is not True:
-      if event.error_code and event.error_code not in _LLM_RESPONSE_ERROR_CODES:
+      if _is_durable_node_error(event):
         await self._log_event(
             "NODE_ERROR",
             callback_ctx,
@@ -7741,8 +9436,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     ):
       # Filter to visible text parts only.  Exclude thoughts
       # (internal reasoning, A2A working/submitted updates),
-      # empty parts, and non-text parts (executable_code, etc.)
-      # that would render as "other" in _format_content.
+      # empty parts, and non-text execution parts (executable_code,
+      # code_execution_result) that are internal tool execution turns
+      # rather than user-facing conversational text.
       visible_parts = [
           p
           for p in event_content.parts
@@ -7844,10 +9540,87 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """
     TraceManager.init_trace(callback_context)
     TraceManager.push_span(callback_context, "agent")
+    # A callable InstructionProvider is resolved per invocation; log None
+    # rather than its function repr and record instruction_source="provider".
+    raw_instruction = getattr(agent, "instruction", None)
+    instruction_text = (
+        raw_instruction
+        if isinstance(raw_instruction, str) and raw_instruction
+        else None
+    )
+    extra_attributes: dict[str, Any] = {}
+    if callable(raw_instruction):
+      extra_attributes["instruction_source"] = "provider"
+
+    raw_static = getattr(agent, "static_instruction", None)
+    static_instruction_text: Optional[str] = None
+    if isinstance(raw_static, str):
+      static_instruction_text = raw_static or None
+    elif raw_static is not None and not callable(raw_static):
+      from google.genai import _transformers
+
+      try:
+        normalized_static = _transformers.t_content(
+            cast(types.ContentOrDict, raw_static)
+        )
+      except Exception:
+        normalized_static = None
+      if normalized_static is not None:
+        parts = getattr(normalized_static, "parts", None) or []
+        part_texts = [
+            p.text
+            for p in parts
+            if isinstance(getattr(p, "text", None), str) and p.text
+        ]
+        if part_texts:
+          static_instruction_text = "\n".join(part_texts)
+    if static_instruction_text:
+      extra_attributes["static_instruction"] = static_instruction_text
+
+    raw_description = getattr(agent, "description", None)
+    if isinstance(raw_description, str) and raw_description:
+      extra_attributes["agent_description"] = raw_description
+
+    # ``model`` is either a model name or a BaseLlm carrying one; if unset
+    # on a sub-agent that defines ``model``, walk ``parent_agent`` to resolve
+    # the inherited model.
+    model_name: Optional[str] = None
+    curr_agent: Any = agent if hasattr(agent, "model") else None
+    seen_agents: set[int] = set()
+    for _ in range(16):
+      if curr_agent is None or id(curr_agent) in seen_agents:
+        break
+      seen_agents.add(id(curr_agent))
+      raw_model = getattr(curr_agent, "model", None)
+      if isinstance(raw_model, str) and raw_model:
+        model_name = raw_model
+        break
+      if raw_model is not None:
+        nested_model = getattr(raw_model, "model", None)
+        if isinstance(nested_model, str) and nested_model:
+          model_name = nested_model
+          break
+      curr_agent = getattr(curr_agent, "parent_agent", None)
+
+    raw_sub_agents = getattr(agent, "sub_agents", None)
+    if isinstance(raw_sub_agents, (list, tuple)):
+      sub_agent_names = [
+          sub_name
+          for sub in raw_sub_agents
+          if isinstance((sub_name := getattr(sub, "name", None)), str)
+          and sub_name
+      ]
+      if sub_agent_names:
+        extra_attributes["sub_agents"] = sub_agent_names
+
     await self._log_event(
         "AGENT_STARTING",
         callback_context,
-        raw_content=getattr(agent, "instruction", ""),
+        raw_content=instruction_text,
+        event_data=EventData(
+            model=model_name,
+            extra_attributes=extra_attributes,
+        ),
     )
 
   @_safe_callback
@@ -8097,6 +9870,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             span_id_override=span_id if is_popped else None,
             parent_span_id_override=(parent_span_id if is_popped else None),
             extra_attributes=extra_attributes,
+            custom_metadata=(
+                llm_response.custom_metadata
+                if not is_partial and isinstance(llm_response, LlmResponse)
+                else None
+            ),
         ),
     )
 
@@ -8173,21 +9951,26 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> None:
     """Callback after tool execution.
 
+    A result that reports a failure is recorded as ``TOOL_ERROR``, the row
+    ``on_tool_error_callback`` writes for a raised error; see
+    ``_tool_result_error_message``. The result itself is left unchanged, and
+    the row leaves it out. The model still receives it, and a later
+    ``LLM_REQUEST`` row records it only in ``content_parts`` (as
+    ``part_attributes.function_response``), so only while
+    ``log_multi_modal_content`` is on and ``content_parts`` is not denied.
+
     Args:
         tool: The tool that was executed.
         tool_args: The arguments passed to the tool.
         tool_context: The tool context.
         result: The response from the tool.
     """
-    resp_truncated, is_truncated = _recursive_smart_truncate(
-        result, self.config.max_content_length
-    )
+    if _pop_tool_error_recorded(self, tool_context):
+      # on_tool_error_callback already recorded this call's failure and closed
+      # its span; the result is the answer a later plugin gave to the error.
+      return
+
     tool_origin = _get_tool_origin(tool, tool_args, tool_context)
-    content_dict = {
-        "tool": tool.name,
-        "result": resp_truncated,
-        "tool_origin": tool_origin,
-    }
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
 
@@ -8196,6 +9979,89 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         span_id_override=span_id,
         parent_span_id_override=parent_span_id,
     )
+    # The span is closed, so the call must get a row whatever its result holds.
+    # Classification runs none of the result's code and contains the failures
+    # of a classifier and of each built-in rule; this boundary backs all of
+    # them up by falling back to the TOOL_COMPLETED row of an unclassified
+    # result. The warning is constant because the exception can carry the
+    # result, and it is logged after the except block, because inside it a
+    # failing log handler would print that exception.
+    classification_failed = False
+    try:
+      error_message = self._tool_result_error_message(
+          tool=tool,
+          tool_args=tool_args,
+          tool_context=tool_context,
+          result=result,
+      )
+    except Exception:  # pylint: disable=broad-except
+      error_message = None
+      classification_failed = True
+    if classification_failed:
+      logger.warning(
+          "Could not classify the result of tool %s; recording it as"
+          " TOOL_COMPLETED.",
+          tool.name,
+      )
+    if error_message is not None:
+      # The content is what on_tool_error_callback records. The result stays
+      # out: its error text is tool output, and a content_formatter written
+      # for TOOL_COMPLETED rows would not scrub it from a TOOL_ERROR row.
+      # Serializing the arguments gets the boundary the result gets below:
+      # arguments that raise are recorded with the serializer's sentinel, and
+      # the constant warning is logged after the except block.
+      args_serialization_failed = False
+      try:
+        args_truncated, args_is_truncated = _recursive_smart_truncate(
+            tool_args, self.config.max_content_length
+        )
+      except Exception:  # pylint: disable=broad-except
+        args_truncated, args_is_truncated = "[UNSUPPORTED_OBJECT]", True
+        args_serialization_failed = True
+      if args_serialization_failed:
+        logger.warning(
+            "Could not serialize the arguments of tool %s; recording a"
+            " sentinel in their place.",
+            tool.name,
+        )
+      event_data.status = "ERROR"
+      event_data.error_message = error_message
+      await self._log_event(
+          "TOOL_ERROR",
+          tool_context,
+          raw_content={
+              "tool": tool.name,
+              "args": args_truncated,
+              "tool_origin": tool_origin,
+          },
+          is_truncated=args_is_truncated,
+          event_data=event_data,
+      )
+      return
+
+    # Serializing the result runs its code, which the classification never
+    # does, so it gets the same boundary: a result that raises is recorded
+    # with the sentinel the serializer writes for a result it rejects itself,
+    # and the constant warning is logged after the except block.
+    serialization_failed = False
+    try:
+      resp_truncated, is_truncated = _recursive_smart_truncate(
+          result, self.config.max_content_length
+      )
+    except Exception:  # pylint: disable=broad-except
+      resp_truncated, is_truncated = "[UNSUPPORTED_OBJECT]", True
+      serialization_failed = True
+    if serialization_failed:
+      logger.warning(
+          "Could not serialize the result of tool %s; recording a sentinel in"
+          " its place.",
+          tool.name,
+      )
+    content_dict = {
+        "tool": tool.name,
+        "result": resp_truncated,
+        "tool_origin": tool_origin,
+    }
     await self._log_event(
         "TOOL_COMPLETED",
         tool_context,
@@ -8222,6 +10088,71 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           is_truncated=args_is_truncated,
           event_data=EventData(extra_attributes={"source_tool": tool.name}),
       )
+
+  def _tool_result_error_message(
+      self,
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+      result: Any,
+  ) -> Optional[str]:
+    """Returns the error message to record for a tool result that failed.
+
+    Three checks run in turn, each on the entries ``_result_fields`` reads
+    without running any of the result's own code:
+
+    1. A ``ReflectAndRetryToolPlugin`` answer is a raised error, recorded as
+       ``TOOL_ERROR`` before the classifier runs: with this plugin registered
+       first, ``on_tool_error_callback`` records the same error without
+       consulting the classifier, so neither plugin order lets a classifier
+       hide it.
+    2. ``config.tool_result_classifier``. Its verdict is read inside the
+       ``Exception`` boundary that surrounds the call, so a classifier that
+       raises or returns anything but a readable ``ToolResultClassification``
+       or None is skipped, and the warning names only the tool: the exception,
+       its traceback and the returned value can all carry the result. A
+       returned awaitable is ignored too, once ``_release_awaitable`` has
+       closed it if it is a coroutine, or cancelled it and retrieved its
+       exception if it is an asyncio future or task, so that Python does not
+       warn about the coroutine and asyncio does not later log an exception
+       the future or task holds. A ``BaseException`` that is
+       not an ``Exception``, such as a cancellation, ``KeyboardInterrupt`` or
+       ``SystemExit``, propagates as it does from every callback of this
+       plugin, because absorbing it would keep a task or the process from
+       stopping.
+    3. A result whose top-level ``isError`` or ``is_error`` is exactly
+       ``True``: any dict, which covers an MCP ``CallToolResult`` dump, or an
+       MCP ``CallToolResult`` model.
+
+    Any other result succeeded, including one that merely has an
+    ``error_details`` key. The tools' own ``_detect_error_in_response`` hooks,
+    which set the OpenTelemetry ``error.type``, are not consulted. Several flag
+    any dict with a truthy ``error`` key, which a function tool may also return
+    as data, and a result they flagged would move from a ``TOOL_COMPLETED`` row
+    that carries it to a ``TOOL_ERROR`` row that leaves it out. Some of them
+    also match ADK's own error envelopes, such as ``GoogleTool``'s
+    ``{"status": "ERROR", "error_details": ...}``; the classifier can record
+    those as failures where that is wanted.
+
+    Args:
+        tool: The tool that produced the result.
+        tool_args: The arguments passed to the tool.
+        tool_context: The tool context.
+        result: The result the model receives.
+
+    Returns:
+        The message of a ``TOOL_ERROR`` row, or None to record the result as
+        ``TOOL_COMPLETED``.
+    """
+    return _classify_tool_result_error(
+        tool=tool,
+        tool_args=tool_args,
+        tool_context=tool_context,
+        result=result,
+        tool_result_classifier=self.config.tool_result_classifier,
+        log=logger,
+    )
 
   @_safe_callback
   async def on_tool_error_callback(
@@ -8251,6 +10182,16 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     }
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
+    # Read before the call is marked: after_tool_callback skips a marked call,
+    # so nothing that can fail may run between the mark and the row. An
+    # exception raised without a message, or whose message cannot be read,
+    # records its type name, which is what a ReflectAndRetryToolPlugin answer
+    # records for a message-less one.
+    try:
+      error_message = str(error) or type(error).__name__
+    except Exception:  # pylint: disable=broad-except
+      error_message = type(error).__name__
+    _mark_tool_error_recorded(self, tool_context)
 
     await self._log_event(
         "TOOL_ERROR",
@@ -8259,7 +10200,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         is_truncated=is_truncated,
         event_data=EventData(
             status="ERROR",
-            error_message=str(error),
+            error_message=error_message,
             latency_ms=duration,
             span_id_override=span_id,
             parent_span_id_override=parent_span_id,

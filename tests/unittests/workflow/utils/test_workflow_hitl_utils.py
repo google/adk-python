@@ -15,21 +15,95 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock
+from urllib.parse import parse_qs
+from urllib.parse import urlparse
 
+from authlib.oauth2.rfc6749 import OAuth2Token
+from authlib.oauth2.rfc7636 import create_s256_code_challenge
+from google.adk.auth.auth_handler import AuthHandler
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.request_input import RequestInput
+from google.adk.tools.tool_confirmation import ToolConfirmation
+from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.workflow.utils._rehydration_utils import _ChildScanState
+from google.adk.workflow.utils._workflow_hitl_utils import apply_confirmation_resume
+from google.adk.workflow.utils._workflow_hitl_utils import auth_interrupt_id
+from google.adk.workflow.utils._workflow_hitl_utils import confirmation_interrupt_id
 from google.adk.workflow.utils._workflow_hitl_utils import create_auth_request_event
+from google.adk.workflow.utils._workflow_hitl_utils import create_confirmation_request_input
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_event
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
 from google.adk.workflow.utils._workflow_hitl_utils import has_auth_credential
-from google.adk.workflow.utils._workflow_hitl_utils import has_request_input_function_call
 from google.adk.workflow.utils._workflow_hitl_utils import process_auth_resume
-from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
 from google.genai import types
 import pytest
+
+
+def test_interrupt_id_helpers():
+  """Interrupt ID helpers prefix node_path with their respective namespaces."""
+  assert (
+      confirmation_interrupt_id("wf@1/node@1")
+      == "wf_tool_confirmation:wf@1/node@1"
+  )
+  assert auth_interrupt_id("wf@1/node@1") == "wf_auth:wf@1/node@1"
+
+
+def test_apply_confirmation_resume():
+  """apply_confirmation_resume sets ctx.tool_confirmation when resumed."""
+  ctx = MagicMock()
+  ctx.node_path = "wf@1/node@1"
+  ctx.tool_confirmation = None
+  ctx.resume_inputs = {}
+
+  assert apply_confirmation_resume(ctx) is False
+  assert ctx.tool_confirmation is None
+
+  ctx.resume_inputs = {
+      "wf_tool_confirmation:wf@1/node@1": {
+          "confirmed": True,
+          "payload": {"note": "approved"},
+      }
+  }
+  assert apply_confirmation_resume(ctx) is True
+  assert ctx.tool_confirmation == ToolConfirmation(
+      confirmed=True, payload={"note": "approved"}
+  )
+
+
+def test_create_confirmation_request_input():
+  """create_confirmation_request_input builds a ToolConfirmation RequestInput."""
+  default_req = create_confirmation_request_input(
+      node_path="wf@1/node@1",
+      tool_name="delete_item",
+      args={"item_id": 42},
+  )
+  assert default_req.interrupt_id == "wf_tool_confirmation:wf@1/node@1"
+  assert (
+      default_req.message
+      == "Please approve or reject the tool call delete_item()."
+  )
+  assert default_req.payload == {
+      "tool_name": "delete_item",
+      "args": {"item_id": 42},
+  }
+  assert default_req.response_schema is ToolConfirmation
+
+  custom_req = create_confirmation_request_input(
+      node_path="wf@1/node@1",
+      tool_name="delete_item",
+      args={"item_id": 42},
+      hint="Confirm deletion?",
+      confirmation_payload={"reason": "required"},
+  )
+  assert custom_req.message == "Confirm deletion?"
+  assert custom_req.payload == {
+      "tool_name": "delete_item",
+      "args": {"item_id": 42},
+      "confirmation_payload": {"reason": "required"},
+  }
+
 
 # --- create_request_input_event ---
 
@@ -77,35 +151,6 @@ class TestCreateRequestInputEvent:
     assert schema["properties"]["approved"]["type"] == "boolean"
 
 
-# --- has_request_input_function_call ---
-
-
-class TestHasRequestInputFunctionCall:
-
-  def test_true_for_request_input_event(self):
-    event = create_request_input_event(
-        RequestInput(interrupt_id="id-1", message="test")
-    )
-    assert has_request_input_function_call(event) is True
-
-  def test_false_for_empty_event(self):
-    assert has_request_input_function_call(Event()) is False
-
-  def test_false_for_non_request_input(self):
-    from google.genai import types
-
-    event = Event(
-        content=types.Content(
-            parts=[
-                types.Part(
-                    function_call=types.FunctionCall(name="other_tool", args={})
-                )
-            ]
-        )
-    )
-    assert has_request_input_function_call(event) is False
-
-
 # --- create_request_input_response ---
 
 
@@ -116,37 +161,6 @@ class TestCreateRequestInputResponse:
     assert part.function_response.id == "id-1"
     assert part.function_response.name == "adk_request_input"
     assert part.function_response.response == {"approved": True}
-
-
-# --- get_request_input_interrupt_ids ---
-
-
-class TestGetRequestInputInterruptIds:
-
-  def test_extracts_ids(self):
-    event = create_request_input_event(
-        RequestInput(interrupt_id="id-1", message="test")
-    )
-    assert get_request_input_interrupt_ids(event) == ["id-1"]
-
-  def test_empty_for_no_function_calls(self):
-    assert get_request_input_interrupt_ids(Event()) == []
-
-  def test_empty_for_non_request_input(self):
-    from google.genai import types
-
-    event = Event(
-        content=types.Content(
-            parts=[
-                types.Part(
-                    function_call=types.FunctionCall(
-                        name="other_tool", args={}, id="id-1"
-                    )
-                )
-            ]
-        )
-    )
-    assert get_request_input_interrupt_ids(event) == []
 
 
 # --- create_auth_request_event ---
@@ -173,7 +187,7 @@ class TestCreateAuthRequestEvent:
 
     assert event.long_running_tool_ids is not None
     fc = event.content.parts[0].function_call
-    assert fc.name == REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+    assert fc.name == REQUEST_EUC_FUNCTION_CALL_NAME
     assert fc.id == "auth-id-1"
     assert "authConfig" in fc.args
 
@@ -229,6 +243,14 @@ class TestCreateAuthRequestEvent:
     assert oauth2["state"]
     assert oauth2["clientId"] == "client-id"
     assert "client-secret" not in json.dumps(fc.args)
+
+  def test_configured_secrets_are_not_handed_to_the_caller(self):
+    """The node's configured API key is not handed to the caller."""
+    event = create_auth_request_event(
+        _api_key_auth_config(), "auth-id-1", _empty_state()
+    )
+    fc = event.content.parts[0].function_call
+    assert "placeholder" not in json.dumps(fc.args)
 
 
 # --- process_auth_resume / has_auth_credential ---
@@ -331,6 +353,24 @@ class TestProcessAuthResume:
     assert "temp:node-cred" in state
     assert "temp:unrelated-cred" not in state
     assert has_auth_credential(auth_config, state) is True
+
+  @pytest.mark.asyncio
+  async def test_malformed_response_raises_workflow_data_error(self):
+    """A malformed auth resume payload raises WorkflowDataError."""
+    from google.adk.workflow._errors import WorkflowDataError
+
+    auth_config = _oauth_auth_config()
+    state = _empty_state()
+
+    with pytest.raises(WorkflowDataError):
+      await process_auth_resume(
+          "not-a-valid-oauth-credential",
+          auth_config,
+          state,
+          "auth-id-1",
+      )
+
+    assert has_auth_credential(auth_config, state) is False
 
 
 def _oauth_auth_config(token_url: str = "https://provider.example.com/token"):
@@ -520,4 +560,50 @@ class TestHasAuthCredential:
     assert has_auth_credential(other_config, state) is False
 
 
-#
+@pytest.mark.asyncio
+@pytest.mark.parametrize("serialize_state_to_json", [False, True])
+async def test_public_client_pkce_code_verifier_persisted_across_resume(
+    monkeypatch,
+    serialize_state_to_json: bool,
+):
+  """Public client PKCE code_verifier is preserved across request and resume."""
+  auth_config = _oauth_auth_config()
+  auth_config.raw_auth_credential.oauth2.client_secret = None
+  state = _empty_state()
+  event = create_auth_request_event(auth_config, "auth-id-1", state)
+
+  oauth2_args = event.content.parts[0].function_call.args["authConfig"][
+      "exchangedAuthCredential"
+  ]["oauth2"]
+  assert "codeVerifier" not in oauth2_args
+  auth_uri = oauth2_args["authUri"]
+  code_challenge = parse_qs(urlparse(auth_uri).query)["code_challenge"][0]
+
+  if serialize_state_to_json:
+    state["adk_oauth_credential:auth-id-1"] = state[
+        "adk_oauth_credential:auth-id-1"
+    ].model_dump(mode="json", by_alias=True)
+
+  mock_client = MagicMock()
+  mock_client.fetch_token.return_value = OAuth2Token(
+      {"access_token": "public_access_token"}
+  )
+  monkeypatch.setattr(
+      "google.adk.auth.oauth2_credential_util.OAuth2Session",
+      lambda *args, **kwargs: mock_client,
+  )
+
+  await process_auth_resume(
+      _oauth_resume_response(auth_config, _requested_state(event)),
+      auth_config,
+      state,
+      "auth-id-1",
+  )
+  cred = AuthHandler(auth_config).get_auth_response(state)
+
+  assert cred is not None
+  assert cred.oauth2.access_token == "public_access_token"
+  assert state["adk_oauth_credential:auth-id-1"] is None
+  verifier = mock_client.fetch_token.call_args.kwargs.get("code_verifier")
+  assert verifier is not None
+  assert create_s256_code_challenge(verifier) == code_challenge

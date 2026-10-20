@@ -125,6 +125,8 @@ def migrate(source_db_url: str, dest_db_path: str) -> None:
     # Migrate events
     logger.info("Migrating events...")
     events = source_session.query(v0_schema.StorageEvent).all()
+    migrated_events = 0
+    skipped_event_ids = []
     for storage_event in events:
       try:
         event_obj = storage_event.to_event()
@@ -143,9 +145,21 @@ def migrate(source_db_url: str, dest_db_path: str) -> None:
                 event_data,
             ),
         )
+        migrated_events += 1
       except Exception as e:
         logger.warning(f"Failed to migrate event {storage_event.id}: {e}")
-    logger.info(f"Migrated {len(events)} events.")
+        skipped_event_ids.append(storage_event.id)
+    logger.info(f"Migrated {migrated_events} events.")
+    if skipped_event_ids:
+      # The rows are dropped from the destination, so name them: the count above
+      # is the number that survived, not the number the source held.
+      logger.warning(
+          "Skipped %d event(s) that could not be migrated: %s. They are still"
+          " in the source database; re-run the migration once the cause is"
+          " fixed.",
+          len(skipped_event_ids),
+          ", ".join(skipped_event_ids),
+      )
 
     dest_conn.commit()
     logger.info("Migration completed successfully.")

@@ -6,7 +6,7 @@ This folder hosts resources for ADK contributors, for example, testing samples e
 
 Samples folder host samples to test different features. The samples are usually minimal and simplistic to test one or a few scenarios.
 
-**Note**: This is different from the [google/adk-samples](https://github.com/google/adk-samples) repo, which hosts more complex e2e samples for customers to use or modify directly.
+**Note**: This is different from the [google/adk-recipes](https://github.com/google/adk-recipes) repo, which hosts more complex e2e samples for customers to use or modify directly.
 
 ## ADK project and architecture overview
 

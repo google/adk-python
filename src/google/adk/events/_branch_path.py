@@ -55,6 +55,21 @@ class _BranchPath:
     return list(self._segments)
 
   @property
+  def ordered_run_ids(self) -> tuple[str, ...]:
+    """Extracts all run IDs (the part after '@') in segment order.
+
+    Example:
+      - Path: 'parent@1.child@2.node'
+      - Returns: ('1', '2')
+    """
+    ids: list[str] = []
+    for segment in self._segments:
+      parts = segment.rsplit("@", 1)
+      if len(parts) > 1 and parts[1]:
+        ids.append(parts[1])
+    return tuple(ids)
+
+  @property
   def run_ids(self) -> set[str]:
     """Extracts all run IDs (the part after '@') from all segments in the path.
 
@@ -62,12 +77,7 @@ class _BranchPath:
       - Path: 'parent@1.child@2.node'
       - Returns: {'1', '2'}
     """
-    ids = set()
-    for segment in self._segments:
-      parts = segment.rsplit("@", 1)
-      if len(parts) > 1 and parts[1]:
-        ids.add(parts[1])
-    return ids
+    return set(self.ordered_run_ids)
 
   @property
   def parent(self) -> _BranchPath | None:

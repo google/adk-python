@@ -765,7 +765,10 @@ class TestRunDebug:
       mock_text_event.author = "test_agent"
       mock_text_event.content = mock.Mock()
       mock_text_event.content.parts = [
-          mock.Mock(text="The weather in Tokyo is clear and 25°C.")
+          mock.Mock(
+              text="The weather in Tokyo is clear and 25°C.",
+              thought=False,
+          )
       ]
       yield mock_text_event
 

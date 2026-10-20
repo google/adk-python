@@ -39,22 +39,6 @@ def copy_or_none(model: Optional[_ModelT]) -> Optional[_ModelT]:
   return None if model is None else model.model_copy(deep=True)
 
 
-def run_config_for_new_live_session(run_config: RunConfig) -> RunConfig:
-  """Copies ``run_config`` for a fresh live session, clearing any handle.
-
-  Only ``session_resumption`` is copied. A deep copy of the whole config would
-  drag ``http_options`` along, and that can hold a live httpx or aiohttp client
-  which raises ``TypeError: cannot pickle``; the rest of the config is not
-  mutated here, so sharing it is what the caller wants anyway.
-  """
-  copied = run_config.model_copy(
-      update={'session_resumption': copy_or_none(run_config.session_resumption)}
-  )
-  if copied.session_resumption:
-    copied.session_resumption.handle = None
-  return copied
-
-
 def copy_http_options(
     http_options: types.HttpOptions,
 ) -> types.HttpOptions:

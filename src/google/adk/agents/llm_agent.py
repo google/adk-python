@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import abc
 import asyncio
+from collections.abc import Iterator
 import inspect
 import logging
+import sys
 from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
@@ -26,6 +28,7 @@ from typing import ClassVar
 from typing import Literal
 from typing import Optional
 from typing import Type
+from typing import TYPE_CHECKING
 from typing import Union
 import warnings
 
@@ -40,10 +43,6 @@ from typing_extensions import TypeAlias
 
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
-from ..flows.llm_flows.auto_flow import AutoFlow
-from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
-from ..flows.llm_flows.single_flow import SingleFlow
-from ..flows.llm_flows.tools._functions import find_matching_function_call
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
@@ -53,7 +52,11 @@ from ..tools.base_tool import BaseTool
 from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
 from ..tools.tool_context import ToolContext
+from ..utils import _lazy
+from ..utils._agent_mode import AgentMode as _AgentMode
+from ..utils._agent_mode import LlmAgentMode as _LlmAgentMode
 from ..utils._callback_pipeline import _normalize_callbacks
+from ..utils._event_loop_cache import per_loop_value
 from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
@@ -65,6 +68,12 @@ from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .context import Context
 from .invocation_context import InvocationContext
+
+if TYPE_CHECKING:
+  from ..flows.llm_flows.auto_flow import AutoFlow as AutoFlow
+  from ..flows.llm_flows.base_llm_flow import BaseLlmFlow as BaseLlmFlow
+  from ..flows.llm_flows.single_flow import SingleFlow as SingleFlow
+
 
 with warnings.catch_warnings():
   # LlmAgentConfig subclasses the deprecated BaseAgentConfig purely as an
@@ -186,24 +195,7 @@ async def _convert_tool_union_to_tools(
   if multiple_tools and isinstance(tool_union, VertexAiSearchTool):
     vais_tool = tool_union
     if vais_tool.bypass_multi_tools_limit:
-      try:
-        from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
-      except ImportError as e:
-        raise ImportError(
-            'VertexAiSearchTool with bypass_multi_tools_limit=True requires'
-            ' the google-cloud-discoveryengine package. Install it with'
-            ' `pip install google-adk[gcp]`.'
-        ) from e
-      return [
-          DiscoveryEngineSearchTool(
-              data_store_id=vais_tool.data_store_id,
-              data_store_specs=vais_tool.data_store_specs,
-              search_engine_id=vais_tool.search_engine_id,
-              filter=vais_tool.filter,
-              max_results=vais_tool.max_results,
-          )
-      ]
-  from ..workflow._base_node import BaseNode
+      return [vais_tool._to_discovery_engine_search_tool()]
 
   if isinstance(tool_union, BaseNode):
     return [_wrap_base_node_as_tool(tool_union)]
@@ -262,6 +254,17 @@ def _http_options_has_base_url(value: Any) -> bool:
   return bool(getattr(value, 'base_url', None))
 
 
+class _ModelCache:
+  """Models built from model names, one per name and running event loop."""
+
+  def get(self, key: str, build: Callable[[], BaseLlm]) -> BaseLlm:
+    return per_loop_value(self, key, build)
+
+  def __eq__(self, other: object) -> bool:
+    # Pydantic compares private attrs; a cache must not make agents unequal.
+    return isinstance(other, _ModelCache)
+
+
 # TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
 # static type checkers.
 class LlmAgent(BaseAgent, abc.ABC):
@@ -303,13 +306,8 @@ class LlmAgent(BaseAgent, abc.ABC):
   LlmAgent.set_default_model. The built-in default is gemini-3.5-flash.
   """
 
-  _resolved_model: Optional[tuple[str, BaseLlm]] = PrivateAttr(default=None)
-  """The model name last resolved by canonical_model, with its BaseLlm."""
-
-  _resolved_live_model: Optional[tuple[str, BaseLlm]] = PrivateAttr(
-      default=None
-  )
-  """The model name last resolved by canonical_live_model, with its BaseLlm."""
+  _model_cache: _ModelCache = PrivateAttr(default_factory=_ModelCache)
+  """Models built from model names, shared with copies of this agent."""
 
   config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
   """The config type for this agent.
@@ -409,7 +407,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   settings, etc.
   """
 
-  mode: Literal['chat', 'task', 'single_turn'] | None = None
+  mode: _LlmAgentMode | None = None
   """The delegation mode for this agent.
 
   Options:
@@ -579,11 +577,20 @@ class LlmAgent(BaseAgent, abc.ABC):
   When a list of callbacks is provided, the callbacks will be called in the
   order they are listed until a callback does not return None.
 
+  The callbacks are also called with an `asyncio.CancelledError` when the tool
+  call is cancelled, for example because a parallel tool call failed or the
+  invocation was cancelled, so that resources acquired in a before-tool
+  callback can be released. A cancelled call is never recovered: all callbacks
+  in the list are called, any returned responses are ignored, the cancellation
+  propagates, and an exception raised by a callback is logged instead of
+  replacing the cancellation.
+
   Args:
     tool: The tool to be called.
     args: The arguments to the tool.
     tool_context: ToolContext,
-    error: The error from the tool call.
+    error: The error from the tool call, or the `asyncio.CancelledError` if the
+      tool call was cancelled.
 
   Returns:
     Optional[dict[str, Any]]: A recovery response to use instead of propagating
@@ -696,18 +703,22 @@ class LlmAgent(BaseAgent, abc.ABC):
     if isinstance(self.model, BaseLlm):
       return self.model
     elif self.model:  # model is non-empty str
-      resolved = self._resolved_model
-      if resolved is None or resolved[0] != self.model:
-        resolved = (self.model, LLMRegistry.new_llm(self.model))
-        self._resolved_model = resolved
-      return resolved[1]
+      name = self.model
+      return self._model_cache.get(
+          f'model:{name}', lambda: LLMRegistry.new_llm(name)
+      )
     else:  # find model from ancestors.
       ancestor_agent = self.parent_agent
       while ancestor_agent is not None:
         if isinstance(ancestor_agent, LlmAgent):
           return ancestor_agent.canonical_model
         ancestor_agent = ancestor_agent.parent_agent
-      return self._resolve_default_model()
+      default_model = self._default_model
+      if isinstance(default_model, BaseLlm):
+        return default_model
+      return self._model_cache.get(
+          f'model:{default_model}', lambda: LLMRegistry.new_llm(default_model)
+      )
 
   @property
   def canonical_live_model(self) -> BaseLlm:
@@ -718,18 +729,23 @@ class LlmAgent(BaseAgent, abc.ABC):
     if isinstance(self.model, BaseLlm):
       return self.model
     elif self.model:  # model is non-empty str
-      resolved = self._resolved_live_model
-      if resolved is None or resolved[0] != self.model:
-        resolved = (self.model, LLMRegistry.new_llm(self.model))
-        self._resolved_live_model = resolved
-      return resolved[1]
+      name = self.model
+      return self._model_cache.get(
+          f'live:{name}', lambda: LLMRegistry.new_llm(name)
+      )
     else:  # find model from ancestors.
       ancestor_agent = self.parent_agent
       while ancestor_agent is not None:
         if isinstance(ancestor_agent, LlmAgent):
           return ancestor_agent.canonical_live_model
         ancestor_agent = ancestor_agent.parent_agent
-      return self._resolve_default_live_model()
+      default_live_model = self._default_live_model
+      if isinstance(default_live_model, BaseLlm):
+        return default_live_model
+      return self._model_cache.get(
+          f'live:{default_live_model}',
+          lambda: LLMRegistry.new_llm(default_live_model),
+      )
 
   async def canonical_model_async(self, ctx: ReadonlyContext) -> BaseLlm:
     """The resolved self.model field as BaseLlm, for one invocation.
@@ -780,7 +796,10 @@ class LlmAgent(BaseAgent, abc.ABC):
 
   @classmethod
   def _resolve_default_model(cls) -> BaseLlm:
-    """Resolves the current default model to a BaseLlm instance."""
+    """Resolves the current default model to a BaseLlm instance.
+
+    Unused by ADK itself; kept because callers outside ADK use it.
+    """
     default_model = cls._default_model
     if isinstance(default_model, BaseLlm):
       return default_model
@@ -797,14 +816,6 @@ class LlmAgent(BaseAgent, abc.ABC):
     if isinstance(model, str) and not model:
       raise ValueError('Default live model must be a non-empty string.')
     cls._default_live_model = model
-
-  @classmethod
-  def _resolve_default_live_model(cls) -> BaseLlm:
-    """Resolves the current default live model to a BaseLlm instance."""
-    default_live_model = cls._default_live_model
-    if isinstance(default_live_model, BaseLlm):
-      return default_live_model
-    return LLMRegistry.new_llm(default_live_model)
 
   async def canonical_instruction(
       self, ctx: ReadonlyContext
@@ -890,6 +901,18 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     return resolved_tools
 
+  @override
+  def _iter_static_children(self) -> Iterator[BaseNode]:
+    """Yields direct static children (sub-agents and node tools)."""
+    from ..tools._node_tool import NodeTool
+
+    yield from super()._iter_static_children()
+    for tool in self.tools:
+      if isinstance(tool, NodeTool):
+        yield tool.node
+      elif isinstance(tool, BaseNode):
+        yield tool
+
   @property
   def canonical_before_model_callbacks(
       self,
@@ -955,9 +978,9 @@ class LlmAgent(BaseAgent, abc.ABC):
         and self.disallow_transfer_to_peers
         and not self.sub_agents
     ):
-      return SingleFlow()
+      return _flow_class('SingleFlow')()
     else:
-      return AutoFlow()
+      return _flow_class('AutoFlow')()
 
   def _get_subagent_to_resume(
       self, ctx: InvocationContext
@@ -985,6 +1008,8 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     # Last event is from user or another agent.
     if last_event.author == 'user':
+      from ..flows.llm_flows.tools._functions import find_matching_function_call
+
       function_call_event = find_matching_function_call(
           ctx._get_events(current_invocation=True), last_event
       )
@@ -1090,7 +1115,7 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     # Task mode agents deliver their final output via finish_task, not intermediate
     # conversational text turns. Skip output_key processing on text responses for task mode.
-    if getattr(self, 'mode', None) == 'task':
+    if getattr(self, 'mode', None) == _AgentMode.TASK:
       return
 
     # Handle text responses
@@ -1142,7 +1167,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     """
     if (
         not self.output_key
-        or getattr(self, 'mode', None) == 'task'
+        or getattr(self, 'mode', None) == _AgentMode.TASK
         or self.output_schema
         or event.author != self.name
         or event.partial
@@ -1256,8 +1281,6 @@ class LlmAgent(BaseAgent, abc.ABC):
   @classmethod
   def _pre_validate_tools(cls, data: Any) -> Any:
     if isinstance(data, dict) and 'tools' in data and data['tools']:
-      from google.adk.workflow._base_node import BaseNode
-
       data['tools'] = [
           _wrap_base_node_as_tool(t) if isinstance(t, BaseNode) else t
           for t in data['tools']
@@ -1321,7 +1344,7 @@ class LlmAgent(BaseAgent, abc.ABC):
           stacklevel=3,
       )
 
-    if self.mode == 'task':
+    if self.mode == _AgentMode.TASK:
       from .llm.task._finish_task_tool import FinishTaskTool
 
       self.tools.append(FinishTaskTool(self))
@@ -1339,12 +1362,28 @@ class LlmAgent(BaseAgent, abc.ABC):
         mode = getattr(sub_agent, 'mode', None)
         # LlmAgent sub-agents default to chat mode (unchanged behavior).
         if isinstance(sub_agent, LlmAgent) and mode is None:
-          sub_agent.mode = 'chat'
-          mode = 'chat'
-        if mode == 'single_turn':
+          sub_agent.mode = _AgentMode.CHAT.value
+          mode = _AgentMode.CHAT.value
+        if mode == _AgentMode.SINGLE_TURN:
           self.tools.append(_SingleTurnAgentTool(sub_agent))
-        elif mode == 'task':
+        elif mode == _AgentMode.TASK:
           self.tools.append(_TaskAgentTool(sub_agent))
 
 
 Agent: TypeAlias = LlmAgent
+
+if not TYPE_CHECKING:
+  __getattr__, __dir__ = _lazy.accessors(
+      globals(),
+      {
+          'AutoFlow': 'google.adk.flows.llm_flows.auto_flow',
+          'BaseLlmFlow': 'google.adk.flows.llm_flows.base_llm_flow',
+          'SingleFlow': 'google.adk.flows.llm_flows.single_flow',
+      },
+  )
+
+
+def _flow_class(name: str) -> type[BaseLlmFlow]:
+  """Returns this module's `name` attribute, so a patched flow class is used."""
+  flow: type[BaseLlmFlow] = getattr(sys.modules[__name__], name)
+  return flow

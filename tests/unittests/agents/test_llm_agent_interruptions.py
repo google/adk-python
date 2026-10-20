@@ -15,8 +15,6 @@
 from __future__ import annotations
 
 from google.adk.agents import LlmAgent
-from google.adk.runners import Runner
-from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.tools.tool_context import ToolContext
@@ -30,6 +28,15 @@ _USER_ID = 'test_user'
 _SESSION_ID = 'test_session'
 
 
+async def _make_runner(agent):
+  """Build an invariant-checking runner with a pre-created session."""
+  runner = testing_utils.TestInMemoryRunner(agent=agent, app_name='test')
+  await runner.session_service.create_session(
+      app_name='test', user_id=_USER_ID, session_id=_SESSION_ID
+  )
+  return runner
+
+
 async def _setup_runner(mock_model, tools=None, **agent_kwargs):
   """Setup runner with LlmAgent directly."""
   llm_agent = LlmAgent(
@@ -38,16 +45,7 @@ async def _setup_runner(mock_model, tools=None, **agent_kwargs):
       tools=tools or [],
       **agent_kwargs,
   )
-  session_service = InMemorySessionService()
-  await session_service.create_session(
-      app_name='test', user_id=_USER_ID, session_id=_SESSION_ID
-  )
-  runner = Runner(
-      app_name='test',
-      agent=llm_agent,
-      session_service=session_service,
-  )
-  return runner
+  return await _make_runner(llm_agent)
 
 
 async def _run_turn(runner, user_message):
@@ -332,14 +330,7 @@ class TestNestedAgentInterruptions:
         sub_agents=[child_agent],
     )
 
-    # Setup runner
-    session_service = InMemorySessionService()
-    await session_service.create_session(
-        app_name='test', user_id=_USER_ID, session_id=_SESSION_ID
-    )
-    runner = Runner(
-        app_name='test', agent=parent_agent, session_service=session_service
-    )
+    runner = await _make_runner(parent_agent)
 
     # When Parent runs the first turn
     events = await _run_turn(runner, 'Go')
@@ -398,14 +389,7 @@ class TestNestedAgentInterruptions:
         sub_agents=[child_agent],
     )
 
-    # Setup runner
-    session_service = InMemorySessionService()
-    await session_service.create_session(
-        app_name='test', user_id=_USER_ID, session_id=_SESSION_ID
-    )
-    runner = Runner(
-        app_name='test', agent=parent_agent, session_service=session_service
-    )
+    runner = await _make_runner(parent_agent)
 
     # When Parent runs the first turn
     events = await _run_turn(runner, 'Go')
@@ -419,7 +403,6 @@ class TestNestedAgentInterruptions:
     # Then it should complete successfully
     assert any('Parent final answer' in t for t in text_parts(resume_events))
 
-  @pytest.mark.xfail(reason='Single-turn agent as subagent not supported yet.')
   async def test_single_turn_child_agent_interrupt_and_resume(self):
     """Single-turn child agent yields on LRO and resumes successfully.
 
@@ -459,14 +442,7 @@ class TestNestedAgentInterruptions:
         sub_agents=[child_agent],
     )
 
-    # Setup runner
-    session_service = InMemorySessionService()
-    await session_service.create_session(
-        app_name='test', user_id=_USER_ID, session_id=_SESSION_ID
-    )
-    runner = Runner(
-        app_name='test', agent=parent_agent, session_service=session_service
-    )
+    runner = await _make_runner(parent_agent)
 
     # When Parent runs the first turn
     events = await _run_turn(runner, 'Go')

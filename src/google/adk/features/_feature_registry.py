@@ -20,6 +20,7 @@ from enum import Enum
 from typing import Generator
 import warnings
 
+from ..utils.env_utils import _is_experimental_warning_suppressed
 from ..utils.env_utils import is_env_enabled
 
 
@@ -27,6 +28,7 @@ class FeatureName(str, Enum):
   """Feature names."""
 
   AGENT_CONFIG = "AGENT_CONFIG"
+  AGENT_ENGINE_SANDBOX_ENVIRONMENT = "AGENT_ENGINE_SANDBOX_ENVIRONMENT"
   AGENT_STATE = "AGENT_STATE"
   AUTHENTICATED_FUNCTION_TOOL = "AUTHENTICATED_FUNCTION_TOOL"
   BASE_AUTHENTICATED_TOOL = "BASE_AUTHENTICATED_TOOL"
@@ -34,12 +36,16 @@ class FeatureName(str, Enum):
   BIG_QUERY_TOOL_CONFIG = "BIG_QUERY_TOOL_CONFIG"
   BIGTABLE_TOOL_SETTINGS = "BIGTABLE_TOOL_SETTINGS"
   BIGTABLE_TOOLSET = "BIGTABLE_TOOLSET"
+  CASCADE_LIVE = "CASCADE_LIVE"
+  CLASSIFIER = "CLASSIFIER"
   COMPUTER_USE = "COMPUTER_USE"
   DATA_AGENT_TOOL_CONFIG = "DATA_AGENT_TOOL_CONFIG"
   DATA_AGENT_TOOLSET = "DATA_AGENT_TOOLSET"
   DYNAMIC_INSTRUCTION_ROUTING = "DYNAMIC_INSTRUCTION_ROUTING"
   DAYTONA_ENVIRONMENT = "DAYTONA_ENVIRONMENT"
   E2B_ENVIRONMENT = "E2B_ENVIRONMENT"
+  ELEVEN_LABS = "ELEVEN_LABS"
+  OPENSANDBOX_ENVIRONMENT = "OPENSANDBOX_ENVIRONMENT"
   ENVIRONMENT_SIMULATION = "ENVIRONMENT_SIMULATION"
   EVENTARC_TOOL_CONFIG = "EVENTARC_TOOL_CONFIG"
   EVENTARC_TOOLSET = "EVENTARC_TOOLSET"
@@ -59,6 +65,9 @@ class FeatureName(str, Enum):
   # enum member by name. Keeping it private avoids a backward-compat
   # obligation for what is intended as a temporary, internal kill-switch.
   _MCP_GRACEFUL_ERROR_HANDLING = "MCP_GRACEFUL_ERROR_HANDLING"
+  # Off by default since it changes wire behavior. Enable with
+  # `ADK_ENABLE_MCP_MODERN_PROTOCOL=1`. No effect on MCP SDK 1.x.
+  _MCP_MODERN_PROTOCOL = "MCP_MODERN_PROTOCOL"
   MONGODB_TOOLSET = "MONGODB_TOOLSET"
   MONGODB_TOOL_SETTINGS = "MONGODB_TOOL_SETTINGS"
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
@@ -110,6 +119,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.AGENT_CONFIG: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
+    FeatureName.AGENT_ENGINE_SANDBOX_ENVIRONMENT: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.AGENT_STATE: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -131,6 +143,12 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.BIGTABLE_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
+    FeatureName.CASCADE_LIVE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.CLASSIFIER: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.COMPUTER_USE: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -147,6 +165,12 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.E2B_ENVIRONMENT: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.ELEVEN_LABS: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.OPENSANDBOX_ENVIRONMENT: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.ENVIRONMENT_SIMULATION: FeatureConfig(
@@ -190,6 +214,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName._MCP_GRACEFUL_ERROR_HANDLING: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName._MCP_MODERN_PROTOCOL: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
     ),
     FeatureName.MONGODB_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
@@ -248,6 +275,24 @@ _WARNED_FEATURES: set[FeatureName] = set()
 _FEATURE_OVERRIDES: dict[FeatureName, bool] = {}
 
 
+def _feature_display_name(feature_name: FeatureName | str) -> str:
+  """Returns the bare flag name, as spelled in `ADK_ENABLE_<NAME>`.
+
+  On Python 3.11 and later, formatting a `str`-mixin enum member in an f-string
+  yields `FeatureName.X` rather than `X`, so messages must not interpolate the
+  member directly.
+
+  Args:
+    feature_name: The feature name, as a `FeatureName` or a plain string.
+
+  Returns:
+    The flag's name without the enum class prefix.
+  """
+  if isinstance(feature_name, FeatureName):
+    return feature_name.value
+  return feature_name
+
+
 def _get_feature_config(
     feature_name: FeatureName,
 ) -> FeatureConfig | None:
@@ -299,7 +344,9 @@ def override_feature_enabled(
   """
   config = _get_feature_config(feature_name)
   if config is None:
-    raise ValueError(f"Feature {feature_name} is not registered.")
+    raise ValueError(
+        f"Feature {_feature_display_name(feature_name)} is not registered."
+    )
   _FEATURE_OVERRIDES[feature_name] = enabled
 
 
@@ -333,7 +380,9 @@ def is_feature_enabled(feature_name: FeatureName) -> bool:
   """
   config = _get_feature_config(feature_name)
   if config is None:
-    raise ValueError(f"Feature {feature_name} is not registered.")
+    raise ValueError(
+        f"Feature {_feature_display_name(feature_name)} is not registered."
+    )
 
   # Check programmatic overrides first (highest priority)
   if feature_name in _FEATURE_OVERRIDES:
@@ -343,11 +392,7 @@ def is_feature_enabled(feature_name: FeatureName) -> bool:
     return enabled
 
   # Check environment variables second
-  feature_name_str = (
-      feature_name.value
-      if isinstance(feature_name, FeatureName)
-      else feature_name
-  )
+  feature_name_str = _feature_display_name(feature_name)
   enable_var = f"ADK_ENABLE_{feature_name_str}"
   disable_var = f"ADK_DISABLE_{feature_name_str}"
   if is_env_enabled(enable_var):
@@ -373,10 +418,17 @@ def _emit_non_stable_warning_once(
     feature_name: The feature name.
     feature_stage: The feature stage.
   """
+  if (
+      feature_stage == FeatureStage.EXPERIMENTAL
+      and _is_experimental_warning_suppressed()
+  ):
+    return
+
   if feature_name not in _WARNED_FEATURES:
     _WARNED_FEATURES.add(feature_name)
     full_message = (
-        f"[{feature_stage.name.upper()}] feature {feature_name} is enabled."
+        f"[{feature_stage.name.upper()}] feature"
+        f" {_feature_display_name(feature_name)} is enabled."
     )
     warnings.warn(full_message, category=UserWarning, stacklevel=4)
 
@@ -412,7 +464,9 @@ def temporary_feature_override(
   """
   config = _get_feature_config(feature_name)
   if config is None:
-    raise ValueError(f"Feature {feature_name} is not registered.")
+    raise ValueError(
+        f"Feature {_feature_display_name(feature_name)} is not registered."
+    )
 
   # Save the original override state
   had_override = feature_name in _FEATURE_OVERRIDES

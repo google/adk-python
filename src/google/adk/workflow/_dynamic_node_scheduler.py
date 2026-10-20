@@ -31,7 +31,10 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from ..agents.base_agent import BaseAgent
+from ..agents.context import _derive_node_path
 from ..events._node_path_builder import _NodePathBuilder
+from ..utils._agent_mode import AgentMode
+from ..utils._agent_mode import DefaultLlmNodeMode
 from ._base_node import BaseNode
 from ._errors import DynamicNodeFailError
 from ._errors import NodeInterruptedError
@@ -64,6 +67,12 @@ class DynamicNodeRun:
 
   output: Any = None
   """The final output of the node once it completes."""
+
+  route: Any = None
+  """The route selected by the node once it completes."""
+
+  branch: str | None = None
+  """The branch of the node once it completes."""
 
   task: asyncio.Task[Context] | None = None
   """The running asyncio Task, or None for a run replayed from cache."""
@@ -117,6 +126,58 @@ class DynamicNodeState:
     counters = self.run_counters.setdefault(parent_path, {})
     counters[node_name] = counters.get(node_name, 0) + 1
     return str(counters[node_name])
+
+  def reserve_run_ids(self, node_path: str) -> None:
+    """Records every run_id in node_path as allocated under its parent path.
+
+    For a node that runs under a path ``next_run_id`` did not hand out, so that
+    a later run of the same node, or of one of its ancestors, is not given that
+    path again.
+
+    Args:
+      node_path: The path the node runs under, e.g. ``root_agent@1/sub@1``.
+    """
+    path: _NodePathBuilder | None = _NodePathBuilder.from_string(node_path)
+    while path is not None and str(path):
+      run_id = path.run_id
+      if run_id and run_id.isdigit():
+        parent_path = str(path.parent) if path.parent else ''
+        counters = self.run_counters.setdefault(parent_path, {})
+        counters[path.node_name] = max(
+            counters.get(path.node_name, 0), int(run_id)
+        )
+      path = path.parent
+
+  def _counter_paths_under(self, parent_path: str) -> list[str]:
+    prefix = f'{parent_path}/' if parent_path else ''
+    return [
+        k
+        for k in self.run_counters
+        if k == parent_path or (prefix and k.startswith(prefix))
+    ]
+
+  def snapshot_counters(self, parent_path: str) -> dict[str, dict[str, int]]:
+    """Copy the sequential run counters under parent_path."""
+    return {
+        path: dict(self.run_counters[path])
+        for path in self._counter_paths_under(parent_path)
+    }
+
+  def reset_for_retry(
+      self,
+      parent_path: str,
+      snapshot: dict[str, dict[str, int]],
+  ) -> None:
+    """Rewind sequential run counters under parent_path before a parent retry.
+
+    The counters go back to ``snapshot``, taken when the failed attempt began,
+    so the retry replays that attempt's completed children. Rewinding further
+    would replay children from earlier attempts the parent already rejected.
+    """
+    for path in self._counter_paths_under(parent_path):
+      del self.run_counters[path]
+    for path, counters in snapshot.items():
+      self.run_counters[path] = dict(counters)
 
   def get_dynamic_tasks(self) -> list[asyncio.Task[Context]]:
     """Get all active dynamic node tasks."""
@@ -326,6 +387,18 @@ class DynamicNodeScheduler:
       else:
         run_id = '1'
 
+    if self._enable_replay and not curr_parent_path:
+      # A sub-agent that starts the turn (the runner resumed it) has no parent
+      # context, so its Context takes its path from the static agent tree,
+      # with every ancestor at run 1. Reserve those run ids: otherwise a
+      # transfer to the parent and back to this agent is allocated that same
+      # path again, and this run is fast-forwarded instead of the agent
+      # running a second time.
+      derived_path, _ = _derive_node_path(
+          target_node_name, run_id, None, None, node=node
+      )
+      self._state.reserve_run_ids(derived_path)
+
     base_path_builder = (
         _NodePathBuilder.from_string(curr_parent_path)
         if curr_parent_path
@@ -334,7 +407,7 @@ class DynamicNodeScheduler:
     node_path = str(base_path_builder.append(target_node_name, run_id))
     if (
         override_isolation_scope is None
-        and getattr(node, 'mode', None) == 'task'
+        and getattr(node, 'mode', None) == AgentMode.TASK
     ):
       override_isolation_scope = node_path
 
@@ -439,7 +512,7 @@ class DynamicNodeScheduler:
     result = check_interception(
         node=curr_node,
         recovered=run.recovered_state,
-        current_run=None if run.is_static else run,
+        current_run=run,
     )
 
     if not result.should_run:
@@ -454,6 +527,7 @@ class DynamicNodeScheduler:
         )
         # Sync output and transfer decisions with the current run state.
         run.output = result.output
+        run.route = result.route
         run.transfer_to_agent = result.transfer_to_agent
 
       if run.is_static:
@@ -475,7 +549,10 @@ class DynamicNodeScheduler:
           result=result,
           ancestors=ancestors,
           node_path=node_path,
-          branch=(run.recovered_state.branch if run.recovered_state else None),
+          branch=(
+              run.branch
+              or (run.recovered_state.branch if run.recovered_state else None)
+          ),
       )
 
       # Chronological sequence barrier wait for replayed dynamic nodes
@@ -634,6 +711,8 @@ class DynamicNodeScheduler:
   ) -> None:
     """Update dynamic node state after execution."""
     state = run.state
+    run.route = child_ctx.route
+    run.branch = child_ctx.branch
     if child_ctx.error:
       state.status = NodeStatus.FAILED
     elif child_ctx.interrupt_ids:
@@ -680,7 +759,13 @@ async def run_node_internal(
         ' response.'
     )
 
-  built_node = build_node(node)
+  is_root_agent_run = (
+      ctx.parent_ctx is None and ctx.node is None and not ctx.node_path
+  )
+  default_llm_mode: DefaultLlmNodeMode = (
+      AgentMode.CHAT if is_root_agent_run else AgentMode.SINGLE_TURN
+  )
+  built_node = build_node(node, default_llm_mode=default_llm_mode)
 
   if isinstance(node, BaseAgent) and isinstance(built_node, BaseAgent):
     built_node.parent_agent = node.parent_agent
@@ -731,6 +816,8 @@ async def run_node_internal(
   )
 
   transfer_to_agent = child_ctx.actions.transfer_to_agent if child_ctx else None
+  if child_ctx and child_ctx.actions.skip_summarization:
+    ctx.actions.skip_summarization = True
 
   if not return_ctx:
     if child_ctx.error:

@@ -193,7 +193,38 @@ def _quote_unquoted_json_object_keys(value: str) -> str:
   return "".join(result)
 
 
-def _parse_tool_call_arguments(arguments: Any) -> Any:
+def _log_repaired_arguments(
+    description: str,
+    arguments: Any,
+    *,
+    function_name: str | None = None,
+    level: int = logging.WARNING,
+) -> None:
+  """Logs an argument repair, keeping the raw payload at debug level."""
+  if not logger.isEnabledFor(level):
+    return
+  if logger.isEnabledFor(logging.DEBUG):
+    if function_name:
+      logger.log(
+          level,
+          "%s for function '%s': %s",
+          description,
+          function_name,
+          arguments,
+      )
+    else:
+      logger.log(level, "%s: %s", description, arguments)
+  elif function_name:
+    logger.log(level, "%s for function '%s'", description, function_name)
+  else:
+    logger.log(level, "%s", description)
+
+
+def _parse_tool_call_arguments(
+    arguments: Any,
+    *,
+    function_name: str | None = None,
+) -> Any:
   """Parses LiteLLM tool call arguments.
 
   LiteLLM normally returns OpenAI-compatible tool call arguments as JSON
@@ -201,6 +232,16 @@ def _parse_tool_call_arguments(arguments: Any) -> Any:
   argument payload is a Python dict literal or has unquoted object keys. Keep
   strict JSON as the primary path, then repair only those complete
   object-literal shapes so ADK can still surface the intended function call.
+
+  Args:
+    arguments: The tool call arguments to parse.
+    function_name: Optional name of the function being called, for logging.
+
+  Returns:
+    The parsed arguments (typically a dict).
+
+  Raises:
+    json.JSONDecodeError: When the arguments cannot be parsed.
   """
   if not arguments:
     return {}
@@ -212,20 +253,79 @@ def _parse_tool_call_arguments(arguments: Any) -> Any:
   except json.JSONDecodeError as exc:
     json_error = exc
 
+  # Retry with Python literal eval (handles single-quoted keys, etc.).
   try:
-    return ast.literal_eval(arguments)
+    result = ast.literal_eval(arguments)
+    _log_repaired_arguments(
+        "Repaired non-strict JSON tool call arguments using literal_eval",
+        arguments,
+        function_name=function_name,
+        level=logging.DEBUG,
+    )
+    return result
   except (SyntaxError, ValueError):
     pass
 
+  # Retry after quoting unquoted JSON object keys.
   repaired_arguments = _quote_unquoted_json_object_keys(arguments)
   if repaired_arguments != arguments:
     try:
-      return json.loads(repaired_arguments)
+      result = json.loads(repaired_arguments)
+      _log_repaired_arguments(
+          "Repaired unquoted JSON object keys in tool call arguments",
+          arguments,
+          function_name=function_name,
+      )
+      return result
     except json.JSONDecodeError:
       try:
-        return ast.literal_eval(repaired_arguments)
+        result = ast.literal_eval(repaired_arguments)
+        _log_repaired_arguments(
+            "Repaired unquoted JSON object keys in tool call arguments using"
+            " literal_eval",
+            arguments,
+            function_name=function_name,
+        )
+        return result
       except (SyntaxError, ValueError):
         pass
+
+  # Retry after stripping Markdown code fences (```json ... ```).
+  stripped = arguments.strip()
+  if (
+      stripped.startswith("```")
+      and stripped.endswith("```")
+      and len(stripped) >= 6
+  ):
+    candidate = stripped[3:-3].strip()
+    if candidate.lower().startswith("json"):
+      candidate = candidate[4:].strip()
+    if candidate and candidate != arguments:
+      candidates = [candidate]
+      repaired_candidate = _quote_unquoted_json_object_keys(candidate)
+      if repaired_candidate != candidate:
+        candidates.append(repaired_candidate)
+      for text in candidates:
+        try:
+          result = json.loads(text)
+          _log_repaired_arguments(
+              "Repaired Markdown-fenced tool call arguments",
+              arguments,
+              function_name=function_name,
+          )
+          return result
+        except json.JSONDecodeError:
+          pass
+        try:
+          result = ast.literal_eval(text)
+          _log_repaired_arguments(
+              "Repaired Markdown-fenced tool call arguments using literal_eval",
+              arguments,
+              function_name=function_name,
+          )
+          return result
+        except (SyntaxError, ValueError):
+          pass
 
   raise json_error
 
@@ -382,6 +482,134 @@ def _strip_proxy_prefix(model: str) -> str:
   return model
 
 
+_UPLOAD_ENDPOINT_KEYS = ("api_base", "api_key", "api_version")
+
+# LiteLLM reads these when the completion call carries no explicit endpoint,
+# so a proxy configured only through the environment still has to be honored
+# by the upload.
+_PROXY_ENV_FALLBACKS = {
+    "api_base": "LITELLM_PROXY_API_BASE",
+    "api_key": "LITELLM_PROXY_API_KEY",
+}
+
+
+def _normalize_endpoint_value(key: str, value: Any) -> Any:
+  """Strips whitespace and trailing api_base slashes from endpoint values."""
+  if isinstance(value, str):
+    value = value.strip()
+    if key == "api_base":
+      value = value.rstrip("/")
+  return value
+
+
+def _get_upload_params(
+    model: str, completion_args: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+  """Endpoint overrides to forward to `litellm.acreate_file`.
+
+  File uploads resolve their endpoint independently of the completion call, so
+  without these they fall back to the underlying provider's own credentials.
+  For a proxied model that splits the request in two: the completion goes to
+  the proxy while the upload goes straight to the provider. That fails when the
+  caller holds only proxy credentials, and when the provider resolves to
+  ``openai`` it is worse than a failure -- `get_openai_credentials` defaults to
+  ``https://api.openai.com/v1``, so a stray ``OPENAI_API_KEY`` in the
+  environment sends proxied file content to the public OpenAI API instead.
+  Direct models with an explicit endpoint (e.g. `api_base` pointing to a
+  custom or local OpenAI gateway) suffer the same leak without these overrides
+  forwarded.
+
+  Explicit completion arguments win, falling back for proxied models to the
+  proxy's own environment variables and module attributes so that proxies
+  configured purely through the environment are still routed correctly.
+
+  Args:
+    model: The LiteLLM model string.
+    completion_args: The arguments the caller passes to the completion call.
+
+  Returns:
+    The subset of endpoint overrides to forward, or None when no overrides
+    exist.
+  """
+  upload_params: Dict[str, Any] = {}
+  for key in _UPLOAD_ENDPOINT_KEYS:
+    if key in completion_args and completion_args[key] is not None:
+      val = _normalize_endpoint_value(key, completion_args[key])
+      if val:
+        upload_params[key] = val
+  if _is_proxied_model(model, completion_args):
+    # LiteLLM resolves the proxy endpoint from these when the completion call
+    # does not carry one, so the upload has to follow the same fallback. Strip
+    # whitespace and trailing slashes so empty, whitespace-only, or slash-only
+    # environment variables do not pass the endpoint guard and reach
+    # acreate_file as malformed endpoints.
+    for key, env_var in _PROXY_ENV_FALLBACKS.items():
+      if not upload_params.get(key):
+        value = _normalize_endpoint_value(key, os.environ.get(env_var, ""))
+        if value:
+          upload_params[key] = value
+    litellm_mod = sys.modules.get("litellm") or litellm
+    if litellm_mod is not None:
+      for key in _UPLOAD_ENDPOINT_KEYS:
+        if not upload_params.get(key):
+          litellm_val = _normalize_endpoint_value(
+              key, getattr(litellm_mod, key, None)
+          )
+          if litellm_val:
+            upload_params[key] = litellm_val
+    if not upload_params.get("api_base"):
+      openai_base = _normalize_endpoint_value(
+          "api_base", os.environ.get("OPENAI_BASE_URL", "")
+      ) or _normalize_endpoint_value(
+          "api_base", os.environ.get("OPENAI_API_BASE", "")
+      )
+      if openai_base:
+        upload_params["api_base"] = openai_base
+    if not upload_params.get("api_key"):
+      openai_key = _normalize_endpoint_value(
+          "api_key", os.environ.get("OPENAI_API_KEY", "")
+      )
+      if openai_key:
+        upload_params["api_key"] = openai_key
+  return upload_params or None
+
+
+def _is_proxied_model(
+    model: str, completion_args: Optional[Dict[str, Any]] = None
+) -> bool:
+  """Returns True if the model is served through a LiteLLM Proxy.
+
+  Covers the explicit ``litellm_proxy/`` prefix, ``custom_llm_provider`` set to
+  ``litellm_proxy``, the ``use_litellm_proxy`` argument in completion args or
+  the ``litellm.use_litellm_proxy`` module flag, and LiteLLM's
+  ``USE_LITELLM_PROXY`` environment variable, which route unprefixed models
+  through the proxy as well.
+  """
+  if not model:
+    return False
+  if model.lower().startswith(_PROXY_PROVIDER + "/"):
+    return True
+  if completion_args:
+    custom_provider = completion_args.get("custom_llm_provider")
+    if (
+        isinstance(custom_provider, str)
+        and custom_provider.strip().lower() == _PROXY_PROVIDER
+    ):
+      return True
+    val = completion_args.get("use_litellm_proxy")
+    if isinstance(val, str):
+      if val.strip().lower() == "true":
+        return True
+    elif bool(val):
+      return True
+  litellm_mod = sys.modules.get("litellm") or litellm
+  if litellm_mod is not None and getattr(
+      litellm_mod, "use_litellm_proxy", False
+  ):
+    return True
+  return os.environ.get("USE_LITELLM_PROXY", "").strip().lower() == "true"
+
+
 def _get_provider_from_model(model: str) -> str:
   """Extracts the provider name from a LiteLLM model string.
 
@@ -525,10 +753,16 @@ def _redact_file_uri_for_log(
   return f"{parsed.scheme}://<redacted>"
 
 
-def _is_file_uri_supported(provider: str, model: str, file_uri: str) -> bool:
+def _is_file_uri_supported(
+    provider: str,
+    model: str,
+    file_uri: str,
+    *,
+    is_proxied: bool = False,
+) -> bool:
   """Returns True when `file_uri` can be sent as a file content block."""
   # If the model is proxied, the proxy might accept arbitrary URIs.
-  if model.lower().startswith(_PROXY_PROVIDER + "/"):
+  if is_proxied or _is_proxied_model(model):
     return True
   if provider in _FILE_ID_REQUIRED_PROVIDERS:
     return _looks_like_openai_file_id(file_uri)
@@ -724,9 +958,15 @@ def _extract_reasoning_value(message: Message | Delta | None) -> Any:
 
 
 _GEMMA4_MODEL_PATTERN = re.compile(r"gemma-?4")
+_STANDARD_TOOL_ROLE_PROVIDERS = frozenset({"openai", "azure", "lm_studio"})
 
 
-def _is_gemma4_model(model: str) -> bool:
+def _is_gemma4_model(
+    model: str,
+    *,
+    provider: str = "",
+    custom_llm_provider: Optional[str] = None,
+) -> bool:
   """Detects Gemma 4 models across naming conventions.
 
   Ollama uses "gemma4" (e.g. "ollama/gemma4:e2b"), while Hugging Face,
@@ -734,12 +974,34 @@ def _is_gemma4_model(model: str) -> bool:
   "google/gemma-4-26B-A4B"). Both need role='tool_responses' for tool
   results.
 
+  OpenAI-compatible endpoints (e.g. "openai/google/gemma-4-e4b",
+  "lm_studio/google/gemma-4-e4b") require the standard role='tool' and are
+  excluded.
+
   Args:
     model: The model name to check.
+    provider: The provider name if known.
+    custom_llm_provider: The custom LLM provider if specified.
 
   Returns:
-    True if the model is a Gemma 4 model, False otherwise.
+    True if the model is a Gemma 4 model requiring tool_responses, False
+    otherwise.
   """
+  effective_provider = next(
+      (
+          candidate
+          for raw in (
+              custom_llm_provider,
+              provider,
+              _get_provider_from_model(model),
+          )
+          # Skip 'litellm_proxy' because it only names the transport.
+          if raw and (candidate := raw.strip().lower()) != _PROXY_PROVIDER
+      ),
+      "",
+  )
+  if effective_provider in _STANDARD_TOOL_ROLE_PROVIDERS:
+    return False
   return bool(_GEMMA4_MODEL_PATTERN.search(model.lower()))
 
 
@@ -878,6 +1140,9 @@ class FunctionChunk(BaseModel):
   name: Optional[str]
   args: Optional[str]
   index: Optional[int] = 0
+  # Gemini signs only some calls (the first of a parallel batch), so most
+  # chunks carry none.
+  thought_signature: bytes | None = None
 
 
 class TextChunk(BaseModel):
@@ -1166,6 +1431,12 @@ def _decode_thought_signature(value: Any) -> Optional[bytes]:
     return None
 
 
+def _decode_tool_call_id_signature(suffix: str) -> Optional[bytes]:
+  """Decodes a signature embedded in a tool call id, urlsafe or unpadded."""
+  standard = suffix.replace("-", "+").replace("_", "/")
+  return _decode_thought_signature(standard + "=" * (-len(standard) % 4))
+
+
 def _extract_reasoning_tokens(usage: Any) -> int:
   """Extracts reasoning tokens from LiteLLM usage.
 
@@ -1277,7 +1548,7 @@ def _extract_thought_signature_from_tool_call(
   if _THOUGHT_SIGNATURE_SEPARATOR in tool_call_id:
     parts = tool_call_id.split(_THOUGHT_SIGNATURE_SEPARATOR, 1)
     if len(parts) == 2:
-      return _decode_thought_signature(parts[1])
+      return _decode_tool_call_id_signature(parts[1])
 
   return None
 
@@ -1304,6 +1575,9 @@ async def _content_to_message_param(
     *,
     provider: str = "",
     model: str = "",
+    upload_params: Optional[Dict[str, Any]] = None,
+    is_proxied: bool = False,
+    custom_llm_provider: Optional[str] = None,
 ) -> Union[Message, list[Message]] | None:
   """Converts a types.Content to a litellm Message or list of Messages.
 
@@ -1314,6 +1588,9 @@ async def _content_to_message_param(
     content: The content to convert.
     provider: The LLM provider name (e.g., "openai", "azure").
     model: The LiteLLM model string, used for provider-specific behavior.
+    upload_params: Endpoint overrides forwarded to file uploads.
+    is_proxied: Whether the request is routed through a LiteLLM Proxy.
+    custom_llm_provider: The custom LLM provider if specified.
 
   Returns:
     A litellm Message, a list of litellm Messages, or None if skipped.
@@ -1336,12 +1613,16 @@ async def _content_to_message_param(
           if isinstance(response, str)
           else _safe_json_serialize(response)
       )
-      # gemma4 requires role='tool_responses' for recognizing function_response parts as responses
-      # from the tool call, instead of OpenAI-compatible 'tool' role used by other models.
-      # Earlier Gemma versions before version 4 do not support tool use,
-      # so this check is intentionally scoped to only look for "gemma4" in the model name.
+      # gemma4 requires role='tool_responses' for recognizing function_response
+      # parts as responses from the tool call, except on OpenAI-compatible
+      # endpoints (openai, azure, lm_studio) which require the standard 'tool'
+      # role. Earlier Gemma versions before version 4 do not support tool use.
       tool_role: Literal["tool", "tool_responses"] = (
-          "tool_responses" if _is_gemma4_model(model) else "tool"
+          "tool_responses"
+          if _is_gemma4_model(
+              model, provider=provider, custom_llm_provider=custom_llm_provider
+          )
+          else "tool"
       )
       tool_messages.append(
           _tool_message(
@@ -1365,6 +1646,9 @@ async def _content_to_message_param(
         types.Content(role=content.role, parts=non_tool_parts),
         provider=provider,
         model=model,
+        upload_params=upload_params,
+        is_proxied=is_proxied,
+        custom_llm_provider=custom_llm_provider,
     )
     follow_up_messages = (
         follow_up if isinstance(follow_up, list) else [follow_up]
@@ -1377,7 +1661,14 @@ async def _content_to_message_param(
   if role == "user":
     user_parts = [part for part in parts if not part.thought]
     message_content = (
-        await _get_content(user_parts, provider=provider, model=model) or None
+        await _get_content(
+            user_parts,
+            provider=provider,
+            model=model,
+            upload_params=upload_params,
+            is_proxied=is_proxied,
+        )
+        or None
     )
     return ChatCompletionUserMessage(
         role="user",
@@ -1423,16 +1714,24 @@ async def _content_to_message_param(
         content_parts.append(part)
 
     final_content = (
-        await _get_content(content_parts, provider=provider, model=model)
+        await _get_content(
+            content_parts,
+            provider=provider,
+            model=model,
+            upload_params=upload_params,
+            is_proxied=is_proxied,
+        )
         if content_parts
         else None
     )
     if final_content and isinstance(final_content, list):
-      # when the content is a single text object, we can use it directly.
-      # this is needed for ollama_chat provider which fails if content is a list
-      first_content = final_content[0]
-      if first_content["type"] == "text":
-        final_content = first_content["text"]
+      # Send the text as a plain string: ollama_chat fails if content is a
+      # list, and OpenAI-style APIs accept only text in assistant content.
+      text_blocks = [
+          block["text"] for block in final_content if block["type"] == "text"
+      ]
+      if text_blocks:
+        final_content = _NEW_LINE.join(text_blocks)
 
     # For Anthropic models, rebuild thinking_blocks with signatures so that
     # thinking is preserved across tool call boundaries. Without this,
@@ -1498,7 +1797,12 @@ async def _content_to_message_param(
     )
 
 
-def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
+def _ensure_tool_results(
+    messages: List[Message],
+    model: str,
+    *,
+    custom_llm_provider: Optional[str] = None,
+) -> List[Message]:
   """Insert placeholder tool messages for missing tool results.
 
   LiteLLM-backed providers like OpenAI and Anthropic reject histories where an
@@ -1517,7 +1821,9 @@ def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
   healed_messages: List[Message] = []
   pending_tool_call_ids: List[str] = []
   expected_tool_role: Literal["tool", "tool_responses"] = (
-      "tool_responses" if _is_gemma4_model(model) else "tool"
+      "tool_responses"
+      if _is_gemma4_model(model, custom_llm_provider=custom_llm_provider)
+      else "tool"
   )
 
   for message in messages:
@@ -1573,6 +1879,8 @@ async def _get_content(
     *,
     provider: str = "",
     model: str = "",
+    upload_params: Optional[Dict[str, Any]] = None,
+    is_proxied: bool = False,
 ) -> _MessageContent:
   """Converts a list of parts to litellm content.
 
@@ -1584,6 +1892,11 @@ async def _get_content(
     provider: The LLM provider name (e.g., "openai", "azure").
     model: The LiteLLM model string (e.g., "openai/gpt-4o",
       "vertex_ai/gemini-2.5-flash").
+    upload_params: Endpoint overrides (``api_base``, ``api_key``,
+      ``api_version``) forwarded to the file upload. Needed when the model is
+      served through a LiteLLM Proxy, since the upload would otherwise fall
+      back to provider environment variables and bypass the proxy.
+    is_proxied: Whether the request is routed through a LiteLLM Proxy.
 
   Returns:
     The litellm content.
@@ -1647,11 +1960,20 @@ async def _get_content(
       elif mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
         # OpenAI/Azure require file_id from uploaded file, not inline data
         if provider in _FILE_ID_REQUIRED_PROVIDERS:
-          upload_provider = (
-              "openai"
-              if model.lower().startswith(_PROXY_PROVIDER + "/")
-              else provider
-          )
+          proxied = is_proxied or _is_proxied_model(model)
+          if proxied and not (upload_params or {}).get("api_base"):
+            # Without an endpoint the upload would fall back to the provider's
+            # own credentials. For `openai` that default is the public
+            # https://api.openai.com/v1, so proxied file content would leave
+            # the proxy entirely. Fail instead of silently sending it there.
+            raise ValueError(
+                f"Cannot upload file for proxied model {model!r}: the LiteLLM"
+                " Proxy endpoint is unknown. Pass `api_base` (and `api_key`) to"
+                " LiteLlm(...), or set LITELLM_PROXY_API_BASE and"
+                " LITELLM_PROXY_API_KEY, so the upload reaches the proxy"
+                " instead of the provider's default endpoint."
+            )
+          upload_provider = "openai" if proxied else provider
           ext = (
               mimetypes.guess_extension(mime_type)
               or _MIME_TYPE_TO_EXTENSION.get(mime_type)
@@ -1662,6 +1984,7 @@ async def _get_content(
               file=(filename, part.inline_data.data, mime_type),
               purpose="assistants",
               custom_llm_provider=upload_provider,
+              **(upload_params or {}),
           )
           content_objects.append(
               _FileContentObject(
@@ -1728,7 +2051,12 @@ async def _get_content(
             )
             continue
 
-      if not _is_file_uri_supported(provider, model, part.file_data.file_uri):
+      if not _is_file_uri_supported(
+          provider,
+          model,
+          part.file_data.file_uri,
+          is_proxied=is_proxied or _is_proxied_model(model),
+      ):
         redacted_file_uri = _redact_file_uri_for_log(
             part.file_data.file_uri,
             display_name=part.file_data.display_name,
@@ -2519,9 +2847,14 @@ def _model_response_to_chunk(
           func_args = function_obj.get("arguments")
           func_index = tool_call.get("index", idx)
           tool_call_id = tool_call.get("id")
+          thought_signature = _extract_thought_signature_from_tool_call(
+              tool_call
+          )
 
-          # Ignore empty chunks that don't carry any information.
-          if not func_name and not func_args:
+          # Ignore empty chunks that don't carry any information. A chunk
+          # with only a signature still counts: the signature belongs to the
+          # call another chunk names.
+          if not func_name and not func_args and not thought_signature:
             continue
 
           yield FunctionChunk(
@@ -2529,6 +2862,7 @@ def _model_response_to_chunk(
               name=func_name,
               args=func_args,
               index=func_index,
+              thought_signature=thought_signature,
           ), finish_reason
 
     if finish_reason and not (message_content or tool_calls or reasoning_parts):
@@ -2697,7 +3031,10 @@ def _message_to_generate_content_response(
       if tool_call.type == "function":
         thought_signature = _extract_thought_signature_from_tool_call(tool_call)
         try:
-          args = _parse_tool_call_arguments(tool_call.function.arguments)
+          args = _parse_tool_call_arguments(
+              tool_call.function.arguments,
+              function_name=tool_call.function.name,
+          )
         except json.JSONDecodeError:
           args = None
         # Report the condition the way Gemini reports it natively instead of
@@ -2727,7 +3064,20 @@ def _message_to_generate_content_response(
           raise ValueError(
               "Function-call part factory returned no function call"
           )
-        function_call.id = tool_call.id
+        # The signature is carried on the part, so strip it back out of the id.
+        # Leaving it there appends a few hundred characters of base64 to every
+        # consumer of `function_call_id`, and `_content_to_message_param`
+        # re-attaches it to the outgoing tool call from `thought_signature`
+        # anyway. Only an id whose suffix decodes as a signature is LiteLLM's
+        # own; every other id is the provider's and stays opaque.
+        call_id, separator, suffix = (tool_call.id or "").partition(
+            _THOUGHT_SIGNATURE_SEPARATOR
+        )
+        function_call.id = (
+            call_id
+            if separator and _decode_tool_call_id_signature(suffix)
+            else tool_call.id
+        )
         if thought_signature:
           part.thought_signature = thought_signature
         parts.append(part)
@@ -2938,9 +3288,60 @@ def _to_litellm_response_format(
   }
 
 
+_ANTHROPIC_MIN_THINKING_BUDGET_TOKENS = 1024
+_ANTHROPIC_EFFORT_BUDGETS: dict[str, int] = {
+    "minimal": _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS,
+    "low": 1024,
+    "medium": 2048,
+    "high": 4096,
+}
+_CLAUDE_4_6_SUBSTRINGS = (
+    "opus-4-6",
+    "opus_4_6",
+    "opus-4.6",
+    "opus_4.6",
+    "sonnet-4-6",
+    "sonnet_4_6",
+    "sonnet-4.6",
+    "sonnet_4.6",
+)
+_CLAUDE_4_7_SUBSTRINGS = (
+    "opus-4-7",
+    "opus_4_7",
+    "opus-4.7",
+    "opus_4.7",
+)
+_GEMINI_MIN_THINKING_BUDGETS: dict[str, int] = {
+    "gemini-2.5-pro": 128,
+    "gemini-2.5-flash-lite": 512,
+}
+
+
+def _drop_params_rejected_by_anthropic_thinking(params: dict[str, Any]) -> None:
+  """Drops sampling params Anthropic rejects while thinking is enabled."""
+  thinking = params.get("thinking")
+  if params.get("reasoning_effort") in (None, "none") and not (
+      isinstance(thinking, dict)
+      and thinking.get("type") in ("enabled", "adaptive")
+  ):
+    return
+  if params.get("temperature") != 1:
+    params.pop("temperature", None)
+  params.pop("top_k", None)
+  top_p = params.get("top_p")
+  if top_p is not None and top_p < 0.95:
+    params.pop("top_p")
+
+
 async def _get_completion_inputs(
     llm_request: LlmRequest,
     model: str,
+    upload_params: Optional[Dict[str, Any]] = None,
+    *,
+    is_proxied: bool = False,
+    custom_llm_provider: Optional[str] = None,
+    max_tokens: Optional[int] = None,
+    has_constructor_reasoning: bool = False,
 ) -> Tuple[
     List[Message],
     Optional[List[Dict[str, Any]]],
@@ -2953,6 +3354,12 @@ async def _get_completion_inputs(
   Args:
     llm_request: The LlmRequest to convert.
     model: The model string to use for determining provider-specific behavior.
+    upload_params: Endpoint overrides forwarded to file uploads.
+    is_proxied: Whether the request is routed through a LiteLLM Proxy.
+    custom_llm_provider: The custom LLM provider if specified.
+    max_tokens: Fallback token limit (e.g. from the LiteLlm constructor).
+    has_constructor_reasoning: Whether the LiteLlm constructor set `thinking`
+      or `reasoning_effort`, which an include_thoughts-only request keeps.
 
   Returns:
     The litellm inputs (message list, tool dictionary, response format,
@@ -2967,7 +3374,12 @@ async def _get_completion_inputs(
   messages: List[Message] = []
   for content in llm_request.contents or []:
     message_param_or_list = await _content_to_message_param(
-        content, provider=provider, model=model
+        content,
+        provider=provider,
+        model=model,
+        upload_params=upload_params,
+        is_proxied=is_proxied,
+        custom_llm_provider=custom_llm_provider,
     )
     if isinstance(message_param_or_list, list):
       messages.extend(message_param_or_list)
@@ -2983,7 +3395,11 @@ async def _get_completion_inputs(
             content=system_instruction,
         ),
     )
-  messages = _ensure_tool_results(messages, model)
+  messages = _ensure_tool_results(
+      messages,
+      model,
+      custom_llm_provider=custom_llm_provider,
+  )
 
   # 2. Convert tool declarations
   tools: Optional[List[Dict[str, Any]]] = None
@@ -3038,6 +3454,186 @@ async def _get_completion_inputs(
       if key in config_dict:
         mapped_key = param_mapping.get(key, key)
         generation_params[mapped_key] = config_dict[key]
+
+    thinking_config = config_dict.get("thinking_config") or {}
+    stripped_model = _strip_proxy_prefix(model)
+    effective_custom_provider = (
+        custom_llm_provider
+        if custom_llm_provider
+        and custom_llm_provider.strip().lower() != _PROXY_PROVIDER
+        else None
+    )
+    if thinking_config and litellm.supports_reasoning(
+        model=stripped_model,
+        custom_llm_provider=effective_custom_provider,
+    ):
+      supported_params = (
+          litellm.get_supported_openai_params(
+              model=stripped_model,
+              custom_llm_provider=effective_custom_provider,
+          )
+          or ()
+      )
+      try:
+        model_info = litellm.get_model_info(
+            model=stripped_model,
+            custom_llm_provider=effective_custom_provider,
+        )
+      except Exception:
+        model_info = None
+      stripped_lower = stripped_model.lower()
+      is_anthropic = (
+          _is_anthropic_model(model)
+          or "claude" in stripped_lower
+          or bool(
+              effective_custom_provider
+              and _is_anthropic_route(effective_custom_provider, model)
+          )
+          or bool(
+              model_info and model_info.get("litellm_provider") == "anthropic"
+          )
+      )
+      is_claude_4_7 = is_anthropic and any(
+          sub in stripped_lower for sub in _CLAUDE_4_7_SUBSTRINGS
+      )
+      is_adaptive_anthropic = is_anthropic and (
+          is_claude_4_7
+          or any(sub in stripped_lower for sub in _CLAUDE_4_6_SUBSTRINGS)
+          or bool(model_info and model_info.get("supports_adaptive_thinking"))
+      )
+      is_gemini = is_gemini_model(stripped_lower)
+      is_gemini_3_or_newer = is_gemini and "gemini-3" in stripped_lower
+      effective_max_tokens = generation_params.get("max_completion_tokens")
+      if effective_max_tokens is None:
+        effective_max_tokens = max_tokens
+      thinking_level = thinking_config.get("thinking_level")
+      thinking_budget = thinking_config.get("thinking_budget")
+      include_thoughts = thinking_config.get("include_thoughts")
+      if thinking_level and thinking_level != "THINKING_LEVEL_UNSPECIFIED":
+        effort = str(getattr(thinking_level, "value", thinking_level)).lower()
+        if is_anthropic and not is_adaptive_anthropic:
+          effort_budget = _ANTHROPIC_EFFORT_BUDGETS.get(effort)
+          if (
+              effective_max_tokens is not None
+              and effective_max_tokens <= _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS
+          ):
+            pass
+          elif effort == "minimal" or (
+              effective_max_tokens is not None
+              and effort_budget is not None
+              and effective_max_tokens <= effort_budget
+          ):
+            if "thinking" in supported_params:
+              budget = (
+                  min(effort_budget, effective_max_tokens - 1)
+                  if effective_max_tokens is not None
+                  and effort_budget is not None
+                  else _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS
+              )
+              generation_params["thinking"] = {
+                  "type": "enabled",
+                  "budget_tokens": budget,
+              }
+          elif "reasoning_effort" in supported_params:
+            generation_params["reasoning_effort"] = effort
+        elif "reasoning_effort" in supported_params and (
+            effort != "minimal"
+            or "thinking" in supported_params
+            or (
+                model_info
+                and model_info.get("supports_minimal_reasoning_effort")
+            )
+        ):
+          generation_params["reasoning_effort"] = effort
+      elif thinking_budget == 0:
+        if "thinking" in supported_params and not is_gemini_3_or_newer:
+          if is_gemini:
+            if "gemini-2.5-pro" not in stripped_lower:
+              generation_params["thinking"] = {
+                  "type": "enabled",
+                  "budget_tokens": 0,
+              }
+          else:
+            generation_params["thinking"] = {"type": "disabled"}
+        elif "reasoning_effort" in supported_params and (
+            is_gemini_3_or_newer
+            or (model_info and model_info.get("supports_none_reasoning_effort"))
+        ):
+          generation_params["reasoning_effort"] = "none"
+      elif thinking_budget and thinking_budget > 0:
+        if (
+            "thinking" in supported_params
+            and not is_gemini_3_or_newer
+            and not is_claude_4_7
+        ):
+          min_budget = 0
+          if is_anthropic:
+            min_budget = _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS
+          elif is_gemini:
+            min_budget = next(
+                (
+                    floor
+                    for sub, floor in _GEMINI_MIN_THINKING_BUDGETS.items()
+                    if sub in stripped_lower
+                ),
+                0,
+            )
+          raw_budget: int = max(min_budget, thinking_budget)
+          budget_val: int | None = raw_budget
+          if is_anthropic and effective_max_tokens is not None:
+            budget_val = (
+                min(raw_budget, effective_max_tokens - 1)
+                if effective_max_tokens > _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS
+                else None
+            )
+          if budget_val is not None:
+            generation_params["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": budget_val,
+            }
+        elif "reasoning_effort" in supported_params:
+          if thinking_budget <= 1024:
+            generation_params["reasoning_effort"] = "low"
+          elif thinking_budget <= 2048:
+            generation_params["reasoning_effort"] = "medium"
+          else:
+            generation_params["reasoning_effort"] = "high"
+
+      if (
+          "thinking" not in generation_params
+          and "reasoning_effort" not in generation_params
+          and (
+              not thinking_level
+              or thinking_level == "THINKING_LEVEL_UNSPECIFIED"
+          )
+          and (thinking_budget is None or thinking_budget < 0)
+          and not has_constructor_reasoning
+      ):
+        if include_thoughts is True:
+          if "thinking" in supported_params and not is_gemini_3_or_newer:
+            if is_anthropic:
+              if is_claude_4_7:
+                generation_params["thinking"] = {"type": "adaptive"}
+              elif (
+                  effective_max_tokens is None
+                  or effective_max_tokens
+                  > _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS
+              ):
+                generation_params["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS,
+                }
+            else:
+              generation_params["thinking"] = {"type": "enabled"}
+        elif (
+            include_thoughts is False
+            and is_gemini
+            and "thinking" in supported_params
+        ):
+          generation_params["thinking"] = {"type": "disabled"}
+
+      if is_anthropic:
+        _drop_params_rejected_by_anthropic_thinking(generation_params)
 
     if not generation_params:
       generation_params = None
@@ -3212,7 +3808,9 @@ def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
   return litellm_model
 
 
-def _warn_gemini_via_litellm(model_string: str) -> None:
+def _warn_gemini_via_litellm(
+    model_string: str, completion_args: Optional[Dict[str, Any]] = None
+) -> None:
   """Warn if Gemini is being used via LiteLLM.
 
   This function logs a warning suggesting users use Gemini directly rather than
@@ -3220,12 +3818,13 @@ def _warn_gemini_via_litellm(model_string: str) -> None:
 
   Args:
     model_string: The LiteLLM model string to check
+    completion_args: Optional completion arguments to check for proxy settings.
   """
   if not _is_litellm_gemini_model(model_string):
     return
 
   # Do not warn if using a proxy, as native Gemini client might not support it.
-  if model_string.lower().startswith(_PROXY_PROVIDER + "/"):
+  if _is_proxied_model(model_string, completion_args):
     return
 
   # Check if warning should be suppressed via environment variable
@@ -3354,7 +3953,7 @@ class LiteLlm(BaseLlm):
     drop_params = kwargs.pop("drop_params", None)
     super().__init__(model=model, **kwargs)
     # Warn if using Gemini via LiteLLM
-    _warn_gemini_via_litellm(model)
+    _warn_gemini_via_litellm(model, kwargs)
     self._additional_args = dict(kwargs)
     # preventing generation call with llm_client
     # and overriding messages, tools and stream which are managed internally
@@ -3481,13 +4080,32 @@ class LiteLlm(BaseLlm):
       logger.debug(_build_request_log(llm_request))
 
     effective_model = llm_request.model or self.model
+    custom_llm_provider = self._additional_args.get("custom_llm_provider")
+    constructor_max_tokens = self._additional_args.get("max_completion_tokens")
+    if constructor_max_tokens is None:
+      constructor_max_tokens = self._additional_args.get("max_tokens")
     messages, tools, response_format, generation_params, tool_choice = (
-        await _get_completion_inputs(llm_request, effective_model)
+        await _get_completion_inputs(
+            llm_request,
+            effective_model,
+            upload_params=_get_upload_params(
+                effective_model, self._additional_args
+            ),
+            is_proxied=_is_proxied_model(
+                effective_model, self._additional_args
+            ),
+            custom_llm_provider=custom_llm_provider,
+            max_tokens=constructor_max_tokens,
+            has_constructor_reasoning=(
+                self._additional_args.get("thinking") is not None
+                or self._additional_args.get("reasoning_effort") is not None
+            ),
+        )
     )
     normalized_messages = _normalize_ollama_chat_messages(
         messages,
         model=effective_model,
-        custom_llm_provider=self._additional_args.get("custom_llm_provider"),
+        custom_llm_provider=custom_llm_provider,
     )
 
     if "functions" in self._additional_args:
@@ -3525,7 +4143,23 @@ class LiteLlm(BaseLlm):
       )
 
     if generation_params:
+      if "max_completion_tokens" in generation_params:
+        completion_args.pop("max_tokens", None)
+      if "thinking" in generation_params:
+        completion_args.pop("reasoning_effort", None)
+      if "reasoning_effort" in generation_params:
+        completion_args.pop("thinking", None)
       completion_args.update(generation_params)
+
+    if (
+        _is_anthropic_model(effective_model)
+        or "claude" in _strip_proxy_prefix(effective_model).lower()
+        or bool(
+            custom_llm_provider
+            and _is_anthropic_route(custom_llm_provider, effective_model)
+        )
+    ):
+      _drop_params_rejected_by_anthropic_thinking(completion_args)
 
     if tool_choice is not None:
       completion_args["tool_choice"] = tool_choice
@@ -3555,6 +4189,12 @@ class LiteLlm(BaseLlm):
       if http_opts.extra_body is not None:
         completion_args["extra_body"] = http_opts.extra_body
 
+    include_thoughts = (
+        llm_request.config.thinking_config.include_thoughts
+        if llm_request.config and llm_request.config.thinking_config
+        else None
+    )
+
     if stream:
       # Accumulate into lists and join once: `+=` on a closure cell or a dict
       # item does not get CPython's in-place unicode concat, so it would copy
@@ -3564,7 +4204,9 @@ class LiteLlm(BaseLlm):
       # Track function calls by index
       function_calls: dict[int, dict[str, Any]] = (
           {}
-      )  # index -> {name, args_parts, id}
+      )  # index -> {name, args_parts, id, thought_signature}
+      # Signatures that arrived before any chunk naming their call.
+      pending_signatures: dict[int, bytes] = {}
       tool_call_trackers: Dict[int, _BraceDepthTracker] = {}
       completion_args["stream"] = True
       completion_args["stream_options"] = {"include_usage": True}
@@ -3573,8 +4215,23 @@ class LiteLlm(BaseLlm):
       usage_metadata = None
       grounding_metadata = None
       last_finish_reason: str | None = None
+      last_model_version: str | None = None
       fallback_index = 0
       multiple_choices_logged = False
+
+      def _finalized_thought_parts(
+          *, has_tool_calls: bool
+      ) -> list[types.Part] | None:
+        if not reasoning_parts:
+          return None
+        thought_parts = _aggregate_streaming_thought_parts(reasoning_parts)
+        if include_thoughts is False:
+          # Anthropic rejects a tool_use turn replayed without its signed
+          # thinking, so only tool-call turns keep it.
+          thought_parts = [
+              p for p in thought_parts if has_tool_calls and p.thought_signature
+          ]
+        return thought_parts or None
 
       def _finalize_tool_call_response(
           *, model_version: str, finish_reason: str
@@ -3587,24 +4244,45 @@ class LiteLlm(BaseLlm):
         for index, func_data in function_calls.items():
           if func_data["id"]:
             args = "".join(func_data["args_parts"])
+            tool_call_arguments: Any = args
             try:
-              _parse_tool_call_arguments(args)
+              tool_call_arguments = _parse_tool_call_arguments(
+                  args,
+                  function_name=func_data["name"],
+              )
             except json.JSONDecodeError:
               has_incomplete_tool_call_args = True
               continue
-            tool_calls.append(
-                ChatCompletionMessageToolCall(
-                    type="function",
-                    id=func_data["id"],
-                    function=ChatCompletionToolCallFunctionChunk(
-                        name=func_data["name"],
-                        arguments=args,
+            tool_call = ChatCompletionMessageToolCall(
+                type="function",
+                id=func_data["id"],
+                function=ChatCompletionToolCallFunctionChunk(
+                    name=func_data["name"],
+                    # Serialise a repaired dict to strict JSON so the
+                    # downstream parse finds valid JSON and logs no second
+                    # repair. A non-dict must stay the original string.
+                    arguments=(
+                        json.dumps(tool_call_arguments)
+                        if isinstance(tool_call_arguments, dict)
+                        else args
                     ),
-                    index=index,
-                )
+                ),
+                index=index,
             )
+            # Put the signature back where a non-streamed tool call carries
+            # it, so the conversion below restores it onto the part. Gemini 3
+            # rejects the next request when a call in the current turn has
+            # lost its signature.
+            signature = func_data["thought_signature"]
+            if signature:
+              tool_call["extra_content"] = {
+                  "google": {"thought_signature": signature}
+              }
+            tool_calls.append(tool_call)
 
         if has_incomplete_tool_call_args:
+          # Dropping complete calls when any call in the batch is incomplete
+          # ensures the caller never acts on a partially understood batch.
           if finish_reason == "length":
             return LlmResponse(
                 error_code=types.FinishReason.MAX_TOKENS,
@@ -3635,10 +4313,8 @@ class LiteLlm(BaseLlm):
                 tool_calls=tool_calls,
             ),
             model_version=model_version,
-            thought_parts=(
-                _aggregate_streaming_thought_parts(reasoning_parts)
-                if reasoning_parts
-                else None
+            thought_parts=_finalized_thought_parts(
+                has_tool_calls=bool(tool_calls)
             ),
         )
         mapped_finish_reason = _map_finish_reason(finish_reason)
@@ -3661,11 +4337,7 @@ class LiteLlm(BaseLlm):
                 content=message_content,
             ),
             model_version=model_version,
-            thought_parts=(
-                _aggregate_streaming_thought_parts(reasoning_parts)
-                if reasoning_parts
-                else None
-            ),
+            thought_parts=_finalized_thought_parts(has_tool_calls=False),
         )
         mapped_finish_reason = _map_finish_reason(finish_reason)
         if _malformed_args_outrank_provider(
@@ -3682,12 +4354,15 @@ class LiteLlm(BaseLlm):
         text_parts.clear()
         reasoning_parts = []
         function_calls.clear()
+        pending_signatures.clear()
         tool_call_trackers.clear()
         # The reason belongs to the segment just finalized; carrying it into
         # the next one would stamp the wrong reason on the next response.
         last_finish_reason = None
 
       async for part in await self.llm_client.acompletion(**completion_args):
+        if getattr(part, "model", None):
+          last_model_version = part.model
         part_choices = part.get("choices") or []
         if not multiple_choices_logged and (
             len(part_choices) > 1
@@ -3703,16 +4378,55 @@ class LiteLlm(BaseLlm):
         part_grounding = _extract_grounding_metadata(part)
         if part_grounding:
           grounding_metadata = part_grounding
+        # One delta can carry several complete tool calls, and
+        # _model_response_to_chunk yields a FunctionChunk per call, each paired
+        # with the same choice-level finish_reason. Record what this part asks
+        # for and finalize once, after every chunk in it has been accumulated:
+        # finalizing inside the loop rebuilds the response per call and keeps
+        # only the last one.
+        finalize_tool_calls = False
+        finalize_text = False
+        finalize_finish_reason: str = ""
         for chunk, finish_reason in _model_response_to_chunk(part):
           if finish_reason:
             last_finish_reason = finish_reason
-          if isinstance(chunk, FunctionChunk):
-            index = chunk.index or fallback_index
+          if (
+              isinstance(chunk, FunctionChunk)
+              and not chunk.name
+              and not chunk.args
+              and chunk.thought_signature
+          ):
+            # Only a signature. Opening a call for it would send the model a
+            # call with no name, so attach it to the call at its own index
+            # (the fallback index may already point past that call), or hold
+            # it for the call that starts there next.
+            index = chunk.index if chunk.index is not None else fallback_index
+            signed_call = function_calls.get(index)
+            if signed_call is not None:
+              signed_call["thought_signature"] = chunk.thought_signature
+            else:
+              pending_signatures[index] = chunk.thought_signature
+          elif isinstance(chunk, FunctionChunk):
+            index = (
+                0
+                if chunk.index == 0
+                and not function_calls.get(0, {}).get("args_complete")
+                else (chunk.index or fallback_index)
+            )
             if index not in function_calls:
-              function_calls[index] = {"name": "", "args_parts": [], "id": None}
+              function_calls[index] = {
+                  "name": "",
+                  "args_parts": [],
+                  "id": None,
+                  "thought_signature": pending_signatures.pop(index, None),
+              }
 
             if chunk.name:
               function_calls[index]["name"] += chunk.name
+            if chunk.thought_signature:
+              function_calls[index][
+                  "thought_signature"
+              ] = chunk.thought_signature
             if chunk.args:
               args_parts = function_calls[index]["args_parts"]
               args_parts.append(chunk.args)
@@ -3725,6 +4439,7 @@ class LiteLlm(BaseLlm):
               if tracker.feed(chunk.args):
                 try:
                   json.loads("".join(args_parts))
+                  function_calls[index]["args_complete"] = True
                   fallback_index += 1
                 except json.JSONDecodeError:
                   pass
@@ -3771,11 +4486,14 @@ class LiteLlm(BaseLlm):
           elif isinstance(chunk, ReasoningChunk):
             if chunk.parts:
               reasoning_parts.extend(chunk.parts)
-              yield LlmResponse(
-                  content=types.Content(role="model", parts=list(chunk.parts)),
-                  partial=True,
-                  model_version=part.model,
-              )
+              if include_thoughts is not False:
+                yield LlmResponse(
+                    content=types.Content(
+                        role="model", parts=list(chunk.parts)
+                    ),
+                    partial=True,
+                    model_version=part.model,
+                )
           elif isinstance(chunk, UsageMetadataChunk):
             usage_metadata = types.GenerateContentResponseUsageMetadata(
                 prompt_token_count=chunk.prompt_tokens,
@@ -3801,14 +4519,9 @@ class LiteLlm(BaseLlm):
               or finish_reason == "length"
               or (finish_reason == "stop" and chunk is None)
           ):
-            aggregated_llm_response_with_tool_call = (
-                _finalize_tool_call_response(
-                    model_version=part.model,
-                    finish_reason=finish_reason,
-                )
-            )
-            _reset_stream_buffers()
-          elif (text_parts or reasoning_parts) and (
+            finalize_tool_calls = True
+            finalize_finish_reason = finish_reason
+          if (text_parts or reasoning_parts) and (
               finish_reason == "length"
               or (
                   finish_reason == "stop"
@@ -3816,11 +4529,35 @@ class LiteLlm(BaseLlm):
                   and not function_calls
               )
           ):
+            finalize_text = True
+            finalize_finish_reason = finish_reason
+
+        # Tool calls take precedence for a part that asks for both:
+        # _finalize_tool_call_response carries the buffered text and reasoning
+        # into the tool-call response, so nothing accumulated here is dropped.
+        # But if tool-call finalization returns an error response with no
+        # content, text finalization still runs so text and reasoning are kept
+        # in their own response.
+        if finalize_tool_calls:
+          aggregated_llm_response_with_tool_call = _finalize_tool_call_response(
+              model_version=part.model,
+              finish_reason=finalize_finish_reason,
+          )
+          if (
+              text_parts or reasoning_parts
+          ) and aggregated_llm_response_with_tool_call.content is None:
+            # Assign to the single text slot so the later stream segment wins.
             aggregated_llm_response = _finalize_text_response(
                 model_version=part.model,
-                finish_reason=finish_reason,
+                finish_reason=finalize_finish_reason,
             )
-            _reset_stream_buffers()
+          _reset_stream_buffers()
+        elif finalize_text:
+          aggregated_llm_response = _finalize_text_response(
+              model_version=part.model,
+              finish_reason=finalize_finish_reason,
+          )
+          _reset_stream_buffers()
 
       # The in-loop finalizers only fire on the reasons known to end a stream,
       # so any other terminal reason ("content_filter" above all) reaches the
@@ -3828,16 +4565,29 @@ class LiteLlm(BaseLlm):
       # the provider actually sent rather than assuming a clean stop, so a
       # filtered stream reports the same finish_reason and error_code that the
       # non-streaming path reports.
+      resolved_model_version = last_model_version or effective_model
       if function_calls and not aggregated_llm_response_with_tool_call:
         aggregated_llm_response_with_tool_call = _finalize_tool_call_response(
-            model_version=part.model,
+            model_version=resolved_model_version,
             finish_reason=last_finish_reason or "tool_calls",
         )
+        if (
+            (text_parts or reasoning_parts)
+            and not aggregated_llm_response
+            and aggregated_llm_response_with_tool_call.content is None
+        ):
+          # Default to "stop" so error_code remains unset on the rescued
+          # text response, avoiding two error-bearing responses for one
+          # cut-off stream.
+          aggregated_llm_response = _finalize_text_response(
+              model_version=resolved_model_version,
+              finish_reason=last_finish_reason or "stop",
+          )
         _reset_stream_buffers()
 
       if (text_parts or reasoning_parts) and not aggregated_llm_response:
         aggregated_llm_response = _finalize_text_response(
-            model_version=part.model,
+            model_version=resolved_model_version,
             finish_reason=last_finish_reason or "stop",
         )
         _reset_stream_buffers()
@@ -3845,19 +4595,15 @@ class LiteLlm(BaseLlm):
           not aggregated_llm_response
           and not aggregated_llm_response_with_tool_call
       ):
-        # The stream ended abnormally without ever producing content (an
-        # immediate content filter, or truncation before the first token).
-        # Non-streaming reports that as an error response; without this the
-        # generator ends having yielded nothing at all, so the reason, the
-        # error and the usage are all dropped and the caller sees a silent stop.
-        trailing_finish_reason = last_finish_reason or ""
-        if trailing_finish_reason and _map_finish_reason(
-            trailing_finish_reason
-        ) not in (None, types.FinishReason.STOP):
-          aggregated_llm_response = _finalize_text_response(
-              model_version=part.model,
-              finish_reason=trailing_finish_reason,
-          )
+        # The stream ended without ever producing content or tool calls (an
+        # immediate content filter, truncation before the first token, or a
+        # normal stop/tool_calls/function_call/EOF with empty deltas). Finalize
+        # an empty response so the finish_reason, error, and usage are
+        # preserved rather than ending the generator having yielded nothing.
+        aggregated_llm_response = _finalize_text_response(
+            model_version=resolved_model_version,
+            finish_reason=last_finish_reason or "stop",
+        )
 
       # waiting until streaming ends to yield the llm_response as litellm tends
       # to send chunk that contains usage_metadata after the chunk with
@@ -3865,6 +4611,8 @@ class LiteLlm(BaseLlm):
       if aggregated_llm_response:
         if usage_metadata:
           aggregated_llm_response.usage_metadata = usage_metadata
+          # Clear usage so tokens are not counted twice across yielded
+          # responses.
           usage_metadata = None
         if grounding_metadata:
           aggregated_llm_response.grounding_metadata = grounding_metadata
@@ -3881,7 +4629,21 @@ class LiteLlm(BaseLlm):
 
     else:
       response = await self.llm_client.acompletion(**completion_args)
-      yield _model_response_to_generate_content_response(response)
+      llm_response = _model_response_to_generate_content_response(response)
+      if (
+          include_thoughts is False
+          and llm_response.content
+          and llm_response.content.parts
+      ):
+        has_tool_calls = any(
+            p.function_call for p in llm_response.content.parts
+        )
+        llm_response.content.parts = [
+            p
+            for p in llm_response.content.parts
+            if not p.thought or (has_tool_calls and p.thought_signature)
+        ]
+      yield llm_response
 
   @classmethod
   @override

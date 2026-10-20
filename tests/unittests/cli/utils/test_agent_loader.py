@@ -670,9 +670,11 @@ class TestAgentLoader:
       loader = AgentLoader(str(temp_path))
 
       # Try to load agent with invalid YAML
-      with pytest.raises(ValidationError) as exc_info:
+      with pytest.raises(RuntimeError) as exc_info:
         loader.load_agent(agent_name)
 
+      assert not isinstance(exc_info.value, ValueError)
+      assert isinstance(exc_info.value.__cause__, ValidationError)
       # The config's only defect is the extra `not_exist_field`, so that is
       # what has to be rejected. Accepting any validation error here would let
       # the extra-key check regress unnoticed.
@@ -1130,6 +1132,30 @@ class TestAgentLoader:
       loader._allow_special_agents = True
       # Should not raise any exception
       loader._validate_agent_name("__adk_agent_builder_assistant")
+
+  def test_value_error_from_agent_module_is_not_reported_as_not_found(self):
+    """A ValueError from the agent's own module is re-raised as a load error."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_file = temp_path / "exploding_agent.py"
+      agent_file.write_text(dedent("""
+                from pydantic import BaseModel, ConfigDict
+
+
+                class Strict(BaseModel):
+                    model_config = ConfigDict(extra="forbid")
+
+
+                Strict(unknown_field="x")
+            """))
+
+      loader = AgentLoader(str(temp_path))
+
+      with pytest.raises(RuntimeError) as exc_info:
+        loader.load_agent("exploding_agent")
+
+      assert not isinstance(exc_info.value, ValueError)
+      assert isinstance(exc_info.value.__cause__, ValidationError)
 
   def test_wrong_type_root_agent_raises_targeted_error(self):
     """A non-agent `root_agent` raises a type-mismatch error, not 'not found'."""

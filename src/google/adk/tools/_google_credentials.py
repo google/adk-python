@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 from typing import List
 from typing import Optional
 
@@ -30,6 +32,8 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import model_validator
 
+from ..auth._kms_encryptor import _check_kms_encrypted_fields
+from ..auth._kms_encryptor import KmsEncryptedCredentials
 from ..auth.auth_credential import AuthCredential
 from ..auth.auth_credential import AuthCredentialTypes
 from ..auth.auth_credential import OAuth2Auth
@@ -37,6 +41,8 @@ from ..auth.auth_tool import AuthConfig
 from ..features import experimental
 from ..features import FeatureName
 from .tool_context import ToolContext
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 @experimental(FeatureName.GOOGLE_CREDENTIALS_CONFIG)
@@ -88,6 +94,8 @@ class BaseGoogleCredentialsConfig(BaseModel):
   """the oauth client secret to use."""
   scopes: Optional[List[str]] = None
   """the scopes to use."""
+  kms_key_name: Optional[str] = None
+  """The KMS key name to encrypt sensitive credentials fields."""
 
   _token_cache_key: Optional[str] = None
   """The key to cache the token in the tool context."""
@@ -95,6 +103,9 @@ class BaseGoogleCredentialsConfig(BaseModel):
   @model_validator(mode="after")
   def __post_init__(self) -> BaseGoogleCredentialsConfig:
     """Validate that only one of credentials, external_access_token_key or client_id/secret are provided."""
+    if not self.kms_key_name:
+      self.kms_key_name = os.environ.get("GOOGLE_CREDENTIAL_KMS_KEY")
+
     if self.credentials:
       if (
           self.external_access_token_key
@@ -147,6 +158,41 @@ class GoogleCredentialsManager:
     """
     self.credentials_config = credentials_config
 
+  def _ensure_kms_wrapped(
+      self,
+      creds: google.oauth2.credentials.Credentials,
+  ) -> google.oauth2.credentials.Credentials:
+    """Ensure credentials are KmsEncryptedCredentials if kms_key_name is configured."""
+    if not self.credentials_config.kms_key_name:
+      return creds
+    if not isinstance(creds, KmsEncryptedCredentials):
+      return KmsEncryptedCredentials(
+          token=creds.token,
+          refresh_token=creds.refresh_token,
+          id_token=creds.id_token,
+          token_uri=creds.token_uri,
+          client_id=creds.client_id,
+          client_secret=creds.client_secret,
+          scopes=creds.scopes,
+          default_scopes=getattr(creds, "default_scopes", None),
+          quota_project_id=getattr(creds, "quota_project_id", None),
+          expiry=creds.expiry,
+          rapt_token=getattr(creds, "rapt_token", None),
+          refresh_handler=getattr(creds, "refresh_handler", None),
+          enable_reauth_refresh=getattr(creds, "_enable_reauth_refresh", False),
+          granted_scopes=getattr(creds, "granted_scopes", None),
+          universe_domain=getattr(creds, "universe_domain", None),
+          account=getattr(creds, "account", None),
+          trust_boundary=(
+              getattr(creds, "_trust_boundary", None)
+              or getattr(creds, "trust_boundary", None)
+          ),
+          kms_key_name=self.credentials_config.kms_key_name,
+      )
+    if creds.kms_key_name != self.credentials_config.kms_key_name:
+      creds.kms_key_name = self.credentials_config.kms_key_name
+    return creds
+
   async def get_valid_credentials(
       self, tool_context: ToolContext
   ) -> Optional[google.auth.credentials.Credentials]:
@@ -177,13 +223,41 @@ class GoogleCredentialsManager:
         if self.credentials_config._token_cache_key
         else None
     )
-    creds = (
-        google.oauth2.credentials.Credentials.from_authorized_user_info(
-            json.loads(creds_json), self.credentials_config.scopes
+    from_cache = False
+    creds_data = None
+    if creds_json:
+      kms_key = self.credentials_config.kms_key_name
+      try:
+        creds_data = json.loads(creds_json)
+        if kms_key:
+          creds = await asyncio.to_thread(
+              KmsEncryptedCredentials.from_authorized_user_info,
+              creds_data,
+              self.credentials_config.scopes,
+              kms_key_name=kms_key,
+          )
+        else:
+          _check_kms_encrypted_fields(creds_data)
+          creds = (
+              google.oauth2.credentials.Credentials.from_authorized_user_info(
+                  creds_data, self.credentials_config.scopes
+              )
+          )
+        from_cache = True
+      except ImportError:
+        raise
+      except Exception:  # pylint: disable=broad-except
+        # Discard cached state and fall back to re-authentication on deserialization
+        # or crypto failures (e.g. json.JSONDecodeError, cryptography.fernet.InvalidToken
+        # during key rotation or ciphertext tampering, or KMS GoogleAPICallError).
+        logger.warning(
+            "Failed to decrypt or deserialize cached credentials; "
+            "discarding cached state.",
+            exc_info=True,
         )
-        if creds_json
-        else None
-    )
+        creds = None
+    else:
+      creds = None
 
     # If credentials are empty use the default credential
     if not creds:
@@ -205,6 +279,22 @@ class GoogleCredentialsManager:
 
     # Check if we have valid credentials
     if creds and creds.valid:
+      creds = self._ensure_kms_wrapped(creds)
+      key_rotated = from_cache and bool(
+          self.credentials_config.kms_key_name
+          and creds_data
+          and creds_data.get("kms_key_name")
+          != self.credentials_config.kms_key_name
+      )
+      if (
+          from_cache
+          and self.credentials_config._token_cache_key
+          and self.credentials_config.kms_key_name
+          and key_rotated
+      ):
+        tool_context.state[self.credentials_config._token_cache_key] = (
+            await asyncio.to_thread(creds.to_json)
+        )
       return creds
 
     # Try to refresh expired credentials
@@ -212,10 +302,11 @@ class GoogleCredentialsManager:
       try:
         await asyncio.to_thread(creds.refresh, Request())
         if creds.valid:
+          creds = self._ensure_kms_wrapped(creds)
           # Cache the refreshed credentials if token cache key is set
-          if self.credentials_config._token_cache_key:
+          if from_cache and self.credentials_config._token_cache_key:
             tool_context.state[self.credentials_config._token_cache_key] = (
-                creds.to_json()
+                await asyncio.to_thread(creds.to_json)
             )
           return creds
       except RefreshError:
@@ -245,7 +336,7 @@ class GoogleCredentialsManager:
                 tokenUrl="https://oauth2.googleapis.com/token",
                 scopes={
                     scope: f"Access to {scope}"
-                    for scope in self.credentials_config.scopes
+                    for scope in self.credentials_config.scopes or []
                 },
             )
         )
@@ -266,19 +357,43 @@ class GoogleCredentialsManager:
 
     if auth_response:
       # OAuth flow completed, create credentials
-      creds = google.oauth2.credentials.Credentials(
-          token=auth_response.oauth2.access_token,
-          refresh_token=auth_response.oauth2.refresh_token,
-          token_uri=auth_scheme.flows.authorizationCode.tokenUrl,
-          client_id=self.credentials_config.client_id,
-          client_secret=self.credentials_config.client_secret,
-          scopes=list(self.credentials_config.scopes),
+      access_token = auth_response.oauth2.access_token
+      refresh_token = auth_response.oauth2.refresh_token
+      token_uri = auth_scheme.flows.authorizationCode.tokenUrl
+      scopes = (
+          list(self.credentials_config.scopes)
+          if self.credentials_config.scopes
+          else None
       )
+      rapt_token = getattr(auth_response.oauth2, "rapt_token", None)
+      if not isinstance(rapt_token, str):
+        rapt_token = None
+      if self.credentials_config.kms_key_name:
+        creds = KmsEncryptedCredentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri=token_uri,
+            client_id=self.credentials_config.client_id,
+            client_secret=self.credentials_config.client_secret,
+            scopes=scopes,
+            rapt_token=rapt_token,
+            kms_key_name=self.credentials_config.kms_key_name,
+        )
+      else:
+        creds = google.oauth2.credentials.Credentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri=token_uri,
+            client_id=self.credentials_config.client_id,
+            client_secret=self.credentials_config.client_secret,
+            scopes=scopes,
+            rapt_token=rapt_token,
+        )
 
       # Cache the new credentials if token cache key is set
       if self.credentials_config._token_cache_key:
         tool_context.state[self.credentials_config._token_cache_key] = (
-            creds.to_json()
+            await asyncio.to_thread(creds.to_json)
         )
 
       return creds

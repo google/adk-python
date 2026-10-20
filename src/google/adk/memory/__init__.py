@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from .base_memory_service import BaseMemoryService
 
 if TYPE_CHECKING:
+  from ._sqlite_memory_service import SqliteMemoryService
   from .in_memory_memory_service import InMemoryMemoryService
   from .vertex_ai_memory_bank_service import VertexAiMemoryBankService
   from .vertex_ai_rag_memory_service import VertexAiRagMemoryService
@@ -27,12 +28,14 @@ if TYPE_CHECKING:
 __all__ = [
     'BaseMemoryService',
     'InMemoryMemoryService',
+    'SqliteMemoryService',
     'VertexAiMemoryBankService',
     'VertexAiRagMemoryService',
 ]
 
 _LAZY_MEMBERS: dict[str, str] = {
     'InMemoryMemoryService': 'in_memory_memory_service',
+    'SqliteMemoryService': '_sqlite_memory_service',
     'VertexAiMemoryBankService': 'vertex_ai_memory_bank_service',
     'VertexAiRagMemoryService': 'vertex_ai_rag_memory_service',
 }

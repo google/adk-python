@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import datetime
 import json
 import os
 import sys
@@ -629,6 +630,20 @@ def test_the_deploy_log_is_kept_for_debugging(client):
       client, 'agent_engine', {'region': 'us-central1'}, AGENT_RUNTIME_OK
   )
   assert os.path.exists(result['logPath'])
+
+
+def test_deploy_log_path_is_unique_per_invocation(client):
+  """Two deploys in the same second get distinct log and staging paths."""
+  fixed_time = datetime(2026, 1, 1, 12, 0, 0)
+  with patch.object(dev_deploy, 'datetime') as mock_dt:
+    mock_dt.now.return_value = fixed_time
+    result1 = deploy(
+        client, 'agent_engine', {'region': 'us-central1'}, 'print("1")'
+    )
+    result2 = deploy(
+        client, 'agent_engine', {'region': 'us-central1'}, 'print("2")'
+    )
+  assert result1['logPath'] != result2['logPath']
 
 
 # --- Endpoints ---------------------------------------------------------------

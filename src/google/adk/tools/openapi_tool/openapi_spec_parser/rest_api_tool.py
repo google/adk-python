@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 import logging
 import ssl
 from typing import Any
@@ -38,10 +40,19 @@ from typing_extensions import override
 from ....agents.readonly_context import ReadonlyContext
 from ....auth.auth_credential import AuthCredential
 from ....auth.auth_schemes import AuthScheme
+from ....errors.input_validation_error import InputValidationError
 from ....features import FeatureName
 from ....features import is_feature_enabled
 from ..._gemini_schema_util import _to_gemini_schema
 from ..._gemini_schema_util import _to_snake_case
+from ..._url_validator import _get_proxy_url
+from ..._url_validator import _is_blocked_address
+from ..._url_validator import _is_blocked_hostname
+from ..._url_validator import _parse_ip_literal
+from ..._url_validator import _parse_request_target
+from ..._url_validator import _reject_blocked_proxied_hostname
+from ..._url_validator import _resolve_direct_addresses
+from ..._url_validator import _ResolvedAddress
 from ...base_tool import BaseTool
 from ...tool_context import ToolContext
 from ..auth.auth_helpers import credential_to_param
@@ -50,6 +61,7 @@ from ..auth.credential_exchangers.auto_auth_credential_exchanger import AutoAuth
 from ..common.common import ApiParameter
 from .openapi_spec_parser import OperationEndpoint
 from .openapi_spec_parser import ParsedOperation
+from .operation_parser import _MAX_TOOL_NAME_LENGTH
 from .operation_parser import OperationParser
 from .tool_auth_handler import AuthPreparationState as AuthPreparationState
 from .tool_auth_handler import ToolAuthHandler
@@ -75,6 +87,35 @@ def snake_to_lower_camel(snake_case_string: str):
   ])
 
 
+def _to_param_string(value: object) -> str:
+  """Serializes a path, header, or cookie parameter value for httpx.
+
+  httpx serializes query values itself but rejects anything other than a string
+  for a header or cookie, so an integer or boolean parameter declared by the
+  spec would fail the whole tool call. Path parameters also use this helper so
+  booleans, arrays, and objects follow OpenAPI's default `simple` style instead
+  of Python's `str(v)`. Numbers are stringified, booleans use their JSON
+  spelling, and arrays and objects are comma-joined (omitting `None` entries).
+
+  Args:
+    value: Raw parameter value from the tool call.
+
+  Returns:
+    The serialized parameter value.
+  """
+  if isinstance(value, bool):
+    return "true" if value else "false"
+  if isinstance(value, (list, tuple)):
+    return ",".join(
+        _to_param_string(item) for item in value if item is not None
+    )
+  if isinstance(value, dict):
+    return ",".join(
+        f"{k},{_to_param_string(v)}" for k, v in value.items() if v is not None
+    )
+  return str(value)
+
+
 HttpxClientFactory = Callable[[], httpx.AsyncClient]
 """Type alias for a zero-argument factory returning an ``httpx.AsyncClient``.
 
@@ -96,6 +137,40 @@ _DEFAULT_TIMEOUT: Final[httpx.Timeout] = httpx.Timeout(
     write=600.0,
     pool=10.0,
 )
+
+
+def _encode_path_param(*, name: str, value: str) -> str:
+  """Percent-encode a path parameter, rejecting RFC 3986 dot-segments.
+
+  ``quote(..., safe="")`` encodes reserved characters including ``/``, ``?``,
+  and ``#``, but leaves ``.`` literal because it is unreserved. A value of
+  ``.`` or ``..``, or a value whose ``/``- or ``\\``-separated segments include
+  those, is still a special path segment on the wire. Backends that decode
+  ``%2F`` and then merge dot-segments can then route the request onto a path
+  the OpenAPI spec never declared.
+
+  Slash-containing IDs (for example ``projects/p/locations/l``) are still
+  encoded as a single segment (``%2F``). Only exact ``.`` / ``..`` segments
+  are rejected, so names such as ``file..txt`` and ``.gitignore`` remain
+  valid.
+
+  Args:
+    name: Original OpenAPI parameter name, used in the error message.
+    value: Raw path parameter value from the tool call.
+
+  Returns:
+    The percent-encoded parameter value.
+
+  Raises:
+    InputValidationError: If any path segment is ``.`` or ``..``.
+  """
+  for segment in value.replace("\\", "/").split("/"):
+    if segment in (".", ".."):
+      raise InputValidationError(
+          f"Path parameter {name!r} must not contain current-directory or"
+          " parent-directory segments."
+      )
+  return quote(value, safe="")
 
 
 class RestApiTool(BaseTool):
@@ -128,6 +203,7 @@ class RestApiTool(BaseTool):
       httpx_client_factory: Optional[HttpxClientFactory] = None,
       *,
       credential_key: Optional[str] = None,
+      allow_private_network_access: bool = False,
   ):
     """Initializes the RestApiTool with the given parameters.
 
@@ -176,9 +252,14 @@ class RestApiTool(BaseTool):
           by ``StreamableHTTPConnectionParams.httpx_client_factory``.
         credential_key: Optional stable key used for interactive auth and
           credential caching.
+        allow_private_network_access: By default, requests refuse loopback,
+          private, link-local (including cloud metadata), and ``*.internal`` /
+          ``*.local`` targets and return an error response. Set this to ``True``
+          to allow requests to private networks, localhost, and custom non-DNS
+          transports.
     """
     # Gemini restrict the length of function name to be less than 64 characters
-    self.name = name[:60]
+    self.name = name[:_MAX_TOOL_NAME_LENGTH]
     self.description = description
     self.endpoint = (
         OperationEndpoint.model_validate_json(endpoint)
@@ -203,6 +284,7 @@ class RestApiTool(BaseTool):
     self._header_provider = header_provider
     self._httpx_client_factory = httpx_client_factory
     self._logger = logger
+    self._allow_private_network_access = allow_private_network_access
     if should_parse_operation:
       self._operation_parser = OperationParser(self.operation)
 
@@ -215,6 +297,8 @@ class RestApiTool(BaseTool):
           Callable[[ReadonlyContext], Dict[str, str]]
       ] = None,
       httpx_client_factory: Optional[HttpxClientFactory] = None,
+      *,
+      allow_private_network_access: bool = False,
   ) -> "RestApiTool":
     """Initializes the RestApiTool from a ParsedOperation object.
 
@@ -229,6 +313,11 @@ class RestApiTool(BaseTool):
         httpx_client_factory: Optional zero-argument callable returning an
           ``httpx.AsyncClient`` to be used for the API call. See
           ``RestApiTool.__init__`` for details.
+        allow_private_network_access: By default, requests refuse loopback,
+          private, link-local (including cloud metadata), and ``*.internal`` /
+          ``*.local`` targets and return an error response. Set this to ``True``
+          to allow requests to private networks, localhost, and custom non-DNS
+          transports.
 
     Returns:
         A RestApiTool object.
@@ -250,6 +339,7 @@ class RestApiTool(BaseTool):
         ssl_verify=ssl_verify,
         header_provider=header_provider,
         httpx_client_factory=httpx_client_factory,
+        allow_private_network_access=allow_private_network_access,
     )
     generated._operation_parser = operation_parser
     return generated
@@ -374,8 +464,8 @@ class RestApiTool(BaseTool):
 
     path_params: Dict[str, Any] = {}
     query_params: Dict[str, Any] = {}
-    header_params: Dict[str, Any] = {}
-    cookie_params: Dict[str, Any] = {}
+    header_params: dict[str, str] = {}
+    cookie_params: dict[str, str] = {}
 
     from ....version import __version__ as adk_version
 
@@ -405,26 +495,43 @@ class RestApiTool(BaseTool):
         # Percent-encode path parameter values (including '/') before they
         # are substituted into the URL template below. Path parameter
         # values ultimately originate from the model's tool-call
-        # arguments, so an unescaped value (e.g. containing '/', '..',
-        # '?', or '#') could redirect the request to a different,
-        # undeclared path -- or undeclared query parameters -- on the
-        # same host than the one the OpenAPI spec's path template and
-        # this tool's configured auth credentials were intended for.
-        # `safe=""` ensures '/' is escaped too, so a value can never
-        # introduce a new path segment.
-        path_params[original_k] = quote(str(v), safe="")
+        # arguments. quote() leaves '.' literal (RFC 3986 unreserved), so
+        # '.' / '..' segments are rejected first: otherwise backends that
+        # decode '%2F' and merge dot-segments can redirect the request --
+        # with this tool's configured auth -- onto an undeclared path.
+        # Reserved characters ('/', '?', '#') are still escaped so a
+        # value cannot introduce a query string or fragment.
+        path_params[original_k] = _encode_path_param(
+            name=original_k, value=_to_param_string(v)
+        )
       elif param_location == "query":
         if v is not None:
           query_params[original_k] = v
       elif param_location == "header":
-        header_params[original_k] = v
+        if v is not None:
+          header_params[original_k] = _to_param_string(v)
       elif param_location == "cookie":
-        cookie_params[original_k] = v
+        if v is not None:
+          cookie_params[original_k] = _to_param_string(v)
 
     # Construct URL
     base_url = self.endpoint.base_url or ""
     base_url = base_url[:-1] if base_url.endswith("/") else base_url
-    url = f"{base_url}{self.endpoint.path.format(**path_params)}"
+    try:
+      formatted_path = self.endpoint.path.format(**path_params)
+    except KeyError as e:
+      missing_param = e.args[0] if e.args else str(e)
+      for param in parameters:
+        if (
+            param.param_location == "path"
+            and param.original_name == missing_param
+            and param.py_name
+        ):
+          raise InputValidationError(
+              f"Missing required path parameter '{param.py_name}'."
+          ) from e
+      raise
+    url = f"{base_url}{formatted_path}"
 
     # Move query params embedded in the path template itself (now that path
     # parameter values are percent-encoded above, only a spec-authored
@@ -455,15 +562,11 @@ class RestApiTool(BaseTool):
             if param.param_location == "body" and param.py_name in kwargs:
               body_data[param.original_name] = kwargs[param.py_name]
 
-        elif schema.type == "array":
+        else:
+          # Exactly one body parameter reaches this branch, and its name
+          # is not stable: _dedupe_param_names can rewrite py_name.
           for param in parameters:
-            if param.param_location == "body" and param.py_name == "array":
-              body_data = kwargs.get("array")
-              break
-        else:  # like string
-          for param in parameters:
-            # original_name = '' indicating this param applies to the full body.
-            if param.param_location == "body" and not param.original_name:
+            if param.param_location == "body":
               body_data = (
                   kwargs.get(param.py_name) if param.py_name in kwargs else None
               )
@@ -525,8 +628,9 @@ class RestApiTool(BaseTool):
           attempt and the guard that bounds the retry.
 
     Returns:
-        The API response as a dictionary. HTTP and authorization failures are
-        reported as an "error" entry rather than raised.
+        The API response as a dictionary. HTTP, authorization, and URL
+        validation failures are reported as an "error" entry rather than
+        raised.
     """
     # Prepare auth credentials for the API call
     tool_auth_handler = ToolAuthHandler.from_tool_context(
@@ -548,8 +652,11 @@ class RestApiTool(BaseTool):
           "message": "Needs your authorization to access your data.",
       }
 
-    # Attach parameters from auth into main parameters list
-    api_params, api_args = self._operation_parser.get_parameters().copy(), args
+    # Work on a copy of args: the caller's dict is also handed to after-tool
+    # callbacks and recorded on the tool span, so the defaults and auth
+    # parameters added below must not land in it.
+    api_params = self._operation_parser.get_parameters().copy()
+    api_args = args.copy()
 
     # Add any required arguments that are missing and have defaults:
     for api_param in api_params:
@@ -571,7 +678,10 @@ class RestApiTool(BaseTool):
         api_args.update(auth_args)
 
     # Got all parameters. Call the API.
-    request_params = self._prepare_request_params(api_params, api_args)
+    try:
+      request_params = self._prepare_request_params(api_params, api_args)
+    except InputValidationError as e:
+      return self._format_error_response(str(e))
     if self._ssl_verify is not None:
       request_params["verify"] = self._ssl_verify
 
@@ -583,8 +693,12 @@ class RestApiTool(BaseTool):
 
     try:
       response = await _request(
-          httpx_client_factory=self._httpx_client_factory, **request_params
+          httpx_client_factory=self._httpx_client_factory,
+          allow_private_network_access=self._allow_private_network_access,
+          **request_params,
       )
+    except ValueError as e:
+      return self._format_error_response(str(e))
     except httpx.TimeoutException as e:
       self._logger.warning(
           "API call timed out for tool %s: %s %s",
@@ -592,14 +706,9 @@ class RestApiTool(BaseTool):
           request_params.get("method", "").upper(),
           request_params.get("url", ""),
       )
-      return {
-          "error": (
-              f"Tool {self.name} execution failed. Analyze this execution error"
-              " and your inputs. Retry with adjustments if applicable. But"
-              " make sure don't retry more than 3 times. Execution Error:"
-              f" Request timed out ({type(e).__name__})."
-          )
-      }
+      return self._format_error_response(
+          f"Request timed out ({type(e).__name__})."
+      )
 
     # Log the API response
     self._logger.debug(
@@ -640,7 +749,7 @@ class RestApiTool(BaseTool):
       response.raise_for_status()  # Raise HTTPStatusError for bad responses
       return response.json()  # Try to decode JSON
     except httpx.HTTPStatusError:
-      error_details = response.content.decode("utf-8")
+      error_details = response.text
       self._logger.warning(
           "API call failed for tool %s: Status %d - %s",
           self.name,
@@ -685,17 +794,23 @@ class RestApiTool(BaseTool):
               }
             # "failed": fall through to the generic error below.
 
-      return {
-          "error": (
-              f"Tool {self.name} execution failed. Analyze this execution error"
-              " and your inputs. Retry with adjustments if applicable. But"
-              " make sure don't retry more than 3 times. Execution Error:"
-              f" Status Code: {response.status_code}, {error_details}"
-          )
-      }
+      return self._format_error_response(
+          f"Status Code: {response.status_code}, {error_details}"
+      )
     except ValueError:
       self._logger.debug("API Response (non-JSON): %s", response.text)
       return {"text": response.text}  # Return text if not JSON
+
+  def _format_error_response(self, error_message: str) -> dict[str, str]:
+    """Formats a tool execution error response dict."""
+    return {
+        "error": (
+            f"Tool {self.name} execution failed. Analyze this execution error"
+            " and your inputs. Retry with adjustments if applicable. But"
+            " make sure don't retry more than 3 times. Execution Error:"
+            f" {error_message}"
+        )
+    }
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:
     """Telemetry hook: returns an error type if the response indicates an error."""
@@ -717,16 +832,125 @@ class RestApiTool(BaseTool):
     )
 
 
+@dataclass(frozen=True)
+class _ValidatedTarget:
+  """A URL that passed SSRF validation, with its resolved addresses cached."""
+
+  hostname: str
+  addresses: tuple[_ResolvedAddress, ...] | None
+
+
+def _uses_proxy(client: httpx.AsyncClient | None, url: str) -> bool:
+  """Returns whether ``client`` routes ``url`` through a proxy."""
+  if client is None:
+    return bool(_get_proxy_url(url))
+  default_transport = getattr(client, "_transport", None)
+  if (
+      isinstance(default_transport, httpx.AsyncBaseTransport)
+      and client._transport_for_url(httpx.URL(url)) is not default_transport
+  ):
+    return True
+  return bool(client.trust_env and _get_proxy_url(url))
+
+
+async def _validate_url(
+    url: str, *, client: httpx.AsyncClient | None = None
+) -> _ValidatedTarget:
+  """Validates ``url`` against SSRF rules and resolves its addresses."""
+  _parse_request_target(url)
+  try:
+    hostname = httpx.URL(url).raw_host.decode("ascii")
+  except httpx.InvalidURL as exc:
+    raise ValueError(f"Invalid url: {url}") from exc
+  if not hostname:
+    raise ValueError(f"URL is missing a hostname: {url}")
+
+  if _is_blocked_hostname(hostname):
+    raise ValueError(f"Blocked host: {hostname}")
+
+  parsed_ip_literal = _parse_ip_literal(hostname)
+  if parsed_ip_literal is not None and _is_blocked_address(parsed_ip_literal):
+    raise ValueError(f"Blocked host: {hostname}")
+
+  if _uses_proxy(client, url):
+    if parsed_ip_literal is None:
+      await asyncio.to_thread(_reject_blocked_proxied_hostname, hostname)
+    return _ValidatedTarget(
+        hostname=hostname,
+        addresses=None,
+    )
+
+  if parsed_ip_literal is not None:
+    addresses: tuple[_ResolvedAddress, ...] = (parsed_ip_literal,)
+  else:
+    addresses = await asyncio.to_thread(_resolve_direct_addresses, hostname)
+
+  return _ValidatedTarget(
+      hostname=hostname,
+      addresses=addresses,
+  )
+
+
+async def _send_pinned_async(
+    client: httpx.AsyncClient,
+    target: _ValidatedTarget,
+    **request_params: Any,
+) -> httpx.Response:
+  """Sends a request to ``target`` via ``client`` with the IP pinned."""
+  if target.addresses is None:
+    raise ValueError("Cannot send pinned request without resolved addresses")
+
+  url = request_params.pop("url", "")
+  request_params.pop("follow_redirects", None)
+  parsed_url = httpx.URL(url)
+  headers = httpx.Headers(request_params.pop("headers", None) or {})
+  headers["Host"] = parsed_url.netloc.decode("ascii")
+  base_extensions = request_params.pop("extensions", None) or {}
+  extensions = {**base_extensions, "sni_hostname": target.hostname}
+
+  last_error: Exception | None = None
+  for address in target.addresses:
+    rewritten_url = parsed_url.copy_with(host=str(address))
+    try:
+      return await client.request(
+          url=rewritten_url,
+          headers=headers,
+          extensions=extensions,
+          follow_redirects=False,
+          **request_params,
+      )
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+      last_error = exc
+
+  if last_error is None:
+    raise ValueError(f"No address available to connect for {target.hostname}")
+  raise last_error
+
+
 async def _request(
     *,
     httpx_client_factory: Optional[HttpxClientFactory] = None,
+    allow_private_network_access: bool = False,
     **request_params,
 ) -> httpx.Response:
+  # SSRF defence:
+  #   1. _validate_url rejects bad schemes, localhost-style names, and any
+  #      hostname whose DNS records include a non-globally-routable IP.
+  #   2. _send_pinned_async issues the request against the validated IP so the
+  #      socket can't be flipped by a DNS rebinding between this validation
+  #      and the connect that follows. The Host header and TLS SNI keep the
+  #      original hostname so cert verification still works.
   verify = request_params.pop("verify", True)
-  if httpx_client_factory is not None:
-    async with httpx_client_factory() as client:
+  client_cm = (
+      httpx_client_factory()
+      if httpx_client_factory is not None
+      else httpx.AsyncClient(verify=verify, timeout=_DEFAULT_TIMEOUT)
+  )
+  async with client_cm as client:
+    if allow_private_network_access:
       return await client.request(**request_params)
-  async with httpx.AsyncClient(
-      verify=verify, timeout=_DEFAULT_TIMEOUT
-  ) as client:
-    return await client.request(**request_params)
+    target = await _validate_url(request_params.get("url", ""), client=client)
+    request_params.pop("follow_redirects", None)
+    if target.addresses is None:
+      return await client.request(follow_redirects=False, **request_params)
+    return await _send_pinned_async(client, target, **request_params)

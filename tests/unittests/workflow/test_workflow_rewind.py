@@ -20,13 +20,14 @@ from google.adk.agents.context import Context
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
-from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.workflow import node as workflow_node
 from google.adk.workflow._base_node import START
 from google.adk.workflow._workflow import Workflow
 from google.genai import types
 import pytest
+
+from .workflow_testing_utils import create_runner
 
 
 def _user_msg(text: str) -> types.Content:
@@ -71,7 +72,7 @@ async def test_static_workflow_rewind_discards_rewound_node_completions():
       root_agent=wf,
       resumability_config=ResumabilityConfig(is_resumable=True),
   )
-  runner = Runner(app=app, session_service=session_service)
+  runner = create_runner(app=app, session_service=session_service)
   session = await session_service.create_session(
       app_name="rewind_static_app", user_id="u"
   )
@@ -157,7 +158,7 @@ async def test_dynamic_scheduler_rewind_rebuilds_index_and_reruns_child():
       root_agent=wf,
       resumability_config=ResumabilityConfig(is_resumable=True),
   )
-  runner = Runner(app=app, session_service=session_service)
+  runner = create_runner(app=app, session_service=session_service)
   session = await session_service.create_session(
       app_name="rewind_dyn_app", user_id="u"
   )
@@ -225,7 +226,7 @@ async def test_rewound_active_task_scope_is_not_rejoined_on_next_turn():
       root_agent=wf,
       resumability_config=ResumabilityConfig(is_resumable=True),
   )
-  runner = Runner(app=app, session_service=session_service)
+  runner = create_runner(app=app, session_service=session_service)
   session = await session_service.create_session(
       app_name="rewind_scope_app", user_id="u"
   )
