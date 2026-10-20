@@ -16,7 +16,9 @@ import time
 
 from google.adk.errors.not_found_error import NotFoundError
 from google.adk.evaluation.eval_case import EvalCase
+from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
+from google.genai import types
 import pytest
 
 
@@ -196,3 +198,94 @@ def test_delete_eval_case_not_found(
   manager.create_eval_set(app_name, eval_set_id)
   with pytest.raises(NotFoundError):
     manager.delete_eval_case(app_name, eval_set_id, eval_case_id)
+
+
+def test_create_eval_set_returns_independent_data(
+    manager, app_name, eval_set_id
+):
+  """Editing the created set cannot add cases outside the manager's API."""
+  created = manager.create_eval_set(app_name, eval_set_id)
+
+  created.eval_cases.append(EvalCase(eval_id="untracked", conversation=[]))
+
+  assert manager.get_eval_set(app_name, eval_set_id).eval_cases == []
+  assert manager.get_eval_case(app_name, eval_set_id, "untracked") is None
+
+
+@pytest.mark.parametrize("operation", ["add", "update"])
+def test_stored_eval_case_is_independent_of_input(
+    manager, app_name, eval_set_id, eval_case_id, operation
+):
+  """Editing a submitted case cannot change stored IDs or nested conversation data."""
+  manager.create_eval_set(app_name, eval_set_id)
+  case = EvalCase(
+      eval_id=eval_case_id,
+      conversation=[
+          Invocation(
+              user_content=types.Content(
+                  role="user", parts=[types.Part(text="original prompt")]
+              )
+          )
+      ],
+  )
+  if operation == "add":
+    manager.add_eval_case(app_name, eval_set_id, case)
+  else:
+    manager.add_eval_case(
+        app_name, eval_set_id, EvalCase(eval_id=eval_case_id, conversation=[])
+    )
+    manager.update_eval_case(app_name, eval_set_id, case)
+
+  case.eval_id = "changed_id"
+  case.conversation[0].user_content.parts[0].text = "changed prompt"
+
+  stored = manager.get_eval_case(app_name, eval_set_id, eval_case_id)
+  assert stored.eval_id == eval_case_id
+  assert stored.conversation[0].user_content.parts[0].text == "original prompt"
+  assert manager.get_eval_set(app_name, eval_set_id).eval_cases == [stored]
+
+
+@pytest.mark.parametrize("read_set", [False, True])
+def test_retrieved_eval_case_is_independent_of_storage(
+    manager, app_name, eval_set_id, eval_case_id, read_set
+):
+  """Editing either read result cannot invalidate a stored case's index."""
+  manager.create_eval_set(app_name, eval_set_id)
+  manager.add_eval_case(
+      app_name,
+      eval_set_id,
+      EvalCase(
+          eval_id=eval_case_id,
+          conversation=[],
+          final_session_state={"items": [1]},
+      ),
+  )
+  case = (
+      manager.get_eval_set(app_name, eval_set_id).eval_cases[0]
+      if read_set
+      else manager.get_eval_case(app_name, eval_set_id, eval_case_id)
+  )
+
+  case.eval_id = "changed_id"
+  case.final_session_state["items"].append(2)
+
+  stored = manager.get_eval_case(app_name, eval_set_id, eval_case_id)
+  assert stored.eval_id == eval_case_id
+  assert stored.final_session_state == {"items": [1]}
+  assert manager.get_eval_set(app_name, eval_set_id).eval_cases == [stored]
+
+
+def test_clearing_retrieved_cases_does_not_delete_stored_cases(
+    manager, app_name, eval_set_id, eval_case_id
+):
+  """Clearing a returned list leaves set reads and case reads consistent."""
+  manager.create_eval_set(app_name, eval_set_id)
+  manager.add_eval_case(
+      app_name, eval_set_id, EvalCase(eval_id=eval_case_id, conversation=[])
+  )
+  retrieved = manager.get_eval_set(app_name, eval_set_id)
+
+  retrieved.eval_cases.clear()
+
+  stored = manager.get_eval_case(app_name, eval_set_id, eval_case_id)
+  assert manager.get_eval_set(app_name, eval_set_id).eval_cases == [stored]
