@@ -102,6 +102,11 @@ client = redis_asyncio.Redis.from_url(
 session_service = RedisSessionService(redis_client=client)
 ```
 
+Native Redis Cluster is not supported. When an event updates `app:` or `user:`
+state, the service watches the session and state keys in one transaction. These
+keys are not guaranteed to share a Cluster hash slot, so the transaction can
+fail with `CROSSSLOT`. Use a standalone Redis instance for this service.
+
 ## Key Schema & State Scoping
 
 `RedisSessionService` stores session data and state using the following Redis key structure:
