@@ -20,6 +20,7 @@ Please do not rely on the implementation details.
 
 from __future__ import annotations
 
+from enum import Enum
 import inspect
 import json
 import logging
@@ -461,6 +462,23 @@ def preprocess_args(
                   e,
               )
             continue
+
+        # The declaration lists the enum's values, so the model sends a value
+        # back. Look up the member so the function gets the Enum it declared.
+        if inspect.isclass(target_type) and issubclass(target_type, Enum):
+          value = args[param_name]
+          if value is not None and not isinstance(value, target_type):
+            try:
+              converted_args[param_name] = target_type(value)
+            except (ValueError, TypeError):
+              logger.warning(
+                  "Argument '%s' is not a value of enum %s: %r; passing it"
+                  " through unchanged.",
+                  param_name,
+                  target_type.__name__,
+                  value,
+              )
+          continue
 
         # Some session stores persist call args as a proto `Struct`, whose
         # only number type is double, so an int comes back as a float.
