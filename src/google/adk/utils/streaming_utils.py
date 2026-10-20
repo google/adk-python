@@ -572,7 +572,7 @@ class StreamingResponseAggregator:
     if not finish_reason and candidate:
       finish_reason = candidate.finish_reason
 
-    error_code = None
+    error_code: Optional[str] = None
     error_message = None
     if finish_reason and finish_reason != types.FinishReason.STOP:
       error_code = finish_reason
