@@ -17,6 +17,7 @@ from __future__ import annotations
 from unittest import mock
 
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.integrations.firestore.firestore_memory_service import FirestoreMemoryService
 from google.genai import types
 import pytest
@@ -587,3 +588,41 @@ async def test_add_session_to_memory_exceeds_batch_limit(mock_firestore_client):
   batch1.commit.assert_called_once()
   assert batch2.set.call_count == 1
   batch2.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_rewound_events(
+    mock_firestore_client,
+):
+  service = FirestoreMemoryService(client=mock_firestore_client)
+
+  from google.adk.sessions.session import Session
+
+  session = Session(id="test_session", app_name="test_app", user_id="test_user")
+  session.events += [
+      Event(
+          id="kept",
+          invocation_id="inv_kept",
+          author="user",
+          content=types.Content(parts=[types.Part.from_text(text="paris")]),
+      ),
+      Event(
+          id="rewound",
+          invocation_id="inv_rewound",
+          author="user",
+          content=types.Content(parts=[types.Part.from_text(text="baker")]),
+      ),
+      Event(
+          invocation_id="inv_rewind",
+          author="user",
+          actions=EventActions(rewind_before_invocation_id="inv_rewound"),
+      ),
+  ]
+  batch = mock.MagicMock()
+  mock_firestore_client.batch.return_value = batch
+  batch.commit = mock.AsyncMock()
+
+  await service.add_session_to_memory(session)
+
+  keywords = [call.args[1]["keywords"] for call in batch.set.call_args_list]
+  assert keywords == [["paris"]]
