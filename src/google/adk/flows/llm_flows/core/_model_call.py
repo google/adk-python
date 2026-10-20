@@ -33,6 +33,7 @@ from ....live.live_request_queue import LiveRequestQueue
 from ....models.llm_request import LlmRequest
 from ....models.llm_response import LlmResponse
 from ....telemetry import _instrumentation
+from ....telemetry._finish_reason import is_reported_finish_reason
 from ....telemetry.tracing import _start_call_llm_span
 from ....telemetry.tracing import trace_call_llm
 from ....utils.context_utils import Aclosing
@@ -281,6 +282,11 @@ async def call_llm_async(
         deferred_partial: tuple[str, LlmResponse] | None = None
         try:
           async for llm_response in agen:
+            # The model is done once the complete response reports why it
+            # stopped; end here, before the caller acts on it (runs tools).
+            inference_ended = not llm_response.partial and (
+                is_reported_finish_reason(llm_response.finish_reason)
+            )
             if llm_response.partial:
               deferred_partial = (model_response_event.id, llm_response)
             else:
@@ -301,6 +307,12 @@ async def call_llm_async(
               ):
                 llm_response = altered
 
+            if (
+                inference_ended
+                and call_llm_span is not None
+                and call_llm_span.is_recording()
+            ):
+              call_llm_span.end()
             yield llm_response
         finally:
           if deferred_partial is not None:
@@ -329,5 +341,5 @@ async def call_llm_async(
       )
     raise
   finally:
-    if call_llm_span is not None:
+    if call_llm_span is not None and call_llm_span.is_recording():
       call_llm_span.end()

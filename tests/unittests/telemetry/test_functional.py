@@ -33,8 +33,11 @@ from .functional._recording import check_case
 from .functional._recording import FunctionalTestCase
 from .functional.scenarios.agent import build_test_runner
 from .functional.scenarios.agent import run_agent_scenario
+from .functional.scenarios.agent import run_streaming_agent_scenario
+from .functional.scenarios.conversation import STREAMING_TURNS
 from .functional.scenarios.conversation import TOOL_ERROR
 from .functional.scenarios.inference import mock_test_model
+from .functional.scenarios.inference import streaming_gemini_test_model
 from .functional.scenarios.mcp import build_mcp_test_runner
 from .functional.scenarios.mcp import FakeMcpSession
 from .functional.scenarios.telemetry_setup import _PATCHED_COUNTERS
@@ -172,6 +175,52 @@ async def test_span_opened_by_the_model_does_not_parent_the_tool_call(
     assert span.parent is not None
     assert span.parent.span_id not in wrapper_span_ids
     assert spans[span.parent.span_id].name.startswith("invoke_agent")
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("schema_version", ["1", "2"])
+@pytest.mark.asyncio
+async def test_model_spans_end_before_the_tool_call_starts(
+    monkeypatch: pytest.MonkeyPatch, streaming: bool, schema_version: str
+) -> None:
+  """A model span must not run on while the flow executes the tool.
+
+  Ending at generator teardown would make the span's duration grow with the
+  tool's latency (#7625).
+  """
+  monkeypatch.setenv(ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN, schema_version)
+  span_exporter = InMemorySpanExporter()
+  install_telemetry(
+      monkeypatch,
+      span_exporter,
+      InMemoryLogRecordExporter(),
+      InMemoryMetricReader(),
+  )
+  if streaming:
+    await run_streaming_agent_scenario(
+        build_test_runner(
+            streaming_gemini_test_model(monkeypatch, STREAMING_TURNS)
+        )
+    )
+  else:
+    await run_agent_scenario(build_test_runner(mock_test_model()))
+
+  spans = span_exporter.get_finished_spans()
+  model_spans = [
+      span
+      for span in spans
+      if span.name == "call_llm" or span.name.startswith("generate_content")
+  ]
+  tool_spans = [s for s in spans if s.name.startswith("execute_tool")]
+
+  assert tool_spans
+  assert any(s.name == "call_llm" for s in model_spans) == (
+      schema_version == "1"
+  )
+  for tool in tool_spans:
+    for model in model_spans:
+      if model.start_time < tool.start_time:
+        assert model.end_time <= tool.start_time, (model.name, tool.name)
 
 
 @pytest.mark.asyncio
