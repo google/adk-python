@@ -442,6 +442,50 @@ class TestValidateNodeData:
 class TestSchemaToJsonSchema:
   """Tests for schema_to_json_schema function."""
 
+  @pytest.mark.parametrize(
+      "schema_type, expected_type",
+      [
+          (types.Type.STRING, "string"),
+          (types.Type.INTEGER, "integer"),
+          (types.Type.BOOLEAN, "boolean"),
+      ],
+  )
+  def test_genai_schema_instance_is_serialized(
+      self, schema_type: types.Type, expected_type: str
+  ) -> None:
+    """A GenAI schema instance describes its value, not its own model fields."""
+    schema = types.Schema(type=schema_type)
+
+    assert schema_to_json_schema(schema) == {"type": expected_type}
+
+  def test_nested_genai_schema_preserves_aliases_and_input(self) -> None:
+    """Nested types use JSON Schema names without modifying the input schema."""
+    schema = types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "tags": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING, min_length=1),
+            ),
+        },
+        required=["tags"],
+    )
+    original = schema.model_dump()
+
+    result = schema_to_json_schema(schema)
+
+    assert result == {
+        "type": "object",
+        "properties": {
+            "tags": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
+        },
+        "required": ["tags"],
+    }
+    assert schema.model_dump() == original
+
   def test_dict_schema_is_returned_unchanged(self):
     """A raw dict is already JSON Schema, so it must not be re-derived."""
     raw = {"type": "object", "properties": {"name": {"type": "string"}}}
