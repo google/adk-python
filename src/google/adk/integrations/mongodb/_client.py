@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -95,3 +96,22 @@ def drop_client_for_pickle(
   state = dict(state)
   state["_client"] = None
   return state
+
+
+def connection_string_from_env(env_var: str) -> str:
+  """Reads the MongoDB connection string from an environment variable.
+
+  Used with `connection_string_env_var` so the value is resolved where the
+  client is built — on the runtime, not at packaging time — which keeps the
+  database password out of pickled deployment packages (Agent Engine).
+
+  Raises:
+      ValueError: If the environment variable is unset or empty.
+  """
+  value = os.environ.get(env_var)
+  if not value:
+    raise ValueError(
+        f"Environment variable {env_var} is not set or empty: it must hold the"
+        " MongoDB connection string."
+    )
+  return value

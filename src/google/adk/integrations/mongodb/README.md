@@ -169,6 +169,55 @@ agent = Agent(
 )
 ```
 
+## Deploying to Agent Engine
+
+Agent Engine packages the app object with cloudpickle, and a live
+`pymongo.MongoClient` (sockets, locks, background threads) cannot cross that
+boundary. `MongoDbToolset` is therefore picklable: the client is dropped at
+pickle time and rebuilt on the runtime from the connection string. A toolset
+built from a caller-owned `mongo_client` or `genai_client` cannot be pickled;
+pass a connection string and leave `genai_client` unset so the query-embedding
+client is built from the ambient environment (`GOOGLE_CLOUD_PROJECT` /
+`GOOGLE_CLOUD_LOCATION`, set automatically on Agent Engine; add
+`GOOGLE_GENAI_USE_VERTEXAI=TRUE` to the deployment env vars).
+
+### Keep the connection string out of the deployment package
+
+A toolset constructed with `connection_string="mongodb+srv://user:PASSWORD@…"`
+carries the URI — password included — as a plaintext attribute, and pickling
+writes it into the uploaded deployment package. To keep the credential out
+of the package, name an environment variable instead:
+
+```python
+toolset = MongoDbToolset(
+    database_name="products_db",
+    connection_string_env_var="MONGODB_URI",  # only the name is stored
+)
+```
+
+Only the variable's name is stored and pickled; the value is resolved where
+the client is built — locally at construction, or on the Agent Engine
+runtime after unpickling. Map the variable to a Secret Manager secret at
+deploy time so the plaintext value never touches the deployment spec either
+(the Agent Engine service account needs the Secret Manager Secret Accessor
+role on the secret):
+
+```python
+from google.cloud.aiplatform_v1.types import SecretRef
+from vertexai import agent_engines
+
+remote = agent_engines.create(
+    app,
+    requirements=[...],
+    env_vars={
+        "MONGODB_URI": SecretRef(
+            secret="mongodb-uri",
+            version="latest",
+        ),
+    },
+)
+```
+
 ## Configuration: `MongoDbToolSettings`
 
 `MongoDbToolSettings` customizes the defaults used by the search tools:
