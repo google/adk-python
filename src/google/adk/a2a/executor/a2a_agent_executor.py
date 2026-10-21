@@ -45,6 +45,7 @@ from .utils import _require_request_context
 from .utils import execute_after_agent_interceptors
 from .utils import execute_after_event_interceptors
 from .utils import execute_before_agent_interceptors
+from .utils import failure_summary
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -152,7 +153,13 @@ class A2aAgentExecutor(AgentExecutor):
     try:
       await self._handle_request(context, event_queue)
     except Exception as e:
-      logger.error('Error handling A2A request: %s', e, exc_info=True)
+      error_id, peer_text = failure_summary(e)
+      logger.error(
+          'Error handling A2A request [error_id=%s]: %s',
+          error_id,
+          e,
+          exc_info=True,
+      )
       # Publish failure event
       try:
         await event_queue.enqueue_event(
@@ -164,7 +171,7 @@ class A2aAgentExecutor(AgentExecutor):
                     message=Message(
                         message_id=platform_uuid.new_uuid(),
                         role=_compat.ROLE_AGENT,
-                        parts=[_compat.make_text_part(str(e))],
+                        parts=[_compat.make_text_part(peer_text)],
                     ),
                 ),
                 final=True,
