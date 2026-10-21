@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from unittest import mock
@@ -1368,3 +1369,27 @@ def test_content_conversion_without_function_response_media() -> None:
       'tool_call_id': 'call_1',
       'content': '{"status": "ok"}',
   }]
+
+
+def test_streaming_fragment_without_id_follows_last_resolved_call() -> None:
+  """A fragment without an id continues the call that was resolved last."""
+  handler = ChatCompletionsResponseHandler()
+
+  def send(call: dict[str, Any]) -> types.FunctionCall:
+    responses = list(
+        handler.process_chunk({'choices': [{'delta': {'tool_calls': [call]}}]})
+    )
+    function_call = _response_parts(responses[0])[0].function_call
+    assert function_call is not None
+    return function_call
+
+  send({
+      'id': 'call_a',
+      'function': {'name': 'weather', 'arguments': '{"city": '},
+  })
+  send(
+      {'id': 'call_b', 'function': {'name': 'clock', 'arguments': '{"zone": '}}
+  )
+
+  assert send({'id': 'call_a', 'function': {'arguments': '"Pa'}}).id == 'call_a'
+  assert send({'function': {'arguments': 'ris"}'}}).id == 'call_a'

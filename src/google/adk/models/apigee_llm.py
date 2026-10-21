@@ -1014,6 +1014,7 @@ class ChatCompletionsResponseHandler:
     self.content_parts = ''
     self.tool_call_parts: dict[int, types.Part] = {}
     self._tool_call_deltas: dict[int, list[str]] = {}
+    self._last_tool_call_index: int | None = None
     self._tool_call_trackers: dict[int, streaming_utils._JsonPathTracker] = {}
     self.role = ''
     self.streaming_complete = False
@@ -1328,6 +1329,8 @@ class ChatCompletionsResponseHandler:
         if part.function_call and part.function_call.id == tool_call_id:
           return index
       return next_index
+    if self._last_tool_call_index is not None:
+      return self._last_tool_call_index
     return max(self.tool_call_parts, default=0)
 
   def _upsert_tool_call(
@@ -1349,6 +1352,7 @@ class ChatCompletionsResponseHandler:
     index = tool_call.get('index')
     if index is None:
       index = self._infer_tool_call_index(tool_call, is_streaming)
+    self._last_tool_call_index = index
 
     if index not in self.tool_call_parts:
       self.tool_call_parts[index] = types.Part(
