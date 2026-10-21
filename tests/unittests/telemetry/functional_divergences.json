@@ -114,18 +114,6 @@
       {
         "path": [
           "attributes",
-          "error.type"
-        ],
-        "example_native_instrumentation_value": {
-          "missing_on_this_side": true
-        },
-        "example_otel_instrumentation_value": "ValueError",
-        "kind": "adk_bug",
-        "reason": "ADK reports a failed call on the enclosing spans and on the duration metric, but leaves `error.type` off the inference span itself."
-      },
-      {
-        "path": [
-          "attributes",
           "gen_ai.output.messages"
         ],
         "example_native_instrumentation_value": {
