@@ -3024,6 +3024,75 @@ async def test_generate_content_span_system_name_follows_model(
     assert log_record.attributes[GEN_AI_SYSTEM] == expected_system
 
 
+@pytest.mark.asyncio
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+@mock.patch('google.adk.telemetry.tracing.tracer')
+@mock.patch(
+    'google.adk.telemetry.tracing._guess_gemini_system_name',
+    return_value='gemini',
+)
+@pytest.mark.parametrize(
+    'request_model,model_version,expected_system',
+    [
+        # LiteLLM returns model_version without the provider prefix.
+        ('openai/gpt-4o', 'gpt-4o', 'openai'),
+        ('groq/llama-3.1-8b-instant', 'llama-3.1-8b-instant', 'groq'),
+        # Anthropic bare ids already resolve; keep working with model_version.
+        ('anthropic/claude-sonnet-4-5', 'claude-sonnet-4-5', 'anthropic'),
+        # Gemini model_version must still resolve to the deployment default.
+        ('gemini-2.0-flash', 'gemini-2.0-flash', 'gemini'),
+    ],
+)
+async def test_choice_log_system_name_when_model_version_lacks_provider(
+    mock_guess_system_name,
+    mock_tracer,
+    mock_otel_logger,
+    monkeypatch,
+    request_model,
+    model_version,
+    expected_system,
+):
+  """Choice logs must match the span when LiteLLM omits the provider prefix.
+
+  Regression for https://github.com/google/adk-python/issues/7631: with
+  ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN=1, gen_ai.choice used model_version
+  alone (e.g. "gpt-4o"), which fell back to gemini while the span correctly
+  used the request model prefix (openai/groq).
+  """
+  monkeypatch.setattr(
+      'google.adk.telemetry._genai_instrumentor.is_instrumented',
+      lambda: False,
+  )
+  agent = LlmAgent(name='test_agent', model=request_model)
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(model=request_model, contents=[])
+  llm_response = LlmResponse(
+      content=types.Content(role='model', parts=[types.Part(text='hi')]),
+      finish_reason=types.FinishReason.STOP,
+      model_version=model_version,
+  )
+  model_response_event = mock.MagicMock()
+  model_response_event.id = 'event-123'
+  mock_span = (
+      mock_tracer.start_as_current_span.return_value.__enter__.return_value
+  )
+
+  async with use_inference_span(
+      llm_request, invocation_context, model_response_event
+  ) as gc_span:
+    trace_inference_result(invocation_context, gc_span, llm_response)
+
+  mock_span.set_attribute.assert_any_call(GEN_AI_SYSTEM, expected_system)
+  choice_logs = [
+      call.args[0]
+      for call in mock_otel_logger.emit.call_args_list
+      if call.args[0].event_name == 'gen_ai.choice'
+  ]
+  assert choice_logs
+  for choice_log in choice_logs:
+    assert choice_log.attributes[GEN_AI_SYSTEM] == expected_system
+
+
 # Model ids that are resource paths: the leading segment is a resource
 # collection, so reading it as a provider prefix mislabels the model.
 _RESOURCE_PATH_MODELS = [

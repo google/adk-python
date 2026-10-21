@@ -1518,16 +1518,42 @@ def _agent_model_name(agent: BaseAgent | BaseNode) -> str | None:
   return model if isinstance(model, str) else model.model
 
 
+def _model_identifies_gen_ai_system(model: str | None) -> bool:
+  """Whether `model` alone is enough to name `gen_ai.system`.
+
+  LiteLLM (and similar gateways) often return a response `model_version`
+  without a provider prefix (e.g. ``gpt-4o`` for ``openai/gpt-4o``). Those
+  bare ids must not be treated as sufficient, or choice logs fall back to
+  Gemini while the span still uses the request model's provider.
+  """
+  if not model:
+    return False
+  if is_gemini_model(model):
+    return True
+  model_name = extract_model_name(model)
+  if _ANTHROPIC_MODEL_PATTERN.match(model_name):
+    return True
+  provider, separator, _ = model_name.partition("/")
+  return bool(
+      separator and provider and provider not in _RESOURCE_COLLECTION_SEGMENTS
+  )
+
+
 def _inference_system_name(
     invocation_context: InvocationContext | None,
     llm_response: LlmResponse,
 ) -> str:
   """Returns the system name of the model that produced an inference result."""
   model = llm_response.model_version
-  if not model and invocation_context is not None:
+  agent_model = None
+  if invocation_context is not None:
     agent = invocation_context.agent
     if agent is not None:
-      model = _agent_model_name(agent)
+      agent_model = _agent_model_name(agent)
+  # Prefer the configured request model when model_version lacks a provider
+  # signal (LiteLLM-style bare ids), so gen_ai.choice matches the span.
+  if agent_model and not _model_identifies_gen_ai_system(model):
+    model = agent_model
   return _resolve_gen_ai_system_name(model)
 
 
