@@ -76,7 +76,7 @@ class InjectionConfig(BaseModel):
   @model_validator(mode="after")
   def check_injected_error_or_response(self) -> Self:
     """Checks that either injected_error or injected_response is set."""
-    if bool(self.injected_error) == bool(self.injected_response):
+    if (self.injected_error is None) == (self.injected_response is None):
       raise ValueError(
           "Either injected_error or injected_response must be set, but not"
           " both, and not neither."

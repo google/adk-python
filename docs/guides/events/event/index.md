@@ -6,7 +6,7 @@ The `event.py` file defines the `Event` and `NodeInfo` classes, which are the fu
 
 In ADK, conversations and workflow executions are modeled as a sequence of events. The `Event` class represents a single unit of this sequence, capturing:
 -   **Content:** Messages exchanged between users and agents (text, function calls, function responses).
--   **Actions:** Side-effects or instructions, such as state updates, routing decisions, agent transfers, and UI rendering requests.
+-   **Actions:** Side-effects or instructions, such as state updates, routing decisions, agent transfers, and UI rendering requests. The [EventActions guide](../event_actions/index.md) describes these actions.
 -   **Metadata:** Information about who generated the event, when, and from which part of the workflow.
 
 `NodeInfo` specifically carries metadata about the workflow node that generated the event, enabling tracking of execution paths and run IDs.
@@ -103,7 +103,7 @@ routing_event = Event(author="router_node", route="success_path")
 
 ### Context Isolation
 
-The `isolation_scope` field is used by the Task API to isolate conversations of delegated agents. Events with a specific `isolation_scope` (e.g., `"task:fc-987"`) will only be visible to agents running within that same scope, preventing them from seeing the main conversation history.
+The `isolation_scope` field is used by the Task API to isolate conversations of delegated agents. A delegated task agent is scoped under the id of the function call that started the task, and events with a specific `isolation_scope` will only be visible to agents running within that same scope, preventing them from seeing the main conversation history.
 
 ## Limitations
 

@@ -302,10 +302,9 @@ class McpToolset(BaseToolset):
       return None
 
     credential = None
-    if readonly_context:
-      credential = readonly_context.get_credential(
-          self._auth_config.credential_key
-      )
+    credential_key = self._auth_config.credential_key
+    if readonly_context and credential_key is not None:
+      credential = readonly_context.get_credential(credential_key)
 
     if not credential:
       credential = self._auth_config.exchanged_auth_credential
@@ -661,6 +660,12 @@ class McpToolset(BaseToolset):
           " loads agent configs it trusts."
       )
 
+    connection_params: Union[
+        StdioServerParameters,
+        StdioConnectionParams,
+        SseConnectionParams,
+        StreamableHTTPConnectionParams,
+    ]
     if mcp_toolset_config.stdio_server_params:
       connection_params = mcp_toolset_config.stdio_server_params
     elif mcp_toolset_config.stdio_connection_params:
@@ -685,7 +690,7 @@ class McpToolset(BaseToolset):
         use_mcp_resources=mcp_toolset_config.use_mcp_resources,
     )
 
-  def __getstate__(self):
+  def __getstate__(self) -> dict[str, Any]:
     """Custom pickling to exclude non-picklable runtime objects."""
     state = self.__dict__.copy()
     # Remove unpicklable file-like objects
@@ -695,7 +700,7 @@ class McpToolset(BaseToolset):
     state["_tool_list_cache"] = collections.OrderedDict()
     return state
 
-  def __setstate__(self, state):
+  def __setstate__(self, state: dict[str, Any]) -> None:
     """Custom unpickling to restore state."""
     self.__dict__.update(state)
     # Default to sys.stderr if _errlog was removed during pickling
@@ -706,7 +711,7 @@ class McpToolset(BaseToolset):
 class MCPToolset(McpToolset):
   """Deprecated name, use `McpToolset` instead."""
 
-  def __init__(self, *args, **kwargs):
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
     warnings.warn(
         "MCPToolset class is deprecated, use `McpToolset` instead.",
         DeprecationWarning,
@@ -743,7 +748,7 @@ class McpToolsetConfig(BaseToolConfig):
   use_mcp_resources: bool = False
 
   @model_validator(mode="after")
-  def _check_only_one_params_field(self):
+  def _check_only_one_params_field(self) -> McpToolsetConfig:
     param_fields = [
         self.stdio_server_params,
         self.stdio_connection_params,

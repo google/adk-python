@@ -449,12 +449,17 @@ class AgentTool(BaseTool):
       cls, config: ToolArgsConfig, config_abs_path: str
   ) -> AgentTool:
     from ..agents import config_agent_utils
+    from ..agents.base_agent import BaseAgent
 
     agent_tool_config = AgentToolConfig.model_validate(config.model_dump())
 
     agent = config_agent_utils.resolve_agent_reference(
         agent_tool_config.agent, config_abs_path
     )
+    if not isinstance(agent, BaseAgent):
+      raise ValueError(
+          f'AgentTool requires an agent, got {type(agent).__name__}.'
+      )
     return cls(
         agent=agent,
         skip_summarization=agent_tool_config.skip_summarization,

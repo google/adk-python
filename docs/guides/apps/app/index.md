@@ -206,6 +206,16 @@ each a pair that must be set together: `compaction_interval` with
 `event_retention_size` for a token budget. Leaving `summarizer` unset makes ADK
 build an `LlmEventSummarizer` from the root agent's model.
 
+When you set `context_cache_config` and `events_compaction_config` on the same
+`App`, as the snippet above does, each compaction causes a context-cache miss.
+The cache is keyed on the system instruction, the tools, and the start of the
+conversation history, and compaction replaces the oldest part of that history
+with a summary. The turn after a summary is written therefore sends its whole
+prompt without the cache. The [events compaction guide](../events_compaction/index.md)
+covers when each compaction trigger fires, and the
+[resumability guide](../resumability/index.md) covers pausing an invocation and
+resuming it later.
+
 ## Limitations
 
 *   **Experimental configs**: `EventsCompactionConfig` and `ResumabilityConfig`

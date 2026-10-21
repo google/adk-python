@@ -137,8 +137,8 @@ def get_gcp_exporters(
 
   span_processors: list[SpanProcessor] = []
   if enable_cloud_tracing:
-    span_processor = _get_gcp_span_exporter(credentials)
-    span_processors.append(span_processor)
+    if (span_processor := _get_gcp_span_exporter(credentials)) is not None:
+      span_processors.append(span_processor)
 
   metric_readers: list[MetricReader] = []
   if enable_cloud_metrics:
@@ -160,11 +160,23 @@ def get_gcp_exporters(
   )
 
 
-def _get_gcp_span_exporter(credentials: Credentials) -> SpanProcessor:
-  """Adds OTEL span exporter to telemetry.googleapis.com"""
+def _get_gcp_span_exporter(credentials: Credentials) -> SpanProcessor | None:
+  """Adds OTEL span exporter to telemetry.googleapis.com.
+
+  Returns None (disabling cloud trace export) if the OTLP-over-HTTP exporter
+  package is unavailable, instead of raising.
+  """
+
+  try:
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+  except (ImportError, AttributeError):
+    logger.warning(
+        "opentelemetry-exporter-otlp-proto-http is not installed; cloud trace"
+        " export is disabled. Install google-adk[otel] to enable it."
+    )
+    return None
 
   from google.auth.transport.requests import AuthorizedSession
-  from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
   session = AuthorizedSession(credentials=credentials)
 
@@ -203,7 +215,7 @@ def _get_gcp_otlp_metric_exporter(
   except (ImportError, AttributeError):
     logger.warning(
         "opentelemetry-exporter-otlp-proto-http is not installed; request-path"
-        " metric export is disabled."
+        " metric export is disabled. Install google-adk[otel] to enable it."
     )
     return None
 
@@ -356,7 +368,7 @@ def _get_gcp_logs_exporter(
   except (ImportError, AttributeError):
     logger.warning(
         "opentelemetry-exporter-otlp-proto-http is not installed; logging to"
-        + " Google Cloud is disabled."
+        " Google Cloud is disabled. Install google-adk[otel] to enable it."
     )
     return None
 

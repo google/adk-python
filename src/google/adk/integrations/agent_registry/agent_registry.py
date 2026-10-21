@@ -23,6 +23,7 @@ import re
 import threading
 from typing import Any
 from typing import Callable
+from typing import cast
 from typing import Dict
 from typing import List
 from typing import Literal
@@ -462,9 +463,11 @@ class AgentRegistry:
       data: Dict[str, Any] = response.json()
       return data
     except requests.exceptions.HTTPError as e:
+      # Only raise_for_status raises HTTPError here, and it sets the response.
+      error_response = cast(requests.Response, e.response)
       raise RuntimeError(
-          f"API request failed with status {e.response.status_code}:"
-          f" {e.response.text}"
+          f"API request failed with status {error_response.status_code}:"
+          f" {error_response.text}"
       ) from e
     except requests.exceptions.RequestException as e:
       raise RuntimeError(f"API request failed (network error): {e}") from e

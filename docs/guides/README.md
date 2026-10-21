@@ -24,6 +24,8 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Apps
 * [App](apps/app/index.md) - The top-level container binding a root agent to app-wide plugins and configuration.
+* [EventsCompactionConfig and BaseEventsSummarizer](apps/events_compaction/index.md) - Keeping a long conversation inside the context window by summarizing older events.
+* [ResumabilityConfig](apps/resumability/index.md) - Letting an invocation that paused, such as on a long-running tool call, continue from where it stopped.
 
 ### Artifacts
 * [BaseArtifactService](artifacts/artifact_service/index.md) - Storing binary payloads outside the conversation history, with versioning, user-scoped filenames, and GCS URL generation.
@@ -53,6 +55,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Events
 * [Event and NodeInfo](events/event/index.md) - Understanding Event and NodeInfo in workflows.
+* [EventActions](events/event_actions/index.md) - The part of an event that ADK acts on, such as ending a turn or handing the conversation to another agent.
 * [RequestInput](events/request_input/index.md) - How to use RequestInput for human-in-the-loop interactions.
 * [Reserved custom_metadata keys](events/internal_metadata/index.md) - The `Event.custom_metadata` keys that only ADK can set, and how restored events are marked.
 
@@ -114,6 +117,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [Runner and InMemoryRunner](runners/runner/index.md) - Managing session lifecycles, state resolution, and streaming agent execution events.
 * [Runner Execution Cancellation](runners/runner/abort.md) - Halting agent and workflow execution cleanly using abort signals.
 * [Runner Live Streaming](runners/runner/live.md) - Real-time bidirectional audio/text streaming and non-blocking background tool execution with Gemini Multimodal Live API.
+* [Runner.rewind_async](runners/runner/rewind.md) - Undoing turns of a conversation and restoring state and artifacts to an earlier point.
 
 ### Security
 * [Credentials Encryption](auth/kms_encryptor/index.md) - Securely encrypting sensitive session credentials using Google Cloud KMS.
@@ -131,6 +135,14 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Tools
 * [FunctionTool](tools/function_tool/index.md) - Wrapping Python functions and generators as agent tools with argument validation, progress streaming, and confirmation.
+* [Using Context in a tool](tools/tool_context/index.md) - Reaching session state, artifacts, memory, and credentials from inside a tool.
+* [BaseTool](tools/base_tool/index.md) - Subclassing the tool base class to write a declaration yourself or to change the model request.
+* [BaseToolset](tools/base_toolset/index.md) - Giving an agent a group of tools that ADK asks for on every run, and filtering which ones the model sees.
+* [LongRunningFunctionTool](tools/long_running_tool/index.md) - Tools whose result arrives later, such as an approval or a batch job, and how to send that result back.
+* [ToolConfirmation](tools/tool_confirmation/index.md) - Pausing a tool call until a person approves it, and passing their answer back to the agent.
+* [AgentTool](tools/agent_tool/index.md) - Calling another agent as a tool in a separate session, and how that compares with a single-turn sub-agent.
+* [McpToolset](tools/mcp_tool/mcp_toolset/index.md) - Connecting an agent to a Model Context Protocol server and using the tools it publishes.
+* [SkillToolset](tools/skill_toolset/index.md) - Giving an agent skills that it loads only when a request calls for them.
 * [ModelConsultTool and ModelConsultContextConfig](tools/model_consult/model_consult_tool/index.md) - Escalating hard decisions mid-generation to a stronger advisor model, with per-turn and session budgets.
 * [Node as tool](tools/node_tool/index.md) - Exposing workflows and deterministic nodes as agent tools with isolated runtime branching and resume support.
 * [to_mcp_server](tools/mcp_tool/agent_to_mcp/index.md) - Expose an ADK agent as an MCP server so any MCP host can drive it as a single tool (the MCP counterpart of to_a2a).

@@ -4243,6 +4243,7 @@ async def test_generate_content_async_excludes_sampling_when_effort(
         ("stop_sequence", types.FinishReason.STOP),
         ("tool_use", types.FinishReason.STOP),
         ("max_tokens", types.FinishReason.MAX_TOKENS),
+        ("model_context_window_exceeded", types.FinishReason.MAX_TOKENS),
         ("pause_turn", types.FinishReason.STOP),
         ("refusal", types.FinishReason.SAFETY),
         (None, None),

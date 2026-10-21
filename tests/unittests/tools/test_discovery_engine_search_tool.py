@@ -22,6 +22,7 @@ from google.adk.tools.discovery_engine_search_tool import DiscoveryEngineSearchT
 from google.adk.tools.discovery_engine_search_tool import SearchResultMode
 from google.api_core import exceptions
 from google.cloud import discoveryengine_v1beta as discoveryengine
+from google.genai import types
 import pytest
 
 from google import auth
@@ -390,6 +391,39 @@ class TestDiscoveryEngineSearchTool:
           credentials=mock_credentials,
           client_options=mock_client_options.ClientOptions.return_value,
       )
+
+  @mock.patch.object(
+      discoveryengine,
+      "SearchServiceClient",
+  )
+  def test_discovery_engine_search_converts_data_store_specs(
+      self, mock_search_client
+  ):
+    """genai spec objects are converted; dict specs pass through."""
+    mock_search_client.return_value.search.return_value = (
+        discoveryengine.SearchResponse()
+    )
+    data_store = "projects/p/locations/global/collections/c/dataStores/d"
+
+    tool = DiscoveryEngineSearchTool(
+        search_engine_id="projects/p/locations/global/collections/c/engines/e",
+        data_store_specs=[
+            types.VertexAISearchDataStoreSpec(
+                data_store=data_store, filter="f"
+            ),
+            {"data_store": data_store},
+        ],
+    )
+    result = tool.discovery_engine_search("test query")
+
+    assert result["status"] == "success"
+    request = mock_search_client.return_value.search.call_args.args[0]
+    assert list(request.data_store_specs) == [
+        discoveryengine.SearchRequest.DataStoreSpec(
+            data_store=data_store, filter="f"
+        ),
+        discoveryengine.SearchRequest.DataStoreSpec(data_store=data_store),
+    ]
 
   @mock.patch.object(
       discoveryengine,

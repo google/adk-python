@@ -609,8 +609,14 @@ class BaseAgent(BaseNode, abc.ABC):
     # If no overrides are provided from the plugins, further run the canonical
     # callbacks.
     if not callback_content and callbacks:
+      # _run_callbacks passes callback_context positionally when needed.
+      adaptable_callbacks: list[
+          Callable[
+              ..., Awaitable[Optional[types.Content]] | Optional[types.Content]
+          ]
+      ] = callbacks
       callback_content = await _run_callbacks(
-          callbacks,
+          adaptable_callbacks,
           _stop_on_truthy,
           callback_context=callback_context,
       )

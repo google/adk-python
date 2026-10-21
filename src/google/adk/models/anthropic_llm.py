@@ -330,12 +330,17 @@ def to_claude_role(role: Optional[str]) -> Literal["user", "assistant"]:
 
 
 # Mapping of Anthropic stop_reason strings to FinishReason enum values
-_STOP_REASON_MAPPING: dict[anthropic_types.StopReason, types.FinishReason] = {
+# Keyed by str: "model_context_window_exceeded" is missing from the anthropic
+# SDK's StopReason literal.
+_STOP_REASON_MAPPING: dict[str, types.FinishReason] = {
     "end_turn": types.FinishReason.STOP,
     "stop_sequence": types.FinishReason.STOP,
     "tool_use": types.FinishReason.STOP,
     "pause_turn": types.FinishReason.STOP,
     "max_tokens": types.FinishReason.MAX_TOKENS,
+    # Generation stopped because the context window filled up, so the output
+    # is truncated just as with max_tokens.
+    "model_context_window_exceeded": types.FinishReason.MAX_TOKENS,
     "refusal": types.FinishReason.SAFETY,
 }
 

@@ -482,7 +482,8 @@ class McpTool(BaseAuthenticatedTool):
     # Format: meta.ui.visibility
     ui = meta.get("ui", {})
     if isinstance(ui, dict):
-      return ui.get("visibility", [])
+      # The MCP Apps extension defines visibility as a list of strings.
+      return cast(list[str], ui.get("visibility", []))
     return []
 
   @property
@@ -648,7 +649,11 @@ class McpTool(BaseAuthenticatedTool):
 
   @override
   async def _run_async_impl(
-      self, *, args, tool_context: ToolContext, credential: AuthCredential
+      self,
+      *,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+      credential: AuthCredential,
   ) -> dict[str, Any]:
     """Runs the tool asynchronously.
 
@@ -661,17 +666,19 @@ class McpTool(BaseAuthenticatedTool):
     """
     # Extract headers from credential for session pooling
     auth_headers = await self._get_headers(tool_context, credential)
-    dynamic_headers = None
+    dynamic_headers: dict[str, str] | None = None
     if self._header_provider:
-      dynamic_headers = self._header_provider(
+      provided_headers = self._header_provider(
           ReadonlyContext(tool_context._invocation_context)  # pylint: disable=protected-access
       )
-      if inspect.isawaitable(dynamic_headers):
-        dynamic_headers = await dynamic_headers
+      if inspect.isawaitable(provided_headers):
+        dynamic_headers = await provided_headers
+      else:
+        dynamic_headers = provided_headers
 
     headers = _merge_auth_and_provider_headers(
         auth_headers=auth_headers,
-        provider_headers=cast(dict[str, str] | None, dynamic_headers),
+        provider_headers=dynamic_headers,
     )
     final_headers = headers if headers else None
 
@@ -940,7 +947,7 @@ class McpTool(BaseAuthenticatedTool):
 class MCPTool(McpTool):
   """Deprecated name, use `McpTool` instead."""
 
-  def __init__(self, *args, **kwargs):
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
     warnings.warn(
         "MCPTool class is deprecated, use `McpTool` instead.",
         DeprecationWarning,

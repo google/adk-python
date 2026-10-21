@@ -730,6 +730,54 @@ async def test_search_memory_continues_past_event_without_words():
 
 
 @pytest.mark.asyncio
+async def test_search_memory_skips_thought_parts() -> None:
+  """Thought parts are neither matched by nor returned from a search."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=[
+          Event(
+              id='thought-only',
+              author='model',
+              content=types.Content(
+                  role='model',
+                  parts=[
+                      types.Part(text='Secret plan', thought=True),
+                      types.Part.from_function_call(name='lookup', args={}),
+                  ],
+              ),
+          ),
+          Event(
+              id='mixed',
+              author='model',
+              content=types.Content(
+                  role='model',
+                  parts=[
+                      types.Part(text='Secret internal note', thought=True),
+                      types.Part(text='Take the train to Paris.'),
+                  ],
+              ),
+          ),
+      ],
+  )
+
+  secret_search = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='Secret'
+  )
+
+  assert not secret_search.memories
+
+  paris_search = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='Paris'
+  )
+
+  assert [memory.content.parts for memory in paris_search.memories] == [
+      [types.Part(text='Take the train to Paris.')]
+  ]
+
+
+@pytest.mark.asyncio
 async def test_delete_memory():
   """Tests that delete_memory purges a single memory entry by its id."""
   memory_service = InMemoryMemoryService()

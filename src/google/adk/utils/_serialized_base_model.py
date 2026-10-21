@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pydantic
 from pydantic import alias_generators
 
@@ -37,7 +39,7 @@ class SerializedBaseModel(pydantic.BaseModel):
       use_attribute_docstrings=True,
   )
 
-  def model_dump_json(self, **kwargs) -> str:
+  def model_dump_json(self, **kwargs: Any) -> str:
     """Override model_dump_json to use by_alias=True by default."""
     kwargs.setdefault('by_alias', True)
     return super().model_dump_json(**kwargs)

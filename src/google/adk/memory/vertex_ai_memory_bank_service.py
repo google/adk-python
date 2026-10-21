@@ -1132,11 +1132,12 @@ def _from_vertex_metadata(
 
 def _from_vertex_metadata_value(value: object) -> object:
   """Converts one Vertex MemoryMetadataValue back to a plain Python value."""
-  getter = (
-      value.get
-      if isinstance(value, Mapping)
-      else lambda k: getattr(value, k, None)
-  )
+
+  def getter(key: str) -> object:
+    if isinstance(value, Mapping):
+      return value.get(key)
+    return getattr(value, key, None)
+
   for key in _VERTEX_METADATA_KEYS:
     if (val := getter(key)) is not None:
       return val

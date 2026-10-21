@@ -48,10 +48,10 @@ from pydantic import ConfigDict
 from pydantic import Field
 from typing_extensions import override
 
+from ...agents._streaming_mode import StreamingMode
 from ...agents.base_agent import BaseAgent
 from ...agents.context import Context
 from ...agents.invocation_context import InvocationContext
-from ...agents.run_config import StreamingMode
 from ...events.event import Event
 from ...events.event_actions import EventActions
 from ...utils._agent_mode import AgentMode

@@ -728,7 +728,7 @@ async def _run_compaction_for_token_threshold_config(
 
 async def _run_compaction_for_token_threshold(
     app: App, session: Session, session_service: BaseSessionService
-):
+) -> bool | None:
   """Runs post-invocation compaction based on a token threshold.
 
   If triggered, this compacts older raw events and keeps the last
@@ -818,7 +818,7 @@ async def _run_compaction_for_sliding_window(
       break
 
   # Get unique invocation IDs and their latest timestamps.
-  invocation_latest_timestamps = {}
+  invocation_latest_timestamps: dict[str, float] = {}
   for event in events:
     # Only consider non-compaction events for unique invocation IDs.
     if event.invocation_id and not event.actions.compaction:

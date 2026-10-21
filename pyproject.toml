@@ -465,6 +465,20 @@ namespace_packages = true
 explicit_package_bases = true
 follow_imports = "normal"
 python_version = "3.11"
+# These third-party packages define functions without type annotations.
+untyped_calls_exclude = [
+  "daytona",
+  "google.api_core",
+  "google.cloud.bigquery",
+  "google.cloud.bigtable",
+  "google.cloud.modelarmor_v1",
+  "google.oauth2",
+  "opentelemetry.exporter.cloud_trace",
+  "opentelemetry.instrumentation.grpc",
+  "redis",
+  "slack_bolt",
+  "sqlalchemy.dialects.mssql",
+]
 disable_error_code = [ "import-not-found", "import-untyped", "unused-ignore" ]
 strict = true
 plugins = [ "pydantic.mypy" ]

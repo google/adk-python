@@ -807,6 +807,7 @@ class SearchSkillsTool(BaseTool):
         description=description,
     )
     self._toolset = toolset
+    self._registry = toolset._registry
 
   def _get_declaration(self) -> types.FunctionDeclaration | None:
     properties = {
@@ -835,7 +836,7 @@ class SearchSkillsTool(BaseTool):
           "error_code": "INVALID_ARGUMENTS",
       }
     try:
-      results = await self._toolset._registry.search_skills(query=query)
+      results = await self._registry.search_skills(query=query)
       formatted_results = []
       for r in results:
         if r.name in self._toolset._skills:
@@ -2044,7 +2045,7 @@ class RunSkillScriptTool(BaseTool):
     code_executor = self._toolset._code_executor
     if code_executor is None:
       agent = tool_context._invocation_context.agent
-      if hasattr(agent, "code_executor"):
+      if agent is not None and hasattr(agent, "code_executor"):
         code_executor = agent.code_executor
     if code_executor is None:
       return {

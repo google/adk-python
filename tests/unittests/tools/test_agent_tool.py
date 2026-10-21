@@ -42,9 +42,11 @@ import google.adk.runners as _runners_module
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_configs import ToolArgsConfig
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils.variant_utils import GoogleLLMVariant
+from google.adk.workflow._function_node import FunctionNode
 from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
@@ -2565,3 +2567,13 @@ async def test_agent_tool_child_cache_state_starts_empty_on_every_call():
   assert first_call_after_tool.cacheable_contents_token_count == 4096
   assert second_call_start.cache_metadata is None
   assert second_call_start.cacheable_contents_token_count is None
+
+
+_non_agent_node = FunctionNode(func=lambda: None, name='non_agent_node')
+
+
+def test_from_config_rejects_non_agent_node():
+  config = ToolArgsConfig(agent={'code': f'{__name__}._non_agent_node'})
+
+  with pytest.raises(ValueError, match='AgentTool requires an agent'):
+    AgentTool.from_config(config, '/tmp/root_agent.yaml')

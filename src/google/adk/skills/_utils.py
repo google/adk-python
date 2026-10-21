@@ -20,6 +20,7 @@ import asyncio
 import io
 import logging
 import pathlib
+from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import Union
@@ -136,7 +137,7 @@ def _build_scripts(
   return scripts
 
 
-def _parse_skill_md_content(content: str) -> tuple[dict, str]:
+def _parse_skill_md_content(content: str) -> tuple[dict[str, Any], str]:
   """Parse SKILL.md from raw content string.
 
   Args:
@@ -171,7 +172,7 @@ def _parse_skill_md_content(content: str) -> tuple[dict, str]:
 
 def _parse_skill_md(
     skill_dir: pathlib.Path,
-) -> tuple[dict, str, pathlib.Path]:
+) -> tuple[dict[str, Any], str, pathlib.Path]:
   """Parse SKILL.md from a skill directory.
 
   Args:
@@ -554,7 +555,7 @@ def _list_skills_in_dir(
     Exception: Whatever `on_error` raises, if it raises.
   """
   skills_base_path = pathlib.Path(skills_base_path).resolve()
-  skills = {}
+  skills: dict[str, models.Frontmatter] = {}
 
   if not skills_base_path.is_dir():
     logging.warning(

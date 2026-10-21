@@ -55,7 +55,11 @@ async for event in runner.run_live(
         print("Live model response:", part.text)
 ```
 
-`run_live` resolves the session the same way `run_async` does, so the session must exist before you call it unless the `Runner` was constructed with `auto_create_session=True`. The queue allows callers to push PCM audio frames or text messages into the active session asynchronously while `run_live` streams response events back, and calling `queue.close()` closes the live connection and ends the `async for` loop.
+The queue allows callers to push PCM audio frames or text messages into the active session asynchronously while `run_live` streams response events back.
+
+`run_live` looks the session up the same way `run_async` does, so the session has to exist before you call it. If it does not exist, `run_live` raises `SessionNotFoundError`. A `Runner` built with `auto_create_session=True` creates the session for you instead, but `InMemoryRunner` does not accept that argument, which is why the example creates the session first.
+
+The `async for` loop does not end when the model finishes a reply, because a live session stays open until you close it. Call `queue.close()` when the conversation is over. Closing the queue closes the connection to the model, and the loop then ends.
 
 ## How it works
 
@@ -90,7 +94,7 @@ sequenceDiagram
    * **Inline Audio Events (`inline_data`):** Streamed directly to callers for low-latency audio playback, but **not** saved to session history to prevent session bloat.
    * **Artifact Media Events (`save_live_blob`):** Video and audio data are saved to artifact storage and persisted to session history when `save_live_blob` is set to `True` on `RunConfig`.
    * **Transcriptions & Tool Calls:** Non-partial transcriptions, usage metadata, and function calls are always saved to session history.
-4. **Non-Blocking Background Tools:** When a tool function is invoked during a live stream, the runner dispatches the tool call to a background task so audio output is not blocked. Once complete, tool execution results are pushed back into `LiveRequestQueue` to update the model.
+4. **Non-Blocking Background Tools:** Streaming tools, which are async generator functions, and tools declared non-blocking run as background tasks, so audio output is not blocked while they work. The [Live background tools](../../live/tools/index.md) guide explains how to declare a tool non-blocking. Once complete, tool execution results are pushed back into `LiveRequestQueue` to update the model.
 
 ## Configuration options
 
@@ -116,40 +120,30 @@ Configured via `run_config=RunConfig(...)`; see [RunConfig](../../agents/run_con
 | `session_resumption` | `types.SessionResumptionConfig \| None` | `None` | Configures transparent session resumption mechanism. |
 | `tool_thread_pool_config` | `ToolThreadPoolConfig \| None` | `None` | Runs tools in a background thread pool executor to keep event loop responsive. |
 
+If you leave `response_modalities` unset, the model responds with audio. Some native-audio models reject a request that names no modality, so `run_live` runs with a copy of your `RunConfig` that sets `response_modalities` to `[types.Modality.AUDIO]`. The `RunConfig` you passed in is not changed. Pass `[types.Modality.TEXT]` if you want text responses.
+
 ## Advanced applications
 
 ### Non-blocking streaming tool callback
 
-Tool functions can declare `input_stream: LiveRequestQueue` as a parameter to stream partial tool results or status updates back to the live session while running in the background:
+A tool written as an async generator function is a streaming tool. ADK starts it as a background task, and each value the tool yields is sent to the model as a function response while the tool keeps running. The following tool reports that a lookup has started before it returns the price:
 
 ```python
-from google.adk.live import LiveRequestQueue
-from google.genai import types
-
-
-async def fetch_stock_ticker(
-    symbol: str, input_stream: LiveRequestQueue
-) -> dict[str, float]:
+async def fetch_stock_ticker(symbol: str):
   """Fetches live stock price while streaming progress."""
-  # Notify live model session that lookup is underway
-  input_stream.send_content(
-      content=types.Content(
-          role="user",
-          parts=[
-              types.Part.from_text(
-                  text=f"Fetching latest price for {symbol}..."
-              )
-          ],
-      )
-  )
+  # Tell the model that the lookup is underway
+  yield {"symbol": symbol, "status": f"Fetching latest price for {symbol}"}
   # Perform lookup
-  return {"symbol": symbol, "price": 154.25}
+  yield {"symbol": symbol, "price": 154.25}
 ```
+
+A streaming tool can also declare a parameter named `input_stream` with the type `LiveRequestQueue`. ADK then gives the tool a queue of its own and copies every request from the session's queue into it, which lets the tool watch the user's audio or video while the conversation continues. ADK leaves `input_stream` out of the function declaration the model sees, so the model never tries to fill it in.
 
 ## Limitations
 
 *   **Gemini Live Model Requirement:** `run_live` requires model endpoints that support the Gemini Multimodal Live API. An `LlmAgent` with no `model` set uses `LlmAgent.DEFAULT_LIVE_MODEL` (`gemini-live-2.5-flash-native-audio`) in live mode.
 *   **Inline Audio Persistence:** Raw PCM audio blobs (`inline_data`) are intentionally omitted from session storage. To retain session audio and video history, set `save_live_blob=True` on `RunConfig`.
+*   **Experimental API:** `run_live` is marked experimental, and its API or behavior may change in future releases.
 
 ## Related guides & samples
 
@@ -157,4 +151,5 @@ async def fetch_stock_ticker(
 *   [LiveRequestQueue](../../live/live_request_queue/index.md) — Guide on real-time input queueing, audio chunking, and non-blocking streaming tools.
 *   [App Container](../../apps/app/index.md) — Guide on bundling agents and plugins into an `App`.
 *   [Live Bidi Streaming Single Agent](../../../../contributing/samples/live/single_agent/agent.py) — Sample single-agent real-time streaming application.
-*   [Live Non-Blocking Tool Agent](../../../../contributing/samples/live/non_blocking_tool_agent/agent.py) — Sample agent using `LiveRequestQueue` in background tool callbacks.
+*   [Live Non-Blocking Tool Agent](../../../../contributing/samples/live/non_blocking_tool_agent/agent.py) is a sample agent whose slow tool is set to `FunctionResponseScheduling.WHEN_IDLE`, so the agent keeps talking with the user while the tool runs.
+*   [Live Bidi Streaming Tools Agent](../../../../contributing/samples/live/tools_agent/agent.py) is a sample with streaming tools, including one that takes `input_stream: LiveRequestQueue` to monitor a video stream.

@@ -211,5 +211,6 @@ closes registered plugins within `plugin_close_timeout`, and flushes
 *   [App Container](../../apps/app/index.md) — Guide on `App` configuration, plugins, and cross-cutting features.
 *   [Runner Execution Cancellation](abort.md) — Guide on halting agent and workflow execution cleanly using abort signals.
 *   [Runner Live Streaming](live.md) — Guide on real-time bidirectional streaming with `run_live` and `LiveRequestQueue`.
+*   [Runner Rewind](rewind.md) covers `rewind_async`, which rewinds a session to the point before a given invocation and reverts the state and artifact changes made after it.
 *   [Session and BaseSessionService](../../sessions/session/index.md) — Guide on session storage backends and state scoping.
 *   [Agent-to-Agent Sample](../../../../contributing/samples/a2a/a2a_basic/agent.py) — Multi-agent application executed via `Runner`.

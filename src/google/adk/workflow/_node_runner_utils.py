@@ -134,6 +134,7 @@ async def run_node_async(
         if (invocation_id or resume_inputs) and not continues_paused_task
         else None
     )
+    node_input: types.Content | None
     if existing_user_content:
       # Resume/retry: recover the original user content.
       node_input = existing_user_content
@@ -151,15 +152,9 @@ async def run_node_async(
     closing_early = False
     try:
       try:
-        should_process_message = bool(
-            new_message
-            and (
-                resume_inputs
-                or continues_paused_task
-                or not existing_user_content
-            )
-        )
-        if should_process_message:
+        if new_message and (
+            resume_inputs or continues_paused_task or not existing_user_content
+        ):
           modified_user_message = (
               await ic.plugin_manager.run_on_user_message_callback(
                   invocation_context=ic, user_message=new_message

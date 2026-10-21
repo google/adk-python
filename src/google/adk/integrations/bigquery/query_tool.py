@@ -250,7 +250,10 @@ def _execute_sql(
                 dry_run=True, create_session=True, labels=bq_job_labels
             ),
         )
-        bq_session_id = session_creator_job.session_info.session_id
+        session_info = session_creator_job.session_info
+        if session_info is None:
+          raise ValueError("BigQuery did not create a session for the query.")
+        bq_session_id = session_info.session_id
         bq_session_dataset_id = session_creator_job.destination.dataset_id
 
         # Remember the BigQuery session info for subsequent queries
@@ -1525,6 +1528,8 @@ def detect_anomalies(
           }
   """
   try:
+    if horizon is None:
+      raise TypeError("horizon must not be None.")
     horizon = int(horizon)
   except (TypeError, ValueError):
     return {
@@ -1533,6 +1538,8 @@ def detect_anomalies(
     }
 
   try:
+    if anomaly_prob_threshold is None:
+      raise TypeError("anomaly_prob_threshold must not be None.")
     anomaly_prob_threshold = float(anomaly_prob_threshold)
   except (TypeError, ValueError):
     return {

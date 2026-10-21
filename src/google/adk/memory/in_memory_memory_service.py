@@ -163,8 +163,11 @@ class InMemoryMemoryService(BaseMemoryService):
       for event in session_events:
         if not event.content or not event.content.parts:
           continue
+        visible_parts = [
+            part for part in event.content.parts if not part.thought
+        ]
         event_text = ' '.join(
-            [part.text for part in event.content.parts if part.text]
+            [part.text for part in visible_parts if part.text]
         )
         words_in_event = _extract_searchable_words(event_text)
         if not words_in_event:
@@ -182,7 +185,15 @@ class InMemoryMemoryService(BaseMemoryService):
               matched_words,
               MemoryEntry(
                   id=event.id,
-                  content=event.content.model_copy(deep=True),
+                  content=event.content.model_copy(
+                      deep=True,
+                      update={
+                          'parts': [
+                              part.model_copy(deep=True)
+                              for part in visible_parts
+                          ]
+                      },
+                  ),
                   author=event.author,
                   timestamp=_utils.format_timestamp(event.timestamp),
               ),

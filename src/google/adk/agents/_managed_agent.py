@@ -53,11 +53,11 @@ from ..utils.context_utils import Aclosing
 from ..utils.env_utils import is_enterprise_mode_enabled
 from ..utils.instructions_utils import inject_session_state
 from ..utils.instructions_utils import InstructionProvider
+from ._streaming_mode import StreamingMode
 from .base_agent import BaseAgent
 from .context import Context
 from .invocation_context import InvocationContext
 from .readonly_context import ReadonlyContext
-from .run_config import StreamingMode
 
 if TYPE_CHECKING:
   from google.genai import Client

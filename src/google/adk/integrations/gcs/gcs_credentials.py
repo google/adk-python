@@ -27,7 +27,8 @@ class GCSCredentialsConfig(BaseGoogleCredentialsConfig):
 
   def __post_init__(self) -> GCSCredentialsConfig:
     """Populate default scope if scopes is None."""
-    super().__post_init__()
+    # pydantic replaces the validator proxy with the function on the class.
+    super().__post_init__()  # type: ignore[operator]
 
     if not self.scopes:
       self.scopes = GCS_DEFAULT_SCOPE

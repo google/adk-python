@@ -45,6 +45,7 @@ from google.genai import types
 import pydantic
 from pydantic import create_model
 from pydantic import fields as pydantic_fields
+from pydantic_core import PydanticUndefined
 from typing_extensions import Annotated
 
 from ..events.event import Event
@@ -298,7 +299,7 @@ def _get_function_fields(
     ann = _collapse_redundant_outer_optional(ann)
 
     if param.default is inspect._empty:
-      default = pydantic_fields.PydanticUndefined
+      default = PydanticUndefined
     else:
       default = param.default
 
@@ -439,9 +440,10 @@ def _build_parameters_json_schema(
 
   # Create a Pydantic model dynamically
   func_name = get_callable_name(func)
-  model = create_model(
+  model: type[pydantic.BaseModel] = create_model(
       f'{func_name}Params',
-      **fields,  # type: ignore[arg-type]
+      # mypy matches the unpacked fields against create_model's typed options.
+      **fields,  # type: ignore[call-overload]
   )
 
   return model.model_json_schema()

@@ -18,6 +18,7 @@ import functools
 import inspect
 import logging
 import re
+from types import TracebackType
 from typing import Any
 from typing import Callable
 from typing import cast
@@ -440,7 +441,7 @@ class FunctionTool(BaseTool):
       target_code = getattr(target.__call__, "__code__", None)
 
     if target_code is not None:
-      curr = tb
+      curr: Optional[TracebackType] = tb
       while curr:
         if curr.tb_frame.f_code is target_code:
           return False

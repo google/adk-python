@@ -76,7 +76,7 @@ class DynamicNodeRun:
   """The branch of the node once it completes."""
 
   task: asyncio.Task[Context] | None = None
-  """The running asyncio Task, or None for a run replayed from cache."""
+  """The running asyncio Task; None once it finishes or for a cached run."""
 
   transfer_to_agent: str | None = None
   """The target agent name if this node execution transferred."""
@@ -697,7 +697,7 @@ class DynamicNodeScheduler:
     else:
       target_node = node.model_copy(update={'name': name})
 
-    run.task = asyncio.create_task(
+    task = asyncio.create_task(
         ctx._run_node_standalone(
             target_node,
             node_input=node_input,
@@ -709,12 +709,17 @@ class DynamicNodeScheduler:
             resume_inputs=actual_resume_inputs,
         )
     )
+    run.task = task
     try:
-      child_ctx = await run.task
+      child_ctx = await task
     except asyncio.CancelledError:
       if node_path in self._state.runs:
         del self._state.runs[node_path]
       raise
+    finally:
+      # The finished task holds the child Context, which holds this scheduler.
+      if run.task is task:
+        run.task = None
     self._record_result(run, child_ctx, node)
     return child_ctx
 

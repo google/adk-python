@@ -110,14 +110,14 @@ class EnvironmentSimulationEngine:
       )
       if generator.random() < injection_config.injection_probability:
         await asyncio.sleep(injection_config.injected_latency_seconds)
-        if injection_config.injected_error:
+        if injection_config.injected_error is not None:
           return {
               "error_code": (
                   injection_config.injected_error.injected_http_error_code
               ),
               "error_message": injection_config.injected_error.error_message,
           }
-        if injection_config.injected_response:
+        if injection_config.injected_response is not None:
           return injection_config.injected_response
 
     # If no injection was applied, fall back to the mock strategy.

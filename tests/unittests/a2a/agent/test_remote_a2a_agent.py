@@ -35,6 +35,13 @@ from a2a.types import Task as A2ATask
 from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskStatus as A2ATaskStatus
 from a2a.types import TaskStatusUpdateEvent
+
+try:
+  from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
+  from a2a.utils.constants import VERSION_HEADER
+except ImportError:
+  PROTOCOL_VERSION_CURRENT = "1.0"
+  VERSION_HEADER = "A2A-Version"
 from fastapi.openapi.models import APIKey as APIKeyScheme
 from fastapi.openapi.models import APIKeyIn
 from google.adk.a2a import _compat
@@ -482,6 +489,49 @@ class TestRemoteA2aAgentResolution:
     assert agent._httpx_client == client
     assert agent._httpx_client_needs_cleanup is True
     assert agent._a2a_client_factory._config.httpx_client == client
+
+  @pytest.mark.asyncio
+  async def test_ensure_resolved_uses_custom_factory(self):
+    """A caller-provided factory subclass creates the remote client."""
+
+    class CustomFactory(ClientFactory):
+
+      def __init__(self, custom_arg: str, config: ClientConfig | None = None):
+        super().__init__(config=config)
+        self.custom_arg = custom_arg
+
+      def create(self, *args, **kwargs):
+        del args, kwargs
+        return custom_client
+
+    custom_client = Mock(spec=A2AClient)
+    factory = CustomFactory(
+        "custom_value", config=ClientConfig(httpx_client=None)
+    )
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(),
+        a2a_client_factory=factory,
+    )
+
+    client = await agent._ensure_resolved()
+
+    try:
+      assert client is custom_client
+      assert isinstance(agent._a2a_client_factory, CustomFactory)
+      assert agent._a2a_client_factory is not factory
+      assert agent._a2a_client_factory.custom_arg == "custom_value"
+      assert (
+          agent._a2a_client_factory._config.httpx_client == agent._httpx_client
+      )
+      if _compat.IS_A2A_V1:
+        assert (
+            agent._a2a_client_factory._httpx_client.headers[VERSION_HEADER]
+            == PROTOCOL_VERSION_CURRENT
+        )
+      assert factory._config.httpx_client is None
+    finally:
+      await agent.cleanup()
 
   @pytest.mark.asyncio
   async def test_ensure_httpx_client_reregisters_transports_with_new_client(
@@ -1260,34 +1310,30 @@ class TestRemoteA2aAgentResolution:
 
   @pytest.mark.asyncio
   async def test_ensure_resolved_with_direct_agent_card_with_factory(self):
-    """Test _ensure_resolved with direct agent card."""
+    """Test _ensure_resolved with direct agent card and custom factory."""
     agent_card = create_test_agent_card()
+    factory = ClientFactory(
+        ClientConfig(),
+    )
+    mock_a2a_client = Mock()
+    factory.create = Mock(return_value=mock_a2a_client)
     agent = RemoteA2aAgent(
         name="test_agent",
         agent_card=agent_card,
-        a2a_client_factory=ClientFactory(
-            ClientConfig(),
-        ),
+        a2a_client_factory=factory,
     )
 
     with patch("httpx.AsyncClient") as mock_client_class:
       mock_client = AsyncMock()
+      mock_client.headers = {}
       mock_client_class.return_value = mock_client
 
-      # Rebinding reconstructs the factory through
-      # ``_compat.A2AClientFactory``, so the patch must target it there.
-      with patch(
-          "google.adk.a2a._compat.A2AClientFactory"
-      ) as mock_factory_class:
-        mock_a2a_client = Mock()
-        mock_factory = Mock()
-        mock_factory.create.return_value = mock_a2a_client
-        mock_factory_class.return_value = mock_factory
+      await agent._ensure_resolved(Mock())
 
-        await agent._ensure_resolved(Mock())
-
-        assert agent._is_resolved is True
-        assert agent._a2a_client == mock_a2a_client
+      assert agent._is_resolved is True
+      assert agent._a2a_client == mock_a2a_client
+      assert agent._a2a_client_factory is not factory
+      assert agent._a2a_client_factory._config.httpx_client == mock_client
 
   @pytest.mark.asyncio
   async def test_ensure_resolved_with_url_source(self):
@@ -5442,6 +5488,47 @@ class TestRemoteA2aAgentCleanup:
     # Should not raise exception
     await agent.cleanup()
     assert agent._httpx_client is None
+
+  @pytest.mark.asyncio
+  async def test_two_agents_with_same_custom_factory_are_isolated(self):
+    """Two agents sharing a custom factory stay isolated."""
+
+    class CustomFactory(ClientFactory):
+
+      def create(self, *args, **kwargs):
+        del args, kwargs
+        return custom_client
+
+    custom_client = Mock(spec=A2AClient)
+    factory = CustomFactory(ClientConfig(httpx_client=None))
+
+    agent1 = RemoteA2aAgent(
+        name="test_agent_1",
+        agent_card=self.agent_card,
+        a2a_client_factory=factory,
+    )
+    agent2 = RemoteA2aAgent(
+        name="test_agent_2",
+        agent_card=self.agent_card,
+        a2a_client_factory=factory,
+    )
+
+    client1 = await agent1._ensure_resolved()
+    client2 = await agent2._ensure_resolved()
+
+    assert client1 is custom_client
+    assert client2 is custom_client
+    assert isinstance(agent1._a2a_client_factory, CustomFactory)
+    assert isinstance(agent2._a2a_client_factory, CustomFactory)
+    assert agent1._a2a_client_factory is not factory
+    assert agent2._a2a_client_factory is not factory
+    assert agent1._a2a_client_factory is not agent2._a2a_client_factory
+    assert agent1._httpx_client is not agent2._httpx_client
+
+    await agent1.cleanup()
+    await agent2.cleanup()
+
+    assert factory._config.httpx_client is None
 
 
 class TestRemoteA2aAgentIntegration:
