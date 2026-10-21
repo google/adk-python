@@ -23,6 +23,7 @@ from unittest import mock
 from unittest.mock import AsyncMock
 
 from google.adk.models.apigee_llm import ApigeeLlm
+from google.adk.models.apigee_llm import ChatCompletionsResponseHandler
 from google.adk.models.apigee_llm import CompletionsHTTPClient
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -812,6 +813,81 @@ async def test_streaming_chat_completions_malformed_json_skipped():
   assert len(responses) == 2
   assert responses[0].content.parts[0].text == 'Hello'
   assert responses[1].content.parts[0].text == ' World'
+
+
+def test_streaming_tool_call_without_index_is_one_call() -> None:
+  """Streamed argument fragments without an index belong to the call before."""
+  handler = ChatCompletionsResponseHandler()
+  chunks = [
+      {
+          'choices': [{
+              'delta': {
+                  'role': 'assistant',
+                  'tool_calls': [{
+                      'id': 'call_1',
+                      'type': 'function',
+                      'function': {'name': 'get_weather', 'arguments': ''},
+                  }],
+              }
+          }]
+      },
+      {
+          'choices': [{
+              'delta': {
+                  'tool_calls': [{'function': {'arguments': '{"city": '}}]
+              }
+          }]
+      },
+      {
+          'choices': [{
+              'delta': {'tool_calls': [{'function': {'arguments': '"Paris"}'}}]}
+          }]
+      },
+      {'choices': [{'delta': {}, 'finish_reason': 'tool_calls'}]},
+  ]
+
+  responses = [r for chunk in chunks for r in handler.process_chunk(chunk)]
+
+  function_calls = [
+      p.function_call for p in _response_parts(responses[-1]) if p.function_call
+  ]
+  assert len(function_calls) == 1
+  assert function_calls[0].name == 'get_weather'
+  assert function_calls[0].id == 'call_1'
+  assert function_calls[0].args == {'city': 'Paris'}
+
+
+def test_streaming_parallel_tool_calls_without_index_stay_apart() -> None:
+  """Calls that open with their own id get their own slot without an index."""
+  handler = ChatCompletionsResponseHandler()
+
+  def delta(tool_call: dict[str, object]) -> dict[str, object]:
+    return {'choices': [{'delta': {'tool_calls': [tool_call]}}]}
+
+  chunks = [
+      delta({
+          'id': 'call_a',
+          'type': 'function',
+          'function': {'name': 'get_weather', 'arguments': '{"city": '},
+      }),
+      delta({'function': {'arguments': '"Paris"}'}}),
+      delta({
+          'id': 'call_b',
+          'type': 'function',
+          'function': {'name': 'get_time', 'arguments': '{"zone": "UTC"}'},
+      }),
+      {'choices': [{'delta': {}, 'finish_reason': 'tool_calls'}]},
+  ]
+
+  responses = [r for chunk in chunks for r in handler.process_chunk(chunk)]
+
+  function_calls = [
+      p.function_call for p in _response_parts(responses[-1]) if p.function_call
+  ]
+  assert [(c.id, c.name, c.args) for c in function_calls] == [
+      ('call_a', 'get_weather', {'city': 'Paris'}),
+      ('call_b', 'get_time', {'zone': 'UTC'}),
+  ]
 
 
 @pytest.mark.asyncio

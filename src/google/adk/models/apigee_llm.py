@@ -1310,6 +1310,26 @@ class ChatCompletionsResponseHandler:
       parts.append(part)
     return parts
 
+  def _infer_tool_call_index(
+      self, tool_call: dict[str, Any], is_streaming: bool
+  ) -> int:
+    """Picks the slot of a tool call that arrives without an index.
+
+    A complete call (non-streaming, or a streamed call that opens with a new
+    id) gets a new slot. A streamed fragment that carries no id continues the
+    call before it.
+    """
+    next_index = len(self.tool_call_parts)
+    if not is_streaming:
+      return next_index
+    tool_call_id = tool_call.get('id')
+    if tool_call_id:
+      for index, part in self.tool_call_parts.items():
+        if part.function_call and part.function_call.id == tool_call_id:
+          return index
+      return next_index
+    return max(self.tool_call_parts, default=0)
+
   def _upsert_tool_call(
       self, tool_call: dict[str, Any], is_streaming: bool = False
   ) -> types.Part:
@@ -1328,9 +1348,7 @@ class ChatCompletionsResponseHandler:
     """
     index = tool_call.get('index')
     if index is None:
-      # If index is not provided, we might be in a non-streaming response.
-      # We just append it as a new tool call.
-      index = len(self.tool_call_parts)
+      index = self._infer_tool_call_index(tool_call, is_streaming)
 
     if index not in self.tool_call_parts:
       self.tool_call_parts[index] = types.Part(
