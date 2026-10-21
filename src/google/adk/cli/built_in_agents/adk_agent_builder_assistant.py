@@ -96,7 +96,9 @@ class AgentBuilderAssistant:
         # File management tools (multi-file support)
         FunctionTool(read_files),  # Read multiple files
         FunctionTool(write_files),  # Write multiple files
-        FunctionTool(delete_files),  # Delete multiple files
+        FunctionTool(
+            delete_files, require_confirmation=True
+        ),  # Delete multiple files
         FunctionTool(cleanup_unused_files),
         # ADK source code search (regex-based)
         FunctionTool(search_adk_source),  # Search ADK source with regex
