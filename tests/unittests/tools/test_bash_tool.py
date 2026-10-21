@@ -295,11 +295,28 @@ class TestExecuteBashTool:
 
   @pytest.mark.asyncio
   async def test_timeout(self, workspace, tool_context_confirmed):
-    tool = bash_tool.ExecuteBashTool(workspace=workspace)
+    tool = bash_tool.ExecuteBashTool(
+        workspace=workspace,
+        policy=bash_tool.BashToolPolicy(timeout_seconds=0),
+    )
+    exit_fut = asyncio.get_running_loop().create_future()
     mock_process = mock.AsyncMock()
     mock_process.pid = 12345
     mock_process.stdout = None
     mock_process.stderr = None
+    mock_process.returncode = None
+
+    async def _wait():
+      if mock_process.returncode is not None:
+        return mock_process.returncode
+      return await exit_fut
+
+    def _killpg(pid, sig):
+      mock_process.returncode = -sig
+      if not exit_fut.done():
+        exit_fut.set_result(-sig)
+
+    mock_process.wait = _wait
     with (
         mock.patch.object(
             asyncio,
@@ -307,10 +324,7 @@ class TestExecuteBashTool:
             autospec=True,
             return_value=mock_process,
         ),
-        mock.patch.object(
-            asyncio, "wait_for", autospec=True, side_effect=asyncio.TimeoutError
-        ),
-        mock.patch("os.killpg") as mock_killpg,
+        mock.patch("os.killpg", side_effect=_killpg) as mock_killpg,
     ):
       result = await tool.run_async(
           args={"command": "python scripts/do_thing.py"},
@@ -469,6 +483,73 @@ class TestOutputLimits:
     assert len(result["stdout"]) < 300
     assert result["returncode"] == -signal.SIGKILL
 
+  @pytest.mark.asyncio
+  async def test_timeout_setsid_child_holding_pipe_cleans_up(
+      self, workspace, tool_context_confirmed
+  ):
+    """Timeout must not leave wait/drain tasks pending when a setsid child holds a pipe.
+
+    A descendant that calls setsid() leaves the process group, so killpg does
+    not close its inherited stdout. Cleanup must cancel the explicit waiter and
+    readers instead of leaving process.wait() pending inside a gather.
+    """
+    import time
+
+    policy = bash_tool.BashToolPolicy(
+        timeout_seconds=1, max_output_bytes_per_stream=64
+    )
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    (workspace / "setsid_hold.py").write_text(
+        "import os\n"
+        "import sys\n"
+        "import time\n"
+        "if os.fork() == 0:\n"
+        "    os.setsid()\n"
+        "    while True:\n"
+        '        sys.stdout.buffer.write(b"z" * 1024)\n'
+        "        sys.stdout.buffer.flush()\n"
+        "        time.sleep(0.05)\n"
+        "else:\n"
+        "    time.sleep(60)\n"
+    )
+    loop = asyncio.get_running_loop()
+    reports = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _, context: reports.append(context))
+    try:
+      started = time.monotonic()
+      result = await tool.run_async(
+          args={"command": "python3 setsid_hold.py"},
+          tool_context=tool_context_confirmed,
+      )
+      elapsed = time.monotonic() - started
+      for _ in range(5):
+        await asyncio.sleep(0)
+      gc.collect()
+      await asyncio.sleep(0)
+    finally:
+      loop.set_exception_handler(previous_handler)
+
+    assert "timed out" in result["error"]
+    # Must return after timeout + drain grace, not after the child's 60s sleep.
+    assert elapsed < 5.0
+    leftover = [
+        t
+        for t in asyncio.all_tasks()
+        if not t.done()
+        and t is not asyncio.current_task()
+        and getattr(getattr(t, "get_coro", lambda: None)(), "__name__", None)
+        in {"_drain_stream", "wait"}
+    ]
+    assert leftover == []
+    noisy = [
+        r
+        for r in reports
+        if "never retrieved" in r.get("message", "")
+        or "shielded" in r.get("message", "").lower()
+    ]
+    assert noisy == []
+
   def test_rejects_negative_output_limit(self):
     with pytest.raises(ValueError, match="max_output_bytes_per_stream"):
       bash_tool.BashToolPolicy(max_output_bytes_per_stream=-1)
@@ -574,5 +655,8 @@ class TestOutputLimits:
     finally:
       loop.set_exception_handler(previous_handler)
     assert [
-        r for r in reports if "never retrieved" in r.get("message", "")
+        r
+        for r in reports
+        if "never retrieved" in r.get("message", "")
+        or "shielded" in r.get("message", "").lower()
     ] == []

@@ -111,12 +111,14 @@ async def _drain_stream(
     output.append(chunk)
 
 
-async def _finish_readers(readers: list[asyncio.Task[None]]) -> None:
-  """Waits briefly for readers to reach EOF, then cancels any stragglers."""
-  _, pending = await asyncio.wait(readers, timeout=_DRAIN_GRACE_SECONDS)
+async def _finish_tasks(tasks: list[asyncio.Task]) -> None:
+  """Waits briefly for tasks to finish, then cancels any stragglers."""
+  if not tasks:
+    return
+  _, pending = await asyncio.wait(tasks, timeout=_DRAIN_GRACE_SECONDS)
   for task in pending:
     task.cancel()
-  await asyncio.gather(*readers, return_exceptions=True)
+  await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -321,9 +323,9 @@ class ExecuteBashTool(BaseTool):
 
     stdout = _BoundedOutput(self._policy.max_output_bytes_per_stream)
     stderr = _BoundedOutput(self._policy.max_output_bytes_per_stream)
-    readers: list[asyncio.Task[None]] = []
+    readers: list[asyncio.Task] = []
+    waiter: Optional[asyncio.Task] = None
     process: Optional[asyncio.subprocess.Process] = None
-    completion: Optional[asyncio.Future[Any]] = None
     try:
       process = await asyncio.create_subprocess_exec(
           *shlex.split(command),
@@ -337,32 +339,40 @@ class ExecuteBashTool(BaseTool):
           asyncio.create_task(_drain_stream(process.stdout, stdout)),
           asyncio.create_task(_drain_stream(process.stderr, stderr)),
       ]
-
-      completion = asyncio.gather(*readers, process.wait())
+      # Explicit waiter instead of gather+shield: on 3.14 shield logs
+      # CancelledError, and a gather's process.wait() can stay pending when
+      # a setsid descendant keeps a pipe open after timeout cancel.
+      waiter = asyncio.create_task(process.wait())
+      tracked = [*readers, waiter]
       try:
-        # Shield so a timeout does not cancel the readers: they must keep
-        # draining the pipes until EOF for the killed process to be reaped.
-        await asyncio.wait_for(
-            asyncio.shield(completion),
+        _done, pending = await asyncio.wait(
+            tracked,
             timeout=self._policy.timeout_seconds,
+            return_when=asyncio.ALL_COMPLETED,
         )
-      except asyncio.TimeoutError:
-        try:
-          if process.pid:
-            _kill_process_group(process)
-        except ProcessLookupError:
-          pass
-        await _finish_readers(readers)
-        await process.wait()
-        return {
-            "error": (
-                f"Command timed out after {self._policy.timeout_seconds}"
-                " seconds."
-            ),
-            "stdout": stdout.render("stdout"),
-            "stderr": stderr.render("stderr"),
-            "returncode": process.returncode,
-        }
+        if pending:
+          try:
+            if process.pid:
+              _kill_process_group(process)
+          except ProcessLookupError:
+            pass
+          await _finish_tasks(tracked)
+          if process.returncode is None:
+            try:
+              await asyncio.wait_for(
+                  process.wait(), timeout=_DRAIN_GRACE_SECONDS
+              )
+            except asyncio.TimeoutError:
+              pass
+          return {
+              "error": (
+                  f"Command timed out after {self._policy.timeout_seconds}"
+                  " seconds."
+              ),
+              "stdout": stdout.render("stdout"),
+              "stderr": stderr.render("stderr"),
+              "returncode": process.returncode,
+          }
       finally:
         try:
           if process.pid:
@@ -382,26 +392,17 @@ class ExecuteBashTool(BaseTool):
           _kill_process_group(process)
       except ProcessLookupError:
         pass
-      if completion is not None and not completion.done():
-        completion.cancel()
-      for task in readers:
+      tracked = [t for t in (*readers, waiter) if t is not None]
+      for task in tracked:
         task.cancel()
-      if readers:
-        await asyncio.gather(*readers, return_exceptions=True)
-      if completion is not None:
-        # Retrieve the cancelled gather's result so asyncio does not report
-        # "_GatheringFuture exception was never retrieved".
-        await asyncio.gather(completion, return_exceptions=True)
-      if process is not None and process.returncode is None:
-        try:
-          await asyncio.shield(process.wait())
-        except Exception:  # pylint: disable=broad-except
-          pass
+      if tracked:
+        await asyncio.gather(*tracked, return_exceptions=True)
       raise
     except Exception as e:  # pylint: disable=broad-except
       logger.exception("ExecuteBashTool execution failed")
-      if readers:
-        await _finish_readers(readers)
+      tracked = [t for t in (*readers, waiter) if t is not None]
+      if tracked:
+        await _finish_tasks(tracked)
       return {
           "error": f"Execution failed: {str(e)}",
           "stdout": stdout.render("stdout"),
