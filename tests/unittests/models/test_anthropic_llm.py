@@ -4256,6 +4256,7 @@ def test_to_google_genai_finish_reason(stop_reason, expected_finish_reason):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("has_content", [True, False])
 @pytest.mark.parametrize(
     "stop_reason,expected_finish_reason",
     [
@@ -4265,15 +4266,17 @@ def test_to_google_genai_finish_reason(stop_reason, expected_finish_reason):
     ],
 )
 async def test_non_streaming_sets_finish_reason(
-    stop_reason, expected_finish_reason
+    stop_reason, expected_finish_reason, has_content
 ):
   """finish_reason is populated on the non-streaming LlmResponse."""
   llm = AnthropicLlm(model="claude-sonnet-4-20250514")
   mock_message = anthropic_types.Message(
       id="msg_test",
-      content=[
-          anthropic_types.TextBlock(text="Hi", type="text", citations=None)
-      ],
+      content=(
+          [anthropic_types.TextBlock(text="Hi", type="text", citations=None)]
+          if has_content
+          else []
+      ),
       model="claude-sonnet-4-20250514",
       role="assistant",
       stop_reason=stop_reason,
@@ -4304,10 +4307,31 @@ async def test_non_streaming_sets_finish_reason(
 
   assert len(responses) == 1
   assert responses[0].finish_reason == expected_finish_reason
+  expected_error = (
+      expected_finish_reason
+      if not has_content and expected_finish_reason != types.FinishReason.STOP
+      else None
+  )
+  assert responses[0].error_code == expected_error
+  assert bool(responses[0].error_message) == bool(expected_error)
+  assert responses[0].usage_metadata.prompt_token_count == 5
+  assert responses[0].usage_metadata.candidates_token_count == 2
+  assert responses[0].model_version == "claude-sonnet-4-20250514"
 
 
 @pytest.mark.asyncio
-async def test_streaming_sets_finish_reason():
+@pytest.mark.parametrize("has_content", [True, False])
+@pytest.mark.parametrize(
+    "stop_reason,expected_finish_reason",
+    [
+        ("end_turn", types.FinishReason.STOP),
+        ("max_tokens", types.FinishReason.MAX_TOKENS),
+        ("refusal", types.FinishReason.SAFETY),
+    ],
+)
+async def test_streaming_sets_finish_reason(
+    stop_reason, expected_finish_reason, has_content
+):
   """finish_reason is populated on the final streaming LlmResponse."""
   llm = AnthropicLlm(model="claude-sonnet-4-20250514")
 
@@ -4332,11 +4356,15 @@ async def test_streaming_sets_finish_reason():
       MagicMock(type="content_block_stop", index=0),
       MagicMock(
           type="message_delta",
-          delta=MagicMock(stop_reason="max_tokens"),
+          delta=MagicMock(stop_reason=stop_reason),
           usage=MagicMock(output_tokens=1),
       ),
       MagicMock(type="message_stop"),
   ]
+  if not has_content:
+    events = [
+        event for event in events if not event.type.startswith("content_")
+    ]
 
   mock_client = MagicMock()
   mock_client.messages.create = AsyncMock(
@@ -4355,7 +4383,17 @@ async def test_streaming_sets_finish_reason():
     ]
 
   final = responses[-1]
-  assert final.finish_reason == types.FinishReason.MAX_TOKENS
+  assert final.finish_reason == expected_finish_reason
+  expected_error = (
+      expected_finish_reason
+      if not has_content and expected_finish_reason != types.FinishReason.STOP
+      else None
+  )
+  assert final.error_code == expected_error
+  assert bool(final.error_message) == bool(expected_error)
+  assert final.usage_metadata.prompt_token_count == 5
+  assert final.usage_metadata.candidates_token_count == 1
+  assert final.model_version == "claude-sonnet-4-20250514"
 
 
 def _make_rate_limit_error() -> RateLimitError:
