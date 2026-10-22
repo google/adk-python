@@ -387,6 +387,7 @@ def test_to_agent_engine_raises_when_explicit_config_file_missing(
         ("", "Name From Config", "Name From Config"),
         ("Name From CLI", "Name From Config", "Name From CLI"),
         ("", None, "agent"),
+        ("", "", "agent"),
     ],
 )
 def test_to_agent_engine_display_name_precedence(

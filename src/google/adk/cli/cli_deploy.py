@@ -1589,7 +1589,7 @@ def to_agent_engine(
             f' {display_name}'
         )
       agent_config['display_name'] = display_name
-    elif 'display_name' not in agent_config:
+    elif not agent_config.get('display_name'):
       agent_config['display_name'] = app_name
     if description:
       if 'description' in agent_config:
