@@ -1129,6 +1129,36 @@ class ChatCompletionsResponseHandler:
 
     finish_reason = choice.get('finish_reason')
     if finish_reason:
+      if finish_reason == 'length' and self._has_incomplete_tool_call_args():
+        error_response = LlmResponse(
+            error_code=types.FinishReason.MAX_TOKENS,
+            error_message=(
+                'Tool call arguments were truncated while streaming and'
+                ' could not be parsed as valid JSON. Increase'
+                ' `max_output_tokens` and retry.'
+            ),
+            finish_reason=types.FinishReason.MAX_TOKENS,
+            custom_metadata=self.custom_metadata,
+            model_version=self.model,
+            usage_metadata=usage_metadata,
+            logprobs_result=logprobs_result,
+        )
+        # Match LiteLlm: retain text separately, but discard the entire call
+        # batch so no complete call can execute alongside an incomplete one.
+        if self.content_parts:
+          yield error_response.model_copy(
+              update={
+                  'content': types.Content(
+                      role=role,
+                      parts=[types.Part.from_text(text=self.content_parts)],
+                  ),
+                  'error_message': 'Maximum tokens reached',
+              }
+          )
+          # Usage belongs to one final response, not both persisted events.
+          error_response.usage_metadata = None
+        yield error_response
+        return
       yield LlmResponse(
           content=types.Content(
               role=role,
@@ -1142,6 +1172,33 @@ class ChatCompletionsResponseHandler:
       )
       # Exit because the 'finish_reason' chunk is the final chunk.
       return
+
+  def _has_incomplete_tool_call_args(self) -> bool:
+    """Checks all calls before the length path can expose a final call batch."""
+    for index in self.tool_call_parts:
+      deltas = self._tool_call_deltas.get(index, [])
+      arguments = ''.join(deltas)
+      if not arguments.strip():
+        return True
+      try:
+        _json_utils.safe_json_loads(arguments)
+      except ValueError:
+        # Some backends send complete JSON objects per delta. Preserve the
+        # existing merge fallback, but never let it discard a bad fragment.
+        merged_args = {}
+        for delta in deltas:
+          if not delta.strip():
+            continue
+          try:
+            parsed_delta = _json_utils.safe_json_loads(delta)
+          except ValueError:
+            return True
+          if not isinstance(parsed_delta, dict):
+            return True
+          merged_args.update(parsed_delta)
+        if not merged_args:
+          return True
+    return False
 
   def _map_finish_reason(self, reason: str | None) -> types.FinishReason:
     if reason == 'stop':
