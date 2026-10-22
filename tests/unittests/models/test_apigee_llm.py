@@ -23,6 +23,7 @@ from unittest import mock
 from unittest.mock import AsyncMock
 
 from google.adk.models.apigee_llm import ApigeeLlm
+from google.adk.models.apigee_llm import ChatCompletionsResponseHandler
 from google.adk.models.apigee_llm import CompletionsHTTPClient
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -979,6 +980,50 @@ def test_parse_response_usage_metadata() -> None:
   assert usage_metadata.candidates_token_count == 5
   assert usage_metadata.total_token_count == 15
   assert usage_metadata.thoughts_token_count == 4
+
+
+def test_parse_response_usage_metadata_cached_and_reasoning() -> None:
+  """Non-stream response maps reasoning and cached prompt tokens."""
+  client = CompletionsHTTPClient(base_url='http://test')
+  response_dict = {
+      'choices': [{
+          'message': {'role': 'assistant', 'content': 'hello'},
+          'finish_reason': 'stop',
+      }],
+      'usage': {
+          'prompt_tokens': 100,
+          'completion_tokens': 400,
+          'total_tokens': 500,
+          'completion_tokens_details': {'reasoning_tokens': 300},
+          'prompt_tokens_details': {'cached_tokens': 64},
+      },
+  }
+  llm_response = client._parse_response(response_dict)
+  usage_metadata = llm_response.usage_metadata
+  assert usage_metadata is not None
+  assert usage_metadata.thoughts_token_count == 300
+  assert usage_metadata.cached_content_token_count == 64
+
+
+def test_stream_chunk_usage_metadata_carries_reasoning_and_cached() -> None:
+  """Streamed final chunk carries reasoning and cached prompt tokens."""
+  handler = ChatCompletionsResponseHandler()
+  chunk = {
+      'model': 'test-model',
+      'choices': [{'delta': {'content': 'hi'}, 'finish_reason': 'stop'}],
+      'usage': {
+          'prompt_tokens': 100,
+          'completion_tokens': 400,
+          'total_tokens': 500,
+          'completion_tokens_details': {'reasoning_tokens': 300},
+          'prompt_tokens_details': {'cached_tokens': 64},
+      },
+  }
+  responses = list(handler.process_chunk(chunk))
+  usage_metadata = responses[-1].usage_metadata
+  assert usage_metadata is not None
+  assert usage_metadata.thoughts_token_count == 300
+  assert usage_metadata.cached_content_token_count == 64
 
 
 @pytest.mark.asyncio
