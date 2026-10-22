@@ -962,20 +962,11 @@ async def test_list_sessions_filters_other_apps(mock_firestore_client):
 
 
 @pytest.mark.asyncio
-async def test_list_sessions_with_empty_user_id_lists_only_that_user(
+async def test_list_sessions_with_empty_user_id_returns_no_sessions(
     mock_firestore_client,
 ):
+  """user_id="" must not fall through to the all-users query."""
   service = FirestoreSessionService(client=mock_firestore_client)
-  root_coll = mock_firestore_client.collection.return_value
-  users_coll = root_coll.document.return_value.collection.return_value
-  user_doc_ref = users_coll.document.return_value
-  user_doc_ref.collection.return_value.where.return_value.get = mock.AsyncMock(
-      return_value=[]
-  )
-  user_doc_ref.get = mock.AsyncMock(return_value=_stored_snapshot(None))
-  root_coll.document.return_value.get = mock.AsyncMock(
-      return_value=_stored_snapshot(None)
-  )
   mock_firestore_client.collection_group.return_value.where.return_value.get = (
       mock.AsyncMock(return_value=[])
   )
@@ -984,7 +975,6 @@ async def test_list_sessions_with_empty_user_id_lists_only_that_user(
 
   assert response.sessions == []
   mock_firestore_client.collection_group.assert_not_called()
-  users_coll.document.assert_any_call("")
 
 
 @pytest.mark.asyncio

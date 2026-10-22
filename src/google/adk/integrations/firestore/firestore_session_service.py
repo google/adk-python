@@ -368,6 +368,10 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
     """Lists sessions from Firestore."""
+    if user_id == "":
+      # Firestore rejects a document path with an empty segment, so no session
+      # can be stored for this user, and querying for one would fail.
+      return ListSessionsResponse()
     if user_id is not None:
       query = self._get_sessions_ref(app_name, user_id).where(
           filter=FieldFilter("appName", "==", app_name)
