@@ -3,9 +3,24 @@
 ## [2.13.0](https://github.com/google/adk-python/compare/v2.12.0...v2.13.0) (2026-10-22)
 
 
+### Highlights
+
+This release stabilizes mature core features while introducing LLM-powered workflow classification, interactive live audio capabilities, and major execution performance improvements.
+
+* **Stability**: Access 12 mature experimental features now promoted to stable status. ([ea298d4](https://github.com/google/adk-python/commit/ea298d4bde4477daa6c419d45637f339eec86d58))
+* **Classifiers**: Direct workflow routing automatically using new structured LLM classifiers and classifier nodes. ([e8c4bac](https://github.com/google/adk-python/commit/e8c4bacdfe675ceb5adcaf24ea005af94d271c68))
+* **Live Audio**: Enable natural real-time voice interactions with barge-in support alongside speech-to-text and text-to-speech integration. ([2e7ef92](https://github.com/google/adk-python/commit/2e7ef926c953e5daab31cbc7ccb52fc77ebd9ae6))
+* **Performance**: Enjoy up to 8x faster execution turns for string-model agents and reduced event-loading overhead. ([772f139](https://github.com/google/adk-python/commit/772f1396244ac7c3381ee7cfe22530899b428de2))
+
+#### Breaking changes
+* **Telemetry**: Update custom telemetry consumers to use modern OpenTelemetry GenAI semantic conventions instead of the deprecated `call_llm` span.
+
+<details>
+<summary>All changes</summary>
+
 ### ⚠ BREAKING CHANGES
 
-* **telemetry:** Deprecate `call_llm` span and OpenTelemetry 1.36 GenAI semconv
+* **telemetry:** deprecate `call_llm` span and OpenTelemetry 1.36 GenAI semconv
 
 ### Features
 
@@ -19,7 +34,7 @@
 * honor ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS ([b592dee](https://github.com/google/adk-python/commit/b592dee0a7ca1e1f9fb84b40c808fda16776b57e)), closes [#5114](https://github.com/google/adk-python/issues/5114)
 * **integrations:** add TypesafeClassifier for TypeSafe's Jev models ([ddf8c55](https://github.com/google/adk-python/commit/ddf8c55eb6bc5e0c5fb90acbed3b66af939f7d7a))
 * **integrations:** keep MongoDB credentials out of Agent Engine packages ([ab5cb45](https://github.com/google/adk-python/commit/ab5cb4591c091b37de90d3596aea023cae376d55))
-* **live:** Add barge-in support to CascadeLiveConnection ([2e7ef92](https://github.com/google/adk-python/commit/2e7ef926c953e5daab31cbc7ccb52fc77ebd9ae6))
+* **live:** add barge-in support to CascadeLiveConnection ([2e7ef92](https://github.com/google/adk-python/commit/2e7ef926c953e5daab31cbc7ccb52fc77ebd9ae6))
 * **live:** add Gemini speech-to-text and text-to-speech for CascadeLive ([f78149a](https://github.com/google/adk-python/commit/f78149a97e109e9c947ade06e3a9ab8a45385e0e))
 * **live:** add ZIP_STORED visual frame pack and unpack helpers ([17d8a5a](https://github.com/google/adk-python/commit/17d8a5aeaa2b6a97ad042cb97e400985ef74ba0b))
 * make MongoDbToolset picklable for Agent Engine ([2f6c666](https://github.com/google/adk-python/commit/2f6c6664a8d3cdf9151ac585bcfe6cb2c0f78d52))
@@ -32,13 +47,11 @@
 * seed adk web sessions from initial_state.json ([3c8c63e](https://github.com/google/adk-python/commit/3c8c63e41b3efca99e20b0b06804ed6b69b1dbf1)), closes [#4961](https://github.com/google/adk-python/issues/4961)
 * support Atlas Automated Embedding in MongoDB search ([8bbfc33](https://github.com/google/adk-python/commit/8bbfc33a54f92be11283c25a7c4a2b709f9cc3e3))
 * support BaseLlm instances in evaluation and user simulation ([cb48b91](https://github.com/google/adk-python/commit/cb48b91981c7306b3110435019e19047b712a7eb)), closes [#3400](https://github.com/google/adk-python/issues/3400)
-* support BaseLlm instances in evaluation and user simulation ([c12392e](https://github.com/google/adk-python/commit/c12392ea5d29c107217365603aea85275f262ec1)), closes [#3400](https://github.com/google/adk-python/issues/3400)
 * support extra packages in cloud deployments ([18a41a5](https://github.com/google/adk-python/commit/18a41a543f2db1dd8856b8f887d48d0c4c2ab56e)), closes [#4980](https://github.com/google/adk-python/issues/4980)
 * surface Vertex rubric verdicts and explanations in eval results ([bc220d2](https://github.com/google/adk-python/commit/bc220d2ef5da6d36d707baacc04760d4f57afbe6)), closes [#7350](https://github.com/google/adk-python/issues/7350)
 * **telemetry:** count conversation compactions per workflow ([d01d5d8](https://github.com/google/adk-python/commit/d01d5d840832df35d536dcf154dc2575348ca5cc))
-* **telemetry:** Deprecate `call_llm` span and OpenTelemetry 1.36 GenAI semconv ([7838488](https://github.com/google/adk-python/commit/783848821aabc6656a79949996c31608d5043606))
-* **telemetry:** Report tool call content under the semconv attributes ([5f0babc](https://github.com/google/adk-python/commit/5f0babc9c59a03005502504713d9f4bd0e5cca55))
-* **telemetry:** Serve the elided LLM content to the ADK Web UI ([f7e3f12](https://github.com/google/adk-python/commit/f7e3f127f3163af9da77ef82624f3b2289ebf25c))
+* **telemetry:** report tool call content under the semconv attributes ([5f0babc](https://github.com/google/adk-python/commit/5f0babc9c59a03005502504713d9f4bd0e5cca55))
+* **telemetry:** serve the elided LLM content to the ADK Web UI ([f7e3f12](https://github.com/google/adk-python/commit/f7e3f127f3163af9da77ef82624f3b2289ebf25c))
 * **tools:** add ForceEscalationPlugin for deterministic model consultation ([a84d978](https://github.com/google/adk-python/commit/a84d978e213d8c788bf719b35f103be8c82ef02d))
 * **tools:** infer Workflow input_schema from START successors in NodeTool ([4ec4af1](https://github.com/google/adk-python/commit/4ec4af1959471bf3445d66bb7a25680865187c8a))
 * **tools:** measure model consultation escalations, tokens, and cost ([f02b89c](https://github.com/google/adk-python/commit/f02b89c398ead95eda1748e771ef9c91c5675f11))
@@ -137,7 +150,7 @@
 * support callables with positional-only arguments in FunctionTool ([12726f7](https://github.com/google/adk-python/commit/12726f7a9775dfb46eddea044742efd89956ac1e)), closes [#7382](https://github.com/google/adk-python/issues/7382)
 * support unhashable callable tools ([56ac304](https://github.com/google/adk-python/commit/56ac304859b35906f12171d1a6aac489a0ffbffb))
 * surface HITL pauses in AgentTool instead of returning "" ([9a5510e](https://github.com/google/adk-python/commit/9a5510e09b788d114cedfb07119a0c9cd4cc527b)), closes [#7245](https://github.com/google/adk-python/issues/7245)
-* **telemetry:** Drop the call_llm span under telemetry schema v2 ([5909a0e](https://github.com/google/adk-python/commit/5909a0ebabdf5786397b68babf1a1fa15aea22ce))
+* **telemetry:** drop the call_llm span under telemetry schema v2 ([5909a0e](https://github.com/google/adk-python/commit/5909a0ebabdf5786397b68babf1a1fa15aea22ce))
 * tolerate non-UTF-8 artifact metadata in FileArtifactService ([69c0b00](https://github.com/google/adk-python/commit/69c0b00fc60a35f0a20882f8cddea052e43ba66a))
 * **tools:** extract query text from all user content parts in ExampleTool ([8f17ac4](https://github.com/google/adk-python/commit/8f17ac4fa4c9a18efabc699ea3032bb861e25dcf))
 * **tools:** preserve raw routine docstrings in legacy declaration builder ([e4067db](https://github.com/google/adk-python/commit/e4067dbcc8192615b69d8ca1fc1de17743a71676))
@@ -186,6 +199,8 @@
 * **sessions:** update State iteration, nested write tracking, and session error docs ([2d81d32](https://github.com/google/adk-python/commit/2d81d3289586bdfb1b9ec4264193dba01416f945))
 * **vmaas:** add a unit guide for AgentEngineEnvironment ([c006e00](https://github.com/google/adk-python/commit/c006e00b96b96777090c423f428a6bbffebac275))
 * **workflow:** align retry_config, graph validation, and error types with HEAD ([ff6c851](https://github.com/google/adk-python/commit/ff6c851dde00cbf3469400810c3148164ff82a18))
+
+</details>
 
 ## [2.12.0](https://github.com/google/adk-python/compare/v2.11.0...v2.12.0) (2026-10-13)
 
