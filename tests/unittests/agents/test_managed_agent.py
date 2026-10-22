@@ -17,6 +17,7 @@ import subprocess
 import sys
 from typing import Any
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 from google.adk.agents._managed_agent import ManagedAgent
 from google.adk.agents.run_config import RunConfig
@@ -1207,3 +1208,33 @@ def test_string_instruction_injects_session_state():
       client.aio.interactions.calls[0]['system_instruction']
       == 'Discuss volcanoes.'
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('node_input', [None, 'Fix bug 42.'])
+async def test_run_impl_closes_run_async_when_consumer_stops_early(node_input):
+  cleaned_up = []
+
+  async def _run_async(self, parent_context):
+    try:
+      for index in range(3):
+        yield Event(
+            author=self.name,
+            invocation_id='inv',
+            content=types.Content(parts=[types.Part(text=f'e{index}')]),
+        )
+    finally:
+      cleaned_up.append(True)
+
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', api_client=_FakeClient()
+  )
+  ctx = MagicMock()
+  ctx.node_path = 'root/mgr'
+
+  with patch.object(ManagedAgent, 'run_async', _run_async):
+    agen = agent._run_impl(ctx=ctx, node_input=node_input)
+    await agen.__anext__()
+    await agen.aclose()
+
+  assert cleaned_up == [True]

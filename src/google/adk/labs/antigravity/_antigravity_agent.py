@@ -57,6 +57,7 @@ from ...events.event_actions import EventActions
 from ...utils._agent_mode import AgentMode
 from ...utils._agent_mode import SingleTurnAgentMode
 from ...utils.content_utils import to_user_content
+from ...utils.context_utils import Aclosing
 from ._event_converter import convert_step_to_events
 from ._event_converter import drain_tool_results
 from ._event_converter import final_model_text
@@ -802,15 +803,16 @@ class AntigravityAgent(BaseAgent):
     last_text: str | None = None
     # Keep in sync with BaseAgent._run_impl: super() cannot be delegated to,
     # since it re-derives the invocation context and would drop node_input.
-    async for event in self.run_async(parent_context=parent_context):
-      if event.author:
-        ctx.event_author = event.author
-      if not event.node_info.path and event.author == self.name:
-        event.node_info.path = ctx.node_path
-      text = final_model_text(event, self.name)
-      if text is not None:
-        last_text = text
-      yield event
+    async with Aclosing(self.run_async(parent_context=parent_context)) as agen:
+      async for event in agen:
+        if event.author:
+          ctx.event_author = event.author
+        if not event.node_info.path and event.author == self.name:
+          event.node_info.path = ctx.node_path
+        text = final_model_text(event, self.name)
+        if text is not None:
+          last_text = text
+        yield event
 
     # Both assignments are needed: NodeRunner._enrich_event reads
     # ctx.event_author, and a direct consumer reads author=.
