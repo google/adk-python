@@ -173,8 +173,12 @@ def build_node(
       if isinstance(agent, LlmAgent) and agent.parallel_worker:
         from .._parallel_worker import _ParallelWorker
 
+        max_parallel_workers = agent.max_parallel_workers
+        agent.max_parallel_workers = None
         agent.parallel_worker = False
-        return _ParallelWorker(node=agent)
+        return _ParallelWorker(
+            node=agent, max_parallel_workers=max_parallel_workers
+        )
       return cast(BaseNode, agent)
     else:
       if kwargs:

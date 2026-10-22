@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import importlib
-import json
 import logging
 import os
 from pathlib import Path
@@ -243,6 +242,8 @@ def test_sample_loads(sample_dir: Path, monkeypatch):
   """Smoke test: every sample's agent imports and constructs a root agent."""
   for key, value in _DUMMY_ENV.items():
     monkeypatch.setenv(key, value)
+  from google.adk.integrations.parameter_manager import parameter_client
+  from google.adk.integrations.secret_manager import secret_client
   import google.auth
   import google.auth.credentials
   import google.auth.transport
@@ -264,6 +265,15 @@ def test_sample_loads(sample_dir: Path, monkeypatch):
           _DummyCredentials(),
           "dummy-project",
       ),
+  )
+  # Integration tests may already have imported these module-level aliases.
+  # Import them before patching google.auth.default so monkeypatch also restores
+  # the original aliases when this test was their first importer.
+  monkeypatch.setattr(
+      parameter_client, "default_service_credential", google.auth.default
+  )
+  monkeypatch.setattr(
+      secret_client, "default_service_credential", google.auth.default
   )
   monkeypatch.setattr(
       mtls,

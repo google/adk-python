@@ -47,6 +47,7 @@ if TYPE_CHECKING:
   from ..workflow._dynamic_node_scheduler import DynamicNodeScheduler
   from ..workflow._graph import NodeLike
   from ..workflow._graph import RouteValue
+  from ..workflow._parallel_tasks import ParallelTasks
   from .invocation_context import InvocationContext
 
 _MAX_PARENT_DEPTH = 50
@@ -220,6 +221,8 @@ class Context(ReadonlyContext):
     self._route_value: RouteValue | list[RouteValue] | None = None
     self._route_emitted: bool = False
     self._interrupt_ids: set[str] = set()
+    self._parallel_group_counters: dict[str, int] = {}
+    self._parallel_task_paths: set[str] = set()
     # scope tag inherited from parent ctx or invocation_context by default;
     # NodeRunner / Workflow may override before the node runs.
     if parent_ctx is not None:
@@ -431,6 +434,35 @@ class Context(ReadonlyContext):
     ctx_with_proxy = ctx.model_copy(update=update)
     return ctx_with_proxy
 
+  def parallel_tasks(
+      self,
+      *,
+      name: str = 'parallel',
+      max_parallel_workers: int | None = None,
+      cancellation_timeout: float = 5.0,
+  ) -> ParallelTasks:
+    """Create an owned group of concurrent workflow node runs.
+
+    Use ``async with ctx.parallel_tasks(...) as tasks`` and ``tasks.spawn``
+    to obtain stable handles. The group bounds running workers, exposes their
+    results, and cancels remaining work when the scope exits abnormally.
+    Worker state remains shared session state; merge returned proposals
+    explicitly when only selected results should update the parent's state.
+
+    Args:
+      name: Stable group name, reused in the same order when resuming.
+      max_parallel_workers: Maximum active children, or None for no limit.
+      cancellation_timeout: Seconds to wait for cancelled children to stop.
+    """
+    from ..workflow._parallel_tasks import ParallelTasks
+
+    return ParallelTasks(
+        self,
+        name=name,
+        max_parallel_workers=max_parallel_workers,
+        cancellation_timeout=cancellation_timeout,
+    )
+
   async def run_node(
       self,
       node: NodeLike,
@@ -450,10 +482,8 @@ class Context(ReadonlyContext):
     asynchronously wait for its result. The dynamically executed node becomes
     a child run of the current node in the workflow.
 
-    IMPORTANT: Always ``await`` this method directly. Wrapping it in
-    ``asyncio.create_task()`` means the task runs unsupervised — errors
-    are silently swallowed and the task is not cancelled if the parent
-    node is interrupted (e.g. via HITL).
+    Await this method directly. For concurrent children, use
+    ``parallel_tasks()`` so the scope supervises errors and cancellation.
 
     Args:
       node: The node to be executed. This can be a BaseNode instance or a
@@ -469,8 +499,8 @@ class Context(ReadonlyContext):
       run_id: An optional custom run ID for the dynamic node execution. If not
         provided, a default run ID is generated. Useful for correlating events
         across runs.
-      use_sub_branch: If True, the dynamic node will be executed in a sub-branch
-        to isolate its state and events from the main branch.
+      use_sub_branch: If True, execute in a separate conversation branch.
+        Session state remains shared.
       override_branch: An optional branch to use instead of parent's branch.
       override_isolation_scope: An optional isolation scope to use instead of
         the parent's scope.

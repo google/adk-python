@@ -160,4 +160,5 @@ This directory contains specific developer guides for the ADK Python implementat
 * [JoinNode](workflow/join_node/index.md) - Synchronizing parallel execution paths in workflows.
 * [RetryConfig](workflow/retry_config/index.md) - Configuring retry policies for resilient workflow nodes.
 * [ParallelWorker](workflow/parallel_worker/index.md) - Processing lists of items concurrently in workflows.
+* [ParallelTasks](workflow/parallel_tasks/index.md) - Owning concurrent agent runs with handles, messages, selective cancellation, and accepted results.
 * [Dynamic Nodes](workflow/dynamic_nodes/index.md) - Scheduling and executing nodes dynamically at runtime.

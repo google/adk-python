@@ -35,6 +35,7 @@ from ....telemetry.tracing import tracer
 from ....tools.base_tool import BaseTool
 from ....tools.tool_confirmation import ToolConfirmation
 from ....workflow._errors import NodeInterruptedError
+from ....workflow._parallel_task_context import _parallel_task_cancellation_requested
 from ..core._utils import as_llm_agent as _as_llm_agent
 from ._caller import _execute_single_prepared_call_async
 from ._caller import _prepare_single
@@ -272,6 +273,12 @@ async def _execute_prepared_function_calls(
   # Wait for all tasks to complete
   try:
     maybe_function_response_events = await _gather_or_cancel(tasks)
+  except asyncio.CancelledError as error:
+    if _parallel_task_cancellation_requested():
+      kept_event = _keep_completed_responses(invocation_context, tasks)
+      if kept_event is not None:
+        setattr(error, _KEPT_FUNCTION_RESPONSE_EVENT_ATTR, kept_event)
+    raise
   except (Exception, NodeInterruptedError) as e:
     # A call raised and its unfinished siblings were cancelled. Calls that had
     # already finished may have had side effects, so keep their real results

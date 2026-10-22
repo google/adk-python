@@ -92,6 +92,7 @@ def _make_event(
   """Create a minimal Event for session event lists."""
   event = MagicMock(spec=Event)
   event.invocation_id = invocation_id
+  event.custom_metadata = None
   event.author = author
   event.output = output
   event.error_code = None
@@ -112,6 +113,7 @@ def _make_fr_event(fc_id, response, invocation_id='inv-1'):
   """Create a user FR event."""
   event = MagicMock(spec=Event)
   event.invocation_id = invocation_id
+  event.custom_metadata = None
   event.author = 'user'
   event.output = None
   event.error_code = None

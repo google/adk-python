@@ -37,6 +37,7 @@ from ...live._realtime_cache_manager import RealtimeCacheManager as _RealtimeCac
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ...utils.context_utils import Aclosing
+from ...workflow._parallel_task_context import _deliver_parallel_task_messages
 from .core._finalizer import finalize_model_response_event
 from .core._finalizer import handle_after_model_callback
 from .core._finalizer import handle_before_model_callback
@@ -580,6 +581,7 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
       model_response_event: Event,
   ) -> Optional[LlmResponse]:
+    await _deliver_parallel_task_messages(invocation_context, llm_request)
     return await handle_before_model_callback(
         invocation_context, llm_request, model_response_event
     )

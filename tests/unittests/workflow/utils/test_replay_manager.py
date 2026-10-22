@@ -56,6 +56,7 @@ def _make_event(
   event.long_running_tool_ids = set(interrupt_ids) if interrupt_ids else None
   event.content = None
   event.actions = None
+  event.custom_metadata = None
   return event
 
 

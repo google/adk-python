@@ -26,7 +26,9 @@ from ...events._rewind_events import _apply_rewinds
 from ...events.event import Event
 from ._rehydration_utils import _ChildScanState
 from ._rehydration_utils import _event_has_result
+from ._rehydration_utils import _is_cancelled_parallel_event
 from ._rehydration_utils import _reconstruct_node_states
+from ._rehydration_utils import _update_parallel_cancellations
 from ._rehydration_utils import is_terminal_event
 from ._replay_sequence_barrier import ReplaySequenceBarrier
 
@@ -45,6 +47,7 @@ class ReplayManager:
     self._live_events: list[Event] = []
     self._indexed_event_count: int = 0
     self._indexed_last_event: Event | None = None
+    self._parallel_cancellations: dict[str, set[str]] = {}
 
   @property
   def sequence_barrier(self) -> ReplaySequenceBarrier | None:
@@ -120,6 +123,7 @@ class ReplayManager:
     self._events_by_parent = {}
     self._transitive_events_by_parent = {}
     self._fc_to_parent = {}
+    self._parallel_cancellations = {}
     self._live_events = list(events)
     self._index_events(events)
     self._record_indexed_through(events)
@@ -133,6 +137,7 @@ class ReplayManager:
     from ...events._interrupts import extract_event_interrupt_ids
 
     for event in events:
+      _update_parallel_cancellations(self._parallel_cancellations, event)
       if event.author == "user":
         self._index_user_event(event, self._fc_to_parent)
         continue
@@ -200,12 +205,12 @@ class ReplayManager:
     path_builder = _NodePathBuilder.from_string(node_path)
     parent_builder = path_builder.parent
     if not parent_builder or not str(parent_builder):
-      return session_events
+      return self._without_cancelled_parallel_events(session_events)
     parent_path = str(parent_builder)
 
     node_events = self._transitive_events_by_parent.get(parent_path, [])
     if not node_events:
-      return session_events
+      return self._without_cancelled_parallel_events(session_events)
 
     # Top-level user text prompts live under root key ("").
     # Merge them so multi-turn turn inputs remain visible during state reconstruction.
@@ -223,11 +228,25 @@ class ReplayManager:
     ]
 
     if not user_prompts:
-      return node_events
+      return self._without_cancelled_parallel_events(node_events)
 
     # Retain exact chronological ordering of session events.
     event_ids = node_event_ids.union(id(e) for e in user_prompts)
-    return [e for e in session_events if id(e) in event_ids]
+    return self._without_cancelled_parallel_events(
+        [e for e in session_events if id(e) in event_ids]
+    )
+
+  def _without_cancelled_parallel_events(
+      self, events: list[Event]
+  ) -> list[Event]:
+    """Apply invocation-wide ownership decisions even across transfer parents."""
+    if not self._parallel_cancellations:
+      return events
+    return [
+        event
+        for event in events
+        if not _is_cancelled_parallel_event(event, self._parallel_cancellations)
+    ]
 
   def _add_event_to_index(self, parent_path: str, event: Event) -> None:
     """Indexes an event under its direct parent and all ancestor paths up to root."""
@@ -257,7 +276,7 @@ class ReplayManager:
     completed: set[str] = set()
     invocation_id = ctx._invocation_context.invocation_id
 
-    for event in events:
+    for event in self._without_cancelled_parallel_events(events):
       # The event index spans the whole session so multi-turn context stays
       # visible during rehydration. The replay sequence, however, must describe
       # only the current invocation: a terminal event from an earlier completed
@@ -328,7 +347,7 @@ class ReplayManager:
     # Use transitive parent events for static child nodes so deeper descendant events (e.g. delegated outputs/interrupts) are recovered
     filtered_events = self._transitive_events_by_parent.get(ctx.node_path, [])
     raw_results = _reconstruct_node_states(
-        events=filtered_events,
+        events=self._without_cancelled_parallel_events(filtered_events),
         base_path=ctx.node_path,
         group_by_direct_child=True,
         invocation_id=ic.invocation_id,

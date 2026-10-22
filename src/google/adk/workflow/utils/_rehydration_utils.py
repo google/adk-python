@@ -28,6 +28,7 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError
 
 from ...events._branch_path import _BranchPath
+from ...events._internal_metadata import INTERNAL_METADATA_PREFIX
 from ...events._interrupts import extract_event_interrupt_ids
 from ...events._interrupts import is_interrupt_event
 from ...events._node_path_builder import _NodePathBuilder
@@ -43,6 +44,46 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 _RESULT_KEY = 'result'
+_PARALLEL_TASKS_CONTROL_KEY = INTERNAL_METADATA_PREFIX + 'parallel_tasks'
+
+
+def _update_parallel_cancellations(
+    cancelled_by_invocation: dict[str, set[str]], event: Event
+) -> None:
+  """Index deliberate cancellations from one trusted native control event."""
+  record = (event.custom_metadata or {}).get(_PARALLEL_TASKS_CONTROL_KEY)
+  if not isinstance(record, dict):
+    return
+  cancelled = record.get('cancelled', [])
+  if isinstance(cancelled, list) and cancelled:
+    cancelled_by_invocation.setdefault(event.invocation_id, set()).update(
+        path for path in cancelled if isinstance(path, str) and path
+    )
+
+
+def _is_cancelled_parallel_event(
+    event: Event, cancelled_by_invocation: dict[str, set[str]]
+) -> bool:
+  """Match cancelled paths and transferred hops sharing their task identity."""
+  cancelled_paths = cancelled_by_invocation.get(event.invocation_id)
+  if not cancelled_paths:
+    return False
+  owners = (event.custom_metadata or {}).get(
+      INTERNAL_METADATA_PREFIX + 'parallel_task_owners'
+  )
+  if isinstance(owners, list) and any(
+      isinstance(task_id, str) and task_id in cancelled_paths
+      for task_id in owners
+  ):
+    return True
+  path: _NodePathBuilder | None = _NodePathBuilder.from_string(
+      event.node_info.path or ''
+  )
+  while path is not None:
+    if str(path) in cancelled_paths:
+      return True
+    path = path.parent
+  return False
 
 
 @dataclass
@@ -277,6 +318,16 @@ def _reconstruct_node_states(
   interrupt_owner: dict[str, str] = {}
   schemas_by_id: dict[str, Any] = {}
 
+  # Deliberate cancellation is a durable ownership decision. A losing worker's
+  # old input request must not keep an ancestor waiting after its coordinator
+  # selected another result. Keep history intact; exclude cancelled subtrees
+  # only from replay state, scoped to the invocation that recorded the choice.
+  cancelled_by_invocation: dict[str, set[str]] = {}
+  for event in events:
+    if invocation_id and event.invocation_id != invocation_id:
+      continue
+    _update_parallel_cancellations(cancelled_by_invocation, event)
+
   base_path_builder = _NodePathBuilder.from_string(base_path)
 
   def get_owner_key(event_path_builder: _NodePathBuilder) -> str | None:
@@ -296,6 +347,8 @@ def _reconstruct_node_states(
   tool_call_ids = _collect_function_call_ids(events)
   for event in events:
     if invocation_id and event.invocation_id != invocation_id:
+      continue
+    if _is_cancelled_parallel_event(event, cancelled_by_invocation):
       continue
 
     # 1. Match user function responses

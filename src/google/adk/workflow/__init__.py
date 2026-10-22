@@ -28,6 +28,8 @@ if TYPE_CHECKING:
   from ._join_node import JoinNode
   from ._node import Node
   from ._node import node
+  from ._parallel_tasks import ParallelTask
+  from ._parallel_tasks import ParallelTasks
   from ._retry_config import RetryConfig
   from ._workflow import Workflow
 
@@ -39,6 +41,8 @@ _LAZY_MEMBERS: dict[str, str] = {
     'JoinNode': '._join_node',
     'Node': '._node',
     'NodeTimeoutError': '._errors',
+    'ParallelTask': '._parallel_tasks',
+    'ParallelTasks': '._parallel_tasks',
     'RetryConfig': '._retry_config',
     'START': '._base_node',
     'Workflow': '._workflow',
@@ -52,6 +56,8 @@ __all__ = [
     'JoinNode',
     'Node',
     'NodeTimeoutError',
+    'ParallelTask',
+    'ParallelTasks',
     'RetryConfig',
     'START',
     'Workflow',

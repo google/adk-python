@@ -51,6 +51,7 @@ from ..sessions.session import Session
 from ..tools.base_tool import BaseTool
 from ..utils._agent_mode import AgentMode
 from ..workflow._base_node import BaseNode
+from ..workflow._parallel_task_context import _tag_parallel_task_event
 from .base_agent import _agent_state_key
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
@@ -495,6 +496,8 @@ class InvocationContext(BaseModel):
           "Ensure the Runner initialises _event_queue on "
           "InvocationContext."
       )
+
+    event = _tag_parallel_task_event(event)
 
     if event.partial:
       # Partial events: SSE streaming only, no session append, no blocking.

@@ -421,6 +421,12 @@ class LlmAgent(BaseAgent, abc.ABC):
   parallel_worker: bool | None = None
   """Whether to run the agent in parallel worker mode."""
 
+  max_parallel_workers: int | None = Field(default=None, ge=1)
+  """Maximum number of input items to run concurrently in parallel worker mode.
+
+  Requires parallel_worker=True. None means no limit on concurrency.
+  """
+
   # LLM-based agent transfer configs - Start
   disallow_transfer_to_parent: bool = False
   """Disallows LLM-controlled transferring to the parent agent.
@@ -1187,6 +1193,14 @@ class LlmAgent(BaseAgent, abc.ABC):
     accumulator += text
     event.actions.state_delta[self.output_key] = accumulator
     return accumulator
+
+  @model_validator(mode='after')
+  def _validate_parallel_worker_config(self) -> LlmAgent:
+    if self.max_parallel_workers is not None and not self.parallel_worker:
+      raise ValueError(
+          'max_parallel_workers can only be set when parallel_worker is True.'
+      )
+    return self
 
   @model_validator(mode='before')
   @classmethod

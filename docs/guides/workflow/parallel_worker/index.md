@@ -12,6 +12,12 @@ A node with a list to work through, whether that is documents to analyze, querie
 
 There is no `ParallelWorker` class to import. You turn the mode on with the `parallel_worker=True` flag on `@node(...)`, on `Node(...)`, or on an `Agent(...)` being used as a node, and the node then runs once per element of its input list rather than once on the list as a whole.
 
+For a coordinator that needs individual task handles, messages, selective
+cancellation, or the first acceptable answer, use
+[parallel tasks](../parallel_tasks/index.md). Both forms use the same owned task
+group and native node scheduler; parallel worker mode retains its ordered list
+results and bounded active work.
+
 ## Get started
 
 The one thing to get right is the parameter name. Each list element is handed to the worker as `node_input`, so the function's parameter **must** be called `node_input`. Any other name is looked up in `ctx.state` instead, is not found there, and every run fails with `ValueError: Missing value for parameter "<name>"` before the function body executes.
@@ -51,7 +57,7 @@ individual parameters. That is the same mechanism described in
 
 ### An agent as the worker
 
-An agent used as a workflow node takes the same flag. Each item arrives as the agent's incoming user message, so the instruction refers to it as the user message rather than through a placeholder.
+An agent used as a workflow node takes the same flag. Each item arrives as the agent's incoming user message, so the instruction refers to it as the user message rather than through a placeholder. Set `max_parallel_workers` to bound the number of items in flight, for example to stay within an API's concurrent request limit:
 
 ```python
 from google.adk import Agent
@@ -60,6 +66,7 @@ analyzer_agent = Agent(
     name="analyzer",
     instruction="Analyze the text in the user message.",
     parallel_worker=True,
+    max_parallel_workers=4,
 )
 ```
 
@@ -90,9 +97,9 @@ When several items fail at once, the worker surfaces the failure belonging to th
 | `parallel_worker` | `bool` | `False` | Turns on parallel worker mode for this node. |
 | `max_parallel_workers` | `int \| None` | `None` | Upper bound on items in flight at once. `None` means all of them. |
 
-Set both on the same call, as in `@node(parallel_worker=True, max_parallel_workers=4)`, or `Node(parallel_worker=True, max_parallel_workers=4)` for a `Node` subclass. Setting `max_parallel_workers` without `parallel_worker=True` raises `ValueError`, and so does any value below `1`.
+Set both on the same call, as in `@node(parallel_worker=True, max_parallel_workers=4)`, `Node(parallel_worker=True, max_parallel_workers=4)` for a `Node` subclass, or `Agent(..., parallel_worker=True, max_parallel_workers=4)`. Setting `max_parallel_workers` without `parallel_worker=True` raises `ValueError`, and so does any value below `1`.
 
-`LlmAgent` accepts `parallel_worker` but has no `max_parallel_workers` field, so `Agent(..., parallel_worker=True, max_parallel_workers=4)` is rejected by Pydantic as an unexpected input. An agent worker cannot be throttled. `max_concurrency` on the enclosing [`Workflow`](../workflow/index.md) does not help either, because it bounds nodes scheduled by graph edges, and the worker's items are dynamic runs, which are exempt. If you need a bound around an agent, drive the fan-out yourself from a node that calls `ctx.run_node()` under your own semaphore.
+The limit applies to items within one parallel worker run. It does not bound all model or tool calls across the workflow. `max_concurrency` on the enclosing [`Workflow`](../workflow/index.md) bounds nodes scheduled by graph edges, and the worker's items are dynamic runs, which are exempt. Set `max_parallel_workers` on the worker itself to bound those items.
 
 A parallel worker also has `rerun_on_resume=True` forced on, whatever the node was given. It has to: after an interrupt the node runs again in order to collect the results of the items that had already finished. Those completed items are replayed from history rather than re-executed.
 
@@ -114,7 +121,6 @@ Several items can be waiting at once. Each carries its own interrupt id, so each
 - **The parameter must be `node_input`.** Any other name is resolved from `ctx.state` and fails at bind time. Naming the parameter after the thing it holds, such as `topic` or `document`, is the usual way a parallel worker goes wrong.
 - **A list goes in and a list comes out.** If the upstream node produces something that is not a list, it is treated as a list of one item. An empty list gives you an empty list back without anything having run.
 - **Fail-fast: one failure fails everything.** A single item raising fails the whole worker and cancels the rest of the items. There is no "continue on error" setting that would let you collect partial results, so wrap the risky part of the item's own logic in a `try` block when a failed item should not take the batch down with it.
-- **Agent workers cannot be throttled.** `max_parallel_workers` does not exist on `LlmAgent`.
 
 ## Related samples
 
