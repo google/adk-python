@@ -205,6 +205,7 @@ cryptography==49.0.0
     #   -c constraints-3.12.txt.stable.tmp
     #   google-adk (pyproject.toml)
     #   authlib
+    #   google-adk
     #   google-auth
     #   joserfc
     #   oci
