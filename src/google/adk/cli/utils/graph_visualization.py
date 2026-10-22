@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 import html
 from typing import Any
 from typing import cast
@@ -151,20 +152,35 @@ def plot_workflow_graph(
     if not node_name or node_name == "__START__":
       continue
 
-    tools = node.get("tools", [])
-    for tool in tools:
-      tool_name = tool.get("name") if isinstance(tool, dict) else str(tool)
+    tools = deque((node_name, tool) for tool in node.get("tools", []))
+    while tools:
+      parent_name, tool = tools.popleft()
+      tool_name = (
+          tool.get("id", tool.get("name"))
+          if isinstance(tool, dict)
+          else str(tool)
+      )
       if tool_name:
         if tool_name not in tool_nodes:
           tool_type = (
               tool.get("type", "tool") if isinstance(tool, dict) else "tool"
           )
-          tool_nodes[tool_name] = {"name": tool_name, "type": tool_type}
+          tool_nodes[tool_name] = {
+              "name": tool_name,
+              "label": (
+                  tool.get("name", tool_name)
+                  if isinstance(tool, dict)
+                  else tool_name
+              ),
+              "type": tool_type,
+          }
         tool_edges.append({
-            "from_node": {"name": node_name},
+            "from_node": {"name": parent_name},
             "to_node": {"name": tool_name},
             "is_tool_edge": True,
         })
+        if isinstance(tool, dict):
+          tools.extend((tool_name, child) for child in tool.get("children", []))
 
   for n in tool_nodes.values():
     if not any(on.get("name") == n["name"] for on in nodes):
@@ -200,13 +216,14 @@ def plot_workflow_graph(
         "function": ("ƒ", "#10B981"),
         "join": ("⌵", "#F59E0B"),
         "tool": ("🔧", "#6B7280"),
+        "toolset": ("🔧", "#6B7280"),
     }
     icon_data = icons.get(node_type)
     type_display = node_type.title()
 
     if icon_data:
       icon, color = icon_data
-      escaped_name = html.escape(node_name)
+      escaped_name = html.escape(node.get("label", node_name))
       node_label = (
           f'<<FONT COLOR="{color}" POINT-SIZE="14">{icon}</FONT>'
           f" {escaped_name}>"
@@ -223,7 +240,7 @@ def plot_workflow_graph(
       if not has_default:
         if icon_data:
           icon, color = icon_data
-          escaped_name = html.escape(node_name)
+          escaped_name = html.escape(node.get("label", node_name))
           node_label = (
               f'<<FONT COLOR="{color}" POINT-SIZE="14">{icon}</FONT>'
               f' {escaped_name}<br/><br/><FONT POINT-SIZE="10">⚠️ [NO'
@@ -257,7 +274,7 @@ def plot_workflow_graph(
           fillcolor=fillcolor,
           margin="0.05,0.05",
       )
-    elif node_type == "tool":
+    elif node_type in ("tool", "toolset"):
       dot.node(
           node_name,
           node_label,
@@ -309,7 +326,7 @@ def plot_workflow_graph(
     if not node_name or node_name in ("__START__", "__END__"):
       continue
 
-    if node.get("type") == "tool":
+    if node.get("type") in ("tool", "toolset"):
       continue
 
     outgoing_edges = [

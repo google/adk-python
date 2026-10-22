@@ -14,16 +14,19 @@
 
 """Tests for graph_serialization edge handling with routing maps."""
 
+import asyncio
 import json
 
 from google.adk.agents import LlmAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.cli.utils.graph_serialization import resolve_toolsets
 from google.adk.cli.utils.graph_serialization import serialize_agent
 from google.adk.cli.utils.graph_serialization import serialize_app_info
 from google.adk.cli.utils.graph_serialization import serialize_node
 from google.adk.cli.utils.graph_serialization import serialize_node_like
+from google.adk.cli.utils.graph_visualization import plot_workflow_graph
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_toolset import BaseToolset
@@ -138,6 +141,56 @@ def test_serialize_agent_with_toolset() -> None:
   assert len(result['tools']) == 1
   assert result['tools'][0]['name'] == 'MockToolset'
   assert result['tools'][0]['type'] == 'tool'
+
+
+def test_toolset_graph_shows_children_under_distinct_parent_nodes() -> None:
+  """Toolset instances retain their identity and connect to their tools."""
+  info = {
+      'root_agent': {
+          'name': 'root',
+          'tools': [
+              {
+                  'name': 'McpToolset',
+                  'id': 'root/toolset_0',
+                  'type': 'toolset',
+                  'children': [{'name': 'add', 'type': 'tool'}],
+              },
+              {
+                  'name': 'McpToolset',
+                  'id': 'root/toolset_1',
+                  'type': 'toolset',
+                  'children': [{'name': 'greet', 'type': 'tool'}],
+              },
+          ],
+      },
+  }
+
+  dot = plot_workflow_graph(info, format='dot')
+
+  assert 'root -> "root/toolset_0"' in dot
+  assert 'root -> "root/toolset_1"' in dot
+  assert '"root/toolset_0" -> add' in dot
+  assert '"root/toolset_1" -> greet' in dot
+  assert dot.count('McpToolset>') == 2
+
+
+async def test_toolset_resolution_without_a_root_returns_no_tools() -> None:
+  """Apps without a root have no toolsets to discover."""
+  assert await resolve_toolsets(None) == {}
+
+
+async def test_toolset_discovery_does_not_swallow_cancellation() -> None:
+  """Cancelled graph requests stop discovery rather than returning a fallback."""
+
+  class CancelledToolset(BaseToolset):
+
+    async def get_tools(self, readonly_context=None):
+      raise asyncio.CancelledError()
+
+  root = LlmAgent(name='root', tools=[CancelledToolset()])
+
+  with pytest.raises(asyncio.CancelledError):
+    await resolve_toolsets(root)
 
 
 def test_serialize_agent_with_litellm_model_is_json_safe() -> None:
