@@ -856,13 +856,25 @@ def message_to_generate_content_response(
         usage_metadata, "cache_creation_input_tokens", cache_creation
     )
 
+  finish_reason = to_google_genai_finish_reason(message.stop_reason)
+  error_code = (
+      finish_reason
+      if not parts and finish_reason != types.FinishReason.STOP
+      else None
+  )
   return LlmResponse(
       content=types.Content(
           role="model",
           parts=parts,
       ),
       usage_metadata=usage_metadata,
-      finish_reason=to_google_genai_finish_reason(message.stop_reason),
+      finish_reason=finish_reason,
+      error_code=error_code,
+      error_message=(
+          f"Claude stopped with {error_code.value} and no content."
+          if error_code
+          else None
+      ),
       model_version=message.model,
   )
 
@@ -1553,10 +1565,22 @@ class AnthropicLlm(BaseLlm):
           usage_metadata, "cache_creation_input_tokens", cache_creation_tokens
       )
 
+    finish_reason = to_google_genai_finish_reason(stop_reason)
+    error_code = (
+        finish_reason
+        if not all_parts and finish_reason != types.FinishReason.STOP
+        else None
+    )
     final_response = LlmResponse(
         content=types.Content(role="model", parts=all_parts),
         usage_metadata=usage_metadata,
-        finish_reason=to_google_genai_finish_reason(stop_reason),
+        finish_reason=finish_reason,
+        error_code=error_code,
+        error_message=(
+            f"Claude stopped with {error_code.value} and no content."
+            if error_code
+            else None
+        ),
         model_version=model_version,
         partial=False,
     )
