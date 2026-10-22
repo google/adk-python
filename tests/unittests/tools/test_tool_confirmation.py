@@ -112,6 +112,24 @@ class TestFromResponseDict:
     assert confirmation.hint == "h"
     assert confirmation.confirmed is True
 
+  def test_single_response_key_with_parsed_dict_is_validated(self):
+    """The wrapper payload may already be deserialized into a dict."""
+    confirmation = ToolConfirmation.from_response_dict(
+        {"response": {"hint": "h", "confirmed": True}}
+    )
+
+    assert confirmation.hint == "h"
+    assert confirmation.confirmed is True
+
+  def test_single_response_key_with_bytes_is_unwrapped_and_json_decoded(self):
+    """The wrapper payload may be raw UTF-8 JSON bytes."""
+    confirmation = ToolConfirmation.from_response_dict({
+        "response": json.dumps({"hint": "h", "confirmed": True}).encode("utf-8")
+    })
+
+    assert confirmation.hint == "h"
+    assert confirmation.confirmed is True
+
   def test_response_key_alongside_other_keys_is_not_unwrapped(self):
     """Only a lone 'response' key is the wrapper format, so this is direct."""
     with pytest.raises(ValidationError):
