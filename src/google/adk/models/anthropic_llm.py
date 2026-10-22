@@ -621,6 +621,12 @@ def _part_to_message_block(
     else:
       tool_result_content = content
 
+    # An MCP CallToolResult reports a failed call with `isError`, spelled
+    # `is_error` in dumps made with MCP SDK 2.x field names.
+    is_error = bool(
+        response_data.get("isError") or response_data.get("is_error")
+    )
+
     return anthropic_types.ToolResultBlockParam(
         tool_use_id=sanitizer.sanitize(
             function_response.id,
@@ -629,7 +635,7 @@ def _part_to_message_block(
         ),
         type="tool_result",
         content=tool_result_content,
-        is_error=False,
+        is_error=is_error,
     )
   elif _is_image_part(part):
     inline_data = part.inline_data

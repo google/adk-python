@@ -1379,6 +1379,24 @@ def test_part_to_message_block_with_multiple_content_items():
   assert result["content"] == "First part\nSecond part"
 
 
+@pytest.mark.parametrize("error_key", ["isError", "is_error"])
+def test_part_to_message_block_marks_mcp_error_result_as_error(error_key):
+  """An MCP CallToolResult with isError reaches Claude as an error result."""
+  response_part = types.Part.from_function_response(
+      name="mcp_tool",
+      response={
+          "content": [{"type": "text", "text": "file not found"}],
+          error_key: True,
+      },
+  )
+  response_part.function_response.id = "test_id_mcp_error"
+
+  result = part_to_message_block(response_part)
+
+  assert result["content"] == "file not found"
+  assert result["is_error"] is True
+
+
 def test_part_to_message_block_tool_result_with_image():
   """Media a tool attached to its response reaches Claude as an image block."""
   image_data = b"chart-bytes"
