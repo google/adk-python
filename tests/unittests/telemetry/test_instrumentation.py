@@ -2673,3 +2673,160 @@ async def test_a_run_nobody_is_collecting_for_still_works():
 
   assert _about(busy.tool_seconds(), _SLICE)
   assert busy.model_seconds() == 0.0
+
+
+# --- a stream whose aggregate repeats its chunks (LiteLlm) ------------------
+
+
+def _text_chunk(text: str) -> LlmResponse:
+  return LlmResponse(
+      content=types.Content(role="model", parts=[types.Part(text=text)]),
+      partial=True,
+  )
+
+
+async def _recorded_output_messages(
+    monkeypatch: pytest.MonkeyPatch, responses, error: Exception | None = None
+) -> list:
+  monkeypatch.setenv(
+      "OTEL_SEMCONV_STABILITY_OPT_IN", "gen_ai_latest_experimental"
+  )
+  monkeypatch.setenv(
+      "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "SPAN_ONLY"
+  )
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+  llm_request = LlmRequest(
+      model="some-model",
+      contents=[types.Content(role="user", parts=[types.Part(text="hi")])],
+  )
+  model_response_event = mock.MagicMock()
+  model_response_event.id = "event-1"
+  recorded = []
+  try:
+    async with _instrumentation.record_inference_telemetry(
+        llm_request, ctx, model_response_event
+    ) as tel_ctx:
+      for response in responses:
+        tel_ctx.record_llm_response(ctx, response)
+      recorded = tel_ctx.span.operation_details_attributes.get(
+          "gen_ai.output.messages", []
+      )
+      if error is not None:
+        raise error
+  except type(error) if error is not None else ():
+    pass
+  return recorded
+
+
+@pytest.mark.asyncio
+async def test_aggregate_after_unfinished_chunks_is_recorded_once(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """The aggregate repeated every chunk, so the answer appeared twice."""
+  del telemetry
+  messages = await _recorded_output_messages(
+      monkeypatch,
+      [
+          _text_chunk("Oslo is "),
+          _text_chunk("4C and cloudy."),
+          _llm_response(
+              content=types.Content(
+                  role="model",
+                  parts=[types.Part(text="Oslo is 4C and cloudy.")],
+              ),
+              partial=False,
+          ),
+      ],
+  )
+
+  assert [m["parts"][0]["content"] for m in messages] == [
+      "Oslo is 4C and cloudy."
+  ]
+  assert messages[0]["finish_reason"] == "stop"
+
+
+@pytest.mark.asyncio
+async def test_tool_call_aggregate_replaces_its_partial_call_chunks(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  del telemetry
+  call = types.FunctionCall(
+      id="call-1", name="get_weather", args={"city": "Oslo"}
+  )
+  messages = await _recorded_output_messages(
+      monkeypatch,
+      [
+          LlmResponse(
+              content=types.Content(
+                  role="model",
+                  parts=[
+                      types.Part(
+                          function_call=types.FunctionCall(
+                              id="call-1",
+                              name="get_weather",
+                              will_continue=True,
+                          )
+                      )
+                  ],
+              ),
+              partial=True,
+          ),
+          _llm_response(
+              content=types.Content(
+                  role="model", parts=[types.Part(function_call=call)]
+              ),
+              partial=False,
+          ),
+      ],
+  )
+
+  assert len(messages) == 1
+  assert messages[0]["parts"][0]["type"] == "tool_call"
+  assert messages[0]["parts"][0]["arguments"] == {"city": "Oslo"}
+
+
+@pytest.mark.asyncio
+async def test_stream_cut_off_before_its_aggregate_keeps_its_chunks(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  del telemetry
+  messages = await _recorded_output_messages(
+      monkeypatch,
+      [_text_chunk("Oslo is "), _text_chunk("4C")],
+      error=ConnectionError("stream dropped"),
+  )
+
+  assert [m["parts"][0]["content"] for m in messages] == ["Oslo is ", "4C"]
+
+
+@pytest.mark.asyncio
+async def test_stream_whose_last_chunk_finishes_keeps_its_chunks(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """Gemini's last chunk carries the finish reason; its aggregate is unseen."""
+  del telemetry
+  messages = await _recorded_output_messages(
+      monkeypatch,
+      [
+          _text_chunk("Oslo is "),
+          _llm_response(
+              content=types.Content(
+                  role="model", parts=[types.Part(text="4C and cloudy.")]
+              ),
+              partial=True,
+          ),
+          _llm_response(
+              content=types.Content(
+                  role="model",
+                  parts=[types.Part(text="Oslo is 4C and cloudy.")],
+              ),
+              partial=False,
+          ),
+      ],
+  )
+
+  assert [m["parts"][0]["content"] for m in messages] == [
+      "Oslo is ",
+      "4C and cloudy.",
+  ]

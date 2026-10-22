@@ -29,6 +29,7 @@ from typing import TypeVar
 
 from opentelemetry import trace
 import opentelemetry.context as context_api
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OUTPUT_MESSAGES
 from typing_extensions import assert_never
 
 from . import _adk_attributes
@@ -573,6 +574,24 @@ class InferenceScope:
     # call) can no longer be recorded on it, but still counts for the metrics.
     if self._inference_span_ended:
       return
+
+    # A model that streams chunks without a finish reason and then yields the
+    # aggregate of those chunks with one (LiteLlm does) would report the
+    # answer twice. Keep only the aggregate. A stream whose last chunk carries
+    # the finish reason never reaches its aggregate, and one cut off before
+    # its aggregate keeps its chunks.
+    if (
+        isinstance(self.span, tracing.GenerateContentSpan)
+        and not response.partial
+        and is_reported_finish_reason(response.finish_reason)
+        and len(self._llm_responses) > 1
+        and all(
+            earlier.partial
+            and not is_reported_finish_reason(earlier.finish_reason)
+            for earlier in self._llm_responses[:-1]
+        )
+    ):
+      self.span.operation_details_attributes.pop(GEN_AI_OUTPUT_MESSAGES, None)
 
     tracing.trace_inference_result(invocation_context, self.span, response)
     # The inference ends at the response that says why generation stopped. End
