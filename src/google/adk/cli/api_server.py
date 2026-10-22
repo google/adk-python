@@ -21,6 +21,7 @@ import base64
 import binascii
 from contextlib import asynccontextmanager
 import contextvars
+from dataclasses import dataclass
 import importlib
 import inspect
 import json
@@ -79,6 +80,8 @@ from ..artifacts.base_artifact_service import ArtifactVersion
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.auth_credential import _redact_credential_secrets
 from ..auth.credential_service.base_credential_service import BaseCredentialService
+from ..errors._invocation_not_found_error import InvocationNotFoundError
+from ..errors._stale_session_error import StaleSessionError
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.input_validation_error import InputValidationError
 from ..errors.session_not_found_error import SessionNotFoundError
@@ -781,6 +784,22 @@ class UpdateSessionRequest(common.BaseModel):
   """The state changes to apply to the session."""
 
 
+class RewindSessionRequest(common.BaseModel):
+  """Request to rewind a session to before a given invocation."""
+
+  rewind_before_invocation_id: str
+  """The invocation ID to rewind the session to before."""
+
+
+@dataclass
+class _LiveSessionRun:
+  """A live /run or /run_sse invocation whose abort_signal rewind can trip."""
+
+  abort_signal: asyncio.Event
+  finished: asyncio.Event
+  next_step_event: Optional[asyncio.Event] = None
+
+
 class FinalizeAgentIdentityCredentialsRequest(common.BaseModel):
   """Request to finalize a 3LO consent for an Agent Identity connector."""
 
@@ -1053,6 +1072,76 @@ class ApiServer:
     self.avatar_config = avatar_config
     self.max_llm_calls = max_llm_calls
     self.default_app_name = os.getenv("ADK_DEFAULT_APP_NAME")
+    self._live_session_runs: dict[
+        tuple[str, str, str], list[_LiveSessionRun]
+    ] = {}
+
+  def _live_session_key(
+      self, app_name: str, user_id: str, session_id: str
+  ) -> tuple[str, str, str]:
+    return (app_name, user_id, session_id)
+
+  def _register_live_session_run(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      live_run: _LiveSessionRun,
+  ) -> None:
+    key = self._live_session_key(app_name, user_id, session_id)
+    self._live_session_runs.setdefault(key, []).append(live_run)
+
+  def _unregister_live_session_run(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      live_run: _LiveSessionRun,
+  ) -> None:
+    key = self._live_session_key(app_name, user_id, session_id)
+    runs = self._live_session_runs.get(key)
+    if not runs:
+      return
+    try:
+      runs.remove(live_run)
+    except ValueError:
+      return
+    if not runs:
+      del self._live_session_runs[key]
+
+  async def _abort_live_session_runs(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      timeout: float = 10.0,
+  ) -> None:
+    """Trips abort_signal on live /run and /run_sse runs for this session."""
+    key = self._live_session_key(app_name, user_id, session_id)
+    runs = list(self._live_session_runs.get(key, ()))
+    if not runs:
+      return
+    for live_run in runs:
+      live_run.abort_signal.set()
+      if live_run.next_step_event is not None:
+        live_run.next_step_event.set()
+    try:
+      await asyncio.wait_for(
+          asyncio.gather(*(live_run.finished.wait() for live_run in runs)),
+          timeout=timeout,
+      )
+    except asyncio.TimeoutError as e:
+      logger.warning(
+          "Timed out waiting for live runs to abort for session %s",
+          session_id,
+      )
+      raise HTTPException(
+          status_code=409,
+          detail=(
+              "Timed out waiting for live runs to abort for session"
+              f" {session_id}"
+          ),
+      ) from e
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
@@ -1846,6 +1935,73 @@ class ApiServer:
 
       return _redacted_session_response(session)
 
+    @app.post(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/rewind",
+        response_model=Session,
+        response_model_exclude_none=True,
+    )
+    async def rewind_session(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        req: RewindSessionRequest,
+    ) -> Response:
+      """Rewinds a session to before the specified invocation.
+
+      Args:
+          app_name: The name of the application.
+          user_id: The ID of the user.
+          session_id: The ID of the session to rewind.
+          req: The rewind request identifying the invocation to rewind to.
+
+      Returns:
+          The rewound session.
+
+      Raises:
+          HTTPException: If the session or invocation is not found, or if the
+              session was modified concurrently.
+      """
+      self.current_app_name_ref.value = app_name
+      session = await self.session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+      runner = await self.get_runner_async(app_name)
+      _set_telemetry_context_if_needed(runner)
+      if self._live_session_runs.get(
+          self._live_session_key(app_name, user_id, session_id)
+      ):
+        if not any(
+            event.invocation_id == req.rewind_before_invocation_id
+            for event in session.events
+        ):
+          raise HTTPException(
+              status_code=404,
+              detail=(
+                  f"Invocation ID not found: {req.rewind_before_invocation_id}"
+              ),
+          )
+        await self._abort_live_session_runs(app_name, user_id, session_id)
+      try:
+        await runner.rewind_async(
+            user_id=user_id,
+            session_id=session_id,
+            rewind_before_invocation_id=req.rewind_before_invocation_id,
+        )
+      except (InvocationNotFoundError, SessionNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+      except StaleSessionError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+      session = await self.session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+      return _redacted_session_response(session)
+
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}/versions/{version_id}/metadata",
         response_model=ArtifactVersion,
@@ -2115,25 +2271,37 @@ class ApiServer:
         )
 
       abort_signal = asyncio.Event()
+      live_run = _LiveSessionRun(
+          abort_signal=abort_signal,
+          finished=asyncio.Event(),
+      )
+      self._register_live_session_run(
+          app_name, req.user_id, req.session_id, live_run
+      )
 
       async def worker() -> list[Event]:
-        run_async_kwargs = _with_abort_signal_kwarg(
-            runner,
-            {
-                "user_id": req.user_id,
-                "session_id": req.session_id,
-                "new_message": req.new_message,
-                "state_delta": req.state_delta,
-                "invocation_id": req.invocation_id,
-                "run_config": run_config,
-            },
-            abort_signal,
-        )
         try:
+          run_async_kwargs = _with_abort_signal_kwarg(
+              runner,
+              {
+                  "user_id": req.user_id,
+                  "session_id": req.session_id,
+                  "new_message": req.new_message,
+                  "state_delta": req.state_delta,
+                  "invocation_id": req.invocation_id,
+                  "run_config": run_config,
+              },
+              abort_signal,
+          )
           async with Aclosing(runner.run_async(**run_async_kwargs)) as agen:
             return [public_event(event) async for event in agen]
         except SessionNotFoundError as e:
           raise HTTPException(status_code=404, detail=str(e)) from e
+        finally:
+          live_run.finished.set()
+          self._unregister_live_session_run(
+              app_name, req.user_id, req.session_id, live_run
+          )
 
       worker_task = asyncio.create_task(worker())
 
@@ -2176,6 +2344,11 @@ class ApiServer:
         raise
       finally:
         monitor_task.cancel()
+        if worker_task.done():
+          live_run.finished.set()
+          self._unregister_live_session_run(
+              app_name, req.user_id, req.session_id, live_run
+          )
 
     @app.post("/run_sse")
     async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
@@ -2235,6 +2408,14 @@ class ApiServer:
         abort_signal = asyncio.Event()
         event_queue: asyncio.Queue[Optional[Event]] = asyncio.Queue()
         next_step_event = asyncio.Event()
+        live_run = _LiveSessionRun(
+            abort_signal=abort_signal,
+            finished=asyncio.Event(),
+            next_step_event=next_step_event,
+        )
+        self._register_live_session_run(
+            app_name, req.user_id, req.session_id, live_run
+        )
 
         async def _produce_events() -> None:
           nonlocal is_closing, original_exc
@@ -2255,8 +2436,9 @@ class ApiServer:
               try:
                 async for event in agen:
                   await event_queue.put(event)
-                  await next_step_event.wait()
-                  next_step_event.clear()
+                  if not abort_signal.is_set():
+                    await next_step_event.wait()
+                    next_step_event.clear()
               except (GeneratorExit, asyncio.CancelledError) as e:
                 if not is_closing and original_exc is None:
                   is_closing = True
@@ -2267,6 +2449,10 @@ class ApiServer:
                 original_exc = e
                 raise
           finally:
+            live_run.finished.set()
+            self._unregister_live_session_run(
+                app_name, req.user_id, req.session_id, live_run
+            )
             await event_queue.put(None)
 
         producer_task = asyncio.create_task(_produce_events())
@@ -2355,6 +2541,11 @@ class ApiServer:
               "Error during generator cleanup after completion: %s", e
           )
           raise e
+        finally:
+          live_run.finished.set()
+          self._unregister_live_session_run(
+              app_name, req.user_id, req.session_id, live_run
+          )
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(

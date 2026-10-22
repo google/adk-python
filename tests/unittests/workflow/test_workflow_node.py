@@ -16,20 +16,27 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncGenerator
+from typing import Any
 from unittest import mock
 
+from google.adk.agents import context as context_lib
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps import App
 from google.adk.events._interrupts import extract_event_interrupt_ids
+from google.adk.events.event import Event
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.adk.tools.base_tool import BaseTool
+from google.adk.utils.context_utils import Aclosing
 from google.adk.workflow import FunctionNode
 from google.adk.workflow import START
-from google.adk.workflow._base_node import BaseNode
-from google.adk.workflow._node import node
 from google.adk.workflow._node import Node
+from google.adk.workflow._node import node
 from google.adk.workflow._parallel_worker import _ParallelWorker as ParallelWorker
 from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow._tool_node import _ToolNode as ToolNode
@@ -1080,3 +1087,39 @@ def test_node_iter_static_children_plain_node():
   """Node._iter_static_children yields nothing when parallel_worker is False."""
   node_inst = _CustomNode(name="subclass", parallel_worker=False)
   assert list(node_inst._iter_static_children()) == []
+
+
+@pytest.mark.asyncio
+async def test_node_run_impl_early_close_closes_inner_generator():
+  """Closing Node._run_impl early closes run_node_impl."""
+  cleaned_up = False
+  first_event = Event(author="cleanup_node")
+  second_event = Event(author="cleanup_node")
+
+  class _CleanupNode(Node):
+
+    async def run_node_impl(
+        self, *, ctx: context_lib.Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      nonlocal cleaned_up
+      try:
+        yield first_event
+        yield second_event
+      finally:
+        await asyncio.sleep(0)
+        cleaned_up = True
+
+  node_inst = _CleanupNode(name="cleanup_node")
+  session = Session(app_name="test", user_id="user", id="session")
+  ic = InvocationContext(
+      invocation_id="inv",
+      session=session,
+      session_service=InMemorySessionService(),
+  )
+  ctx = context_lib.Context(ic, node=node_inst)
+
+  async with Aclosing(node_inst.run(ctx=ctx, node_input=None)) as agen:
+    first = await anext(agen)
+    assert first is first_event
+
+  assert cleaned_up

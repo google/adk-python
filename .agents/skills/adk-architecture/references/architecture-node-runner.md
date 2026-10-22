@@ -78,6 +78,17 @@ Orchestrator
   configured delay, increments `attempt_count` and rebuilds the child Context
   from scratch. Retry count is **not** persisted, so it does not survive a
   resume.
+- A child started with `ctx.run_node()` that fails reaches the node as
+  `DynamicNodeFailError`. The child's runner already emitted the error event,
+  so NodeRunner only matches the retry policy against the child's error. A
+  node with a `retry_config` copies the run-id counters under it at the start
+  of every attempt (`_snapshot_dynamic_children`), and a retry for such a
+  failure restores that copy (`_reset_dynamic_children_for_retry`). The retry
+  then hands out the same run ids and replays the children the failed attempt
+  completed, at any depth. A retry for the node's own exception keeps the
+  counters, so its children run again.
+- A `Workflow` reports a failing child by setting `ctx.error` rather than
+  raising, and NodeRunner applies the retry policy to that error as well.
 - When retries are exhausted, the error is recorded on `ctx.error` and
   `ctx.error_node_path` and the Context is returned normally — NodeRunner does
   not re-raise to the orchestrator.

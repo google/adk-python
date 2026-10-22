@@ -60,6 +60,7 @@ from typing import AsyncIterator
 from typing import Callable
 from typing import cast
 from typing import Coroutine
+from typing import Literal
 from typing import Optional
 from typing import ParamSpec
 from typing import Protocol
@@ -2587,17 +2588,27 @@ class BigQueryLoggerConfig:
         a ``HITL_*_REQUEST`` event and ``INVOCATION_COMPLETED`` without
         ``AGENT_RESPONSE`` text) followed by the ``function_response`` turn that
         resumes it needs no reply, and that resumption turn needs no user text.
+        Each agent's ``instruction`` in the trace is the one logged by
+        ``AGENT_STARTING``; when none was logged (for example a callable
+        ``InstructionProvider``), it falls back to the earliest non-empty
+        ``system_prompt`` logged for that agent in the session's
+        ``LLM_REQUEST`` events. For ``AGENT_RESPONSE``, a non-blank string
+        ``$.text_summary`` (such as from a custom ``content_formatter``) takes
+        precedence over ``$.response``.
         Independent of ``create_views``. The traces are rebuilt from the
-        ``content`` column and require ``USER_MESSAGE_RECEIVED``,
+        ``content`` column and, with the default ``eval_view_mode`` of
+        ``"full"``, require ``USER_MESSAGE_RECEIVED``,
         ``AGENT_STARTING``, ``LLM_REQUEST``, ``TOOL_STARTING``,
         ``TOOL_COMPLETED``, ``TOOL_PAUSED``, ``AGENT_TRANSFER``,
         ``AGENT_RESPONSE``, ``INVOCATION_COMPLETED``, ``HITL_*_REQUEST``, and
         ``HITL_*_REQUEST_COMPLETED`` events, so denying ``content`` via
         ``payload_column_denylist`` or filtering out any of those events via
-        ``event_denylist`` / ``event_allowlist`` is rejected at construction.
+        ``event_denylist`` / ``event_allowlist`` is rejected at construction
+        (``eval_view_mode`` relaxes the event requirement).
         Any custom ``content_formatter`` must preserve the JSON keys consumed
         by the evaluation views (``$.text_summary``, ``$.response``,
-        ``$.tool``, ``$.args``, and ``$.result``). The views aggregate per
+        ``$.system_prompt``, ``$.tool``, ``$.args``, and ``$.result``). The
+        views aggregate per
         session or turn, so filtering them on ``session_start_timestamp`` or
         ``turn_start_timestamp`` does not prune the events table's ``timestamp``
         partitions: every query scans the whole table. For large tables,
@@ -2621,6 +2632,18 @@ class BigQueryLoggerConfig:
         or if it cannot take those keyword arguments. One that raises an
         ``Exception`` or returns anything else is skipped at run time: the
         built-in rule applies, and the logged warning names only the tool.
+      eval_view_mode: Which events the eval views require. ``"full"`` (the
+        default) requires every event listed under ``create_eval_views``, so
+        each trace shows the agents, model calls and tool calls.
+        ``"conversation_only"`` is for deployments that deliberately leave the
+        tool and model events out of the table (for example, to keep tool
+        arguments and results or system prompts out of it): it requires only
+        ``USER_MESSAGE_RECEIVED``, ``AGENT_RESPONSE`` and
+        ``INVOCATION_COMPLETED`` (and the ``content`` column) and creates the
+        same views, whose traces then hold the user and model text. A paused
+        turn is recognized only when its ``TOOL_PAUSED`` or ``HITL_*_REQUEST``
+        event is logged, and otherwise is not ``eval_ready``. Any other
+        value raises ``ValueError`` when the eval views are validated.
   """
 
   enabled: bool = True
@@ -2717,6 +2740,10 @@ class BigQueryLoggerConfig:
   create_eval_views: bool = False
   # Application rules for tool results that report a failure without raising.
   tool_result_classifier: Optional[ToolResultClassifier] = None
+  # Which events the eval views require: "full" (every event the trace is
+  # rebuilt from) or "conversation_only" (just the user and model text events,
+  # for deployments that leave the tool and model events out of the table).
+  eval_view_mode: Literal["full", "conversation_only"] = "full"
 
 
 # ==============================================================================
@@ -3249,8 +3276,8 @@ class BatchProcessor:
       ``queue_full``: the in-memory queue was full when the event arrived.
       ``arrow_prep_failed``: the batch could not be serialized to Arrow.
       ``retry_exhausted``: the write failed after exhausting all retries.
-      ``non_retryable``: BigQuery returned a non-retryable error (e.g. a
-        schema mismatch).
+      ``non_retryable``: BigQuery rejected the write with a non-retryable
+        error (e.g. a schema mismatch).
       ``unexpected_error``: an unexpected exception aborted the write.
       ``shutdown_timeout``: rows still queued when shutdown timed out.
       ``shutdown_cancelled``: rows still queued when shutdown was
@@ -3661,6 +3688,9 @@ class BatchProcessor:
                     "%d row(s) dropped due to a non-retryable BigQuery error.",
                     len(rows),
                 )
+              # In-band row rejections leave the stream usable; only RPC-level
+              # InvalidArgument/FailedPrecondition below can mean a finalized,
+              # expired, or in-use stream.
               if self.exactly_once_delivery and had_ambiguous_send:
                 self._desync_stream()
               self._record_drop("non_retryable", len(rows))
@@ -3751,6 +3781,49 @@ class BatchProcessor:
         )
         await asyncio.sleep(sleep_time)
         delay *= self.retry_config.multiplier
+      except (
+          api_exceptions.Unauthenticated,
+          api_exceptions.InvalidArgument,
+          api_exceptions.FailedPrecondition,
+      ) as e:
+        # BigQuery rejected the append outright, so no rows were written and a
+        # retry cannot succeed. Forbidden/PermissionDenied is handled above
+        # under permission_denied.
+        error_message = str(e)
+        is_schema_mismatch = "schema mismatch" in error_message.lower()
+        if is_schema_mismatch:
+          logger.error(
+              "BigQuery Schema Mismatch: %s. This usually means the"
+              " table schema does not match the expected schema.",
+              e,
+          )
+        else:
+          logger.error("Non-retryable BigQuery error: %s", e)
+          logger.error(
+              "%d row(s) dropped due to a non-retryable BigQuery error.",
+              len(rows),
+          )
+        # Unauthenticated and "schema mismatch" rejections leave the committed
+        # stream usable, so only an earlier ambiguous attempt desyncs it. Other
+        # RPC-level InvalidArgument and FailedPrecondition errors can mean a
+        # finalized, expired, or in-use stream, so they always desync a
+        # committed stream to rotate onto a fresh one for the next batch.
+        if self.exactly_once_delivery and (
+            had_ambiguous_send
+            or (
+                isinstance(
+                    e,
+                    (
+                        api_exceptions.InvalidArgument,
+                        api_exceptions.FailedPrecondition,
+                    ),
+                )
+                and not is_schema_mismatch
+            )
+        ):
+          self._desync_stream()
+        self._record_drop("non_retryable", len(rows))
+        return
       except Exception as e:
         total_dropped = self._record_drop("unexpected_error", len(rows))
         if request_sent and not definitive_rejection:
@@ -5121,13 +5194,22 @@ WHERE
 #   prefer terminal rows, which keeps streamed usage from being counted
 #   twice.
 # - ``_format_content`` renders text parts as ``text: '...'`` joined by
-#   `` | ``; ``response_events`` strips that ``_format_content`` wrapper
-#   back to plain text (kept in sync with ``_format_content`` by
+#   `` | ``; ``response_events`` strips that ``_format_content`` wrapper back
+#   to plain text (kept in sync with ``_format_content`` by
 #   ``TestEvalViews.test_eval_response_text_patterns_unwrap_format_content``).
 #   Any other ``_format_content`` output (``None``, or one with a non-text
 #   part such as ``call: ...`` or ``other``) gives a NULL ``response_text``;
 #   a response in another shape, such as the JSON args of a
 #   ``final_response_tool_names`` tool, is kept as is.
+# - For AGENT_RESPONSE, ``formatted_response`` prefers a non-blank string
+#   ``$.text_summary`` (such as one emitted by a custom ``content_formatter``)
+#   over ``$.response`` (a non-empty string, or an object or array serialized
+#   with ``TO_JSON_STRING``).
+# - An agent's ``instruction`` comes from its latest AGENT_STARTING event.
+#   Where none logged one (a callable ``InstructionProvider`` is not logged as
+#   text), it falls back to ``logged_system_prompt`` from
+#   ``session_agent_prompts``, the earliest non-empty ``system_prompt`` logged
+#   for that agent in the session's LLM_REQUEST events.
 # - ``trace`` holds only ``agents`` and ``turns``, and every nested object uses
 #   proto field names only, because unknown fields are rejected.
 # - No output column is named ``status``, avoiding collisions with
@@ -5148,6 +5230,11 @@ WHERE
 #   reply is not paused.
 # - Every column is aggregated per session or turn, so filters on the output
 #   timestamps cannot prune the events table's ``timestamp`` partitions.
+# - ``eval_view_mode`` picks the events that must be logged for the views to be
+#   created (``_EVAL_VIEW_EVENTS_BY_MODE``): all of
+#   ``_EVAL_VIEW_REQUIRED_EVENTS`` for ``"full"``, but only
+#   ``_EVAL_VIEW_CORE_EVENTS`` for ``"conversation_only"``, where the same SQL
+#   yields traces of the user and model text.
 _EVAL_VIEW_REQUIRED_EVENTS = frozenset({
     "USER_MESSAGE_RECEIVED",
     "AGENT_STARTING",
@@ -5165,6 +5252,16 @@ _EVAL_VIEW_REQUIRED_EVENTS = frozenset({
     "AGENT_RESPONSE",
     "INVOCATION_COMPLETED",
 })
+# The events a conversation's user and model text come from.
+_EVAL_VIEW_CORE_EVENTS = frozenset({
+    "USER_MESSAGE_RECEIVED",
+    "AGENT_RESPONSE",
+    "INVOCATION_COMPLETED",
+})
+_EVAL_VIEW_EVENTS_BY_MODE = {
+    "full": _EVAL_VIEW_REQUIRED_EVENTS,
+    "conversation_only": _EVAL_VIEW_CORE_EVENTS,
+}
 
 _EVAL_VIEW_CTES_SQL = """\
 WITH
@@ -5250,7 +5347,13 @@ WITH
       IF(
         event_type = 'AGENT_RESPONSE',
         COALESCE(
-          JSON_VALUE(content, '$.response'),
+          IF(
+            JSON_TYPE(JSON_QUERY(content, '$.text_summary')) = 'string'
+              AND TRIM(JSON_VALUE(content, '$.text_summary')) != '',
+            JSON_VALUE(content, '$.text_summary'),
+            NULL
+          ),
+          NULLIF(JSON_VALUE(content, '$.response'), ''),
           IF(
             JSON_TYPE(JSON_QUERY(content, '$.response'))
               IN ('object', 'array'),
@@ -5720,13 +5823,38 @@ WITH
       {scope_columns},
       agent_id
   ),
+  session_agent_prompts AS (
+    SELECT
+      session_id,
+      agent AS agent_id,
+      ARRAY_AGG(
+        IF(
+          JSON_TYPE(JSON_QUERY(content, '$.system_prompt')) = 'string'
+            AND TRIM(JSON_VALUE(content, '$.system_prompt')) != '',
+          JSON_VALUE(content, '$.system_prompt'),
+          NULL
+        )
+        IGNORE NULLS
+        ORDER BY timestamp, event_id
+        LIMIT 1
+      )[SAFE_OFFSET(0)] AS logged_system_prompt
+    FROM
+      raw_events
+    WHERE
+      event_type = 'LLM_REQUEST'
+      AND agent IS NOT NULL
+    GROUP BY
+      session_id,
+      agent
+  ),
   agent_configs AS (
     SELECT
       {scope_columns},
       agent_id,
       JSON_OBJECT(
         'agent_id', agent_id,
-        'instruction', COALESCE(instruction, ''),
+        'instruction',
+        COALESCE(NULLIF(instruction, ''), logged_system_prompt, ''),
         'description', COALESCE(description, ''),
         'sub_agents', COALESCE(sub_agents, JSON_ARRAY()),
         'tools', IF(
@@ -5741,6 +5869,9 @@ WITH
       ) AS agent_config
     FROM
       agent_latest
+    LEFT JOIN
+      session_agent_prompts
+      USING (session_id, agent_id)
     LEFT JOIN
       agent_tool_declarations
       USING ({scope_columns}, agent_id)
@@ -7455,22 +7586,35 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           f"{prefix} when 'content' is in payload_column_denylist, because"
           " AgentData trace reconstruction requires the 'content' column."
       )
-    denied_events = (
-        set(self.config.event_denylist or ()) & _EVAL_VIEW_REQUIRED_EVENTS
+    required_events = (
+        _EVAL_VIEW_EVENTS_BY_MODE.get(self.config.eval_view_mode)
+        if isinstance(self.config.eval_view_mode, str)
+        else None
     )
+    if required_events is None:
+      raise ValueError(
+          f"{prefix} with unknown"
+          f" eval_view_mode={self.config.eval_view_mode!r}; expected one of"
+          f" {sorted(_EVAL_VIEW_EVENTS_BY_MODE)}."
+      )
+    denied_events = set(self.config.event_denylist or ()) & required_events
     if denied_events:
       raise ValueError(
           f"{prefix} when required events are in event_denylist:"
           f" {sorted(denied_events)}."
       )
     if self.config.event_allowlist:
-      missing_events = _EVAL_VIEW_REQUIRED_EVENTS - set(
-          self.config.event_allowlist
-      )
+      missing_events = required_events - set(self.config.event_allowlist)
       if missing_events:
+        hint = (
+            " Set eval_view_mode='conversation_only' if tool, model-request,"
+            " agent-handoff, or HITL events are intentionally omitted."
+            if self.config.eval_view_mode == "full"
+            else ""
+        )
         raise ValueError(
             f"{prefix} unless event_allowlist includes all required events;"
-            f" missing: {sorted(missing_events)}."
+            f" missing: {sorted(missing_events)}.{hint}"
         )
 
   def _create_eval_views(self) -> bool:
@@ -7521,13 +7665,17 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     them on demand.  Ensures the plugin is initialized before attempting
     view creation.
 
-    The views rebuild ``AgentData`` traces from ``content`` and require
+    The views rebuild ``AgentData`` traces from ``content``.  When
+    ``config.eval_view_mode`` is ``"full"`` (default), they require
     ``USER_MESSAGE_RECEIVED``, ``AGENT_STARTING``, ``LLM_REQUEST``,
     ``TOOL_STARTING``, ``TOOL_COMPLETED``, ``TOOL_PAUSED``, ``AGENT_TRANSFER``,
     ``AGENT_RESPONSE``, ``INVOCATION_COMPLETED``, ``HITL_*_REQUEST``, and
-    ``HITL_*_REQUEST_COMPLETED`` events.  Any custom ``content_formatter`` must
-    preserve ``$.text_summary``, ``$.response``, ``$.tool``, ``$.args``, and
-    ``$.result``.
+    ``HITL_*_REQUEST_COMPLETED`` events; when ``config.eval_view_mode`` is
+    ``"conversation_only"``, they require only the three core conversation
+    events (``USER_MESSAGE_RECEIVED``, ``AGENT_RESPONSE``, and
+    ``INVOCATION_COMPLETED``).  Any custom ``content_formatter`` must preserve
+    ``$.text_summary``, ``$.response``, ``$.system_prompt``, ``$.tool``,
+    ``$.args``, and ``$.result``.
 
     The views aggregate per session or turn, so a filter on their
     ``session_start_timestamp`` or ``turn_start_timestamp`` column does not
@@ -7536,8 +7684,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     date-filtered slice of a view into a table once and evaluate that table.
 
     Raises:
-      ValueError: ``'content'`` is in ``payload_column_denylist``, or
-        ``event_denylist`` / ``event_allowlist`` filters out a required event.
+      ValueError: ``'content'`` is in ``payload_column_denylist``,
+        ``eval_view_mode`` is unknown, or ``event_denylist`` /
+        ``event_allowlist`` filters out a required event.
       RuntimeError: The plugin failed to initialize.
     """
     self._validate_eval_view_config()

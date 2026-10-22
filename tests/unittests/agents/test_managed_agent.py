@@ -19,13 +19,18 @@ from typing import Any
 from unittest.mock import MagicMock
 
 from google.adk.agents._managed_agent import ManagedAgent
+from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.run_config import StreamingMode
 from google.adk.events.event import Event
 from google.adk.models.llm_response import LlmResponse
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.adk.tools import google_search
 from google.adk.tools._remote_mcp_server import RemoteMcpServer
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.utils.context_utils import Aclosing
 from google.genai import types
 from google.genai import types as genai_types
 from pydantic import ValidationError
@@ -779,10 +784,6 @@ def test_mode_chat_is_rejected():
 
 
 async def test_run_impl_bridges_node_input_to_user_content():
-  from google.adk.agents.context import Context
-  from google.adk.agents.invocation_context import InvocationContext
-  from google.adk.sessions.in_memory_session_service import InMemorySessionService
-  from google.adk.sessions.session import Session
   from google.adk.utils.content_utils import to_user_content
 
   captured = {}
@@ -816,6 +817,50 @@ async def test_run_impl_bridges_node_input_to_user_content():
 
   assert events == []
   assert captured['user_content'] == to_user_content('compute primes')
+
+
+async def test_run_impl_early_close_closes_run_async():
+  """Closing ManagedAgent._run_impl early closes run_async."""
+  cleaned_up = False
+
+  class _CleanupManagedAgent(ManagedAgent):
+    """ManagedAgent stub that tracks whether run_async cleanup ran."""
+
+    async def run_async(self, parent_context):
+      nonlocal cleaned_up
+      try:
+        yield Event(
+            invocation_id=parent_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role='model', parts=[types.Part.from_text(text='first')]
+            ),
+        )
+        yield Event(
+            invocation_id=parent_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role='model', parts=[types.Part.from_text(text='second')]
+            ),
+        )
+      finally:
+        await asyncio.sleep(0)
+        cleaned_up = True
+
+  agent = _CleanupManagedAgent(name='m', agent_id='a', mode='single_turn')
+  session = Session(app_name='test', user_id='user', id='session')
+  ic = InvocationContext(
+      invocation_id='inv',
+      session=session,
+      session_service=InMemorySessionService(),
+  )
+  ctx = Context(ic, node=agent)
+
+  async with Aclosing(agent.run(ctx=ctx, node_input='go')) as agen:
+    first = await anext(agen)
+    assert first.content.parts[0].text == 'first'
+
+  assert cleaned_up
 
 
 async def _drain(agen):
@@ -1178,10 +1223,6 @@ def test_instruction_sent_on_chained_turn():
 
 
 def test_string_instruction_injects_session_state():
-  from google.adk.agents.invocation_context import InvocationContext
-  from google.adk.sessions.in_memory_session_service import InMemorySessionService
-  from google.adk.sessions.session import Session
-
   client = _RecordingClient([[]])
   agent = ManagedAgent(
       name='mgr',

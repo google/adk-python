@@ -33,6 +33,7 @@ from google.adk.workflow import START
 from google.adk.workflow._errors import DynamicNodeFailError
 from google.adk.workflow._errors import NodeTimeoutError
 from google.adk.workflow._graph import Graph
+from google.adk.workflow._join_node import JoinNode
 from google.adk.workflow._node import Node
 from google.adk.workflow._node import node
 from google.adk.workflow._node_runner import NodeRunner
@@ -1422,3 +1423,132 @@ async def test_dynamic_function_node_retry_gets_fresh_arguments():
   assert seen == [[1, 2], [1, 2]]
   outputs = [e.output for e in events if e.output is not None]
   assert 3 in outputs
+
+
+@pytest.mark.asyncio
+async def test_parent_retry_replays_work_of_a_child_that_failed() -> None:
+  """A retried parent replays what a failed child had completed.
+
+  The child has no retry_config of its own and fails with its own error after
+  its grandchild finished. The parent's retry runs the child again, and the
+  child's call replays the grandchild instead of running it a second time.
+  """
+  runs = {'grandchild': 0, 'child': 0}
+
+  @node
+  async def grandchild(ctx: Context):
+    runs['grandchild'] += 1
+    return 'grandchild_done'
+
+  @node(rerun_on_resume=True)
+  async def child(ctx: Context):
+    runs['child'] += 1
+    result = await ctx.run_node(grandchild)
+    if runs['child'] == 1:
+      raise CustomRetryableError('child fails once after its grandchild')
+    return f'child:{result}'
+
+  @node(
+      rerun_on_resume=True,
+      retry_config=RetryConfig(max_attempts=2, initial_delay=0.0, jitter=0.0),
+  )
+  async def parent(ctx: Context):
+    return await ctx.run_node(child)
+
+  wf = Workflow(name='wf', edges=[(START, parent)])
+  events, _, _ = await _run_workflow(wf)
+
+  assert runs == {'grandchild': 1, 'child': 2}
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'child:grandchild_done' in outputs
+
+
+@pytest.mark.asyncio
+async def test_workflow_timeout_retry_replays_finished_branch() -> None:
+  """A Workflow retried after its timeout runs a finished branch only once."""
+  runs = {'branch_a': 0, 'branch_b': 0}
+
+  @node()
+  async def branch_a(ctx: Context) -> str:
+    runs['branch_a'] += 1
+    return 'a_out'
+
+  @node()
+  async def branch_b(ctx: Context) -> str:
+    runs['branch_b'] += 1
+    if runs['branch_b'] == 1:
+      await asyncio.sleep(10)
+    return 'b_out'
+
+  inner_wf = Workflow(
+      name='inner_wf',
+      edges=[
+          (START, (branch_a, branch_b)),
+          ((branch_a, branch_b), JoinNode(name='join')),
+      ],
+      timeout=0.5,
+      retry_config=RetryConfig(max_attempts=2, initial_delay=0.0, jitter=0.0),
+  )
+  outer_wf = Workflow(name='outer_wf', edges=[(START, inner_wf)])
+
+  events, _, _ = await _run_workflow(outer_wf)
+
+  assert runs == {'branch_a': 1, 'branch_b': 2}
+  outputs = [e.output for e in events if e.output is not None]
+  assert {'branch_a': 'a_out', 'branch_b': 'b_out'} in outputs
+
+
+@pytest.mark.asyncio
+async def test_workflow_retry_with_parallel_branches_runs_succeeded_branch_once() -> (
+    None
+):
+  """A Workflow retry after parallel branch A fails runs branch B only once.
+
+  branch_a fails only after branch_b has finished, so branch_b's result is
+  already recorded when branch_a is retried.
+  """
+  branch_a_runs = 0
+  branch_b_runs = 0
+  branch_b_done = asyncio.Event()
+
+  @node()
+  async def branch_a(ctx: Context) -> str:
+    nonlocal branch_a_runs
+    branch_a_runs += 1
+    await branch_b_done.wait()
+    if branch_a_runs == 1:
+      await asyncio.sleep(0.01)
+      raise CustomRetryableError('branch_a failed once')
+    return 'a_out'
+
+  @node()
+  async def branch_b(ctx: Context) -> str:
+    nonlocal branch_b_runs
+    branch_b_runs += 1
+    branch_b_done.set()
+    return 'b_out'
+
+  join = JoinNode(name='join')
+  wf = Workflow(
+      name='parallel_wf',
+      edges=[
+          (START, (branch_a, branch_b)),
+          ((branch_a, branch_b), join),
+      ],
+      retry_config=RetryConfig(max_attempts=2, initial_delay=0.0, jitter=0.0),
+  )
+
+  events, _, _ = await _run_workflow(wf)
+
+  assert branch_a_runs == 2
+  assert branch_b_runs == 1
+  outputs = {
+      e.node_info.path: e.output
+      for e in events
+      if e.node_info and e.output is not None
+  }
+  assert outputs == {
+      'parallel_wf@1/branch_b@1': 'b_out',
+      'parallel_wf@1/branch_a@1': 'a_out',
+      'parallel_wf@1/join@1': {'branch_a': 'a_out', 'branch_b': 'b_out'},
+  }

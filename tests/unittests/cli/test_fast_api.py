@@ -40,10 +40,13 @@ from google.adk.auth.auth_credential import _redact_credential_secrets
 from google.adk.cli import api_server as api_server_module
 from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli import service_registry as service_registry_module
+from google.adk.cli.api_server import RewindSessionRequest
 from google.adk.cli.api_server import RunAgentRequest
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.cli.utils.base_agent_loader import _AgentLoadError
+from google.adk.errors import InvocationNotFoundError
+from google.adk.errors import StaleSessionError
 from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.errors.not_found_error import NotFoundError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
@@ -2350,6 +2353,714 @@ def test_patch_session_not_found(test_app, test_session_info):
   assert response.status_code == 404
   assert "Session not found" in response.json()["detail"]
   logger.info("Patch session not found test passed")
+
+
+def test_rewind_session(test_app, create_test_session, monkeypatch):
+  """Test rewinding a session to before a given invocation."""
+  info = create_test_session
+  captured: dict[str, Any] = {}
+
+  async def rewind_async_capture(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      rewind_before_invocation_id: str,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del self, run_config
+    captured["user_id"] = user_id
+    captured["session_id"] = session_id
+    captured["rewind_before_invocation_id"] = rewind_before_invocation_id
+
+  monkeypatch.setattr(Runner, "rewind_async", rewind_async_capture)
+
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}/rewind"
+  )
+  response = test_app.post(
+      url, json={"rewind_before_invocation_id": "some-invocation-id"}
+  )
+
+  assert response.status_code == 200
+  assert captured["user_id"] == info["user_id"]
+  assert captured["session_id"] == info["session_id"]
+  assert captured["rewind_before_invocation_id"] == "some-invocation-id"
+  data = response.json()
+  assert data["id"] == info["session_id"]
+
+
+def test_rewind_session_invocation_not_found(
+    test_app, create_test_session, monkeypatch
+):
+  """Test rewinding to an unknown invocation ID returns 404."""
+  info = create_test_session
+
+  async def rewind_async_raise(self, **kwargs):
+    del self, kwargs
+    raise InvocationNotFoundError(
+        "Invocation ID not found: missing-invocation-id"
+    )
+
+  monkeypatch.setattr(Runner, "rewind_async", rewind_async_raise)
+
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}/rewind"
+  )
+  response = test_app.post(
+      url, json={"rewind_before_invocation_id": "missing-invocation-id"}
+  )
+
+  assert response.status_code == 404
+  assert "missing-invocation-id" in response.json()["detail"]
+
+
+def test_rewind_session_stale_session_returns_409(
+    test_app, create_test_session, monkeypatch
+):
+  """Test rewinding a stale session returns 409."""
+  info = create_test_session
+
+  async def rewind_async_raise(self, **kwargs):
+    del self, kwargs
+    raise StaleSessionError("The session has been modified in storage")
+
+  monkeypatch.setattr(Runner, "rewind_async", rewind_async_raise)
+
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}/rewind"
+  )
+  response = test_app.post(
+      url, json={"rewind_before_invocation_id": "some-invocation-id"}
+  )
+
+  assert response.status_code == 409
+  assert "modified in storage" in response.json()["detail"]
+
+
+def test_rewind_session_unexpected_value_error_propagates(
+    test_app, create_test_session, monkeypatch
+):
+  """Test unexpected ValueError in rewind_async is not turned into a 404."""
+  info = create_test_session
+
+  async def rewind_async_raise(self, **kwargs):
+    del self, kwargs
+    raise ValueError("unexpected failure")
+
+  monkeypatch.setattr(Runner, "rewind_async", rewind_async_raise)
+
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}/rewind"
+  )
+  with pytest.raises(ValueError, match="unexpected failure"):
+    test_app.post(
+        url, json={"rewind_before_invocation_id": "some-invocation-id"}
+    )
+
+
+def test_rewind_session_not_found(test_app, test_session_info):
+  """Test rewinding a nonexistent session returns 404."""
+  info = test_session_info
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      "/sessions/nonexistent/rewind"
+  )
+  response = test_app.post(
+      url, json={"rewind_before_invocation_id": "some-invocation-id"}
+  )
+
+  assert response.status_code == 404
+  assert "Session not found" in response.json()["detail"]
+
+
+def test_rewind_session_not_found_with_auto_create_session(
+    test_app_auto_session, test_session_info, mock_session_service
+):
+  """Test rewinding a nonexistent session does not auto-create a session."""
+  info = test_session_info
+  session_id = "nonexistent_session"
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{session_id}/rewind"
+  )
+  response = test_app_auto_session.post(
+      url, json={"rewind_before_invocation_id": "some-invocation-id"}
+  )
+
+  assert response.status_code == 404
+  assert "Session not found" in response.json()["detail"]
+  assert (
+      mock_session_service.get_session_sync(
+          app_name=info["app_name"],
+          user_id=info["user_id"],
+          session_id=session_id,
+      )
+      is None
+  )
+
+
+async def test_rewind_session_redacts_oauth2_client_secret(
+    test_app, test_session_info, mock_session_service, oauth2_auth_config_dict
+):
+  """Test rewinding a session redacts OAuth2 credential secrets."""
+  session = await mock_session_service.create_session(
+      app_name=test_session_info["app_name"],
+      user_id=test_session_info["user_id"],
+      session_id=test_session_info["session_id"],
+      state={},
+  )
+  event = Event(
+      author="agent",
+      invocation_id="invocation_id",
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name="adk_request_credential",
+                      id="adk-req-cred-id",
+                      args={
+                          "functionCallId": "adk-original-fc-id",
+                          "authConfig": oauth2_auth_config_dict,
+                      },
+                  )
+              )
+          ],
+      ),
+      actions=EventActions(
+          requested_auth_configs={"adk-original-fc-id": oauth2_auth_config_dict}
+      ),
+  )
+  await mock_session_service.append_event(session=session, event=event)
+
+  url = (
+      f"/apps/{test_session_info['app_name']}/users/"
+      f"{test_session_info['user_id']}/sessions/"
+      f"{test_session_info['session_id']}/rewind"
+  )
+  response = test_app.post(
+      url, json={"rewind_before_invocation_id": "invocation_id"}
+  )
+  assert response.status_code == 200
+  assert "should-never-reach-the-client" not in response.text
+  assert "pkce-verifier-should-not-leak-either" not in response.text
+
+  data = response.json()
+  assert data["id"] == test_session_info["session_id"]
+  matching_events = [
+      e
+      for e in data["events"]
+      if e.get("content")
+      and e["content"].get("parts")
+      and e["content"]["parts"][0].get("functionCall", {}).get("name")
+      == "adk_request_credential"
+  ]
+  assert len(matching_events) == 1
+  args = matching_events[0]["content"]["parts"][0]["functionCall"]["args"]
+  raw_oauth2 = args["authConfig"]["rawAuthCredential"]["oauth2"]
+  exchanged_oauth2 = args["authConfig"]["exchangedAuthCredential"]["oauth2"]
+  assert "clientSecret" not in raw_oauth2
+  assert "clientSecret" not in exchanged_oauth2
+  assert "codeVerifier" not in exchanged_oauth2
+  assert raw_oauth2["clientId"] == "public-client-id"
+  action_auth = matching_events[0]["actions"]["requestedAuthConfigs"][
+      "adk-original-fc-id"
+  ]
+  assert "clientSecret" not in action_auth["rawAuthCredential"]["oauth2"]
+
+
+async def _seed_session_turns_for_rewind(mock_session_service, info):
+  """Append two user/agent turns so rewind has a target invocation."""
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.Content(
+              role="user", parts=[types.Part.from_text(text="first")]
+          ),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="agent",
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="reply-1")]
+          ),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.Content(
+              role="user", parts=[types.Part.from_text(text="second")]
+          ),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="agent",
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="reply-2")]
+          ),
+      ),
+  ]
+  for event in events:
+    await mock_session_service.append_event(session=session, event=event)
+  return session
+
+
+async def test_rewind_aborts_active_run_sse(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Rewinding a session while /run_sse is active aborts the live run first."""
+  info = create_test_session
+  await _seed_session_turns_for_rewind(mock_session_service, info)
+  captured_contexts = []
+  tool_in_flight = asyncio.Event()
+
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+
+  class SlowToolAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(self, invocation_context):
+      captured_contexts.append(invocation_context)
+      fc = types.Part.from_function_call(name="slow_tool", args={"q": "test"})
+      fc.function_call.id = "call_sse_rewind"
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[fc]),
+      )
+      tool_in_flight.set()
+      await invocation_context._abort_signal.wait()
+
+  slow_agent = SlowToolAgent("slow_tool_agent")
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: slow_agent
+  )
+
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  app = client.app
+  run_sse_handler = None
+  rewind_handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      run_sse_handler = route.endpoint
+    elif (
+        route.path
+        == "/apps/{app_name}/users/{user_id}/sessions/{session_id}/rewind"
+    ):
+      rewind_handler = route.endpoint
+  assert run_sse_handler is not None
+  assert rewind_handler is not None
+
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
+      streaming=True,
+  )
+  response = await run_sse_handler(req)
+
+  async def receive():
+    await asyncio.Event().wait()
+
+  sent_chunks: list[str] = []
+
+  async def send(message):
+    if message.get("type") == "http.response.body" and message.get("body"):
+      sent_chunks.append(message["body"].decode("utf-8"))
+
+  sse_task = asyncio.create_task(
+      response(
+          {"type": "http", "asgi": {"spec_version": "2.1"}},
+          receive,
+          send,
+      )
+  )
+  await tool_in_flight.wait()
+
+  rewind_result = await rewind_handler(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      req=RewindSessionRequest(rewind_before_invocation_id="inv2"),
+  )
+  await sse_task
+
+  assert len(captured_contexts) == 1
+  assert captured_contexts[0].is_aborted is True
+  assert "StaleSessionError" not in "".join(sent_chunks)
+  rewind_data = json.loads(rewind_result.body)
+  events = rewind_data.get("events", [])
+  assert (events[-1].get("actions") or {}).get(
+      "rewindBeforeInvocationId"
+  ) == "inv2"
+  assert any(event.get("errorCode") == "INVOCATION_ABORTED" for event in events)
+
+
+async def test_rewind_aborts_active_run(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Rewinding a session while /run is active aborts the live run first."""
+  info = create_test_session
+  await _seed_session_turns_for_rewind(mock_session_service, info)
+  captured_contexts = []
+  tool_in_flight = asyncio.Event()
+
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+
+  class SlowToolAgent(BaseAgent):
+
+    async def _run_async_impl(self, invocation_context):
+      captured_contexts.append(invocation_context)
+      fc = types.Part.from_function_call(name="slow_tool", args={"q": "test"})
+      fc.function_call.id = "call_run_rewind"
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[fc]),
+      )
+      tool_in_flight.set()
+      try:
+        await asyncio.wait_for(
+            invocation_context._abort_signal.wait(), timeout=1.0
+        )
+      except asyncio.TimeoutError:
+        pass
+      if not invocation_context.is_aborted:
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part.from_text(text="DONE.")]
+            ),
+        )
+
+  slow_agent = SlowToolAgent(name="slow_tool_agent", sub_agents=[])
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: slow_agent
+  )
+
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  app = client.app
+  run_handler = None
+  rewind_handler = None
+  for route in app.routes:
+    if route.path == "/run":
+      run_handler = route.endpoint
+    elif (
+        route.path
+        == "/apps/{app_name}/users/{user_id}/sessions/{session_id}/rewind"
+    ):
+      rewind_handler = route.endpoint
+  assert run_handler is not None
+  assert rewind_handler is not None
+
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
+      streaming=False,
+  )
+
+  async def receive():
+    await asyncio.Event().wait()
+
+  request = starlette.requests.Request(
+      {
+          "type": "http",
+          "method": "POST",
+          "path": "/run",
+          "headers": [],
+          "asgi": {"spec_version": "2.1"},
+      },
+      receive=receive,
+  )
+
+  run_task = asyncio.create_task(run_handler(req, request))
+  await tool_in_flight.wait()
+
+  rewind_result = await rewind_handler(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      req=RewindSessionRequest(rewind_before_invocation_id="inv2"),
+  )
+  run_response = await run_task
+
+  assert run_response.status_code == 200
+  assert len(captured_contexts) == 1
+  assert captured_contexts[0].is_aborted is True
+  run_events = json.loads(run_response.body)
+  assert any(
+      event.get("errorCode") == "INVOCATION_ABORTED" for event in run_events
+  )
+  rewind_data = json.loads(rewind_result.body)
+  events = rewind_data.get("events", [])
+  assert (events[-1].get("actions") or {}).get(
+      "rewindBeforeInvocationId"
+  ) == "inv2"
+  assert any(event.get("errorCode") == "INVOCATION_ABORTED" for event in events)
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  assert session.events[-1].actions.rewind_before_invocation_id == "inv2"
+
+
+async def test_invalid_rewind_does_not_abort_active_run_sse(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Invalid /rewind requests do not abort an active /run_sse run."""
+  info = create_test_session
+  await _seed_session_turns_for_rewind(mock_session_service, info)
+  captured_contexts = []
+  tool_in_flight = asyncio.Event()
+
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+
+  class SlowToolAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(self, invocation_context):
+      captured_contexts.append(invocation_context)
+      fc = types.Part.from_function_call(name="slow_tool", args={"q": "test"})
+      fc.function_call.id = "call_sse_invalid"
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[fc]),
+      )
+      tool_in_flight.set()
+      await invocation_context._abort_signal.wait()
+
+  slow_agent = SlowToolAgent("slow_tool_agent")
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: slow_agent
+  )
+
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  app = client.app
+  run_sse_handler = None
+  rewind_handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      run_sse_handler = route.endpoint
+    elif (
+        route.path
+        == "/apps/{app_name}/users/{user_id}/sessions/{session_id}/rewind"
+    ):
+      rewind_handler = route.endpoint
+  assert run_sse_handler is not None
+  assert rewind_handler is not None
+
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
+      streaming=True,
+  )
+  response = await run_sse_handler(req)
+
+  async def receive():
+    await asyncio.Event().wait()
+
+  async def send(message):
+    del message
+
+  sse_task = asyncio.create_task(
+      response(
+          {"type": "http", "asgi": {"spec_version": "2.1"}},
+          receive,
+          send,
+      )
+  )
+  await tool_in_flight.wait()
+
+  try:
+    with pytest.raises(HTTPException) as rewind_exc:
+      await rewind_handler(
+          app_name=info["app_name"],
+          user_id=info["user_id"],
+          session_id=info["session_id"],
+          req=RewindSessionRequest(rewind_before_invocation_id="missing-inv"),
+      )
+    assert rewind_exc.value.status_code == 404
+    assert captured_contexts[0].is_aborted is False
+  finally:
+    await rewind_handler(
+        app_name=info["app_name"],
+        user_id=info["user_id"],
+        session_id=info["session_id"],
+        req=RewindSessionRequest(rewind_before_invocation_id="inv2"),
+    )
+    await sse_task
+
+
+async def test_rewind_abort_timeout_returns_409(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Timing out waiting for a live run to abort returns 409."""
+  info = create_test_session
+  await _seed_session_turns_for_rewind(mock_session_service, info)
+  tool_in_flight = asyncio.Event()
+  release_stuck_run = asyncio.Event()
+
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+  monkeypatch.setattr(
+      api_server_module.ApiServer._abort_live_session_runs,
+      "__defaults__",
+      (0.01,),
+  )
+
+  class StuckToolAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(self, invocation_context):
+      fc = types.Part.from_function_call(name="stuck_tool", args={"q": "test"})
+      fc.function_call.id = "call_sse_stuck"
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[fc]),
+      )
+      tool_in_flight.set()
+      await release_stuck_run.wait()
+
+  stuck_agent = StuckToolAgent("stuck_tool_agent")
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: stuck_agent
+  )
+
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  app = client.app
+  run_sse_handler = None
+  rewind_handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      run_sse_handler = route.endpoint
+    elif (
+        route.path
+        == "/apps/{app_name}/users/{user_id}/sessions/{session_id}/rewind"
+    ):
+      rewind_handler = route.endpoint
+  assert run_sse_handler is not None
+  assert rewind_handler is not None
+
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Run stuck tool"}]},
+      streaming=True,
+  )
+  response = await run_sse_handler(req)
+
+  async def receive():
+    await asyncio.Event().wait()
+
+  async def send(message):
+    del message
+
+  sse_task = asyncio.create_task(
+      response(
+          {"type": "http", "asgi": {"spec_version": "2.1"}},
+          receive,
+          send,
+      )
+  )
+  await tool_in_flight.wait()
+
+  try:
+    with pytest.raises(HTTPException) as rewind_exc:
+      await rewind_handler(
+          app_name=info["app_name"],
+          user_id=info["user_id"],
+          session_id=info["session_id"],
+          req=RewindSessionRequest(rewind_before_invocation_id="inv2"),
+      )
+    assert rewind_exc.value.status_code == 409
+    assert "Timed out waiting for live runs to abort" in rewind_exc.value.detail
+
+    session_during_stuck = await mock_session_service.get_session(
+        app_name=info["app_name"],
+        user_id=info["user_id"],
+        session_id=info["session_id"],
+    )
+    assert not any(
+        event.actions.rewind_before_invocation_id is not None
+        for event in session_during_stuck.events
+    )
+  finally:
+    release_stuck_run.set()
+    await sse_task
 
 
 def test_agent_run(test_app, create_test_session):

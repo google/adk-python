@@ -2215,14 +2215,17 @@ class RemoteA2aAgent(BaseAgent):
     later events are passed through untouched.
     """
     promoted = False
-    async for event in super()._run_impl(ctx=ctx, node_input=node_input):
-      if (
-          self.mode != AgentMode.TASK
-          and not promoted
-          and self._promote_response_to_output(event, ctx.node_path)
-      ):
-        promoted = True
-      yield event
+    async with Aclosing(
+        super()._run_impl(ctx=ctx, node_input=node_input)
+    ) as agen:
+      async for event in agen:
+        if (
+            self.mode != AgentMode.TASK
+            and not promoted
+            and self._promote_response_to_output(event, ctx.node_path)
+        ):
+          promoted = True
+        yield event
 
   def _promote_response_to_output(self, event: Event, node_path: str) -> bool:
     """Sets ``event.output`` from non-thought text parts, if eligible.

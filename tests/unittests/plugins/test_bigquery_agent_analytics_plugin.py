@@ -331,6 +331,19 @@ async def _async_gen(val):
   yield val
 
 
+class _FailingAsyncIterator:
+  """Raises `error` on the first iteration, like a failed gRPC stream."""
+
+  def __init__(self, error: Exception):
+    self._error = error
+
+  def __aiter__(self):
+    return self
+
+  async def __anext__(self):
+    raise self._error
+
+
 async def _get_captured_event_dict_async(mock_write_client, expected_schema):
   """Helper to get the event_dict passed to append_rows."""
   mock_write_client.append_rows.assert_called_once()
@@ -13307,6 +13320,8 @@ class _EvalViewSqlEvaluator:
       return None if args[0] == args[1] else args[0]
     if name == "ARRAY_LENGTH":
       return None if args[0] is None else len(args[0])
+    if name == "TRIM":
+      return None if args[0] is None else args[0].strip()
     if name == "CHR":
       return chr(args[0])
     if name in ("REGEXP_CONTAINS", "REGEXP_REPLACE"):
@@ -14885,6 +14900,447 @@ class TestEvalViews:
           **first_turn_events[0],
           "event_timestamp": "2026-04-19T12:00:00Z",
       })
+
+  @pytest.mark.asyncio
+  async def test_eval_views_conversation_only_mode(self):
+    """eval_view_mode='conversation_only' requires only the 3 core events."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    assert config.eval_view_mode == "full"
+
+    core_events = {
+        "USER_MESSAGE_RECEIVED",
+        "AGENT_RESPONSE",
+        "INVOCATION_COMPLETED",
+    }
+    assert bigquery_agent_analytics_plugin._EVAL_VIEW_CORE_EVENTS == core_events
+    redacted_allowlist = [
+        "USER_MESSAGE_RECEIVED",
+        "AGENT_RESPONSE",
+        "INVOCATION_STARTING",
+        "INVOCATION_COMPLETED",
+        "LLM_REQUEST",
+        "LLM_RESPONSE",
+        "LLM_ERROR",
+        "TOOL_ERROR",
+        "AGENT_ERROR",
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="Set eval_view_mode='conversation_only'",
+    ):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              create_eval_views=True,
+              event_allowlist=redacted_allowlist,
+          ),
+      )
+
+    plugin_redacted = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True,
+                eval_view_mode="conversation_only",
+                event_allowlist=redacted_allowlist,
+                event_denylist=["TOOL_STARTING", "AGENT_STARTING"],
+            ),
+        )
+    )
+    assert plugin_redacted.config.eval_view_mode == "conversation_only"
+
+    for core_event in sorted(core_events):
+      with pytest.raises(
+          ValueError, match="required events are in event_denylist"
+      ):
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True,
+                eval_view_mode="conversation_only",
+                event_denylist=[core_event],
+            ),
+        )
+      with pytest.raises(
+          ValueError, match=re.escape(f"missing: ['{core_event}'].")
+      ):
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True,
+                eval_view_mode="conversation_only",
+                event_allowlist=sorted(core_events - {core_event}),
+            ),
+        )
+
+    plugin_unknown_mode = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+        )
+    )
+    for bad_mode in ("invalid_mode", []):
+      plugin_unknown_mode.config.eval_view_mode = (
+          bad_mode  # type: ignore[assignment]
+      )
+      with pytest.raises(
+          ValueError,
+          match=re.escape(f"unknown eval_view_mode={bad_mode!r}"),
+      ):
+        await plugin_unknown_mode.create_eval_views()
+
+  def test_eval_formatted_response_prefers_text_summary_before_response(self):
+    """formatted_response prefers non-blank string $.text_summary.
+
+    When $.text_summary is missing, blank, or not a JSON string, it falls back
+    to $.response.
+    """
+    _, turn_view = self._eval_views()
+
+    def evaluate_response(content):
+      formatted = turn_view.evaluate(
+          "formatted_response",
+          {"event_type": "AGENT_RESPONSE", "content": content},
+      )
+      response_text = turn_view.evaluate(
+          "response_text",
+          {"event_type": "AGENT_RESPONSE", "formatted_response": formatted},
+      )
+      return formatted, response_text
+
+    # 1. A non-blank string $.text_summary (e.g. from a custom
+    # content_formatter) takes precedence over $.response.
+    assert evaluate_response({
+        "text_summary": "Summary wins.",
+        "response": {"parts": [{"markdown": "Ignored part."}]},
+    }) == ("Summary wins.", "Summary wins.")
+    assert evaluate_response({
+        "text_summary": "  Padded summary.  ",
+        "response": "text: 'Ignored'",
+    }) == ("  Padded summary.  ", "  Padded summary.  ")
+    assert evaluate_response({
+        "text_summary": "text: 'Wrapped summary'",
+        "response": "text: 'Ignored'",
+    }) == ("text: 'Wrapped summary'", "Wrapped summary")
+
+    # 2. Missing, empty, whitespace-only, or non-string $.text_summary falls
+    # through to $.response.
+    assert evaluate_response({
+        "text_summary": "   \n\t ",
+        "response": "text: 'Hi'",
+    }) == ("text: 'Hi'", "Hi")
+    assert evaluate_response({
+        "text_summary": "",
+        "response": "Plain string response.",
+    }) == ("Plain string response.", "Plain string response.")
+    assert evaluate_response({
+        "text_summary": {"nested": "not a string scalar"},
+        "response": "text: 'Fallback to response'",
+    }) == ("text: 'Fallback to response'", "Fallback to response")
+    assert evaluate_response({
+        "text_summary": False,
+        "response": "text: 'Fallback from bool'",
+    }) == ("text: 'Fallback from bool'", "Fallback from bool")
+    assert evaluate_response({
+        "text_summary": 123,
+        "response": "text: 'Fallback from int'",
+    }) == ("text: 'Fallback from int'", "Fallback from int")
+
+    # 3. Object or array $.response is serialized with TO_JSON_STRING when no
+    # non-blank string $.text_summary is present.
+    multi_answer = {
+        "answer": "Paris",
+        "sources": ["wiki/Paris"],
+        "confidence": 0.9,
+    }
+    formatted_multi, text_multi = evaluate_response({"response": multi_answer})
+    assert formatted_multi == text_multi
+    assert json.loads(text_multi) == multi_answer
+    array_response = [{"step": 1}, {"step": 2}]
+    formatted_arr, text_arr = evaluate_response({"response": array_response})
+    assert formatted_arr == text_arr
+    assert json.loads(text_arr) == array_response
+    wrapped_output_schema = (
+        'text: \'{"summary": "Met with team", "action_items": ["ship'
+        ' CL", "write doc"]}\''
+    )
+    assert evaluate_response({"response": wrapped_output_schema}) == (
+        wrapped_output_schema,
+        (
+            '{"summary": "Met with team", "action_items": ["ship CL", "write'
+            ' doc"]}'
+        ),
+    )
+    assert evaluate_response({"text_summary": "  ", "response": ""}) == (
+        None,
+        None,
+    )
+
+  def test_eval_agent_instruction_fallback_from_session_agent_prompts(self):
+    """agent_configs falls back to earliest session LLM_REQUEST.system_prompt.
+
+    Covers legacy callable reprs, empty text_summary, and current
+    before_agent_callback rows with content=None and
+    instruction_source='provider'.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+
+    rows = [
+        # Session 1, Turn 1: AGENT_STARTING instruction takes precedence over
+        # LLM_REQUEST.system_prompt.
+        event(
+            "inv-static",
+            0,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Run query."},
+            session_id="s-static",
+        ),
+        event(
+            "inv-static",
+            1,
+            "AGENT_STARTING",
+            {"text_summary": "Static agent instruction."},
+            session_id="s-static",
+        ),
+        event(
+            "inv-static",
+            2,
+            "LLM_REQUEST",
+            {"system_prompt": "Dynamic system prompt v1."},
+            session_id="s-static",
+        ),
+        event(
+            "inv-static",
+            3,
+            "TOOL_STARTING",
+            {"tool": "execute_sql", "args": {"sql": "SELECT 1"}},
+            session_id="s-static",
+        ),
+        event(
+            "inv-static",
+            4,
+            "TOOL_COMPLETED",
+            {"tool": "execute_sql", "result": {"rows": 1}},
+            session_id="s-static",
+        ),
+        event(
+            "inv-static",
+            5,
+            "AGENT_RESPONSE",
+            {"text_summary": "1 row returned."},
+            session_id="s-static",
+        ),
+        event("inv-static", 6, "INVOCATION_COMPLETED", session_id="s-static"),
+        # Session 2, Turn 1: callable InstructionProvider on AGENT_STARTING
+        # (both current content=None with instruction_source='provider' and
+        # legacy function repr); earliest non-blank LLM_REQUEST.system_prompt
+        # in the session wins.
+        event(
+            "inv-callable-1",
+            10,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Clarify metric."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            11,
+            "AGENT_STARTING",
+            None,
+            attributes={"instruction_source": "provider"},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            12,
+            "LLM_REQUEST",
+            {"system_prompt": "   "},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            13,
+            "LLM_REQUEST",
+            {"system_prompt": "Earliest session system prompt."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            14,
+            "LLM_REQUEST",
+            {"system_prompt": "Turn 1 retry system prompt."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            15,
+            "AGENT_STARTING",
+            "<function sub_instruction at 0x7f0001>",
+            agent="sub_agent",
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            16,
+            "LLM_REQUEST",
+            {"system_prompt": "Sub-agent session prompt."},
+            agent="sub_agent",
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            17,
+            "AGENT_RESPONSE",
+            {"text_summary": "Do you mean gross or net revenue?"},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            18,
+            "INVOCATION_COMPLETED",
+            session_id="s-callable",
+        ),
+        # Session 2, Turn 2: root_agent logs a later LLM_REQUEST system_prompt,
+        # and sub_agent logs AGENT_STARTING with {"text_summary": ""} (to
+        # exercise NULLIF(instruction, '') in agent_configs) without a new
+        # LLM_REQUEST; both still resolve to their earliest session
+        # system_prompt in turn_view and session_view.
+        event(
+            "inv-callable-2",
+            20,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Net revenue."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-2",
+            21,
+            "AGENT_STARTING",
+            None,
+            attributes={"instruction_source": "provider"},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-2",
+            22,
+            "LLM_REQUEST",
+            {"system_prompt": "Later turn 2 system prompt."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-2",
+            23,
+            "AGENT_STARTING",
+            {"text_summary": ""},
+            agent="sub_agent",
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-2",
+            24,
+            "AGENT_RESPONSE",
+            {"text_summary": "Net revenue is $10M."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-2",
+            25,
+            "INVOCATION_COMPLETED",
+            session_id="s-callable",
+        ),
+        # Session 3, Turn 1: conversation-only turn (only USER_MESSAGE_RECEIVED,
+        # AGENT_RESPONSE, INVOCATION_COMPLETED).
+        event(
+            "inv-conv-only",
+            30,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Pinned query."},
+            session_id="s-conv-only",
+        ),
+        event(
+            "inv-conv-only",
+            31,
+            "AGENT_RESPONSE",
+            {"text_summary": "Fast-path answer."},
+            session_id="s-conv-only",
+        ),
+        event(
+            "inv-conv-only",
+            32,
+            "INVOCATION_COMPLETED",
+            session_id="s-conv-only",
+        ),
+    ]
+
+    session_rows = {row["session_id"]: row for row in session_view.run(rows)}
+    turn_rows = {row["invocation_id"]: row for row in turn_view.run(rows)}
+
+    assert (
+        session_rows["s-static"]["trace"]["agents"]["root_agent"]["instruction"]
+        == "Static agent instruction."
+    )
+    assert (
+        turn_rows["inv-static"]["trace"]["agents"]["root_agent"]["instruction"]
+        == "Static agent instruction."
+    )
+
+    assert (
+        session_rows["s-callable"]["trace"]["agents"]["root_agent"][
+            "instruction"
+        ]
+        == "Earliest session system prompt."
+    )
+    assert (
+        turn_rows["inv-callable-1"]["trace"]["agents"]["root_agent"][
+            "instruction"
+        ]
+        == "Earliest session system prompt."
+    )
+    assert (
+        turn_rows["inv-callable-2"]["trace"]["agents"]["root_agent"][
+            "instruction"
+        ]
+        == "Earliest session system prompt."
+    )
+    assert (
+        session_rows["s-callable"]["trace"]["agents"]["sub_agent"][
+            "instruction"
+        ]
+        == "Sub-agent session prompt."
+    )
+    assert (
+        turn_rows["inv-callable-1"]["trace"]["agents"]["sub_agent"][
+            "instruction"
+        ]
+        == "Sub-agent session prompt."
+    )
+    assert (
+        turn_rows["inv-callable-2"]["trace"]["agents"]["sub_agent"][
+            "instruction"
+        ]
+        == "Sub-agent session prompt."
+    )
+
+    assert (
+        session_rows["s-conv-only"]["trace"]["agents"]["root_agent"][
+            "instruction"
+        ]
+        == ""
+    )
+    assert session_rows["s-conv-only"]["trace"]["turns"][0]["events"][1][
+        "content"
+    ]["parts"] == [{"text": "Fast-path answer."}]
 
 
 # ==============================================================================
@@ -17222,6 +17678,21 @@ class TestAgentResponseLogging:
     assert mock_write_client.append_rows.call_count == 0
 
 
+# AppendRows auth errors that reject a batch without writing any row and leave
+# a committed stream usable. Forbidden/PermissionDenied is classified separately
+# under permission_denied.
+_AUTH_NON_RETRYABLE_ERRORS = (api_exceptions.Unauthenticated,)
+# AppendRows errors that can also mean the stream itself is unusable
+# (finalized, expired or in use by another client).
+_STREAM_STATE_NON_RETRYABLE_ERRORS = (
+    api_exceptions.InvalidArgument,
+    api_exceptions.FailedPrecondition,
+)
+_STREAM_LEVEL_NON_RETRYABLE_ERRORS = (
+    _AUTH_NON_RETRYABLE_ERRORS + _STREAM_STATE_NON_RETRYABLE_ERRORS
+)
+
+
 class TestDropStats:
   """Tests that dropped events are counted and exposed via get_drop_stats."""
 
@@ -17326,6 +17797,79 @@ class TestDropStats:
     assert bp.dropped_event_count == 1
     assert secret not in caplog.text
     assert "1 row(s) dropped" in caplog.text
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("raise_while_iterating", [False, True])
+  @pytest.mark.parametrize("error_cls", _STREAM_LEVEL_NON_RETRYABLE_ERRORS)
+  async def test_stream_level_non_retryable_drops_are_counted(
+      self, dummy_arrow_schema, caplog, error_cls, raise_while_iterating
+  ):
+    """A rejected AppendRows stream is non_retryable, not unexpected."""
+    retry_config = bigquery_agent_analytics_plugin.RetryConfig(
+        max_retries=1, initial_delay=0.0, multiplier=1.0, max_delay=0.0
+    )
+    bp = self._make_processor(dummy_arrow_schema, retry_config=retry_config)
+    self._stub_arrow_prep(bp)
+
+    async def fake_append_rows(requests, **kwargs):
+      del kwargs
+      await anext(requests)
+      error = error_cls("rejected")
+      if raise_while_iterating:
+        return _FailingAsyncIterator(error)
+      raise error
+
+    bp.write_client.append_rows.side_effect = fake_append_rows
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger="google_adk.google.adk.plugins.bigquery_agent_analytics_plugin",
+    ):
+      await bp._write_rows_with_retry([{"a": 1}, {"a": 2}])
+
+    assert bp.write_client.append_rows.call_count == 1
+    assert bp.get_drop_stats()["non_retryable"] == 2
+    assert bp.get_drop_stats()["unexpected_error"] == 0
+    assert "Non-retryable BigQuery error" in caplog.text
+    assert "2 row(s) dropped" in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("raise_while_iterating", [False, True])
+  async def test_stream_level_schema_mismatch_logs_schema_hint(
+      self, dummy_arrow_schema, caplog, raise_while_iterating
+  ):
+    """A stream-level schema mismatch logs the schema hint, not a traceback."""
+    retry_config = bigquery_agent_analytics_plugin.RetryConfig(
+        max_retries=1, initial_delay=0.0, multiplier=1.0, max_delay=0.0
+    )
+    bp = self._make_processor(dummy_arrow_schema, retry_config=retry_config)
+    self._stub_arrow_prep(bp)
+
+    async def fake_append_rows(requests, **kwargs):
+      del kwargs
+      await anext(requests)
+      error = api_exceptions.InvalidArgument("Schema mismatch: field x")
+      if raise_while_iterating:
+        return _FailingAsyncIterator(error)
+      raise error
+
+    bp.write_client.append_rows.side_effect = fake_append_rows
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger="google_adk.google.adk.plugins.bigquery_agent_analytics_plugin",
+    ):
+      await bp._write_rows_with_retry([{"a": 1}, {"a": 2}])
+
+    assert bp.write_client.append_rows.call_count == 1
+    assert bp.get_drop_stats()["non_retryable"] == 2
+    assert bp.get_drop_stats()["unexpected_error"] == 0
+    assert "BigQuery Schema Mismatch: 400 Schema mismatch: field x" in (
+        caplog.text
+    )
+    assert "Non-retryable BigQuery error" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
 
   @pytest.mark.asyncio
   @pytest.mark.parametrize("error_mode", ["in_band", "raised"])
@@ -17717,6 +18261,59 @@ class TestExactlyOnceDelivery:
     create_stream.assert_awaited_once_with()
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize("raise_while_iterating", [False, True])
+  async def test_unauthenticated_after_ambiguity_rotates_stream(
+      self, dummy_arrow_schema, raise_while_iterating
+  ):
+    """Unauthenticated after an ambiguous attempt still rotates the stream."""
+    client = mock.MagicMock()
+    streams = []
+    calls = 0
+    replacement = self._STREAM.replace("committed-1", "committed-2")
+    create_stream = mock.AsyncMock(return_value=replacement)
+
+    async def append_rows(requests, **kwargs):
+      nonlocal calls
+      del kwargs
+      request = await anext(requests)
+      streams.append(request.write_stream)
+      calls += 1
+      if calls == 1:
+        # Ambiguous send: request left before a definitive rejection.
+        raise asyncio.TimeoutError()
+      if calls == 2:
+        error = api_exceptions.Unauthenticated("unauthenticated")
+        if raise_while_iterating:
+          return _FailingAsyncIterator(error)
+        raise error
+      return _async_gen(self._response())
+
+    client.append_rows.side_effect = append_rows
+    client.finalize_write_stream = mock.AsyncMock()
+    processor = self._make_processor(
+        dummy_arrow_schema,
+        write_client=client,
+        create_stream=create_stream,
+        max_retries=1,
+    )
+
+    await processor._write_rows_with_retry([{"batch": "a"}])
+
+    assert processor._offset_desynced
+    assert {
+        reason: count
+        for reason, count in processor.get_drop_stats().items()
+        if count
+    } == {"non_retryable": 1}
+
+    await processor._write_rows_with_retry([{"batch": "b"}])
+
+    assert not processor._offset_desynced
+    assert streams == [self._STREAM, self._STREAM, replacement]
+    assert processor._next_offset == 1
+    create_stream.assert_awaited_once_with()
+
+  @pytest.mark.asyncio
   async def test_forbidden_after_ambiguity_desyncs_stream_in_eod_mode(
       self, dummy_arrow_schema
   ):
@@ -17795,6 +18392,186 @@ class TestExactlyOnceDelivery:
     assert streams == [self._STREAM, self._STREAM]
     assert processor._next_offset == 0
     assert processor.get_drop_stats()["permission_denied"] == 2
+    create_stream.assert_not_awaited()
+
+  def _first_attempt_rejection_client(
+      self, error, raise_while_iterating, offsets, streams
+  ):
+    """A write client whose first AppendRows call fails with `error`."""
+    client = mock.MagicMock()
+    calls = 0
+
+    async def append_rows(requests, **kwargs):
+      nonlocal calls
+      del kwargs
+      request = await anext(requests)
+      offsets.append(request.offset)
+      streams.append(request.write_stream)
+      calls += 1
+      if calls > 1:
+        return _async_gen(self._response())
+      if raise_while_iterating:
+        return _FailingAsyncIterator(error)
+      raise error
+
+    client.append_rows.side_effect = append_rows
+    return client
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("raise_while_iterating", [False, True])
+  @pytest.mark.parametrize("error_cls", _AUTH_NON_RETRYABLE_ERRORS)
+  async def test_first_attempt_auth_rejection_keeps_offset(
+      self, dummy_arrow_schema, error_cls, raise_while_iterating
+  ):
+    """A definitive first-attempt auth rejection leaves its offset reusable."""
+    offsets = []
+    streams = []
+    replacement = self._STREAM.replace("committed-1", "committed-2")
+    create_stream = mock.AsyncMock(return_value=replacement)
+    processor = self._make_processor(
+        dummy_arrow_schema,
+        write_client=self._first_attempt_rejection_client(
+            error_cls("rejected"), raise_while_iterating, offsets, streams
+        ),
+        create_stream=create_stream,
+        max_retries=1,
+    )
+
+    await processor._write_rows_with_retry([{"a": 1}])
+
+    assert not processor._offset_desynced
+    assert processor.get_drop_stats()["non_retryable"] == 1
+    assert processor.get_drop_stats()["unexpected_error"] == 0
+
+    await processor._write_rows_with_retry([{"a": 2}])
+
+    assert offsets == [0, 0]
+    assert streams == [self._STREAM, self._STREAM]
+    assert processor._next_offset == 1
+    create_stream.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("raise_while_iterating", [False, True])
+  @pytest.mark.parametrize("error_cls", _STREAM_STATE_NON_RETRYABLE_ERRORS)
+  async def test_first_attempt_stream_state_rejection_rotates_stream(
+      self, dummy_arrow_schema, error_cls, raise_while_iterating
+  ):
+    """A finalized, expired or in-use committed stream is replaced."""
+    offsets = []
+    streams = []
+    replacement = self._STREAM.replace("committed-1", "committed-2")
+    create_stream = mock.AsyncMock(return_value=replacement)
+    processor = self._make_processor(
+        dummy_arrow_schema,
+        write_client=self._first_attempt_rejection_client(
+            error_cls("rejected"), raise_while_iterating, offsets, streams
+        ),
+        create_stream=create_stream,
+        max_retries=1,
+    )
+
+    await processor._write_rows_with_retry([{"a": 1}])
+
+    assert processor._offset_desynced
+    assert processor.get_drop_stats()["non_retryable"] == 1
+    assert processor.get_drop_stats()["unexpected_error"] == 0
+
+    await processor._write_rows_with_retry([{"a": 2}])
+
+    assert not processor._offset_desynced
+    assert offsets == [0, 0]
+    assert streams == [self._STREAM, replacement]
+    assert processor._next_offset == 1
+    create_stream.assert_awaited_once_with()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("raise_while_iterating", [False, True])
+  async def test_first_attempt_schema_mismatch_keeps_offset(
+      self, dummy_arrow_schema, raise_while_iterating
+  ):
+    """A first-attempt RPC-level schema mismatch keeps the committed stream."""
+    offsets = []
+    streams = []
+    replacement = self._STREAM.replace("committed-1", "committed-2")
+    create_stream = mock.AsyncMock(return_value=replacement)
+    processor = self._make_processor(
+        dummy_arrow_schema,
+        write_client=self._first_attempt_rejection_client(
+            api_exceptions.InvalidArgument("Schema mismatch: field x"),
+            raise_while_iterating,
+            offsets,
+            streams,
+        ),
+        create_stream=create_stream,
+        max_retries=1,
+    )
+
+    await processor._write_rows_with_retry([{"a": 1}])
+
+    assert not processor._offset_desynced
+    assert {
+        reason: count
+        for reason, count in processor.get_drop_stats().items()
+        if count
+    } == {"non_retryable": 1}
+
+    await processor._write_rows_with_retry([{"a": 2}])
+
+    assert offsets == [0, 0]
+    assert streams == [self._STREAM, self._STREAM]
+    assert processor._next_offset == 1
+    create_stream.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("code", "message"),
+      [
+          (3, "invalid argument"),
+          (3, "Schema mismatch: field x"),
+          (9, "failed precondition"),
+      ],
+  )
+  async def test_first_attempt_in_band_rejection_keeps_offset(
+      self, dummy_arrow_schema, code, message
+  ):
+    """An in-band first-attempt rejection keeps the committed stream."""
+    client = mock.MagicMock()
+    offsets = []
+    streams = []
+    replacement = self._STREAM.replace("committed-1", "committed-2")
+    create_stream = mock.AsyncMock(return_value=replacement)
+
+    async def append_rows(requests, **kwargs):
+      del kwargs
+      request = await anext(requests)
+      offsets.append(request.offset)
+      streams.append(request.write_stream)
+      if len(streams) == 1:
+        return _async_gen(self._response(code, message))
+      return _async_gen(self._response())
+
+    client.append_rows.side_effect = append_rows
+    processor = self._make_processor(
+        dummy_arrow_schema,
+        write_client=client,
+        create_stream=create_stream,
+        max_retries=1,
+    )
+
+    await processor._write_rows_with_retry([{"a": 1}])
+
+    assert not processor._offset_desynced
+    assert {
+        reason: count
+        for reason, count in processor.get_drop_stats().items()
+        if count
+    } == {"non_retryable": 1}
+
+    await processor._write_rows_with_retry([{"a": 2}])
+
+    assert offsets == [0, 0]
+    assert streams == [self._STREAM, self._STREAM]
+    assert processor._next_offset == 1
     create_stream.assert_not_awaited()
 
   @pytest.mark.asyncio

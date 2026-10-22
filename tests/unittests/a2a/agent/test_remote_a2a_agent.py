@@ -60,6 +60,7 @@ from google.adk.a2a.converters import event_converter
 from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
 from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
+from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
@@ -76,8 +77,10 @@ from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_BEGIN
 from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_END
 from google.adk.flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
 from google.adk.utils import _mtls_utils
+from google.adk.utils.context_utils import Aclosing
 from google.genai import types as genai_types
 import httpx
 from pydantic import BaseModel
@@ -7285,6 +7288,43 @@ class TestRemoteA2aAgentWorkflowOutput:
     ]
     assert join_outputs
     assert join_outputs[0].output == {"remote_agent": "Simulated error"}
+
+  @pytest.mark.asyncio
+  async def test_run_impl_early_close_closes_super_run_impl(self):
+    """Closing RemoteA2aAgent._run_impl early closes super()._run_impl."""
+    cleaned_up = False
+    first_event = self._make_text_event(text="first", task_state="working")
+    second_event = self._make_text_event(text="second", task_state="completed")
+
+    class _CleanupRemoteAgent(RemoteA2aAgent):
+
+      async def _run_async_impl(self, ctx):
+        nonlocal cleaned_up
+        try:
+          yield first_event
+          yield second_event
+        finally:
+          await asyncio.sleep(0)
+          cleaned_up = True
+
+    agent = _CleanupRemoteAgent(
+        name="remote_agent",
+        agent_card=create_test_agent_card(),
+    )
+    session = Session(app_name="test_app", user_id="user", id="session")
+    parent_ctx = InvocationContext(
+        invocation_id="inv",
+        session=session,
+        session_service=Mock(spec=BaseSessionService),
+        agent=agent,
+    )
+    ctx = Context(parent_ctx, node=agent)
+
+    async with Aclosing(agent.run(ctx=ctx, node_input=None)) as agen:
+      event = await anext(agen)
+      assert event is first_event
+
+    assert cleaned_up
 
 
 # ---------------------------------------------------------------------------

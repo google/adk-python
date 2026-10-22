@@ -49,6 +49,7 @@ from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
 from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
 from google.adk.events.event import Event
 from google.adk.events.event import EventActions
+from google.adk.events.event import NodeInfo
 from google.adk.models.google_llm import Gemini
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
@@ -3206,6 +3207,372 @@ async def test_runner_delegation_closes_active_task_scope_on_terminal_results(
   )
   session.events.extend(events)
   assert runners._find_active_task_scope(session) is None
+
+
+def _isolated_event(scope: str, **kwargs: Any) -> Event:
+  return Event(
+      author=f"{scope}_worker",
+      invocation_id="inv-1",
+      isolation_scope=scope,
+      **kwargs,
+  )
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        pytest.param(
+            [
+                _isolated_event(
+                    "output",
+                    content=types.Content(
+                        role="model",
+                        parts=[
+                            types.Part.from_function_call(name="q", args={})
+                        ],
+                    ),
+                ),
+                _isolated_event(
+                    "output",
+                    content=types.Content(
+                        role="model",
+                        parts=[types.Part.from_text(text='{"columns": []}')],
+                    ),
+                    output={"columns": []},
+                ),
+                # A trailing state-delta flush without content keeps it closed.
+                _isolated_event(
+                    "output",
+                    actions=EventActions(state_delta={"profile": {}}),
+                ),
+            ],
+            id="output_then_state_flush",
+        ),
+        pytest.param(
+            [
+                _isolated_event(
+                    "error", error_code="RuntimeError", error_message="boom"
+                )
+            ],
+            id="unhandled_error",
+        ),
+        pytest.param(
+            [
+                _isolated_event(
+                    "message",
+                    node_info=NodeInfo(
+                        path="wf@1/single_turn_worker@1",
+                        message_as_output=True,
+                    ),
+                    content=types.Content(
+                        role="model", parts=[types.Part.from_text(text="done")]
+                    ),
+                )
+            ],
+            id="message_as_output",
+        ),
+        pytest.param(
+            [_isolated_event("route", actions=EventActions(route="branch_a"))],
+            id="route",
+        ),
+        pytest.param(
+            [
+                _isolated_event(
+                    "truncated_output",
+                    finish_reason=types.FinishReason.MAX_TOKENS,
+                    error_code=types.FinishReason.MAX_TOKENS,
+                    output={"result": "ok"},
+                )
+            ],
+            id="output_with_non_stop_finish_reason",
+        ),
+        pytest.param(
+            [
+                _isolated_event(
+                    "truncated_route",
+                    finish_reason=types.FinishReason.MAX_TOKENS,
+                    error_code=types.FinishReason.MAX_TOKENS,
+                    actions=EventActions(route="branch_b"),
+                )
+            ],
+            id="route_with_non_stop_finish_reason",
+        ),
+    ],
+)
+def test_runner_closes_terminated_isolated_run(events: list[Event]):
+  """An isolated run that ends without finish_task does not take user turns."""
+  # Arrange
+  session = Session(
+      app_name=TEST_APP_ID,
+      user_id=TEST_USER_ID,
+      id=TEST_SESSION_ID,
+      events=events,
+  )
+
+  # Act / Assert
+  assert runners._find_active_task_scope(session) is None
+
+
+@pytest.mark.asyncio
+async def test_runner_keeps_task_scope_active_after_child_output():
+  """A task scope stays open on a clarifying question or non-stop finish."""
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  session.events.extend([
+      # Child helper inside the task scope emits an output.
+      Event(
+          author="child_helper",
+          invocation_id="inv-1",
+          isolation_scope="task_scope_1",
+          content=types.Content(
+              role="model",
+              parts=[types.Part.from_text(text="helper result")],
+          ),
+          output="helper result",
+      ),
+      # Parent task agent then asks the user a clarifying question whose turn
+      # ended with a non-STOP finish_reason (setting error_code).
+      Event(
+          author="task_agent",
+          invocation_id="inv-1",
+          isolation_scope="task_scope_1",
+          finish_reason=types.FinishReason.MAX_TOKENS,
+          error_code=types.FinishReason.MAX_TOKENS,
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part.from_text(text="Which environment do you want?")
+              ],
+          ),
+      ),
+      # A prompt_feedback.block_reason turn sets error_code with finish_reason
+      # None; it must also leave the active task scope open.
+      Event(
+          author="task_agent",
+          invocation_id="inv-1",
+          isolation_scope="task_scope_1",
+          finish_reason=None,
+          error_code=types.BlockedReason.SAFETY,
+      ),
+  ])
+
+  assert runners._find_active_task_scope(session) == ("task_scope_1", "inv-1")
+
+
+@pytest.mark.asyncio
+async def test_runner_keeps_isolation_scope_active_on_request_input_interrupt():
+  """An isolated scope paused on a request_input interrupt remains active."""
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  request_input_call = types.Part.from_function_call(
+      name="adk_request_input",
+      args={"message": "Approve deployment?"},
+  )
+  request_input_call.function_call.id = "interrupt-1"
+  session.events.extend([
+      Event(
+          author="child_helper",
+          invocation_id="inv-1",
+          isolation_scope="isolated_hitl_scope",
+          content=types.Content(
+              role="model",
+              parts=[types.Part.from_text(text="prepared plan")],
+          ),
+          output="prepared plan",
+      ),
+      Event(
+          author="hitl_worker",
+          invocation_id="inv-1",
+          isolation_scope="isolated_hitl_scope",
+          content=types.Content(
+              role="model",
+              parts=[request_input_call],
+          ),
+          long_running_tool_ids=["interrupt-1"],
+      ),
+  ])
+
+  assert runners._find_active_task_scope(session) == (
+      "isolated_hitl_scope",
+      "inv-1",
+  )
+
+
+@pytest.mark.asyncio
+async def test_runner_abort_closes_only_its_own_invocation_in_scope():
+  """An abort in a later invocation does not close an earlier one."""
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  session.events.extend([
+      Event(
+          author="task_agent",
+          invocation_id="inv-1",
+          isolation_scope="shared_scope",
+          content=types.Content(
+              role="model",
+              parts=[types.Part.from_text(text="Waiting for confirmation")],
+          ),
+      ),
+      Event(
+          author="task_agent",
+          invocation_id="inv-2",
+          isolation_scope="shared_scope",
+          error_code="INVOCATION_ABORTED",
+          error_message="Invocation was aborted by client.",
+      ),
+  ])
+
+  assert runners._find_active_task_scope(session) == (
+      "shared_scope",
+      "inv-1",
+  )
+
+
+@pytest.mark.asyncio
+async def test_runner_reopens_finish_task_scope_on_later_invocation():
+  """A finish_task-closed scope opens a fresh run on a later invocation."""
+  intake = LlmAgent(
+      name="intake",
+      mode="task",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name=FINISH_TASK_TOOL_NAME,
+                  args={"result": "Booked Tokyo hotel"},
+              ),
+              "Which Paris hotel?",
+              types.Part.from_function_call(
+                  name=FINISH_TASK_TOOL_NAME,
+                  args={"result": "Booked Paris Ritz"},
+              ),
+          ]
+      ),
+  )
+  wf = Workflow(name="wf", edges=[(START, intake)])
+  runner = testing_utils.InMemoryRunner(
+      app=App(name="test_reopen_finish_task_scope", root_agent=wf)
+  )
+
+  inv1_events = await runner.run_async(
+      testing_utils.UserContent("Book hotel in Tokyo")
+  )
+  session = await runner.runner.session_service.get_session(
+      app_name=runner.runner.app_name,
+      user_id="test_user",
+      session_id=runner.session_id,
+  )
+  assert runners._find_active_task_scope(session) is None
+
+  inv2_events = await runner.run_async(
+      testing_utils.UserContent("Book hotel in Paris")
+  )
+  session = await runner.runner.session_service.get_session(
+      app_name=runner.runner.app_name,
+      user_id="test_user",
+      session_id=runner.session_id,
+  )
+  inv2_id = inv2_events[0].invocation_id
+  assert inv2_id != inv1_events[0].invocation_id
+  assert runners._find_active_task_scope(session) == (
+      "wf@1/intake@1",
+      inv2_id,
+  )
+
+  followup_events = await runner.run_async(testing_utils.UserContent("Ritz"))
+  session = await runner.runner.session_service.get_session(
+      app_name=runner.runner.app_name,
+      user_id="test_user",
+      session_id=runner.session_id,
+  )
+  assert followup_events[0].invocation_id == inv2_id
+  assert runners._find_active_task_scope(session) is None
+
+
+@pytest.mark.asyncio
+async def test_runner_routes_follow_up_turn_to_root_after_isolated_node_completes():
+  """A completed isolated node run does not hijack the next top-level turn."""
+  worker: Any = LlmAgent(
+      name="worker",
+      model=testing_utils.MockModel.create(responses=["worker_done", "done_2"]),
+      mode="single_turn",
+  )
+
+  seen_unscoped_turns: list[int] = []
+
+  @node(rerun_on_resume=True)
+  async def driver(*, ctx, node_input):
+    result = await ctx.run_node(
+        worker,
+        node_input=node_input,
+        override_isolation_scope="scope_state",
+    )
+    unscoped_user_events = [
+        e
+        for e in ctx.session.events
+        if e.author == "user" and e.isolation_scope is None
+    ]
+    seen_unscoped_turns.append(len(unscoped_user_events))
+    yield Event(output=result if result is not None else "ok")
+
+  wf = Workflow(name="wf", edges=[(START, driver)])
+  runner = testing_utils.InMemoryRunner(
+      app=App(name="test_isolated_close", root_agent=wf)
+  )
+
+  await runner.run_async(testing_utils.UserContent("first turn"))
+  session = await runner.runner.session_service.get_session(
+      app_name=runner.runner.app_name,
+      user_id="test_user",
+      session_id=runner.session_id,
+  )
+  assert runners._find_active_task_scope(session) is None
+
+  await runner.run_async(testing_utils.UserContent("second turn"))
+
+  assert seen_unscoped_turns == [1, 2]
+
+
+def test_find_active_task_scope_reopens_after_contentless_interrupt_event():
+  """A contentless interrupt event in the same run reopens a completed scope."""
+  session = Session(
+      id=TEST_SESSION_ID,
+      user_id=TEST_USER_ID,
+      app_name=TEST_APP_ID,
+      events=[
+          Event(
+              author="step_1",
+              invocation_id="inv_1",
+              isolation_scope="shared_scope",
+              output="step_1_done",
+          ),
+          Event(
+              author="step_2",
+              invocation_id="inv_1",
+              isolation_scope="shared_scope",
+              long_running_tool_ids={"lro_1"},
+          ),
+      ],
+  )
+
+  assert runners._find_active_task_scope(session) == ("shared_scope", "inv_1")
 
 
 @pytest.mark.asyncio

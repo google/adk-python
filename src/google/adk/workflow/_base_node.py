@@ -92,7 +92,11 @@ class BaseNode(BaseModel, abc.ABC):
   """Configuration for retrying the node on failure.
 
   If set, failures of the node will trigger retries according to the
-  specified policy.
+  specified policy. A retry after the node's own error runs it again in
+  full, including the children it started with ``ctx.run_node()``. A retry
+  after one of those children failed replays the children that the failed
+  attempt had completed, at any depth below the node, instead of running
+  them again.
 
   On a ``Workflow``, a failure of any node inside it is a failure of the
   workflow, so the whole sub-workflow is retried. Children that already

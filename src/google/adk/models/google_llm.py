@@ -273,7 +273,7 @@ class Gemini(BaseLlm):
     if llm_request.config:
       if not llm_request.config.http_options:
         llm_request.config.http_options = types.HttpOptions()
-      llm_request.config.http_options.headers = self._merge_tracking_headers(
+      llm_request.config.http_options.headers = merge_tracking_headers(
           llm_request.config.http_options.headers or {}
       )
       _, api_version = self._base_url_and_api_version
@@ -457,10 +457,9 @@ class Gemini(BaseLlm):
     }
     if api_version:
       kwargs_for_http_options['api_version'] = api_version
+    adk_http_options = types.HttpOptions(**kwargs_for_http_options)
 
-    kwargs: dict[str, Any] = {
-        'http_options': types.HttpOptions(**kwargs_for_http_options),
-    }
+    kwargs: dict[str, Any] = {'http_options': adk_http_options}
     if self.model.startswith('projects/'):
       kwargs['enterprise'] = True
 
@@ -469,6 +468,9 @@ class Gemini(BaseLlm):
       kwargs.update(get_gcp_client_defaults(client_kwargs))
     if client_kwargs:
       kwargs.update(client_kwargs)
+    kwargs['http_options'] = self._with_adk_http_options(
+        kwargs['http_options'], adk_http_options
+    )
 
     return Client(**kwargs)
 
@@ -523,13 +525,12 @@ class Gemini(BaseLlm):
 
     base_url, _ = self._base_url_and_api_version
 
-    kwargs: dict[str, Any] = {
-        'http_options': types.HttpOptions(
-            headers=self._tracking_headers(),
-            api_version=self._live_api_version,
-            base_url=base_url,
-        )
-    }
+    adk_http_options = types.HttpOptions(
+        headers=self._tracking_headers(),
+        api_version=self._live_api_version,
+        base_url=base_url,
+    )
+    kwargs: dict[str, Any] = {'http_options': adk_http_options}
     if self.model.startswith('projects/'):
       kwargs['enterprise'] = True
 
@@ -538,8 +539,42 @@ class Gemini(BaseLlm):
       kwargs.update(get_gcp_client_defaults(client_kwargs))
     if client_kwargs:
       kwargs.update(client_kwargs)
+    kwargs['http_options'] = self._with_adk_http_options(
+        kwargs['http_options'], adk_http_options
+    )
 
     return Client(**kwargs)
+
+  def _with_adk_http_options(
+      self,
+      http_options: Optional[types.HttpOptionsOrDict],
+      adk_http_options: types.HttpOptions,
+  ) -> types.HttpOptions:
+    """Returns a copy of http_options with ADK's options merged in.
+
+    ``client_kwargs['http_options']`` replaces the http_options ADK builds as a
+    whole, so ADK's tracking headers are merged back in afterwards, and ADK's
+    ``api_version``, ``base_url`` and ``retry_options`` fill the fields the
+    caller left unset. Fields the caller set win.
+
+    Args:
+      http_options: The http_options the client is about to be built with.
+      adk_http_options: The http_options ADK built for the client.
+
+    Returns:
+      A copy of http_options with ADK's options merged in.
+    """
+    if http_options is None:
+      http_options = types.HttpOptions()
+    elif isinstance(http_options, dict):
+      http_options = types.HttpOptions.model_validate(http_options)
+    else:
+      http_options = http_options.model_copy()
+    for field in ('api_version', 'base_url', 'retry_options'):
+      if getattr(http_options, field) is None:
+        setattr(http_options, field, getattr(adk_http_options, field))
+    http_options.headers = merge_tracking_headers(http_options.headers or {})
+    return http_options
 
   @contextlib.asynccontextmanager
   async def connect(
@@ -552,23 +587,19 @@ class Gemini(BaseLlm):
 
     Yields:
       BaseLlmConnection, the connection to the Gemini model.
+
+    Raises:
+      ValueError: If ``live_connect_config`` sets ``http_options``, which
+        google-genai only accepts on the client for the Live API.
     """
-    # add tracking headers to custom headers and set api_version given
-    # the customized http options will override the one set in the api client
-    # constructor
     if (
         llm_request.live_connect_config
         and llm_request.live_connect_config.http_options
     ):
-      if not llm_request.live_connect_config.http_options.headers:
-        llm_request.live_connect_config.http_options.headers = {}
-      llm_request.live_connect_config.http_options.headers = (
-          self._merge_tracking_headers(
-              llm_request.live_connect_config.http_options.headers
-          )
-      )
-      llm_request.live_connect_config.http_options.api_version = (
-          self._live_api_version
+      raise ValueError(
+          'The Live API does not support request-level http_options in'
+          ' live_connect_config. Set them on the client instead, e.g.'
+          " Gemini(client_kwargs={'http_options': ...})."
       )
 
     if self.speech_config is not None:
@@ -629,14 +660,7 @@ class Gemini(BaseLlm):
         len(llm_request.contents or []),
         llm_request.live_connect_config.response_modalities,
     )
-    # Callers may put credentials in per-request headers, so the transport
-    # options never go to the log.
-    logger.debug(
-        'Live connect config: %s',
-        llm_request.live_connect_config.model_copy(
-            update={'http_options': None}
-        ),
-    )
+    logger.debug('Live connect config: %s', llm_request.live_connect_config)
     model = llm_request.model
     if model is None:
       raise ValueError('Live Gemini requests require a model name.')
@@ -717,10 +741,6 @@ class Gemini(BaseLlm):
             )
           new_parts.append(part)
         content.parts = new_parts
-
-  def _merge_tracking_headers(self, headers: dict[str, str]) -> dict[str, str]:
-    """Merge tracking headers to the given headers."""
-    return merge_tracking_headers(headers)
 
 
 def _build_function_declaration_log(
