@@ -3361,7 +3361,8 @@ async def test_in_memory_initial_state_uses_configured_copy_depth(
         'app:config': {'values': ['original']},
         'user:profile': {'values': ['original']},
         'cart': {'values': ['original']},
-        'temp:ignored': {'values': ['original']},
+        # Dropped temporary values must not be traversed by deepcopy.
+        'temp:ignored': threading.Lock(),
     }
     kwargs = dict(
         app_name='my_app', user_id='u1', session_id='s1', state=initial_state
@@ -3371,8 +3372,8 @@ async def test_in_memory_initial_state_uses_configured_copy_depth(
     else:
       await service.create_session(**kwargs)
 
-    for value in initial_state.values():
-      value['values'].append('changed')
+    for key in ('app:config', 'user:profile', 'cart'):
+      initial_state[key]['values'].append('changed')
     initial_state['added'] = {'values': ['changed']}
     stored = await service.get_session(
         app_name='my_app', user_id='u1', session_id='s1'
