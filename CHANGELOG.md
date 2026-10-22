@@ -14,7 +14,7 @@ This release stabilizes mature core features while introducing LLM-powered workf
 
 #### Breaking changes
 
-* **Default OpenTelemetry GenAI schema updated to v2 (`otel_semconv_1_44`)**: Update custom telemetry consumers outside Vertex Agent Engine to read `invoke_workflow` / `generate_content` spans and `gen_ai.*` attributes instead of the deprecated `invocation` / `call_llm` spans and `gcp.vertex.agent.*` attributes, or set `ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN=otel_semconv_1_36` to keep the legacy v1 schema (supported until at least 2027-03-31). See the [unit guide](https://github.com/google/adk-python/blob/main/docs/guides/telemetry/telemetry_config/index.md) for more details. ([7838488](https://github.com/google/adk-python/commit/783848821aabc6656a79949996c31608d5043606))
+* **Telemetry**: Defaults to OpenTelemetry GenAI v2 (`otel_semconv_1_44`, removing `call_llm`); set `ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN=otel_semconv_1_36` to keep the legacy v1 schema. See the [unit guide](https://github.com/google/adk-python/blob/main/docs/guides/telemetry/telemetry_config/index.md) for more details. ([7838488](https://github.com/google/adk-python/commit/783848821aabc6656a79949996c31608d5043606))
 
 <details>
 <summary>All changes</summary>
