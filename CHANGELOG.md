@@ -7,13 +7,14 @@
 
 This release stabilizes mature core features while introducing LLM-powered workflow classification, interactive live audio capabilities, and major execution performance improvements.
 
-* **Stability**: Access 12 mature experimental features now promoted to stable status. ([ea298d4](https://github.com/google/adk-python/commit/ea298d4bde4477daa6c419d45637f339eec86d58))
-* **Classifiers**: Direct workflow routing automatically using new structured LLM classifiers and classifier nodes. ([e8c4bac](https://github.com/google/adk-python/commit/e8c4bacdfe675ceb5adcaf24ea005af94d271c68))
-* **Live Audio**: Enable natural real-time voice interactions with barge-in support alongside speech-to-text and text-to-speech integration. ([2e7ef92](https://github.com/google/adk-python/commit/2e7ef926c953e5daab31cbc7ccb52fc77ebd9ae6))
+* **Stability**: Access 12 mature experimental features now promoted to stable status. See the [unit guide](https://github.com/google/adk-python/blob/main/docs/guides/features/feature_registry/index.md) for more details. ([ea298d4](https://github.com/google/adk-python/commit/ea298d4bde4477daa6c419d45637f339eec86d58))
+* **Classifiers**: Direct workflow routing automatically using new structured `LlmClassifier` and `ClassifierNode` primitives. See the [unit guide](https://github.com/google/adk-python/blob/main/docs/guides/labs/classifiers/classifier_node/index.md) for more details. ([e8c4bac](https://github.com/google/adk-python/commit/e8c4bacdfe675ceb5adcaf24ea005af94d271c68))
+* **Live Audio**: Enable natural real-time voice interactions with barge-in support alongside Gemini speech-to-text and text-to-speech integration. See the [unit guide](https://github.com/google/adk-python/blob/main/docs/guides/live/cascade_live/index.md) for more details. ([2e7ef92](https://github.com/google/adk-python/commit/2e7ef926c953e5daab31cbc7ccb52fc77ebd9ae6))
 * **Performance**: Enjoy up to 8x faster execution turns for string-model agents and reduced event-loading overhead. ([772f139](https://github.com/google/adk-python/commit/772f1396244ac7c3381ee7cfe22530899b428de2))
 
 #### Breaking changes
-* **Telemetry**: Update custom telemetry consumers to use modern OpenTelemetry GenAI semantic conventions instead of the deprecated `call_llm` span.
+
+* **Default OpenTelemetry GenAI schema updated to v2 (`otel_semconv_1_44`)**: Update custom telemetry consumers outside Vertex Agent Engine to read `invoke_workflow` / `generate_content` spans and `gen_ai.*` attributes instead of the deprecated `invocation` / `call_llm` spans and `gcp.vertex.agent.*` attributes, or set `ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN=otel_semconv_1_36` to keep the legacy v1 schema (supported until at least 2027-03-31). See the [unit guide](https://github.com/google/adk-python/blob/main/docs/guides/telemetry/telemetry_config/index.md) for more details. ([7838488](https://github.com/google/adk-python/commit/783848821aabc6656a79949996c31608d5043606))
 
 <details>
 <summary>All changes</summary>
