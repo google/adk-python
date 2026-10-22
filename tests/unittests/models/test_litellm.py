@@ -495,6 +495,30 @@ def test_enforce_strict_openai_schema_strips_ref_sibling_keywords():
   assert list(inner_prop.keys()) == ["$ref"]
 
 
+class _TreeNode(BaseModel):
+  name: str
+  children: list["_TreeNode"] = []
+
+
+def test_enforce_strict_openai_schema_inlines_root_ref():
+  """A self-referencing model must keep the $defs its root $ref points to."""
+  schema = _TreeNode.model_json_schema()
+  # Pydantic v2 generates a root {"$defs": ..., "$ref": ...} for recursive models
+  assert sorted(schema) == ["$defs", "$ref"]
+
+  _enforce_strict_openai_schema(schema)
+
+  assert "$ref" not in schema
+  assert schema["type"] == "object"
+  assert schema["additionalProperties"] is False
+  assert schema["required"] == ["children", "name"]
+  children = schema["properties"]["children"]
+  assert children["items"] == {"$ref": "#/$defs/_TreeNode"}
+  tree_def = schema["$defs"]["_TreeNode"]
+  assert tree_def["additionalProperties"] is False
+  assert tree_def["required"] == ["children", "name"]
+
+
 def test_enforce_strict_openai_schema_handles_array_items():
   """Array item schemas should also be recursively transformed."""
   schema = _WithList.model_json_schema()
