@@ -7286,6 +7286,198 @@ class TestRemoteA2aAgentWorkflowOutput:
     assert join_outputs
     assert join_outputs[0].output == {"remote_agent": "Simulated error"}
 
+  @pytest.mark.parametrize(
+      "state",
+      [
+          "TASK_STATE_SUBMITTED",
+          "TASK_STATE_WORKING",
+          "TASK_STATE_INPUT_REQUIRED",
+          "TASK_STATE_AUTH_REQUIRED",
+          "TASK_STATE_UNSPECIFIED",
+      ],
+  )
+  def test_skips_non_final_task_states_a2a_v1_names(self, state):
+    """a2a-sdk 1.x serializes task states as protobuf enum names."""
+    agent = self._make_agent()
+    event = self._make_text_event(text="in-progress chunk", task_state=state)
+    event.node_info.path = self._NODE_PATH
+
+    assert agent._promote_response_to_output(event, self._NODE_PATH) is False
+    assert event.output is None
+
+  async def _run_in_workflow(self, events_to_yield):
+    class _StubRemoteAgent(RemoteA2aAgent):
+
+      async def _run_async_impl(self, ctx):
+        for event in events_to_yield:
+          yield event
+
+    agent = _StubRemoteAgent(
+        name="remote_agent",
+        agent_card=create_test_agent_card(),
+    )
+
+    from google.adk.apps.app import App
+    from google.adk.workflow._join_node import JoinNode
+    from google.adk.workflow._workflow import Workflow
+
+    from tests.unittests import testing_utils
+
+    workflow = Workflow(
+        name="wf",
+        edges=[("START", agent, JoinNode(name="join"))],
+    )
+    runner = testing_utils.InMemoryRunner(
+        app=App(name="t", root_agent=workflow)
+    )
+    events = await runner.run_async(testing_utils.get_user_content("start"))
+    return [
+        e
+        for e in events
+        if isinstance(e, Event)
+        and e.output is not None
+        and "join" in (e.node_info.path or "")
+    ]
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("working", "completed"),
+      [
+          ("working", "completed"),
+          ("TASK_STATE_WORKING", "TASK_STATE_COMPLETED"),
+      ],
+  )
+  async def test_run_impl_streamed_answer_becomes_output_after_stream_ends(
+      self, working, completed
+  ):
+    """Regression test for #7589.
+
+    ADK's A2A executors stream every text as an artifact update while the
+    task is ``working`` and close with a ``completed`` update that has no
+    content. The node output must be the last answer text, not ``None``
+    (a2a-sdk 0.3) or the first intermediate text (a2a-sdk 1.x).
+    """
+    preamble = self._make_text_event(
+        text="Let me look that up.", task_state=working
+    )
+    answer = self._make_text_event(text="The answer is 42.", task_state=working)
+    closing = Event(author="remote_agent")
+    closing.custom_metadata = {
+        A2A_METADATA_PREFIX + "response": {"status": {"state": completed}}
+    }
+
+    join_outputs = await self._run_in_workflow([preamble, answer, closing])
+
+    assert join_outputs
+    assert join_outputs[0].output == {"remote_agent": "The answer is 42."}
+    # The streamed events themselves are passed through untouched.
+    assert preamble.output is None
+    assert answer.output is None
+
+  @pytest.mark.asyncio
+  async def test_run_impl_streamed_answer_with_task_state_enum(self):
+    """a2a-sdk 0.3 keeps the ``TaskState`` str-enum in recorded metadata."""
+    import enum
+
+    class _TaskState(str, enum.Enum):
+      working = "working"
+      completed = "completed"
+
+    answer = self._make_text_event(text="The answer is 42.")
+    answer.custom_metadata = {
+        A2A_METADATA_PREFIX
+        + "response": {"status": {"state": _TaskState.working}}
+    }
+    closing = Event(author="remote_agent")
+    closing.custom_metadata = {
+        A2A_METADATA_PREFIX
+        + "response": {"status": {"state": _TaskState.completed}}
+    }
+
+    join_outputs = await self._run_in_workflow([answer, closing])
+
+    assert join_outputs
+    assert join_outputs[0].output == {"remote_agent": "The answer is 42."}
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "paused_state",
+      ["input-required", "auth-required", "TASK_STATE_INPUT_REQUIRED"],
+  )
+  async def test_run_impl_paused_turn_does_not_promote_streamed_text(
+      self, paused_state
+  ):
+    """A turn that pauses for input or auth must not produce an output."""
+    working_text = self._make_text_event(
+        text="I need your approval.", task_state="working"
+    )
+    paused = Event(author="remote_agent")
+    paused.custom_metadata = {
+        A2A_METADATA_PREFIX + "response": {"status": {"state": paused_state}}
+    }
+
+    join_outputs = await self._run_in_workflow([working_text, paused])
+
+    assert join_outputs
+    assert join_outputs[0].output == {"remote_agent": None}
+    assert working_text.output is None
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "end_state",
+      [
+          "failed",
+          "canceled",
+          "rejected",
+          "TASK_STATE_FAILED",
+          "TASK_STATE_CANCELED",
+          "TASK_STATE_REJECTED",
+      ],
+  )
+  async def test_run_impl_unsuccessful_turn_does_not_promote_streamed_text(
+      self, end_state
+  ):
+    """Text streamed before a failure must not look like a successful output."""
+    working_text = self._make_text_event(
+        text="partial progress...", task_state="working"
+    )
+    ending = Event(author="remote_agent")
+    ending.custom_metadata = {
+        A2A_METADATA_PREFIX + "response": {"status": {"state": end_state}}
+    }
+
+    join_outputs = await self._run_in_workflow([working_text, ending])
+
+    assert join_outputs
+    assert join_outputs[0].output == {"remote_agent": None}
+
+  @pytest.mark.asyncio
+  async def test_run_impl_error_event_does_not_promote_streamed_text(self):
+    working_text = self._make_text_event(
+        text="partial progress...", task_state="working"
+    )
+    error_event = Event(
+        author="remote_agent",
+        error_message="Remote A2A task failed: boom",
+    )
+
+    join_outputs = await self._run_in_workflow([working_text, error_event])
+
+    assert join_outputs
+    assert join_outputs[0].output == {"remote_agent": None}
+
+  @pytest.mark.asyncio
+  async def test_run_impl_unfinished_task_does_not_promote_streamed_text(self):
+    """A task still ``working`` when the stream ends has no answer yet."""
+    working_text = self._make_text_event(
+        text="Started job #12, still running", task_state="TASK_STATE_WORKING"
+    )
+
+    join_outputs = await self._run_in_workflow([working_text])
+
+    assert join_outputs
+    assert join_outputs[0].output == {"remote_agent": None}
+
 
 # ---------------------------------------------------------------------------
 # Regression coverage for the A2A human-input resume rewrite, which flattens a

@@ -2188,11 +2188,39 @@ class RemoteA2aAgent(BaseAgent):
 
   # Task states that represent in-progress or input-awaiting work.
   # Events stamped with one of these states carry intermediate or
-  # waiting-for-input content, never the final answer, so they must
-  # not be promoted to the workflow node's output.
-  _NON_FINAL_TASK_STATES = frozenset(
-      {"submitted", "working", "input-required", "auth-required", "unknown"}
-  )
+  # waiting-for-input content, so they are never promoted to the workflow
+  # node's output as they arrive. Session metadata contains the serialized
+  # wire state: A2A 0.3 uses hyphenated names, while A2A 1.x uses protobuf
+  # enum names.
+  _NON_FINAL_TASK_STATES = frozenset({
+      "submitted",
+      "working",
+      "input-required",
+      "auth-required",
+      "unknown",
+      "TASK_STATE_SUBMITTED",
+      "TASK_STATE_WORKING",
+      "TASK_STATE_INPUT_REQUIRED",
+      "TASK_STATE_AUTH_REQUIRED",
+      "TASK_STATE_UNSPECIFIED",
+  })
+
+  # Subset of ``_NON_FINAL_TASK_STATES`` in which the remote agent is still
+  # producing its answer. ADK's own A2A executors stream the answer as an
+  # artifact update while the task is ``working`` and then send a bare
+  # ``completed`` status update, so the last answer text seen in one of these
+  # states is remembered and becomes the node output once the stream ends.
+  _IN_PROGRESS_TASK_STATES = frozenset({
+      "submitted",
+      "working",
+      "TASK_STATE_SUBMITTED",
+      "TASK_STATE_WORKING",
+  })
+
+  # The only task states in which a remembered in-progress answer may become
+  # the node output. A turn that failed, was canceled or rejected, paused for
+  # input or auth, or is still running keeps the previous behavior (no output).
+  _COMPLETED_TASK_STATES = frozenset({"completed", "TASK_STATE_COMPLETED"})
 
   async def _run_impl(
       self,
@@ -2213,16 +2241,72 @@ class RemoteA2aAgent(BaseAgent):
     ``ValueError`` on a second assignment), so promotion is gated to
     the first terminal A2A event of the run. Non-final task states and
     later events are passed through untouched.
+
+    When streaming, the answer usually arrives while the task is still
+    ``submitted``/``working`` and the closing ``completed`` update carries no
+    content, so no event is promotable. In that case, and only if the task
+    reached ``completed``, the last answer text seen in an in-progress state
+    is set on ``ctx.output`` after the stream ends, and the framework emits it
+    as the node output. Every event is still yielded unchanged and as soon as
+    it arrives.
     """
     promoted = False
+    deferred_output: Optional[str] = None
+    last_task_state: Optional[str] = None
     async for event in super()._run_impl(ctx=ctx, node_input=node_input):
-      if (
-          self.mode != AgentMode.TASK
-          and not promoted
-          and self._promote_response_to_output(event, ctx.node_path)
-      ):
-        promoted = True
+      if self.mode != AgentMode.TASK and not promoted:
+        # Not updated after promotion: the fallback below is unused then.
+        last_task_state = self._get_task_state(event) or last_task_state
+        if self._promote_response_to_output(event, ctx.node_path):
+          promoted = True
+        elif last_task_state in self._IN_PROGRESS_TASK_STATES:
+          answer_text = self._get_answer_text(event, ctx.node_path)
+          if answer_text is not None:
+            deferred_output = answer_text
       yield event
+
+    if (
+        not promoted
+        and deferred_output is not None
+        and last_task_state in self._COMPLETED_TASK_STATES
+        and not getattr(ctx, "interrupt_ids", None)
+        and getattr(ctx, "output", None) is None
+    ):
+      ctx.output = deferred_output
+
+  @staticmethod
+  def _get_task_state(event: Event) -> Optional[str]:
+    """Returns the A2A task state recorded on ``event``, if any."""
+    response_meta = (event.custom_metadata or {}).get(
+        A2A_METADATA_PREFIX + "response"
+    )
+    if not isinstance(response_meta, dict):
+      return None
+    status = response_meta.get("status")
+    if not isinstance(status, dict):
+      return None
+    state = status.get("state")
+    # A2A 0.3 keeps the ``TaskState`` str-enum in the dumped dict.
+    state = getattr(state, "value", state)
+    return state if isinstance(state, str) else None
+
+  def _get_answer_text(self, event: Event, node_path: str) -> Optional[str]:
+    """Returns the non-thought text of this node's non-partial event."""
+    if event.partial or event.output is not None:
+      return None
+    if event.node_info.path != node_path:
+      return None
+    if not event.content or not event.content.parts:
+      return None
+    text_chunks = [
+        part.text
+        for part in event.content.parts
+        if part.text
+        and not part.thought
+        and not part.function_call
+        and not part.function_response
+    ]
+    return "".join(text_chunks) if text_chunks else None
 
   def _promote_response_to_output(self, event: Event, node_path: str) -> bool:
     """Sets ``event.output`` from non-thought text parts, if eligible.
