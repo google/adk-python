@@ -20,6 +20,7 @@ Please do not rely on the implementation details.
 
 from __future__ import annotations
 
+from enum import Enum
 import inspect
 import json
 import logging
@@ -503,6 +504,39 @@ def preprocess_args(
                 non_integral_items,
             )
           converted_args[param_name] = coerced_items
+          continue
+
+        # The declaration lists an enum's values, so each element of a
+        # list[Enum] argument comes back as a value. Look up the members so
+        # the function gets the Enums it declared.
+        item_types = (
+            get_args(target_type) if get_origin(target_type) is list else ()
+        )
+        if (
+            len(item_types) == 1
+            and inspect.isclass(item_types[0])
+            and issubclass(item_types[0], Enum)
+            and isinstance(args[param_name], list)
+        ):
+          enum_type = item_types[0]
+          converted_items = []
+          unknown_items = []
+          for item in args[param_name]:
+            # Looking up a member returns the member itself.
+            try:
+              item = enum_type(item)
+            except (ValueError, TypeError):
+              unknown_items.append(item)
+            converted_items.append(item)
+          if unknown_items:
+            logger.warning(
+                "Argument '%s' is typed list[%s] but contains values that are"
+                " not members: %r; passing them through unchanged.",
+                param_name,
+                enum_type.__name__,
+                unknown_items,
+            )
+          converted_args[param_name] = converted_items
           continue
 
         if inspect.isclass(target_type) and issubclass(target_type, BaseModel):
