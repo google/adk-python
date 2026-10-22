@@ -962,6 +962,32 @@ async def test_list_sessions_filters_other_apps(mock_firestore_client):
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_with_empty_user_id_lists_only_that_user(
+    mock_firestore_client,
+):
+  service = FirestoreSessionService(client=mock_firestore_client)
+  root_coll = mock_firestore_client.collection.return_value
+  users_coll = root_coll.document.return_value.collection.return_value
+  user_doc_ref = users_coll.document.return_value
+  user_doc_ref.collection.return_value.where.return_value.get = mock.AsyncMock(
+      return_value=[]
+  )
+  user_doc_ref.get = mock.AsyncMock(return_value=_stored_snapshot(None))
+  root_coll.document.return_value.get = mock.AsyncMock(
+      return_value=_stored_snapshot(None)
+  )
+  mock_firestore_client.collection_group.return_value.where.return_value.get = (
+      mock.AsyncMock(return_value=[])
+  )
+
+  response = await service.list_sessions(app_name="test_app", user_id="")
+
+  assert response.sessions == []
+  mock_firestore_client.collection_group.assert_not_called()
+  users_coll.document.assert_any_call("")
+
+
+@pytest.mark.asyncio
 async def test_get_user_state_returns_stored_user_state(mock_firestore_client):
   """get_user_state returns the user_states document for the app and user."""
   service = FirestoreSessionService(client=mock_firestore_client)
