@@ -26,6 +26,7 @@ This release stabilizes mature core features while introducing LLM-powered workf
 ### Features
 
 * add delete_memory api to BaseMemoryService ([41e5c7b](https://github.com/google/adk-python/commit/41e5c7b90622c90ed79af70f0ce96c3b55ab1ff3)), closes [#6949](https://github.com/google/adk-python/issues/6949)
+* add MongoDB-backed session service ([0df43f5](https://github.com/google/adk-python/commit/0df43f572b0c24d0e76123e44e7a090c5a785df2))
 * add OpenSandbox environment ([69d1c90](https://github.com/google/adk-python/commit/69d1c901ba842b5300d6ef8ce2872ea545b2375c)), closes [#6758](https://github.com/google/adk-python/issues/6758)
 * **classifiers:** add BaseClassifier and typed question/answer types ([773418f](https://github.com/google/adk-python/commit/773418f34f93edd7c379edb5703744066b9cc28a))
 * **classifiers:** add ClassifierNode for workflow routing ([e8c4bac](https://github.com/google/adk-python/commit/e8c4bacdfe675ceb5adcaf24ea005af94d271c68))
