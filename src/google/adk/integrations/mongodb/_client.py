@@ -63,6 +63,19 @@ def get_mongo_client(
   )
 
 
+def is_index_privilege_error(exc: Exception) -> bool:
+  """Returns whether `exc` is the deployment denying a `createIndex` call.
+
+  Code 13 is MongoDB's Unauthorized error. Atlas denies it as code 8000
+  ("user is not allowed to do action [createIndex]"); that code also covers
+  unrelated Atlas errors, so the message is matched instead.
+  """
+  if getattr(exc, "code", None) == 13:
+    return True
+  message = str(exc).lower()
+  return "not authorized" in message or "not allowed to do action" in message
+
+
 def drop_client_for_pickle(
     state: dict[str, Any], *, owns_client: bool, owner: str
 ) -> dict[str, Any]:
