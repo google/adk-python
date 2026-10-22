@@ -214,6 +214,11 @@ async def test_preprocess_request_with_function_response():
             id="bytes",
         ),
         pytest.param(
+            {"cancelled_at": None, "guests": [{"email": None}]},
+            '{"cancelled_at": null, "guests": [{"email": null}]}',
+            id="none_values",
+        ),
+        pytest.param(
             {
                 "result": LoadMemoryResponse(
                     memories=[

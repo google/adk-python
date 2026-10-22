@@ -305,10 +305,11 @@ def _function_response_to_json(response: dict[str, Any] | None) -> str:
 
   The payload holds whatever the tool returned, which can include values the
   json module cannot encode, such as datetimes, bytes or Pydantic models. They
-  are converted the way a Gemini request carries a function response: unset
-  model fields are dropped, bytes are base64-encoded, and values Pydantic
-  cannot serialize fall back to their str(). Non-ASCII text is kept as is, so
-  the model reads the characters rather than escape sequences.
+  are converted the way a Gemini request carries a function response: Pydantic
+  model fields that are None are dropped (None values in dicts and lists stay
+  null), bytes are base64-encoded, and values Pydantic cannot serialize fall
+  back to their str(). Non-ASCII text is kept as is, so the model reads the
+  characters rather than escape sequences.
 
   Args:
     response: The payload of the function response.
