@@ -411,7 +411,6 @@ google-api-core==2.34.0
     #   google-cloud-speech
     #   google-cloud-storage
     #   google-cloud-texttospeech
-    #   google-cloud-trace
 google-api-python-client==2.201.0
     # via
     #   -c constraints-3.15.txt.stable.tmp
@@ -450,7 +449,6 @@ google-auth==2.60.0
     #   google-cloud-speech
     #   google-cloud-storage
     #   google-cloud-texttospeech
-    #   google-cloud-trace
     #   google-genai
     #   toolbox-adk
     #   toolbox-core
@@ -545,7 +543,6 @@ google-cloud-monitoring==2.32.0
     #   -c constraints-3.15.txt.stable.tmp
     #   google-cloud-bigtable
     #   google-cloud-spanner
-    #   opentelemetry-exporter-gcp-monitoring
 google-cloud-parametermanager==0.4.3
     # via
     #   -c constraints-3.15.txt.stable.tmp
@@ -582,10 +579,6 @@ google-cloud-texttospeech==2.38.0
     # via
     #   -c constraints-3.15.txt.stable.tmp
     #   google-adk (pyproject.toml)
-google-cloud-trace==1.21.0
-    # via
-    #   -c constraints-3.15.txt.stable.tmp
-    #   opentelemetry-exporter-gcp-trace
 google-crc32c==1.9.0
     # via
     #   -c constraints-3.15.txt.stable.tmp
@@ -676,7 +669,6 @@ grpcio==1.84.0
     #   google-cloud-spanner
     #   google-cloud-speech
     #   google-cloud-texttospeech
-    #   google-cloud-trace
     #   googleapis-common-protos
     #   grpc-google-iam-v1
     #   grpc-interceptor
@@ -1091,8 +1083,6 @@ opentelemetry-api==1.42.1
     #   google-cloud-spanner
     #   mcp
     #   opentelemetry-exporter-gcp-logging
-    #   opentelemetry-exporter-gcp-monitoring
-    #   opentelemetry-exporter-gcp-trace
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-instrumentation
     #   opentelemetry-instrumentation-aiohttp-client
@@ -1107,16 +1097,7 @@ opentelemetry-api==1.42.1
 opentelemetry-exporter-gcp-logging==1.12.0a0
     # via
     #   -c constraints-3.15.txt.stable.tmp
-    #   google-adk (pyproject.toml)
     #   google-cloud-agentplatform
-opentelemetry-exporter-gcp-monitoring==1.15.0a0
-    # via
-    #   -c constraints-3.15.txt.stable.tmp
-    #   google-adk (pyproject.toml)
-opentelemetry-exporter-gcp-trace==1.15.0
-    # via
-    #   -c constraints-3.15.txt.stable.tmp
-    #   google-adk (pyproject.toml)
 opentelemetry-exporter-otlp-proto-common==1.42.1
     # via
     #   -c constraints-3.15.txt.stable.tmp
@@ -1163,8 +1144,6 @@ opentelemetry-resourcedetector-gcp==1.14.0
     #   google-adk (pyproject.toml)
     #   google-cloud-spanner
     #   opentelemetry-exporter-gcp-logging
-    #   opentelemetry-exporter-gcp-monitoring
-    #   opentelemetry-exporter-gcp-trace
 opentelemetry-sdk==1.42.1
     # via
     #   -c constraints-3.15.txt.stable.tmp
@@ -1176,8 +1155,6 @@ opentelemetry-sdk==1.42.1
     #   google-cloud-pubsub
     #   google-cloud-spanner
     #   opentelemetry-exporter-gcp-logging
-    #   opentelemetry-exporter-gcp-monitoring
-    #   opentelemetry-exporter-gcp-trace
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-resourcedetector-gcp
 opentelemetry-semantic-conventions==0.63b1
@@ -1312,7 +1289,6 @@ proto-plus==1.29.0
     #   google-cloud-spanner
     #   google-cloud-speech
     #   google-cloud-texttospeech
-    #   google-cloud-trace
 protobuf==6.33.6
     # via
     #   -c constraints-3.15.txt.stable.tmp
@@ -1343,7 +1319,6 @@ protobuf==6.33.6
     #   google-cloud-spanner
     #   google-cloud-speech
     #   google-cloud-texttospeech
-    #   google-cloud-trace
     #   googleapis-common-protos
     #   grpc-google-iam-v1
     #   grpcio-status
@@ -1909,8 +1884,6 @@ typing-extensions==4.16.0
     #   mypy
     #   openai
     #   opentelemetry-api
-    #   opentelemetry-exporter-gcp-monitoring
-    #   opentelemetry-exporter-gcp-trace
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
