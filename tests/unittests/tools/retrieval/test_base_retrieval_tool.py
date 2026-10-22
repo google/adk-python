@@ -44,6 +44,7 @@ def test_get_declaration_with_json_schema_feature_disabled():
   assert isinstance(declaration.parameters, types.Schema)
   assert declaration.parameters.type == types.Type.OBJECT
   assert 'query' in declaration.parameters.properties
+  assert declaration.parameters.required == ['query']
 
 
 def test_get_declaration_with_json_schema_feature_enabled():
@@ -64,4 +65,5 @@ def test_get_declaration_with_json_schema_feature_enabled():
               'description': 'The query to retrieve.',
           },
       },
+      'required': ['query'],
   }

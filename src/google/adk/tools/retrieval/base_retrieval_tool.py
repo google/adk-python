@@ -44,6 +44,7 @@ class BaseRetrievalTool(BaseTool):
                       'description': 'The query to retrieve.',
                   },
               },
+              'required': ['query'],
           },
       )
     return types.FunctionDeclaration(
@@ -57,5 +58,6 @@ class BaseRetrievalTool(BaseTool):
                     description='The query to retrieve.',
                 ),
             },
+            required=['query'],
         ),
     )
