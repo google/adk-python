@@ -9131,3 +9131,44 @@ class TestRemoteA2aAgentClonesShareResolution:
 
     assert client.is_closed
     assert clone._httpx_client is None
+
+  @pytest.mark.asyncio
+  async def test_resolve_after_cleanup_builds_a_new_client(self):
+    agent = RemoteA2aAgent(name="remote", agent_card=self._CARD_URL)
+    clone = agent.clone()
+    with patch.object(
+        RemoteA2aAgent,
+        "_resolve_agent_card",
+        AsyncMock(return_value=create_test_agent_card()),
+    ):
+      before = await clone._ensure_resolved()
+      closed_client = clone._httpx_client
+      await agent.cleanup()
+      after = await clone._ensure_resolved()
+
+    try:
+      assert after is not before
+      assert clone._httpx_client is not closed_client
+      assert not clone._httpx_client.is_closed
+    finally:
+      await agent.cleanup()
+
+  @pytest.mark.asyncio
+  async def test_concurrent_first_resolution_fetches_the_card_once(self):
+    agent = RemoteA2aAgent(name="remote", agent_card=self._CARD_URL)
+
+    async def slow_resolve(*args, **kwargs):
+      await asyncio.sleep(0.01)
+      return create_test_agent_card()
+
+    resolve = AsyncMock(side_effect=slow_resolve)
+    with patch.object(RemoteA2aAgent, "_resolve_agent_card", resolve):
+      clients = await asyncio.gather(
+          *(agent.clone()._ensure_resolved() for _ in range(5))
+      )
+
+    try:
+      assert resolve.await_count == 1
+      assert all(client is clients[0] for client in clients)
+    finally:
+      await agent.cleanup()
