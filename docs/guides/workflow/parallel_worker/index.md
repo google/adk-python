@@ -8,7 +8,7 @@ A node with a list to work through, whether that is documents to analyze, querie
 
 - **Concurrency**: the node runs once per item, all at the same time, throttled by `max_parallel_workers` when you set it.
 - **Aggregation**: the outputs are gathered into a single list that keeps the original order of the inputs.
-- **Error propagation**: when one item fails, the remaining tasks are canceled and the error is raised straight away.
+- **Error propagation**: when one item fails, the remaining tasks are canceled and the error is raised.
 
 There is no `ParallelWorker` class to import. You turn the mode on with the `parallel_worker=True` flag on `@node(...)`, on `Node(...)`, or on an `Agent(...)` being used as a node, and the node then runs once per element of its input list rather than once on the list as a whole.
 
@@ -75,11 +75,7 @@ worker sample does exactly that, writing `topic` in an earlier node and reading
 1.  **Input handling.** The worker expects a `list`. If it is handed a single item that is not a list, it wraps that item in a one-element list and carries on.
 2.  **Task spawning.** It starts one run per item with `ctx.run_node(..., use_sub_branch=True)`, which gives each item its own sub-branch, named along the lines of `parent_node@1/worker_node@1` and `parent_node@1/worker_node@2`. The separate sub-branches are what keep one item's events from being read as another's while they all run at the same time.
 3.  **Result ordering.** Tasks run in parallel and may well finish out of order, but the worker remembers each item's original index and puts the results back in that order before emitting the list.
-4.  **Failure handling.** When one of the parallel tasks raises, the worker does four things:
-    - The worker immediately catches it.
-    - It cancels the worker's other tasks, whether they are running or still pending.
-    - It waits for the cancellation of those tasks to complete, giving them five seconds before abandoning them with a warning, so an item that swallows cancellation cannot hang the node forever.
-    - It re-raises the original exception, failing the node.
+4.  **Failure handling.** When one of the parallel tasks raises, after exhausting any item-level `retry_config`, the worker cancels the tasks still running and re-raises the original exception, failing the node. Canceled tasks get up to five seconds to stop before the worker abandons them with a warning, and items that had not started yet, because of `max_parallel_workers`, are not started.
 
 When several items fail at once, the worker surfaces the failure belonging to the lowest input index, so the exception you see is the same on every run and on every replay.
 
@@ -96,7 +92,11 @@ Set both on the same call, as in `@node(parallel_worker=True, max_parallel_worke
 
 A parallel worker also has `rerun_on_resume=True` forced on, whatever the node was given. It has to: after an interrupt the node runs again in order to collect the results of the items that had already finished. Those completed items are replayed from history rather than re-executed.
 
-Everything else a node can be configured with, including `timeout`, `retry_config` and the schemas, is inherited from [`BaseNode`](../base_node/index.md). All of it applies to the worker as a whole rather than to each item separately.
+Everything else a node can be configured with, including `timeout`, `retry_config` and the schemas, is inherited from [`BaseNode`](../base_node/index.md). Where each one applies depends on how the worker is declared:
+
+- **`retry_config` applies to each item**, however the worker is declared, including `node(worker, retry_config=...)` on a node that is already a parallel worker. A transient failure on one item retries only that item, in place, while its siblings keep running. An item failure is not retried again at the level of the worker, so an item that keeps failing runs `max_attempts` times per run of the worker. The policy does not cover a failure of the worker as a whole either, such as a `timeout` set on the worker; a `Node` subclass with `parallel_worker=True` is the exception, as described below. A `retry_config` given for the worker replaces one the wrapped node already had, as `node()` does for any node. An enclosing node with a `retry_config` of its own can also retry a failed worker, replaying items that already completed in the same invocation while the failed item starts over with a fresh budget.
+- **With `@node(...)`, `node(..., parallel_worker=True)` or an agent**, `timeout` and the schemas belong to the wrapped node as well, so they apply to each item: every item gets the full `timeout`, and each item's input and output are validated rather than the lists. Passing `timeout` to `node()` on a node that is already a parallel worker, as in `node(summarize, timeout=60)`, limits the worker as a whole instead. An `Agent` with `parallel_worker=True` only becomes a worker when it is built into a node, so `node(analyzer_agent, timeout=60)` still limits each item.
+- **A `Node` subclass with `parallel_worker=True`** applies `timeout` and the schemas both to each item and to the worker as a whole. Its `timeout` limits every item and also the whole batch, and its schemas validate every item and also the whole input and output lists, so a schema there has to accept both. Its `retry_config` retries each item as described above, and also retries the whole worker when the worker itself fails rather than one of its items, as when that `timeout` expires. That retry runs the worker again in full, so every item runs again, including those that had completed.
 
 ## Advanced applications
 
@@ -113,7 +113,7 @@ Several items can be waiting at once. Each carries its own interrupt id, so each
 - **No importable class.** There is no public `ParallelWorker` symbol; `google.adk.workflow` does not export one. The only way in is the `parallel_worker` flag.
 - **The parameter must be `node_input`.** Any other name is resolved from `ctx.state` and fails at bind time. Naming the parameter after the thing it holds, such as `topic` or `document`, is the usual way a parallel worker goes wrong.
 - **A list goes in and a list comes out.** If the upstream node produces something that is not a list, it is treated as a list of one item. An empty list gives you an empty list back without anything having run.
-- **Fail-fast: one failure fails everything.** A single item raising fails the whole worker and cancels the rest of the items. There is no "continue on error" setting that would let you collect partial results, so wrap the risky part of the item's own logic in a `try` block when a failed item should not take the batch down with it.
+- **Fail-fast: one failure fails everything.** A single item that fails, once any `retry_config` it has is used up, fails the whole worker and cancels the rest of the items. There is no "continue on error" setting that would let you collect partial results, so wrap the risky part of the item's own logic in a `try` block when a failed item should not take the batch down with it.
 - **Agent workers cannot be throttled.** `max_parallel_workers` does not exist on `LlmAgent`.
 
 ## Related samples

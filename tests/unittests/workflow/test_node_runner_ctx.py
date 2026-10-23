@@ -597,6 +597,90 @@ async def test_use_sub_branch_appends_segment_to_branch():
 
 
 @pytest.mark.asyncio
+async def test_delegated_output_is_published_on_claiming_parent_branch():
+  """use_as_output moves only the child's output event to the parent branch."""
+
+  class _Node(BaseNode):
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield Event(content=types.ModelContent('working'))
+      yield Event(output='result')
+
+  parent_ctx, events = _make_ctx()
+  parent_ctx._invocation_context.branch = 'parent_branch'
+
+  await NodeRunner(
+      node=_Node(name='n'),
+      parent_ctx=parent_ctx,
+      use_sub_branch=True,
+      use_as_output=True,
+      run_id='1',
+  ).run()
+
+  assert [e.branch for e in events] == ['parent_branch.n@1', 'parent_branch']
+  assert events[1].node_info.path.endswith('n@1')
+
+
+@pytest.mark.asyncio
+async def test_delegated_output_on_function_response_keeps_child_branch():
+  """FunctionResponse events carrying output stay paired on the child branch."""
+
+  class _TaskLikeNode(BaseNode):
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield Event(
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id='fc_finish',
+                          name='finish_task',
+                          args={'result': 'done'},
+                      )
+                  )
+              ],
+          )
+      )
+      yield Event(
+          content=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id='fc_finish',
+                          name='finish_task',
+                          response={'result': 'Task completed.'},
+                      )
+                  )
+              ],
+          ),
+          output='done',
+      )
+
+  parent_ctx, events = _make_ctx()
+  parent_ctx._invocation_context.branch = 'parent_branch'
+
+  child_ctx = await NodeRunner(
+      node=_TaskLikeNode(name='n'),
+      parent_ctx=parent_ctx,
+      use_sub_branch=True,
+      use_as_output=True,
+      run_id='1',
+  ).run()
+
+  assert child_ctx.output == 'done'
+  assert [e.branch for e in events] == [
+      'parent_branch.n@1',
+      'parent_branch.n@1',
+  ]
+  assert events[1].node_info.output_for == [
+      events[1].node_info.path,
+      parent_ctx.node_path,
+  ]
+
+
+@pytest.mark.asyncio
 async def test_sequential_branch_propagation():
   """NodeRunner inherits parent branch when use_sub_branch is False."""
 

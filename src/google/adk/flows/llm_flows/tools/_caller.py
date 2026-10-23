@@ -20,7 +20,6 @@ import asyncio
 import base64
 import binascii
 from collections.abc import Awaitable
-import contextlib
 import contextvars
 import copy
 import dataclasses
@@ -40,15 +39,12 @@ from ....events.event import Event
 from ....telemetry import _instrumentation
 from ....tools._confirmation_utils import apply_confirmation_gate
 from ....tools.base_tool import BaseTool
-from ....tools.function_tool import FunctionTool
 from ....tools.tool_confirmation import ToolConfirmation
 from ....tools.tool_context import ToolContext
 from ....utils._callback_pipeline import _run_callbacks
 from ....utils._callback_pipeline import _stop_on_non_none
+from ....utils._sync_runner import _use_sync_callable_context
 from ..core._utils import require_agent_name as _require_agent_name
-from ._thread_pool import _get_tool_thread_pool
-from ._thread_pool import _is_sync_tool
-from ._thread_pool import _use_executor_for_sync_callables
 
 if TYPE_CHECKING:
   from ....agents.invocation_context import InvocationContext
@@ -563,15 +559,16 @@ async def _execute_single_prepared_call(
     # a before-tool callback set up can be released, and stays cancelled.
     if function_response is None:
       try:
-        function_response = await apply_confirmation_gate(
-            tool, function_args, tool_context
-        )
-        if function_response is None:
-          function_response = await tool_runner()
-        elif tool_context.tool_confirmation is None:
-          # The pause is not a tool result for the model to summarize; without
-          # this the flow re-invokes the model, which calls the tool again.
-          tool_context.actions.skip_summarization = True
+        with _use_sync_callable_context(tool_context):
+          function_response = await apply_confirmation_gate(
+              tool, function_args, tool_context
+          )
+          if function_response is None:
+            function_response = await tool_runner()
+          elif tool_context.tool_confirmation is None:
+            # The pause is not a tool result for the model to summarize; without
+            # this the flow re-invokes the model, which calls the tool again.
+            tool_context.actions.skip_summarization = True
       except asyncio.CancelledError as cancelled:
         await _tool_error_handler.notify_tool_cancelled(
             invocation_context=invocation_context,
@@ -688,33 +685,14 @@ async def _execute_single_prepared_call_async(
   other tool, async function tools included, runs on the event loop as it does
   without the config.
   """
-  tool = prepared_call.tool
-  run_config = invocation_context.run_config
-  thread_pool_config = (
-      run_config.tool_thread_pool_config if run_config else None
-  )
-
-  async def call_tool() -> object:
-    from ....tools._node_tool import NodeTool
-
-    sync_callables: contextlib.AbstractContextManager[None] = (
-        contextlib.nullcontext()
-    )
-    if (
-        thread_pool_config is not None
-        and _is_sync_tool(tool)
-        and isinstance(tool, (FunctionTool, NodeTool))
-    ):
-      sync_callables = _use_executor_for_sync_callables(
-          _get_tool_thread_pool(thread_pool_config.max_workers)
-      )
-    with sync_callables:
-      return await _call_tool_async(
-          tool,
-          args=prepared_call.function_args,
-          tool_context=prepared_call.tool_context,
-      )
 
   return await _execute_single_prepared_call(
-      invocation_context, prepared_call, agent, tool_runner=call_tool
+      invocation_context,
+      prepared_call,
+      agent,
+      tool_runner=lambda: _call_tool_async(
+          prepared_call.tool,
+          args=prepared_call.function_args,
+          tool_context=prepared_call.tool_context,
+      ),
   )

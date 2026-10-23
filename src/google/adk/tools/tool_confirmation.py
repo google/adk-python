@@ -21,11 +21,7 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
-from ..features import experimental
-from ..features import FeatureName
 
-
-@experimental(FeatureName.TOOL_CONFIRMATION)
 class ToolConfirmation(BaseModel):
   """Represents a tool confirmation configuration."""
 

@@ -102,6 +102,8 @@ class ApplicationIntegrationToolset(BaseToolset):
       auth_credential: AuthCredential | None = None,
       tool_filter: ToolPredicate | list[str] | None = None,
       credential_key: str | None = None,
+      *,
+      allow_private_network_access: bool = False,
   ):
     """Args:
 
@@ -123,6 +125,11 @@ class ApplicationIntegrationToolset(BaseToolset):
         tool_filter: The filter used to filter the tools in the toolset. It can
           be either a tool predicate or a list of tool names of the tools to
           expose.
+        allow_private_network_access: By default, generated tools refuse
+          loopback, private, link-local (including cloud metadata), and
+          ``*.internal`` / ``*.local`` targets and return an error response. Set
+          this to ``True`` to allow requests to private networks, localhost, and
+          custom non-DNS transports.
 
     Raises:
         ValueError: If none of the following conditions are met:
@@ -146,6 +153,7 @@ class ApplicationIntegrationToolset(BaseToolset):
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
     self._credential_key = credential_key
+    self._allow_private_network_access = allow_private_network_access
     # Store auth config as instance variable so ADK can populate
     # exchanged_auth_credential in-place before calling get_tools()
     self._auth_config: AuthConfig | None = (
@@ -224,6 +232,7 @@ class ApplicationIntegrationToolset(BaseToolset):
           auth_scheme=auth_scheme,
           credential_key=self._credential_key,
           tool_filter=self.tool_filter,
+          allow_private_network_access=self._allow_private_network_access,
       )
       return
 
@@ -242,7 +251,10 @@ class ApplicationIntegrationToolset(BaseToolset):
         entity = cast(str, getattr(open_api_operation.operation, "x-entity"))
       elif hasattr(open_api_operation.operation, "x-action"):
         action = cast(str, getattr(open_api_operation.operation, "x-action"))
-      rest_api_tool = RestApiTool.from_parsed_operation(open_api_operation)
+      rest_api_tool = RestApiTool.from_parsed_operation(
+          open_api_operation,
+          allow_private_network_access=self._allow_private_network_access,
+      )
       if auth_scheme:
         rest_api_tool.configure_auth_scheme(auth_scheme)
       if auth_credential:

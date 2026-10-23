@@ -26,8 +26,6 @@ from typing_extensions import deprecated
 from typing_extensions import override
 
 from ..events.event import Event
-from ..features import experimental
-from ..features import FeatureName
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
@@ -48,7 +46,6 @@ with warnings.catch_warnings():
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@experimental(FeatureName.AGENT_STATE)
 class LoopAgentState(BaseAgentState):
   """State for LoopAgent."""
 

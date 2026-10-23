@@ -17,12 +17,15 @@ from __future__ import annotations
 from collections.abc import Iterator
 import copy
 import functools
+import logging
 from typing import Any
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
   from pydantic import BaseModel
   from pydantic import TypeAdapter
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class StateSchemaError(TypeError):
@@ -70,12 +73,24 @@ def _validate_state_entry(
     ) from e
 
 
+def _equals_its_json_form(value: Any) -> bool:
+  """Whether value converts to JSON data equal to it."""
+  from pydantic_core import to_jsonable_python
+
+  try:
+    return bool(to_jsonable_python(value, inf_nan_mode="null") == value)
+  except Exception:  # pylint: disable=broad-exception-caught
+    return False
+
+
 class State:
   """A state dict that maintains the current value and the pending-commit delta.
 
   A write into a dict or list read from the state reaches the delta unvalidated:
   only an assignment is checked against the schema, so `state['tags'].append(1)`
-  is recorded even where `tags` is declared `list[str]`.
+  is recorded even where `tags` is declared `list[str]`. A container with no
+  JSON form equal to it, as when it holds a protobuf message or a datetime, is
+  left out of the delta, along with writes into it this state recorded earlier.
   """
 
   APP_PREFIX = "app:"
@@ -99,6 +114,9 @@ class State:
     self._delta = delta
     self._schema = schema
     self._snapshots: dict[str, tuple[Any, Any]] = {}
+    # TODO: recorded keys are per State, so a container another context over
+    # the same event re-records or makes non-JSON is not withdrawn.
+    self._recorded_nested_keys: set[str] = set()
 
   def __getitem__(self, key: str) -> Any:
     """Returns the value of the state dict for the given key."""
@@ -119,6 +137,7 @@ class State:
     self._value[key] = value
     self._delta[key] = value
     self._snapshots.pop(key, None)
+    self._recorded_nested_keys.discard(key)
 
   def _take_snapshot(self, key: str, value: Any) -> None:
     """Keeps the container a read handed out beside a copy to compare it with.
@@ -143,7 +162,8 @@ class State:
     place without assigning its key, so it is found by comparing the container
     with the copy taken when it was read. Every container a read handed out is
     compared on every call, so a caller that reads the delta repeatedly pays
-    that comparison each time.
+    that comparison each time. A changed container with no JSON form equal to
+    it is not recorded, and one this state recorded earlier leaves the delta.
     """
     for key, (handed_out, snapshot) in list(self._snapshots.items()):
       if key in self._delta:
@@ -152,18 +172,38 @@ class State:
         current = self._value[key]
       else:
         del self._snapshots[key]
+        self._recorded_nested_keys.discard(key)
         continue
       # Another context may have assigned the key since the read, and its
       # value wins; only the container this state handed out is tracked.
       if current is not handed_out:
         del self._snapshots[key]
+        self._recorded_nested_keys.discard(key)
         continue
       try:
         changed = bool(current != snapshot)
       except Exception:  # pylint: disable=broad-exception-caught
-        del self._snapshots[key]
-        continue
+        changed = True
       if changed:
+        if not _equals_its_json_form(current):
+          del self._snapshots[key]
+          if key in self._recorded_nested_keys:
+            self._recorded_nested_keys.remove(key)
+            self._delta.pop(key, None)
+            logger.debug(
+                "Nested write to state key %r withdrawn from the delta: its"
+                " container has no JSON form equal to it.",
+                key,
+            )
+          else:
+            logger.debug(
+                "Nested write to state key %r not recorded: its container has"
+                " no JSON form equal to it.",
+                key,
+            )
+          continue
+        if key not in self._delta:
+          self._recorded_nested_keys.add(key)
         self._value[key] = current
         self._delta[key] = current
         self._take_snapshot(key, current)
@@ -188,7 +228,9 @@ class State:
     """Whether the state has pending delta.
 
     Not a pure query: a write made into a dict or list read from the state is
-    recorded into the delta here.
+    recorded into the delta here, and a container this state recorded leaves
+    the delta once it has no JSON form equal to it, so a True answer can turn
+    False with no assignment in between.
     """
     self._record_nested_writes()
     return bool(self._delta)
@@ -208,6 +250,7 @@ class State:
     self._delta.update(delta)
     for key in delta:
       self._snapshots.pop(key, None)
+      self._recorded_nested_keys.discard(key)
 
   def to_dict(self) -> dict[str, Any]:
     """Returns the state dict."""

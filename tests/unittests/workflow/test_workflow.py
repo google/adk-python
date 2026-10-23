@@ -20,10 +20,12 @@ workflow behavior through Runner(node=...) instead of agent.run_async().
 
 import asyncio
 from collections import Counter
+import gc
 from typing import Any
 from typing import AsyncGenerator
 from unittest import mock
 import uuid
+import weakref
 
 from google.adk.agents.context import Context
 from google.adk.apps.app import App
@@ -207,6 +209,38 @@ async def test_sequential_two_nodes():
   assert ('NodeA', 'Hello') in by_node
   assert ('NodeB', 'World') in by_node
   assert by_node.index(('NodeA', 'Hello')) < by_node.index(('NodeB', 'World'))
+
+
+@pytest.mark.asyncio
+async def test_finished_turn_frees_its_session_without_gc():
+  """A turn's session copy is freed by reference counting once the turn ends."""
+  seen_sessions = []
+
+  def record_session(ctx: Context) -> str:
+    seen_sessions.append(weakref.ref(ctx.session))
+    return 'done'
+
+  wf = Workflow(name='wf', edges=[(START, record_session)])
+  session_service = InMemorySessionService()
+  runner = Runner(app_name='app', node=wf, session_service=session_service)
+  session = await session_service.create_session(app_name='app', user_id='u')
+
+  gc.collect()
+  gc.disable()
+  try:
+    for _ in range(2):
+      async for _ in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(role='user', parts=[types.Part(text='hi')]),
+      ):
+        pass
+    alive = [ref for ref in seen_sessions if ref() is not None]
+  finally:
+    gc.enable()
+
+  assert len(seen_sessions) == 2
+  assert not alive
 
 
 # 2. test_run_async_with_intermediate_content

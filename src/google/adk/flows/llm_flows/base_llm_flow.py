@@ -23,7 +23,6 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.adk.platform import time as platform_time
-from google.genai import types
 from opentelemetry import trace
 
 from . import functions as functions
@@ -35,7 +34,6 @@ from ...live._flow_utils import DEFAULT_MAX_RECONNECT_ATTEMPTS as DEFAULT_MAX_RE
 from ...live._flow_utils import DEFAULT_TASK_COMPLETION_DELAY as DEFAULT_TASK_COMPLETION_DELAY
 from ...live._flow_utils import DEFAULT_TRANSFER_AGENT_DELAY as DEFAULT_TRANSFER_AGENT_DELAY
 from ...live._realtime_cache_manager import RealtimeCacheManager as _RealtimeCacheManager
-from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ...utils.context_utils import Aclosing
@@ -57,6 +55,7 @@ from .core._utils import as_llm_agent as _as_llm_agent
 from .core._utils import copy_http_options
 from .core._utils import require_run_config as _require_run_config
 from .prompt import _dynamic_instructions
+from .prompt import _schema as _output_schema_processor
 from .tools import _agent_tools
 from .tools import _toolset_auth
 
@@ -286,49 +285,6 @@ class BaseLlmFlow(ABC):
       async for event in agen:
         yield event
 
-  async def _screen_live_user_content(
-      self,
-      invocation_context: InvocationContext,
-      content: types.Content,
-      llm_request: LlmRequest,
-  ) -> Optional[Event]:
-    """Screens live user content with a before model callback."""
-    from ...live import _live_llm_flow
-
-    return await _live_llm_flow.screen_live_user_content(
-        self, invocation_context, content, llm_request
-    )
-
-  async def _send_to_model(
-      self,
-      llm_connection: BaseLlmConnection,
-      invocation_context: InvocationContext,
-      llm_request: LlmRequest,
-  ) -> None:
-    """Sends data to model."""
-    from ...live import _live_llm_flow
-
-    await _live_llm_flow.send_to_model(
-        self, llm_connection, invocation_context, llm_request
-    )
-
-  async def _receive_from_model(
-      self,
-      llm_connection: BaseLlmConnection,
-      invocation_context: InvocationContext,
-      llm_request: LlmRequest,
-  ) -> AsyncGenerator[Event, None]:
-    """Receive data from model and process events using BaseLlmConnection."""
-    from ...live import _live_llm_flow
-
-    async with Aclosing(
-        _live_llm_flow.receive_from_model(
-            self, llm_connection, invocation_context, llm_request
-        )
-    ) as agen:
-      async for event in agen:
-        yield event
-
   async def run_async(
       self, invocation_context: InvocationContext
   ) -> AsyncGenerator[Event, None]:
@@ -449,8 +405,24 @@ class BaseLlmFlow(ABC):
             yield event
 
   async def _preprocess_async(
-      self, invocation_context: InvocationContext, llm_request: LlmRequest
+      self,
+      invocation_context: InvocationContext,
+      llm_request: LlmRequest,
+      *,
+      live: bool = False,
   ) -> AsyncGenerator[Event, None]:
+    """Runs the request processors to assemble `llm_request`.
+
+    Args:
+      invocation_context: The invocation context.
+      llm_request: The request to populate.
+      live: Whether the request opens a live session. Live does not support
+        `output_schema`, so the output schema processor is skipped rather than
+        adding a `set_model_response` tool whose result nothing consumes.
+
+    Yields:
+      Events emitted by the request processors.
+    """
     agent = _as_llm_agent(invocation_context)
     if not hasattr(agent, 'tools') or not hasattr(agent, 'canonical_model'):
       raise TypeError(
@@ -471,6 +443,11 @@ class BaseLlmFlow(ABC):
 
     # Runs request processors followed by tool-resolution request processors.
     for processor in self._iter_request_processors():
+      if (
+          live
+          and processor.name == _output_schema_processor.request_processor.name
+      ):
+        continue
       async with Aclosing(
           processor.run_async(invocation_context, llm_request)
       ) as agen:
@@ -543,38 +520,6 @@ class BaseLlmFlow(ABC):
       ) as agen:
         async for event in agen:
           yield event
-
-  async def _postprocess_live(
-      self,
-      invocation_context: InvocationContext,
-      llm_request: LlmRequest,
-      llm_response: LlmResponse,
-      model_response_event: Event,
-  ) -> AsyncGenerator[Event, None]:
-    """Postprocess after calling the LLM asynchronously.
-
-    Args:
-      invocation_context: The invocation context.
-      llm_request: The original LLM request.
-      llm_response: The LLM response from the LLM call.
-      model_response_event: A mutable event for the LLM response.
-
-    Yields:
-      A generator of events.
-    """
-    from ...live import _live_llm_flow
-
-    async with Aclosing(
-        _live_llm_flow.postprocess_live_flow(
-            self,
-            invocation_context,
-            llm_request,
-            llm_response,
-            model_response_event,
-        )
-    ) as agen:
-      async for event in agen:
-        yield event
 
   async def _postprocess_run_processors_async(
       self, invocation_context: InvocationContext, llm_response: LlmResponse

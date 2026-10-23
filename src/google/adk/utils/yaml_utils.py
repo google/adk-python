@@ -78,18 +78,23 @@ def dump_pydantic_to_yaml(
   file_path = Path(file_path)
   file_path.parent.mkdir(parents=True, exist_ok=True)
 
-  class _MultilineDumper(yaml.SafeDumper):
+  # PyYAML ships no types, so mypy sees SafeDumper as Any.
+  class _MultilineDumper(yaml.SafeDumper):  # type: ignore[misc]
 
-    def increase_indent(self, flow=False, indentless=False):
+    def increase_indent(
+        self, flow: bool = False, indentless: bool = False
+    ) -> None:
       """Override to force consistent indentation for sequences in mappings.
 
       By default, PyYAML uses indentless=True for sequences that are values
       in mappings, creating flush-left alignment. This override forces proper
       indentation for all sequences regardless of context.
       """
-      return super(_MultilineDumper, self).increase_indent(flow, False)
+      super(_MultilineDumper, self).increase_indent(flow, False)
 
-  def multiline_str_representer(dumper, data):
+  def multiline_str_representer(
+      dumper: _MultilineDumper, data: str
+  ) -> yaml.ScalarNode:
     if '\n' in data or '"' in data or "'" in data:
       return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
     return dumper.represent_scalar('tag:yaml.org,2002:str', data)

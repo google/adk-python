@@ -182,7 +182,7 @@ not something the interface can express.
 | --- | --- | --- |
 | `InMemoryArtifactService` | `InMemoryArtifactService()` | Tests and local development. Everything is lost when the process exits, and it is not safe under concurrent writers. |
 | `FileArtifactService` | `FileArtifactService(root_dir)` | A single machine that needs artifacts to survive a restart. Filenames may contain `/` and become nested directories. |
-| `GcsArtifactService` | `GcsArtifactService(bucket_name)` | Serving from more than one process or machine. Extra keyword arguments are forwarded to the Cloud Storage client. |
+| `GcsArtifactService` | `GcsArtifactService(bucket_name)` | Serving from more than one process or machine. Supports generating authenticated browser and time-limited signed URLs directly. Extra keyword arguments are forwarded to the Cloud Storage client. |
 
 `InMemoryRunner` picks `InMemoryArtifactService` for you, which is why artifact
 code works in tests without any wiring.
@@ -206,6 +206,64 @@ lives in the service and not above it.
 returned. Callers (such as `LoadArtifactsTool`) rely on this listing to
 determine which artifacts may be loaded, so any omitted or paginated-out
 artifacts will be treated as out of scope and cannot be loaded by the model.
+
+## Direct URL access with `GcsArtifactService`
+
+When using `GcsArtifactService`, you can generate direct URLs to view or
+download artifacts instead of reading binary payloads into memory or proxying
+bytes through your server:
+
+*   **Authenticated browser URL**: Generates a Google Cloud Storage browser URL
+    (`https://storage.cloud.google.com/<bucket>/...`) requiring the user to be
+    signed into a Google Account with read permissions on the bucket.
+*   **Time-limited signed URL**: Generates a signed URL allowing anyone with
+    the link to download or view the artifact for a limited period, without
+    requiring Google credentials. Ideal for web frontends, rendering
+    images/charts, or sharing with external clients. Generating one needs
+    credentials that can sign, such as a service account key; otherwise pass
+    `service_account_email` and `access_token` as extra keyword arguments.
+
+```python
+import datetime
+
+# Authenticated browser URL (requires Google account login)
+url = await runner.artifact_service.get_authenticated_url(
+    app_name="report_app",
+    user_id="u1",
+    session_id="s1",
+    filename="chart.png",
+)
+
+# Time-limited signed URL (valid for 2 hours)
+signed_url = await runner.artifact_service.get_signed_url(
+    app_name="report_app",
+    user_id="u1",
+    session_id="s1",
+    filename="chart.png",
+    expiration=datetime.timedelta(hours=2),
+)
+```
+
+Key options for URL generation:
+
+*   **Version resolution**: Pass `version=...` to link to a specific historical
+    version. If omitted or `None`, it automatically resolves to the latest
+    version.
+*   **User-scoped files**: For user-scoped artifacts (saved with `user:`
+    prefix), pass `session_id=None` (or omit it) and include the prefix in
+    `filename` (e.g., `filename="user:profile.png"`).
+*   **Expiration**: `expiration` on `get_signed_url` accepts a
+    `datetime.timedelta`, `datetime.datetime`, or integer. An integer is a Unix
+    timestamp under the default v2 signing and a number of seconds from now
+    under v4. Defaults to 1 hour if not specified.
+*   **HTTP Method & Signing Version**: You can pass `method="GET"` (default)
+    and optional `signing_version="v4"` (or `"v2"`), plus additional keyword
+    arguments forwarded to Google Cloud Storage's underlying
+    `Blob.generate_signed_url`.
+*   **When `None` is returned**: Both methods return `None` when the requested
+    artifact does not exist, or when it was saved as a `file_data` reference
+    to an external URI (such as `gs://...`), since the service holds only the
+    reference and not the bytes. Only `artifact://` references are followed.
 
 ## Letting the model fetch an artifact
 

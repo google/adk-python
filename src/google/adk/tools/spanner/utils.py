@@ -39,7 +39,6 @@ from .settings import SpannerVectorStoreSettings
 
 if TYPE_CHECKING:
   from google.cloud import spanner
-  from google.cloud.spanner_v1.database import Database
   from google.genai import Client
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -80,8 +79,8 @@ def execute_sql(
             query not returned in the result.
   """
 
-  spanner_client: spanner.Client | None = None
-  database: Database | None = None
+  spanner_client: client._SpannerClient | None = None
+  database: client._SpannerDatabase | None = None
   try:
     # Get Spanner client
     spanner_client = client._get_typed_spanner_client(

@@ -23,6 +23,7 @@ installed a2a-sdk version.
 from __future__ import annotations
 
 import base64
+import copy
 import dataclasses
 from datetime import datetime
 from datetime import timezone
@@ -39,7 +40,7 @@ from typing import TypeAlias
 from typing import TypeVar
 
 from a2a.client.client import ClientConfig as A2AClientConfig
-from a2a.client.client_factory import ClientFactory as A2AClientFactory
+from a2a.client.client_factory import ClientFactory as _ClientFactory
 from a2a.types import AgentCard
 from a2a.types import AgentSkill
 from a2a.types import APIKeySecurityScheme
@@ -57,6 +58,9 @@ from google.protobuf.json_format import MessageToDict
 from google.protobuf.json_format import ParseDict
 
 from ..utils.context_utils import Aclosing
+
+# Re-exported: callers construct factories via ``_compat.A2AClientFactory``.
+A2AClientFactory = _ClientFactory
 
 # -----------------------------------------------------------------------------
 # Version detection
@@ -895,30 +899,48 @@ def make_client_config(*, httpx_client: Any, **kwargs: Any) -> Any:
 def rebind_client_factory_httpx(factory: Any, httpx_client: Any) -> Any:
   """Returns a client factory bound to ``httpx_client``.
 
-  0.3.x: the factory is rebuilt preserving its internal state — the existing
-         ``ClientConfig`` (with the new httpx client swapped in via
-         ``dataclasses.replace``), its ``consumers``, and any custom transports
-         re-registered from ``_registry``. This keeps custom transports working.
-  1.x:   the ``ClientFactory`` constructor only accepts ``config`` (no
-         ``consumers``/registry to carry over), so a fresh factory is created
-         with only the standard protocol bindings (custom transports are not
-         carried over — intended behavior).
+  0.3.x: the factory is copied preserving its internal state (consumers and
+         custom transports), with ``_config.httpx_client`` rebound to
+         ``httpx_client``.
+  1.x:   the factory is copied preserving subclass state, with
+         ``_config.httpx_client`` and ``_httpx_client`` rebound to
+         ``httpx_client``, and default protocol bindings applied if none were
+         set.
   """
-  if IS_A2A_V1:
-    return A2AClientFactory(
-        config=make_client_config(httpx_client=httpx_client)
-    )
+  if hasattr(factory, "_config") and factory._config is not None:
+    config = dataclasses.replace(factory._config, httpx_client=httpx_client)
+    if IS_A2A_V1:
+      if not getattr(config, "supported_protocol_bindings", None):
+        config = dataclasses.replace(
+            config,
+            supported_protocol_bindings=[
+                TP_JSONRPC,
+                TP_HTTP_JSON,
+            ],
+        )
+  else:
+    config = make_client_config(httpx_client=httpx_client)
 
-  registry = factory._registry  # pylint: disable=protected-access
-  new_factory: Any = _as_factory(A2AClientFactory)(
-      config=dataclasses.replace(
-          factory._config,  # pylint: disable=protected-access
-          httpx_client=httpx_client,
-      ),
-      consumers=factory._consumers,  # pylint: disable=protected-access
-  )
-  for label, generator in registry.items():
-    new_factory.register(label, generator)
+  new_factory = copy.copy(factory)
+  new_factory._config = config
+  if hasattr(new_factory, "_httpx_client"):
+    new_factory._httpx_client = httpx_client
+    if hasattr(httpx_client, "headers"):
+      try:
+        from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
+        from a2a.utils.constants import VERSION_HEADER
+
+        httpx_client.headers.setdefault(
+            VERSION_HEADER, PROTOCOL_VERSION_CURRENT
+        )
+      except ImportError:
+        pass
+  if hasattr(new_factory, "_registry") and new_factory._registry is not None:
+    new_factory._registry = copy.copy(factory._registry)
+  if hasattr(new_factory, "_register_defaults"):
+    bindings = getattr(config, "supported_protocol_bindings", None)
+    if bindings is not None:
+      new_factory._register_defaults(bindings)
   return new_factory
 
 

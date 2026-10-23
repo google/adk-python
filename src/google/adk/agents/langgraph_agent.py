@@ -101,7 +101,8 @@ class LangGraphAgent(BaseAgent):
   )
   """The pydantic model config."""
 
-  graph: CompiledStateGraph
+  # Left unsubscripted: older langgraph releases raise TypeError when it is.
+  graph: CompiledStateGraph  # type: ignore[type-arg]
 
   instruction: str = ''
 

@@ -31,6 +31,7 @@ from google.cloud import bigquery
 
 from . import client
 from ...tools.tool_context import ToolContext
+from .._google_sdk import read_api_repr as _read_api_repr
 from .config import BigQueryToolConfig
 from .config import WriteMode
 
@@ -250,7 +251,10 @@ def _execute_sql(
                 dry_run=True, create_session=True, labels=bq_job_labels
             ),
         )
-        bq_session_id = session_creator_job.session_info.session_id
+        session_info = session_creator_job.session_info
+        if session_info is None:
+          raise ValueError("BigQuery did not create a session for the query.")
+        bq_session_id = session_info.session_id
         bq_session_dataset_id = session_creator_job.destination.dataset_id
 
         # Remember the BigQuery session info for subsequent queries
@@ -302,7 +306,8 @@ def _execute_sql(
               labels=bq_job_labels,
           ),
       )
-      return {"status": "SUCCESS", "dry_run_info": dry_run_job.to_api_repr()}
+      dry_run_info = _read_api_repr(dry_run_job)
+      return {"status": "SUCCESS", "dry_run_info": dry_run_info}
 
     # Finally execute the query, fetch the result, and return it
     job_config = bigquery.QueryJobConfig(
@@ -956,7 +961,7 @@ def forecast(
     timestamp_col: str,
     data_col: str,
     horizon: int = 10,
-    id_cols: Optional[list[str]] = None,
+    id_cols: list[str] | None = None,
     *,
     credentials: Credentials,
     settings: BigQueryToolConfig,
@@ -1396,10 +1401,10 @@ def detect_anomalies(
     history_data: str,
     times_series_timestamp_col: str,
     times_series_data_col: str,
-    horizon: Optional[int] = 1000,
-    target_data: Optional[str] = None,
-    times_series_id_cols: Optional[list[str]] = None,
-    anomaly_prob_threshold: Optional[float] = 0.95,
+    horizon: int | None = 1000,
+    target_data: str | None = None,
+    times_series_id_cols: list[str] | None = None,
+    anomaly_prob_threshold: float | None = 0.95,
     *,
     credentials: Credentials,
     settings: BigQueryToolConfig,
@@ -1525,6 +1530,8 @@ def detect_anomalies(
           }
   """
   try:
+    if horizon is None:
+      raise TypeError("horizon must not be None.")
     horizon = int(horizon)
   except (TypeError, ValueError):
     return {
@@ -1533,6 +1540,8 @@ def detect_anomalies(
     }
 
   try:
+    if anomaly_prob_threshold is None:
+      raise TypeError("anomaly_prob_threshold must not be None.")
     anomaly_prob_threshold = float(anomaly_prob_threshold)
   except (TypeError, ValueError):
     return {

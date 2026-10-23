@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import copy
 import json
 from pathlib import Path
+import ssl
 import tempfile
 import threading
 from typing import Literal
@@ -35,6 +37,13 @@ from a2a.types import Task as A2ATask
 from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskStatus as A2ATaskStatus
 from a2a.types import TaskStatusUpdateEvent
+
+try:
+  from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
+  from a2a.utils.constants import VERSION_HEADER
+except ImportError:
+  PROTOCOL_VERSION_CURRENT = "1.0"
+  VERSION_HEADER = "A2A-Version"
 from fastapi.openapi.models import APIKey as APIKeyScheme
 from fastapi.openapi.models import APIKeyIn
 from google.adk.a2a import _compat
@@ -51,6 +60,7 @@ from google.adk.a2a.converters import event_converter
 from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
 from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
+from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
@@ -67,7 +77,10 @@ from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_BEGIN
 from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_END
 from google.adk.flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
+from google.adk.utils import _mtls_utils
+from google.adk.utils.context_utils import Aclosing
 from google.genai import types as genai_types
 import httpx
 from pydantic import BaseModel
@@ -433,6 +446,113 @@ class TestRemoteA2aAgentResolution:
     # 1.x uses supported_protocol_bindings instead.
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "agent_card",
+      [
+          "https://us-aiplatform.googleapis.com/v1/agent.json",
+          create_test_agent_card(
+              url="https://us-aiplatform.googleapis.com/v1/rpc"
+          ),
+      ],
+      ids=["url_source", "card"],
+  )
+  async def test_ensure_httpx_client_presents_client_cert(self, agent_card):
+    """For a Google API agent the default client presents the client cert."""
+    agent = RemoteA2aAgent(name="test_agent", agent_card=agent_card)
+    client_cert_ctx = ssl.create_default_context()
+
+    with patch.object(
+        _mtls_utils,
+        "_client_cert_ssl_context",
+        autospec=True,
+        return_value=client_cert_ctx,
+    ):
+      client = await agent._ensure_httpx_client()
+
+    try:
+      assert client.event_hooks["request"] == [
+          _mtls_utils._route_googleapis_request_to_mtls
+      ]
+      assert client._transport._pool._ssl_context is client_cert_ctx
+    finally:
+      await agent.cleanup()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "agent_card",
+      [
+          "https://example.com/agent.json",
+          create_test_agent_card(url="https://example.com/rpc"),
+          _make_multi_interface_card([
+              ("https://us-aiplatform.googleapis.com/v1/rpc", "JSONRPC"),
+              ("https://example.com/rpc", "JSONRPC"),
+          ]),
+      ],
+      ids=["url_source", "card", "card_with_off_google_interface"],
+  )
+  async def test_ensure_httpx_client_skips_client_cert_for_other_hosts(
+      self, agent_card
+  ):
+    """The client cert is never loaded for an agent off *.googleapis.com."""
+    agent = RemoteA2aAgent(name="test_agent", agent_card=agent_card)
+
+    with patch.object(
+        _mtls_utils, "_client_cert_ssl_context", autospec=True
+    ) as mock_ssl_context:
+      client = await agent._ensure_httpx_client()
+
+    try:
+      mock_ssl_context.assert_not_called()
+      assert client.event_hooks["request"] == []
+    finally:
+      await agent.cleanup()
+
+  @pytest.mark.asyncio
+  async def test_ensure_httpx_client_without_client_cert(self):
+    """Without a client cert the default client keeps httpx defaults."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(
+            url="https://us-aiplatform.googleapis.com/v1/rpc"
+        ),
+    )
+
+    with patch.object(
+        _mtls_utils,
+        "_client_cert_ssl_context",
+        autospec=True,
+        return_value=None,
+    ):
+      client = await agent._ensure_httpx_client()
+
+    try:
+      assert client.event_hooks["request"] == []
+    finally:
+      await agent.cleanup()
+
+  @pytest.mark.asyncio
+  async def test_ensure_httpx_client_concurrent_callers_share_one_client(self):
+    """Callers racing to create the default client all get the same one."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card=create_test_agent_card()
+    )
+
+    with patch.object(
+        _mtls_utils,
+        "_client_cert_ssl_context",
+        autospec=True,
+        return_value=None,
+    ):
+      clients = await asyncio.gather(
+          *(agent._ensure_httpx_client() for _ in range(5))
+      )
+
+    try:
+      assert all(client is clients[0] for client in clients)
+    finally:
+      await agent.cleanup()
+
+  @pytest.mark.asyncio
   async def test_ensure_httpx_client_reuses_existing_client(self):
     """Test that _ensure_httpx_client reuses existing client."""
     existing_client = httpx.AsyncClient()
@@ -482,6 +602,49 @@ class TestRemoteA2aAgentResolution:
     assert agent._httpx_client == client
     assert agent._httpx_client_needs_cleanup is True
     assert agent._a2a_client_factory._config.httpx_client == client
+
+  @pytest.mark.asyncio
+  async def test_ensure_resolved_uses_custom_factory(self):
+    """A caller-provided factory subclass creates the remote client."""
+
+    class CustomFactory(ClientFactory):
+
+      def __init__(self, custom_arg: str, config: ClientConfig | None = None):
+        super().__init__(config=config)
+        self.custom_arg = custom_arg
+
+      def create(self, *args, **kwargs):
+        del args, kwargs
+        return custom_client
+
+    custom_client = Mock(spec=A2AClient)
+    factory = CustomFactory(
+        "custom_value", config=ClientConfig(httpx_client=None)
+    )
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(),
+        a2a_client_factory=factory,
+    )
+
+    client = await agent._ensure_resolved()
+
+    try:
+      assert client is custom_client
+      assert isinstance(agent._a2a_client_factory, CustomFactory)
+      assert agent._a2a_client_factory is not factory
+      assert agent._a2a_client_factory.custom_arg == "custom_value"
+      assert (
+          agent._a2a_client_factory._config.httpx_client == agent._httpx_client
+      )
+      if _compat.IS_A2A_V1:
+        assert (
+            agent._a2a_client_factory._httpx_client.headers[VERSION_HEADER]
+            == PROTOCOL_VERSION_CURRENT
+        )
+      assert factory._config.httpx_client is None
+    finally:
+      await agent.cleanup()
 
   @pytest.mark.asyncio
   async def test_ensure_httpx_client_reregisters_transports_with_new_client(
@@ -1113,6 +1276,41 @@ class TestRemoteA2aAgentResolution:
     )
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "source, rpc_url",
+      [
+          (
+              "https://us-aiplatform.googleapis.com/v1/agent.json",
+              "https://us-aiplatform.mtls.googleapis.com/v1/rpc",
+          ),
+          (
+              "https://us-aiplatform.mtls.googleapis.com/v1/agent.json",
+              "https://us-aiplatform.googleapis.com/v1/rpc",
+          ),
+      ],
+  )
+  async def test_validate_agent_card_treats_mtls_googleapis_host_as_same_origin(
+      self, source, rpc_url
+  ):
+    """A Google API card may name the mTLS or plain host of its source."""
+    agent = RemoteA2aAgent(name="test_agent", agent_card=source)
+
+    await agent._validate_agent_card(create_test_agent_card(url=rpc_url))
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_rejects_other_mtls_googleapis_host(self):
+    """The mTLS carve-out does not admit a different Google API host."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="https://us-aiplatform.googleapis.com/v1/agent.json",
+    )
+
+    with pytest.raises(AgentCardResolutionError, match="same origin"):
+      await agent._validate_agent_card(
+          create_test_agent_card(url="https://other.mtls.googleapis.com/rpc")
+      )
+
+  @pytest.mark.asyncio
   async def test_validate_agent_card_rejects_cross_origin_rpc_url(self):
     """A fetched card cannot redirect RPC traffic to an unrelated host."""
     agent = RemoteA2aAgent(
@@ -1260,34 +1458,30 @@ class TestRemoteA2aAgentResolution:
 
   @pytest.mark.asyncio
   async def test_ensure_resolved_with_direct_agent_card_with_factory(self):
-    """Test _ensure_resolved with direct agent card."""
+    """Test _ensure_resolved with direct agent card and custom factory."""
     agent_card = create_test_agent_card()
+    factory = ClientFactory(
+        ClientConfig(),
+    )
+    mock_a2a_client = Mock()
+    factory.create = Mock(return_value=mock_a2a_client)
     agent = RemoteA2aAgent(
         name="test_agent",
         agent_card=agent_card,
-        a2a_client_factory=ClientFactory(
-            ClientConfig(),
-        ),
+        a2a_client_factory=factory,
     )
 
     with patch("httpx.AsyncClient") as mock_client_class:
       mock_client = AsyncMock()
+      mock_client.headers = {}
       mock_client_class.return_value = mock_client
 
-      # Rebinding reconstructs the factory through
-      # ``_compat.A2AClientFactory``, so the patch must target it there.
-      with patch(
-          "google.adk.a2a._compat.A2AClientFactory"
-      ) as mock_factory_class:
-        mock_a2a_client = Mock()
-        mock_factory = Mock()
-        mock_factory.create.return_value = mock_a2a_client
-        mock_factory_class.return_value = mock_factory
+      await agent._ensure_resolved(Mock())
 
-        await agent._ensure_resolved(Mock())
-
-        assert agent._is_resolved is True
-        assert agent._a2a_client == mock_a2a_client
+      assert agent._is_resolved is True
+      assert agent._a2a_client == mock_a2a_client
+      assert agent._a2a_client_factory is not factory
+      assert agent._a2a_client_factory._config.httpx_client == mock_client
 
   @pytest.mark.asyncio
   async def test_ensure_resolved_with_url_source(self):
@@ -3287,6 +3481,55 @@ class TestRemoteA2aAgentStreamingArtifactChunks:
     assert "".join(rendered) == "Hello, world!"
     assert events[0].partial is True
     assert events[1].partial is False
+
+  @pytest.mark.asyncio
+  async def test_chunks_of_one_artifact_share_the_event_id(self):
+    """All chunks of one artifact are one response, like local streaming.
+
+    ADK's A2A server closes a streamed response with a ``last_chunk`` update
+    that replaces the artifact (``append=False``) with the full text. Sharing
+    the event id is what tells a consumer that this final event replaces the
+    partial ones rather than adding to them.
+    """
+    stream = [
+        _make_artifact_chunk("Hello, ", append=False, last_chunk=False),
+        _make_artifact_chunk("world!", append=True, last_chunk=False),
+        _make_artifact_chunk("Hello, world!", append=False, last_chunk=True),
+    ]
+
+    events = [
+        await self.agent._handle_a2a_response(
+            (_make_accumulated_task([]), update), self.mock_context
+        )
+        for update in stream
+    ]
+
+    assert [event.partial for event in events] == [True, True, False]
+    assert len({event.id for event in events}) == 1
+
+  @pytest.mark.asyncio
+  async def test_different_artifacts_get_different_event_ids(self):
+    """Two responses of one invocation stay apart: one id per artifact."""
+    first = _make_artifact_chunk("First answer.", append=False, last_chunk=True)
+    second = TaskArtifactUpdateEvent(
+        task_id="task-123",
+        context_id="context-123",
+        append=False,
+        last_chunk=True,
+        artifact=_compat.make_artifact(
+            artifact_id="artifact-2",
+            parts=[_compat.make_text_part("Second answer.")],
+        ),
+    )
+
+    events = [
+        await self.agent._handle_a2a_response(
+            (_make_accumulated_task([]), update), self.mock_context
+        )
+        for update in (first, second)
+    ]
+
+    assert events[0].id != events[1].id
 
   @pytest.mark.asyncio
   async def test_artifact_update_without_parts_is_ignored(self):
@@ -5394,6 +5637,47 @@ class TestRemoteA2aAgentCleanup:
     await agent.cleanup()
     assert agent._httpx_client is None
 
+  @pytest.mark.asyncio
+  async def test_two_agents_with_same_custom_factory_are_isolated(self):
+    """Two agents sharing a custom factory stay isolated."""
+
+    class CustomFactory(ClientFactory):
+
+      def create(self, *args, **kwargs):
+        del args, kwargs
+        return custom_client
+
+    custom_client = Mock(spec=A2AClient)
+    factory = CustomFactory(ClientConfig(httpx_client=None))
+
+    agent1 = RemoteA2aAgent(
+        name="test_agent_1",
+        agent_card=self.agent_card,
+        a2a_client_factory=factory,
+    )
+    agent2 = RemoteA2aAgent(
+        name="test_agent_2",
+        agent_card=self.agent_card,
+        a2a_client_factory=factory,
+    )
+
+    client1 = await agent1._ensure_resolved()
+    client2 = await agent2._ensure_resolved()
+
+    assert client1 is custom_client
+    assert client2 is custom_client
+    assert isinstance(agent1._a2a_client_factory, CustomFactory)
+    assert isinstance(agent2._a2a_client_factory, CustomFactory)
+    assert agent1._a2a_client_factory is not factory
+    assert agent2._a2a_client_factory is not factory
+    assert agent1._a2a_client_factory is not agent2._a2a_client_factory
+    assert agent1._httpx_client is not agent2._httpx_client
+
+    await agent1.cleanup()
+    await agent2.cleanup()
+
+    assert factory._config.httpx_client is None
+
 
 class TestRemoteA2aAgentIntegration:
   """Integration tests for RemoteA2aAgent."""
@@ -7004,6 +7288,43 @@ class TestRemoteA2aAgentWorkflowOutput:
     ]
     assert join_outputs
     assert join_outputs[0].output == {"remote_agent": "Simulated error"}
+
+  @pytest.mark.asyncio
+  async def test_run_impl_early_close_closes_super_run_impl(self):
+    """Closing RemoteA2aAgent._run_impl early closes super()._run_impl."""
+    cleaned_up = False
+    first_event = self._make_text_event(text="first", task_state="working")
+    second_event = self._make_text_event(text="second", task_state="completed")
+
+    class _CleanupRemoteAgent(RemoteA2aAgent):
+
+      async def _run_async_impl(self, ctx):
+        nonlocal cleaned_up
+        try:
+          yield first_event
+          yield second_event
+        finally:
+          await asyncio.sleep(0)
+          cleaned_up = True
+
+    agent = _CleanupRemoteAgent(
+        name="remote_agent",
+        agent_card=create_test_agent_card(),
+    )
+    session = Session(app_name="test_app", user_id="user", id="session")
+    parent_ctx = InvocationContext(
+        invocation_id="inv",
+        session=session,
+        session_service=Mock(spec=BaseSessionService),
+        agent=agent,
+    )
+    ctx = Context(parent_ctx, node=agent)
+
+    async with Aclosing(agent.run(ctx=ctx, node_input=None)) as agen:
+      event = await anext(agen)
+      assert event is first_event
+
+    assert cleaned_up
 
 
 # ---------------------------------------------------------------------------

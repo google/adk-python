@@ -23,6 +23,7 @@ import re
 import threading
 from typing import Any
 from typing import Callable
+from typing import cast
 from typing import Dict
 from typing import List
 from typing import Literal
@@ -87,8 +88,9 @@ _RUNTIME_REFERENCE_ATTRIBUTE = (
 # added to execute_tool spans in google.adk.telemetry.tracing
 class AgentRegistrySingleMcpToolset(McpToolset):
 
-  # Set when the auth scheme came from a binding. The class default also covers
-  # toolsets pickled by versions that did not have it.
+  # Set when the auth scheme came from a binding. The class defaults also cover
+  # toolsets pickled by versions that did not have them.
+  _mcp_server_id: str | None = None
   _binding_registry: AgentRegistry | None = None
 
   def __init__(
@@ -108,6 +110,7 @@ class AgentRegistrySingleMcpToolset(McpToolset):
       auth_scheme: AuthScheme | None = None,
       auth_credential: AuthCredential | None = None,
       binding_registry: AgentRegistry | None = None,
+      mcp_server_id: str | None = None,
   ):
     super().__init__(
         connection_params=connection_params,
@@ -117,6 +120,7 @@ class AgentRegistrySingleMcpToolset(McpToolset):
         auth_credential=auth_credential,
     )
     self.destination_resource_id = destination_resource_id
+    self._mcp_server_id = mcp_server_id
     self._binding_registry = binding_registry
     self._rebind_lock = threading.Lock()
 
@@ -151,7 +155,9 @@ class AgentRegistrySingleMcpToolset(McpToolset):
     Args:
       registry: The registry the binding was first resolved with.
     """
-    resource_id = self.destination_resource_id
+    # Toolsets pickled before `_mcp_server_id` was added stored `mcpServerId`
+    # in `destination_resource_id`.
+    resource_id = self._mcp_server_id or self.destination_resource_id
     try:
       source_identifier = (
           registry._get_deployed_agent_id()  # pylint: disable=protected-access
@@ -457,9 +463,11 @@ class AgentRegistry:
       data: Dict[str, Any] = response.json()
       return data
     except requests.exceptions.HTTPError as e:
+      # Only raise_for_status raises HTTPError here, and it sets the response.
+      error_response = cast(requests.Response, e.response)
       raise RuntimeError(
-          f"API request failed with status {e.response.status_code}:"
-          f" {e.response.text}"
+          f"API request failed with status {error_response.status_code}:"
+          f" {error_response.text}"
       ) from e
     except requests.exceptions.RequestException as e:
       raise RuntimeError(f"API request failed (network error): {e}") from e
@@ -747,6 +755,25 @@ class AgentRegistry:
     if not isinstance(mcp_server_id, str):
       mcp_server_id = None
 
+    # Prefer the App Hub resource-name URI (`RuntimeReference.uri`) for the
+    # destination span attribute, since that is the identifier form the
+    # Agent Platform Topology view's connection matcher resolves against.
+    # Fall back to `mcpServerId` if the URI is absent, blank, or not a string.
+    attributes = server_details.get("attributes")
+    runtime_reference = (
+        attributes.get(_RUNTIME_REFERENCE_ATTRIBUTE)
+        if isinstance(attributes, dict)
+        else None
+    )
+    uri = (
+        runtime_reference.get("uri")
+        if isinstance(runtime_reference, dict)
+        else None
+    )
+    destination_resource_id = (
+        uri if isinstance(uri, str) and uri.strip() else mcp_server_id
+    )
+
     endpoint_uri, _, _ = self._get_connection_uri(
         server_details, protocol_binding=_compat.TP_JSONRPC
     )
@@ -786,13 +813,14 @@ class AgentRegistry:
       return headers
 
     return AgentRegistrySingleMcpToolset(
-        destination_resource_id=mcp_server_id,
+        destination_resource_id=destination_resource_id,
         connection_params=connection_params,
         tool_name_prefix=name,
         header_provider=combined_header_provider,
         auth_scheme=auth_scheme,
         auth_credential=auth_credential,
         binding_registry=binding_registry,
+        mcp_server_id=mcp_server_id,
     )
 
   # --- Endpoint Methods ---

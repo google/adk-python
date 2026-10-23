@@ -14,6 +14,7 @@
 
 """Unit tests for canonical_xxx fields in LlmAgent."""
 
+import asyncio
 import logging
 from typing import Any
 from typing import Optional
@@ -192,6 +193,34 @@ def test_canonical_model_str_not_stale_after_model_copy():
 
   assert copied.canonical_model.model == 'gemini-2.5-flash'
   assert agent.canonical_model.model == 'gemini-pro'
+
+
+def test_copies_share_one_model_per_event_loop():
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+
+  async def models_in_one_loop():
+    return [
+        agent.canonical_model,
+        agent.clone().canonical_model,
+        agent.clone().canonical_model,
+    ]
+
+  first_loop = asyncio.run(models_in_one_loop())
+  second_loop = asyncio.run(models_in_one_loop())
+
+  assert all(m is first_loop[0] for m in first_loop)
+  assert all(m is second_loop[0] for m in second_loop)
+  assert first_loop[0] is not second_loop[0]
+
+
+def test_resolving_a_model_keeps_agents_built_alike_equal():
+  first = LlmAgent(name='test_agent', model='gemini-pro')
+  second = LlmAgent(name='test_agent', model='gemini-pro')
+  assert first == second
+
+  _ = first.canonical_model
+
+  assert first == second
 
 
 def test_canonical_live_model_str_resolved_once():

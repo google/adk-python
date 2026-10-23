@@ -19,7 +19,7 @@ Use the following procedure to get an NVIDIA NIM API key.
 Install LiteLLM by running the following code.
 
 ```bash
-pip install litellm
+pip install "google-adk[extensions]"
 ```
 
 ## Using NVIDIA Models in ADK

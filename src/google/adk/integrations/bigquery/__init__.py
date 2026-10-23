@@ -22,9 +22,9 @@ from __future__ import annotations
 import typing
 
 if typing.TYPE_CHECKING:
-  from ._bigquery_skill import get_bigquery_skill
-  from .bigquery_credentials import BigQueryCredentialsConfig
-  from .bigquery_toolset import BigQueryToolset
+  from ._bigquery_skill import get_bigquery_skill as get_bigquery_skill
+  from .bigquery_credentials import BigQueryCredentialsConfig as BigQueryCredentialsConfig
+  from .bigquery_toolset import BigQueryToolset as BigQueryToolset
 
 __all__ = [
     "BigQueryCredentialsConfig",

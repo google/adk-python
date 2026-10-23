@@ -17,6 +17,7 @@
 import os
 from unittest import mock
 
+from google.adk.models.llm_response import LlmResponse
 from google.adk.telemetry import _hallucination
 from google.adk.telemetry import _metrics
 from google.adk.telemetry import _token_usage
@@ -456,6 +457,45 @@ def test_record_client_token_usage(mock_meter_setup):
   assert output_call[1]["attributes"] == base_attributes | {
       "gen_ai.token.type": "output"
   }
+
+
+def test_record_client_token_usage_keeps_usage_before_trailing_response(
+    mock_meter_setup,
+):
+  """Usage reported before the last response of a call is still recorded.
+
+  A LiteLlm stream cut off by max_tokens inside a tool call yields the text
+  with the usage, then an error response that carries none.
+  """
+  llm_request = mock.MagicMock(model="test-model")
+  responses = [
+      LlmResponse(
+          content=types.ModelContent("Let me check the weather."),
+          finish_reason=types.FinishReason.MAX_TOKENS,
+          model_version="test-model-v1",
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=120, candidates_token_count=40
+          ),
+      ),
+      LlmResponse(
+          finish_reason=types.FinishReason.MAX_TOKENS,
+          model_version="test-model-v1",
+      ),
+  ]
+
+  _metrics.record_client_token_usage(
+      agent_name="test_agent",
+      llm_request=llm_request,
+      responses=responses,
+  )
+
+  recorded = {
+      kwargs["attributes"]["gen_ai.token.type"]: args[0]
+      for args, kwargs in mock_meter_setup[
+          "client_token_usage"
+      ].record.call_args_list
+  }
+  assert recorded == {"input": 120, "output": 40}
 
 
 @pytest.fixture(name="call_count_histograms")

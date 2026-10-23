@@ -158,13 +158,17 @@ Within a single step (`_execute_step`), when replay is enabled:
   concurrent `run.task`, or calls `check_interception(node=curr_node,
   recovered=run.recovered_state, current_run=run)`:
 
-1. **Same-turn dedup / waiting (`current_run` present and `not current_run.is_static`)** —
+1. **Same-turn dedup / failed / waiting (`current_run` present and `not current_run.is_static`)** —
    if `current_run.state.status == COMPLETED`, returns `should_run=False` with
-   `current_run.output` and `current_run.transfer_to_agent`. If `WAITING` with
-   `interrupts`, returns `should_run=False` with those `interrupts`. (Every
-   static dispatch gets a fresh `run_id`, so loop edges never reuse a
-   `node_path`; static runs have `is_static=True` so no-outcome static nodes
-   fast-forward in step 7 via `should_run = (current_run is not None and not current_run.is_static)`.)
+   `current_run.output`, `current_run.route`, and
+   `current_run.transfer_to_agent`. If `FAILED`, returns `should_run=True`
+   with `resume_inputs=recovered.resolved_responses` so a dynamic run that
+   failed in the current turn reruns instead of consulting stale recovered
+   events. If `WAITING` with `interrupts`, returns `should_run=False` with
+   those `interrupts`. (Every static dispatch gets a fresh `run_id`, so loop
+   edges never reuse a `node_path`; static runs have `is_static=True` so
+   no-outcome static nodes fast-forward in step 7 via
+   `should_run = (current_run is not None and not current_run.is_static)`.)
 
 2. **Nested `Workflow` (`isinstance(node, Workflow)`)** — before checking
    completion or interrupts, `check_interception` immediately returns

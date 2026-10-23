@@ -31,6 +31,8 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from ..agents.base_agent import BaseAgent
+from ..agents.context import _derive_node_path
+from ..events._branch_path import _BranchPath
 from ..events._node_path_builder import _NodePathBuilder
 from ..utils._agent_mode import AgentMode
 from ..utils._agent_mode import DefaultLlmNodeMode
@@ -67,8 +69,14 @@ class DynamicNodeRun:
   output: Any = None
   """The final output of the node once it completes."""
 
+  route: Any = None
+  """The route selected by the node once it completes."""
+
+  branch: str | None = None
+  """The branch of the node once it completes."""
+
   task: asyncio.Task[Context] | None = None
-  """The running asyncio Task, or None for a run replayed from cache."""
+  """The running asyncio Task; None once it finishes or for a cached run."""
 
   transfer_to_agent: str | None = None
   """The target agent name if this node execution transferred."""
@@ -120,15 +128,57 @@ class DynamicNodeState:
     counters[node_name] = counters.get(node_name, 0) + 1
     return str(counters[node_name])
 
-  def reset_for_retry(self, parent_path: str) -> None:
-    """Reset sequential run counters under parent_path before a parent retry."""
+  def reserve_run_ids(self, node_path: str) -> None:
+    """Records every run_id in node_path as allocated under its parent path.
+
+    For a node that runs under a path ``next_run_id`` did not hand out, so that
+    a later run of the same node, or of one of its ancestors, is not given that
+    path again.
+
+    Args:
+      node_path: The path the node runs under, e.g. ``root_agent@1/sub@1``.
+    """
+    path: _NodePathBuilder | None = _NodePathBuilder.from_string(node_path)
+    while path is not None and str(path):
+      run_id = path.run_id
+      if run_id and run_id.isdigit():
+        parent_path = str(path.parent) if path.parent else ''
+        counters = self.run_counters.setdefault(parent_path, {})
+        counters[path.node_name] = max(
+            counters.get(path.node_name, 0), int(run_id)
+        )
+      path = path.parent
+
+  def _counter_paths_under(self, parent_path: str) -> list[str]:
     prefix = f'{parent_path}/' if parent_path else ''
-    for path in [
+    return [
         k
         for k in self.run_counters
         if k == parent_path or (prefix and k.startswith(prefix))
-    ]:
+    ]
+
+  def snapshot_counters(self, parent_path: str) -> dict[str, dict[str, int]]:
+    """Copy the sequential run counters under parent_path."""
+    return {
+        path: dict(self.run_counters[path])
+        for path in self._counter_paths_under(parent_path)
+    }
+
+  def reset_for_retry(
+      self,
+      parent_path: str,
+      snapshot: dict[str, dict[str, int]],
+  ) -> None:
+    """Rewind sequential run counters under parent_path before a parent retry.
+
+    The counters go back to ``snapshot``, taken when the failed attempt began,
+    so the retry replays that attempt's completed children. Rewinding further
+    would replay children from earlier attempts the parent already rejected.
+    """
+    for path in self._counter_paths_under(parent_path):
       del self.run_counters[path]
+    for path, counters in snapshot.items():
+      self.run_counters[path] = dict(counters)
 
   def get_dynamic_tasks(self) -> list[asyncio.Task[Context]]:
     """Get all active dynamic node tasks."""
@@ -167,10 +217,10 @@ class DynamicNodeScheduler:
 
     Args:
       state: The shared dynamic node state.
-      enable_replay: Whether to reconstruct prior runs from session events.
-        Set to False when the scheduler is installed only to drive sequential
-        agent transfers, so scheduling stays a direct pass-through to
-        NodeRunner without session event scanning.
+      enable_replay: Whether to reconstruct prior runs from session events. Set
+        to False when the scheduler is installed only to drive sequential agent
+        transfers, so scheduling stays a direct pass-through to NodeRunner
+        without session event scanning.
     """
     self._state = state
     self._replay_manager = state.replay_manager
@@ -321,7 +371,8 @@ class DynamicNodeScheduler:
     In workflow mode (enable_replay=True):
       - Allocates auto-incrementing sequential run IDs (_state.next_run_id).
       - Rehydrates and deduplicates executions from session events.
-      - Sets up chronological sequence barriers and registers runs in _state.runs.
+      - Sets up chronological sequence barriers and registers runs in
+      _state.runs.
 
     In standalone mode (enable_replay=False):
       - Defaults run_id to '1' to keep node paths stable across repeat runs.
@@ -337,6 +388,18 @@ class DynamicNodeScheduler:
         )
       else:
         run_id = '1'
+
+    if self._enable_replay and not curr_parent_path:
+      # A sub-agent that starts the turn (the runner resumed it) has no parent
+      # context, so its Context takes its path from the static agent tree,
+      # with every ancestor at run 1. Reserve those run ids: otherwise a
+      # transfer to the parent and back to this agent is allocated that same
+      # path again, and this run is fast-forwarded instead of the agent
+      # running a second time.
+      derived_path, _ = _derive_node_path(
+          target_node_name, run_id, None, None, node=node
+      )
+      self._state.reserve_run_ids(derived_path)
 
     base_path_builder = (
         _NodePathBuilder.from_string(curr_parent_path)
@@ -466,6 +529,7 @@ class DynamicNodeScheduler:
         )
         # Sync output and transfer decisions with the current run state.
         run.output = result.output
+        run.route = result.route
         run.transfer_to_agent = result.transfer_to_agent
 
       if run.is_static:
@@ -480,6 +544,18 @@ class DynamicNodeScheduler:
         )
       else:
         ancestors = []
+      base_branch = (
+          override_branch
+          if override_branch is not None
+          else curr_parent_ctx._invocation_context.branch
+      )
+      scheduled_branch = (
+          _BranchPath.create_sub_branch(
+              base_branch, name=curr_name, run_id=curr_run_id
+          )
+          if use_sub_branch
+          else base_branch
+      )
       mock_ctx = create_mock_context(
           parent_ctx=curr_parent_ctx,
           node=curr_node,
@@ -487,7 +563,11 @@ class DynamicNodeScheduler:
           result=result,
           ancestors=ancestors,
           node_path=node_path,
-          branch=(run.recovered_state.branch if run.recovered_state else None),
+          branch=(
+              run.branch
+              or (run.recovered_state.branch if run.recovered_state else None)
+              or scheduled_branch
+          ),
       )
 
       # Chronological sequence barrier wait for replayed dynamic nodes
@@ -617,7 +697,7 @@ class DynamicNodeScheduler:
     else:
       target_node = node.model_copy(update={'name': name})
 
-    run.task = asyncio.create_task(
+    task = asyncio.create_task(
         ctx._run_node_standalone(
             target_node,
             node_input=node_input,
@@ -629,12 +709,17 @@ class DynamicNodeScheduler:
             resume_inputs=actual_resume_inputs,
         )
     )
+    run.task = task
     try:
-      child_ctx = await run.task
+      child_ctx = await task
     except asyncio.CancelledError:
       if node_path in self._state.runs:
         del self._state.runs[node_path]
       raise
+    finally:
+      # The finished task holds the child Context, which holds this scheduler.
+      if run.task is task:
+        run.task = None
     self._record_result(run, child_ctx, node)
     return child_ctx
 
@@ -646,6 +731,8 @@ class DynamicNodeScheduler:
   ) -> None:
     """Update dynamic node state after execution."""
     state = run.state
+    run.route = child_ctx.route
+    run.branch = child_ctx.branch
     if child_ctx.error:
       state.status = NodeStatus.FAILED
     elif child_ctx.interrupt_ids:

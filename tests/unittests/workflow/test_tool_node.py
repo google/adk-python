@@ -1347,7 +1347,7 @@ async def test_tool_node_malformed_auth_response_is_not_a_tool_error():
       function_response=types.FunctionResponse(
           id=fc.id,
           name=REQUEST_EUC_FUNCTION_CALL_NAME,
-          response={"result": "not a credential"},
+          response={"result": {"not": "a credential"}},
       )
   )
 

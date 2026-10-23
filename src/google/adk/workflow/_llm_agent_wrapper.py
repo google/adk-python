@@ -525,9 +525,13 @@ async def run_llm_agent_as_node(
     )
     async with aclosing(run_method) as run_iter:
       async for event in run_iter:
+        task_fcs = _extract_task_delegation_fcs(event, tools_dict)
         if is_task_mode:
           finish_fc = _extract_finish_task_fc(event)
-          if finish_fc is not None:
+          # A turn that also delegates is handled as a delegation below, with
+          # finish_task's response drained as an error. Finishing here would
+          # drop the delegation and leave its call unanswered.
+          if finish_fc is not None and not task_fcs:
             # Remember the latest FC's args; wait for FinishTaskTool's FR
             # before terminating. If validation fails, the FR will NOT be
             # the success message — the LLM sees the error and retries.
@@ -548,7 +552,6 @@ async def run_llm_agent_as_node(
             return
 
         yield event
-        task_fcs = _extract_task_delegation_fcs(event, tools_dict)
         if task_fcs:
           # Mixed turns (regular tool FC + task FC) still have pending
           # regular-tool FR events in this generator. Drain them before
@@ -559,6 +562,16 @@ async def run_llm_agent_as_node(
                 _drain_pending_tool_response_events(run_iter)
             ) as drain_iter:
               async for pending_event in drain_iter:
+                for fr in pending_event.get_function_responses():
+                  if fr.name == _FINISH_TASK_FC_NAME:
+                    fr.response = {
+                        'error': (
+                            'finish_task was ignored because a task'
+                            ' delegation was sent in the same turn. Call'
+                            ' finish_task by itself once the delegated'
+                            ' result is available.'
+                        )
+                    }
                 yield pending_event
 
           for fc in task_fcs:

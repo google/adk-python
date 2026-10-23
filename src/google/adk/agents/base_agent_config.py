@@ -25,8 +25,6 @@ from pydantic import ConfigDict
 from pydantic import Field
 from typing_extensions import deprecated
 
-from ..features import experimental
-from ..features import FeatureName
 from .common_configs import AgentRefConfig
 from .common_configs import CodeConfig
 
@@ -38,7 +36,6 @@ TBaseAgentConfig = TypeVar('TBaseAgentConfig', bound='BaseAgentConfig')
     'Config is now loaded via reflection so the separate config class is no '
     'longer needed.'
 )
-@experimental(FeatureName.AGENT_CONFIG)
 class BaseAgentConfig(BaseModel):
   """The config for the YAML schema of a BaseAgent.
 

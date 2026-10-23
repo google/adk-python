@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 from pathlib import PurePosixPath
 import shlex
+import time
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -50,6 +51,16 @@ _FILE_NOT_FOUND_EXIT_CODE = 66
 # A command reaches the sandbox as one `bash -c` argument, which Linux caps at
 # 128 KiB. Larger writes need chunking, which is not supported yet.
 _MAX_COMMAND_BYTES = 120 * 1024
+
+_SANDBOX_STATE_RUNNING = "STATE_RUNNING"
+
+# How long to keep resending a command the service could not deliver to the
+# sandbox, for example while a new or resumed sandbox is still starting,
+# counted from the first failed delivery. The service itself retries for about
+# 30 seconds before it reports a sandbox unreachable, so each attempt can take
+# that long.
+_UNREACHABLE_RETRY_SECONDS = 60
+_UNREACHABLE_RETRY_INTERVAL_SECONDS = 2.0
 
 
 @experimental(FeatureName.AGENT_ENGINE_SANDBOX_ENVIRONMENT)
@@ -192,7 +203,7 @@ class AgentEngineEnvironment(BaseEnvironment):
     try:
       result = await self._execute_bash(command, timeout=timeout_seconds)
     except APIError as e:
-      if e.code == 504 or e.status == "DEADLINE_EXCEEDED":
+      if _is_timeout(e):
         return ExecutionResult(exit_code=-1, timed_out=True)
       raise
     return ExecutionResult(
@@ -249,21 +260,46 @@ class AgentEngineEnvironment(BaseEnvironment):
     sandbox_name = self._sandbox_name
     if not self._is_initialized or sandbox_name is None:
       raise RuntimeError("Sandbox is not started. Call initialize() first.")
-    try:
-      return await self._manager.execute_bash(
-          sandbox_name, command, timeout=timeout
-      )
-    except APIError as e:
-      # A paused or resuming sandbox rejects commands: the service answers
-      # UNAVAILABLE after it starts resuming a paused sandbox, and
-      # FAILED_PRECONDITION while the sandbox is not running.
-      if e.code != 503 and e.status != "FAILED_PRECONDITION":
-        raise
-      logger.info("Sandbox %s is not running; resuming", sandbox_name)
-    await self._manager.wait_until_running(sandbox_name)
-    return await self._manager.execute_bash(
-        sandbox_name, command, timeout=timeout
-    )
+    resumed = False
+    unreachable_deadline: float | None = None
+    while True:
+      try:
+        return await self._manager.execute_bash(
+            sandbox_name, command, timeout=timeout
+        )
+      except APIError as e:
+        # The command never reached the shell server, so sending it again
+        # cannot run it twice.
+        if _is_unreachable(e):
+          if unreachable_deadline is None:
+            unreachable_deadline = time.monotonic() + _UNREACHABLE_RETRY_SECONDS
+          if time.monotonic() < unreachable_deadline:
+            logger.info(
+                "Sandbox %s is not reachable yet; retrying", sandbox_name
+            )
+            await asyncio.sleep(_UNREACHABLE_RETRY_INTERVAL_SECONDS)
+            continue
+          raise
+        # A paused or resuming sandbox rejects commands: the service answers
+        # UNAVAILABLE after it starts resuming a paused sandbox, and
+        # FAILED_PRECONDITION while the sandbox is not running. The service
+        # also reports some errors from a running sandbox, such as a command
+        # timeout, as FAILED_PRECONDITION, so the command is retried only if
+        # it did not time out and the sandbox is not running; otherwise it
+        # would run twice.
+        if (
+            resumed
+            or _is_timeout(e)
+            or (e.code != 503 and e.status != "FAILED_PRECONDITION")
+        ):
+          raise
+        state = await self._manager.get_sandbox_state(sandbox_name)
+        if state == _SANDBOX_STATE_RUNNING:
+          raise
+        logger.info("Sandbox %s is %s; resuming", sandbox_name, state)
+      await self._manager.wait_until_running(sandbox_name)
+      resumed = True
+      unreachable_deadline = None
 
   def _resolve_path(self, path: str | os.PathLike[str]) -> str:
     """Resolves a relative path against the sandbox working directory."""
@@ -271,3 +307,19 @@ class AgentEngineEnvironment(BaseEnvironment):
     if pure.is_absolute():
       return str(pure)
     return str(PurePosixPath(_WORKSPACE) / pure)
+
+
+def _is_timeout(error: APIError) -> bool:
+  """Returns whether an error reports a command the sandbox killed for time."""
+  # The service reports the shell server's timeout as FAILED_PRECONDITION with
+  # DEADLINE_EXCEEDED in the message, rather than as a 504.
+  return (
+      error.code == 504
+      or error.status == "DEADLINE_EXCEEDED"
+      or "DEADLINE_EXCEEDED" in (error.message or "")
+  )
+
+
+def _is_unreachable(error: APIError) -> bool:
+  """Returns whether the service could not deliver a command to the sandbox."""
+  return "Unable to reach the sandbox environment" in (error.message or "")

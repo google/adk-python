@@ -28,6 +28,7 @@ from pydantic import field_validator
 
 from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_node_data
+from ..utils._sync_runner import _use_sync_callable_context
 from ._errors import WorkflowConfigurationError
 from ._retry_config import RetryConfig
 
@@ -91,12 +92,23 @@ class BaseNode(BaseModel, abc.ABC):
   """Configuration for retrying the node on failure.
 
   If set, failures of the node will trigger retries according to the
-  specified policy.
+  specified policy. A retry after the node's own error runs it again in
+  full, including the children it started with ``ctx.run_node()``. A retry
+  after one of those children failed replays the children that the failed
+  attempt had completed, at any depth below the node, instead of running
+  them again.
 
   On a ``Workflow``, a failure of any node inside it is a failure of the
   workflow, so the whole sub-workflow is retried. Children that already
   produced an output or a state change are replayed rather than run again;
   a child that produced neither leaves nothing to replay and runs again.
+
+  On a parallel worker (``parallel_worker=True``), the policy applies to each
+  item: a failed item is retried in place while the other items keep
+  running, and the worker itself is not retried for an item's failure. The
+  policy does not cover a failure of the worker as a whole, such as its
+  ``timeout``, except on a ``Node`` subclass with ``parallel_worker=True``,
+  which keeps the policy on the worker as well.
 
   ``None`` means the node is not retried (the default).
   """
@@ -191,9 +203,16 @@ class BaseNode(BaseModel, abc.ABC):
     from ..events.request_input import RequestInput
     from ..utils.context_utils import Aclosing
 
+    _sentinel = object()
     node_input = self._validate_input_data(node_input)
     async with Aclosing(self._run_impl(ctx=ctx, node_input=node_input)) as agen:
-      async for item in agen:
+      while True:
+        # Bind per step rather than across yield so async-generator suspension
+        # never leaks or cross-resets ContextVar tokens in the caller task.
+        with _use_sync_callable_context(ctx):
+          item = await anext(agen, _sentinel)
+        if item is _sentinel:
+          break
         if item is None:
           continue
         if isinstance(item, Event):

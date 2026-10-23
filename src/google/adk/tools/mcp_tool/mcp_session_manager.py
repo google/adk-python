@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+import concurrent.futures
 import contextlib
 from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
@@ -28,34 +29,43 @@ import os
 import sys
 import threading
 import time
+from types import TracebackType
 from typing import Any
 from typing import AsyncIterator
 from typing import Callable
+from typing import cast
 from typing import Dict
 from typing import Optional
 from typing import Protocol
 from typing import runtime_checkable
 from typing import TextIO
+from typing import TYPE_CHECKING
 import urllib.parse
 
 import google.auth
 import google.auth.credentials
 from google.auth.transport.requests import Request
 
-try:
+if TYPE_CHECKING:
   from google.auth.aio.credentials import Credentials as AsyncCredentials
   from google.auth.aio.transport.sessions import AsyncAuthorizedSession
 
-  _AIO_SUPPORTED = True
-except ImportError:
+  _AIO_SUPPORTED: bool
+else:
+  try:
+    from google.auth.aio.credentials import Credentials as AsyncCredentials
+    from google.auth.aio.transport.sessions import AsyncAuthorizedSession
 
-  class AsyncCredentials:  # pylint: disable=g-bad-classes
-    pass
+    _AIO_SUPPORTED = True
+  except ImportError:
 
-  class AsyncAuthorizedSession:  # pylint: disable=g-bad-classes
-    pass
+    class AsyncCredentials:  # pylint: disable=g-bad-classes
+      pass
 
-  _AIO_SUPPORTED = False
+    class AsyncAuthorizedSession:  # pylint: disable=g-bad-classes
+      pass
+
+    _AIO_SUPPORTED = False
 
 try:
   import aiohttp.helpers
@@ -192,7 +202,7 @@ class _StreamableHttpClientWrapper:
       url: str,
       http_client: httpx.AsyncClient,
       terminate_on_close: bool = True,
-  ):
+  ) -> None:
     self.url = url
     self.http_client = http_client
     self.terminate_on_close = terminate_on_close
@@ -218,7 +228,12 @@ class _StreamableHttpClientWrapper:
         await self.http_client.__aexit__(type(e), e, e.__traceback__)
       raise
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> None:
     try:
       await self.ctx_mgr.__aexit__(exc_type, exc_val, exc_tb)
     finally:
@@ -267,7 +282,7 @@ def _reports_session_terminated(exc: McpError) -> bool:
   """Whether this MCP error is the server's own session-terminated report."""
   if exc.error.code == _SESSION_TERMINATED_ERROR_CODE:
     return True
-  return (
+  return bool(
       exc.error.code == _INVALID_REQUEST_ERROR_CODE
       and exc.error.message == _SESSION_TERMINATED_MESSAGE
   )
@@ -377,7 +392,7 @@ class _DebugHttpxClientFactory:
       self,
       base_factory: CheckableMcpHttpClientFactory,
       session_manager: MCPSessionManager | None = None,
-  ):
+  ) -> None:
     self._base_factory = base_factory
     self._session_manager = session_manager
 
@@ -405,7 +420,7 @@ class _DebugHttpxClientFactory:
         or query_params.get('session_id', [None])[0]
     )
 
-  async def _response_hook(self, response: httpx.Response):
+  async def _response_hook(self, response: httpx.Response) -> None:
     session_id = self._extract_session_id(response)
 
     debug_list = None
@@ -576,14 +591,15 @@ def _is_google_api_host(host: str | None) -> bool:
   return host == 'googleapis.com' or host.endswith('.googleapis.com')
 
 
-class _RefreshableAsyncCredentials(AsyncCredentials):
+# google.auth is skipped by the mypy config, so AsyncCredentials is Any.
+class _RefreshableAsyncCredentials(AsyncCredentials):  # type: ignore[misc]
   """Adapter to refresh sync credentials asynchronously."""
 
   def __init__(
       self,
       creds: google.auth.credentials.Credentials,
       target_host: str | None = None,
-  ):
+  ) -> None:
     super().__init__()
     self._creds = creds
     self._target_host = target_host
@@ -637,7 +653,7 @@ class _RefreshableAsyncCredentials(AsyncCredentials):
 class _GoogleAuthAsyncByteStream(httpx.AsyncByteStream):
   """Adapter to bridge google-auth Response.content with httpx.AsyncByteStream."""
 
-  def __init__(self, auth_response: Any):
+  def __init__(self, auth_response: Any) -> None:
     self._auth_response = auth_response
 
   async def __aiter__(self) -> AsyncIterator[bytes]:
@@ -651,7 +667,7 @@ class _GoogleAuthAsyncByteStream(httpx.AsyncByteStream):
 class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
   """Adapter to bridge google-auth AsyncAuthorizedSession with httpx.AsyncBaseTransport."""
 
-  def __init__(self, auth_session: Any):
+  def __init__(self, auth_session: AsyncAuthorizedSession) -> None:
     self._auth_session = auth_session
 
   async def handle_async_request(
@@ -679,7 +695,7 @@ class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
             aiohttp.helpers.get_env_proxy_for_url,
             yarl.URL(str(request.url)),
         )
-    auth_response: Any = await self._auth_session.request(
+    auth_response = await self._auth_session.request(
         method=request.method,
         url=str(request.url),
         data=content if content else None,
@@ -713,7 +729,7 @@ class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
 class _SharedAsyncTransport(httpx.AsyncBaseTransport):
   """Wrapper transport that prevents the wrapped transport from being closed."""
 
-  def __init__(self, transport: httpx.AsyncBaseTransport):
+  def __init__(self, transport: httpx.AsyncBaseTransport) -> None:
     self._transport = transport
 
   async def handle_async_request(
@@ -731,7 +747,7 @@ def _create_mtls_client_factory(
   """Returns a factory that creates httpx.AsyncClient using the mtls_transport."""
 
   def factory(
-      headers: dict[str, Any] | None = None,
+      headers: dict[str, str] | None = None,
       timeout: httpx.Timeout | None = None,
       auth: httpx.Auth | None = None,
   ) -> httpx.AsyncClient:
@@ -767,7 +783,7 @@ class MCPSessionManager:
       sampling_callback: SamplingFnT | None = None,
       sampling_capabilities: SamplingCapability | None = None,
       elicitation_callback: ElicitationFnT | None = None,
-  ):
+  ) -> None:
     """Initializes the MCP session manager.
 
     Args:
@@ -786,6 +802,11 @@ class MCPSessionManager:
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
     self._elicitation_callback = elicitation_callback
+    self._connection_params: (
+        StdioConnectionParams
+        | SseConnectionParams
+        | StreamableHTTPConnectionParams
+    )
 
     if isinstance(connection_params, StdioServerParameters):
       # So far timeout is not configurable. Given MCP is still evolving, we
@@ -855,7 +876,7 @@ class MCPSessionManager:
     self._mtls_probe_failed_at: dict[asyncio.AbstractEventLoop, float] = {}
 
   def _make_on_session_created(self, session_key: str) -> Callable[[str], None]:
-    def on_session_created(session_id: str):
+    def on_session_created(session_id: str) -> None:
       logger.debug('Session created: %s -> %s', session_id, session_key)
       self._session_id_to_key[session_id] = session_key
 
@@ -863,7 +884,7 @@ class MCPSessionManager:
 
   def _set_active_debug_list(
       self, session_key: str, debug_list: list[dict[str, Any]]
-  ):
+  ) -> None:
     self._active_debug_lists[session_key] = debug_list
 
   def _get_active_debug_list_by_session_id(
@@ -999,20 +1020,20 @@ class MCPSessionManager:
         Merged headers dictionary, or None for stdio connections, which do not
         support headers.
     """
-    if isinstance(self._connection_params, StdioConnectionParams) or isinstance(
-        self._connection_params, StdioServerParameters
-    ):
+    if isinstance(self._connection_params, StdioConnectionParams):
       # Stdio connections don't support headers
       return None
 
-    base_headers = {}
+    base_headers: Dict[str, str] = {}
     if (
         hasattr(self._connection_params, 'headers')
         and self._connection_params.headers
     ):
       base_headers = {
           key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
-          for key, value in self._connection_params.headers.items()
+          for key, value in cast(
+              'Dict[str, str]', self._connection_params.headers
+          ).items()
       }
 
     if additional_headers:
@@ -1174,7 +1195,7 @@ class MCPSessionManager:
       session_key: str,
       exit_stack: AsyncExitStack,
       stored_loop: asyncio.AbstractEventLoop,
-  ):
+  ) -> None:
     """Cleans up a session, handling different event loops safely.
 
     Args:
@@ -1221,7 +1242,7 @@ class MCPSessionManager:
         )
 
         # Attach a callback so errors don't go unnoticed
-        def cleanup_done(f: asyncio.Future):
+        def cleanup_done(f: concurrent.futures.Future[None]) -> None:
           try:
             if f.exception():
               logger.warning(
@@ -1344,6 +1365,7 @@ class MCPSessionManager:
     Raises:
         ValueError: If the connection parameters are not supported.
     """
+    client: AbstractAsyncContextManager[Any]
     if isinstance(self._connection_params, StdioConnectionParams):
       client = stdio_client(
           server=self._connection_params.server_params,
@@ -1465,15 +1487,10 @@ class MCPSessionManager:
 
       # Create a new session (either first time or replacing disconnected one)
       exit_stack = AsyncExitStack()
-      timeout_in_seconds = (
-          self._connection_params.timeout
-          if hasattr(self._connection_params, 'timeout')
-          else None
-      )
-      sse_read_timeout_in_seconds = (
-          self._connection_params.sse_read_timeout
-          if hasattr(self._connection_params, 'sse_read_timeout')
-          else None
+      # Connection params are extensible, so neither timeout is guaranteed.
+      timeout_in_seconds = getattr(self._connection_params, 'timeout', None)
+      sse_read_timeout_in_seconds = getattr(
+          self._connection_params, 'sse_read_timeout', None
       )
 
       try:
@@ -1530,7 +1547,7 @@ class MCPSessionManager:
             )
         raise ConnectionError(f'Failed to create MCP session: {e}') from e
 
-  def __getstate__(self):
+  def __getstate__(self) -> dict[str, Any]:
     """Custom pickling to exclude non-picklable runtime objects."""
     state = self.__dict__.copy()
     # Remove unpicklable entries or those that shouldn't persist across pickle
@@ -1552,7 +1569,7 @@ class MCPSessionManager:
 
     return state
 
-  def __setstate__(self, state):
+  def __setstate__(self, state: dict[str, Any]) -> None:
     """Custom unpickling to restore state."""
     self.__dict__.update(state)
     # Re-initialize members that were not pickled
@@ -1572,7 +1589,7 @@ class MCPSessionManager:
     if not hasattr(self, '_errlog') or self._errlog is None:
       self._errlog = sys.stderr
 
-  async def close(self):
+  async def close(self) -> None:
     """Closes all sessions and cleans up resources."""
     current_loop = asyncio.get_running_loop()
     async with self._session_lock:

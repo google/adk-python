@@ -4485,6 +4485,103 @@ async def test_streaming_parallel_tool_calls_keep_signature_per_call(
   assert parts[1].thought_signature is None
 
 
+def test_model_response_to_chunk_keeps_a_signature_only_delta():
+  """A delta with only a signature is kept so it can reach its call."""
+  chunks = list(
+      _model_response_to_chunk(
+          _streamed_tool_call_chunk(index=0, signature=b"late_sig")
+      )
+  )
+
+  function_chunk = chunks[0][0]
+  assert isinstance(function_chunk, FunctionChunk)
+  assert not function_chunk.name and not function_chunk.args
+  assert function_chunk.thought_signature == b"late_sig"
+
+
+@pytest.mark.asyncio
+async def test_streaming_signature_after_its_call_signs_that_call(
+    mock_completion, lite_llm_instance
+):
+  """A signature-only delta that trails a later call still signs its own."""
+  mock_completion.return_value = iter([
+      _streamed_tool_call_chunk(
+          index=0,
+          call_id="call_1",
+          name="get_weather",
+          arguments='{"city": "Oslo"}',
+      ),
+      _streamed_tool_call_chunk(
+          index=1,
+          call_id="call_2",
+          name="get_weather",
+          arguments='{"city": "Bergen"}',
+      ),
+      _streamed_tool_call_chunk(index=0, signature=b"late_sig"),
+      _streamed_finish_chunk(),
+  ])
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  parts = responses[-1].content.parts
+  assert [p.function_call.id for p in parts] == ["call_1", "call_2"]
+  assert [p.thought_signature for p in parts] == [b"late_sig", None]
+
+
+@pytest.mark.asyncio
+async def test_streaming_signature_before_its_call_signs_that_call(
+    mock_completion, lite_llm_instance
+):
+  """A signature-only delta ahead of its call opens no call of its own."""
+  mock_completion.return_value = iter([
+      _streamed_tool_call_chunk(
+          index=1,
+          call_id="call_2",
+          name="get_weather",
+          arguments='{"city": "Bergen"}',
+      ),
+      _streamed_tool_call_chunk(index=0, signature=b"early_sig"),
+      _streamed_tool_call_chunk(
+          index=0,
+          call_id="call_1",
+          name="get_weather",
+          arguments='{"city": ',
+      ),
+      _streamed_tool_call_chunk(
+          index=0,
+          arguments='"Oslo"}',
+      ),
+      _streamed_finish_chunk(),
+  ])
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  streamed_calls = [
+      part.function_call
+      for response in responses
+      for part in (response.content.parts if response.content else [])
+      if part.function_call
+  ]
+  assert all(call.name == "get_weather" for call in streamed_calls)
+  parts = responses[-1].content.parts
+  assert [p.function_call.id for p in parts] == ["call_2", "call_1"]
+  assert [p.function_call.args for p in parts] == [
+      {"city": "Bergen"},
+      {"city": "Oslo"},
+  ]
+  assert [p.thought_signature for p in parts] == [None, b"early_sig"]
+
+
 def test_message_to_generate_content_response_no_thought_signature():
   """Parts without thought_signature have thought_signature=None."""
   message = ChatCompletionAssistantMessage(
@@ -7622,6 +7719,995 @@ async def test_get_completion_inputs_generation_params():
   # Should not include max_output_tokens
   assert "max_output_tokens" not in generation_params
   assert "stop_sequences" not in generation_params
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "thinking_level", "expected"),
+    [
+        (
+            "anthropic/claude-sonnet-4-5",
+            types.ThinkingLevel.MINIMAL,
+            {"thinking": {"type": "enabled", "budget_tokens": 1024}},
+        ),
+        (
+            "vertex_ai/claude-sonnet-4-5",
+            types.ThinkingLevel.MINIMAL,
+            {"thinking": {"type": "enabled", "budget_tokens": 1024}},
+        ),
+        (
+            "anthropic/claude-opus-4-7",
+            types.ThinkingLevel.MINIMAL,
+            {"reasoning_effort": "minimal"},
+        ),
+        (
+            "anthropic/claude-sonnet-4-6",
+            types.ThinkingLevel.MINIMAL,
+            {"reasoning_effort": "minimal"},
+        ),
+        (
+            "gemini/gemini-2.5-flash",
+            types.ThinkingLevel.MINIMAL,
+            {"reasoning_effort": "minimal"},
+        ),
+        (
+            "openai/o3-mini",
+            types.ThinkingLevel.LOW,
+            {"reasoning_effort": "low"},
+        ),
+        ("openai/o3-mini", types.ThinkingLevel.MINIMAL, None),
+        ("openai/o4-mini", types.ThinkingLevel.MINIMAL, None),
+        ("openai/gpt-5.4-mini", types.ThinkingLevel.MINIMAL, None),
+        (
+            "openai/gpt-5",
+            types.ThinkingLevel.MINIMAL,
+            {"reasoning_effort": "minimal"},
+        ),
+    ],
+)
+async def test_get_completion_inputs_maps_thinking_level_to_reasoning_effort(
+    model: str,
+    thinking_level: types.ThinkingLevel,
+    expected: dict[str, object] | None,
+) -> None:
+  """Maps thinking_level to reasoning_effort or Anthropic's minimum budget."""
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(thinking_level=thinking_level),
+      ),
+  )
+
+  _, _, _, generation_params, _ = await _get_completion_inputs(req, model=model)
+  assert generation_params == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "thinking_budget", "expected"),
+    [
+        (
+            "anthropic/claude-sonnet-4-5",
+            2048,
+            {"thinking": {"type": "enabled", "budget_tokens": 2048}},
+        ),
+        (
+            "anthropic/claude-sonnet-4-5",
+            512,
+            {"thinking": {"type": "enabled", "budget_tokens": 1024}},
+        ),
+        (
+            "vertex_ai/claude-sonnet-4-5",
+            512,
+            {"thinking": {"type": "enabled", "budget_tokens": 1024}},
+        ),
+        (
+            "anthropic/claude-sonnet-4-5",
+            0,
+            {"thinking": {"type": "disabled"}},
+        ),
+        ("anthropic/claude-sonnet-4-5", -1, None),
+        (
+            "anthropic/claude-opus-4-7",
+            2048,
+            {"reasoning_effort": "medium"},
+        ),
+        (
+            "gemini/gemini-2.5-flash",
+            512,
+            {"thinking": {"type": "enabled", "budget_tokens": 512}},
+        ),
+        (
+            "gemini/gemini-2.5-flash",
+            0,
+            {"thinking": {"type": "enabled", "budget_tokens": 0}},
+        ),
+        (
+            "vertex_ai/gemini-2.5-flash",
+            0,
+            {"thinking": {"type": "enabled", "budget_tokens": 0}},
+        ),
+        ("gemini/gemini-2.5-pro", 0, None),
+        ("vertex_ai/gemini-2.5-pro", 0, None),
+        (
+            "gemini/gemini-2.5-pro",
+            64,
+            {"thinking": {"type": "enabled", "budget_tokens": 128}},
+        ),
+        (
+            "gemini/gemini-2.5-flash-lite",
+            100,
+            {"thinking": {"type": "enabled", "budget_tokens": 512}},
+        ),
+        ("gemini/gemini-3-flash-preview", 1024, {"reasoning_effort": "low"}),
+        ("gemini/gemini-3-flash-preview", 2048, {"reasoning_effort": "medium"}),
+        ("gemini/gemini-3-flash-preview", 4096, {"reasoning_effort": "high"}),
+        ("gemini/gemini-3-flash-preview", 0, {"reasoning_effort": "none"}),
+        ("vertex_ai/gemini-3-flash-preview", 0, {"reasoning_effort": "none"}),
+        ("openai/o3-mini", 1024, {"reasoning_effort": "low"}),
+        ("openai/o3-mini", 2048, {"reasoning_effort": "medium"}),
+        ("openai/o3-mini", 4096, {"reasoning_effort": "high"}),
+        ("openai/o3-mini", 0, None),
+        ("openai/o3-mini", -1, None),
+        ("openai/gpt-5", 2048, {"reasoning_effort": "medium"}),
+        ("openai/gpt-5", 0, None),
+        ("openai/gpt-5.1", 0, {"reasoning_effort": "none"}),
+    ],
+)
+async def test_get_completion_inputs_maps_thinking_budget(
+    model: str,
+    thinking_budget: int,
+    expected: dict[str, object] | None,
+) -> None:
+  """Maps thinking_budget to provider-supported thinking or reasoning_effort."""
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
+      ),
+  )
+
+  _, _, _, generation_params, _ = await _get_completion_inputs(req, model=model)
+  assert generation_params == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "max_output_tokens", "thinking_config", "expected"),
+    [
+        (
+            "anthropic/claude-sonnet-4-5",
+            1500,
+            types.ThinkingConfig(thinking_budget=2048),
+            {
+                "max_completion_tokens": 1500,
+                "thinking": {"type": "enabled", "budget_tokens": 1499},
+            },
+        ),
+        (
+            "anthropic/claude-sonnet-4-5",
+            1000,
+            types.ThinkingConfig(thinking_budget=512),
+            {"max_completion_tokens": 1000},
+        ),
+        (
+            "anthropic/claude-sonnet-4-5",
+            1000,
+            types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL),
+            {"max_completion_tokens": 1000},
+        ),
+        (
+            "anthropic/claude-sonnet-4-5",
+            1000,
+            types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
+            {"max_completion_tokens": 1000},
+        ),
+        (
+            "anthropic/claude-sonnet-4-5",
+            1500,
+            types.ThinkingConfig(thinking_level=types.ThinkingLevel.MEDIUM),
+            {
+                "max_completion_tokens": 1500,
+                "thinking": {"type": "enabled", "budget_tokens": 1499},
+            },
+        ),
+        (
+            "anthropic/claude-sonnet-4-5",
+            1500,
+            types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
+            {
+                "max_completion_tokens": 1500,
+                "reasoning_effort": "low",
+            },
+        ),
+        (
+            "gemini/gemini-2.5-flash",
+            1000,
+            types.ThinkingConfig(thinking_budget=512),
+            {
+                "max_completion_tokens": 1000,
+                "thinking": {"type": "enabled", "budget_tokens": 512},
+            },
+        ),
+    ],
+)
+async def test_get_completion_inputs_caps_anthropic_thinking_budget(
+    model: str,
+    max_output_tokens: int,
+    thinking_config: types.ThinkingConfig,
+    expected: dict[str, object],
+) -> None:
+  """Caps Anthropic budget_tokens below max_completion_tokens."""
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          max_output_tokens=max_output_tokens,
+          thinking_config=thinking_config,
+      ),
+  )
+
+  _, _, _, generation_params, _ = await _get_completion_inputs(req, model=model)
+  assert generation_params == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "thinking_config",
+    [
+        types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
+        types.ThinkingConfig(thinking_budget=2048),
+        types.ThinkingConfig(thinking_budget=0),
+    ],
+)
+async def test_get_completion_inputs_ignores_thinking_for_non_reasoning_model(
+    thinking_config: types.ThinkingConfig,
+) -> None:
+  """Ignores thinking_config for models that do not support reasoning."""
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(thinking_config=thinking_config),
+  )
+
+  _, _, _, generation_params, _ = await _get_completion_inputs(
+      req, model="gpt-4o-mini"
+  )
+  assert generation_params is None
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_thinking_budget_zero_unmapped_model(
+    mocker,
+) -> None:
+  """Returns None for thinking_budget=0 when get_model_info fails."""
+  # Pin provider capabilities; litellm releases disagree on fireworks_ai's.
+  mocker.patch.object(litellm, "supports_reasoning", return_value=True)
+  mocker.patch.object(
+      litellm,
+      "get_supported_openai_params",
+      return_value=["max_completion_tokens", "reasoning_effort"],
+  )
+  mocker.patch.object(
+      litellm, "get_model_info", side_effect=Exception("model not mapped")
+  )
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(thinking_budget=0),
+      ),
+  )
+
+  _, _, _, generation_params, _ = await _get_completion_inputs(
+      req, model="fireworks_ai/qwen3-8b"
+  )
+  assert generation_params is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "thinking_config"),
+    [
+        (
+            "bedrock/moonshotai.kimi-k2-thinking",
+            types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
+        ),
+        (
+            "bedrock/moonshotai.kimi-k2-thinking",
+            types.ThinkingConfig(thinking_budget=2048),
+        ),
+        (
+            "minimax/MiniMax-M2.1",
+            types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
+        ),
+        (
+            "bedrock/us-gov-east-1/claude-sonnet-4-5-20250929-v1:0",
+            types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL),
+        ),
+    ],
+)
+async def test_get_completion_inputs_ignores_unsupported_reasoning_params(
+    model: str,
+    thinking_config: types.ThinkingConfig,
+) -> None:
+  """Omits reasoning parameters when the provider does not support them."""
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(thinking_config=thinking_config),
+  )
+
+  _, _, _, generation_params, _ = await _get_completion_inputs(req, model=model)
+  assert generation_params is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "model",
+        "constructor_kwargs",
+        "thinking_config",
+        "expected_key",
+        "expected_val",
+        "absent_key",
+    ),
+    [
+        (
+            "gemini/gemini-2.5-flash",
+            {"reasoning_effort": "high"},
+            types.ThinkingConfig(thinking_budget=2048),
+            "thinking",
+            {"type": "enabled", "budget_tokens": 2048},
+            "reasoning_effort",
+        ),
+        (
+            "anthropic/claude-sonnet-4-5",
+            {"thinking": {"type": "enabled", "budget_tokens": 4096}},
+            types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
+            "reasoning_effort",
+            "low",
+            "thinking",
+        ),
+        (
+            "openai/o3-mini",
+            {"reasoning_effort": "high"},
+            types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
+            "reasoning_effort",
+            "low",
+            "thinking",
+        ),
+        (
+            "anthropic/claude-sonnet-4-5",
+            {"reasoning_effort": "high"},
+            types.ThinkingConfig(include_thoughts=True),
+            "reasoning_effort",
+            "high",
+            "thinking",
+        ),
+        (
+            "gemini/gemini-2.5-flash",
+            {"thinking": {"type": "enabled", "budget_tokens": 4096}},
+            types.ThinkingConfig(include_thoughts=True),
+            "thinking",
+            {"type": "enabled", "budget_tokens": 4096},
+            "reasoning_effort",
+        ),
+        (
+            "gemini/gemini-2.5-flash",
+            {"reasoning_effort": "high"},
+            types.ThinkingConfig(include_thoughts=False),
+            "reasoning_effort",
+            "high",
+            "thinking",
+        ),
+    ],
+)
+async def test_generate_content_async_thinking_config_overrides_init(
+    mock_acompletion: AsyncMock,
+    mock_client: MockLLMClient,
+    model: str,
+    constructor_kwargs: dict[str, object],
+    thinking_config: types.ThinkingConfig,
+    expected_key: str,
+    expected_val: object,
+    absent_key: str,
+) -> None:
+  """Request thinking level or budget overrides constructor reasoning kwargs."""
+  llm = LiteLlm(model=model, llm_client=mock_client, **constructor_kwargs)
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(thinking_config=thinking_config),
+  )
+
+  async for _ in llm.generate_content_async(req):
+    pass
+
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs[expected_key] == expected_val
+  assert absent_key not in kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "constructor_kwargs",
+        "config",
+        "expected_thinking",
+        "expected_effort",
+    ),
+    [
+        (
+            {"max_tokens": 1000},
+            types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(thinking_budget=512),
+            ),
+            None,
+            None,
+        ),
+        (
+            {"max_tokens": 1000},
+            types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(
+                    thinking_level=types.ThinkingLevel.LOW
+                ),
+            ),
+            None,
+            None,
+        ),
+        (
+            {"max_tokens": 1500},
+            types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(thinking_budget=2048),
+            ),
+            {"type": "enabled", "budget_tokens": 1499},
+            None,
+        ),
+        (
+            {"max_completion_tokens": 1500},
+            types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(
+                    thinking_level=types.ThinkingLevel.MEDIUM
+                ),
+            ),
+            {"type": "enabled", "budget_tokens": 1499},
+            None,
+        ),
+        (
+            {"max_tokens": 1000},
+            types.GenerateContentConfig(
+                max_output_tokens=3000,
+                thinking_config=types.ThinkingConfig(thinking_budget=2048),
+            ),
+            {"type": "enabled", "budget_tokens": 2048},
+            None,
+        ),
+    ],
+)
+async def test_generate_content_async_caps_anthropic_with_init_max_tokens(
+    mock_acompletion: AsyncMock,
+    mock_client: MockLLMClient,
+    constructor_kwargs: dict[str, object],
+    config: types.GenerateContentConfig,
+    expected_thinking: dict[str, object] | None,
+    expected_effort: str | None,
+) -> None:
+  """Caps or omits Anthropic thinking using constructor max_tokens fallback."""
+  llm = LiteLlm(
+      model="anthropic/claude-sonnet-4-5",
+      llm_client=mock_client,
+      **constructor_kwargs,
+  )
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=config,
+  )
+
+  async for _ in llm.generate_content_async(req):
+    pass
+
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs.get("thinking") == expected_thinking
+  assert kwargs.get("reasoning_effort") == expected_effort
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("temperature", "thinking_config", "expected"),
+    [
+        (
+            0.5,
+            types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
+            {"reasoning_effort": "low"},
+        ),
+        (
+            0.5,
+            types.ThinkingConfig(thinking_budget=2048),
+            {"thinking": {"type": "enabled", "budget_tokens": 2048}},
+        ),
+        (
+            1.0,
+            types.ThinkingConfig(thinking_budget=2048),
+            {
+                "temperature": 1.0,
+                "thinking": {"type": "enabled", "budget_tokens": 2048},
+            },
+        ),
+        (
+            0.5,
+            types.ThinkingConfig(thinking_budget=0),
+            {
+                "temperature": 0.5,
+                "thinking": {"type": "disabled"},
+            },
+        ),
+    ],
+)
+async def test_get_completion_inputs_anthropic_thinking_temperature(
+    temperature: float,
+    thinking_config: types.ThinkingConfig,
+    expected: dict[str, object],
+) -> None:
+  """Drops non-unit temperature on Anthropic when thinking is enabled."""
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          temperature=temperature,
+          thinking_config=thinking_config,
+      ),
+  )
+
+  _, _, _, generation_params, _ = await _get_completion_inputs(
+      req, model="anthropic/claude-sonnet-4-5"
+  )
+  assert generation_params == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("top_p", "thinking_budget", "expected"),
+    [
+        (
+            0.5,
+            2048,
+            {"thinking": {"type": "enabled", "budget_tokens": 2048}},
+        ),
+        (
+            0.96,
+            2048,
+            {
+                "top_p": 0.96,
+                "thinking": {"type": "enabled", "budget_tokens": 2048},
+            },
+        ),
+        (
+            0.5,
+            0,
+            {"top_p": 0.5, "top_k": 40.0, "thinking": {"type": "disabled"}},
+        ),
+    ],
+)
+async def test_get_completion_inputs_anthropic_thinking_drops_top_k_top_p(
+    top_p: float,
+    thinking_budget: int,
+    expected: dict[str, object],
+) -> None:
+  """Drops top_k and top_p below 0.95 on Anthropic when thinking is enabled."""
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          top_k=40,
+          top_p=top_p,
+          thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
+      ),
+  )
+
+  _, _, _, generation_params, _ = await _get_completion_inputs(
+      req, model="anthropic/claude-sonnet-4-5"
+  )
+  assert generation_params == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("constructor_kwargs", "expected_temperature", "expected_top_k"),
+    [
+        ({"reasoning_effort": "none"}, 0.5, 40.0),
+        ({"reasoning_effort": "low"}, None, None),
+    ],
+)
+async def test_generate_content_async_anthropic_thinking_sampling_params(
+    mock_acompletion: AsyncMock,
+    mock_client: MockLLMClient,
+    constructor_kwargs: dict[str, object],
+    expected_temperature: float | None,
+    expected_top_k: float | None,
+) -> None:
+  """Drops sampling params only when reasoning_effort enables thinking."""
+  llm = LiteLlm(
+      model="anthropic/claude-sonnet-4-5",
+      llm_client=mock_client,
+      **constructor_kwargs,
+  )
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(temperature=0.5, top_k=40),
+  )
+
+  async for _ in llm.generate_content_async(req):
+    pass
+
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs.get("temperature") == expected_temperature
+  assert kwargs.get("top_k") == expected_top_k
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "custom_llm_provider", "thinking_config", "expected"),
+    [
+        (
+            "deepseek-reasoner",
+            "deepseek",
+            types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
+            {"reasoning_effort": "low"},
+        ),
+        (
+            "claude-sonnet-4-5",
+            "anthropic",
+            types.ThinkingConfig(thinking_budget=512),
+            {"thinking": {"type": "enabled", "budget_tokens": 1024}},
+        ),
+    ],
+)
+async def test_get_completion_inputs_thinking_uses_custom_llm_provider(
+    model: str,
+    custom_llm_provider: str,
+    thinking_config: types.ThinkingConfig,
+    expected: dict[str, object],
+) -> None:
+  """Forwards custom_llm_provider to LiteLLM reasoning capability lookups."""
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(thinking_config=thinking_config),
+  )
+
+  _, _, _, generation_params, _ = await _get_completion_inputs(
+      req,
+      model=model,
+      custom_llm_provider=custom_llm_provider,
+  )
+  assert generation_params == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "thinking_config", "expected"),
+    [
+        (
+            "gemini/gemini-2.5-flash",
+            types.ThinkingConfig(include_thoughts=True),
+            {"thinking": {"type": "enabled"}},
+        ),
+        (
+            "gemini/gemini-2.5-flash",
+            types.ThinkingConfig(include_thoughts=False),
+            {"thinking": {"type": "disabled"}},
+        ),
+        (
+            "gemini/gemini-3-flash-preview",
+            types.ThinkingConfig(include_thoughts=True),
+            None,
+        ),
+        (
+            "openai/o3-mini",
+            types.ThinkingConfig(include_thoughts=True),
+            None,
+        ),
+        (
+            "anthropic/claude-sonnet-4-5",
+            types.ThinkingConfig(include_thoughts=True),
+            {"thinking": {"type": "enabled", "budget_tokens": 1024}},
+        ),
+        (
+            "anthropic/claude-opus-4-7",
+            types.ThinkingConfig(include_thoughts=True),
+            {"thinking": {"type": "adaptive"}},
+        ),
+    ],
+)
+async def test_get_completion_inputs_maps_include_thoughts(
+    model: str,
+    thinking_config: types.ThinkingConfig,
+    expected: dict[str, object] | None,
+) -> None:
+  """Maps include_thoughts when no explicit level or budget is set."""
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(thinking_config=thinking_config),
+  )
+
+  _, _, _, generation_params, _ = await _get_completion_inputs(req, model=model)
+  assert generation_params == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_generate_content_async_include_thoughts_false(
+    mock_acompletion: AsyncMock,
+    mock_completion: Mock,
+    mock_client: MockLLMClient,
+    stream: bool,
+) -> None:
+  """Omits all thought parts from a text turn when include_thoughts is False."""
+  mock_acompletion.return_value = ModelResponse(
+      model="anthropic/claude-sonnet-4-5",
+      choices=[
+          Choices(
+              finish_reason="stop",
+              message=ChatCompletionAssistantMessage(
+                  role="assistant",
+                  content="final answer",
+                  thinking_blocks=[{
+                      "type": "thinking",
+                      "thinking": "hidden reasoning",
+                      "signature": "c2lnX2E=",
+                  }],
+              ),
+          )
+      ],
+  )
+  mock_completion.return_value = [
+      ModelResponseStream(
+          model="anthropic/claude-sonnet-4-5",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      thinking_blocks=[{
+                          "type": "thinking",
+                          "thinking": "hidden reasoning",
+                          "signature": "c2lnX2E=",
+                      }],
+                  ),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="anthropic/claude-sonnet-4-5",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="final answer"),
+              )
+          ],
+      ),
+      _streamed_finish_chunk(),
+  ]
+  llm = LiteLlm(model="anthropic/claude-sonnet-4-5", llm_client=mock_client)
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(
+              thinking_budget=2048,
+              include_thoughts=False,
+          ),
+      ),
+  )
+
+  responses = [r async for r in llm.generate_content_async(req, stream=stream)]
+  assert not any(
+      r.partial and any(p.thought for p in r.content.parts or [])
+      for r in responses
+      if r.content
+  )
+  final_response = responses[-1]
+  assert final_response.content is not None
+  assert final_response.content.parts is not None
+  parts = final_response.content.parts
+  assert len(parts) == 1
+  assert parts[0].text == "final answer"
+  assert not parts[0].thought
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_include_thoughts_false_keeps_signed_tool_loop_thinking(
+    mock_acompletion: AsyncMock,
+    mock_completion: Mock,
+    mock_client: MockLLMClient,
+    stream: bool,
+) -> None:
+  """Keeps signed tool-call thinking when include_thoughts is False."""
+  thinking_block = {
+      "type": "thinking",
+      "thinking": "check weather",
+      "signature": "c2lnX2E=",
+  }
+  mock_acompletion.side_effect = [
+      ModelResponse(
+          model="anthropic/claude-sonnet-4-5",
+          choices=[
+              Choices(
+                  finish_reason="tool_calls",
+                  message=ChatCompletionAssistantMessage(
+                      role="assistant",
+                      content=None,
+                      thinking_blocks=[thinking_block],
+                      tool_calls=[
+                          ChatCompletionMessageToolCall(
+                              type="function",
+                              id="call_1",
+                              function=Function(
+                                  name="get_weather",
+                                  arguments='{"city": "Paris"}',
+                              ),
+                          )
+                      ],
+                  ),
+              )
+          ],
+      ),
+      ModelResponse(
+          model="anthropic/claude-sonnet-4-5",
+          choices=[
+              Choices(
+                  finish_reason="stop",
+                  message=ChatCompletionAssistantMessage(
+                      role="assistant",
+                      content="Sunny in Paris",
+                  ),
+              )
+          ],
+      ),
+  ]
+  mock_completion.side_effect = [
+      [
+          ModelResponseStream(
+              model="anthropic/claude-sonnet-4-5",
+              choices=[
+                  StreamingChoices(
+                      finish_reason=None,
+                      delta=Delta(
+                          role="assistant",
+                          thinking_blocks=[
+                              {"type": "thinking", "thinking": "check "},
+                          ],
+                      ),
+                  )
+              ],
+          ),
+          ModelResponseStream(
+              model="anthropic/claude-sonnet-4-5",
+              choices=[
+                  StreamingChoices(
+                      finish_reason=None,
+                      delta=Delta(
+                          thinking_blocks=[
+                              {"type": "thinking", "thinking": "weather"},
+                          ],
+                      ),
+                  )
+              ],
+          ),
+          ModelResponseStream(
+              model="anthropic/claude-sonnet-4-5",
+              choices=[
+                  StreamingChoices(
+                      finish_reason=None,
+                      delta=Delta(
+                          thinking_blocks=[
+                              {
+                                  "type": "thinking",
+                                  "thinking": "",
+                                  "signature": "c2lnX2E=",
+                              },
+                          ],
+                      ),
+                  )
+              ],
+          ),
+          _streamed_tool_call_chunk(
+              index=0,
+              call_id="call_1",
+              name="get_weather",
+              arguments='{"city": "Paris"}',
+          ),
+          _streamed_finish_chunk("tool_calls"),
+      ],
+      [
+          ModelResponseStream(
+              model="anthropic/claude-sonnet-4-5",
+              choices=[
+                  StreamingChoices(
+                      finish_reason=None,
+                      delta=Delta(role="assistant", content="Sunny in Paris"),
+                  )
+              ],
+          ),
+          _streamed_finish_chunk(),
+      ],
+  ]
+
+  llm = LiteLlm(model="anthropic/claude-sonnet-4-5", llm_client=mock_client)
+  thinking_config = types.ThinkingConfig(
+      thinking_budget=2048,
+      include_thoughts=False,
+  )
+  user_content = types.Content(
+      role="user",
+      parts=[types.Part.from_text(text="Weather in Paris?")],
+  )
+  turn1_req = LlmRequest(
+      contents=[user_content],
+      config=types.GenerateContentConfig(thinking_config=thinking_config),
+  )
+
+  turn1_responses = [
+      r async for r in llm.generate_content_async(turn1_req, stream=stream)
+  ]
+  assert not any(
+      r.partial and any(p.thought for p in r.content.parts or [])
+      for r in turn1_responses
+      if r.content
+  )
+  turn1_content = turn1_responses[-1].content
+  assert turn1_content is not None
+  assert turn1_content.parts is not None
+  assert [p.thought_signature for p in turn1_content.parts if p.thought] == [
+      b"sig_a"
+  ]
+
+  tool_response_part = types.Part.from_function_response(
+      name="get_weather",
+      response={"weather": "sunny"},
+  )
+  assert tool_response_part.function_response is not None
+  tool_response_part.function_response.id = "call_1"
+  turn2_req = LlmRequest(
+      contents=[
+          user_content,
+          turn1_content,
+          types.Content(role="user", parts=[tool_response_part]),
+      ],
+      config=types.GenerateContentConfig(thinking_config=thinking_config),
+  )
+
+  turn2_responses = [
+      r async for r in llm.generate_content_async(turn2_req, stream=stream)
+  ]
+  assert turn2_responses[-1].content is not None
+  call_kwargs = (
+      mock_completion if stream else mock_acompletion
+  ).call_args.kwargs
+  assistant_msg = call_kwargs["messages"][1]
+  assert assistant_msg["thinking_blocks"] == [thinking_block]
+  assert assistant_msg["tool_calls"][0]["function"]["name"] == "get_weather"
 
 
 @pytest.mark.asyncio

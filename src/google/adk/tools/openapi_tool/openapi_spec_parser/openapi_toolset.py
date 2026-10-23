@@ -82,6 +82,7 @@ class OpenAPIToolset(BaseToolset):
       ] = None,
       httpx_client_factory: Optional[HttpxClientFactory] = None,
       preserve_property_names: bool = False,
+      allow_private_network_access: bool = False,
   ) -> None:
     """Initializes the OpenAPIToolset.
 
@@ -149,6 +150,11 @@ class OpenAPIToolset(BaseToolset):
         useful when calling APIs that expect camelCase or other non-snake_case
         parameter names in the request. Defaults to False for backward
         compatibility.
+      allow_private_network_access: By default, generated tools refuse loopback,
+        private, link-local (including cloud metadata), and ``*.internal`` /
+        ``*.local`` targets and return an error response. Set this to ``True``
+        to allow requests to private networks, localhost, and custom non-DNS
+        transports.
     """
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
     self._header_provider = header_provider
@@ -171,6 +177,7 @@ class OpenAPIToolset(BaseToolset):
       spec_dict = self._load_spec(cast(str, spec_str), spec_str_type)
     self._ssl_verify = ssl_verify
     self._httpx_client_factory = httpx_client_factory
+    self._allow_private_network_access = allow_private_network_access
     self._tools: Final[List[RestApiTool]] = list(self._parse(spec_dict))
     if auth_scheme or auth_credential:
       self._configure_auth_all(auth_scheme, auth_credential)
@@ -265,6 +272,7 @@ class OpenAPIToolset(BaseToolset):
             ssl_verify=self._ssl_verify,
             header_provider=self._header_provider,
             httpx_client_factory=self._httpx_client_factory,
+            allow_private_network_access=self._allow_private_network_access,
         )
         for o in operations
     ]

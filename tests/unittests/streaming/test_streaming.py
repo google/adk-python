@@ -34,7 +34,7 @@ async def _wait_for_queue_empty(queue: LiveRequestQueue):
   """Wait until the queue is empty and the background consumer has finished."""
   while not queue._queue.empty():
     await asyncio.sleep(0)
-  # Give opportunity for _send_to_model to finish processing (e.g. append_event)
+  # Give opportunity for send_to_model to finish processing (e.g. append_event)
   for _ in range(10):
     await asyncio.sleep(0)
 

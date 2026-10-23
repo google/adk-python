@@ -33,8 +33,6 @@ from google.genai import types
 from pydantic import BaseModel
 import yaml
 
-from ..features import experimental
-from ..features import FeatureName
 from ..tools.tool_configs import ToolConfig
 from .base_agent import BaseAgent
 from .common_configs import AgentRefConfig
@@ -701,7 +699,6 @@ def _config_as_model(
   return config_data
 
 
-@experimental(FeatureName.AGENT_CONFIG)
 def from_config(config_path: str) -> BaseNode:
   """Build agent or workflow node from a YAML config file path.
 
@@ -1052,7 +1049,6 @@ def _set_enforce_denylist(value: bool) -> None:
   _ENFORCE_DENYLIST = value
 
 
-@experimental(FeatureName.AGENT_CONFIG)
 def resolve_fully_qualified_name(name: str) -> Any:
   try:
     module_path, obj_name = name.rsplit(".", 1)
@@ -1063,7 +1059,6 @@ def resolve_fully_qualified_name(name: str) -> Any:
     raise ValueError(f"Invalid fully qualified name: {name}") from e
 
 
-@experimental(FeatureName.AGENT_CONFIG)
 def resolve_agent_reference(
     ref_config: AgentRefConfig, referencing_agent_config_abs_path: str
 ) -> BaseNode:
@@ -1142,7 +1137,6 @@ def _resolve_agent_code_reference(code: str) -> BaseNode:
   return obj
 
 
-@experimental(FeatureName.AGENT_CONFIG)
 def resolve_code_reference(code_config: CodeConfig) -> Any:
   """Resolve a code reference to actual Python object.
 
@@ -1188,7 +1182,6 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
     raise ValueError(f"Invalid fully qualified name: {code_config.name}") from e
 
 
-@experimental(FeatureName.AGENT_CONFIG)
 def resolve_callbacks(callbacks_config: List[CodeConfig]) -> Any:
   """Resolve callbacks from configuration.
 

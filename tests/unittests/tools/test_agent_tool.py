@@ -44,9 +44,11 @@ import google.adk.runners as _runners_module
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_configs import ToolArgsConfig
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils.variant_utils import GoogleLLMVariant
+from google.adk.workflow._function_node import FunctionNode
 from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
@@ -2448,3 +2450,158 @@ async def test_agent_tool_in_tool_thread_pool_returns_nested_reply():
   )
 
   assert result == 'nested reply'
+
+
+@mark.asyncio
+@mark.parametrize(
+    ('parent_ttl_seconds', 'expected_child_ttl_seconds'),
+    [
+        (1800, 300),
+        (120, 120),
+        (None, None),
+    ],
+    ids=[
+        'ttl_above_cap_clamped_to_300s',
+        'ttl_below_cap_preserved',
+        'no_parent_cache_config_remains_none',
+    ],
+)
+async def test_agent_tool_propagates_cache_config(
+    parent_ttl_seconds: int | None,
+    expected_child_ttl_seconds: int | None,
+):
+  """The child sees the parent's cache config with its TTL capped at 300s."""
+  from google.adk.agents.context_cache_config import ContextCacheConfig
+  from google.adk.apps.app import App
+
+  child_model = testing_utils.MockModel.create(responses=['child result'])
+  child = LlmAgent(name='tool_agent', model=child_model)
+  parent_model = testing_utils.MockModel.create(
+      responses=[function_call_no_schema, 'done']
+  )
+  parent = LlmAgent(
+      name='root_agent', model=parent_model, tools=[AgentTool(agent=child)]
+  )
+  cache_config = (
+      ContextCacheConfig(
+          min_tokens=1024, ttl_seconds=parent_ttl_seconds, cache_intervals=5
+      )
+      if parent_ttl_seconds is not None
+      else None
+  )
+  app = App(
+      name='cached_parent_app',
+      root_agent=parent,
+      context_cache_config=cache_config,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async('go')
+
+  (child_request,) = child_model.requests
+  if expected_child_ttl_seconds is None:
+    assert [r.cache_config for r in parent_model.requests] == [None, None]
+    assert child_request.cache_config is None
+  else:
+    assert [r.cache_config.ttl_seconds for r in parent_model.requests] == [
+        parent_ttl_seconds,
+        parent_ttl_seconds,
+    ]
+    assert child_request.cache_config is not None
+    assert child_request.cache_config.ttl_seconds == expected_child_ttl_seconds
+    assert child_request.cache_config.min_tokens == 1024
+    assert child_request.cache_config.cache_intervals == 5
+
+
+@mark.asyncio
+async def test_agent_tool_child_cache_state_starts_empty_on_every_call():
+  """Each call runs the child in a new session, so no cache state carries over.
+
+  Gemini creates an explicit cache only when an earlier response in the same
+  session left cache metadata behind. That handoff happens within one AgentTool
+  call and never across calls.
+  """
+  from google.adk.agents.context_cache_config import ContextCacheConfig
+  from google.adk.apps.app import App
+  from google.adk.models.cache_metadata import CacheMetadata
+
+  fingerprint_only = CacheMetadata(fingerprint='child-fp', contents_count=0)
+  usage = types.GenerateContentResponseUsageMetadata(prompt_token_count=4096)
+
+  def lookup(query: str) -> str:
+    """Looks up a query."""
+    return f'result for {query}'
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          LlmResponse(
+              content=types.Content(
+                  role='model',
+                  parts=[
+                      Part.from_function_call(
+                          name='lookup', args={'query': 'a'}
+                      )
+                  ],
+              ),
+              cache_metadata=fingerprint_only,
+              usage_metadata=usage,
+          ),
+          LlmResponse(
+              content=types.Content(role='model', parts=[Part(text='first')]),
+              usage_metadata=usage,
+          ),
+          LlmResponse(
+              content=types.Content(role='model', parts=[Part(text='second')]),
+              cache_metadata=fingerprint_only,
+              usage_metadata=usage,
+          ),
+      ]
+  )
+  inner = LlmAgent(name='tool_agent', model=mock_model, tools=[lookup])
+  parent_model = testing_utils.MockModel.create(
+      responses=[
+          function_call_no_schema,
+          'first done',
+          function_call_no_schema,
+          'second done',
+      ]
+  )
+  parent = LlmAgent(
+      name='root_agent', model=parent_model, tools=[AgentTool(agent=inner)]
+  )
+  app = App(
+      name='cached_parent_app',
+      root_agent=parent,
+      context_cache_config=ContextCacheConfig(
+          min_tokens=1024, ttl_seconds=1800, cache_intervals=5
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async('one')
+  await runner.run_async('two')
+
+  first_call_start, first_call_after_tool, second_call_start = (
+      mock_model.requests
+  )
+  assert [r.cache_config.ttl_seconds for r in mock_model.requests] == [
+      300,
+      300,
+      300,
+  ]
+  assert first_call_start.cache_metadata is None
+  assert first_call_start.cacheable_contents_token_count is None
+  assert first_call_after_tool.cache_metadata == fingerprint_only
+  assert first_call_after_tool.cacheable_contents_token_count == 4096
+  assert second_call_start.cache_metadata is None
+  assert second_call_start.cacheable_contents_token_count is None
+
+
+_non_agent_node = FunctionNode(func=lambda: None, name='non_agent_node')
+
+
+def test_from_config_rejects_non_agent_node():
+  config = ToolArgsConfig(agent={'code': f'{__name__}._non_agent_node'})
+
+  with pytest.raises(ValueError, match='AgentTool requires an agent'):
+    AgentTool.from_config(config, '/tmp/root_agent.yaml')

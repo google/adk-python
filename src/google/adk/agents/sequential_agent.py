@@ -28,8 +28,6 @@ from typing_extensions import deprecated
 from typing_extensions import override
 
 from ..events.event import Event
-from ..features import experimental
-from ..features import FeatureName
 from ..tools.base_tool import BaseTool
 from ..utils.context_utils import Aclosing
 from ..utils.instructions_utils import InstructionProvider
@@ -80,7 +78,6 @@ def _append_instruction(
   return combined
 
 
-@experimental(FeatureName.AGENT_STATE)
 class SequentialAgentState(BaseAgentState):
   """State for SequentialAgent."""
 

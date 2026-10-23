@@ -46,6 +46,7 @@ class ToolExecutionError(Exception):
         `error.type` span attribute in OpenTelemetry traces.
     """
     self.message = message
+    self.error_type: str | None
     if isinstance(error_type, ToolErrorType):
       self.error_type = error_type.value
     else:

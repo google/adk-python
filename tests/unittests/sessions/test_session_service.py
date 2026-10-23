@@ -1329,6 +1329,77 @@ async def test_number_valued_state_delta_is_stored_exactly(
   assert {key: reloaded.state[key] for key in numbers} == numbers
 
 
+# Integers outside the signed 64-bit range, such as an unsigned 64-bit hash.
+_LARGE_INTEGERS = {
+    'uint64_hash': 2**64 - 1,
+    'big_negative': -(2**70) - 1,
+}
+
+
+@pytest.mark.skipif(
+    sqlite3.sqlite_version_info < (3, 38),
+    reason='Exact large integers need the SQLite 3.38+ -> operator.',
+)
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prefix', ['', 'user:', 'app:'])
+async def test_large_integers_survive_unrelated_state_delta(
+    session_service, prefix
+):
+  """Integers beyond 64 bits stay exact ints after an unrelated state_delta."""
+  numbers = {prefix + key: value for key, value in _LARGE_INTEGERS.items()}
+  session = await session_service.create_session(
+      app_name='my_app', user_id='u1', session_id='s1', state=numbers
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={prefix + 'other': 1}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  reloaded_numbers = {key: reloaded.state[key] for key in numbers}
+  assert reloaded_numbers == numbers
+  assert all(type(value) is int for value in reloaded_numbers.values())
+
+
+@pytest.mark.skipif(
+    sqlite3.sqlite_version_info < (3, 38),
+    reason='Exact large integers need the SQLite 3.38+ -> operator.',
+)
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prefix', ['', 'user:', 'app:'])
+async def test_large_integer_state_delta_is_stored_exactly(
+    session_service, prefix
+):
+  """Integers beyond 64 bits written by a state_delta stay exact ints."""
+  numbers = {prefix + key: value for key, value in _LARGE_INTEGERS.items()}
+  # Seed the scope so the delta is merged into existing state.
+  session = await session_service.create_session(
+      app_name='my_app',
+      user_id='u1',
+      session_id='s1',
+      state={prefix + 'seed': 1},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta=numbers),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  reloaded_numbers = {key: reloaded.state[key] for key in numbers}
+  assert reloaded_numbers == numbers
+  assert all(type(value) is int for value in reloaded_numbers.values())
+
+
 @pytest.mark.asyncio
 async def test_temp_state_is_not_persisted_in_state_or_events(session_service):
   app_name = 'my_app'
