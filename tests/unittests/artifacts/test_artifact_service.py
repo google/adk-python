@@ -4167,3 +4167,102 @@ async def test_load_artifact_survives_malformed_metadata_on_binary_payload(
   )
 
   assert loaded is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (("team/project", "alice"), ("team", "project/alice")),
+        (("team", "project/alice"), ("team/project", "alice")),
+    ],
+)
+async def test_in_memory_slash_in_identifiers_keeps_scopes_separate(
+    first, second
+):
+  """Distinct (app_name, user_id) pairs with embedded '/' stay isolated.
+
+  The shared validator allows '/' inside app and user identifiers, so joining
+  raw identifiers into one storage key would let either scope read, version
+  and delete the other's artifacts.
+  """
+  artifact_service = InMemoryArtifactService()
+  saved = types.Part.from_text(text="first scope value")
+  assert (
+      await artifact_service.save_artifact(
+          app_name=first[0],
+          user_id=first[1],
+          session_id="s1",
+          filename="notes.txt",
+          artifact=saved,
+      )
+      == 0
+  )
+
+  # The second scope has its own empty history.
+  assert (
+      await artifact_service.load_artifact(
+          app_name=second[0],
+          user_id=second[1],
+          session_id="s1",
+          filename="notes.txt",
+      )
+      is None
+  )
+  assert (
+      await artifact_service.list_versions(
+          app_name=second[0],
+          user_id=second[1],
+          session_id="s1",
+          filename="notes.txt",
+      )
+      == []
+  )
+  assert (
+      await artifact_service.list_artifact_keys(
+          app_name=second[0], user_id=second[1], session_id="s1"
+      )
+      == []
+  )
+
+  # Saving through the second scope allocates its own version 0.
+  assert (
+      await artifact_service.save_artifact(
+          app_name=second[0],
+          user_id=second[1],
+          session_id="s1",
+          filename="notes.txt",
+          artifact=types.Part.from_text(text="second scope value"),
+      )
+      == 0
+  )
+  loaded_first = await artifact_service.load_artifact(
+      app_name=first[0],
+      user_id=first[1],
+      session_id="s1",
+      filename="notes.txt",
+  )
+  assert loaded_first is not None
+  assert loaded_first.text == "first scope value"
+  assert await artifact_service.list_versions(
+      app_name=first[0],
+      user_id=first[1],
+      session_id="s1",
+      filename="notes.txt",
+  ) == [0]
+
+  # Deleting through the second scope leaves the first scope intact.
+  await artifact_service.delete_artifact(
+      app_name=second[0],
+      user_id=second[1],
+      session_id="s1",
+      filename="notes.txt",
+  )
+  reloaded_first = await artifact_service.load_artifact(
+      app_name=first[0],
+      user_id=first[1],
+      session_id="s1",
+      filename="notes.txt",
+  )
+  assert reloaded_first is not None
+  assert reloaded_first.text == "first scope value"
