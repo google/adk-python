@@ -975,6 +975,7 @@ async def test_list_sessions_with_empty_user_id_returns_no_sessions(
 
   assert response.sessions == []
   mock_firestore_client.collection_group.assert_not_called()
+  mock_firestore_client.collection.assert_not_called()
 
 
 @pytest.mark.asyncio
