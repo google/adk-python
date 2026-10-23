@@ -239,7 +239,7 @@ class VertexAiRagMemoryService(BaseMemoryService):
       text_parts = [
           part.text.replace("\n", " ")
           for part in event.content.parts
-          if part.text
+          if part.text and not part.thought
       ]
       if text_parts:
         output_lines.append(

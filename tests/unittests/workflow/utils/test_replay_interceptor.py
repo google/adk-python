@@ -37,11 +37,12 @@ import pytest
 
 
 def test_same_turn_completed():
-  """Same-turn completed run intercepts and returns cached output."""
+  """Same-turn completed run intercepts and returns cached output, route, and transfer."""
   # Given a same-turn completed run
   run = DynamicNodeRun(
       state=NodeState(status=NodeStatus.COMPLETED),
       output='cached-out',
+      route='route-a',
       transfer_to_agent='target-agent',
   )
 
@@ -54,6 +55,7 @@ def test_same_turn_completed():
   # Then it intercepts with cached results
   assert not result.should_run
   assert result.output == 'cached-out'
+  assert result.route == 'route-a'
   assert result.transfer_to_agent == 'target-agent'
 
 
@@ -73,6 +75,47 @@ def test_same_turn_waiting():
   # Then it intercepts and keeps waiting
   assert not result.should_run
   assert result.interrupts == {'fc-1'}
+
+
+def test_same_turn_failed_run_reruns_with_resolved_responses():
+  """A dynamic run that failed this turn runs again with its resolved responses.
+
+  Its recovered events show its only interrupt answered, which on their own
+  would complete a node that does not rerun on resume with the answer
+  instead of running it. A static run falls through to its recovered events.
+  """
+  recovered = _ChildScanState(
+      run_id='1',
+      interrupt_ids={'fc-1'},
+      resolved_ids={'fc-1'},
+      resolved_responses={'fc-1': 'ans'},
+  )
+  dynamic_run = DynamicNodeRun(
+      state=NodeState(status=NodeStatus.FAILED),
+      recovered_state=recovered,
+      is_static=False,
+  )
+  static_run = DynamicNodeRun(
+      state=NodeState(status=NodeStatus.FAILED),
+      recovered_state=recovered,
+      is_static=True,
+  )
+
+  dynamic_result = check_interception(
+      node=BaseNode(name='node', rerun_on_resume=False),
+      recovered=recovered,
+      current_run=dynamic_run,
+  )
+  static_result = check_interception(
+      node=BaseNode(name='node', rerun_on_resume=False),
+      recovered=recovered,
+      current_run=static_run,
+  )
+
+  assert dynamic_result.should_run
+  assert dynamic_result.resume_inputs == {'fc-1': 'ans'}
+  assert not static_result.should_run
+  assert static_result.output == 'ans'
 
 
 def test_cross_turn_unresolved_interrupts_no_rerun():

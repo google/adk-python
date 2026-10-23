@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import ipaddress
 import json
@@ -64,6 +65,7 @@ from ...flows.llm_flows.context._fencing import _present_other_agent_message
 from ...flows.llm_flows.context._fencing import quote_untrusted
 from ...flows.llm_flows.tools._functions import find_matching_function_call
 from ...sessions.session import Session
+from ...utils import _mtls_utils
 from ...utils._agent_mode import AgentMode
 from ...utils._agent_mode import TaskAgentMode
 from ...utils._function_call_names import CLIENT_FUNCTION_CALL_NAMES
@@ -109,6 +111,7 @@ A2A_METADATA_PREFIX = "a2a:"
 DEFAULT_TIMEOUT = 600.0
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+_MTLS_GOOGLEAPIS_SUFFIX = ".mtls.googleapis.com"
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -401,6 +404,21 @@ def _url_origin(url: str) -> tuple[str, str, Optional[int]]:
   )
 
 
+def _card_target_origin(url: str) -> tuple[str, str, Optional[int]]:
+  """Returns the origin of url, with a Google API's mTLS host as its plain host.
+
+  Requests to a ``*.googleapis.com`` host may be routed to its mTLS host, so
+  a card fetched from one may name the other.
+
+  Raises:
+    ValueError: If the URL carries a malformed port.
+  """
+  scheme, host, port = _url_origin(url)
+  if host.endswith(_MTLS_GOOGLEAPIS_SUFFIX):
+    host = host[: -len(_MTLS_GOOGLEAPIS_SUFFIX)] + ".googleapis.com"
+  return scheme, host, port
+
+
 @a2a_experimental
 class AgentCardResolutionError(Exception):
   """Raised when agent card resolution fails."""
@@ -682,8 +700,10 @@ class RemoteA2aAgent(BaseAgent):
   containing a ``result`` key matching ``"Task completed."`` for success, or
   ``"Task failed."`` for failure). Additionally, the client's ``output_schema``
   must be set to mirror the remote agent's output schema to ensure correct
-  output unwrapping. ``None`` (default) leaves the agent as a plain
-  ``transfer_to_agent`` target.
+  output unwrapping. When the remote task fails, is canceled, or cannot be
+  reached, the parent's delegating call receives ``{"error": message}`` and
+  control returns to the parent. ``None`` (default) leaves the agent as a
+  plain ``transfer_to_agent`` target.
   """
 
   def __init__(
@@ -910,17 +930,43 @@ class RemoteA2aAgent(BaseAgent):
     ctx.end_invocation = True
     return event
 
+  def _client_targets_only_googleapis(self) -> bool:
+    """Returns whether every host the default client will call is a Google API.
+
+    A card fetched from a URL may only name RPC URLs on that origin (see
+    `_validate_card_rpc_targets`), so the source URL stands for them.
+    """
+    source = self._agent_card_source
+    if source and source.startswith(("http://", "https://")):
+      target_urls = [source]
+    elif self._agent_card:
+      target_urls = _compat.agent_card_rpc_urls(self._agent_card)
+    else:
+      target_urls = []
+    return bool(target_urls) and all(
+        _mtls_utils.is_googleapis_url(url) for url in target_urls
+    )
+
   async def _ensure_httpx_client(self) -> httpx.AsyncClient:
     """Ensure HTTP client is available and properly configured."""
     if not self._httpx_client:
-      self._httpx_client = httpx.AsyncClient(
-          timeout=httpx.Timeout(timeout=self._timeout)
-      )
-      self._httpx_client_needs_cleanup = True
-      if self._a2a_client_factory:
-        self._a2a_client_factory = _compat.rebind_client_factory_httpx(
-            self._a2a_client_factory, self._httpx_client
+      client_cert_kwargs = {}
+      if self._client_targets_only_googleapis():
+        # Loading the certificate can run a cert provider, so keep it off the
+        # event loop.
+        client_cert_kwargs = await asyncio.to_thread(
+            _mtls_utils.client_cert_httpx_kwargs
         )
+      # Another caller may have created the client during the await.
+      if not self._httpx_client:
+        self._httpx_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout=self._timeout), **client_cert_kwargs
+        )
+        self._httpx_client_needs_cleanup = True
+        if self._a2a_client_factory:
+          self._a2a_client_factory = _compat.rebind_client_factory_httpx(
+              self._a2a_client_factory, self._httpx_client
+          )
     if not self._a2a_client_factory:
       self._a2a_client_factory = A2AClientFactory(
           config=_compat.make_client_config(httpx_client=self._httpx_client)
@@ -1113,8 +1159,9 @@ class RemoteA2aAgent(BaseAgent):
     Every URL the card offers is checked, not only the one this ADK version
     would select, because the client factory negotiates the endpoint across
     the card's whole interface list. Each must be https and share the origin
-    the card was fetched from; plain http stays allowed on a loopback host,
-    the local-development shape the A2A helpers emit.
+    the card was fetched from, counting a Google API's mTLS host as its plain
+    host; plain http stays allowed on a loopback host, the local-development
+    shape the A2A helpers emit.
 
     A card passed in directly or read from a local file did not come off the
     network here, so its target is left to the caller.
@@ -1124,7 +1171,7 @@ class RemoteA2aAgent(BaseAgent):
       return
 
     try:
-      source_origin = _url_origin(source)
+      source_origin = _card_target_origin(source)
     except ValueError as e:
       raise AgentCardResolutionError(
           f"Invalid agent card source URL: {source}, error: {e}"
@@ -1141,7 +1188,7 @@ class RemoteA2aAgent(BaseAgent):
         )
 
       try:
-        card_origin = _url_origin(card_url)
+        card_origin = _card_target_origin(card_url)
       except ValueError as e:
         raise AgentCardResolutionError(
             f"Invalid RPC URL in agent card: {card_url}, error: {e}"
@@ -2168,16 +2215,30 @@ class RemoteA2aAgent(BaseAgent):
     ``ValueError`` on a second assignment), so promotion is gated to
     the first terminal A2A event of the run. Non-final task states and
     later events are passed through untouched.
+
+    In task mode, a task that fails sets the output to
+    ``{"error": message}``, so the parent's delegating call gets a response.
+    It is set on ``ctx`` rather than yielded, because a failure is not a
+    result and must not be validated against ``output_schema``.
     """
     promoted = False
-    async for event in super()._run_impl(ctx=ctx, node_input=node_input):
-      if (
-          self.mode != AgentMode.TASK
-          and not promoted
-          and self._promote_response_to_output(event, ctx.node_path)
-      ):
-        promoted = True
-      yield event
+    async with Aclosing(
+        super()._run_impl(ctx=ctx, node_input=node_input)
+    ) as agen:
+      async for event in agen:
+        if (
+            self.mode != AgentMode.TASK
+            and not promoted
+            and self._promote_response_to_output(event, ctx.node_path)
+        ):
+          promoted = True
+        if (
+            self.mode == "task"
+            and event.error_message
+            and is_finish_task_terminal_fr(event)
+        ):
+          ctx.output = {"error": event.error_message}
+        yield event
 
   def _promote_response_to_output(self, event: Event, node_path: str) -> bool:
     """Sets ``event.output`` from non-thought text parts, if eligible.

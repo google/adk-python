@@ -82,7 +82,7 @@ class _PinnedAddressAdapter(HTTPAdapter):
       timeout: Any = None,
       verify: bool | str = True,
       cert: tuple[str, str] | str | None = None,
-      proxies: dict[str, str | None] | None = None,
+      proxies: dict[str, str] | None = None,
   ) -> requests.Response:
     prepared_request = request.copy()
     prepared_request.headers['Host'] = self._host_header
@@ -178,7 +178,8 @@ def _fetch_direct_content(
       with session.get(
           url,
           allow_redirects=False,
-          proxies={'http': None, 'https': None},
+          # requests types reject None, which requests documents as no proxy.
+          proxies={'http': None, 'https': None},  # type: ignore[dict-item]
           timeout=_DEFAULT_TIMEOUT_SECONDS,
           stream=True,
       ) as response:

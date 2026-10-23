@@ -441,11 +441,14 @@ class SessionContext:
         # to the read/write MemoryObjectStreams needed to build the
         # ClientSession. We limit to the first two values to be compatible
         # with all clients.
+        read_stream, write_stream = transports[:2]
         if self._is_stdio:
           session = await exit_stack.enter_async_context(
               ClientSession(
-                  *transports[:2],
-                  read_timeout_seconds=_read_timeout(self._timeout),
+                  read_stream,
+                  write_stream,
+                  # MCP SDK 1.x declares a timedelta here and 2.x a float.
+                  read_timeout_seconds=_read_timeout(self._timeout),  # type: ignore[arg-type]
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,
@@ -457,8 +460,10 @@ class SessionContext:
           # instead of the connection timeout as the read_timeout for the session.
           session = await exit_stack.enter_async_context(
               ClientSession(
-                  *transports[:2],
-                  read_timeout_seconds=_read_timeout(self._sse_read_timeout),
+                  read_stream,
+                  write_stream,
+                  # MCP SDK 1.x declares a timedelta here and 2.x a float.
+                  read_timeout_seconds=_read_timeout(self._sse_read_timeout),  # type: ignore[arg-type]
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,

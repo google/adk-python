@@ -29,6 +29,7 @@ import warnings
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import ResumabilityConfig
@@ -37,6 +38,7 @@ from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.utils.context_utils import Aclosing
 from google.adk.workflow import BaseNode
 from google.genai import types
 import pytest
@@ -1650,6 +1652,49 @@ def test_abstract_subclass_cannot_be_instantiated():
 
   with pytest.raises(TypeError, match='abstract'):
     _Incomplete(name='incomplete')
+
+
+@pytest.mark.asyncio
+async def test_run_impl_aclose_closes_inner_run_async_generator(
+    request: pytest.FixtureRequest,
+):
+  """Closing _run_impl early deterministically closes inner run_async."""
+  cleaned_up = False
+
+  class _CleanupTrackingAgent(BaseAgent):
+    """Agent that tracks whether _run_async_impl cleanup ran."""
+
+    @override
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      nonlocal cleaned_up
+      try:
+        yield Event(
+            author=self.name,
+            invocation_id=ctx.invocation_id,
+            content=types.Content(parts=[types.Part(text='first')]),
+        )
+        yield Event(
+            author=self.name,
+            invocation_id=ctx.invocation_id,
+            content=types.Content(parts=[types.Part(text='second')]),
+        )
+      finally:
+        await asyncio.sleep(0)
+        cleaned_up = True
+
+  agent = _CleanupTrackingAgent(name=f'{request.function.__name__}_agent')
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  ctx = Context(parent_ctx, node=agent)
+
+  async with Aclosing(agent.run(ctx=ctx, node_input=None)) as agen:
+    event = await anext(agen)
+    assert event.content.parts[0].text == 'first'
+
+  assert cleaned_up
 
 
 if __name__ == '__main__':

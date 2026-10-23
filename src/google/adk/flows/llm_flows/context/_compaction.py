@@ -168,8 +168,14 @@ def _recover_compacted_function_calls(
   removed are re-injected too, so a sibling is not surfaced as a phantom
   pending call.
 
+  Call ids can be reused. Ownership is resolved in source order before any
+  events are restored: a response belongs to the latest preceding call with
+  its id, even when another call with that id survived compaction.
+
   Args:
     events: The post-compaction events being assembled into request contents.
+      Must contain the same Event objects as `source_events`; ownership is
+      matched by identity, not by value.
     source_events: The pre-compaction events to recover missing calls from.
 
   Returns:
@@ -177,71 +183,68 @@ def _recover_compacted_function_calls(
     compacted sibling responses) re-injected; the original list is returned
     unchanged when nothing needs recovery.
   """
-  call_ids_present: set[str] = set()
-  response_ids_present: set[str] = set()
-  for event in events:
+  if not any(event.get_function_responses() for event in events):
+    return events
+
+  present_events = {id(event) for event in events}
+  latest_call_by_id: dict[str, Event] = {}
+  call_by_response: dict[tuple[int, str], Event] = {}
+  response_by_call: dict[tuple[int, str], Event] = {}
+  surviving_responses: set[tuple[int, str]] = set()
+  for event in source_events:
     for function_call in event.get_function_calls():
       if function_call.id:
-        call_ids_present.add(function_call.id)
+        latest_call_by_id[function_call.id] = event
     for function_response in event.get_function_responses():
-      if function_response.id:
-        response_ids_present.add(function_response.id)
-
-  orphaned_ids = {
-      response_id
-      for response_id in response_ids_present
-      if response_id not in call_ids_present
-  }
-  if not orphaned_ids:
-    return events
-
-  call_event_by_id: dict[str, Event] = {}
-  for event in source_events:
-    for function_call in event.get_function_calls():
-      if function_call.id in orphaned_ids:
-        call_event_by_id.setdefault(function_call.id, event)
-
-  if not call_event_by_id:
-    return events
-
-  # Keep the highest-timestamp response per id so a sibling that completed
-  # before being compacted contributes its real result, not its stale
-  # placeholder; ties fall back to source order.
-  response_event_by_id: dict[str, Event] = {}
-  for event in source_events:
-    for function_response in event.get_function_responses():
-      if not function_response.id:
+      response_id = function_response.id
+      if not response_id:
         continue
-      existing = response_event_by_id.get(function_response.id)
+      call_event = latest_call_by_id.get(response_id)
+      if call_event is None:
+        continue
+      call_by_response[id(event), response_id] = call_event
+      call_key = (id(call_event), response_id)
+      if id(event) in present_events:
+        surviving_responses.add(call_key)
+      # Keep the latest update for this occurrence, not a later call that
+      # happens to reuse the id. Equal timestamps retain source order.
+      existing = response_by_call.get(call_key)
       if existing is None or event.timestamp >= existing.timestamp:
-        response_event_by_id[function_response.id] = event
+        response_by_call[call_key] = event
 
   result: list[Event] = []
-  reinjected_ids: set[str] = set()
+  reinjected_calls: set[int] = set()
+  reinjected_responses: set[int] = set()
   for event in events:
     for function_response in event.get_function_responses():
       function_response_id = function_response.id
       if not function_response_id:
         continue
-      call_event = call_event_by_id.get(function_response_id)
-      if call_event is None or function_response_id in reinjected_ids:
+      call_event = call_by_response.get((id(event), function_response_id))
+      if (
+          call_event is None
+          or id(call_event) in present_events
+          or id(call_event) in reinjected_calls
+      ):
         continue
       result.append(call_event)
-      sibling_ids = [
-          function_call.id
-          for function_call in call_event.get_function_calls()
-          if function_call.id
-      ]
-      reinjected_ids.update(sibling_ids)
+      reinjected_calls.add(id(call_event))
       # Recover sibling responses that compaction removed so a parallel sibling
       # is not left looking like a pending call.
-      for sibling_id in sibling_ids:
-        if sibling_id not in response_ids_present:
-          sibling_response = response_event_by_id.get(sibling_id)
-          if sibling_response is not None:
+      for sibling_call in call_event.get_function_calls():
+        if not sibling_call.id:
+          continue
+        sibling_key = (id(call_event), sibling_call.id)
+        if sibling_key not in surviving_responses:
+          sibling_response = response_by_call.get(sibling_key)
+          if (
+              sibling_response is not None
+              and id(sibling_response) not in reinjected_responses
+          ):
             result.append(sibling_response)
+            reinjected_responses.add(id(sibling_response))
     result.append(event)
-  return result
+  return result if reinjected_calls else events
 
 
 __all__ = [

@@ -43,6 +43,7 @@ from .config import A2aAgentExecutorConfig
 from .executor_context import ExecutorContext
 from .utils import _enqueue_canceled_task_event
 from .utils import _require_request_context
+from .utils import _require_user_id
 from .utils import execute_after_agent_interceptors
 from .utils import execute_after_event_interceptors
 from .utils import execute_before_agent_interceptors
@@ -106,7 +107,7 @@ class _A2aAgentExecutor(AgentExecutor):
 
       executor_context = ExecutorContext(
           app_name=runner.app_name,
-          user_id=run_request.user_id,
+          user_id=_require_user_id(run_request),
           session_id=session_id,
           runner=runner,
       )
@@ -283,7 +284,7 @@ class _A2aAgentExecutor(AgentExecutor):
   ) -> str:
     session_id = run_request.session_id
     # create a new session if not exists
-    user_id = run_request.user_id
+    user_id = _require_user_id(run_request)
     session = None
     if session_id:
       session = await runner.session_service.get_session(

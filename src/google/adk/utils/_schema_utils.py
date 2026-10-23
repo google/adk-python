@@ -26,6 +26,7 @@ import logging
 import re
 from types import UnionType
 from typing import Any
+from typing import cast
 from typing import get_args
 from typing import get_origin
 from typing import Optional
@@ -113,7 +114,8 @@ def get_list_inner_type(schema: SchemaType) -> Optional[type[BaseModel]]:
   inner_type = args[0]
   if get_origin(inner_type) is Annotated:
     inner_type = get_args(inner_type)[0]
-  return inner_type
+  # is_list_of_basemodel verified inner_type is a BaseModel subclass.
+  return cast(type[BaseModel], inner_type)
 
 
 def schema_to_json_schema(schema: SchemaType) -> dict[str, Any]:
@@ -249,11 +251,15 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
 
   if is_basemodel_schema(schema):
     # For regular BaseModel, use model_validate_json
-    return schema.model_validate_json(json_text).model_dump(exclude_none=True)
+    if get_origin(schema) is Annotated:
+      schema = get_args(schema)[0]
+    # is_basemodel_schema verified schema is now a BaseModel subclass.
+    model = cast(type[BaseModel], schema)
+    return model.model_validate_json(json_text).model_dump(exclude_none=True)
   elif is_list_of_basemodel(schema):
     # For list[BaseModel], use TypeAdapter to validate
-    type_adapter = TypeAdapter(schema)
-    validated: list[Any] = type_adapter.validate_json(json_text)
+    type_adapter: TypeAdapter[list[BaseModel]] = TypeAdapter(schema)
+    validated = type_adapter.validate_json(json_text)
     return [item.model_dump(exclude_none=True) for item in validated]
   else:
     # For other schema types (list[str], dict, Schema, etc.),
@@ -522,7 +528,7 @@ def preprocess_args(
         ):
           item_type = get_list_inner_type(target_type)
           if item_type is not None:
-            converted_list = []
+            converted_list: list[object] = []
             for item in args[param_name]:
               if isinstance(item, dict):
                 try:

@@ -3812,3 +3812,44 @@ def test_trace_generate_content_result_without_a_span_emits_nothing(
   )
 
   mock_otel_logger.emit.assert_not_called()
+
+
+def test_build_llm_request_for_trace_traces_content_without_parts():
+  from google.adk.telemetry.tracing import _build_llm_request_for_trace
+
+  llm_request = LlmRequest(
+      model='gemini-2.0-flash',
+      contents=[types.Content(role='user', parts=None)],
+  )
+
+  result = _build_llm_request_for_trace(llm_request)
+
+  assert result['contents'] == [{'role': 'user', 'parts': []}]
+
+
+@pytest.mark.asyncio
+async def test_use_inference_span_rejects_context_without_agent():
+  invocation_context = await _create_invocation_context(
+      LlmAgent(name='test_agent', model='gemini-pro')
+  )
+  invocation_context.agent = None
+
+  with pytest.raises(ValueError, match='must have an agent'):
+    async with use_inference_span(
+        LlmRequest(model='gemini-pro'), invocation_context, mock.MagicMock()
+    ):
+      pass
+
+
+@pytest.mark.asyncio
+async def test_use_generate_content_span_rejects_context_without_agent():
+  invocation_context = await _create_invocation_context(
+      LlmAgent(name='test_agent', model='gemini-pro')
+  )
+  invocation_context.agent = None
+
+  with pytest.raises(ValueError, match='must have an agent'):
+    with use_generate_content_span(
+        LlmRequest(model='gemini-pro'), invocation_context, mock.MagicMock()
+    ):
+      pass

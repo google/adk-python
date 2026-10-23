@@ -3633,11 +3633,103 @@ async def test_skill_toolset_dynamic_tool_resolution(mock_skill1, mock_skill2):
 
   # Prefixed toolset tool
   assert "prefixed_mock_tool" in tool_names
+  assert [t.name for t in tools[len(toolset._tools) :]] == [
+      "my_custom_tool",
+      "my_func",
+      "my_node",
+      "shared_tool",
+      "skill2_tool",
+      "prefixed_mock_tool",
+  ]
 
   # Check specific tool resolution details
   my_func_tool = next(t for t in tools if t.name == "my_func")
   assert isinstance(my_func_tool, skill_toolset.FunctionTool)
   assert my_func_tool.description == "My function description."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "first_skill",
+        "second_skill",
+        "expected_turn1_order",
+        "expected_turn2_order",
+    ),
+    [
+        (
+            "skill1",
+            "skill2",
+            ["zebra_tool", "alpha_tool"],
+            ["zebra_tool", "alpha_tool", "beta_tool"],
+        ),
+        (
+            "skill2",
+            "skill1",
+            ["beta_tool", "alpha_tool"],
+            ["beta_tool", "alpha_tool", "zebra_tool"],
+        ),
+    ],
+    ids=[
+        "skill1_then_skill2_appends_without_mid_list_insert",
+        "skill2_then_skill1_appends_without_mid_list_insert",
+    ],
+)
+async def test_skill_toolset_resolves_additional_tools_in_append_only_activation_order(
+    mock_skill1,
+    mock_skill2,
+    first_skill,
+    second_skill,
+    expected_turn1_order,
+    expected_turn2_order,
+):
+  """Newly activated skills append tools without shifting earlier turns' tools."""
+
+  def _make_named_mock_tool(name: str) -> skill_toolset.BaseTool:
+    tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+    tool.name = name
+    return tool
+
+  mock_skill1.name = "skill1"
+  mock_skill1.frontmatter.metadata = {
+      "adk_additional_tools": ["zebra_tool", "alpha_tool"]
+  }
+  mock_skill2.name = "skill2"
+  mock_skill2.frontmatter.metadata = {
+      "adk_additional_tools": ["beta_tool", "alpha_tool"]
+  }
+  extra_tools = [
+      _make_named_mock_tool(name)
+      for name in ("zebra_tool", "alpha_tool", "beta_tool")
+  ]
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1, mock_skill2], additional_tools=extra_tools
+  )
+  core_tool_count = len(toolset._tools)
+  ctx = _make_tool_context_with_agent()
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+
+  ctx.invocation_id = "turn-1"
+  await load_tool.run_async(args={"skill_name": first_skill}, tool_context=ctx)
+  turn1_tools = await toolset.get_tools_with_prefix(readonly_context=ctx)
+  assert [t.name for t in turn1_tools[core_tool_count:]] == expected_turn1_order
+
+  ctx.invocation_id = "turn-2"
+  await load_tool.run_async(args={"skill_name": second_skill}, tool_context=ctx)
+  turn2_tools = await toolset.get_tools_with_prefix(readonly_context=ctx)
+  assert [t.name for t in turn2_tools[core_tool_count:]] == expected_turn2_order
+  assert [
+      t.name
+      for t in turn2_tools[
+          core_tool_count : core_tool_count + len(expected_turn1_order)
+      ]
+  ] == expected_turn1_order
+
+  # Re-activating the first skill on a later turn is a no-op on tool ordering.
+  ctx.invocation_id = "turn-3"
+  await load_tool.run_async(args={"skill_name": first_skill}, tool_context=ctx)
+  turn3_tools = await toolset.get_tools_with_prefix(readonly_context=ctx)
+  assert [t.name for t in turn3_tools[core_tool_count:]] == expected_turn2_order
 
 
 @pytest.mark.asyncio

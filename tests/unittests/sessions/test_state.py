@@ -16,11 +16,14 @@
 
 from __future__ import annotations
 
+import dataclasses
+import datetime
 import threading
 from typing import Any
 
 from google.adk.sessions.state import State
 from google.adk.sessions.state import StateSchemaError
+from google.protobuf import duration_pb2
 from pydantic import BaseModel
 import pytest
 
@@ -163,6 +166,117 @@ def test_a_container_whose_copy_never_matches_is_left_alone():
   state, _, delta = _state_with(handles={'h': _ComparesByIdentity()})
 
   state['handles']
+
+  assert not state.has_delta()
+  assert not delta
+
+
+@pytest.mark.parametrize(
+    'held',
+    [
+        duration_pb2.Duration(seconds=3),
+        datetime.datetime(2026, 1, 1),
+        (1, 2),
+        float('inf'),
+    ],
+    ids=['proto', 'datetime', 'tuple', 'infinity'],
+)
+def test_a_container_with_no_equal_json_form_is_left_alone(held):
+  """A persisted event would hand such a container back changed."""
+  state, _, delta = _state_with(configs={'held': held})
+
+  state['configs']['added'] = 1
+
+  assert not state.has_delta()
+  assert not delta
+  assert state['configs'] == {'held': held, 'added': 1}
+
+
+def test_a_recorded_container_that_loses_its_json_form_is_withdrawn():
+  """The delta holds the container itself, so a later write would reach it."""
+  state, _, delta = _state_with(configs={'a': 1})
+
+  state['configs']['b'] = 2
+  assert state.has_delta()
+  state['configs']['proto'] = duration_pb2.Duration(seconds=3)
+
+  assert not state.has_delta()
+  assert not delta
+
+
+def test_an_assigned_container_is_not_withdrawn():
+  """Only a container the state recorded on its own is taken back."""
+  state, _, delta = _state_with()
+  state['configs'] = {'a': 1}
+
+  state['configs']['b'] = 2
+  assert state.has_delta()
+  state['configs']['proto'] = duration_pb2.Duration(seconds=3)
+
+  assert state.has_delta()
+  assert list(delta) == ['configs']
+
+
+@pytest.mark.parametrize(
+    'take_over',
+    [
+        lambda state: state.__setitem__('configs', {'a': 1}),
+        lambda state: state.update({'configs': {'a': 1}}),
+    ],
+    ids=['assigned', 'updated'],
+)
+def test_a_recorded_key_assigned_again_is_not_withdrawn(take_over):
+  """An assignment takes the key over from what the state recorded."""
+  state, _, delta = _state_with(configs={'a': 1})
+  state['configs']['b'] = 2
+  assert state.has_delta()
+
+  take_over(state)
+  state['configs']['proto'] = duration_pb2.Duration(seconds=3)
+
+  assert state.has_delta()
+  assert list(delta) == ['configs']
+
+
+def test_a_value_another_writer_put_in_the_delta_is_not_withdrawn():
+  """A state stops counting a key as its own once another value replaces it."""
+  state, _, delta = _state_with(configs={'a': 1})
+  state['configs']['b'] = 2
+  assert state.has_delta()
+
+  delta['configs'] = {'proto': duration_pb2.Duration(seconds=3)}
+  assert state.has_delta()
+  state['configs']['added'] = 1
+
+  assert state.has_delta()
+  assert list(delta) == ['configs']
+
+
+@dataclasses.dataclass(eq=False)
+class _AssumesSameType:
+  """A value whose == reads a field the other side may not have."""
+
+  x: int
+
+  def __eq__(self, other: object) -> bool:
+    return self.x == other.x  # type: ignore[attr-defined]
+
+
+def test_a_container_whose_json_comparison_raises_is_left_alone():
+  state, _, delta = _state_with(configs={'held': _AssumesSameType(1)})
+
+  state['configs']['added'] = 1
+
+  assert not state.has_delta()
+  assert not delta
+
+
+def test_a_recorded_container_that_cannot_be_compared_is_withdrawn():
+  state, _, delta = _state_with(configs={'a': 1, 'b': 2})
+  state['configs']['c'] = 3
+  assert state.has_delta()
+
+  state['configs']['b'] = _AssumesSameType(1)
 
   assert not state.has_delta()
   assert not delta

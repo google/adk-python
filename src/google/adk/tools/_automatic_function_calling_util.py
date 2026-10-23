@@ -30,7 +30,7 @@ from google.genai import types
 import pydantic
 from pydantic import BaseModel
 from pydantic import create_model
-from pydantic import fields as pydantic_fields
+from pydantic_core import PydanticUndefined
 
 from . import _function_parameter_parse_util
 from . import _function_tool_declarations
@@ -83,9 +83,7 @@ def _get_fields_dict(func: Callable[..., Any]) -> _JsonSchema:
                   param.default
                   if param.default != inspect.Parameter.empty
                   # ! Need to use Undefined instead of None
-                  # pydantic re-exports this sentinel from pydantic_core but
-                  # does not declare it in pydantic.fields' public surface.
-                  else pydantic_fields.PydanticUndefined  # type: ignore[attr-defined]
+                  else PydanticUndefined
               ),
               # 3. Do not support parameter description for now.
               description=None,
@@ -232,6 +230,8 @@ def build_function_declaration(
     ignore_params: list[str] | None = None,
     variant: GoogleLLMVariant = GoogleLLMVariant.GEMINI_API,
 ) -> types.FunctionDeclaration:
+  # A BaseModel instance gets past inspect.signature only if it is callable.
+  func = cast(Callable[..., Any], func)
   # ========== Pydantic-based function tool declaration (new feature) ==========
   if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
     declaration = (
@@ -272,7 +272,7 @@ def build_function_declaration(
       if name not in ignore_params
   ]
   new_sig = signature.replace(parameters=new_params)
-  callable_func = cast(Callable[..., Any], func)
+  callable_func = func
   original = cast(
       FunctionType, unwrap_callable(callable_func, follow_wrapped=True)
   )

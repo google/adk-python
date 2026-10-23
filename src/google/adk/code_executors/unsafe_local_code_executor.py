@@ -127,6 +127,16 @@ class UnsafeLocalCodeExecutor(BaseCodeExecutor):
   # optimize_data_file.
   optimize_data_file: bool = Field(default=False, frozen=True, exclude=True)
 
+  # Overrides the BaseCodeExecutor attribute: the base default of None waits
+  # for the execution forever, which non-terminating generated code turns into
+  # a hung agent.
+  timeout_seconds: int | None = 300
+  """The wall-clock timeout in seconds for a single code execution.
+
+  Defaults to 300, matching ``ContainerCodeExecutor`` and ``GkeCodeExecutor``.
+  None waits for the execution indefinitely.
+  """
+
   def __init__(self, **data: Any) -> None:
     """Initializes the UnsafeLocalCodeExecutor."""
     if 'stateful' in data and data['stateful']:

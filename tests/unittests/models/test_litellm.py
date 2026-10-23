@@ -2652,6 +2652,7 @@ async def test_generate_content_async_with_bedrock_cache_tokens(
     assert response.usage_metadata.total_token_count == 15
     assert response.usage_metadata.cached_content_token_count == 8
     assert response.usage_metadata.cache_creation_input_tokens == 4
+    assert response.cache_creation_token_count == 4
 
   mock_acompletion.assert_called_once()
 
@@ -6384,6 +6385,74 @@ async def test_generate_content_async_stream_with_bedrock_cache_tokens(
   assert responses[5].usage_metadata.total_token_count == 15
   assert responses[5].usage_metadata.cached_content_token_count == 8
   assert responses[5].usage_metadata.cache_creation_input_tokens == 4
+  assert responses[5].cache_creation_token_count == 4
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_text_with_bedrock_cache_tokens(
+    mock_completion, lite_llm_instance
+):
+  """A text-only stream reports cache writes on its final response."""
+  streaming_text_response = [
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Hello, "),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason="stop",
+                  delta=Delta(role="assistant", content="world!"),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          usage={
+              "prompt_tokens": 10,
+              "completion_tokens": 5,
+              "total_tokens": 15,
+              "cache_read_input_tokens": 8,
+              "cache_creation_input_tokens": 4,
+          },
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+              )
+          ],
+      ),
+  ]
+
+  mock_completion.return_value = iter(streaming_text_response)
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+  assert len(responses) == 3
+  assert responses[0].content.parts[0].text == "Hello, "
+  assert responses[1].content.parts[0].text == "world!"
+  assert responses[2].usage_metadata.prompt_token_count == 10
+  assert responses[2].usage_metadata.candidates_token_count == 5
+  assert responses[2].usage_metadata.total_token_count == 15
+  assert responses[2].usage_metadata.cached_content_token_count == 8
+  assert responses[2].usage_metadata.cache_creation_input_tokens == 4
+  assert responses[2].cache_creation_token_count == 4
 
 
 @pytest.mark.asyncio

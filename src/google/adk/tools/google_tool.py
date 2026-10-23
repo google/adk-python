@@ -23,15 +23,12 @@ from google.auth.credentials import Credentials
 from pydantic import BaseModel
 from typing_extensions import override
 
-from ..features import experimental
-from ..features import FeatureName
 from ._google_credentials import BaseGoogleCredentialsConfig
 from ._google_credentials import GoogleCredentialsManager
 from .function_tool import FunctionTool
 from .tool_context import ToolContext
 
 
-@experimental(FeatureName.GOOGLE_TOOL)
 class GoogleTool(FunctionTool):
   """GoogleTool class for tools that call Google APIs.
 

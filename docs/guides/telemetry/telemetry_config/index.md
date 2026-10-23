@@ -345,5 +345,5 @@ happened to want.
 
 ## Related guides
 
-*   `RunConfig` is the object a `TelemetryConfig` attaches
+*   [RunConfig](../../agents/run_config/index.md) is the object a `TelemetryConfig` attaches
     to, and covers the rest of what it controls per run.

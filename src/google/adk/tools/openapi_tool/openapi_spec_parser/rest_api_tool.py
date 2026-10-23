@@ -43,6 +43,7 @@ from ....auth.auth_schemes import AuthScheme
 from ....errors.input_validation_error import InputValidationError
 from ....features import FeatureName
 from ....features import is_feature_enabled
+from ....utils import _mtls_utils
 from ..._gemini_schema_util import _to_gemini_schema
 from ..._gemini_schema_util import _to_snake_case
 from ..._url_validator import _get_proxy_url
@@ -248,8 +249,11 @@ class RestApiTool(BaseTool):
           (e.g. request signing), or any other ``httpx.AsyncClient`` option that
           ``ssl_verify`` can't reach, including its timeout policy. When
           ``None`` (default), a fresh ``httpx.AsyncClient`` with bounded
-          timeouts is created per request. Mirrors the pattern exposed for MCP
-          by ``StreamableHTTPConnectionParams.httpx_client_factory``.
+          timeouts is created per request; for ``*.googleapis.com`` URLs it
+          presents the default client certificate for mTLS when one is
+          configured, unless ``ssl_verify`` is an ``ssl.SSLContext``. Mirrors
+          the pattern exposed for MCP by
+          ``StreamableHTTPConnectionParams.httpx_client_factory``.
         credential_key: Optional stable key used for interactive auth and
           credential caching.
         allow_private_network_access: By default, requests refuse loopback,
@@ -941,10 +945,27 @@ async def _request(
   #      and the connect that follows. The Host header and TLS SNI keep the
   #      original hostname so cert verification still works.
   verify = request_params.pop("verify", True)
+  client_kwargs: Dict[str, Any] = {"verify": verify}
+  url = str(request_params.get("url", ""))
+  # A caller-supplied client factory or SSLContext is used as given.
+  if (
+      httpx_client_factory is None
+      and not isinstance(verify, ssl.SSLContext)
+      and _mtls_utils.is_googleapis_url(url)
+  ):
+    client_kwargs.update(
+        await asyncio.to_thread(
+            _mtls_utils.client_cert_httpx_kwargs, verify, url=url
+        )
+    )
+    if "event_hooks" in client_kwargs:
+      # Rewrite before validation: the pinned request carries an IP, which
+      # the request hook can no longer map to the mTLS host.
+      request_params["url"] = _mtls_utils.effective_googleapis_endpoint(url)
   client_cm = (
       httpx_client_factory()
       if httpx_client_factory is not None
-      else httpx.AsyncClient(verify=verify, timeout=_DEFAULT_TIMEOUT)
+      else httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT, **client_kwargs)
   )
   async with client_cm as client:
     if allow_private_network_access:

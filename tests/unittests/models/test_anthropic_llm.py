@@ -1379,6 +1379,24 @@ def test_part_to_message_block_with_multiple_content_items():
   assert result["content"] == "First part\nSecond part"
 
 
+@pytest.mark.parametrize("error_key", ["isError", "is_error"])
+def test_part_to_message_block_marks_mcp_error_result_as_error(error_key):
+  """An MCP CallToolResult with isError reaches Claude as an error result."""
+  response_part = types.Part.from_function_response(
+      name="mcp_tool",
+      response={
+          "content": [{"type": "text", "text": "file not found"}],
+          error_key: True,
+      },
+  )
+  response_part.function_response.id = "test_id_mcp_error"
+
+  result = part_to_message_block(response_part)
+
+  assert result["content"] == "file not found"
+  assert result["is_error"] is True
+
+
 def test_part_to_message_block_tool_result_with_image():
   """Media a tool attached to its response reaches Claude as an image block."""
   image_data = b"chart-bytes"
@@ -2875,8 +2893,19 @@ def test_message_to_generate_content_response_reports_cache_creation_tokens():
   response = message_to_generate_content_response(message)
 
   assert response.usage_metadata.cache_creation_input_tokens == 50
+  # Serializable mirror: the usage_metadata attribute above is dropped by
+  # model_dump (google.genai forbids extra fields), so the count is also
+  # exposed on LlmResponse.cache_creation_token_count for event consumers.
+  assert response.cache_creation_token_count == 50
+  assert (
+      response.model_dump(by_alias=True, exclude_none=True)[
+          "cacheCreationTokenCount"
+      ]
+      == 50
+  )
   dumped = response.model_dump()
   assert "usage_metadata" in dumped
+  assert "cache_creation_input_tokens" not in dumped["usage_metadata"]
 
 
 def test_message_to_generate_content_response_no_cache_creation_tokens():
@@ -2906,6 +2935,7 @@ def test_message_to_generate_content_response_no_cache_creation_tokens():
   response = message_to_generate_content_response(message)
 
   assert not hasattr(response.usage_metadata, "cache_creation_input_tokens")
+  assert response.cache_creation_token_count is None
 
 
 @pytest.mark.asyncio
@@ -2963,8 +2993,10 @@ async def test_streaming_reports_cache_creation_tokens():
   assert len(responses) == 2
   final_response = responses[-1]
   assert final_response.usage_metadata.cache_creation_input_tokens == 50
+  assert final_response.cache_creation_token_count == 50
   dumped = final_response.model_dump()
   assert "usage_metadata" in dumped
+  assert "cache_creation_input_tokens" not in dumped["usage_metadata"]
 
 
 async def test_streaming_sets_model_version():
@@ -4243,6 +4275,7 @@ async def test_generate_content_async_excludes_sampling_when_effort(
         ("stop_sequence", types.FinishReason.STOP),
         ("tool_use", types.FinishReason.STOP),
         ("max_tokens", types.FinishReason.MAX_TOKENS),
+        ("model_context_window_exceeded", types.FinishReason.MAX_TOKENS),
         ("pause_turn", types.FinishReason.STOP),
         ("refusal", types.FinishReason.SAFETY),
         (None, None),

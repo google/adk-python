@@ -24,19 +24,17 @@ from typing_extensions import override
 from ..auth.auth_credential import AuthCredential
 from ..auth.auth_tool import AuthConfig
 from ..auth.credential_manager import CredentialManager
-from ..features import experimental
-from ..features import FeatureName
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
 logger = logging.getLogger("google_adk." + __name__)
 
 
-@experimental(FeatureName.BASE_AUTHENTICATED_TOOL)
 class BaseAuthenticatedTool(BaseTool):
-  """A base tool class that handles authentication before the actual tool logic
-  gets called. Functions can accept a special `credential` argument which is the
-  credential ready for use.(Experimental)
+  """A base tool class that handles authentication before the actual tool logic.
+
+  Functions can accept a special `credential` argument which is the credential
+  ready for use.
   """
 
   def __init__(

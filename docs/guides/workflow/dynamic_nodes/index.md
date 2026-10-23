@@ -152,9 +152,9 @@ async def run_node(
 | :--- | :--- | :--- | :--- |
 | `node` | `NodeLike` | *Required* | The node to execute (Function, Agent, or Workflow). |
 | `node_input` | `Any` | `None` | Input data to pass to the dynamic node. |
-| `use_as_output` | `bool` | `False` | If `True`, the child node's output is used as the calling parent node's output. The parent's own output event is suppressed. Can only be set once per parent execution. |
+| `use_as_output` | `bool` | `False` | If `True`, the child node's output is used as the calling parent node's output. The parent's own output event is suppressed, and non-tool output events from the child are published on the outermost claiming ancestor's branch. Can only be set once per parent execution. |
 | `run_id` | `str \| None` | `None` | Optional custom run ID. If provided, **must contain non-numeric characters**, such as `"run_a"`, to prevent collision with auto-generated IDs. |
-| `use_sub_branch` | `bool` | `False` | If `True`, executes the node in a sub-branch (appending `node_name@run_id` to the branch path). Essential for parallel runs to isolate events. |
+| `use_sub_branch` | `bool` | `False` | If `True`, executes the node in a sub-branch (appending `node_name@run_id` to the branch path). Essential for parallel runs to isolate events. Combined with `use_as_output=True`, non-tool output events are published on the outermost claiming ancestor's branch, while tool calls, tool responses (including a task agent's `finish_task` response), and intermediate events stay isolated on the sub-branch. |
 | `override_branch` | `str \| None` | `None` | Explicitly overrides the branch name for the execution context. |
 | `override_isolation_scope` | `str \| None` | `None` | Overrides the isolation scope the child inherits from the parent. |
 | `raise_on_wait` | `bool` | `False` | Changes what a child left `WAITING` gives back. `False` returns `None`; `True` raises `NodeInterruptedError`. |

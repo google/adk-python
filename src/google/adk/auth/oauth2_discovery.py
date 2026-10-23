@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import List
@@ -24,9 +25,21 @@ import httpx
 from pydantic import BaseModel
 from pydantic import ValidationError
 
+from ..utils import _mtls_utils
 from ..utils.feature_decorator import experimental
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+async def _new_client(url: str) -> httpx.AsyncClient:
+  """Returns a client that presents the default client certificate, if any.
+
+  The certificate is only presented when ``url`` is a Google API.
+  """
+  client_cert_kwargs = await asyncio.to_thread(
+      _mtls_utils.client_cert_httpx_kwargs, url=url
+  )
+  return httpx.AsyncClient(**client_cert_kwargs)
 
 
 @experimental
@@ -46,6 +59,42 @@ class ProtectedResourceMetadata(BaseModel):
 
   resource: str
   authorization_servers: List[str] = []
+
+
+# Discovery may be routed to the mTLS host, which names itself in the metadata
+# it returns. Callers get plain hosts: the authorization endpoint is opened by
+# a browser without the client certificate, and token clients only switch to
+# the mTLS host (and present the certificate) when given a plain host.
+def _plain_auth_server_metadata(
+    metadata: AuthorizationServerMetadata,
+) -> AuthorizationServerMetadata:
+  plain = _mtls_utils.plain_googleapis_url
+  return metadata.model_copy(
+      update={
+          "issuer": plain(metadata.issuer),
+          "authorization_endpoint": plain(metadata.authorization_endpoint),
+          "token_endpoint": plain(metadata.token_endpoint),
+          "registration_endpoint": (
+              plain(metadata.registration_endpoint)
+              if metadata.registration_endpoint
+              else None
+          ),
+      }
+  )
+
+
+def _plain_resource_metadata(
+    metadata: ProtectedResourceMetadata,
+) -> ProtectedResourceMetadata:
+  plain = _mtls_utils.plain_googleapis_url
+  return metadata.model_copy(
+      update={
+          "resource": plain(metadata.resource),
+          "authorization_servers": [
+              plain(server) for server in metadata.authorization_servers
+          ],
+      }
+  )
 
 
 @experimental
@@ -82,14 +131,18 @@ class OAuth2DiscoveryManager:
           f"{base_url}/.well-known/openid-configuration",
       ]
 
-    async with httpx.AsyncClient() as client:
+    async with await _new_client(issuer_url) as client:
       for endpoint in endpoints_to_try:
         try:
           response = await client.get(endpoint, timeout=5)
           response.raise_for_status()
-          metadata = AuthorizationServerMetadata.model_validate(response.json())
+          metadata = _plain_auth_server_metadata(
+              AuthorizationServerMetadata.model_validate(response.json())
+          )
           # Validate issuer to defend against MIX-UP attacks
-          if metadata.issuer.rstrip("/") == issuer_url.rstrip("/"):
+          if metadata.issuer.rstrip("/") == _mtls_utils.plain_googleapis_url(
+              issuer_url
+          ).rstrip("/"):
             return metadata
           else:
             logger.warning(
@@ -122,13 +175,17 @@ class OAuth2DiscoveryManager:
     else:
       well_known_endpoint = f"{base_url}/.well-known/oauth-protected-resource"
 
-    async with httpx.AsyncClient() as client:
+    async with await _new_client(resource_url) as client:
       try:
         response = await client.get(well_known_endpoint, timeout=5)
         response.raise_for_status()
-        metadata = ProtectedResourceMetadata.model_validate(response.json())
+        metadata = _plain_resource_metadata(
+            ProtectedResourceMetadata.model_validate(response.json())
+        )
         # Validate resource to defend against MIX-UP attacks
-        if metadata.resource == resource_url.rstrip("/"):
+        if metadata.resource == _mtls_utils.plain_googleapis_url(
+            resource_url
+        ).rstrip("/"):
           return metadata
         else:
           logger.warning(

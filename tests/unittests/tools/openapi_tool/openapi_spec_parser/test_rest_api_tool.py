@@ -56,11 +56,21 @@ from google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler import 
 from google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler import ToolAuthHandler
 from google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler import ToolContextCredentialStore
 from google.adk.tools.tool_context import ToolContext
+from google.adk.utils import _mtls_utils
 from google.genai.types import FunctionDeclaration
 from google.genai.types import Schema
 import httpx
 import pytest
 import requests
+
+
+@pytest.fixture(autouse=True)
+def mock_client_cert_ssl_context():
+  """Keeps the default client independent of the host's mTLS configuration."""
+  with patch.object(
+      _mtls_utils, "_client_cert_ssl_context", autospec=True, return_value=None
+  ) as mock_ctx:
+    yield mock_ctx
 
 
 @pytest.fixture
@@ -3175,6 +3185,141 @@ class TestRestApiTool:
       await tool.call(args={}, tool_context=mock_tool_context)
       assert mock_async_client.called
 
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "ssl_verify, expected_verify",
+      [(None, True), (False, False), ("/path/to/ca.pem", "/path/to/ca.pem")],
+  )
+  async def test_call_without_httpx_client_factory_presents_client_cert(
+      self,
+      mock_tool_context,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+      mock_client_cert_ssl_context,
+      ssl_verify,
+      expected_verify,
+  ):
+    """The default client presents the client certificate to Google APIs."""
+    mock_response = mock.create_autospec(requests.Response, instance=True)
+    mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
+    mock_client = mock.create_autospec(
+        httpx.AsyncClient, instance=True, spec_set=True
+    )
+    mock_client.request = AsyncMock(return_value=mock_response)
+    client_cert_ctx = ssl.create_default_context()
+    mock_client_cert_ssl_context.return_value = client_cert_ctx
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=OperationEndpoint(
+            base_url="https://aiplatform.googleapis.com",
+            path="/test",
+            method="GET",
+        ),
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+        ssl_verify=ssl_verify,
+    )
+
+    with patch.object(
+        httpx, "AsyncClient", return_value=mock_client, autospec=True
+    ) as mock_async_client:
+      await tool.call(args={}, tool_context=mock_tool_context)
+
+    mock_client_cert_ssl_context.assert_called_once_with(expected_verify)
+    _, call_kwargs = mock_async_client.call_args
+    assert call_kwargs["verify"] is client_cert_ctx
+    assert call_kwargs["event_hooks"] == {
+        "request": [_mtls_utils._route_googleapis_request_to_mtls]
+    }
+
+  @pytest.mark.asyncio
+  async def test_call_to_other_host_skips_client_cert(
+      self,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+      mock_client_cert_ssl_context,
+  ):
+    """The client certificate is not sent to hosts other than Google APIs."""
+    mock_response = mock.create_autospec(requests.Response, instance=True)
+    mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
+    mock_client = mock.create_autospec(
+        httpx.AsyncClient, instance=True, spec_set=True
+    )
+    mock_client.request = AsyncMock(return_value=mock_response)
+    mock_client_cert_ssl_context.return_value = ssl.create_default_context()
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    with patch.object(
+        httpx, "AsyncClient", return_value=mock_client, autospec=True
+    ) as mock_async_client:
+      await tool.call(args={}, tool_context=mock_tool_context)
+
+    mock_client_cert_ssl_context.assert_not_called()
+    _, call_kwargs = mock_async_client.call_args
+    assert call_kwargs["verify"] is True
+    assert "event_hooks" not in call_kwargs
+
+  @pytest.mark.asyncio
+  async def test_call_with_ssl_context_skips_client_cert(
+      self,
+      mock_tool_context,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+      mock_ssl_context,
+      mock_client_cert_ssl_context,
+  ):
+    """A caller-supplied SSLContext is used as given."""
+    mock_response = mock.create_autospec(requests.Response, instance=True)
+    mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
+    mock_client = mock.create_autospec(
+        httpx.AsyncClient, instance=True, spec_set=True
+    )
+    mock_client.request = AsyncMock(return_value=mock_response)
+    mock_client_cert_ssl_context.return_value = ssl.create_default_context()
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=OperationEndpoint(
+            base_url="https://aiplatform.googleapis.com",
+            path="/test",
+            method="GET",
+        ),
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+        ssl_verify=mock_ssl_context,
+    )
+
+    with patch.object(
+        httpx, "AsyncClient", return_value=mock_client, autospec=True
+    ) as mock_async_client:
+      await tool.call(args={}, tool_context=mock_tool_context)
+
+    mock_client_cert_ssl_context.assert_not_called()
+    _, call_kwargs = mock_async_client.call_args
+    assert call_kwargs["verify"] is mock_ssl_context
+    assert "event_hooks" not in call_kwargs
+
   def test_prepare_request_params_extracts_embedded_query_params(
       self, sample_auth_credential, sample_auth_scheme
   ):
@@ -4241,6 +4386,50 @@ class TestRequestSsrfProtection:
     assert sent.url.port == 8443
     assert sent.headers["Host"] == "xn--strae-oqa.example:8443"
     assert sent.extensions.get("sni_hostname") == "xn--strae-oqa.example"
+
+  @pytest.mark.asyncio
+  async def test_request_with_client_cert_pins_mtls_googleapis_host(
+      self, mock_tool_context, mock_client_cert_ssl_context, monkeypatch
+  ):
+    """Validation, pinning, Host and SNI all use the mTLS host."""
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+      if host == "aiplatform.mtls.googleapis.com":
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0))]
+      raise socket.gaierror(8, "no")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    client_cert_ctx = ssl.create_default_context()
+    mock_client_cert_ssl_context.return_value = client_cert_ctx
+    captured_request: list[httpx.Request] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+      captured_request.append(request)
+      return httpx.Response(200, json={"success": True})
+
+    transport = httpx.MockTransport(mock_handler)
+    real_async_client = httpx.AsyncClient
+    tool = self._make_tool("https://aiplatform.googleapis.com", "/v1/models")
+
+    with patch.object(
+        httpx,
+        "AsyncClient",
+        side_effect=lambda **kwargs: real_async_client(
+            transport=transport, **kwargs
+        ),
+    ) as mock_async_client:
+      response = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert response == {"success": True}
+    assert mock_async_client.call_args.kwargs["verify"] is client_cert_ctx
+    assert len(captured_request) == 1
+    sent = captured_request[0]
+    assert sent.url.host == "8.8.8.8"
+    assert sent.url.path == "/v1/models"
+    assert sent.headers["Host"] == "aiplatform.mtls.googleapis.com"
+    assert (
+        sent.extensions.get("sni_hostname") == "aiplatform.mtls.googleapis.com"
+    )
 
   @pytest.mark.asyncio
   async def test_apihub_toolset_forwards_allow_private_network_access(

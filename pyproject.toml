@@ -32,7 +32,7 @@ classifiers = [
 dynamic = [ "version" ]
 dependencies = [
   "aiosqlite>=0.21",
-  "authlib>=1.6.6,<2",
+  "authlib>=1.9.1,<2",
   "click>=8.1.8,<9",
   "cryptography>=42",
   "fastapi>=0.133,<1",
@@ -117,7 +117,7 @@ optional-dependencies.all = [
   "kubernetes>=29",
   "langgraph>=1.0.10,<2",
   "langgraph-checkpoint>=4.1.1,<5",
-  "litellm>=1.84",
+  "litellm>=1.84,<1.106.3",
   "livekit>=1,<2",
   "livekit-api>=1,<2",
   "llama-index-embeddings-google-genai>=0.3",
@@ -235,7 +235,7 @@ optional-dependencies.extensions = [
   "kubernetes>=29",
   "langgraph>=1.0.10,<2",
   "langgraph-checkpoint>=4.1.1,<5",                                  # LangGraph's own floor still admits unsafe checkpoint deserialization.
-  "litellm>=1.84",
+  "litellm>=1.84,<1.106.3",                                          # 1.107.0 was a compromised release; raise only after checking the new release is clean.
   "llama-index-embeddings-google-genai>=0.3",
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
@@ -296,15 +296,20 @@ optional-dependencies.mongodb = [ "pymongo>=4.9,<5" ]
 optional-dependencies.oci = [
   "oci>=2.126", # OCI Generative AI native SDK (OCIGenAILlm)
 ]
+# OpenTelemetry export and instrumentation for ADK.
 optional-dependencies.openai = [ "openai>=2.20,<3" ]
 optional-dependencies.opensandbox = [
   "opensandbox>=0.1.15,<0.2", # For OpenSandbox remote sandbox.
 ]
-optional-dependencies.otel-gcp = [
+optional-dependencies.otel = [
+  "opentelemetry-exporter-otlp-proto-http>=1.36",
   "opentelemetry-instrumentation-google-genai>=0.7b1,<2",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
   "opentelemetry-instrumentation-httpx>=0.54b0,<1",
 ]
+# Incorrectly-named extra - never included anything GCP-specific.
+# Kept as a backward-compatible alias.
+optional-dependencies.otel-gcp = [ "google-adk[otel]" ]
 optional-dependencies.redis = [
   "redis>=4.2", # 4.2 is where redis.asyncio landed, the only API used.
 ]
@@ -363,7 +368,7 @@ optional-dependencies.test = [
   "langchain-community>=0.3.17",
   "langgraph>=1.0.10,<2",
   "langgraph-checkpoint>=4.1.1,<5",                                  # LangGraph's own floor still admits unsafe checkpoint deserialization.
-  "litellm>=1.84",
+  "litellm>=1.84,<1.106.3",                                          # 1.107.0 was a compromised release; raise only after checking the new release is clean.
   "livekit>=1,<2",
   "livekit-api>=1,<2",
   "llama-index-readers-file>=0.4",
@@ -460,6 +465,20 @@ namespace_packages = true
 explicit_package_bases = true
 follow_imports = "normal"
 python_version = "3.11"
+# These third-party packages define functions without type annotations.
+untyped_calls_exclude = [
+  "daytona",
+  "google.api_core",
+  "google.cloud.bigquery",
+  "google.cloud.bigtable",
+  "google.cloud.modelarmor_v1",
+  "google.oauth2",
+  "opentelemetry.exporter.cloud_trace",
+  "opentelemetry.instrumentation.grpc",
+  "redis",
+  "slack_bolt",
+  "sqlalchemy.dialects.mssql",
+]
 disable_error_code = [ "import-not-found", "import-untyped", "unused-ignore" ]
 strict = true
 plugins = [ "pydantic.mypy" ]
