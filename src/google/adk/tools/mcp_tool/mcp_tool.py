@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 from collections.abc import Awaitable
 import inspect
+import json
 import logging
 from typing import Any
 from typing import Callable
@@ -89,6 +90,15 @@ _RESERVED_TOOL_NAMES = frozenset({
 })
 
 _UNSET = object()
+
+# Serialized ceiling for an MCP output schema sent to Gemini as
+# FunctionDeclaration.response_json_schema. Gemini declares no ceiling for the
+# field, so keep parity with the 1024-character bound that
+# _append_response_schema_to_description applies to the same schema on the
+# OpenAI-compatible path (models/lite_llm.py). Servers generate outputSchema
+# mechanically; Google Cloud's MCP servers serialize proto-derived schemas to
+# over 70,000 characters and Gemini expands each $ref when tokenizing.
+_MAX_RESPONSE_JSON_SCHEMA_LENGTH = 1024
 
 
 def _merge_auth_and_provider_headers(
@@ -404,6 +414,18 @@ class McpTool(BaseAuthenticatedTool):
           if fenced and output_schema is not None
           else output_schema
       )
+      if output_schema:
+        serialized = json.dumps(output_schema, separators=(",", ":"))
+        if len(serialized) > _MAX_RESPONSE_JSON_SCHEMA_LENGTH:
+          logger.warning(
+              "Dropping output_schema for MCP tool %s: serialized length %d"
+              " exceeds %d characters; sending it as response_json_schema can"
+              " push the request past the model's input token limit.",
+              self.name,
+              len(serialized),
+              _MAX_RESPONSE_JSON_SCHEMA_LENGTH,
+          )
+          output_schema = None
       function_decl = FunctionDeclaration(
           name=self.name,
           description=description,
