@@ -40,6 +40,9 @@ session files, CLI output and A2A messages.
 RESTORED_EVENT_KEY = INTERNAL_METADATA_PREFIX + "restored_event"
 """Set on events that ADK restored into a session from outside it."""
 
+USER_MESSAGE_GROUP_KEY = INTERNAL_METADATA_PREFIX + "user_message_group"
+"""Identifies branch-scoped events split from the same incoming user message."""
+
 
 def _is_internal_key(key: Any) -> bool:
   return isinstance(key, str) and key.startswith(INTERNAL_METADATA_PREFIX)
