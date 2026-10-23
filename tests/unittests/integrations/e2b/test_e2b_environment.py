@@ -222,3 +222,18 @@ async def test_lazy_recreate_when_expired(sandbox):
   assert create.await_count == 2
   assert env._sandbox is fresh
   expired.set_timeout.assert_not_awaited()
+
+
+async def test_resolve_path_rejects_relative_escape():
+  """Model-supplied '..' paths cannot resolve outside the sandbox home."""
+  env = E2BEnvironment()
+
+  with pytest.raises(ValueError, match='escapes working directory'):
+    env._resolve_path('../../etc/passwd')
+
+
+async def test_resolve_path_anchors_and_normalizes_relative_paths():
+  env = E2BEnvironment()
+
+  assert env._resolve_path('sub/../notes.txt') == '/home/user/notes.txt'
+  assert env._resolve_path('/etc/passwd') == '/etc/passwd'

@@ -30,6 +30,7 @@ from typing_extensions import override
 
 from ...environment._base_environment import BaseEnvironment
 from ...environment._base_environment import ExecutionResult
+from ...environment._base_environment import resolve_sandbox_path
 from ...features import experimental
 from ...features import FeatureName
 
@@ -384,10 +385,7 @@ class OpenSandboxEnvironment(BaseEnvironment):
 
   @staticmethod
   def _resolve_path(path: str | os.PathLike[str]) -> str:
-    pure = PurePosixPath(os.fspath(path))
-    if pure.is_absolute():
-      return str(pure)
-    return str(PurePosixPath(_SANDBOX_HOME) / pure)
+    return resolve_sandbox_path(path, _SANDBOX_HOME)
 
   @staticmethod
   def _command_timeout(timeout: float | None) -> timedelta | None:

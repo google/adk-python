@@ -624,3 +624,17 @@ async def test_initialize_explains_missing_optional_dependency():
   with mock.patch.dict("sys.modules", {"opensandbox": None}):
     with pytest.raises(ImportError, match=r"google-adk\[opensandbox\]"):
       await env.initialize()
+
+
+def test_resolve_path_rejects_relative_escape():
+  """Model-supplied '..' paths cannot resolve outside the sandbox workspace."""
+  with pytest.raises(ValueError, match="escapes working directory"):
+    OpenSandboxEnvironment._resolve_path("../../etc/passwd")
+
+
+def test_resolve_path_anchors_and_normalizes_relative_paths():
+  assert (
+      OpenSandboxEnvironment._resolve_path("sub/../notes.txt")
+      == "/workspace/notes.txt"
+  )
+  assert OpenSandboxEnvironment._resolve_path("/etc/passwd") == "/etc/passwd"
