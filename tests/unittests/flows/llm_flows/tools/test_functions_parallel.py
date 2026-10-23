@@ -206,6 +206,27 @@ async def test_parallel_writes_of_separate_dict_keys_are_all_kept():
 
 
 @pytest.mark.asyncio
+async def test_parallel_dict_write_that_removes_a_key_replaces_the_union():
+  added = asyncio.Event()
+
+  async def edit_cart(action: str, tool_context: ToolContext) -> None:
+    if action == 'add':
+      tool_context.state['cart'] = {'apple': 1, 'pear': 2}
+      added.set()
+    else:
+      await asyncio.wait_for(added.wait(), timeout=5)
+      cart = dict(tool_context.state['cart'])
+      cart.pop('pear')
+      tool_context.state['cart'] = cart
+
+  state = await _run_parallel_calls(
+      edit_cart, [{'action': 'add'}, {'action': 'remove'}]
+  )
+
+  assert state['cart'] == {'apple': 1}
+
+
+@pytest.mark.asyncio
 async def test_parallel_list_writes_bypassing_state_keep_call_order():
   async def set_items(item: str, tool_context: ToolContext) -> None:
     tool_context.actions.state_delta['items'] = [item]

@@ -129,6 +129,7 @@ def _apply_latest_state_writes(
   """
   merged_delta = merged_event.actions.state_delta
   latest_writes: dict[str, Any] = {}
+  built_on_writes: list[str] = []
   for key in merged_delta:
     latest = session_state.get(key)
     if not isinstance(latest, (dict, list)):
@@ -141,6 +142,18 @@ def _apply_latest_state_writes(
     # State stores the same object in the session and in the call's delta.
     if len(writes) > 1 and any(write is latest for write in writes):
       latest_writes[key] = latest
+      writer = next(
+          event
+          for event in function_response_events
+          if event.actions.state_delta.get(key) is latest
+      )
+      reads = getattr(writer, '_state_reads', {}).get(key, {})
+      # A writer that read another call's write built on it, so a key missing
+      # from its value was removed on purpose. Replace instead of merging.
+      if any(id(write) in reads for write in writes if write is not latest):
+        built_on_writes.append(key)
+  for key in built_on_writes:
+    del merged_delta[key]
   deep_merge_dicts(merged_delta, latest_writes)
 
 
