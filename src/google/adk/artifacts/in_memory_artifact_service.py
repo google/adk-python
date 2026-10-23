@@ -20,6 +20,8 @@ from typing import Any
 from typing import cast
 from typing import Optional
 from typing import Union
+from urllib.parse import quote
+from urllib.parse import unquote
 
 from google.genai import types
 from pydantic import BaseModel
@@ -33,6 +35,21 @@ from .base_artifact_service import BaseArtifactService
 from .base_artifact_service import ensure_part
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_SESSION_NAMESPACE = "s"
+_USER_NAMESPACE = "u"
+
+
+def _encode_segment(value: str) -> str:
+  """Encodes one storage-key segment so embedded ``/`` cannot shift scopes.
+
+  Identifiers may contain ``/`` by design (the shared validator allows it), so
+  joining raw identifiers would let distinct ``(app_name, user_id)`` pairs
+  address the same stored entry. Percent-encoding removes ``/`` from every
+  segment; the leading namespace tag keeps a session id such as ``user`` from
+  colliding with the user namespace.
+  """
+  return quote(value, safe="")
 
 
 @dataclasses.dataclass
@@ -90,14 +107,25 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     artifact_util.validate_path_segment(app_name, "app_name")
     artifact_util.validate_path_segment(user_id, "user_id")
     if self._file_has_user_namespace(filename):
-      return f"{app_name}/{user_id}/user/{filename}"
+      return "/".join((
+          _USER_NAMESPACE,
+          _encode_segment(app_name),
+          _encode_segment(user_id),
+          _encode_segment(filename),
+      ))
 
     if session_id is None:
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
     artifact_util.validate_path_segment(session_id, "session_id")
-    return f"{app_name}/{user_id}/{session_id}/{filename}"
+    return "/".join((
+        _SESSION_NAMESPACE,
+        _encode_segment(app_name),
+        _encode_segment(user_id),
+        _encode_segment(session_id),
+        _encode_segment(filename),
+    ))
 
   @override
   async def save_artifact(
@@ -241,18 +269,31 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     artifact_util.validate_path_segment(user_id, "user_id")
     if session_id is not None:
       artifact_util.validate_path_segment(session_id, "session_id")
-    usernamespace_prefix = f"{app_name}/{user_id}/user/"
+    # Encoded segments contain no '/', so a trailing-slash prefix matches
+    # exactly this scope and no other.
+    usernamespace_prefix = "/".join((
+        _USER_NAMESPACE,
+        _encode_segment(app_name),
+        _encode_segment(user_id),
+        "",
+    ))
     session_prefix = (
-        f"{app_name}/{user_id}/{session_id}/" if session_id else None
+        "/".join((
+            _SESSION_NAMESPACE,
+            _encode_segment(app_name),
+            _encode_segment(user_id),
+            _encode_segment(session_id),
+            "",
+        ))
+        if session_id
+        else None
     )
     filenames = []
     for path in self.artifacts:
       if session_prefix and path.startswith(session_prefix):
-        filename = path.removeprefix(session_prefix)
-        filenames.append(filename)
+        filenames.append(unquote(path.removeprefix(session_prefix)))
       elif path.startswith(usernamespace_prefix):
-        filename = path.removeprefix(usernamespace_prefix)
-        filenames.append(filename)
+        filenames.append(unquote(path.removeprefix(usernamespace_prefix)))
     return sorted(filenames)
 
   @override
