@@ -5,7 +5,7 @@
 
 ### Highlights
 
-This release stabilizes mature core features while introducing LLM-powered workflow classification, interactive live audio capabilities, and major execution performance improvements.
+This release stabilizes core features while introducing TypeSafe workflow classification, live audio interactions, MongoDB integrations, and execution performance improvements.
 
 * **Stability**: Access 12 mature experimental features now promoted to stable status. See the [unit guide](https://github.com/google/adk-python/blob/main/docs/guides/features/feature_registry/index.md) for more details. ([ea298d4](https://github.com/google/adk-python/commit/ea298d4bde4477daa6c419d45637f339eec86d58))
 * **Classifiers**: Route workflows with TypeSafe's Jev models via the new `TypesafeClassifier` and `ClassifierNode`. Jev returns calibrated probabilities in a single forward pass, much faster than an LLM. See the [unit guide](https://github.com/google/adk-python/blob/main/docs/guides/labs/classifiers/classifier_node/index.md) for more details. ([ddf8c55](https://github.com/google/adk-python/commit/ddf8c55eb6bc5e0c5fb90acbed3b66af939f7d7a), [e8c4bac](https://github.com/google/adk-python/commit/e8c4bacdfe675ceb5adcaf24ea005af94d271c68))
