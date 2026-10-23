@@ -145,8 +145,31 @@ async def _make_per_agent_database(
 
 
 BACKENDS = [
-    _Backend('in_memory', _make_in_memory),
-    _Backend('in_memory_light_copy', _make_in_memory_light_copy),
+    _Backend(
+        'in_memory',
+        _make_in_memory,
+        divergences={
+            'test_append_event_does_not_retain_caller_event': (
+                'append stores the event object passed by the caller: events'
+                ' may hold values that cannot be copied, and append must not'
+                ' pay copy costs; reads return deep copies instead'
+            ),
+        },
+    ),
+    _Backend(
+        'in_memory_light_copy',
+        _make_in_memory_light_copy,
+        divergences={
+            'test_append_event_does_not_retain_caller_event': (
+                'append stores the event object passed by the caller: events'
+                ' may hold values that cannot be copied, and append must not'
+                ' pay copy costs; reads return copies instead'
+            ),
+            'test_append_event_does_not_retain_caller_state': (
+                'light copy keeps state values aliased to the caller, by design'
+            ),
+        },
+    ),
     _Backend('database', _make_database),
     _Backend('sqlite', _make_sqlite),
     _Backend(

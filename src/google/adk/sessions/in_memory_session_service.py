@@ -365,7 +365,7 @@ class InMemorySessionService(BaseSessionService):
 
     if event.actions and event.actions.state_delta:
       state_deltas = _session_util.extract_state_delta(
-          event.actions.state_delta
+          _copy_state(event.actions.state_delta)
       )
       app_state_delta = state_deltas['app']
       user_state_delta = state_deltas['user']
