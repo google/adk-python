@@ -206,6 +206,56 @@ async def test_parallel_writes_of_separate_dict_keys_are_all_kept():
 
 
 @pytest.mark.asyncio
+async def test_parallel_dict_write_that_removes_a_key_replaces_the_union():
+  added = asyncio.Event()
+
+  async def edit_cart(action: str, tool_context: ToolContext) -> None:
+    if action == 'add':
+      tool_context.state['cart'] = {'apple': 1, 'pear': 2}
+      added.set()
+    else:
+      await asyncio.wait_for(added.wait(), timeout=5)
+      cart = dict(tool_context.state['cart'])
+      cart.pop('pear')
+      tool_context.state['cart'] = cart
+
+  state = await _run_parallel_calls(
+      edit_cart, [{'action': 'add'}, {'action': 'remove'}]
+  )
+
+  assert state['cart'] == {'apple': 1}
+
+
+@pytest.mark.asyncio
+async def test_parallel_dict_write_keeps_independent_write_the_latest_did_not_read():
+  b_written = asyncio.Event()
+  c_read = asyncio.Event()
+  a_written = asyncio.Event()
+
+  async def save_draft(draft_id: str, tool_context: ToolContext) -> None:
+    drafts = dict(tool_context.state.get('drafts', {}))
+    if draft_id == 'a':
+      await asyncio.wait_for(c_read.wait(), timeout=5)
+    elif draft_id == 'c':
+      await asyncio.wait_for(b_written.wait(), timeout=5)
+      drafts = dict(tool_context.state.get('drafts', {}))
+      c_read.set()
+      await asyncio.wait_for(a_written.wait(), timeout=5)
+    drafts[draft_id] = 'body'
+    tool_context.state['drafts'] = drafts
+    if draft_id == 'a':
+      a_written.set()
+    elif draft_id == 'b':
+      b_written.set()
+
+  state = await _run_parallel_calls(
+      save_draft, [{'draft_id': 'a'}, {'draft_id': 'b'}, {'draft_id': 'c'}]
+  )
+
+  assert state['drafts'] == {'a': 'body', 'b': 'body', 'c': 'body'}
+
+
+@pytest.mark.asyncio
 async def test_parallel_list_writes_bypassing_state_keep_call_order():
   async def set_items(item: str, tool_context: ToolContext) -> None:
     tool_context.actions.state_delta['items'] = [item]

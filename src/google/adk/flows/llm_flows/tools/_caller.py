@@ -381,13 +381,16 @@ def _build_response_event(
       content.parts.append(types.Part.from_text(text=result_text))
 
   # Builds the function response event.
-  return Event(
+  event = Event(
       invocation_id=invocation_context.invocation_id,
       author=_require_agent_name(invocation_context),
       content=content,
       actions=tool_context.actions,
       branch=invocation_context.branch,
   )
+  # Read by `_apply_latest_state_writes` to tell which write a call built on.
+  event._state_reads = tool_context.state._read_values  # pylint: disable=protected-access
+  return event
 
 
 @dataclasses.dataclass
