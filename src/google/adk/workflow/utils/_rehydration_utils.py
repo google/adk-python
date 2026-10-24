@@ -274,7 +274,7 @@ def _reconstruct_node_states(
 ) -> dict[str, _ChildScanState]:
   """Scans session events to reconstruct node states for resume."""
   scan_states: dict[str, _ChildScanState] = {}
-  interrupt_owner: dict[str, str] = {}
+  interrupt_owner: dict[str, str | None] = {}
   schemas_by_id: dict[str, Any] = {}
 
   base_path_builder = _NodePathBuilder.from_string(base_path)
@@ -354,6 +354,14 @@ def _reconstruct_node_states(
     owner_key = get_owner_key(event_path_builder)
 
     if not owner_key:
+      # The event belongs to a run outside the scanned one (e.g. a later
+      # dynamic run of the same node reusing an interrupt id). Claim any
+      # interrupt it raises anyway: leaving the previous owner in place
+      # would misattribute the later response to the earlier run, clearing
+      # that run's completed output and rerunning it with the wrong answer.
+      # See https://github.com/google/adk-python/issues/7609.
+      for interrupt_id in extract_event_interrupt_ids(event):
+        interrupt_owner[interrupt_id] = None
       continue
 
     # 3. Initialize state for the owner if needed
