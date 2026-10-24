@@ -16,8 +16,11 @@
 
 from __future__ import annotations
 
+import logging
+import pathlib
 import re
 from typing import Any
+from typing import Callable
 from typing import Optional
 import unicodedata
 
@@ -146,6 +149,14 @@ class Script(BaseModel):
     return self.src
 
 
+def _read_resource_file(path: pathlib.Path) -> str | bytes:
+  """Reads a resource file as UTF-8 text or falls back to raw bytes."""
+  try:
+    return path.read_text(encoding="utf-8")
+  except UnicodeDecodeError:
+    return path.read_bytes()
+
+
 class Resources(BaseModel):
   """L3 skill content: additional instructions, assets, and scripts.
 
@@ -161,6 +172,24 @@ class Resources(BaseModel):
   assets: dict[str, str | bytes] = {}
   scripts: dict[str, Script] = {}
 
+  _reference_paths: dict[str, pathlib.Path] = {}
+  _asset_paths: dict[str, pathlib.Path] = {}
+  _script_paths: dict[str, pathlib.Path] = {}
+
+  def __getattribute__(self, name: str) -> Any:
+    if name in ("references", "assets", "scripts"):
+      private = object.__getattribute__(self, "__pydantic_private__") or {}
+      if name == "references" and private.get("_reference_paths"):
+        for key in list(private["_reference_paths"]):
+          self.get_reference(key)
+      elif name == "assets" and private.get("_asset_paths"):
+        for key in list(private["_asset_paths"]):
+          self.get_asset(key)
+      elif name == "scripts" and private.get("_script_paths"):
+        for key in list(private["_script_paths"]):
+          self.get_script(key)
+    return super().__getattribute__(name)
+
   def get_reference(self, reference_id: str) -> Optional[str | bytes]:
     """Get content of a reference file.
 
@@ -170,7 +199,13 @@ class Resources(BaseModel):
     Returns:
         Reference content as string or bytes, or None if not found
     """
-    return self.references.get(reference_id)
+    refs = object.__getattribute__(self, "__dict__")["references"]
+    if reference_id in refs:
+      return refs[reference_id]
+    path = self._reference_paths.pop(reference_id, None)
+    if path is not None:
+      refs[reference_id] = _read_resource_file(path)
+    return refs.get(reference_id)
 
   def get_asset(self, asset_id: str) -> Optional[str | bytes]:
     """Get content of an asset file.
@@ -181,7 +216,13 @@ class Resources(BaseModel):
     Returns:
         Asset content as string or bytes, or None if not found
     """
-    return self.assets.get(asset_id)
+    assets = object.__getattribute__(self, "__dict__")["assets"]
+    if asset_id in assets:
+      return assets[asset_id]
+    path = self._asset_paths.pop(asset_id, None)
+    if path is not None:
+      assets[asset_id] = _read_resource_file(path)
+    return assets.get(asset_id)
 
   def get_script(self, script_id: str) -> Optional[Script]:
     """Get content of a script file.
@@ -192,19 +233,33 @@ class Resources(BaseModel):
     Returns:
         Script object, or None if not found
     """
-    return self.scripts.get(script_id)
+    scripts = object.__getattribute__(self, "__dict__")["scripts"]
+    if script_id in scripts:
+      return scripts[script_id]
+    path = self._script_paths.pop(script_id, None)
+    if path is not None:
+      try:
+        scripts[script_id] = Script(src=path.read_text(encoding="utf-8"))
+      except UnicodeDecodeError:
+        logging.warning("Skipping non-UTF-8 skill script '%s'.", script_id)
+        return None
+    return scripts.get(script_id)
 
   def list_references(self) -> list[str]:
     """List all available reference paths."""
-    return list(self.references.keys())
+    refs = object.__getattribute__(self, "__dict__")["references"]
+    return list(dict.fromkeys([*refs, *self._reference_paths]))
 
   def list_assets(self) -> list[str]:
     """List all available asset paths."""
-    return list(self.assets.keys())
+    assets = object.__getattribute__(self, "__dict__")["assets"]
+    return list(dict.fromkeys([*assets, *self._asset_paths]))
 
   def list_scripts(self) -> list[str]:
     """List all available script paths."""
-    return list(self.scripts.keys())
+    for key in list(self._script_paths):
+      self.get_script(key)
+    return list(object.__getattribute__(self, "__dict__")["scripts"].keys())
 
 
 class Skill(BaseModel):
@@ -230,6 +285,18 @@ class Skill(BaseModel):
   """Location the skill was loaded from, used for telemetry.
   Should be compliant with RFC 3986.
   """
+  _instructions_loader: Optional[Callable[[], str]] = None
+
+  def __getattribute__(self, name: str) -> Any:
+    if name == "instructions":
+      private = object.__getattribute__(self, "__pydantic_private__") or {}
+      loader = private.get("_instructions_loader")
+      if loader is not None:
+        d = object.__getattribute__(self, "__dict__")
+        if not d.get("instructions"):
+          d["instructions"] = loader()
+        private["_instructions_loader"] = None
+    return super().__getattribute__(name)
 
   @property
   def name(self) -> str:

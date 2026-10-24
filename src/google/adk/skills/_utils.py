@@ -85,6 +85,19 @@ def _validate_relative_resource_path(path: str) -> str:
   return normalized
 
 
+def _scan_dir(directory: pathlib.Path) -> dict[str, pathlib.Path]:
+  """Recursively collect file paths from a directory without reading them."""
+  files: dict[str, pathlib.Path] = {}
+  if directory.exists() and directory.is_dir():
+    for file_path in directory.rglob("*"):
+      if "__pycache__" in file_path.parts:
+        continue
+      if file_path.is_file():
+        relative_path = file_path.relative_to(directory)
+        files[relative_path.as_posix()] = file_path
+  return files
+
+
 def _load_dir(directory: pathlib.Path) -> dict[str, Union[str, bytes]]:
   """Recursively load files from a directory into a dictionary.
 
@@ -98,20 +111,10 @@ def _load_dir(directory: pathlib.Path) -> dict[str, Union[str, bytes]]:
     Dictionary mapping relative file paths to their content: a `str` for
     UTF-8 text files, or raw `bytes` for binary files.
   """
-  files: dict[str, Union[str, bytes]] = {}
-  if directory.exists() and directory.is_dir():
-    for file_path in directory.rglob("*"):
-      if "__pycache__" in file_path.parts:
-        continue
-      if file_path.is_file():
-        relative_path = file_path.relative_to(directory)
-        try:
-          files[relative_path.as_posix()] = file_path.read_text(
-              encoding="utf-8"
-          )
-        except UnicodeDecodeError:
-          files[relative_path.as_posix()] = file_path.read_bytes()
-  return files
+  return {
+      key: models._read_resource_file(path)
+      for key, path in _scan_dir(directory).items()
+  }
 
 
 def _build_scripts(
@@ -173,6 +176,36 @@ def _parse_skill_md_content(content: str) -> tuple[dict[str, Any], str]:
   return cast("dict[str, Any]", parsed), body
 
 
+def _find_skill_md(skill_dir: pathlib.Path) -> pathlib.Path:
+  """Locate SKILL.md or skill.md in a skill directory."""
+  if not skill_dir.is_dir():
+    raise FileNotFoundError(f"Skill directory '{skill_dir}' not found.")
+
+  for name in ("SKILL.md", "skill.md"):
+    path = skill_dir / name
+    if path.exists():
+      return path
+
+  raise FileNotFoundError(f"SKILL.md not found in '{skill_dir}'.")
+
+
+def _parse_skill_md_frontmatter(skill_md: pathlib.Path) -> dict[str, Any]:
+  """Parse only the YAML frontmatter from a SKILL.md file."""
+  with skill_md.open(encoding="utf-8") as f:
+    buf = ""
+    while True:
+      chunk = f.read(4096)
+      if not chunk:
+        break
+      buf += chunk
+      if not buf.startswith("---"):
+        raise ValueError("SKILL.md must start with YAML frontmatter (---)")
+      if "---" in buf[3:]:
+        break
+  parsed, _ = _parse_skill_md_content(buf)
+  return parsed
+
+
 def _parse_skill_md(
     skill_dir: pathlib.Path,
 ) -> tuple[dict[str, Any], str, pathlib.Path]:
@@ -188,19 +221,7 @@ def _parse_skill_md(
     FileNotFoundError: If the directory or SKILL.md is not found.
     ValueError: If SKILL.md is invalid.
   """
-  if not skill_dir.is_dir():
-    raise FileNotFoundError(f"Skill directory '{skill_dir}' not found.")
-
-  skill_md = None
-  for name in ("SKILL.md", "skill.md"):
-    path = skill_dir / name
-    if path.exists():
-      skill_md = path
-      break
-
-  if skill_md is None:
-    raise FileNotFoundError(f"SKILL.md not found in '{skill_dir}'.")
-
+  skill_md = _find_skill_md(skill_dir)
   content = skill_md.read_text(encoding="utf-8")
   parsed, body = _parse_skill_md_content(content)
 
@@ -214,7 +235,8 @@ def _load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
     skill_dir: Path to the skill directory.
 
   Returns:
-    Skill object with all components loaded.
+    Skill object with frontmatter loaded and instructions/resources loaded on
+    demand.
 
   Raises:
     FileNotFoundError: If the skill directory or SKILL.md is not found.
@@ -223,7 +245,8 @@ def _load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
   """
   skill_dir = pathlib.Path(skill_dir).resolve()
 
-  parsed, body, skill_md = _parse_skill_md(skill_dir)
+  skill_md = _find_skill_md(skill_dir)
+  parsed = _parse_skill_md_frontmatter(skill_md)
 
   # Use model_validate to handle aliases like allowed-tools
   frontmatter = models.Frontmatter.model_validate(parsed)
@@ -235,22 +258,20 @@ def _load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
         f" name '{skill_dir.name}'."
     )
 
-  references = _load_dir(skill_dir / "references")
-  assets = _load_dir(skill_dir / "assets")
-  scripts = _build_scripts(_load_dir(skill_dir / "scripts"))
-
-  resources = models.Resources(
-      references=references,
-      assets=assets,
-      scripts=scripts,
-  )
+  resources = models.Resources()
+  resources._reference_paths = _scan_dir(skill_dir / "references")
+  resources._asset_paths = _scan_dir(skill_dir / "assets")
+  resources._script_paths = _scan_dir(skill_dir / "scripts")
 
   skill = models.Skill(
       frontmatter=frontmatter,
-      instructions=body,
+      instructions="",
       resources=resources,
   )
   skill._uri = skill_dir.as_uri()
+  skill._instructions_loader = lambda: _parse_skill_md_content(
+      skill_md.read_text(encoding="utf-8")
+  )[1]
   return skill
 
 
@@ -491,7 +512,7 @@ def _validate_skill_dir(
     return [f"SKILL.md not found in '{skill_dir}'."]
 
   try:
-    parsed, _, _ = _parse_skill_md(skill_dir)
+    parsed = _parse_skill_md_frontmatter(skill_md)
   except (FileNotFoundError, ValueError) as e:
     return [str(e)]
 
@@ -533,7 +554,7 @@ def _read_skill_properties(
     ValueError: If the frontmatter is invalid.
   """
   skill_dir = pathlib.Path(skill_dir).resolve()
-  parsed, _, _ = _parse_skill_md(skill_dir)
+  parsed = _parse_skill_md_frontmatter(_find_skill_md(skill_dir))
   return models.Frontmatter.model_validate(parsed)
 
 
