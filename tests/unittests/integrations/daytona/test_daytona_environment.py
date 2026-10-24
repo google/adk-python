@@ -245,3 +245,18 @@ async def test_read_file_raises_file_not_found_on_daytona_not_found(
 
   with pytest.raises(FileNotFoundError):
     await env.read_file("missing.txt")
+
+
+async def test_resolve_path_rejects_relative_escape():
+  """Model-supplied '..' paths cannot resolve outside the sandbox workspace."""
+  env = DaytonaEnvironment()
+
+  with pytest.raises(ValueError, match="escapes working directory"):
+    env._resolve_path("../../etc/passwd")
+
+
+async def test_resolve_path_anchors_and_normalizes_relative_paths():
+  env = DaytonaEnvironment()
+
+  assert env._resolve_path("sub/../notes.txt") == "/workspaces/notes.txt"
+  assert env._resolve_path("/etc/passwd") == "/etc/passwd"
