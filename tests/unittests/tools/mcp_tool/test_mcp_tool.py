@@ -667,6 +667,80 @@ class TestMCPToolWithJsonSchema:
     assert declaration.response is None
     assert not declaration.response_json_schema
 
+  def test_get_declaration_drops_oversized_output_schema(self):
+    """An output schema too large to send is omitted from the declaration."""
+    output_schema = {
+        "type": "object",
+        "properties": {
+            "field_%d"
+            % i: {
+                "type": "string",
+                "description": "x" * 200,
+            }
+            for i in range(10)
+        },
+    }
+
+    tool = MCPTool(
+        mcp_tool=MockMCPTool(outputSchema=output_schema),
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
+      declaration = tool._get_declaration()
+
+    assert declaration.response is None
+    assert declaration.response_json_schema is None
+    assert declaration.parameters_json_schema is not None
+
+  def test_get_declaration_logs_when_dropping_oversized_output_schema(
+      self, caplog
+  ):
+    """Dropping an oversized output schema is logged as a warning."""
+    output_schema = {
+        "type": "object",
+        "properties": {
+            "field": {"type": "string", "description": "x" * 2000},
+        },
+    }
+
+    tool = MCPTool(
+        mcp_tool=MockMCPTool(outputSchema=output_schema),
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
+      with caplog.at_level(logging.WARNING):
+        declaration = tool._get_declaration()
+
+    assert declaration.response_json_schema is None
+    assert "Omitting the output schema" in caplog.text
+
+  def test_get_declaration_keeps_output_schema_within_budget(self):
+    """An output schema that fits the budget is sent to the model."""
+    output_schema = {
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "description": "x" * 500},
+        },
+    }
+
+    tool = MCPTool(
+        mcp_tool=MockMCPTool(outputSchema=output_schema),
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
+      declaration = tool._get_declaration()
+
+    assert declaration.response_json_schema == output_schema
+
 
 class TestMCPTool:
   """Test suite for MCPTool class."""
