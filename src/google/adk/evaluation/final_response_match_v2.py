@@ -179,7 +179,9 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge[LlmAsAJudgeCriterion]):
 
   @override
   def convert_auto_rater_response_to_score(
-      self, llm_response: LlmResponse
+      self,
+      llm_response: LlmResponse,
+      actual_invocation: Optional[Invocation] = None,
   ) -> AutoRaterScore:
     response_text = get_text_from_content(llm_response.content)
     if response_text is None:
