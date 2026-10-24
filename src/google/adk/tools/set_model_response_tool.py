@@ -301,7 +301,7 @@ class SetModelResponseTool(BaseTool):
       if self._model_type is not None:
         # For regular BaseModel, validate directly
         validated_model = self._model_type.model_validate(args)
-        result = validated_model.model_dump(exclude_none=True)
+        result = validated_model.model_dump(mode='json', exclude_none=True)
       elif self._list_model_type is not None:
         # For list[BaseModel], extract and validate the 'items' field
         items = args.get('items', [])
@@ -310,7 +310,8 @@ class SetModelResponseTool(BaseTool):
         )
         validated_items = type_adapter.validate_python(items)
         result = [
-            item.model_dump(exclude_none=True) for item in validated_items
+            item.model_dump(mode='json', exclude_none=True)
+            for item in validated_items
         ]
       else:
         # For other schema types (list[str], dict, etc.),

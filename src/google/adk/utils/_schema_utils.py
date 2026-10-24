@@ -255,12 +255,16 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
       schema = get_args(schema)[0]
     # is_basemodel_schema verified schema is now a BaseModel subclass.
     model = cast(type[BaseModel], schema)
-    return model.model_validate_json(json_text).model_dump(exclude_none=True)
+    return model.model_validate_json(json_text).model_dump(
+        mode="json", exclude_none=True
+    )
   elif is_list_of_basemodel(schema):
     # For list[BaseModel], use TypeAdapter to validate
     type_adapter: TypeAdapter[list[BaseModel]] = TypeAdapter(schema)
     validated = type_adapter.validate_json(json_text)
-    return [item.model_dump(exclude_none=True) for item in validated]
+    return [
+        item.model_dump(mode="json", exclude_none=True) for item in validated
+    ]
   else:
     # For other schema types (list[str], dict, Schema, etc.),
     return _json_utils.safe_json_loads(json_text, context="schema value")

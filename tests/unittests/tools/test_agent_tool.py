@@ -14,6 +14,7 @@
 
 import asyncio
 import contextlib
+from datetime import date
 import json
 from typing import Any
 from typing import Optional
@@ -33,6 +34,7 @@ from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.flows.llm_flows.tools._thread_pool import _call_tool_in_thread_pool
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+from google.adk.models.anthropic_llm import part_to_message_block
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
@@ -2351,6 +2353,32 @@ def test_agent_tool_skip_summarization_handles_non_string_result(
   text_parts = [p.text for p in last_event.content.parts if p.text]
 
   assert text_parts == ['{"value": 123}']
+
+
+def test_agent_tool_structured_date_output_survives_anthropic_conversion(
+    setup_skip_summarization_runner,
+):
+  """The Runner's typed tool result must serialize for the parent provider."""
+
+  class DatedOutput(BaseModel):
+    day: date
+
+  runner = setup_skip_summarization_runner(
+      tool_agent_model_responses=['{"day": "2026-10-17"}'],
+      tool_agent_output_schema=DatedOutput,
+  )
+  events = runner.run('start')
+
+  final_event = [event for event in events if event.is_final_response()][-1]
+  assert [part.text for part in final_event.content.parts if part.text] == [
+      '{"day": "2026-10-17"}'
+  ]
+  response_part = next(
+      part for part in final_event.content.parts if part.function_response
+  )
+  block = part_to_message_block(response_part)
+  assert block['type'] == 'tool_result'
+  assert json.loads(block['content']) == {'day': '2026-10-17'}
 
 
 # ---------------------------------------------------------------------------

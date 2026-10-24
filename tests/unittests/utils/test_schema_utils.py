@@ -14,6 +14,7 @@
 
 """Tests for _schema_utils module."""
 
+from datetime import date
 import functools
 import inspect
 import signal
@@ -179,6 +180,42 @@ class TestValidateSchema:
     json_text = '{"name": "test", "optional_field": null}'
     result = validate_schema(ModelWithOptional, json_text)
     assert result == {"name": "test"}
+
+  @pytest.mark.parametrize("as_list", [False, True])
+  def test_structured_output_preserves_json_date(self, as_list):
+    class DatedOutput(BaseModel):
+      day: date
+      note: str | None = None
+
+    schema = list[DatedOutput] if as_list else DatedOutput
+    payload = '[{"day": "2026-10-17"}]' if as_list else '{"day": "2026-10-17"}'
+    expected = [{"day": "2026-10-17"}] if as_list else {"day": "2026-10-17"}
+
+    assert validate_schema(schema, payload) == expected
+
+  @pytest.mark.parametrize("schema_kind", ["model", "list_item", "list"])
+  def test_annotated_structured_output_preserves_json_date(self, schema_kind):
+    """Annotation metadata must preserve JSON dumping and None omission."""
+
+    class DatedOutput(BaseModel):
+      day: date
+      note: str | None = None
+
+    annotated_model = Annotated[DatedOutput, Field(description="Dated output")]
+    schemas = {
+        "model": annotated_model,
+        "list_item": list[annotated_model],
+        "list": Annotated[
+            list[DatedOutput], Field(description="Dated outputs")
+        ],
+    }
+    payload = '{"day": "2026-10-22", "note": null}'
+    expected = {"day": "2026-10-22"}
+    if schema_kind != "model":
+      payload = "[" + payload + "]"
+      expected = [expected]
+
+    assert validate_schema(schemas[schema_kind], payload) == expected
 
   def test_list_of_basemodel_schema(self):
     """Test validation with a list[BaseModel] schema."""
