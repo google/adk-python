@@ -17,6 +17,7 @@ import base64
 import json
 import os
 import re
+import sys
 import threading
 from typing import Any
 from unittest import mock
@@ -1527,6 +1528,85 @@ def test_part_to_message_block_rejects_unsupported_image_mime_type():
 
   with pytest.raises(ValueError, match="Unsupported Anthropic image MIME"):
     part_to_message_block(part)
+
+
+def test_part_to_message_block_with_gcs_pdf_document():
+  """A gs:// PDF file part downloads the object and sends it inline."""
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  blob = MagicMock(size=len(pdf_data))
+  blob.download_as_bytes.return_value = pdf_data
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = blob
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    result = part_to_message_block(
+        Part(
+            file_data=types.FileData(
+                file_uri="gs://my-bucket/reports/q4.pdf",
+                mime_type="application/pdf",
+            )
+        )
+    )
+
+  assert result["type"] == "document"
+  assert result["source"]["type"] == "base64"
+  assert result["source"]["media_type"] == "application/pdf"
+  assert result["source"]["data"] == base64.b64encode(pdf_data).decode()
+  client.bucket.assert_called_once_with("my-bucket")
+  client.bucket.return_value.get_blob.assert_called_once_with("reports/q4.pdf")
+
+
+def test_part_to_message_block_rejects_oversized_gcs_file():
+  """A gs:// object above Anthropic's 32 MB document limit raises ValueError."""
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = MagicMock(
+      size=33 * 1024 * 1024
+  )
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    with pytest.raises(ValueError, match="too large"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://my-bucket/big.pdf",
+                  mime_type="application/pdf",
+              )
+          )
+      )
+
+
+def test_part_to_message_block_rejects_unsupported_gcs_file_type():
+  """A gs:// object Claude cannot carry inline still raises NotImplementedError."""
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = MagicMock(size=10)
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    with pytest.raises(NotImplementedError, match="Not supported yet"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://my-bucket/clip.mp4",
+                  mime_type="video/mp4",
+              )
+          )
+      )
+
+
+def test_part_to_message_block_missing_gcs_dependency(monkeypatch):
+  """Without google-cloud-storage, the error names the extra to install."""
+  # None in sys.modules makes the import itself raise ImportError.
+  monkeypatch.setitem(sys.modules, "google.cloud", None)
+  monkeypatch.setitem(sys.modules, "google.cloud.storage", None)
+
+  with pytest.raises(ImportError, match=r"google-adk\[gcp\]"):
+    part_to_message_block(
+        Part(
+            file_data=types.FileData(
+                file_uri="gs://my-bucket/reports/q4.pdf",
+                mime_type="application/pdf",
+            )
+        )
+    )
 
 
 content_to_message_param_test_cases = [

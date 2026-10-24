@@ -53,6 +53,7 @@ from typing_extensions import override
 from . import _prompt_cache
 from ..utils import _json_utils
 from ..utils import streaming_utils
+from ..utils._dependency import missing_extra
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._schema_utils import lowercase_schema_types
 from ..utils._schema_utils import schema_to_json_schema
@@ -75,6 +76,42 @@ _ImageMediaType: TypeAlias = Literal[
     "image/webp",
 ]
 _ANTHROPIC_IMAGE_MEDIA_TYPES = frozenset[str](get_args(_ImageMediaType))
+
+# Anthropic caps documents at 32 MB; a larger gs:// object cannot be sent
+# inline at all.
+_MAX_FILE_DATA_SIZE = 32 * 1024 * 1024
+
+
+def _download_gcs_uri(uri: str) -> bytes:
+  """Downloads the object a gs:// file_data URI points at.
+
+  Claude accepts only inline base64 sources, so the bytes travel in the
+  request itself. Raises ValueError when the object exceeds Anthropic's
+  32 MB document limit.
+  """
+  try:
+    from google.cloud import storage  # pylint: disable=g-import-not-at-top
+  except ImportError as e:
+    raise missing_extra("google-cloud-storage", "gcp") from e
+  bucket_name, object_name = uri.removeprefix("gs://").split("/", 1)
+  client = storage.Client()
+  blob = client.bucket(bucket_name).get_blob(object_name)
+  if blob is None:
+    raise ValueError(f"gs:// object not found: {uri}")
+  size = blob.size
+  if size is not None and size > _MAX_FILE_DATA_SIZE:
+    raise ValueError(
+        f"gs:// object too large for Claude: {uri} is {size} bytes, but"
+        f" Claude accepts at most {_MAX_FILE_DATA_SIZE} bytes (32 MB)."
+    )
+  data = blob.download_as_bytes()
+  if len(data) > _MAX_FILE_DATA_SIZE:
+    raise ValueError(
+        f"gs:// object too large for Claude: {uri} is {len(data)} bytes, but"
+        f" Claude accepts at most {_MAX_FILE_DATA_SIZE} bytes (32 MB)."
+    )
+  return data
+
 
 _MessageBlockParam: TypeAlias = Union[
     anthropic_types.TextBlockParam,
@@ -668,6 +705,40 @@ def _part_to_message_block(
     return anthropic_types.DocumentBlockParam(
         type="document",
         source=pdf_source,
+    )
+  elif part.file_data:
+    file_data = part.file_data
+    uri = file_data.file_uri or ""
+    mime_type = file_data.mime_type
+    # Claude rejects URL sources upstream, so gs:// objects are downloaded
+    # and sent inline as base64 (issue #2466). Any other URI scheme stays
+    # unsupported.
+    if not uri.startswith("gs://"):
+      raise NotImplementedError(f"Not supported yet: {part}")
+    is_pdf = (
+        mime_type is not None
+        and mime_type.split(";", 1)[0].strip() == "application/pdf"
+    )
+    is_image = mime_type is not None and mime_type.startswith("image/")
+    if not is_pdf and not is_image:
+      raise NotImplementedError(f"Not supported yet: {part}")
+    data = base64.b64encode(_download_gcs_uri(uri)).decode()
+    if is_pdf:
+      return anthropic_types.DocumentBlockParam(
+          type="document",
+          source=anthropic_types.Base64PDFSourceParam(
+              type="base64",
+              media_type="application/pdf",
+              data=data,
+          ),
+      )
+    return anthropic_types.ImageBlockParam(
+        type="image",
+        source=anthropic_types.Base64ImageSourceParam(
+            type="base64",
+            media_type=_normalize_image_media_type(mime_type),
+            data=data,
+        ),
     )
   elif part.executable_code:
     return anthropic_types.TextBlockParam(
