@@ -527,6 +527,14 @@ class GoogleApiToOpenApiConverter:
     if "pattern" in param_data:
       schema["pattern"] = param_data["pattern"]
 
+    # A repeated parameter takes a list of values, each matching the schema
+    # above. Its default moves to the array as a one-item list.
+    if param_data.get("repeated", False):
+      item_schema = schema
+      schema = {"type": "array", "items": item_schema}
+      if "default" in item_schema:
+        schema["default"] = [item_schema.pop("default")]
+
     return schema
 
   def save_openapi_spec(self, output_path: str) -> None:
