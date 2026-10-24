@@ -44,6 +44,7 @@ from ...dependencies._mcp import ClientSession as _ClientSession
 from ...dependencies._mcp import ElicitationFnT
 from ...dependencies._mcp import ListResourcesResult
 from ...dependencies._mcp import ListToolsResult
+from ...dependencies._mcp import MessageHandlerFnT
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...dependencies._mcp import StdioServerParameters
@@ -177,6 +178,7 @@ class McpToolset(BaseToolset):
       elicitation_callback: ElicitationFnT | None = None,
       credential_key: str | None = None,
       propagate_grounding_metadata: bool = False,
+      message_handler: MessageHandlerFnT | None = None,
   ) -> None:
     """Initializes the McpToolset.
 
@@ -232,6 +234,8 @@ class McpToolset(BaseToolset):
       propagate_grounding_metadata: If True, each listed tool copies
         ``meta.adk_grounding_metadata`` from the MCP result into
         ``temp:_adk_grounding_metadata``. Default False.
+      message_handler: Optional async callback for incoming MCP messages,
+        including server notifications. Does not invalidate the tool-list cache.
     """
 
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
@@ -269,6 +273,7 @@ class McpToolset(BaseToolset):
         sampling_callback=self._sampling_callback,
         sampling_capabilities=self._sampling_capabilities,
         elicitation_callback=self._elicitation_callback,
+        message_handler=message_handler,
     )
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
