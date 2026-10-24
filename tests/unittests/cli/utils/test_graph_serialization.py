@@ -14,16 +14,19 @@
 
 """Tests for graph_serialization edge handling with routing maps."""
 
+import asyncio
 import json
 
 from google.adk.agents import LlmAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.cli.utils.graph_serialization import resolve_toolsets
 from google.adk.cli.utils.graph_serialization import serialize_agent
 from google.adk.cli.utils.graph_serialization import serialize_app_info
 from google.adk.cli.utils.graph_serialization import serialize_node
 from google.adk.cli.utils.graph_serialization import serialize_node_like
+from google.adk.cli.utils.graph_visualization import plot_workflow_graph
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_toolset import BaseToolset
@@ -138,6 +141,162 @@ def test_serialize_agent_with_toolset() -> None:
   assert len(result['tools']) == 1
   assert result['tools'][0]['name'] == 'MockToolset'
   assert result['tools'][0]['type'] == 'tool'
+
+
+def test_toolset_graph_shows_children_under_distinct_parent_nodes() -> None:
+  """Toolset instances retain their identity and connect to their tools."""
+  info = {
+      'root_agent': {
+          'name': 'root',
+          'tools': [
+              {
+                  'name': 'McpToolset',
+                  'id': 'root/toolset_0',
+                  'type': 'toolset',
+                  'children': [{'name': 'add', 'type': 'tool'}],
+              },
+              {
+                  'name': 'McpToolset',
+                  'id': 'root/toolset_1',
+                  'type': 'toolset',
+                  'children': [{'name': 'greet', 'type': 'tool'}],
+              },
+          ],
+      },
+  }
+
+  dot = plot_workflow_graph(info, format='dot')
+
+  assert 'root -> "root/toolset_0"' in dot
+  assert 'root -> "root/toolset_1"' in dot
+  assert '"root/toolset_0" -> add' in dot
+  assert '"root/toolset_1" -> greet' in dot
+  assert dot.count('McpToolset>') == 2
+
+
+def test_same_named_tools_in_different_toolsets_are_separate_nodes() -> None:
+  """Each toolset gets its own child when both expose the same tool name."""
+  info = {
+      'root_agent': {
+          'name': 'root',
+          'tools': [
+              {
+                  'name': 'McpToolset',
+                  'id': 'root/toolset_0',
+                  'type': 'toolset',
+                  'children': [{'name': 'add', 'type': 'tool'}],
+              },
+              {
+                  'name': 'McpToolset',
+                  'id': 'root/toolset_1',
+                  'type': 'toolset',
+                  'children': [{'name': 'add', 'type': 'tool'}],
+              },
+              {
+                  'name': 'McpToolset',
+                  'id': 'root/toolset_2',
+                  'type': 'toolset',
+                  'children': [{'name': 'add', 'type': 'tool'}],
+              },
+          ],
+      },
+  }
+
+  dot = plot_workflow_graph(info, format='dot')
+
+  assert 'root -> "root/toolset_0"' in dot
+  assert 'root -> "root/toolset_1"' in dot
+  assert 'root -> "root/toolset_2"' in dot
+  # The first copy keeps the bare name so a tool-call event matches its title.
+  # Later copies are scoped under the toolset and still labeled "add".
+  assert '"root/toolset_0" -> add' in dot
+  assert '"root/toolset_1" -> "root/toolset_1/add"' in dot
+  assert '"root/toolset_2" -> "root/toolset_2/add"' in dot
+  assert '"root/toolset_1" -> add\n' not in dot
+  assert '"root/toolset_2" -> add\n' not in dot
+  assert dot.count(' add>') == 3
+
+
+def test_same_named_tools_on_different_agents_are_separate_nodes() -> None:
+  """Two agents exposing the same tool name do not share a child node."""
+  info = {
+      'root_agent': {
+          'name': 'root',
+          'sub_agents': [
+              {
+                  'name': 'left',
+                  'tools': [{
+                      'name': 'McpToolset',
+                      'id': 'left/toolset_0',
+                      'type': 'toolset',
+                      'children': [{'name': 'add', 'type': 'tool'}],
+                  }],
+              },
+              {
+                  'name': 'right',
+                  'tools': [{
+                      'name': 'McpToolset',
+                      'id': 'right/toolset_0',
+                      'type': 'toolset',
+                      'children': [{'name': 'add', 'type': 'tool'}],
+                  }],
+              },
+          ],
+      },
+  }
+
+  dot = plot_workflow_graph(info, format='dot')
+
+  assert 'root -> left' in dot
+  assert 'root -> right' in dot
+  assert '"left/toolset_0" -> add' in dot
+  assert '"right/toolset_0" -> "right/toolset_0/add"' in dot
+  assert dot.count(' add>') == 2
+
+
+def test_repeated_name_under_one_toolset_stays_a_separate_node() -> None:
+  """One toolset listing the same name twice still draws two child nodes."""
+  info = {
+      'root_agent': {
+          'name': 'root',
+          'tools': [{
+              'name': 'McpToolset',
+              'id': 'root/toolset_0',
+              'type': 'toolset',
+              'children': [
+                  {'name': 'add', 'type': 'tool'},
+                  {'name': 'add', 'type': 'tool'},
+                  {'name': 'add', 'type': 'tool'},
+              ],
+          }],
+      },
+  }
+
+  dot = plot_workflow_graph(info, format='dot')
+
+  assert '"root/toolset_0" -> add' in dot
+  assert '"root/toolset_0" -> "root/toolset_0/add"' in dot
+  assert '"root/toolset_0" -> "root/toolset_0/add_2"' in dot
+  assert dot.count(' add>') == 3
+
+
+async def test_toolset_resolution_without_a_root_returns_no_tools() -> None:
+  """Apps without a root have no toolsets to discover."""
+  assert await resolve_toolsets(None) == {}
+
+
+async def test_toolset_discovery_does_not_swallow_cancellation() -> None:
+  """Cancelled graph requests stop discovery rather than returning a fallback."""
+
+  class CancelledToolset(BaseToolset):
+
+    async def get_tools(self, readonly_context=None):
+      raise asyncio.CancelledError()
+
+  root = LlmAgent(name='root', tools=[CancelledToolset()])
+
+  with pytest.raises(asyncio.CancelledError):
+    await resolve_toolsets(root)
 
 
 def test_serialize_agent_with_litellm_model_is_json_safe() -> None:
