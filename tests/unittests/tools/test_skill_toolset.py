@@ -388,6 +388,15 @@ async def test_list_skills_tool(
                     "name": "skill1",
                     "description": "Skill 1 description",
                 },
+                "resources": [
+                    "references/ref1.md",
+                    "references/doc.pdf",
+                    "assets/asset1.txt",
+                    "assets/image.png",
+                    "scripts/setup.sh",
+                    "scripts/run.py",
+                    "scripts/build.rb",
+                ],
             },
         ),
         (
@@ -413,6 +422,21 @@ async def test_load_skill_run_async(
   tool = skill_toolset.LoadSkillTool(toolset)
   result = await tool.run_async(args=args, tool_context=tool_context_instance)
   assert result == expected_result
+
+
+@pytest.mark.asyncio
+async def test_load_skill_run_async_omits_empty_resources(
+    mock_skill1, tool_context_instance
+):
+  mock_skill1.resources.list_references.return_value = []
+  mock_skill1.resources.list_assets.return_value = []
+  mock_skill1.resources.list_scripts.return_value = []
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+  result = await tool.run_async(
+      args={"skill_name": "skill1"}, tool_context=tool_context_instance
+  )
+  assert "resources" not in result
 
 
 @pytest.mark.asyncio
