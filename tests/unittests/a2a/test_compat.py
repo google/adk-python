@@ -822,3 +822,80 @@ def test_stream_normalizer_task_snapshot_with_artifacts_is_authoritative():
   task, _ = normalize(_v1_artifact_chunk('art-2', ' appended', append=True))
   by_id = {a.artifact_id: [p.text for p in a.parts] for a in task.artifacts}
   assert by_id == {'art-1': ['fresh'], 'art-2': ['other', ' appended']}
+
+
+def _task_with_artifacts(*artifacts: tuple[str, list[str]], history=None):
+  return _compat.make_task(
+      id='task-1',
+      context_id='context-1',
+      status=_compat.make_task_status(_compat.TS_COMPLETED),
+      artifacts=[
+          _compat.make_artifact(
+              artifact_id=artifact_id,
+              parts=[_compat.make_text_part(text) for text in texts],
+          )
+          for artifact_id, texts in artifacts
+      ],
+      **({'history': history} if history else {}),
+  )
+
+
+def _seen(*artifacts: tuple[str, list[str]]):
+  """The parts already received, as RemoteA2aAgent reads them from a snapshot."""
+  return {
+      artifact['artifactId']: artifact['parts']
+      for artifact in _compat.a2a_to_dict(_task_with_artifacts(*artifacts))[
+          'artifacts'
+      ]
+  }
+
+
+def _artifact_texts(task) -> list[list[str]]:
+  return [
+      [part.get('text') for part in artifact['parts']]
+      for artifact in _compat.a2a_to_dict(task).get('artifacts') or []
+  ]
+
+
+def test_task_without_seen_artifact_parts_drops_what_was_seen():
+  task = _task_with_artifacts(
+      ('turn-1', ['call']), ('grown', ['a', 'b']), ('turn-2', ['answer'])
+  )
+
+  unseen = _compat.task_without_seen_artifact_parts(
+      task, _seen(('turn-1', ['call']), ('grown', ['a']))
+  )
+
+  # A fully seen artifact goes; one that grew keeps only its new parts.
+  assert _artifact_texts(unseen) == [['b'], ['answer']]
+  assert unseen.id == task.id
+  assert _artifact_texts(task) == [['call'], ['a', 'b'], ['answer']]
+
+
+def test_task_without_seen_artifact_parts_keeps_a_replaced_artifact():
+  # A2A lets an update replace an artifact under the same id. The same id and
+  # part count with different content is new output, not a repeat.
+  task = _task_with_artifacts(('result', ['second answer']))
+
+  unseen = _compat.task_without_seen_artifact_parts(
+      task, _seen(('result', ['first answer']))
+  )
+
+  assert _artifact_texts(unseen) == [['second answer']]
+
+
+def test_task_without_seen_artifact_parts_drops_history_once_all_was_seen():
+  earlier = _compat.make_message(
+      role=_compat.ROLE_AGENT,
+      parts=[_compat.make_text_part('earlier')],
+      message_id='message-1',
+  )
+  task = _task_with_artifacts(('a', ['x']), history=[earlier])
+
+  all_seen = _compat.task_without_seen_artifact_parts(task, _seen(('a', ['x'])))
+  some_new = _compat.task_without_seen_artifact_parts(task, {})
+
+  assert not _compat.a2a_to_dict(all_seen).get('artifacts')
+  assert not _compat.a2a_to_dict(all_seen).get('history')
+  assert _artifact_texts(some_new) == [['x']]
+  assert _compat.a2a_to_dict(some_new).get('history')

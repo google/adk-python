@@ -847,3 +847,156 @@ async def test_make_stream_normalizer_accumulates_status_history():
   # the latest status is applied to the running task.
   final_task, _ = results[2]
   assert final_task.status.state == pb.TASK_STATE_COMPLETED
+
+
+def _confirmation_run_async(received_requests: list):
+  """The events a tool with ``require_confirmation=True`` produces, as a script.
+
+  Turn 1 is the tool call, its "requires confirmation" response, and the
+  ``adk_request_confirmation`` call the client answers; turn 2 runs the tool and
+  answers. The first two are ordinary events, so they become task artifacts.
+  """
+
+  async def run_async(**kwargs):
+    received_requests.append(kwargs)
+    if len(received_requests) == 1:
+      yield Event(
+          author="FakeAgent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name="delete_file",
+                          args={"path": "/tmp/x"},
+                          id="call_1",
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      )
+      yield Event(
+          author="FakeAgent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name="delete_file",
+                          response={"error": "requires confirmation"},
+                          id="call_1",
+                      )
+                  )
+              ],
+              role="user",
+          ),
+      )
+      yield Event(
+          author="FakeAgent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name="adk_request_confirmation",
+                          args={"originalFunctionCall": {"id": "call_1"}},
+                          id="confirm_1",
+                      )
+                  )
+              ],
+              role="model",
+          ),
+          long_running_tool_ids={"confirm_1"},
+      )
+    else:
+      yield Event(
+          author="FakeAgent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name="delete_file",
+                          response={"deleted": "/tmp/x"},
+                          id="call_1",
+                      )
+                  )
+              ],
+              role="user",
+          ),
+      )
+      yield Event(
+          author="FakeAgent",
+          content=types.Content(
+              parts=[types.Part(text="Deleted it.")], role="model"
+          ),
+      )
+
+  return run_async
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_a_resumed_task_returns_only_its_new_turn(streaming):
+  """A task resumed after input-required does not bring its earlier turns back.
+
+  A non-streaming response is the whole task, and the task's artifacts
+  accumulate, so turn 1's tool call and its "requires confirmation" response
+  used to arrive again with the turn-2 answer. Each turn carries only what it
+  produced, as when streaming.
+  """
+  received_requests = []
+  app = create_server_app_v1(
+      _confirmation_run_async(received_requests), force_new_version=True
+  )
+
+  async with app.router.lifespan_context(app):
+    agent = create_client(app, streaming=streaming)
+    session_service = InMemorySessionService()
+    await session_service.create_session(
+        app_name="ClientApp", user_id="test_user", session_id="test_session"
+    )
+    client_runner = Runner(
+        app_name="ClientApp", agent=agent, session_service=session_service
+    )
+
+    async def run_turn(message: types.Content) -> list[Event]:
+      return [
+          event
+          async for event in client_runner.run_async(
+              user_id="test_user",
+              session_id="test_session",
+              new_message=message,
+          )
+          if not event.partial
+      ]
+
+    turn_1 = await run_turn(
+        types.Content(parts=[types.Part(text="Hi")], role="user")
+    )
+    turn_2 = await run_turn(
+        types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        name="adk_request_confirmation",
+                        response={"confirmed": True},
+                        id="confirm_1",
+                    )
+                )
+            ],
+            role="user",
+        )
+    )
+
+  assert "adk_request_confirmation" in [
+      c.name for e in turn_1 for c in e.get_function_calls()
+  ]
+  assert [c.name for e in turn_2 for c in e.get_function_calls()] == []
+  assert [r.response for e in turn_2 for r in e.get_function_responses()] == [
+      {"deleted": "/tmp/x"}
+  ]
+  assert [
+      p.text
+      for e in turn_2
+      if e.content and e.content.parts
+      for p in e.content.parts
+      if p.text
+  ] == ["Deleted it."]

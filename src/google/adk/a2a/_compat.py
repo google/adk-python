@@ -34,7 +34,9 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
 from typing import cast
+from typing import Mapping
 from typing import Optional
+from typing import Sequence
 from typing import TYPE_CHECKING
 from typing import TypeAlias
 from typing import TypeVar
@@ -826,6 +828,58 @@ def make_stream_normalizer() -> Callable[[Any], Any]:
     return (_snapshot(task), payload)
 
   return normalize
+
+
+def task_without_seen_artifact_parts(
+    task: Task, seen: Mapping[str, Sequence[Any]]
+) -> Task:
+  """Returns a copy of ``task`` without the artifact parts already seen.
+
+  A task's artifacts accumulate over its whole life, so a non-streaming response
+  to a resumed task carries every earlier turn's artifacts again. ``seen`` maps
+  an artifact id to the parts last received for it, in ``a2a_to_dict`` form.
+  Only the leading parts equal to those are dropped: an artifact that was
+  appended to keeps its new parts, one replaced under the same id is kept whole,
+  and one with nothing new is dropped. If every artifact was seen, the history
+  goes too, so a converter cannot fall back to an earlier turn's message. ``task``
+  itself is not modified.
+  """
+
+  def new_parts_from(artifact: Artifact) -> int:
+    earlier = seen.get(artifact.artifact_id) or ()
+    index = 0
+    for part, earlier_part in zip(artifact.parts, earlier):
+      if a2a_to_dict(part) != earlier_part:
+        break
+      index += 1
+    return index
+
+  kept = [
+      (artifact, start)
+      for artifact in task.artifacts
+      if (start := new_parts_from(artifact)) < len(artifact.parts)
+  ]
+  drop_history = bool(task.artifacts) and not kept
+  if IS_A2A_V1:
+    copy = Task()
+    copy.CopyFrom(task)
+    del copy.artifacts[:]
+    for artifact, start in kept:
+      new = copy.artifacts.add()
+      new.CopyFrom(artifact)
+      del new.parts[:start]
+    if drop_history:
+      del copy.history[:]
+    return copy
+  update: dict[str, Any] = {
+      "artifacts": [
+          artifact.model_copy(update={"parts": artifact.parts[start:]})
+          for artifact, start in kept
+      ]
+  }
+  if drop_history:
+    update["history"] = []
+  return task.model_copy(update=update)
 
 
 # -----------------------------------------------------------------------------
