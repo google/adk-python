@@ -48,6 +48,7 @@ from .errors.session_not_found_error import SessionNotFoundError
 from .events._abort_events import _build_abort_events
 from .events._abort_events import _is_abort_event
 from .events._internal_metadata import internal_metadata
+from .events._internal_metadata import USER_MESSAGE_GROUP_KEY
 from .events._internal_metadata import without_internal_metadata
 from .events._isolation_scope import _find_finished_scope_runs
 from .events._rewind_events import _apply_rewinds
@@ -106,7 +107,7 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
   runs by ``(scope, invocation_id)`` lets a workflow task node open a fresh
   scoped run on a later invocation in the same session.
 
-  Used by ``Runner._append_user_event`` to scope the new user message
+  Used by ``Runner._append_user_events`` to scope the new user message
   to that task agent's view.
 
   Returns:
@@ -197,6 +198,58 @@ def _stamp_event_branch_context(ic: InvocationContext, event: Event) -> None:
         and function_call.isolation_scope is not None
     ):
       event.isolation_scope = function_call.isolation_scope
+
+
+def _split_user_event_by_branch(
+    ic: InvocationContext, event: Event
+) -> list[Event]:
+  """Keeps responses to different execution contexts in separate user events."""
+  if not event.content or len(event.get_function_responses()) < 2:
+    return [event]
+
+  # Use the latest call in this invocation, just as branch stamping does.
+  calls_by_id = {
+      call.id: call_event
+      for call_event in ic._get_events(current_invocation=True)
+      for call in call_event.get_function_calls()
+      if call.id
+  }
+  groups: dict[tuple[str | None, str | None], list[types.Part]] = {}
+  for part in event.content.parts or []:
+    response = part.function_response
+    call_event = (
+        calls_by_id.get(response.id) if response and response.id else None
+    )
+    context = (
+        (call_event.branch, call_event.isolation_scope)
+        if call_event is not None
+        else (None, event.isolation_scope)
+    )
+    groups.setdefault(context, []).append(part)
+  if len(groups) < 2:
+    return [event]
+
+  events: list[Event] = []
+  for (branch, isolation_scope), parts in groups.items():
+    # Each persisted event owns its content and actions. Apply the caller's
+    # state delta only once, on the first event, and preserve input order
+    # within each branch (including multiple responses on the same branch).
+    branch_event = event.model_copy(
+        update={
+            'content': event.content.model_copy(update={'parts': parts}),
+        }
+    ).model_copy(deep=True)
+    branch_event.branch = branch
+    branch_event.isolation_scope = isolation_scope
+    branch_event.custom_metadata = {
+        **(branch_event.custom_metadata or {}),
+        USER_MESSAGE_GROUP_KEY: event.id,
+    }
+    if events:
+      branch_event.id = Event.new_id()
+      branch_event.actions = EventActions()
+    events.append(branch_event)
+  return events
 
 
 class Runner:
@@ -676,15 +729,15 @@ class Runner:
       )
     return invocation_ids.pop() if invocation_ids else None
 
-  async def _build_and_append_user_event(
+  async def _build_and_append_user_events(
       self,
       ic: InvocationContext,
       *,
       session: Optional[Session] = None,
       content: Optional[types.Content] = None,
       state_delta: Optional[dict[str, Any]] = None,
-  ) -> Event:
-    """Builds a user event, stamps context/isolation metadata, and appends it."""
+  ) -> list[Event]:
+    """Builds and appends user events scoped to their matching function calls."""
     target_session = session or ic.session
     event_kwargs: dict[str, Any] = {
         'invocation_id': ic.invocation_id,
@@ -703,21 +756,26 @@ class Runner:
         event.isolation_scope, _ = active_scope
     _apply_run_config_custom_metadata(event, ic.run_config)
     _stamp_event_branch_context(ic, event)
-    return await self.session_service.append_event(
-        session=target_session, event=event
-    )
+    appended_events = []
+    for branch_event in _split_user_event_by_branch(ic, event):
+      appended_events.append(
+          await self.session_service.append_event(
+              session=target_session, event=branch_event
+          )
+      )
+    return appended_events
 
-  async def _append_user_event(
+  async def _append_user_events(
       self,
       ic: InvocationContext,
       content: types.Content,
       *,
       state_delta: Optional[dict[str, Any]] = None,
-  ) -> Event:
-    """Append a user message event to the session and return it."""
+  ) -> list[Event]:
+    """Append a user message to the session and return its scoped events."""
     if content.parts and any(p.function_call for p in content.parts):
       raise ValueError('User message cannot contain function calls.')
-    return await self._build_and_append_user_event(
+    return await self._build_and_append_user_events(
         ic, content=content, state_delta=state_delta
     )
 
@@ -740,7 +798,10 @@ class Runner:
       The appended event, matching the return convention of
       the user message event.
     """
-    return await self._build_and_append_user_event(ic, state_delta=state_delta)
+    events = await self._build_and_append_user_events(
+        ic, state_delta=state_delta
+    )
+    return events[0]
 
   def _find_user_message_for_invocation(
       self, events: list[Event], invocation_id: str
@@ -1703,7 +1764,7 @@ class Runner:
             text=f'Uploaded file: {file_name}. It is saved into artifacts'
         )
     # Appends only. We do not yield the event because it's not from the model.
-    await self._build_and_append_user_event(
+    await self._build_and_append_user_events(
         invocation_context,
         session=target_session,
         content=new_message,

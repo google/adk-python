@@ -14,6 +14,7 @@
 
 """Tests for HITL flows with different agent structures."""
 
+import asyncio
 import copy
 from unittest import mock
 
@@ -21,6 +22,7 @@ from fastapi.openapi.models import APIKey
 from fastapi.openapi.models import APIKeyIn
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
+from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
@@ -35,6 +37,10 @@ from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_C
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils.context_utils import Aclosing
+from google.adk.workflow import JoinNode
+from google.adk.workflow import node
+from google.adk.workflow import START
+from google.adk.workflow import Workflow
 from google.genai.types import Content
 from google.genai.types import FunctionCall
 from google.genai.types import FunctionResponse
@@ -53,6 +59,177 @@ HINT_TEXT = (
 TOOL_CALL_ERROR_RESPONSE = {
     "error": "This tool call requires confirmation, please approve or reject."
 }
+
+
+@pytest.mark.parametrize(
+    ("structure", "separate_messages"),
+    [
+        ("workflow", False),
+        ("workflow", True),
+        ("parallel", False),
+        ("parallel", True),
+        ("nested", False),
+        ("scopes", False),
+    ],
+)
+@pytest.mark.parametrize("order", [("a", "b"), ("b", "a")])
+@pytest.mark.parametrize(
+    "confirmed", [(True, True), (True, False), (False, True), (False, False)]
+)
+async def test_parallel_confirmations_preserve_branch_isolation(
+    structure, order, confirmed, separate_messages
+):
+  """Approvals and rejections reach their own parallel execution contexts.
+
+  Each branch calls the same tool. Resume two approvals/rejections together
+  (or separately as a control). Static Workflow and ParallelAgent cases also
+  leave a third branch pending, then approve it. Models must receive only
+  their own results, and every approved tool must run once.
+  """
+  ran = []
+  names = (
+      ("a", "b", "c") if structure in ("workflow", "parallel") else ("a", "b")
+  )
+
+  def act(who: str) -> str:
+    ran.append(who)
+    return f"{who} acted"
+
+  models = {
+      who: testing_utils.MockModel.create(
+          responses=[
+              Part(
+                  function_call=FunctionCall(
+                      id=f"call-{who}", name="act", args={"who": who}
+                  )
+              ),
+              "done",
+          ]
+      )
+      for who in names
+  }
+  agents = [
+      LlmAgent(
+          name=who,
+          model=model,
+          mode="chat" if structure in ("nested", "scopes") else None,
+          tools=[FunctionTool(act, require_confirmation=True)],
+      )
+      for who, model in models.items()
+  ]
+  if structure == "workflow":
+    join = JoinNode(name="join")
+    runner = testing_utils.InMemoryRunner(
+        node=Workflow(
+            name="root",
+            edges=[
+                (START, tuple(agents)),
+                *((agent, join) for agent in agents),
+            ],
+        )
+    )
+  elif structure == "parallel":
+    runner = testing_utils.InMemoryRunner(
+        app=App(
+            name="test_app",
+            root_agent=ParallelAgent(name="root", sub_agents=agents),
+            resumability_config=ResumabilityConfig(is_resumable=True),
+        )
+    )
+  else:
+
+    @node(rerun_on_resume=True)
+    async def fanout(ctx: Context):
+      return await asyncio.gather(*[
+          ctx.run_node(
+              agent,
+              node_input="go",
+              run_id=agent.name,
+              use_sub_branch=structure == "nested" and agent.name != "a",
+              override_isolation_scope=f"scope_{agent.name}"
+              if structure == "scopes"
+              else None,
+          )
+          for agent in agents
+      ])
+
+    runner = testing_utils.InMemoryRunner(
+        node=Workflow(name="root", edges=[(START, fanout)])
+    )
+
+  try:
+    events = await runner.run_async("go")
+    pending = {
+        event.author: call
+        for event in events
+        for call in event.get_function_calls()
+        if call.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+    }
+    assert set(pending) == set(names)
+    assert ran == []
+    invocation_id = events[0].invocation_id
+    verdicts = dict(zip(("a", "b"), confirmed))
+
+    def answer(who):
+      call = pending[who]
+      return Part(
+          function_response=FunctionResponse(
+              id=call.id, name=call.name, response={"confirmed": verdicts[who]}
+          )
+      )
+
+    messages = (
+        [[answer(who)] for who in order]
+        if separate_messages
+        else [[answer(who) for who in order]]
+    )
+    for parts in messages:
+      resume_events = [
+          event
+          async for event in runner.runner.run_async(
+              user_id=runner.session.user_id,
+              session_id=runner.session.id,
+              new_message=Content(role="user", parts=parts),
+              invocation_id=invocation_id,
+              yield_user_message=True,
+          )
+      ]
+      if structure != "parallel":
+        user_events = [
+            event for event in resume_events if event.author == "user"
+        ]
+        assert [
+            response.id
+            for event in user_events
+            for response in event.get_function_responses()
+        ] == [part.function_response.id for part in parts]
+
+    assert sorted(ran) == sorted(who for who in ("a", "b") if verdicts[who])
+    if "c" in models:
+      assert len(models["c"].requests) == 1
+    for who in ("a", "b"):
+      assert len(models[who].requests) == 2
+      results = [
+          part.function_response.response
+          for content in models[who].requests[-1].contents
+          for part in content.parts or []
+          if part.function_response
+      ]
+      assert results == [
+          {"result": f"{who} acted"}
+          if verdicts[who]
+          else {"error": "This tool call is rejected."}
+      ]
+
+    if "c" in models:
+      verdicts["c"] = True
+      await runner.run_async(
+          Content(role="user", parts=[answer("c")]), invocation_id=invocation_id
+      )
+      assert sorted(ran) == sorted(who for who in names if verdicts[who])
+      assert len(models["c"].requests) == 2
+  finally:
+    await runner.runner.close()
 
 
 def _create_llm_response_from_tools(
