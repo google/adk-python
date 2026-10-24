@@ -26,10 +26,13 @@ from typing import Mapping
 from typing import Optional
 from typing import Sequence
 
+from opentelemetry.sdk.trace import Event
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter
 from opentelemetry.sdk.trace.export import SpanExportResult
 from opentelemetry.trace import SpanContext
+from opentelemetry.trace import Status
+from opentelemetry.trace import StatusCode
 from opentelemetry.trace import TraceFlags
 from opentelemetry.trace import TraceState
 from opentelemetry.util.types import AttributeValue
@@ -46,9 +49,20 @@ CREATE TABLE IF NOT EXISTS spans (
   end_time_unix_nano INTEGER,
   session_id TEXT,
   invocation_id TEXT,
-  attributes_json TEXT
+  attributes_json TEXT,
+  status_code TEXT,
+  status_description TEXT,
+  events_json TEXT
 );
 """
+
+# Columns added after the first release of this exporter. A database file
+# written by an older version lacks them, so they are added on open.
+_ADDED_COLUMNS = (
+    ("status_code", "TEXT"),
+    ("status_description", "TEXT"),
+    ("events_json", "TEXT"),
+)
 
 _CREATE_SESSION_INDEX = """
 CREATE INDEX IF NOT EXISTS spans_session_id_idx ON spans(session_id);
@@ -68,8 +82,11 @@ INSERT OR REPLACE INTO spans (
   end_time_unix_nano,
   session_id,
   invocation_id,
-  attributes_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+  attributes_json,
+  status_code,
+  status_description,
+  events_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 """
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -102,6 +119,12 @@ class SqliteSpanExporter(SpanExporter):
     with self._lock:
       conn = self._get_connection()
       conn.execute(_CREATE_SPANS_TABLE)
+      existing = {
+          row["name"] for row in conn.execute("PRAGMA table_info(spans)")
+      }
+      for name, column_type in _ADDED_COLUMNS:
+        if name not in existing:
+          conn.execute(f"ALTER TABLE spans ADD COLUMN {name} {column_type}")
       conn.execute(_CREATE_SESSION_INDEX)
       conn.execute(_CREATE_TRACE_INDEX)
       conn.commit()
@@ -132,6 +155,56 @@ class SqliteSpanExporter(SpanExporter):
     if not isinstance(decoded, dict):
       return {}
     return cast(dict[str, AttributeValue], decoded)
+
+  def _serialize_events(self, events: Sequence[Event]) -> str:
+    return json.dumps(
+        [
+            {
+                "name": event.name,
+                "timestamp": event.timestamp,
+                "attributes": dict(event.attributes or {}),
+            }
+            for event in events
+        ],
+        ensure_ascii=False,
+        default=lambda o: "<not serializable>",
+    )
+
+  def _deserialize_events(self, events_json: object) -> list[Event]:
+    if not isinstance(events_json, (str, bytes, bytearray)):
+      return []
+    try:
+      decoded: object = json.loads(events_json)
+    except (json.JSONDecodeError, TypeError) as e:
+      logger.debug("Failed to deserialize span events: %r", e)
+      return []
+    if not isinstance(decoded, list):
+      return []
+    events: list[Event] = []
+    for item in decoded:
+      if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+        continue
+      attributes = item.get("attributes")
+      events.append(
+          Event(
+              name=item["name"],
+              attributes=attributes if isinstance(attributes, dict) else None,
+              timestamp=item.get("timestamp"),
+          )
+      )
+    return events
+
+  def _deserialize_status(
+      self, status_code: object, status_description: object
+  ) -> Status:
+    try:
+      code = StatusCode[str(status_code)]
+    except KeyError:
+      return Status(StatusCode.UNSET)
+    # OpenTelemetry keeps a description only for an error status.
+    if code is StatusCode.ERROR and isinstance(status_description, str):
+      return Status(code, status_description)
+    return Status(code)
 
   def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
     try:
@@ -167,6 +240,9 @@ class SqliteSpanExporter(SpanExporter):
               session_id,
               invocation_id,
               self._serialize_attributes(attributes),
+              span.status.status_code.name,
+              span.status.description,
+              self._serialize_events(span.events),
           ))
         conn.executemany(_INSERT_SPAN, rows)
         conn.commit()
@@ -224,6 +300,10 @@ class SqliteSpanExporter(SpanExporter):
         attributes=attributes,
         start_time=row["start_time_unix_nano"],
         end_time=row["end_time_unix_nano"],
+        status=self._deserialize_status(
+            row["status_code"], row["status_description"]
+        ),
+        events=self._deserialize_events(row["events_json"]),
     )
 
   def get_all_spans_for_session(self, session_id: str) -> list[ReadableSpan]:

@@ -16,11 +16,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sqlite3
 
 from google.adk.telemetry.sqlite_span_exporter import SqliteSpanExporter
+from opentelemetry.sdk.trace import Event
 from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export import SpanExportResult
 from opentelemetry.trace import SpanContext
+from opentelemetry.trace import Status
+from opentelemetry.trace import StatusCode
 from opentelemetry.trace import TraceFlags
 from opentelemetry.trace import TraceState
 
@@ -460,3 +466,131 @@ def test_get_spans_ordered_by_start_time(tmp_path):
   assert result[0].context.span_id == 0x100
   assert result[1].context.span_id == 0x200
   assert result[2].context.span_id == 0x300
+
+
+def test_round_trip_preserves_error_status_and_events(tmp_path):
+  exporter = SqliteSpanExporter(db_path=str(tmp_path / "test.db"))
+  context = SpanContext(
+      trace_id=0xDEF45,
+      span_id=0xABC12,
+      is_remote=False,
+      trace_flags=TraceFlags(TraceFlags.SAMPLED),
+      trace_state=TraceState(),
+  )
+  span = ReadableSpan(
+      name="failing_tool",
+      context=context,
+      attributes={"gcp.vertex.agent.session_id": "s1"},
+      start_time=1000,
+      end_time=2000,
+      status=Status(StatusCode.ERROR, "ValueError: boom"),
+      events=[
+          Event(
+              name="exception",
+              attributes={
+                  "exception.type": "ValueError",
+                  "exception.message": "boom",
+              },
+              timestamp=1500,
+          )
+      ],
+  )
+
+  assert exporter.export([span]) == SpanExportResult.SUCCESS
+  (restored,) = exporter.get_all_spans_for_session("s1")
+
+  assert restored.status.status_code is StatusCode.ERROR
+  assert restored.status.description == "ValueError: boom"
+  assert len(restored.events) == 1
+  event = restored.events[0]
+  assert event.name == "exception"
+  assert event.timestamp == 1500
+  assert dict(event.attributes) == {
+      "exception.type": "ValueError",
+      "exception.message": "boom",
+  }
+
+
+def test_exception_raised_inside_a_real_span_is_read_back(tmp_path):
+  """The case from the issue: a run that fails must not read back as clean."""
+  exporter = SqliteSpanExporter(db_path=str(tmp_path / "test.db"))
+  provider = TracerProvider()
+  provider.add_span_processor(SimpleSpanProcessor(exporter))
+  tracer = provider.get_tracer(__name__)
+
+  try:
+    with tracer.start_as_current_span(
+        "run", attributes={"gcp.vertex.agent.session_id": "s1"}
+    ):
+      raise ValueError("boom")
+  except ValueError:
+    pass
+
+  (restored,) = exporter.get_all_spans_for_session("s1")
+
+  assert restored.status.status_code is StatusCode.ERROR
+  assert "boom" in (restored.status.description or "")
+  assert [event.name for event in restored.events] == ["exception"]
+  assert restored.events[0].attributes["exception.type"] == "ValueError"
+
+
+def test_span_without_status_or_events_reads_back_unset_and_empty(tmp_path):
+  exporter = SqliteSpanExporter(db_path=str(tmp_path / "test.db"))
+  exporter.export(
+      [_create_span(attributes={"gcp.vertex.agent.session_id": "s1"})]
+  )
+
+  (restored,) = exporter.get_all_spans_for_session("s1")
+
+  assert restored.status.status_code is StatusCode.UNSET
+  assert list(restored.events) == []
+
+
+def test_database_from_older_version_gains_the_new_columns(tmp_path):
+  """A file written before status and events were stored keeps working."""
+  db_path = tmp_path / "old.db"
+  conn = sqlite3.connect(db_path)
+  conn.execute("""
+      CREATE TABLE spans (
+        span_id TEXT PRIMARY KEY,
+        trace_id TEXT NOT NULL,
+        parent_span_id TEXT,
+        name TEXT NOT NULL,
+        start_time_unix_nano INTEGER,
+        end_time_unix_nano INTEGER,
+        session_id TEXT,
+        invocation_id TEXT,
+        attributes_json TEXT
+      )
+      """)
+  conn.execute(
+      "INSERT INTO spans VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      (
+          "00000000000abc12",
+          "0" * 27 + "def45",
+          None,
+          "old",
+          1,
+          2,
+          "s1",
+          None,
+          "{}",
+      ),
+  )
+  conn.commit()
+  conn.close()
+
+  exporter = SqliteSpanExporter(db_path=str(db_path))
+  exporter.export([
+      _create_span(
+          span_id=0x999,
+          name="new",
+          attributes={"gcp.vertex.agent.session_id": "s1"},
+          start_time=5,
+      )
+  ])
+
+  old, new = exporter.get_all_spans_for_session("s1")
+  assert (old.name, new.name) == ("old", "new")
+  assert old.status.status_code is StatusCode.UNSET
+  assert list(old.events) == []
