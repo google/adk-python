@@ -14,6 +14,7 @@
 
 import asyncio
 import inspect
+import json
 import logging
 import time
 from types import SimpleNamespace
@@ -666,6 +667,79 @@ class TestMCPToolWithJsonSchema:
 
     assert declaration.response is None
     assert not declaration.response_json_schema
+
+  def test_get_declaration_with_output_schema_under_bound_sent(self):
+    """Test a serialized output schema within the size bound is sent."""
+    output_schema = {
+        "type": "object",
+        "properties": {
+            "result": {
+                "type": "string",
+                "description": "The result of the operation",
+            },
+        },
+    }
+    tool = MCPTool(
+        mcp_tool=MockMCPTool(outputSchema=output_schema),
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
+      declaration = tool._get_declaration()
+
+    assert declaration.response is None
+    assert declaration.response_json_schema == output_schema
+
+  def test_get_declaration_with_oversized_output_schema_dropped_with_warning(
+      self, caplog
+  ):
+    """Test an output schema over the size bound is dropped with one warning."""
+    output_schema = {
+        "type": "object",
+        "properties": {
+            "result": {"type": "string", "description": "x" * 1100},
+        },
+    }
+    tool = MCPTool(
+        mcp_tool=MockMCPTool(outputSchema=output_schema, name="get_dashboard"),
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    with (
+        caplog.at_level(logging.WARNING),
+        temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True),
+    ):
+      declaration = tool._get_declaration()
+
+    assert declaration.response is None
+    assert declaration.response_json_schema is None
+    warning_records = [
+        record for record in caplog.records if record.levelno == logging.WARNING
+    ]
+    assert len(warning_records) == 1
+    message = warning_records[0].getMessage()
+    assert "get_dashboard" in message
+    serialized_length = len(json.dumps(output_schema, separators=(",", ":")))
+    assert str(serialized_length) in message
+
+  def test_get_declaration_without_output_schema_and_json_schema_for_func_decl_enabled(
+      self,
+  ):
+    """Test function declaration generation without any output schema."""
+    tool = MCPTool(
+        mcp_tool=MockMCPTool(outputSchema=None),
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
+      declaration = tool._get_declaration()
+
+    assert declaration.response is None
+    assert declaration.response_json_schema is None
 
 
 class TestMCPTool:
