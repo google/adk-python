@@ -1043,11 +1043,15 @@ class ChatCompletionsResponseHandler:
     reasoning_tokens = (usage.get('completion_tokens_details', {}) or {}).get(
         'reasoning_tokens', 0
     ) or 0
+    cached_tokens = (usage.get('prompt_tokens_details', {}) or {}).get(
+        'cached_tokens', 0
+    ) or 0
     usage_metadata = types.GenerateContentResponseUsageMetadata(
         prompt_token_count=usage.get('prompt_tokens', 0),
         candidates_token_count=usage.get('completion_tokens', 0),
         total_token_count=usage.get('total_tokens', 0),
         thoughts_token_count=reasoning_tokens if reasoning_tokens else None,
+        cached_content_token_count=cached_tokens if cached_tokens else None,
     )
     logprobs_result = _parse_logprobs(choice.get('logprobs'))
 
@@ -1082,10 +1086,18 @@ class ChatCompletionsResponseHandler:
 
     usage_metadata = None
     if self.usage:
+      reasoning_tokens = (
+          self.usage.get('completion_tokens_details', {}) or {}
+      ).get('reasoning_tokens', 0) or 0
+      cached_tokens = (
+          self.usage.get('prompt_tokens_details', {}) or {}
+      ).get('cached_tokens', 0) or 0
       usage_metadata = types.GenerateContentResponseUsageMetadata(
           prompt_token_count=self.usage.get('prompt_tokens', 0),
           candidates_token_count=self.usage.get('completion_tokens', 0),
           total_token_count=self.usage.get('total_tokens', 0),
+          thoughts_token_count=reasoning_tokens if reasoning_tokens else None,
+          cached_content_token_count=cached_tokens if cached_tokens else None,
       )
 
     choices = chunk.get('choices')
