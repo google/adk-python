@@ -123,15 +123,14 @@ class TestFromResponseDict:
 
   def test_single_response_key_with_bytes_is_unwrapped_and_json_decoded(self):
     """The wrapper payload may be raw UTF-8 JSON bytes."""
-    confirmation = ToolConfirmation.from_response_dict({
-        "response": json.dumps({"hint": "h", "confirmed": True}).encode("utf-8")
-    })
+    raw = json.dumps({"hint": "h", "confirmed": True}).encode("utf-8")
+    confirmation = ToolConfirmation.from_response_dict({"response": raw})
 
     assert confirmation.hint == "h"
     assert confirmation.confirmed is True
 
-  def test_single_response_key_with_invalid_inner_value_raises_validation_error(self):
-    """A wrapper whose inner value is not a valid dict or string raises ValidationError."""
+  def test_single_response_key_with_invalid_inner_value(self):
+    """Invalid inner value in wrapper raises ValidationError."""
     with pytest.raises(ValidationError):
       ToolConfirmation.from_response_dict({"response": 123})
 

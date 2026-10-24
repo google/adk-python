@@ -27,10 +27,9 @@ from google.adk.events.event import NodeInfo
 from google.adk.events.request_input import RequestInput
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
-from google.adk.workflow.utils._rehydration_utils import _ChildScanState
 from google.adk.workflow._errors import WorkflowDataError
+from google.adk.workflow.utils._rehydration_utils import _ChildScanState
 from google.adk.workflow.utils._workflow_hitl_utils import apply_confirmation_resume
-from google.adk.workflow.utils._workflow_hitl_utils import parse_tool_confirmation
 from google.adk.workflow.utils._workflow_hitl_utils import auth_interrupt_id
 from google.adk.workflow.utils._workflow_hitl_utils import confirmation_interrupt_id
 from google.adk.workflow.utils._workflow_hitl_utils import create_auth_request_event
@@ -38,6 +37,7 @@ from google.adk.workflow.utils._workflow_hitl_utils import create_confirmation_r
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_event
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
 from google.adk.workflow.utils._workflow_hitl_utils import has_auth_credential
+from google.adk.workflow.utils._workflow_hitl_utils import parse_tool_confirmation
 from google.adk.workflow.utils._workflow_hitl_utils import process_auth_resume
 from google.genai import types
 import pytest
@@ -75,7 +75,7 @@ def test_apply_confirmation_resume():
 
 
 def test_apply_confirmation_resume_wrapped_parsed_dict():
-  """apply_confirmation_resume sets ctx.tool_confirmation from wrapped pre-parsed dict."""
+  """Resume sets tool_confirmation from a wrapped parsed dict."""
   ctx = MagicMock()
   ctx.node_path = "wf@1/node@1"
   ctx.tool_confirmation = None
@@ -94,10 +94,18 @@ def test_apply_confirmation_resume_wrapped_parsed_dict():
   )
 
 
-def test_parse_tool_confirmation_invalid_inner_value_raises_workflow_data_error():
-  """Invalid inner value in response wrapper raises WorkflowDataError, not TypeError."""
-  with pytest.raises(WorkflowDataError, match="Invalid tool confirmation response"):
+def test_parse_tool_confirmation_invalid_inner_value():
+  """Invalid inner value in wrapper raises WorkflowDataError."""
+  with pytest.raises(
+      WorkflowDataError, match="Invalid tool confirmation response"
+  ):
     parse_tool_confirmation({"response": 123})
+
+
+def test_parse_tool_confirmation_wrapped_dict_with_none_field():
+  """Omitted fields serialized as None inside wrapper are dropped."""
+  res = parse_tool_confirmation({"response": {"confirmed": True, "hint": None}})
+  assert res == ToolConfirmation(confirmed=True)
 
 
 def test_create_confirmation_request_input():

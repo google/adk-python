@@ -63,10 +63,17 @@ def parse_tool_confirmation(response: Any) -> ToolConfirmation:
         'A tool confirmation response must be a ToolConfirmation payload, but'
         f' got {type(response).__name__}.'
     )
+  cleaned = {k: v for k, v in response.items() if v is not None}
+  if (
+      len(cleaned) == 1
+      and 'response' in cleaned
+      and isinstance(cleaned['response'], dict)
+  ):
+    cleaned['response'] = {
+        k: v for k, v in cleaned['response'].items() if v is not None
+    }
   try:
-    return ToolConfirmation.from_response_dict(
-        {k: v for k, v in response.items() if v is not None}
-    )
+    return ToolConfirmation.from_response_dict(cleaned)
   except ValueError as e:
     raise WorkflowDataError(
         f'Invalid tool confirmation response: {response!r}'
