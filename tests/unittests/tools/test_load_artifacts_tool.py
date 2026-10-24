@@ -206,7 +206,20 @@ async def test_load_artifacts_converts_csv_octet_stream_to_text():
 
 
 @pytest.mark.asyncio
-async def test_load_artifacts_converts_docx_to_text():
+@pytest.mark.parametrize(
+    ('xml_text', 'expected_text'),
+    [
+        ('Hello DOCX', 'Hello DOCX'),
+        ('Research &amp; Development', 'Research & Development'),
+        ('x &lt; 5 &amp;&amp; y &gt; 1', 'x < 5 && y > 1'),
+        ('&quot;Hello&quot; &apos;world&apos;', '"Hello" \'world\''),
+        ('&#20013;&#x6587; &#x1F600;', '中文 😀'),
+        ('Literal &amp;lt; and &amp;#65;', 'Literal &lt; and &#65;'),
+        ('&#x80;', '\x80'),
+        ('&unknown; &#0; &#x110000;', '&unknown; &#0; &#x110000;'),
+    ],
+)
+async def test_load_artifacts_converts_docx_to_text(xml_text, expected_text):
   """DOCX binary payloads are extracted to raw text."""
   artifact_name = 'document.docx'
 
@@ -215,9 +228,9 @@ async def test_load_artifacts_converts_docx_to_text():
   with zipfile.ZipFile(docx_bytes_io, 'w') as zf:
     zf.writestr(
         'word/document.xml',
-        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:document'
-        b' xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:t>Hello'
-        b' DOCX</w:t></w:p></w:body></w:document>',
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:document'
+        ' xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f'<w:body><w:p><w:t>{xml_text}</w:t></w:p></w:body></w:document>',
     )
 
   docx_bytes = docx_bytes_io.getvalue()
@@ -251,7 +264,7 @@ async def test_load_artifacts_converts_docx_to_text():
 
   artifact_part = llm_request.contents[-1].parts[1]
   assert artifact_part.inline_data is None
-  assert artifact_part.text == 'Hello DOCX'
+  assert artifact_part.text == expected_text
 
 
 @pytest.mark.asyncio
