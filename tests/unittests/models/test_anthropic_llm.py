@@ -2122,6 +2122,72 @@ async def test_streaming_text_yields_partial_and_final():
 
 
 @pytest.mark.asyncio
+async def test_streaming_takes_final_input_and_cache_counts_from_message_delta():
+  """message_delta carries the cumulative input and cache counts."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=anthropic_types.Usage(
+                  input_tokens=3,
+                  output_tokens=1,
+                  cache_read_input_tokens=0,
+                  cache_creation_input_tokens=0,
+              ),
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.TextDelta(text="Hi", type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=anthropic_types.MessageDeltaUsage(
+              output_tokens=7,
+              input_tokens=120,
+              cache_read_input_tokens=30,
+              cache_creation_input_tokens=10,
+          ),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="You are helpful"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  usage = responses[-1].usage_metadata
+  assert usage.prompt_token_count == 160
+  assert usage.cached_content_token_count == 30
+  assert usage.candidates_token_count == 7
+  assert usage.total_token_count == 167
+  assert usage.cache_creation_input_tokens == 10
+
+
+@pytest.mark.asyncio
 async def test_streaming_tool_use_yields_function_call():
   """Streaming tool_use should accumulate args and yield in final."""
   llm = AnthropicLlm(model="claude-sonnet-4-20250514")

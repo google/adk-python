@@ -787,6 +787,14 @@ def _extract_cached_token_count(usage: Any) -> int | None:
   return cached if isinstance(cached, int) else None
 
 
+def _extract_uncached_input_token_count(
+    usage: Any, default: int | None = 0
+) -> int | None:
+  """Returns ``input_tokens``, the part of the prompt outside the cache."""
+  value = getattr(usage, "input_tokens", None)
+  return value if isinstance(value, int) else default
+
+
 def _extract_prompt_token_count(usage: anthropic_types.Usage) -> int:
   """Returns every input token billed for the turn.
 
@@ -1355,7 +1363,7 @@ class AnthropicLlm(BaseLlm):
     tool_use_blocks: dict[int, _ToolUseAccumulator] = {}
     thinking_blocks: dict[int, _ThinkingAccumulator] = {}
     redacted_thinking_blocks: dict[int, str] = {}
-    input_tokens = 0
+    uncached_input_tokens = 0
     output_tokens = 0
     thinking_tokens: int | None = None
     cached_input_tokens: int | None = None
@@ -1365,7 +1373,9 @@ class AnthropicLlm(BaseLlm):
 
     async for event in raw_stream:
       if event.type == "message_start":
-        input_tokens = _extract_prompt_token_count(event.message.usage)
+        uncached_input_tokens = _extract_uncached_input_token_count(
+            event.message.usage
+        )
         output_tokens = event.message.usage.output_tokens
         thinking_tokens = _extract_thinking_token_count(event.message.usage)
         cached_input_tokens = _extract_cached_token_count(event.message.usage)
@@ -1503,6 +1513,17 @@ class AnthropicLlm(BaseLlm):
         # thinking detail is refreshed alongside the total it is nested in.
         output_tokens = event.usage.output_tokens
         thinking_tokens = _extract_thinking_token_count(event.usage)
+        # The input and cache counts are cumulative here too, and are final
+        # where ``message_start`` could only report what it knew up front.
+        final_uncached = _extract_uncached_input_token_count(event.usage, None)
+        if final_uncached is not None:
+          uncached_input_tokens = final_uncached
+        final_cached = _extract_cached_token_count(event.usage)
+        if final_cached is not None:
+          cached_input_tokens = final_cached
+        final_creation = _extract_cache_creation_token_count(event.usage)
+        if final_creation is not None:
+          cache_creation_tokens = final_creation
         if event.delta and event.delta.stop_reason:
           stop_reason = event.delta.stop_reason
 
@@ -1548,6 +1569,11 @@ class AnthropicLlm(BaseLlm):
         function_call.id = tool_acc.id
         all_parts.append(part)
 
+    input_tokens = (
+        uncached_input_tokens
+        + (cached_input_tokens or 0)
+        + (cache_creation_tokens or 0)
+    )
     usage_metadata = types.GenerateContentResponseUsageMetadata(
         prompt_token_count=input_tokens,
         candidates_token_count=output_tokens - (thinking_tokens or 0),
