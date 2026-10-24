@@ -23,6 +23,8 @@ from a2a.types import Message
 from a2a.types import TaskStatusUpdateEvent
 
 from .. import _compat
+from ...events._branch_path import _BranchPath
+from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
 from ..converters.utils import _get_adk_metadata_key as _get_adk_metadata_key
 from .config import ExecuteInterceptor
@@ -121,3 +123,105 @@ async def execute_after_agent_interceptors(
             executor_context, final_event
         )
   return final_event
+
+
+def _is_error_event(event: Event) -> bool:
+  """Returns whether the ADK event reports an error."""
+  # Fields are read defensively: the v1 executor only hands events to a
+  # (possibly custom) converter, so it must not assume a full ADK event.
+  return bool(
+      getattr(event, 'error_code', None)
+      or getattr(event, 'error_message', None)
+  )
+
+
+def _is_root_agent_event(event: Event) -> bool:
+  """Returns whether the event was emitted by the root agent or node itself.
+
+  The root's own events carry a single-segment node path (e.g. ``'root@1'``),
+  while events from sub-agents and child nodes are nested under it (e.g.
+  ``'root@1/helper@1'``).
+  """
+  path = getattr(getattr(event, 'node_info', None), 'path', None)
+  if not path or not isinstance(path, str):
+    return False
+  return _NodePathBuilder.from_string(path).parent is None
+
+
+def _has_result_payload(event: Event) -> bool:
+  """Returns whether the event carries a node output or user-visible content."""
+  if getattr(event, 'output', None) is not None:
+    return True
+  content = getattr(event, 'content', None)
+  if not content or not content.parts:
+    return False
+  for part in content.parts:
+    if part.thought:
+      continue
+    if (part.text and part.text.strip()) or part.inline_data or part.file_data:
+      return True
+  return False
+
+
+def _is_successful_result(event: Event) -> bool:
+  """Returns whether the event is a complete, error-free result.
+
+  A result is a final, non-partial, agent-authored response that carries a
+  node output or user-visible content (non-thought text, inline data or file
+  data). Function calls and responses, thought-only and state-only events are
+  not results.
+  """
+  if (
+      getattr(event, 'author', None) == 'user'
+      or getattr(event, 'partial', None)
+      or _is_error_event(event)
+      or not _has_result_payload(event)
+  ):
+    return False
+  return event.is_final_response()
+
+
+def _is_in_branch_scope(branch: str | None, scope: str | None) -> bool:
+  """Returns whether ``branch`` is ``scope`` itself or nested under it."""
+  branch_path = _BranchPath.from_string(
+      branch if isinstance(branch, str) else None
+  )
+  scope_path = _BranchPath.from_string(
+      scope if isinstance(scope, str) else None
+  )
+  return branch_path == scope_path or branch_path.is_descendant_of(scope_path)
+
+
+class _ErrorRecoveryTracker:
+  """Tracks the error events of a run and whether the run recovered from them.
+
+  An error event no longer means the run is over: a sub-agent or a workflow
+  node can fail, and the run continues and produces an answer. An error is
+  recovered from once a later successful result is emitted from the same or an
+  enclosing branch, so a sibling branch succeeding does not hide a failure.
+  Errors emitted by the root agent itself are never recovered from.
+  """
+
+  def __init__(self) -> None:
+    self._unresolved_errors: list[Event] = []
+
+  def observe(self, event: Event) -> None:
+    """Records an event emitted by the run, in emission order."""
+    if _is_error_event(event):
+      self._unresolved_errors.append(event)
+      return
+    if not _is_successful_result(event):
+      return
+    self._unresolved_errors = [
+        error
+        for error in self._unresolved_errors
+        if _is_root_agent_event(error)
+        or not _is_in_branch_scope(
+            getattr(error, 'branch', None), getattr(event, 'branch', None)
+        )
+    ]
+
+  @property
+  def unresolved_error(self) -> Event | None:
+    """The latest error event the run has not recovered from, if any."""
+    return self._unresolved_errors[-1] if self._unresolved_errors else None

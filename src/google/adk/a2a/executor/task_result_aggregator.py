@@ -29,8 +29,14 @@ class TaskResultAggregator:
   """Aggregates the task status updates and provides the final task state."""
 
   def __init__(self) -> None:
+    # The state and message from the non-failure signals (auth required,
+    # input required, working). A failure is recorded separately, so that
+    # these keep being tracked while the task is failed and survive a failure
+    # that the run recovers from.
     self._task_state = _compat.TS_WORKING
     self._task_status_message: Message | None = None
+    self._failed = False
+    self._failure_message: Message | None = None
 
   def process_event(self, event: Event) -> None:
     """Process an event from the agent run and detect signals about the task status.
@@ -39,25 +45,16 @@ class TaskResultAggregator:
     """
     if isinstance(event, TaskStatusUpdateEvent):
       if event.status.state == _compat.TS_FAILED:
-        self._task_state = _compat.TS_FAILED
-        self._task_status_message = _compat.normalize_message(
-            event.status.message
-        )
-      elif (
-          event.status.state == _compat.TS_AUTH_REQUIRED
-          and self._task_state != _compat.TS_FAILED
-      ):
+        self._failed = True
+        self._failure_message = _compat.normalize_message(event.status.message)
+      elif event.status.state == _compat.TS_AUTH_REQUIRED:
         self._task_state = _compat.TS_AUTH_REQUIRED
         self._task_status_message = _compat.normalize_message(
             event.status.message
         )
       elif (
           event.status.state == _compat.TS_INPUT_REQUIRED
-          and self._task_state
-          not in (
-              _compat.TS_FAILED,
-              _compat.TS_AUTH_REQUIRED,
-          )
+          and self._task_state != _compat.TS_AUTH_REQUIRED
       ):
         self._task_state = _compat.TS_INPUT_REQUIRED
         self._task_status_message = _compat.normalize_message(
@@ -80,10 +77,22 @@ class TaskResultAggregator:
       if hasattr(event, "final"):
         event.final = False
 
+  def _clear_failure(self) -> None:
+    """Forgets the recorded failure, falling back to the non-failure state.
+
+    Used by the executor when the run recovered from every error it emitted.
+    """
+    self._failed = False
+    self._failure_message = None
+
   @property
   def task_state(self) -> Any:
+    if self._failed:
+      return _compat.TS_FAILED
     return self._task_state
 
   @property
   def task_status_message(self) -> Message | None:
+    if self._failed:
+      return self._failure_message
     return self._task_status_message

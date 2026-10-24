@@ -25,7 +25,6 @@ from a2a.server.agent_execution import RequestContext
 from a2a.server.events.event_queue import EventQueue
 from a2a.types import Message
 from a2a.types import Task
-from a2a.types import TaskStatusUpdateEvent
 from typing_extensions import override
 
 from .. import _compat
@@ -42,6 +41,7 @@ from ..experimental import a2a_experimental
 from .config import A2aAgentExecutorConfig
 from .executor_context import ExecutorContext
 from .utils import _enqueue_canceled_task_event
+from .utils import _ErrorRecoveryTracker
 from .utils import _require_request_context
 from .utils import _require_user_id
 from .utils import execute_after_agent_interceptors
@@ -187,19 +187,14 @@ class _A2aAgentExecutor(AgentExecutor):
   ) -> None:
     _, task_id, context_id = _require_request_context(context)
     agents_artifact: dict[str, str] = {}
-    error_event: TaskStatusUpdateEvent | None = None
+    error_tracker = _ErrorRecoveryTracker()
     long_running_functions = LongRunningFunctions(
         self._config.gen_ai_part_converter
     )
     async with Aclosing(runner.run_async(**vars(run_request))) as agen:
       async for adk_event in agen:
         # Handle error scenarios
-        if adk_event and (adk_event.error_code or adk_event.error_message):
-          error_event = create_error_status_event(
-              adk_event,
-              task_id,
-              context_id,
-          )
+        error_tracker.observe(adk_event)
 
         # Handle long running function calls
         adk_event = long_running_functions.process_event(adk_event)
@@ -223,8 +218,14 @@ class _A2aAgentExecutor(AgentExecutor):
           for e in a2a_events:
             await event_queue.enqueue_event(e)
 
-    if error_event:
-      final_event = error_event
+    # An error the run recovered from (e.g. a failed sub-agent whose parent
+    # went on to answer) does not fail the task.
+    if unresolved_error := error_tracker.unresolved_error:
+      final_event = create_error_status_event(
+          unresolved_error,
+          task_id,
+          context_id,
+      )
     elif long_running_functions.has_long_running_function_calls():
       long_running_event = (
           long_running_functions.create_long_running_function_call_event(
