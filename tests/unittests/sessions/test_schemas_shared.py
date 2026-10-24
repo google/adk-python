@@ -81,6 +81,18 @@ def test_dynamic_json_serializes_to_json_text_for_non_postgresql(dynamic_json):
   assert dynamic_json.process_result_value(bound, dialect) == value
 
 
+def test_dynamic_json_keeps_non_ascii_text_unescaped(dynamic_json):
+  """Non-ASCII text is stored as-is rather than as \\uXXXX escapes."""
+  dialect = _dialect("sqlite")
+  value = {"greeting": "こんにちは", "nested": ["世界"]}
+
+  bound = dynamic_json.process_bind_param(value, dialect)
+
+  assert "こんにちは" in bound
+  assert "\\u" not in bound
+  assert dynamic_json.process_result_value(bound, dialect) == value
+
+
 def test_dynamic_json_passes_values_through_for_postgresql(dynamic_json):
   """JSONB accepts and returns Python objects, so no conversion happens."""
   dialect = _dialect("postgresql")

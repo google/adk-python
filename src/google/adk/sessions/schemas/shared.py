@@ -70,7 +70,8 @@ class DynamicJSON(TypeDecorator[dict[str, Any]]):  # type: ignore[misc]
     if value is not None:
       if dialect.name == "postgresql":
         return value  # JSONB handles dict directly
-      return json.dumps(value)  # Serialize to JSON string for TEXT
+      # Keep non-ASCII text readable in the database instead of \uXXXX escapes.
+      return json.dumps(value, ensure_ascii=False)  # JSON string for TEXT
     return value
 
   def process_result_value(
