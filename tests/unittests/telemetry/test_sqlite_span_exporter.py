@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sqlite3
 
 from google.adk.telemetry.sqlite_span_exporter import SqliteSpanExporter
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExportResult
 from opentelemetry.trace import SpanContext
+from opentelemetry.trace import SpanKind
 from opentelemetry.trace import TraceFlags
 from opentelemetry.trace import TraceState
 
@@ -32,6 +34,7 @@ def _create_span(
     parent_span_id: int | None = None,
     name: str = "test_span",
     attributes: dict | None = None,
+    kind: SpanKind = SpanKind.INTERNAL,
     start_time: int = 1000,
     end_time: int = 2000,
 ) -> ReadableSpan:
@@ -58,6 +61,7 @@ def _create_span(
       name=name,
       context=context,
       parent=parent,
+      kind=kind,
       attributes=attributes or {},
       start_time=start_time,
       end_time=end_time,
@@ -225,6 +229,86 @@ def test_round_trip_preserves_span_attributes(tmp_path):
   assert retrieved.start_time == 1000000
   assert retrieved.end_time == 2000000
   assert retrieved.attributes == original_attributes
+
+
+def test_span_kinds_survive_exporter_restart(tmp_path):
+  db_path = tmp_path / "test.db"
+  kinds = [
+      SpanKind.CLIENT,
+      SpanKind.SERVER,
+      SpanKind.PRODUCER,
+      SpanKind.CONSUMER,
+  ]
+  exporter = SqliteSpanExporter(db_path=str(db_path))
+  spans = [
+      _create_span(
+          span_id=index + 1,
+          kind=kind,
+          attributes={"gen_ai.conversation.id": "session-kind"},
+          start_time=index,
+      )
+      for index, kind in enumerate(kinds)
+  ]
+  assert exporter.export(spans) == SpanExportResult.SUCCESS
+  exporter.shutdown()
+
+  reopened = SqliteSpanExporter(db_path=str(db_path))
+  try:
+    restored = reopened.get_all_spans_for_session("session-kind")
+    assert [(span.context.span_id, span.kind) for span in restored] == [
+        (index + 1, kind) for index, kind in enumerate(kinds)
+    ]
+  finally:
+    reopened.shutdown()
+
+
+def test_legacy_database_retains_spans_and_accepts_new_kinds(tmp_path):
+  db_path = tmp_path / "legacy.db"
+  with sqlite3.connect(db_path) as conn:
+    conn.execute("""
+        CREATE TABLE spans (
+          span_id TEXT PRIMARY KEY, trace_id TEXT NOT NULL,
+          parent_span_id TEXT, name TEXT NOT NULL,
+          start_time_unix_nano INTEGER, end_time_unix_nano INTEGER,
+          session_id TEXT, invocation_id TEXT, attributes_json TEXT
+        )
+    """)
+    conn.execute(
+        "INSERT INTO spans VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "0000000000000001",
+            "000000000000000000000000000def45",
+            None,
+            "legacy_operation",
+            1000,
+            2000,
+            "session-legacy",
+            None,
+            '{"gen_ai.conversation.id": "session-legacy"}',
+        ),
+    )
+
+  exporter = SqliteSpanExporter(db_path=str(db_path))
+  try:
+    assert (
+        exporter.export([
+            _create_span(
+                span_id=2,
+                name="new_operation",
+                kind=SpanKind.CLIENT,
+                attributes={"gen_ai.conversation.id": "session-legacy"},
+                start_time=3000,
+            )
+        ])
+        == SpanExportResult.SUCCESS
+    )
+    restored = exporter.get_all_spans_for_session("session-legacy")
+    assert [(span.name, span.kind) for span in restored] == [
+        ("legacy_operation", SpanKind.INTERNAL),
+        ("new_operation", SpanKind.CLIENT),
+    ]
+  finally:
+    exporter.shutdown()
 
 
 def test_spans_with_parent_context_exported_correctly(tmp_path):
