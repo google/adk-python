@@ -1506,7 +1506,6 @@ def to_agent_engine(
   )
   app_name = os.path.basename(os.path.normpath(agent_folder))
   _validate_app_name(app_name)
-  display_name = display_name or app_name
   parent_folder = os.path.dirname(os.path.normpath(agent_folder))
   if adk_app_object:
     warnings.warn(
@@ -1593,6 +1592,8 @@ def to_agent_engine(
             f' {display_name}'
         )
       agent_config['display_name'] = display_name
+    elif not agent_config.get('display_name'):
+      agent_config['display_name'] = app_name
     if description:
       if 'description' in agent_config:
         click.echo(
