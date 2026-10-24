@@ -121,6 +121,8 @@ class ReadFileTool(BaseTool):
       total = len(lines_bytes)
       start = max(1, start_line or 1)
       end = min(total, end_line or total)
+      if total == 0 and start == 1 and end == 0:
+        return {'status': 'ok', 'content': ''}
       if start > total:
         return {
             'status': 'error',
