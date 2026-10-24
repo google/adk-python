@@ -262,6 +262,76 @@ async def test_run_async_without_tool_context_sync_func():
   assert result == "test_value_1"
 
 
+@pytest.mark.parametrize("result_kind", ["coroutine", "future"])
+async def test_run_async_resolves_awaitable_from_sync_function(result_kind):
+  """Synchronous wrappers return their asynchronous result, not an awaitable."""
+
+  async def resolve(value: str) -> str:
+    await asyncio.sleep(0)
+    return f"resolved:{value}"
+
+  def wrapped_tool(value: str):
+    if result_kind == "future":
+      future = asyncio.get_running_loop().create_future()
+      future.set_result(f"resolved:{value}")
+      return future
+    return resolve(value)
+
+  result = await FunctionTool(wrapped_tool).run_async(
+      args={"value": "hello"}, tool_context=MagicMock()
+  )
+
+  assert result == "resolved:hello"
+
+
+async def test_run_async_propagates_error_from_sync_wrapped_coroutine():
+  """Errors raised while awaiting a wrapped tool still reach the caller."""
+
+  async def fail():
+    raise ValueError("wrapped tool failed")
+
+  def wrapped_tool():
+    return fail()
+
+  with pytest.raises(ValueError, match="wrapped tool failed"):
+    await FunctionTool(wrapped_tool).run_async(
+        args={}, tool_context=MagicMock()
+    )
+
+
+@pytest.mark.parametrize("requires_confirmation", [False, True])
+async def test_sync_wrapped_confirmation_predicate_is_awaited(
+    requires_confirmation, mock_tool_context
+):
+  """A wrapped async predicate gates execution using its resolved boolean."""
+  calls = []
+
+  def tool(value: str) -> str:
+    calls.append(value)
+    return value
+
+  async def decide(value: str) -> bool:
+    return requires_confirmation
+
+  def wrapped_predicate(value: str):
+    return decide(value)
+
+  mock_tool_context.tool_confirmation = None
+  mock_tool_context.function_call_id = "test_function_call_id"
+  function_tool = FunctionTool(tool, require_confirmation=wrapped_predicate)
+
+  result = await function_tool.run_async(
+      args={"value": "hello"}, tool_context=mock_tool_context
+  )
+
+  if requires_confirmation:
+    assert "requires confirmation" in result["error"]
+    assert calls == []
+  else:
+    assert result == "hello"
+    assert calls == ["hello"]
+
+
 def _sync_wrapper(func: Callable[..., Any]) -> Callable[..., Any]:
   """A plain sync decorator, as commonly used for logging or retries."""
 

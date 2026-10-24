@@ -949,6 +949,38 @@ class TestCallToolInThreadPool:
 
     assert result == {'value': 'main_thread_value'}
 
+  async def test_sync_wrapper_awaitable_runs_on_caller_loop(self):
+    """A worker-created coroutine resolves on the caller's event loop."""
+    caller_loop = asyncio.get_running_loop()
+    wrapper_threads = []
+
+    async def resolve(value: str) -> str:
+      assert asyncio.get_running_loop() is caller_loop
+      await asyncio.sleep(0)
+      return f'resolved:{value}'
+
+    def wrapped_tool(value: str):
+      wrapper_threads.append(threading.current_thread().name)
+      return resolve(value)
+
+    tool = FunctionTool(wrapped_tool)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context, function_call_id='test_id'
+    )
+
+    result = await _call_tool_in_thread_pool(
+        tool, {'value': 'hello'}, tool_context
+    )
+
+    assert result == 'resolved:hello'
+    assert len(wrapper_threads) == 1
+    assert wrapper_threads[0].startswith('adk_tool_executor')
+
   @pytest.mark.asyncio
   async def test_sync_tool_returning_none_runs_exactly_once(self):
     """Regression test for double invocation of a None-returning sync tool.
