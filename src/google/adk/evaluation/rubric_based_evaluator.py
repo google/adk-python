@@ -439,6 +439,7 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
             response_text,
         )
     rubric_scores = []
+    scores_by_rubric_id: dict[str, Optional[float]] = {}
 
     normalized_rubric_to_rubric_map = {}
     rubric_by_id = {}
@@ -457,6 +458,16 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
             _normalize_text(rubric_response.property_text)
         )
       if rubric:
+        if rubric.rubric_id in scores_by_rubric_id:
+          if scores_by_rubric_id[rubric.rubric_id] != rubric_response.score:
+            logger.warning(
+                "Auto-rater returned conflicting scores for rubric %s;"
+                " this sample will not be scored.",
+                rubric.rubric_id,
+            )
+            return AutoRaterScore(score=None, rubric_scores=[])
+          continue
+        scores_by_rubric_id[rubric.rubric_id] = rubric_response.score
         rubric_scores.append(
             RubricScore(
                 rubric_id=rubric.rubric_id,
