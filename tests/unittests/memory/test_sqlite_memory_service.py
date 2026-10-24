@@ -15,8 +15,11 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 import sqlite3
+from typing import Literal
 
 import aiosqlite
 from google.adk.events.event import Event
@@ -349,6 +352,195 @@ async def test_persistence_across_restarts(tmp_path, fts_mode):
   )
   assert response.memories
   assert response.memories[0].custom_metadata["session_id"] == session.id
+
+
+@pytest.mark.parametrize("in_memory", [False, True])
+@pytest.mark.parametrize("ingestion", ["events", "session"])
+async def test_search_returns_visible_parts_without_mutating_events(
+    tmp_path: Path,
+    fts_mode: Literal["off", "on"],
+    in_memory: bool,
+    ingestion: str,
+) -> None:
+  """Search removes thoughts while preserving visible content and identity."""
+  db_path = tmp_path / "memory.db"
+  service = SqliteMemoryService(
+      ":memory:" if in_memory else db_path, fts=fts_mode
+  )
+  visible_parts = [
+      types.Part(text="My preferred tea is saffron.", thought=False),
+      types.Part.from_bytes(data=b"visible image", mime_type="image/png"),
+      types.Part(text="Serve it hot."),
+  ]
+  event = Event(
+      id="event-1",
+      author="assistant",
+      timestamp=1.0,
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(text="Synthetic obsidiansecret", thought=True),
+              visible_parts[0],
+              types.Part(
+                  inline_data=types.Blob(
+                      data=b"synthetic thought image", mime_type="image/png"
+                  ),
+                  thought=True,
+              ),
+              *visible_parts[1:],
+          ],
+      ),
+  )
+  original_event = event.model_copy(deep=True)
+  try:
+    if ingestion == "session":
+      await service.add_session_to_memory(_make_session([event]))
+    else:
+      await service.add_events_to_memory(
+          app_name="app",
+          user_id="user",
+          session_id="session-1",
+          events=[event],
+      )
+    if not in_memory:
+      with closing(sqlite3.connect(db_path)) as conn:
+        stored_before_search = conn.execute(
+            "SELECT content_json FROM memory_events"
+        ).fetchone()[0]
+
+    response = await service.search_memory(
+        app_name="app", user_id="user", query="saffron"
+    )
+
+    if not in_memory:
+      with closing(sqlite3.connect(db_path)) as conn:
+        stored_after_search = conn.execute(
+            "SELECT content_json FROM memory_events"
+        ).fetchone()[0]
+      assert stored_before_search == stored_after_search
+      assert stored_after_search == original_event.content.model_dump_json(
+          exclude_none=True
+      )
+    assert event == original_event
+    assert len(response.memories) == 1
+    memory = response.memories[0]
+    assert memory.content == types.Content(role="model", parts=visible_parts)
+    assert memory.id == "1"
+    assert memory.author == "assistant"
+    assert memory.timestamp == datetime.fromtimestamp(1.0).isoformat()
+    assert memory.custom_metadata == {
+        "session_id": "session-1",
+        "event_id": "event-1",
+    }
+  finally:
+    await service.close()
+
+
+async def test_search_does_not_match_thought_text(
+    fts_mode: Literal["off", "on"],
+) -> None:
+  """Thought text is not searchable even when the event has visible text."""
+  service = SqliteMemoryService(":memory:", fts=fts_mode)
+  event = Event(
+      author="assistant",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(text="Synthetic obsidiansecret", thought=True),
+              types.Part(text="My preferred tea is saffron."),
+          ],
+      ),
+  )
+  try:
+    await service.add_events_to_memory(
+        app_name="app", user_id="user", events=[event]
+    )
+
+    response = await service.search_memory(
+        app_name="app", user_id="user", query="obsidiansecret"
+    )
+
+    assert not response.memories
+  finally:
+    await service.close()
+
+
+async def test_search_filters_preexisting_thoughts_without_rewriting_storage(
+    tmp_path: Path, fts_mode: Literal["off", "on"]
+) -> None:
+  """Reopening old rows filters returned thoughts without rewriting JSON.
+
+  Seed stored JSON directly so this also catches an ingestion-only fix.
+  """
+  db_path = tmp_path / "memory.db"
+  service = SqliteMemoryService(db_path, fts=fts_mode)
+  try:
+    await service.search_memory(app_name="app", user_id="user", query="saffron")
+  finally:
+    await service.close()
+  stored_content = """{
+    "role": "model",
+    "parts": [
+      {"text": "Synthetic obsidiansecret", "thought": true},
+      {"text": "My preferred tea is saffron.", "thought": false},
+      {"file_data": {"file_uri": "gs://test-bucket/image.png",
+                     "mime_type": "image/png"}}
+    ]
+  }"""
+  with closing(sqlite3.connect(db_path)) as conn:
+    conn.execute(
+        """INSERT INTO memory_events (
+          id, app_name, user_id, session_id, event_id, author, timestamp,
+          content_json, search_text
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            42,
+            "app",
+            "user",
+            "old-session",
+            "old-event",
+            "assistant",
+            1.0,
+            stored_content,
+            "my preferred tea is saffron.",
+        ),
+    )
+    conn.commit()
+    content_before_search = conn.execute(
+        "SELECT content_json FROM memory_events WHERE id = 42"
+    ).fetchone()[0]
+
+  reopened_service = SqliteMemoryService(db_path, fts=fts_mode)
+  try:
+    response = await reopened_service.search_memory(
+        app_name="app", user_id="user", query="saffron"
+    )
+  finally:
+    await reopened_service.close()
+  with closing(sqlite3.connect(db_path)) as conn:
+    content_after_search = conn.execute(
+        "SELECT content_json FROM memory_events WHERE id = 42"
+    ).fetchone()[0]
+
+  assert content_before_search == content_after_search == stored_content
+  assert len(response.memories) == 1
+  memory = response.memories[0]
+  assert memory.content == types.Content(
+      role="model",
+      parts=[
+          types.Part(text="My preferred tea is saffron.", thought=False),
+          types.Part.from_uri(
+              file_uri="gs://test-bucket/image.png", mime_type="image/png"
+          ),
+      ],
+  )
+  assert memory.id == "42"
+  assert memory.author == "assistant"
+  assert memory.timestamp == datetime.fromtimestamp(1.0).isoformat()
+  assert memory.custom_metadata == {
+      "session_id": "old-session",
+      "event_id": "old-event",
+  }
 
 
 @pytest.mark.asyncio
