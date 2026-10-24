@@ -32,6 +32,7 @@ from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
+from .llm_as_judge_utils import get_text_from_content
 
 
 class RougeEvaluator(Evaluator):
@@ -90,10 +91,7 @@ class RougeEvaluator(Evaluator):
 
 
 def _get_text_from_content(content: Optional[genai_types.Content]) -> str:
-  if content and content.parts:
-    return "\n".join([part.text for part in content.parts if part.text])
-
-  return ""
+  return get_text_from_content(content) or ""
 
 
 def _get_eval_status(score: float, threshold: float) -> EvalStatus:

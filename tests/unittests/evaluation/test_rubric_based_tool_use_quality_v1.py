@@ -79,6 +79,24 @@ def test_format_auto_rater_prompt_with_basic_invocation(
   assert "<response>\nNo intermediate steps were taken.\n</response>" in prompt
 
 
+def test_format_auto_rater_prompt_excludes_thought_parts(
+    evaluator: RubricBasedToolUseV1Evaluator,
+):
+  """Tests format_auto_rater_prompt excludes thought parts from user input."""
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[
+              genai_types.Part(text="Considering the request.", thought=True),
+              genai_types.Part(text="User input here."),
+          ]
+      ),
+  )
+  prompt = evaluator.format_auto_rater_prompt(invocation, None)
+
+  assert "Considering the request." not in prompt
+  assert "User input here." in prompt
+
+
 def test_format_auto_rater_prompt_with_invocation_rubrics_only():
   """Tests prompt formatting when rubrics are defined on the invocation."""
   judge_model_options = JudgeModelOptions(
