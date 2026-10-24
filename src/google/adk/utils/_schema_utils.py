@@ -129,6 +129,12 @@ def schema_to_json_schema(schema: SchemaType) -> dict[str, Any]:
   """
   if isinstance(schema, dict):
     return schema
+  if isinstance(schema, types.Schema):
+    json_schema = schema.model_dump(
+        mode="json", by_alias=True, exclude_none=True
+    )
+    lowercase_schema_types(json_schema)
+    return json_schema
   return TypeAdapter(schema).json_schema()
 
 

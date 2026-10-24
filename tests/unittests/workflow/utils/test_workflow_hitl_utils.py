@@ -110,6 +110,29 @@ def test_create_confirmation_request_input():
 
 class TestCreateRequestInputEvent:
 
+  def test_with_genai_response_schema(self) -> None:
+    """A GenAI response schema is included in the human-input event."""
+    request = RequestInput(
+        interrupt_id="genai-schema",
+        response_schema=types.Schema(
+            type=types.Type.OBJECT,
+            properties={"approved": types.Schema(type=types.Type.BOOLEAN)},
+            required=["approved"],
+        ),
+    )
+
+    event = create_request_input_event(request)
+
+    assert event.content is not None
+    call = event.content.parts[0].function_call
+    assert call.args["response_schema"] == {
+        "type": "object",
+        "properties": {"approved": {"type": "boolean"}},
+        "required": ["approved"],
+    }
+    assert event.long_running_tool_ids == {"genai-schema"}
+    assert event.model_dump_json()
+
   def test_basic_event(self):
     ri = RequestInput(
         interrupt_id="test-id",
