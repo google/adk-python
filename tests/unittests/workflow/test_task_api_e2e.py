@@ -29,7 +29,6 @@ nested-delegation path are all exercised:
 from __future__ import annotations
 
 from typing import Any
-from typing import AsyncGenerator
 
 from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
@@ -1005,3 +1004,199 @@ async def test_dynamic_run_node_isolates_peer_task_agents(
       p.text or "" for c in beta_request.contents or [] for p in c.parts or []
   )
   assert "ALPHA_SECRET_CONVERSATION" not in rendered_beta_context
+
+
+@pytest.mark.asyncio
+async def test_root_task_survives_clarification(
+    request: pytest.FixtureRequest,
+):
+  model = testing_utils.MockModel.create(
+      responses=["What is your specific question?", "Got it."]
+  )
+  agent = LlmAgent(name="my_task", model=model, mode="task")
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async("Do a task")
+  await runner.run_async("Here is the clarification")
+
+  assert len(model.requests) == 2
+  req = model.requests[1]
+  parts = [p.text for c in req.contents if c.role == "user" for p in c.parts]
+  # Exactly two user-role text parts: original task + clarification answer.
+  # len(parts) == 2 guards against duplicated answers (regression for #7384).
+  assert len(parts) == 2
+  assert "Do a task" in parts[0]
+  assert "Here is the clarification" in parts[1]
+
+
+@pytest.mark.asyncio
+async def test_two_sequential_root_tasks_clarification_no_cross_contamination(
+    request: pytest.FixtureRequest,
+):
+  """Four-turn regression for #7384: second root task clarification isolation.
+
+  Turn 1: Task A (root task) returns a clarification question.
+  Turn 2: User answers "Clarification for A" — Task A resumes and finishes.
+  Turn 3: Task B (a new root task in the same session) is invoked with
+          "Do task B" — Task B returns its own clarification question.
+  Turn 4: User answers "Clarification for B" — Task B resumes and finishes.
+          The test verifies both of Task B's LLM requests (calls 3 & 4) only
+          contain Task B's inputs and do not leak Task A's clarification answer.
+  """
+  model_a = testing_utils.MockModel.create(
+      responses=[
+          # Turn 1: Task A asks a clarification question.
+          "What details do you need for A?",
+          # Turn 2: Task A receives the answer and finishes.
+          _finish_part({"result": "Task A done"}),
+      ]
+  )
+  model_b = testing_utils.MockModel.create(
+      responses=[
+          # Turn 3 (call 3): Task B asks its own clarification question.
+          "What details do you need for B?",
+          # Turn 4 (call 4): Task B receives the answer and finishes.
+          _finish_part({"result": "Task B done"}),
+      ]
+  )
+  agent_a = LlmAgent(name="task_a", model=model_a, mode="task")
+  agent_b = LlmAgent(name="task_b", model=model_b, mode="task")
+
+  from google.adk.runners import Runner
+  from google.adk.sessions.in_memory_session_service import InMemorySessionService
+
+  # Both runners share the same app_name so they can look up the shared session.
+  app_name = request.function.__name__
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name=app_name,
+      user_id="u",
+  )
+
+  app_a = App(name=app_name, root_agent=agent_a)
+  runner_a = Runner(app=app_a, session_service=session_service)
+
+  app_b = App(name=app_name, root_agent=agent_b)
+  runner_b = Runner(app=app_b, session_service=session_service)
+
+  # Turn 1: Task A is invoked and asks a clarification question.
+  async for _ in runner_a.run_async(
+      user_id="u",
+      session_id=session.id,
+      new_message=testing_utils.get_user_content("Do task A"),
+  ):
+    pass
+
+  # Turn 2: User answers Task A's clarification question; Task A finishes.
+  async for _ in runner_a.run_async(
+      user_id="u",
+      session_id=session.id,
+      new_message=testing_utils.get_user_content("Clarification for A"),
+  ):
+    pass
+
+  # Task A made 2 LLM calls.
+  assert len(model_a.requests) == 2
+
+  # Turn 3 (call 3): Task B is invoked fresh in the same session and asks
+  # its own clarification question.
+  async for _ in runner_b.run_async(
+      user_id="u",
+      session_id=session.id,
+      new_message=testing_utils.get_user_content("Do task B"),
+  ):
+    pass
+
+  # Turn 4 (call 4): User answers Task B's clarification question; Task B finishes.
+  async for _ in runner_b.run_async(
+      user_id="u",
+      session_id=session.id,
+      new_message=testing_utils.get_user_content("Clarification for B"),
+  ):
+    pass
+
+  # Task B made 2 LLM calls.
+  assert (
+      len(model_b.requests) == 2
+  ), f"Task B should have been called twice; got {len(model_b.requests)}"
+
+  # Verify call 3 (Turn 3): Task B's first request should contain only "Do task B".
+  req3 = model_b.requests[0]
+  b_user_parts_turn3 = [
+      p.text
+      for c in req3.contents
+      if c.role == "user"
+      for p in c.parts
+      if p.text
+  ]
+  assert len(b_user_parts_turn3) == 1, (
+      "Expected exactly 1 user-role text part for Task B on Turn 3 (its own"
+      f" prompt), got {len(b_user_parts_turn3)}: {b_user_parts_turn3}"
+  )
+  assert "Do task B" in b_user_parts_turn3[0], (
+      "Task B's prompt not found in its first request; got:"
+      f" {b_user_parts_turn3}"
+  )
+  assert (
+      "Clarification for A" not in b_user_parts_turn3[0]
+  ), "Task A's clarification answer must not appear in Task B's context"
+
+  # Verify call 4 (Turn 4): Task B's resumption request should contain its own
+  # original prompt and its clarification answer, but never Task A's answer.
+  req4 = model_b.requests[1]
+  b_user_parts_turn4 = [
+      p.text
+      for c in req4.contents
+      if c.role == "user"
+      for p in c.parts
+      if p.text
+  ]
+  assert len(b_user_parts_turn4) == 2, (
+      "Expected exactly 2 user-role text parts for Task B on Turn 4 "
+      "(original task + clarification answer), "
+      f"got {len(b_user_parts_turn4)}: {b_user_parts_turn4}"
+  )
+  assert "Do task B" in b_user_parts_turn4[0], (
+      "Task B's prompt not found in its resumption request; got:"
+      f" {b_user_parts_turn4}"
+  )
+  assert "Clarification for B" in b_user_parts_turn4[1], (
+      "Task B's clarification answer not found in its resumption request; got:"
+      f" {b_user_parts_turn4}"
+  )
+  assert (
+      "Clarification for A" not in b_user_parts_turn4[0]
+  ), "Task A's clarification answer must not appear in Task B's prompt"
+  assert "Clarification for A" not in b_user_parts_turn4[1], (
+      "Task A's clarification answer must not appear in Task B's resumption"
+      " context"
+  )
+
+
+@pytest.mark.asyncio
+async def test_separate_root_tasks_same_session_get_separate_scopes(
+    request: pytest.FixtureRequest,
+):
+  model = testing_utils.MockModel.create(
+      responses=[
+          _finish_part({"result": "Done A"}),
+          _finish_part({"result": "Done B"}),
+      ]
+  )
+  agent = LlmAgent(name="my_task", model=model, mode="task")
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async("Run A")
+  await runner.run_async("Run B")
+
+  events = runner.session.events
+  task_events = [e for e in events if e.author == "my_task" and e.output]
+  assert len(task_events) == 2
+  # scopes should be different
+  scope_a = task_events[0].isolation_scope
+  scope_b = task_events[1].isolation_scope
+  assert scope_a != scope_b
+  assert scope_a is not None
+  assert scope_b is not None
