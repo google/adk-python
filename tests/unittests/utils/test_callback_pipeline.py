@@ -14,10 +14,24 @@
 
 from __future__ import annotations
 
+import asyncio
+
+from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.run_config import RunConfig
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.telemetry import tracing
+from google.adk.telemetry.context import TelemetryConfig
 from google.adk.utils._callback_pipeline import _normalize_callbacks
 from google.adk.utils._callback_pipeline import _run_callbacks
 from google.adk.utils._callback_pipeline import _stop_on_non_none
 from google.adk.utils._callback_pipeline import _stop_on_truthy
+from google.genai import errors as genai_errors
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 import pytest
 
 
@@ -449,3 +463,211 @@ async def test_on_model_error_callback_with_reordered_kwargs_maintains_canonical
   )
 
   assert result == 'ctx_val:req_val:err_val'
+
+
+@pytest.fixture
+def spans(monkeypatch):
+  exporter = InMemorySpanExporter()
+  provider = TracerProvider()
+  provider.add_span_processor(SimpleSpanProcessor(exporter))
+  monkeypatch.setattr(tracing, 'tracer', provider.get_tracer('callbacks'))
+  monkeypatch.setenv('ADK_EXPERIMENTAL_TELEMETRY', 'true')
+  yield exporter
+  provider.shutdown()
+
+
+async def test_callback_span_covers_the_awaited_result(spans):
+  """The callback's full execution belongs to a child of the caller span."""
+  seen = []
+
+  async def callback():
+    seen.append(trace.get_current_span().get_span_context().span_id)
+    await asyncio.sleep(0)
+    seen.append(trace.get_current_span().get_span_context().span_id)
+    return 'answer'
+
+  with tracing.tracer.start_as_current_span('parent') as parent:
+    result = await _run_callbacks([callback], _stop_on_truthy)
+    assert trace.get_current_span() is parent
+
+  child, parent_span = spans.get_finished_spans()
+  assert result == 'answer'
+  assert child.name == f'execute_callback {callback.__qualname__}'
+  assert seen == [child.context.span_id, child.context.span_id]
+  assert child.parent.span_id == parent_span.context.span_id
+  assert not child.attributes
+
+
+@pytest.mark.parametrize('telemetry_enabled', [False, True])
+@pytest.mark.parametrize('is_async', [False, True], ids=['sync', 'async'])
+@pytest.mark.parametrize(
+    'error,expected_error_type',
+    [
+        (ValueError('callback failed'), 'ValueError'),
+        (genai_errors.ClientError(429, {'message': 'quota exceeded'}), '429'),
+    ],
+)
+async def test_callback_error_is_recorded_and_propagated(
+    spans, monkeypatch, telemetry_enabled, is_async, error, expected_error_type
+):
+  """Tracing records a failure without replacing the callback's exception."""
+  monkeypatch.setenv('ADK_EXPERIMENTAL_TELEMETRY', str(telemetry_enabled))
+
+  def callback():
+    raise error
+
+  async def async_callback():
+    raise error
+
+  with pytest.raises(type(error)) as caught:
+    await _run_callbacks(
+        [async_callback if is_async else callback], _stop_on_truthy
+    )
+
+  assert caught.value is error
+  finished_spans = spans.get_finished_spans()
+  assert len(finished_spans) == int(telemetry_enabled)
+  if telemetry_enabled:
+    (span,) = finished_spans
+    assert span.status.status_code == StatusCode.ERROR
+    assert span.events[0].name == 'exception'
+    assert span.attributes['error.type'] == expected_error_type
+
+
+@pytest.mark.parametrize('stop_condition', [_stop_on_truthy, _stop_on_non_none])
+async def test_only_executed_callbacks_have_spans(spans, stop_condition):
+  """Returning an override prevents later callbacks from running or tracing."""
+
+  def first():
+    return 'override'
+
+  def later():
+    raise AssertionError('later callback ran')
+
+  assert await _run_callbacks([first, later], stop_condition) == 'override'
+  assert [s.name for s in spans.get_finished_spans()] == [
+      f'execute_callback {first.__qualname__}'
+  ]
+
+
+@pytest.mark.parametrize(
+    'env_enabled,request_enabled,expected_count',
+    [(False, None, 0), (True, False, 0), (False, True, 1), (True, None, 1)],
+)
+async def test_request_telemetry_setting_controls_callback_spans(
+    spans, monkeypatch, env_enabled, request_enabled, expected_count
+):
+  """The request override takes precedence over the experimental env setting."""
+  monkeypatch.setenv('ADK_EXPERIMENTAL_TELEMETRY', str(env_enabled))
+  service = InMemorySessionService()
+  session = await service.create_session(app_name='app', user_id='user')
+  ctx = Context(
+      InvocationContext(
+          invocation_id='invocation',
+          session=session,
+          session_service=service,
+          run_config=RunConfig(
+              telemetry=TelemetryConfig(
+                  adk_experimental_telemetry_opt_in=request_enabled
+              )
+          ),
+      )
+  )
+
+  def callback(callback_context):
+    assert callback_context is ctx
+    return 'answer'
+
+  assert (
+      await _run_callbacks([callback], _stop_on_truthy, callback_context=ctx)
+      == 'answer'
+  )
+  assert len(spans.get_finished_spans()) == expected_count
+
+
+async def test_cancelling_callback_ends_its_span(spans):
+  """Cancellation reaches the callback and ends its span without an error."""
+  started = asyncio.Event()
+  cleaned_up = []
+
+  async def callback():
+    try:
+      started.set()
+      await asyncio.Event().wait()
+    finally:
+      cleaned_up.append(True)
+
+  task = asyncio.create_task(_run_callbacks([callback], _stop_on_truthy))
+  await started.wait()
+  task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await task
+
+  assert cleaned_up == [True]
+  (span,) = spans.get_finished_spans()
+  assert span.end_time is not None
+  assert span.status.status_code == StatusCode.UNSET
+  assert 'error.type' not in span.attributes
+
+
+async def test_callable_object_has_a_named_span(spans):
+  """A callable instance does not need a function's qualname to be traced."""
+
+  class Callback:
+
+    def __call__(self):
+      return 'answer'
+
+  assert await _run_callbacks([Callback()], _stop_on_truthy) == 'answer'
+  (span,) = spans.get_finished_spans()
+  assert span.name == f'execute_callback {Callback.__qualname__}'
+
+
+async def test_nested_callback_spans_preserve_the_parent(spans):
+  """An inner pipeline is traced beneath the callback that invoked it."""
+
+  def inner():
+    return 'answer'
+
+  async def outer():
+    return await _run_callbacks([inner], _stop_on_truthy)
+
+  with tracing.tracer.start_as_current_span('parent'):
+    assert await _run_callbacks([outer], _stop_on_truthy) == 'answer'
+
+  inner_span, outer_span, parent_span = spans.get_finished_spans()
+  assert inner_span.parent.span_id == outer_span.context.span_id
+  assert outer_span.parent.span_id == parent_span.context.span_id
+
+
+async def test_concurrent_callbacks_keep_separate_spans(spans):
+  """Awaiting another callback does not attach its span to this task."""
+  first_started = asyncio.Event()
+  second_started = asyncio.Event()
+  seen = {}
+
+  async def first():
+    before = trace.get_current_span().get_span_context().span_id
+    first_started.set()
+    await second_started.wait()
+    seen['first'] = (
+        before,
+        trace.get_current_span().get_span_context().span_id,
+    )
+
+  async def second():
+    await first_started.wait()
+    second_started.set()
+    seen['second'] = trace.get_current_span().get_span_context().span_id
+
+  with tracing.tracer.start_as_current_span('parent'):
+    await asyncio.gather(
+        _run_callbacks([first], _stop_on_truthy),
+        _run_callbacks([second], _stop_on_truthy),
+    )
+
+  callback_spans = [s for s in spans.get_finished_spans() if s.name != 'parent']
+  assert len(callback_spans) == 2
+  assert callback_spans[0].parent.span_id == callback_spans[1].parent.span_id
+  assert seen['first'][0] == seen['first'][1]
+  assert seen['first'][0] != seen['second']

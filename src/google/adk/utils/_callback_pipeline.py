@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Awaitable
 from collections.abc import Callable
 from collections.abc import Sequence
+from contextlib import nullcontext
 import inspect
 from typing import Any
 from typing import TypeVar
@@ -89,14 +90,51 @@ async def _run_callbacks(
     *args: _P.args,
     **kwargs: _P.kwargs,
 ) -> _TResult | None:
-  """Runs callbacks in order while preserving their stop semantics."""
+  """Runs callbacks in order while preserving their stop semantics.
+
+  Experimental telemetry records a child span for each executed callback.
+  """
+  from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
+
+  from ..agents.context import Context
+  from ..telemetry import tracing
+
+  if not callbacks:
+    return None
+  callback_context = kwargs.get('callback_context') or kwargs.get(
+      'tool_context'
+  )
+  invocation_context = (
+      callback_context.get_invocation_context()
+      if isinstance(callback_context, Context)
+      else None
+  )
+  telemetry_config = tracing._telemetry_config_from_invocation_context(
+      invocation_context
+  )
   result: _TResult | None = None
   for callback in callbacks:
-    callback_result = _invoke_callback(callback, *args, **kwargs)
-    if inspect.isawaitable(callback_result):
-      result = await callback_result
-    else:
-      result = callback_result
+    callback_name = getattr(
+        callback, '__qualname__', type(callback).__qualname__
+    )
+    scope = (
+        tracing.tracer.start_as_current_span(
+            f'execute_callback {callback_name}'
+        )
+        if telemetry_config.should_emit_experimental_telemetry
+        else nullcontext()
+    )
+    with scope as span:
+      try:
+        callback_result = _invoke_callback(callback, *args, **kwargs)
+        if inspect.isawaitable(callback_result):
+          result = await callback_result
+        else:
+          result = callback_result
+      except Exception as error:
+        if span is not None:
+          span.set_attribute(ERROR_TYPE, tracing.resolve_error_type(error))
+        raise
     if _stop_condition(result):
       return result
   return result
