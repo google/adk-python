@@ -12,11 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
+
 from google.adk import models
+from google.adk.memory.memory_entry import MemoryEntry
 from google.adk.models.gemma_llm import Gemma
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.tools.load_memory_tool import LoadMemoryResponse
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
@@ -188,6 +192,80 @@ async def test_preprocess_request_with_function_response():
   )
   assert llm_request.contents[0].parts[0].function_response is None
   assert llm_request.contents[0].parts[0].function_call is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response,want_json",
+    [
+        pytest.param(
+            {"city": "München", "forecast": "東京は晴れ"},
+            '{"city": "München", "forecast": "東京は晴れ"}',
+            id="non_ascii_text",
+        ),
+        pytest.param(
+            {"checked_in_at": datetime.datetime(2026, 10, 22, 9, 30)},
+            '{"checked_in_at": "2026-10-22T09:30:00"}',
+            id="datetime",
+        ),
+        pytest.param(
+            {"thumbnail": b"\xff\xd8"},
+            '{"thumbnail": "_9g="}',
+            id="bytes",
+        ),
+        pytest.param(
+            {"cancelled_at": None, "guests": [{"email": None}]},
+            '{"cancelled_at": null, "guests": [{"email": null}]}',
+            id="none_values",
+        ),
+        pytest.param(
+            {
+                "result": LoadMemoryResponse(
+                    memories=[
+                        MemoryEntry(
+                            content=types.Content(
+                                role="user",
+                                parts=[types.Part(text="I live in Paris.")],
+                            ),
+                            author="user",
+                        )
+                    ]
+                )
+            },
+            '{"result": {"memories": [{"content": {"parts": [{"text": "I live'
+            ' in Paris."}], "role": "user"}, "custom_metadata": {}, "author":'
+            ' "user"}]}}',
+            id="pydantic_model",
+        ),
+    ],
+)
+async def test_preprocess_request_with_function_response_converts_values(
+    response, want_json
+):
+  """Tool results reach Gemma as readable JSON, whatever values they hold."""
+  llm_request = LlmRequest(
+      model="gemma-3-1b-it",
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name="get_booking", response=response
+                      )
+                  )
+              ],
+          )
+      ],
+      config=types.GenerateContentConfig(),
+  )
+
+  await Gemma()._preprocess_request(llm_request)
+
+  assert (
+      llm_request.contents[0].parts[0].text
+      == f"Invoking tool `get_booking` produced: `{want_json}`."
+  )
 
 
 @pytest.mark.asyncio
