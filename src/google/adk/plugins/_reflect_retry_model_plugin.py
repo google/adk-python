@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 import uuid
 
 from google.genai import types
@@ -29,6 +30,9 @@ from ._reflect_retry_utils import resolve_scope_key
 from ._reflect_retry_utils import ScopedFailureTracker
 from ._reflect_retry_utils import TrackingScope
 from .base_plugin import BasePlugin
+
+if TYPE_CHECKING:
+  from ..agents.invocation_context import InvocationContext
 
 RESERVED_TOOL_CALL_ERROR_TYPE = "RESERVED_TOOL_CALL"
 
@@ -296,6 +300,36 @@ Formulate a new plan based on your analysis and try a corrected or different app
         ),
         thought_signature=SKIP_THOUGHT_SIGNATURE_VALIDATOR,
     )
+
+  async def after_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    """Drops the failure counts of an invocation once its run ends."""
+    await self._clear_invocation_failures(invocation_context)
+
+  async def on_run_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Drops the failure counts of an invocation whose run failed."""
+    del error  # The counts are dropped whatever ended the run.
+    await self._clear_invocation_failures(invocation_context)
+
+  async def _clear_invocation_failures(
+      self, invocation_context: InvocationContext
+  ) -> None:
+    """Drops the counts kept for an invocation under the INVOCATION scope.
+
+    Each invocation gets its own scope, and nothing reads it once the run is
+    over, so keeping it would grow the tracker with every invocation that saw
+    a failure.
+    """
+    if self.scope == TrackingScope.INVOCATION:
+      await self._tracker.clear_scope(
+          resolve_scope_key(self.scope, invocation_context.invocation_id)
+      )
 
   def _get_model_retry_uuid(self) -> str:
     """Generates a unique ID for the model retry tool call."""

@@ -18,6 +18,7 @@ import asyncio
 import json
 from typing import Any
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
@@ -29,6 +30,9 @@ from ._reflect_retry_utils import resolve_scope_key
 from ._reflect_retry_utils import ScopedFailureTracker
 from ._reflect_retry_utils import TrackingScope
 from .base_plugin import BasePlugin
+
+if TYPE_CHECKING:
+  from ..agents.invocation_context import InvocationContext
 
 # A mapping from a tool's name to its consecutive failure count.
 PerToolFailuresCounter = dict[str, int]
@@ -216,6 +220,36 @@ class ReflectAndRetryToolPlugin(BasePlugin):
     if isinstance(error, asyncio.CancelledError):
       return None
     return await self._handle_tool_error(tool, tool_args, tool_context, error)
+
+  async def after_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    """Drops the failure counts of an invocation once its run ends."""
+    await self._clear_invocation_failures(invocation_context)
+
+  async def on_run_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Drops the failure counts of an invocation whose run failed."""
+    del error  # The counts are dropped whatever ended the run.
+    await self._clear_invocation_failures(invocation_context)
+
+  async def _clear_invocation_failures(
+      self, invocation_context: InvocationContext
+  ) -> None:
+    """Drops the counts kept for an invocation under the INVOCATION scope.
+
+    Each invocation gets its own scope, and nothing reads it once the run is
+    over, so keeping it would grow the tracker with every invocation that saw
+    a failure.
+    """
+    if self.scope == TrackingScope.INVOCATION:
+      await self._tracker.clear_scope(
+          resolve_scope_key(self.scope, invocation_context.invocation_id)
+      )
 
   async def _handle_tool_error(
       self,

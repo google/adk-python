@@ -18,8 +18,10 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import Mock
 
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.plugins.reflect_retry_tool_plugin import GLOBAL_SCOPE_KEY
 from google.adk.plugins.reflect_retry_tool_plugin import REFLECT_AND_RETRY_RESPONSE_TYPE
 from google.adk.plugins.reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
+from google.adk.plugins.reflect_retry_tool_plugin import TrackingScope
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
@@ -729,3 +731,78 @@ class TestReflectAndRetryToolPlugin(IsolatedAsyncioTestCase):
         error=asyncio.CancelledError(),
     )
     self.assertIsNone(result)
+
+  async def _run_flaky_agent(
+      self,
+      plugin: ReflectAndRetryToolPlugin,
+      *,
+      num_invocations: int,
+      fail_every_call: bool,
+  ) -> None:
+    """Runs invocations whose tool fails, so the plugin records failures."""
+    calls = 0
+
+    def flaky_tool() -> dict[str, int]:
+      """A tool that fails on its first call, or always."""
+      nonlocal calls
+      calls += 1
+      if fail_every_call or calls % 2 == 1:
+        raise ValueError("tool failed")
+      return {"calls": calls}
+
+    function_call = types.Part.from_function_call(name="flaky_tool", args={})
+    mock_model = testing_utils.MockModel.create(
+        responses=[function_call, function_call, "done"] * num_invocations
+    )
+    agent = LlmAgent(name="root_agent", model=mock_model, tools=[flaky_tool])
+    runner = testing_utils.TestInMemoryRunner(agent=agent, plugins=[plugin])
+    for _ in range(num_invocations):
+      await runner.run_async_with_new_session("go")
+
+  async def test_invocation_scope_counts_are_dropped_after_each_run(self):
+    """Invocation-scoped failure counts do not outlive their invocation."""
+    plugin = ReflectAndRetryToolPlugin(max_retries=1)
+
+    await self._run_flaky_agent(
+        plugin, num_invocations=3, fail_every_call=False
+    )
+
+    self.assertEqual(plugin._scoped_failure_counters, {})
+
+  async def test_invocation_scope_counts_are_dropped_when_retries_run_out(
+      self,
+  ):
+    """Counts left at the retry limit are dropped when the run ends."""
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=1, throw_exception_if_retry_exceeded=False
+    )
+
+    await self._run_flaky_agent(plugin, num_invocations=2, fail_every_call=True)
+
+    self.assertEqual(plugin._scoped_failure_counters, {})
+
+  async def test_invocation_scope_counts_are_dropped_when_the_run_fails(self):
+    """Counts are dropped when the plugin re-raises and the run fails."""
+    plugin = ReflectAndRetryToolPlugin(max_retries=1)
+
+    with self.assertRaises(Exception):
+      await self._run_flaky_agent(
+          plugin, num_invocations=1, fail_every_call=True
+      )
+
+    self.assertEqual(plugin._scoped_failure_counters, {})
+
+  async def test_global_scope_counts_survive_the_end_of_a_run(self):
+    """Global failure counts are shared across runs, so they are kept."""
+    plugin = ReflectAndRetryToolPlugin(
+        max_retries=5,
+        throw_exception_if_retry_exceeded=False,
+        tracking_scope=TrackingScope.GLOBAL,
+    )
+
+    await self._run_flaky_agent(plugin, num_invocations=1, fail_every_call=True)
+
+    self.assertEqual(
+        plugin._scoped_failure_counters,
+        {GLOBAL_SCOPE_KEY: {"flaky_tool": 2}},
+    )

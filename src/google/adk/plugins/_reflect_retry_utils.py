@@ -69,3 +69,8 @@ class ScopedFailureTracker:
       if scope_key in self._scoped_failure_counters:
         counter = self._scoped_failure_counters[scope_key]
         counter.pop(item_name, None)
+
+  async def clear_scope(self, scope_key: str) -> None:
+    """Atomically drops every failure count recorded under a scope."""
+    async with self._lock:
+      self._scoped_failure_counters.pop(scope_key, None)

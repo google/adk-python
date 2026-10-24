@@ -28,6 +28,8 @@ from google.adk.plugins._reflect_retry_model_plugin import TrackingScope
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 
+from .. import testing_utils
+
 
 class TestReflectAndRetryModelPlugin(IsolatedAsyncioTestCase):
   """Tests for model error handling in the ReflectAndRetryModelPlugin."""
@@ -673,3 +675,25 @@ class TestReflectAndRetryModelPlugin(IsolatedAsyncioTestCase):
     self.assertEqual(
         resp2.content.parts[0].function_call.args["retry_count"], 2
     )
+
+  async def test_invocation_scope_counts_are_dropped_after_each_run(self):
+    """Invocation-scoped model failure counts do not outlive the run."""
+    plugin = ReflectAndRetryModelPlugin(max_retries=2)
+    malformed = LlmResponse(
+        error_code=types.FinishReason.MALFORMED_FUNCTION_CALL,
+        error_message="TEST_ERROR",
+        finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
+    )
+    done = LlmResponse(
+        content=types.Content(role="model", parts=[types.Part(text="done")])
+    )
+    mock_model = testing_utils.MockModel.create(
+        responses=[malformed, done, malformed, done]
+    )
+    agent = LlmAgent(name="root_agent", model=mock_model)
+    runner = testing_utils.TestInMemoryRunner(agent=agent, plugins=[plugin])
+
+    for _ in range(2):
+      await runner.run_async_with_new_session("go")
+
+    self.assertEqual(plugin._tracker._scoped_failure_counters, {})
