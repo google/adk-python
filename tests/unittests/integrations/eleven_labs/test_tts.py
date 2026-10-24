@@ -55,6 +55,25 @@ def test_take_sentence_length_fallback():
   assert rest == "four five six"
 
 
+def test_take_sentence_cjk_punctuation():
+  sentence, rest = _take_sentence("你好。今天天气很好！", 100)
+  assert sentence == "你好。"
+  assert rest == "今天天气很好！"
+
+
+def test_take_sentence_cjk_waits_for_closing_quote():
+  assert _take_sentence("「はい。", 100) == (None, "「はい。")
+  sentence, rest = _take_sentence("「はい。」と言った", 100)
+  assert sentence == "「はい。」"
+  assert rest == "と言った"
+
+
+def test_take_sentence_length_fallback_without_spaces():
+  sentence, rest = _take_sentence("あ" * 30, 20)
+  assert sentence == "あ" * 20
+  assert rest == "あ" * 10
+
+
 def test_init_unsupported_sample_rate():
   with pytest.raises(ValueError, match="ElevenLabs cannot emit 12345 Hz PCM"):
     ElevenLabsTTS(sample_rate=12345)
