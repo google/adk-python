@@ -48,5 +48,8 @@ class ToolConfirmation(BaseModel):
     ``{'response': json_string}`` wrapper format.
     """
     if response and len(response) == 1 and "response" in response:
-      return cls.model_validate(json.loads(response["response"]))
+      raw = response["response"]
+      if isinstance(raw, (str, bytes, bytearray)):
+        return cls.model_validate(json.loads(raw))
+      return cls.model_validate(raw)
     return cls.model_validate(response)
