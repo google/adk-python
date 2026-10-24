@@ -43,7 +43,8 @@ _JSON_PATH_TOKEN_RE = re.compile(
 def _unescape_json_path_string(s: str) -> str:
   def replace(match: re.Match[str]) -> str:
     if match.group(1):
-      return chr(int(match.group(1), 16))
+      # Decode adjacent escapes together to preserve UTF-16 surrogate pairs.
+      return json.loads(f'"\\u{match.group(1)}"')
     ch = match.group(2)
     escapes = {
         'n': '\n',
@@ -54,7 +55,7 @@ def _unescape_json_path_string(s: str) -> str:
     }
     return escapes.get(ch, ch)
 
-  return re.sub(r'\\u([0-9a-fA-F]{4})|\\(.)', replace, s)
+  return re.sub(r'\\u([0-9a-fA-F]{4}(?:\\u[0-9a-fA-F]{4})*)|\\(.)', replace, s)
 
 
 def _parse_json_path(json_path: str) -> list[str | int]:
