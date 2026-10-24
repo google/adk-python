@@ -153,6 +153,18 @@ def test_parse_critique(response_text):
     "reasoning": "The response is invalid."
   }
   ```""",
+        """```json
+  {
+    "is_the_agent_response_valid": "not valid",
+    "is_the_agent_response_invalid": true
+  }
+  ```""",
+        """```json
+  {
+    "is_the_agent_response_invalid": true,
+    "is_the_agent_response_valid": "not valid"
+  }
+  ```""",
     ],
 )
 def test_parse_critique_invalid(response_text):
@@ -389,31 +401,44 @@ def test_convert_auto_rater_response_to_score_missing_key():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "sampled_verdicts",
+    "judge_responses",
     [
-        ["valid", "Invalid", "INVALID"],
-        ["invalid", "va,lid", ",true"],
+        [
+            '{"is_the_agent_response_valid": "valid"}',
+            '{"is_the_agent_response_valid": "Invalid"}',
+            '{"is_the_agent_response_valid": "INVALID"}',
+        ],
+        [
+            '{"is_the_agent_response_valid": "invalid"}',
+            '{"is_the_agent_response_valid": "va,lid"}',
+            '{"is_the_agent_response_valid": ",true"}',
+        ],
+        [
+            '{"is_the_agent_response_valid": "valid"}',
+            (
+                '{"is_the_agent_response_valid": "not valid",'
+                ' "is_the_agent_response_invalid": true}'
+            ),
+            (
+                '{"is_the_agent_response_invalid": true,'
+                ' "is_the_agent_response_valid": "not valid"}'
+            ),
+        ],
     ],
 )
 async def test_evaluate_invocations_majority_vote_over_judge_labels(
-    sampled_verdicts, mocker
+    judge_responses, mocker
 ):
   """Capitalized verdicts vote; labels that are not verdicts still do not."""
   evaluator = _create_test_evaluator_gemini(threshold=0.5)
   evaluator._judge_model_options.num_samples = 3
-  verdicts = iter(sampled_verdicts)
+  responses = iter(judge_responses)
 
   async def generate_content_async(llm_request):
     del llm_request
     yield LlmResponse(
         content=genai_types.Content(
-            parts=[
-                genai_types.Part(
-                    text=(
-                        f'{{"is_the_agent_response_valid": "{next(verdicts)}"}}'
-                    )
-                )
-            ],
+            parts=[genai_types.Part(text=next(responses))],
             role="model",
         )
     )

@@ -89,11 +89,9 @@ def _parse_critique(response: str) -> Label:
     The extracted label, either VALID, INVALID, or NOT_FOUND.
   """
   # Regex matching the label field in the response. The end of the field is
-  # identified by either a comma, new line, or an end-bracket. If a single-word
-  # label does not match, the label can be several words separated by single
-  # spaces, as in "partially valid".
+  # identified by either a comma, new line, or an end-bracket.
   label_match_is_response_valid = re.search(
-      r'"is_the_agent_response_valid":\s*\[*[\n\s]*"*([^"^\]^\s]*|[^"^\]^\s,}]+(?:\x20[^"^\]^\s,}]+)+)"*[\n\s]*\]*\s*[,\n\}]',
+      r'"is_the_agent_response_valid":\s*\[*[\n\s]*"*([^"^\]^\s]*)"*[\n\s]*\]*\s*[,\n\}]',
       response,
   )
   # In case the model names the label field as "is_the_agent_response_*invalid*"
@@ -128,6 +126,19 @@ def _parse_critique(response: str) -> Label:
     )
   else:
     label = Label.NOT_FOUND
+  if label == Label.NOT_FOUND:
+    # No single-word label was recognized. Accept a label of several words
+    # separated by single spaces, as in "partially valid".
+    label_match_multi_word = re.search(
+        r'"is_the_agent_response_valid":\s*\[*[\n\s]*"*([^"^\]^\s,}]+(?:\x20[^"^\]^\s,}]+)+)"*[\n\s]*\]*\s*[,\n\}]',
+        response,
+    )
+    if (
+        label_match_multi_word
+        and label_match_multi_word.group(1).lower()
+        in Label.PARTIALLY_VALID.value
+    ):
+      label = Label.INVALID
   return label
 
 
