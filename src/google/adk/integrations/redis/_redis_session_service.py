@@ -22,6 +22,7 @@ import json
 import logging
 import re
 import time
+from base64 import urlsafe_b64encode
 from typing import Any
 from typing import cast
 from typing import Optional
@@ -48,6 +49,11 @@ else:
     redis_asyncio = None
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _encode_key_component(value: str) -> str:
+  """Encodes an identity component as unpadded URL-safe Base64."""
+  return urlsafe_b64encode(value.encode("utf-8")).decode("ascii").rstrip("=")
 
 
 def _escape_glob(value: str) -> str:
@@ -104,15 +110,32 @@ class RedisSessionService(BaseSessionService):
 
   def _session_key(self, app_name: str, user_id: str, session_id: str) -> str:
     """Constructs the Redis key for a given session."""
-    return f"{self.config.key_prefix}{app_name}:{user_id}:{session_id}"
+    return (
+        f"{self.config.key_prefix}v2:s2_{_encode_key_component(app_name)}."
+        f"{_encode_key_component(user_id)}.{_encode_key_component(session_id)}"
+    )
 
   def _user_state_key(self, app_name: str, user_id: str) -> str:
     """Constructs the Redis key for user-scoped state."""
-    return f"{self.config.key_prefix}user_state:{app_name}:{user_id}"
+    return (
+        f"{self.config.key_prefix}v2:u2_{_encode_key_component(app_name)}."
+        f"{_encode_key_component(user_id)}"
+    )
 
   def _app_state_key(self, app_name: str) -> str:
     """Constructs the Redis key for app-scoped state."""
-    return f"{self.config.key_prefix}app_state:{app_name}"
+    return f"{self.config.key_prefix}v2:a2_{_encode_key_component(app_name)}"
+
+  @staticmethod
+  def _matches_session_identity(
+      session: Session, app_name: str, user_id: str, session_id: str
+  ) -> bool:
+    """Checks that a stored session belongs to the requested identity."""
+    return (
+        session.app_name == app_name
+        and session.user_id == user_id
+        and session.id == session_id
+    )
 
   @staticmethod
   def _merge_state(
@@ -257,6 +280,10 @@ class RedisSessionService(BaseSessionService):
       return None
 
     session = Session.model_validate_json(raw)
+    if not self._matches_session_identity(
+        session, app_name, user_id, session_id
+    ):
+      return None
     app_state = json.loads(app_raw) if app_raw else {}
     user_state = json.loads(user_raw) if user_raw else {}
     session.state = self._merge_state(app_state, user_state, session.state)
@@ -279,12 +306,13 @@ class RedisSessionService(BaseSessionService):
   ) -> ListSessionsResponse:
     """Lists sessions matching the given app_name and optional user_id."""
     client = self._get_redis()
-    escaped_app_name = _escape_glob(app_name)
     pattern = (
-        f"{self.config.key_prefix}{escaped_app_name}:{_escape_glob(user_id)}:*"
-        if user_id is not None
-        else f"{self.config.key_prefix}{escaped_app_name}:*"
+        f"{_escape_glob(self.config.key_prefix)}v2:"
+        f"s2_{_encode_key_component(app_name)}."
     )
+    if user_id is not None:
+      pattern += f"{_encode_key_component(user_id)}."
+    pattern += "*"
     app_raw = await client.get(self._app_state_key(app_name))
     app_state = json.loads(app_raw) if app_raw else {}
 
@@ -300,9 +328,14 @@ class RedisSessionService(BaseSessionService):
       if raw:
         try:
           s = Session.model_validate_json(raw)
-          # Key segments are ':'-joined and the trailing wildcard spans ':', so
-          # a matched key can belong to another app or user whose id embeds a
-          # ':'. Confirm ownership from the stored session itself.
+          # A legacy key can match the v2 scan pattern; only list canonical keys.
+          expected_key = self._session_key(s.app_name, s.user_id, s.id)
+          if key != (
+              expected_key.encode("utf-8")
+              if isinstance(key, bytes)
+              else expected_key
+          ):
+            continue
           if s.app_name != app_name or (
               user_id is not None and s.user_id != user_id
           ):
@@ -345,11 +378,9 @@ class RedisSessionService(BaseSessionService):
     """Appends an event to the session and synchronizes state in Redis."""
     client = self._get_redis()
     key = self._session_key(session.app_name, session.user_id, session.id)
-    # Check before any write: the app/user state deltas below are stored under
-    # their own keys, and the session write would otherwise create a session
-    # that was never stored instead of failing like the other services.
     if not await client.exists(key):
       raise SessionNotFoundError(f"Session {session.id} not found.")
+
     event = await super().append_event(session, event)
     # Stamp the session with the event's own timestamp, matching
     # InMemorySessionService, SqliteSessionService and DatabaseSessionService.
@@ -358,8 +389,14 @@ class RedisSessionService(BaseSessionService):
     # last_update_time is the key list_sessions orders by.
     session.last_update_time = event.timestamp
 
-    # Sync app and user state deltas to their respective keys
+    # Collect state deltas before the transaction. State writes are queued in
+    # the same watched transaction as the session write so identity validation
+    # protects all persistent mutations.
+    app_delta: dict[str, Any] = {}
+    user_delta: dict[str, Any] = {}
     session_delta: dict[str, Any] = {}
+    app_key = None
+    user_key = None
     if event.actions and event.actions.state_delta:
       deltas = _session_util.extract_state_delta(event.actions.state_delta)
       app_delta = deltas.get("app", {})
@@ -368,25 +405,9 @@ class RedisSessionService(BaseSessionService):
 
       if app_delta:
         app_key = self._app_state_key(session.app_name)
-        app_raw = await client.get(app_key)
-        app_state = json.loads(app_raw) if app_raw else {}
-        app_state.update(app_delta)
-        await client.set(
-            app_key,
-            json.dumps(app_state),
-            ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
-        )
 
       if user_delta:
         user_key = self._user_state_key(session.app_name, session.user_id)
-        user_raw = await client.get(user_key)
-        user_state = json.loads(user_raw) if user_raw else {}
-        user_state.update(user_delta)
-        await client.set(
-            user_key,
-            json.dumps(user_state),
-            ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
-        )
 
     # Prepare storage copy with ONLY session-scoped state (excluding app:, user:, temp:)
     session_only_state = self._extract_session_only_state(session.state)
@@ -398,6 +419,11 @@ class RedisSessionService(BaseSessionService):
         events=session.events,
         last_update_time=session.last_update_time,
     )
+    watch_keys = [key]
+    if app_key:
+      watch_keys.append(app_key)
+    if user_key:
+      watch_keys.append(user_key)
 
     async def append_to_storage(pipe: Any) -> None:
       raw = await pipe.get(key)
@@ -405,6 +431,10 @@ class RedisSessionService(BaseSessionService):
         # The caller may hold a filtered view. Reload on every transaction
         # attempt so concurrent appends are preserved as well.
         stored_session = Session.model_validate_json(raw)
+        if not self._matches_session_identity(
+            stored_session, session.app_name, session.user_id, session.id
+        ):
+          raise SessionNotFoundError("Session not found.")
         storage_session.events = stored_session.events
         storage_session.state = stored_session.state
         if not event.partial:
@@ -414,12 +444,37 @@ class RedisSessionService(BaseSessionService):
       else:
         storage_session.events = list(session.events)
         storage_session.state = dict(session_only_state)
+
+      app_state = None
+      if app_key:
+        app_raw = await pipe.get(app_key)
+        app_state = json.loads(app_raw) if app_raw else {}
+        app_state.update(app_delta)
+
+      user_state = None
+      if user_key:
+        user_raw = await pipe.get(user_key)
+        user_state = json.loads(user_raw) if user_raw else {}
+        user_state.update(user_delta)
+
       pipe.multi()
+      if app_key:
+        pipe.set(
+            app_key,
+            json.dumps(app_state),
+            ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
+        )
+      if user_key:
+        pipe.set(
+            user_key,
+            json.dumps(user_state),
+            ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
+        )
       pipe.set(
           key,
           storage_session.model_dump_json(),
           ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
       )
 
-    await client.transaction(append_to_storage, key)
+    await client.transaction(append_to_storage, *watch_keys)
     return event

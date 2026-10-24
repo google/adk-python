@@ -25,6 +25,7 @@ from google.adk.events.event import Event
 from google.adk.events.event import EventActions
 from google.adk.integrations.redis._config import RedisSessionServiceConfig
 from google.adk.integrations.redis._redis_session_service import RedisSessionService
+from google.adk.integrations.redis._redis_session_service import _escape_glob
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.session import Session
 from google.genai import types
@@ -45,6 +46,147 @@ def session_service(fake_redis):
       key_prefix="test:session:",
   )
   return RedisSessionService(config=config, redis_client=fake_redis)
+
+
+def test_key_components_are_unambiguous_and_type_separated(session_service):
+  assert (
+      RedisSessionService()
+      ._session_key("app1", "user1", "session1")
+      .startswith("adk:session:v2:")
+  )
+  assert (
+      session_service._session_key("app1", "user1", "session1")
+      == "test:session:v2:s2_YXBwMQ.dXNlcjE.c2Vzc2lvbjE"
+  )
+  victim_key = session_service._session_key("billing", "tenant:victim", "fixed")
+  assert (
+      victim_key == "test:session:v2:s2_YmlsbGluZw.dGVuYW50OnZpY3RpbQ.Zml4ZWQ"
+  )
+  assert victim_key != session_service._session_key(
+      "billing", "tenant", "victim:fixed"
+  )
+  assert session_service._user_state_key(
+      "billing:tenant", "victim"
+  ) != session_service._user_state_key("billing", "tenant:victim")
+  assert session_service._session_key(
+      "user_state", "billing", "alice"
+  ) != session_service._user_state_key("billing", "alice")
+  assert session_service._session_key(
+      "app_state", "billing", "alice"
+  ) != session_service._app_state_key("billing:alice")
+  assert (
+      session_service._app_state_key("billing")
+      == "test:session:v2:a2_YmlsbGluZw"
+  )
+  for key in (
+      victim_key,
+      session_service._user_state_key("billing:tenant", "victim"),
+      session_service._app_state_key("billing:tenant"),
+  ):
+    encoded_suffix = key.removeprefix("test:session:v2:")
+    assert ":" not in encoded_suffix
+    assert not any(char in encoded_suffix for char in "*?[]\\")
+
+  assert _escape_glob("prefix:*?[x]") == r"prefix:\*\?\[x\]"
+  assert _escape_glob("a\\b") == "a\\\\b"
+
+
+@pytest.mark.asyncio
+async def test_versioned_keys_ignore_legacy_session_and_state_keys(
+    session_service, fake_redis
+):
+  legacy_session = Session(
+      id="fixed",
+      app_name="billing",
+      user_id="tenant:victim",
+      state={"private": "legacy-session"},
+      events=[],
+      last_update_time=1.0,
+  )
+  legacy_key = "test:session:billing:tenant:victim:fixed"
+  await fake_redis.set(legacy_key, legacy_session.model_dump_json())
+  legacy_session_at_user_state_key = Session(
+      id="alice",
+      app_name="user_state",
+      user_id="billing",
+      state={"private": "legacy-session-at-state-key"},
+      events=[],
+      last_update_time=1.0,
+  )
+  await fake_redis.set(
+      "test:session:user_state:billing:alice",
+      legacy_session_at_user_state_key.model_dump_json(),
+  )
+  await fake_redis.set("test:session:app_state:billing", '{"old": true}')
+
+  assert (
+      await session_service.get_session(
+          app_name="billing",
+          user_id="tenant:victim",
+          session_id="fixed",
+      )
+      is None
+  )
+  assert (
+      await session_service.get_user_state(app_name="billing", user_id="alice")
+      == {}
+  )
+  assert (
+      await session_service.list_sessions(
+          app_name="billing", user_id="tenant:victim"
+      )
+  ).sessions == []
+  assert (
+      await session_service.list_sessions(app_name="billing")
+  ).sessions == []
+  await session_service.delete_session(
+      app_name="billing", user_id="tenant:victim", session_id="fixed"
+  )
+  assert await fake_redis.get(legacy_key) == legacy_session.model_dump_json()
+  new_session = await session_service.create_session(
+      app_name="billing", user_id="alice", session_id="new"
+  )
+  assert new_session.state == {}
+
+
+@pytest.mark.parametrize("binary_scan_keys", [False, True])
+@pytest.mark.asyncio
+async def test_list_sessions_ignores_legacy_key_matching_v2_scan(
+    session_service, fake_redis, binary_scan_keys
+):
+  legacy_session = Session(
+      id="bar",
+      app_name="v2",
+      user_id="s2_djI.foo",
+      state={"private": "legacy-session"},
+      events=[],
+      last_update_time=1.0,
+  )
+  await fake_redis.set(
+      "test:session:v2:s2_djI.foo:bar", legacy_session.model_dump_json()
+  )
+  current = await session_service.create_session(
+      app_name="v2", user_id="alice", session_id="live"
+  )
+  if binary_scan_keys:
+    original_scan_iter = fake_redis.scan_iter
+    original_get = fake_redis.get
+
+    async def scan_bytes(match):
+      async for key in original_scan_iter(match):
+        yield key.encode("utf-8")
+
+    async def get_with_bytes(key):
+      return await original_get(
+          key.decode("utf-8") if isinstance(key, bytes) else key
+      )
+
+    fake_redis.scan_iter = scan_bytes
+    fake_redis.get = get_with_bytes
+
+  assert (await session_service.list_sessions(app_name="v2")).sessions == [
+      current
+  ]
 
 
 @pytest.mark.asyncio
@@ -107,6 +249,197 @@ async def test_get_session_not_found(session_service):
       session_id="nonexistent",
   )
   assert fetched is None
+
+
+@pytest.mark.asyncio
+async def test_get_list_and_delete_reject_colon_key_alias(session_service):
+  """A colon-delimited identity alias cannot read, list, or delete a session."""
+  victim = await session_service.create_session(
+      app_name="billing",
+      user_id="tenant:victim",
+      session_id="fixed",
+      state={"secret": "victim-only"},
+  )
+  assert session_service._session_key(
+      "billing", "tenant:victim", "fixed"
+  ) != session_service._session_key("billing", "tenant", "victim:fixed")
+
+  assert (
+      await session_service.get_session(
+          app_name="billing", user_id="tenant", session_id="victim:fixed"
+      )
+      is None
+  )
+  assert (
+      await session_service.list_sessions(app_name="billing", user_id="tenant")
+  ).sessions == []
+  assert [
+      s.id
+      for s in (
+          await session_service.list_sessions(app_name="billing")
+      ).sessions
+  ] == [victim.id]
+
+  await session_service.delete_session(
+      app_name="billing", user_id="tenant", session_id="victim:fixed"
+  )
+  fetched = await session_service.get_session(
+      app_name="billing", user_id="tenant:victim", session_id="fixed"
+  )
+  assert fetched is not None
+  assert fetched.state["secret"] == "victim-only"
+
+
+@pytest.mark.asyncio
+async def test_delete_session_removes_corrupt_record(
+    session_service, fake_redis
+):
+  """Deletion works even if the stored session cannot be deserialized."""
+  key = session_service._session_key("billing", "tenant:victim", "fixed")
+  await fake_redis.set(key, "{corrupt json")
+  await session_service.delete_session(
+      app_name="billing", user_id="tenant:victim", session_id="fixed"
+  )
+  assert await fake_redis.get(key) is None
+
+
+@pytest.mark.asyncio
+async def test_append_event_does_not_commit_state_after_identity_race(
+    session_service, fake_redis
+):
+  """A replacement identity aborts queued session and state writes."""
+  victim = await session_service.create_session(
+      app_name="billing",
+      user_id="tenant:victim",
+      session_id="fixed",
+  )
+  alias = Session(
+      id="victim:fixed",
+      app_name="billing",
+      user_id="tenant",
+      state={"owner": "replacement"},
+      events=[],
+      last_update_time=victim.last_update_time,
+  )
+  key = session_service._session_key("billing", "tenant:victim", "fixed")
+  original_get = fake_redis.get
+  replaced = False
+
+  async def replace_after_read(read_key):
+    nonlocal replaced
+    raw = await original_get(read_key)
+    if read_key == key and not replaced:
+      replaced = True
+      await fake_redis.delete(key)
+      await fake_redis.set(key, alias.model_dump_json())
+    return raw
+
+  fake_redis.get = replace_after_read
+  event = Event(
+      author="user",
+      actions=EventActions(
+          state_delta={
+              "app:should_not_write": True,
+              "user:should_not_write": True,
+              "session:should_not_write": True,
+          }
+      ),
+  )
+  with pytest.raises(SessionNotFoundError):
+    await session_service.append_event(victim, event)
+
+  assert await original_get(session_service._app_state_key("billing")) is None
+  assert (
+      await original_get(
+          session_service._user_state_key("billing", "tenant:victim")
+      )
+      is None
+  )
+  remaining = await original_get(key)
+  assert remaining is not None
+  assert Session.model_validate_json(remaining).user_id == "tenant"
+  assert Session.model_validate_json(remaining).state == {
+      "owner": "replacement"
+  }
+
+
+@pytest.mark.asyncio
+async def test_append_event_rejects_mismatched_stored_identity_without_persistent_mutation(
+    session_service, fake_redis
+):
+  """A mismatched Redis record cannot cause persistent cross-identity writes."""
+  victim = await session_service.create_session(
+      app_name="billing",
+      user_id="tenant:victim",
+      session_id="fixed",
+      state={"secret": "victim-only"},
+  )
+  attacker_view = Session(
+      id="victim:fixed",
+      app_name="billing",
+      user_id="tenant",
+      state={"attacker": "local-only"},
+      events=[],
+      last_update_time=victim.last_update_time,
+  )
+  attacker_key = session_service._session_key(
+      "billing", "tenant", "victim:fixed"
+  )
+  await fake_redis.set(attacker_key, victim.model_dump_json())
+  event = Event(
+      author="user",
+      actions=EventActions(
+          state_delta={
+              "app:alias_write": True,
+              "user:alias_write": True,
+              "session_alias_write": True,
+          }
+      ),
+  )
+
+  with pytest.raises(SessionNotFoundError):
+    await session_service.append_event(attacker_view, event)
+
+  assert await fake_redis.get(session_service._app_state_key("billing")) is None
+  assert (
+      await session_service.get_user_state(app_name="billing", user_id="tenant")
+      == {}
+  )
+  assert (
+      await session_service.get_user_state(
+          app_name="billing", user_id="tenant:victim"
+      )
+      == {}
+  )
+  stored = await session_service.get_session(
+      app_name="billing", user_id="tenant:victim", session_id="fixed"
+  )
+  assert stored is not None
+  assert stored.events == []
+  assert stored.state == {"secret": "victim-only"}
+  assert await fake_redis.get(attacker_key) == victim.model_dump_json()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [False, True])
+async def test_append_event_to_unknown_session_writes_nothing(
+    session_service, fake_redis, partial
+):
+  """A rejected append leaves no session, app state or user state behind."""
+  session = Session(app_name="app1", user_id="u1", id="never_created")
+  event = Event(
+      author="agent",
+      partial=partial,
+      actions=EventActions(
+          state_delta={"count": 1, "user:score": 100, "app:status": "active"}
+      ),
+  )
+
+  with pytest.raises(SessionNotFoundError):
+    await session_service.append_event(session, event)
+
+  assert fake_redis._store == {}
+  assert session.events == []
 
 
 @pytest.mark.asyncio
@@ -424,11 +757,11 @@ async def test_list_sessions_glob_metacharacters_match_literally(
   )
 
   for app_name, user_id, expected_pattern in (
-      ("app1", "*", r"test:session:app1:\*:*"),
-      ("app1", "u?", r"test:session:app1:u\?:*"),
-      ("app1", "[u]1", r"test:session:app1:\[u\]1:*"),
-      ("app1", "u\\1", r"test:session:app1:u\\1:*"),
-      ("*", "u1", r"test:session:\*:u1:*"),
+      ("app1", "*", "test:session:v2:s2_YXBwMQ.Kg.*"),
+      ("app1", "u?", "test:session:v2:s2_YXBwMQ.dT8.*"),
+      ("app1", "[u]1", "test:session:v2:s2_YXBwMQ.W3VdMQ.*"),
+      ("app1", "u\\1", "test:session:v2:s2_YXBwMQ.dVwx.*"),
+      ("*", "u1", "test:session:v2:s2_Kg.dTE.*"),
   ):
     fake_redis.scan_patterns.clear()
     resp = await session_service.list_sessions(
@@ -439,7 +772,7 @@ async def test_list_sessions_glob_metacharacters_match_literally(
 
   fake_redis.scan_patterns.clear()
   resp = await session_service.list_sessions(app_name="*")
-  assert fake_redis.scan_patterns == [r"test:session:\*:*"]
+  assert fake_redis.scan_patterns == ["test:session:v2:s2_Kg.*"]
   assert resp.sessions == []
 
 

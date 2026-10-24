@@ -123,6 +123,11 @@ service = RedisSessionService(redis_client=shared_client)
 RedisSessionService requires the `redis` Python package to be installed. You
 can install it using `pip install google-adk[redis]`.
 
+Native Redis Cluster is not supported. When an event updates `app:` or `user:`
+state, the service watches the session and state keys in one transaction. These
+keys are not guaranteed to share a Cluster hash slot, so the transaction can
+fail with `CROSSSLOT`. Use a standalone Redis instance for this service.
+
 State keys prefixed with `temp:` are treated as transient. While they are
 available in the session object immediately after creation or an update, they
 are not persisted to Redis and will disappear when the session is reloaded
