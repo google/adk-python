@@ -46,6 +46,21 @@ import pytest
     "is_the_agent_response_valid": "undefined label",
   }
   ```""",
+        """```json
+  {
+    "is_the_agent_response_valid": "not valid",
+  }
+  ```""",
+        """```json
+  {
+    "is_the_agent_response_valid": "va,lid",
+  }
+  ```""",
+        """```json
+  {
+    "is_the_agent_response_valid": ",True",
+  }
+  ```""",
     ],
 )
 def test_parse_critique_label_not_found(response_text):
@@ -74,6 +89,18 @@ def test_parse_critique_label_not_found(response_text):
     "reasoning": "The response is valid."
   }
   ```""",
+        """```json
+  {
+    "is_the_agent_response_valid": "Valid",
+    "reasoning": "The response is valid."
+  }
+  ```""",
+        """```json
+  {
+    "is_the_agent_response_valid": ["VALID"],
+    "reasoning": "The response is valid."
+  }
+  ```""",
     ],
 )
 def test_parse_critique(response_text):
@@ -99,6 +126,30 @@ def test_parse_critique(response_text):
         """```json
   {
     "is_the_agent_response_invalid":\n    [ "invalid\n"],
+    "reasoning": "The response is invalid."
+  }
+  ```""",
+        """```json
+  {
+    "is_the_agent_response_valid": "Invalid",
+    "reasoning": "The response is invalid."
+  }
+  ```""",
+        """```json
+  {
+    "is_the_agent_response_valid": "partially valid",
+    "reasoning": "The response is partially valid."
+  }
+  ```""",
+        """```json
+  {
+    "is_the_agent_response_invalid": "True",
+    "reasoning": "The response is invalid."
+  }
+  ```""",
+        """```json
+  {
+    "is_the_agent_response_invalid": "Invalid",
     "reasoning": "The response is invalid."
   }
   ```""",
@@ -334,6 +385,51 @@ def test_convert_auto_rater_response_to_score_missing_key():
       llm_response
   )
   assert auto_rater_score == AutoRaterScore()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sampled_verdicts",
+    [
+        ["valid", "Invalid", "INVALID"],
+        ["invalid", "va,lid", ",true"],
+    ],
+)
+async def test_evaluate_invocations_majority_vote_over_judge_labels(
+    sampled_verdicts, mocker
+):
+  """Capitalized verdicts vote; labels that are not verdicts still do not."""
+  evaluator = _create_test_evaluator_gemini(threshold=0.5)
+  evaluator._judge_model_options.num_samples = 3
+  verdicts = iter(sampled_verdicts)
+
+  async def generate_content_async(llm_request):
+    del llm_request
+    yield LlmResponse(
+        content=genai_types.Content(
+            parts=[
+                genai_types.Part(
+                    text=(
+                        f'{{"is_the_agent_response_valid": "{next(verdicts)}"}}'
+                    )
+                )
+            ],
+            role="model",
+        )
+    )
+
+  evaluator._judge_model = mocker.MagicMock()
+  evaluator._judge_model.generate_content_async = generate_content_async
+  actual_invocation, expected_invocation = _create_test_invocations(
+      "candidate text", "reference text"
+  )
+
+  result = await evaluator.evaluate_invocations(
+      [actual_invocation], [expected_invocation]
+  )
+
+  assert result.overall_score == 0.0
+  assert result.overall_eval_status == EvalStatus.FAILED
 
 
 def test_aggregate_per_invocation_samples_none_evaluated():

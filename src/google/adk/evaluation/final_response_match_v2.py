@@ -89,9 +89,11 @@ def _parse_critique(response: str) -> Label:
     The extracted label, either VALID, INVALID, or NOT_FOUND.
   """
   # Regex matching the label field in the response. The end of the field is
-  # identified by either a comma, new line, or an end-bracket.
+  # identified by either a comma, new line, or an end-bracket. If a single-word
+  # label does not match, the label can be several words separated by single
+  # spaces, as in "partially valid".
   label_match_is_response_valid = re.search(
-      r'"is_the_agent_response_valid":\s*\[*[\n\s]*"*([^"^\]^\s]*)"*[\n\s]*\]*\s*[,\n\}]',
+      r'"is_the_agent_response_valid":\s*\[*[\n\s]*"*([^"^\]^\s]*|[^"^\]^\s,}]+(?:\x20[^"^\]^\s,}]+)+)"*[\n\s]*\]*\s*[,\n\}]',
       response,
   )
   # In case the model names the label field as "is_the_agent_response_*invalid*"
@@ -100,9 +102,10 @@ def _parse_critique(response: str) -> Label:
       r'"is_the_agent_response_invalid":\s*\[*[\n\s]*"*([^"^\]^\s]*)"*[\n\s]*\]*\s*[,\n\}]',
       response,
   )
-  # Remove any trailing whitespace, commas, or end-brackets from the label.
+  # Remove any trailing whitespace, commas, or end-brackets from the label, and
+  # lowercase it so the match does not depend on the judge's capitalization.
   if label_match_is_response_valid:
-    label = label_match_is_response_valid.group(1).strip().rstrip(",}")
+    label = label_match_is_response_valid.group(1).strip().rstrip(",}").lower()
     if label in [
         Label.INVALID.value,
         Label.ALMOST.value,
@@ -115,7 +118,9 @@ def _parse_critique(response: str) -> Label:
     else:
       label = Label.NOT_FOUND
   elif label_match_is_response_invalid:
-    label = label_match_is_response_invalid.group(1).strip().rstrip(",}")
+    label = (
+        label_match_is_response_invalid.group(1).strip().rstrip(",}").lower()
+    )
     label = (
         Label.INVALID
         if label in [Label.TRUE.value, Label.INVALID.value]
