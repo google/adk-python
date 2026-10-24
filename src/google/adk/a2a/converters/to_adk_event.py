@@ -691,6 +691,7 @@ def convert_a2a_message_to_event(
         _extract_event_actions(a2a_message.metadata),
         long_running_function_ids,
         content_role=content_role,
+        allow_empty_event=any(metadata_fields.values()),
         **metadata_fields,
     )
     return event
