@@ -286,6 +286,42 @@ class TestDialogueAssembly:
     assert "Transfer money between accounts." in evaluator._formatted_tools
 
   @pytest.mark.asyncio
+  async def test_app_details_with_built_in_tool(self, evaluator):
+    """Tests that tools without function declarations are skipped."""
+    app_details = AppDetails(
+        agent_details={
+            "search_agent": AgentDetails(
+                name="search_agent",
+                instructions="You answer questions using search.",
+                tool_declarations=[
+                    genai_types.Tool(google_search=genai_types.GoogleSearch()),
+                    genai_types.Tool(
+                        function_declarations=[
+                            genai_types.FunctionDeclaration(
+                                name="get_weather",
+                                description="Get the weather for a city.",
+                            )
+                        ]
+                    ),
+                ],
+            )
+        },
+    )
+    invocations = [
+        _make_invocation(
+            user_text="What is the weather in Paris?",
+            agent_text="It is sunny.",
+            invocation_id="search_agent",
+            rubrics=_RUBRICS,
+            app_details=app_details,
+        ),
+    ]
+    evaluator._assemble_dialogue_history(invocations)
+
+    assert "get_weather" in evaluator._formatted_tools
+    assert "Get the weather for a city." in evaluator._formatted_tools
+
+  @pytest.mark.asyncio
   async def test_invocation_without_user_content(self, evaluator):
     """Tests that invocations with no user text parts are handled gracefully."""
     invocations = [
