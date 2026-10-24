@@ -20,6 +20,8 @@ from unittest.mock import patch
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
+from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.plugins.save_files_as_artifacts_plugin import SaveFilesAsArtifactsPlugin
 from google.genai import types
 import pytest
@@ -220,8 +222,43 @@ class TestSaveFilesAsArtifactsPlugin:
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    assert result == user_message
-    assert result.parts[0].inline_data == inline_data
+    assert result is None
+    assert user_message.parts[0].inline_data == inline_data
+
+  @pytest.mark.asyncio
+  async def test_no_artifact_service_does_not_stop_later_plugins(self):
+    """Without an artifact service, later plugins still see the message."""
+    self.mock_context.artifact_service = None
+    seen = []
+
+    class _RecordingPlugin(BasePlugin):
+
+      async def on_user_message_callback(
+          self, *, invocation_context, user_message
+      ):
+        seen.append(user_message)
+
+    plugin_manager = PluginManager(
+        plugins=[self.plugin, _RecordingPlugin(name="recording")]
+    )
+    user_message = types.Content(
+        parts=[
+            types.Part(
+                inline_data=types.Blob(
+                    display_name="test.pdf",
+                    data=b"test data",
+                    mime_type="application/pdf",
+                )
+            )
+        ]
+    )
+
+    result = await plugin_manager.run_on_user_message_callback(
+        invocation_context=self.mock_context, user_message=user_message
+    )
+
+    assert result is None
+    assert seen == [user_message]
 
   @pytest.mark.asyncio
   async def test_no_parts_in_message(self):
