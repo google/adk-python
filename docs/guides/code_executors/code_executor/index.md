@@ -196,10 +196,10 @@ code on your host, in order of how much you have to operate to get there.
 
 ### Run in a container
 
-`ContainerCodeExecutor` starts a Docker container as a non-root user, with the
-network off and Linux capabilities dropped. If you are moving off
-`UnsafeLocalCodeExecutor`, this is the shortest step that puts a real boundary
-between the model's code and your host:
+`ContainerCodeExecutor` starts a Docker container with the network off by default
+and Linux capabilities dropped. It runs as the image's configured user, which
+may be root. If you are moving off `UnsafeLocalCodeExecutor`, this is the shortest
+step that puts a real boundary between the model's code and your host:
 
 ```python
 from google.adk.agents import LlmAgent
