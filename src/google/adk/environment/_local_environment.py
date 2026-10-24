@@ -23,6 +23,8 @@ from pathlib import Path
 import shutil
 import signal
 import tempfile
+from typing import BinaryIO
+from typing import Iterator
 
 from typing_extensions import override
 
@@ -36,6 +38,50 @@ logger = logging.getLogger('google_adk.' + __name__)
 # SIGKILL, and then for its output pipes to close, so that tearing a command
 # down cannot itself block forever.
 _TERMINATE_GRACE_SECONDS = 5
+
+# Chunk size for streaming a file while looking for line boundaries, so a
+# single very long line cannot force reading the rest of the file at once.
+_LINE_SCAN_CHUNK_SIZE = 65536
+
+
+def _iter_binary_lines(f: BinaryIO) -> Iterator[bytes]:
+  """Yields lines the same way `bytes.splitlines(keepends=True)` would.
+
+  Unlike iterating a binary file object directly (which only splits on
+  `b'\\n'`), this also splits on a bare `b'\\r'` and on `b'\\r\\n'`, matching
+  `bytes.splitlines()` so streamed reads agree with the whole-file path other
+  environments use.
+  """
+  pending = b''
+  while True:
+    chunk = f.read(_LINE_SCAN_CHUNK_SIZE)
+    if not chunk:
+      break
+    buf = pending + chunk
+    pos = 0
+    end = len(buf)
+    while pos < end:
+      idx_n = buf.find(b'\n', pos)
+      idx_r = buf.find(b'\r', pos)
+      if idx_n == -1 and idx_r == -1:
+        break
+      if idx_r != -1 and (idx_n == -1 or idx_r < idx_n):
+        if idx_r == end - 1:
+          # A lone `\r` at the end of this chunk might be the start of a
+          # `\r\n` pair split across the chunk boundary; defer it.
+          break
+        if buf[idx_r + 1 : idx_r + 2] == b'\n':
+          yield buf[pos : idx_r + 2]
+          pos = idx_r + 2
+        else:
+          yield buf[pos : idx_r + 1]
+          pos = idx_r + 1
+      else:
+        yield buf[pos : idx_n + 1]
+        pos = idx_n + 1
+    pending = buf[pos:]
+  if pending:
+    yield pending
 
 
 def _signal_group(group: int, sig: int) -> None:
@@ -208,6 +254,21 @@ class LocalEnvironment(BaseEnvironment):
     return await asyncio.to_thread(self._sync_read, resolved)
 
   @override
+  async def read_file_lines(
+      self,
+      path: str | Path,
+      start_line: int = 1,
+      end_line: int | None = None,
+  ) -> tuple[list[bytes], int]:
+    if self._working_dir is None:
+      raise RuntimeError('`working_dir` is not set. Call initialize() first.')
+
+    resolved = self._resolve_path(path)
+    return await asyncio.to_thread(
+        self._sync_read_lines, resolved, start_line, end_line
+    )
+
+  @override
   async def write_file(self, path: str | Path, content: str | bytes) -> None:
     if self._working_dir is None:
       raise RuntimeError('`working_dir` is not set. Call initialize() first.')
@@ -231,6 +292,22 @@ class LocalEnvironment(BaseEnvironment):
   def _sync_read(path: Path) -> bytes:
     with open(path, 'rb') as f:
       return f.read()
+
+  @staticmethod
+  def _sync_read_lines(
+      path: Path, start_line: int, end_line: int | None
+  ) -> tuple[list[bytes], int]:
+    """Streams *path* line-by-line, keeping only the requested range."""
+    start = max(1, start_line)
+    selected: list[bytes] = []
+    total = 0
+    with open(path, 'rb') as f:
+      for line in _iter_binary_lines(f):
+        total += 1
+        if total < start or (end_line is not None and total > end_line):
+          continue
+        selected.append(line)
+    return selected, total
 
   @staticmethod
   def _sync_write(path: Path, content: str | bytes) -> None:
