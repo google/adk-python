@@ -15,8 +15,11 @@
 import asyncio
 import gc
 import logging
+import os
+import pathlib
 import signal
 import sys
+import time
 from unittest import mock
 
 import pytest
@@ -91,6 +94,62 @@ def tool_context_rejected():
   ctx.tool_confirmation = confirmation
   ctx.actions = mock.MagicMock()
   return ctx
+
+
+def _pid_is_alive(pid: int) -> bool:
+  """Returns whether pid still exists."""
+  try:
+    os.kill(pid, 0)
+  except ProcessLookupError:
+    return False
+  return True
+
+
+async def _wait_for_pid_exit(pid: int, timeout: float = 2.0) -> bool:
+  """Returns True once pid is gone, or False if it outlives timeout."""
+  deadline = time.monotonic() + timeout
+  while _pid_is_alive(pid):
+    if time.monotonic() >= deadline:
+      return False
+    await asyncio.sleep(0.05)
+  return True
+
+
+def _kill_pidfile(path: pathlib.Path) -> None:
+  """SIGKILLs the pid recorded in path, if that process is still running."""
+  if not path.is_file():
+    return
+  text = path.read_text().strip()
+  if not text:
+    return
+  try:
+    pid = int(text)
+  except ValueError:
+    return
+  try:
+    os.kill(pid, signal.SIGKILL)
+  except ProcessLookupError:
+    return
+
+
+# A setsid grandchild keeps stdout open after its parent leaves the group.
+_SETSID_PIPE_HOLDER = (
+    "import os\n"
+    "import sys\n"
+    "import time\n"
+    "if os.fork() == 0:\n"
+    "    os.setsid()\n"
+    "    with open('writer.pid', 'w') as handle:\n"
+    "        handle.write(str(os.getpid()))\n"
+    "    while True:\n"
+    '        sys.stdout.buffer.write(b"z" * 1024)\n'
+    "        sys.stdout.buffer.flush()\n"
+    "        time.sleep(0.05)\n"
+    "else:\n"
+    "    with open('parent.pid', 'w') as handle:\n"
+    "        handle.write(str(os.getpid()))\n"
+    "    time.sleep(60)\n"
+)
 
 
 # --- _validate_command tests ---
@@ -317,6 +376,7 @@ class TestExecuteBashTool:
         exit_fut.set_result(-sig)
 
     mock_process.wait = _wait
+    mock_process._transport = mock.Mock()
     with (
         mock.patch.object(
             asyncio,
@@ -333,6 +393,56 @@ class TestExecuteBashTool:
       mock_killpg.assert_called_with(12345, signal.SIGKILL)
     assert "error" in result
     assert "timed out" in result["error"].lower()
+    mock_process._transport.close.assert_called_once()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "close_error",
+      [AttributeError("missing"), OSError(9, "Bad file descriptor")],
+  )
+  async def test_timeout_ignores_transport_close_error(
+      self, workspace, tool_context_confirmed, close_error
+  ):
+    """A transport that is already closed still returns the timeout error."""
+    tool = bash_tool.ExecuteBashTool(
+        workspace=workspace,
+        policy=bash_tool.BashToolPolicy(timeout_seconds=0),
+    )
+    exit_fut = asyncio.get_running_loop().create_future()
+    mock_process = mock.AsyncMock()
+    mock_process.pid = 12345
+    mock_process.stdout = None
+    mock_process.stderr = None
+    mock_process.returncode = None
+
+    async def _wait():
+      if mock_process.returncode is not None:
+        return mock_process.returncode
+      return await exit_fut
+
+    def _killpg(pid, sig):
+      mock_process.returncode = -sig
+      if not exit_fut.done():
+        exit_fut.set_result(-sig)
+
+    mock_process.wait = _wait
+    mock_process._transport = mock.Mock()
+    mock_process._transport.close.side_effect = close_error
+    with (
+        mock.patch.object(
+            asyncio,
+            "create_subprocess_exec",
+            autospec=True,
+            return_value=mock_process,
+        ),
+        mock.patch("os.killpg", side_effect=_killpg),
+    ):
+      result = await tool.run_async(
+          args={"command": "python scripts/do_thing.py"},
+          tool_context=tool_context_confirmed,
+      )
+    assert "timed out" in result["error"].lower()
+    mock_process._transport.close.assert_called_once()
 
   @pytest.mark.asyncio
   async def test_cwd_is_workspace(self, workspace, tool_context_confirmed):
@@ -487,31 +597,18 @@ class TestOutputLimits:
   async def test_timeout_setsid_child_holding_pipe_cleans_up(
       self, workspace, tool_context_confirmed
   ):
-    """Timeout must not leave wait/drain tasks pending when a setsid child holds a pipe.
+    """Timeout closes the pipe so a setsid descendant stops writing.
 
     A descendant that calls setsid() leaves the process group, so killpg does
-    not close its inherited stdout. Cleanup must cancel the explicit waiter and
-    readers instead of leaving process.wait() pending inside a gather.
+    not close its inherited stdout. Cleanup cancels the explicit waiter and
+    readers, then closes the subprocess transport. The descendant's next write
+    fails and the writer exits instead of outliving run_async.
     """
-    import time
-
     policy = bash_tool.BashToolPolicy(
         timeout_seconds=1, max_output_bytes_per_stream=64
     )
     tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
-    (workspace / "setsid_hold.py").write_text(
-        "import os\n"
-        "import sys\n"
-        "import time\n"
-        "if os.fork() == 0:\n"
-        "    os.setsid()\n"
-        "    while True:\n"
-        '        sys.stdout.buffer.write(b"z" * 1024)\n'
-        "        sys.stdout.buffer.flush()\n"
-        "        time.sleep(0.05)\n"
-        "else:\n"
-        "    time.sleep(60)\n"
-    )
+    (workspace / "setsid_hold.py").write_text(_SETSID_PIPE_HOLDER)
     loop = asyncio.get_running_loop()
     reports = []
     previous_handler = loop.get_exception_handler()
@@ -527,28 +624,31 @@ class TestOutputLimits:
         await asyncio.sleep(0)
       gc.collect()
       await asyncio.sleep(0)
+      assert "timed out" in result["error"]
+      # Returns after timeout plus drain grace, not the child's 60s sleep.
+      assert elapsed < 5.0
+      leftover = [
+          t
+          for t in asyncio.all_tasks()
+          if not t.done()
+          and t is not asyncio.current_task()
+          and getattr(getattr(t, "get_coro", lambda: None)(), "__name__", None)
+          in {"_drain_stream", "wait"}
+      ]
+      assert leftover == []
+      noisy = [
+          r
+          for r in reports
+          if "never retrieved" in r.get("message", "")
+          or "shielded" in r.get("message", "").lower()
+      ]
+      assert noisy == []
+      writer_pid = int((workspace / "writer.pid").read_text().strip())
+      assert await _wait_for_pid_exit(writer_pid)
     finally:
       loop.set_exception_handler(previous_handler)
-
-    assert "timed out" in result["error"]
-    # Must return after timeout + drain grace, not after the child's 60s sleep.
-    assert elapsed < 5.0
-    leftover = [
-        t
-        for t in asyncio.all_tasks()
-        if not t.done()
-        and t is not asyncio.current_task()
-        and getattr(getattr(t, "get_coro", lambda: None)(), "__name__", None)
-        in {"_drain_stream", "wait"}
-    ]
-    assert leftover == []
-    noisy = [
-        r
-        for r in reports
-        if "never retrieved" in r.get("message", "")
-        or "shielded" in r.get("message", "").lower()
-    ]
-    assert noisy == []
+      _kill_pidfile(workspace / "writer.pid")
+      _kill_pidfile(workspace / "parent.pid")
 
   def test_rejects_negative_output_limit(self):
     with pytest.raises(ValueError, match="max_output_bytes_per_stream"):
@@ -622,6 +722,46 @@ class TestOutputLimits:
         == "_drain_stream"
     ]
     assert leftover_drains == []
+
+  @pytest.mark.asyncio
+  async def test_cancellation_setsid_child_holding_pipe_exits(
+      self, workspace, tool_context_confirmed
+  ):
+    """Cancelling run_async closes the pipe so a setsid writer exits.
+
+    The forked child leaves the process group, so killing that group does not
+    stop it. Transport close after the cancelled readers are gathered must
+    make the writer exit.
+    """
+    policy = bash_tool.BashToolPolicy(
+        timeout_seconds=30, max_output_bytes_per_stream=64
+    )
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    (workspace / "setsid_hold.py").write_text(_SETSID_PIPE_HOLDER)
+    task = asyncio.create_task(
+        tool.run_async(
+            args={"command": "python3 setsid_hold.py"},
+            tool_context=tool_context_confirmed,
+        )
+    )
+    pid_path = workspace / "writer.pid"
+    try:
+      deadline = time.monotonic() + 2
+      while not pid_path.is_file():
+        if task.done() or time.monotonic() >= deadline:
+          break
+        await asyncio.sleep(0.05)
+      assert pid_path.is_file()
+      task.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await task
+      writer_pid = int(pid_path.read_text().strip())
+      assert await _wait_for_pid_exit(writer_pid)
+    finally:
+      if not task.done():
+        task.cancel()
+      _kill_pidfile(pid_path)
+      _kill_pidfile(workspace / "parent.pid")
 
   @pytest.mark.asyncio
   async def test_cancellation_retrieves_completion_exception(

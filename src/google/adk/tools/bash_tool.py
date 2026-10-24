@@ -121,6 +121,32 @@ async def _finish_tasks(tasks: list[asyncio.Task]) -> None:
   await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def _close_subprocess_transport(
+    process: Optional[asyncio.subprocess.Process],
+) -> None:
+  """Closes subprocess pipes so an escaped descendant exits.
+
+  A child that called setsid() survives the process-group kill and keeps the
+  inherited pipe open. While that read end stays open, the descendant keeps
+  running after run_async returns. Closing the transport drops the pipe, so
+  its next write fails with EPIPE. close() is a no-op once the transport is
+  already shut; a half-torn-down transport can still raise.
+  """
+  if process is None:
+    return
+  transport = getattr(process, "_transport", None)
+  if transport is None:
+    return
+  try:
+    transport.close()
+  except (AttributeError, OSError, RuntimeError):
+    logger.warning(
+        "Failed to close bash subprocess transport for pid %s",
+        getattr(process, "pid", None),
+        exc_info=True,
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class BashToolPolicy:
   """Configuration for allowed bash commands and resource limits.
@@ -357,6 +383,7 @@ class ExecuteBashTool(BaseTool):
           except ProcessLookupError:
             pass
           await _finish_tasks(tracked)
+          _close_subprocess_transport(process)
           if process.returncode is None:
             try:
               await asyncio.wait_for(
@@ -397,12 +424,14 @@ class ExecuteBashTool(BaseTool):
         task.cancel()
       if tracked:
         await asyncio.gather(*tracked, return_exceptions=True)
+      _close_subprocess_transport(process)
       raise
     except Exception as e:  # pylint: disable=broad-except
       logger.exception("ExecuteBashTool execution failed")
       tracked = [t for t in (*readers, waiter) if t is not None]
       if tracked:
         await _finish_tasks(tracked)
+      _close_subprocess_transport(process)
       return {
           "error": f"Execution failed: {str(e)}",
           "stdout": stdout.render("stdout"),
