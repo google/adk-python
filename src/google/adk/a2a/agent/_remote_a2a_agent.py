@@ -695,6 +695,21 @@ def _build_auth_interceptors(
   )
 
 
+class _SharedResolution:
+  """The resolved card and clients of a RemoteA2aAgent and all its clones."""
+
+  def __init__(self) -> None:
+    self.agent_card: Optional[AgentCard] = None
+    self.a2a_client: Optional[A2AClient] = None
+    self.a2a_client_factory: Optional[A2AClientFactory] = None
+    self.httpx_client: Optional[httpx.AsyncClient] = None
+    self.httpx_client_needs_cleanup = False
+    self.is_resolved = False
+    # Concurrent first requests across sessions would otherwise each fetch
+    # the card and build a client.
+    self.lock = asyncio.Lock()
+
+
 @a2a_experimental
 class RemoteA2aAgent(BaseAgent):
   """Agent that communicates with a remote A2A agent via A2A client.
@@ -733,6 +748,83 @@ class RemoteA2aAgent(BaseAgent):
   control returns to the parent. ``None`` (default) leaves the agent as a
   plain ``transfer_to_agent`` target.
   """
+
+  # The agent tree is cloned for every invocation (BaseAgent.clone() is a
+  # shallow model_copy), so the resolved card and clients live on an object
+  # the clones share: the first turn resolves them, and cleanup() on this
+  # instance closes what any clone opened. Deleting one of these attributes
+  # resets it, which unittest.mock.patch.object does on exit.
+  @property
+  def _agent_card(self) -> Optional[AgentCard]:
+    return self._resolution.agent_card
+
+  @_agent_card.setter
+  def _agent_card(self, value: Optional[AgentCard]) -> None:
+    self._resolution.agent_card = value
+
+  @_agent_card.deleter
+  def _agent_card(self) -> None:
+    self._resolution.agent_card = None
+
+  @property
+  def _a2a_client(self) -> Optional[A2AClient]:
+    return self._resolution.a2a_client
+
+  @_a2a_client.setter
+  def _a2a_client(self, value: Optional[A2AClient]) -> None:
+    self._resolution.a2a_client = value
+
+  @_a2a_client.deleter
+  def _a2a_client(self) -> None:
+    self._resolution.a2a_client = None
+
+  @property
+  def _a2a_client_factory(self) -> Optional[A2AClientFactory]:
+    return self._resolution.a2a_client_factory
+
+  @_a2a_client_factory.setter
+  def _a2a_client_factory(self, value: Optional[A2AClientFactory]) -> None:
+    self._resolution.a2a_client_factory = value
+
+  @_a2a_client_factory.deleter
+  def _a2a_client_factory(self) -> None:
+    self._resolution.a2a_client_factory = None
+
+  @property
+  def _httpx_client(self) -> Optional[httpx.AsyncClient]:
+    return self._resolution.httpx_client
+
+  @_httpx_client.setter
+  def _httpx_client(self, value: Optional[httpx.AsyncClient]) -> None:
+    self._resolution.httpx_client = value
+
+  @_httpx_client.deleter
+  def _httpx_client(self) -> None:
+    self._resolution.httpx_client = None
+
+  @property
+  def _httpx_client_needs_cleanup(self) -> bool:
+    return self._resolution.httpx_client_needs_cleanup
+
+  @_httpx_client_needs_cleanup.setter
+  def _httpx_client_needs_cleanup(self, value: bool) -> None:
+    self._resolution.httpx_client_needs_cleanup = value
+
+  @_httpx_client_needs_cleanup.deleter
+  def _httpx_client_needs_cleanup(self) -> None:
+    self._resolution.httpx_client_needs_cleanup = False
+
+  @property
+  def _is_resolved(self) -> bool:
+    return self._resolution.is_resolved
+
+  @_is_resolved.setter
+  def _is_resolved(self, value: bool) -> None:
+    self._resolution.is_resolved = value
+
+  @_is_resolved.deleter
+  def _is_resolved(self) -> None:
+    self._resolution.is_resolved = False
 
   def __init__(
       self,
@@ -805,9 +897,8 @@ class RemoteA2aAgent(BaseAgent):
     if agent_card is None:
       raise ValueError("agent_card cannot be None")
 
-    self._agent_card: Optional[AgentCard] = None
+    self._resolution = _SharedResolution()
     self._agent_card_source: Optional[str] = None
-    self._a2a_client: Optional[A2AClient] = None
     # This is stored to support backward compatible usage of class.
     # In future, the client is expected to be present in the factory.
     self._httpx_client = httpx_client
@@ -818,7 +909,8 @@ class RemoteA2aAgent(BaseAgent):
     self._is_resolved = False
     self._genai_part_converter = genai_part_converter
     self._a2a_part_converter = a2a_part_converter
-    self._a2a_client_factory: Optional[A2AClientFactory] = a2a_client_factory
+    self._a2a_client_factory = a2a_client_factory
+    self._configured_a2a_client_factory = a2a_client_factory
     self._a2a_request_meta_provider = a2a_request_meta_provider
     self._full_history_when_stateless_param = full_history_when_stateless
     self._context_builder = context_builder
@@ -1275,44 +1367,47 @@ class RemoteA2aAgent(BaseAgent):
         return client
 
       # Shared (cached) resolution path.
-      if not self._agent_card:
+      async with self._resolution.lock:
+        if self._is_resolved and self._a2a_client:
+          return self._a2a_client
+        if not self._agent_card:
 
-        # Resolve agent card if needed
-        agent_card = await self._resolve_agent_card(ctx)
+          # Resolve agent card if needed
+          agent_card = await self._resolve_agent_card(ctx)
 
-        # Validate agent card
-        await self._validate_agent_card(agent_card)
+          # Validate agent card
+          await self._validate_agent_card(agent_card)
 
-        # Store the card only once it has validated. A rejected card left on
-        # the instance reads as already resolved, so the next call skips the
-        # check and talks to the origin that card named.
-        self._agent_card = agent_card
+          # Store the card only once it has validated. A rejected card left on
+          # the instance reads as already resolved, so the next call skips the
+          # check and talks to the origin that card named.
+          self._agent_card = agent_card
 
-      # A public card may already have been resolved for transfer selection.
-      # Preserve the existing behavior of adopting its description when the
-      # remote agent itself is initialized.
-      if not self.description and self._agent_card.description:
-        self.description = _adopted_card_description(
-            self._agent_card.description, self._agent_card_source
-        )
-
-      # Initialize A2A client
-      if not self._a2a_client:
-        await self._ensure_httpx_client()
-        if not self._a2a_client_factory:
-          raise AgentCardResolutionError(
-              f"Failed to initialize A2A client factory for {self.name}"
+        # A public card may already have been resolved for transfer selection.
+        # Preserve the existing behavior of adopting its description when the
+        # remote agent itself is initialized.
+        if not self.description and self._agent_card.description:
+          self.description = _adopted_card_description(
+              self._agent_card.description, self._agent_card_source
           )
-        self._a2a_client = self._a2a_client_factory.create(self._agent_card)
 
-      if not self._a2a_client:
-        raise AgentCardResolutionError(
-            f"Failed to initialize A2A client for {self.name}"
-        )
+        # Initialize A2A client
+        if not self._a2a_client:
+          await self._ensure_httpx_client()
+          if not self._a2a_client_factory:
+            raise AgentCardResolutionError(
+                f"Failed to initialize A2A client factory for {self.name}"
+            )
+          self._a2a_client = self._a2a_client_factory.create(self._agent_card)
 
-      self._is_resolved = True
-      logger.info("Successfully resolved remote A2A agent: %s", self.name)
-      return self._a2a_client
+        if not self._a2a_client:
+          raise AgentCardResolutionError(
+              f"Failed to initialize A2A client for {self.name}"
+          )
+
+        self._is_resolved = True
+        logger.info("Successfully resolved remote A2A agent: %s", self.name)
+        return self._a2a_client
 
     except Exception as e:
       logger.error("Failed to resolve remote A2A agent %s: %s", self.name, e)
@@ -2384,3 +2479,8 @@ class RemoteA2aAgent(BaseAgent):
         )
       finally:
         self._httpx_client = None
+        # The A2A client and the factory were bound to the closed client, and
+        # clones share them, so resolve again on the next request.
+        self._a2a_client = None
+        self._a2a_client_factory = self._configured_a2a_client_factory
+        self._is_resolved = False
