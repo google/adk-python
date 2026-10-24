@@ -174,6 +174,112 @@ def test_toolset_graph_shows_children_under_distinct_parent_nodes() -> None:
   assert dot.count('McpToolset>') == 2
 
 
+def test_same_named_tools_in_different_toolsets_are_separate_nodes() -> None:
+  """Each toolset gets its own child when both expose the same tool name."""
+  info = {
+      'root_agent': {
+          'name': 'root',
+          'tools': [
+              {
+                  'name': 'McpToolset',
+                  'id': 'root/toolset_0',
+                  'type': 'toolset',
+                  'children': [{'name': 'add', 'type': 'tool'}],
+              },
+              {
+                  'name': 'McpToolset',
+                  'id': 'root/toolset_1',
+                  'type': 'toolset',
+                  'children': [{'name': 'add', 'type': 'tool'}],
+              },
+              {
+                  'name': 'McpToolset',
+                  'id': 'root/toolset_2',
+                  'type': 'toolset',
+                  'children': [{'name': 'add', 'type': 'tool'}],
+              },
+          ],
+      },
+  }
+
+  dot = plot_workflow_graph(info, format='dot')
+
+  assert 'root -> "root/toolset_0"' in dot
+  assert 'root -> "root/toolset_1"' in dot
+  assert 'root -> "root/toolset_2"' in dot
+  # The first copy keeps the bare name so a tool-call event matches its title.
+  # Later copies are scoped under the toolset and still labeled "add".
+  assert '"root/toolset_0" -> add' in dot
+  assert '"root/toolset_1" -> "root/toolset_1/add"' in dot
+  assert '"root/toolset_2" -> "root/toolset_2/add"' in dot
+  assert '"root/toolset_1" -> add\n' not in dot
+  assert '"root/toolset_2" -> add\n' not in dot
+  assert dot.count(' add>') == 3
+
+
+def test_same_named_tools_on_different_agents_are_separate_nodes() -> None:
+  """Two agents exposing the same tool name do not share a child node."""
+  info = {
+      'root_agent': {
+          'name': 'root',
+          'sub_agents': [
+              {
+                  'name': 'left',
+                  'tools': [{
+                      'name': 'McpToolset',
+                      'id': 'left/toolset_0',
+                      'type': 'toolset',
+                      'children': [{'name': 'add', 'type': 'tool'}],
+                  }],
+              },
+              {
+                  'name': 'right',
+                  'tools': [{
+                      'name': 'McpToolset',
+                      'id': 'right/toolset_0',
+                      'type': 'toolset',
+                      'children': [{'name': 'add', 'type': 'tool'}],
+                  }],
+              },
+          ],
+      },
+  }
+
+  dot = plot_workflow_graph(info, format='dot')
+
+  assert 'root -> left' in dot
+  assert 'root -> right' in dot
+  assert '"left/toolset_0" -> add' in dot
+  assert '"right/toolset_0" -> "right/toolset_0/add"' in dot
+  assert dot.count(' add>') == 2
+
+
+def test_repeated_name_under_one_toolset_stays_a_separate_node() -> None:
+  """One toolset listing the same name twice still draws two child nodes."""
+  info = {
+      'root_agent': {
+          'name': 'root',
+          'tools': [{
+              'name': 'McpToolset',
+              'id': 'root/toolset_0',
+              'type': 'toolset',
+              'children': [
+                  {'name': 'add', 'type': 'tool'},
+                  {'name': 'add', 'type': 'tool'},
+                  {'name': 'add', 'type': 'tool'},
+              ],
+          }],
+      },
+  }
+
+  dot = plot_workflow_graph(info, format='dot')
+
+  assert '"root/toolset_0" -> add' in dot
+  assert '"root/toolset_0" -> "root/toolset_0/add"' in dot
+  assert '"root/toolset_0" -> "root/toolset_0/add_2"' in dot
+  assert dot.count(' add>') == 3
+
+
 async def test_toolset_resolution_without_a_root_returns_no_tools() -> None:
   """Apps without a root have no toolsets to discover."""
   assert await resolve_toolsets(None) == {}

@@ -238,6 +238,39 @@ def test_build_graph_keeps_multiple_toolsets_separate(
   ]
 
 
+def test_graph_image_separates_same_named_tools_from_different_toolsets(
+    test_client, monkeypatch, mcp_graph_session
+):
+  """Two unprefixed toolsets that both expose add and greet stay distinct."""
+  toolsets = [
+      McpToolset(
+          connection_params=StreamableHTTPConnectionParams(
+              url="http://127.0.0.1:1/mcp"
+          )
+      )
+      for _ in range(2)
+  ]
+  runner = MagicMock(
+      app=App(name="demo", root_agent=LlmAgent(name="root", tools=toolsets))
+  )
+  monkeypatch.setattr(
+      dev_server.DevServer, "get_runner_async", AsyncMock(return_value=runner)
+  )
+
+  response = test_client.get("/dev/apps/demo/build_graph_image")
+
+  assert response.status_code == 200
+  dot = response.json()[""]["dotSrc"]
+  assert 'root -> "root/toolset_0"' in dot
+  assert 'root -> "root/toolset_1"' in dot
+  assert '"root/toolset_0" -> add' in dot
+  assert '"root/toolset_0" -> greet' in dot
+  assert '"root/toolset_1" -> "root/toolset_1/add"' in dot
+  assert '"root/toolset_1" -> "root/toolset_1/greet"' in dot
+  assert dot.count(" add>") == 2
+  assert dot.count(" greet>") == 2
+
+
 @pytest.mark.parametrize("server_down", [False, True])
 def test_graph_image_keeps_other_tools_when_mcp_listing_is_empty(
     test_client, monkeypatch, mcp_graph_session, server_down

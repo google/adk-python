@@ -26,6 +26,24 @@ import graphviz
 from ...workflow._node_status import NodeStatus
 
 
+def _disambiguate_tool_node_id(
+    parent_name: str, label: str, used_ids: set[str]
+) -> str:
+  """Scope a repeated tool name under its parent so the nodes stay distinct.
+
+  The first copy keeps the bare tool name: tool-call highlighting matches that
+  node title exactly. Later copies are separate nodes, still labeled with the
+  tool name.
+  """
+  scoped = f"{parent_name}/{label}"
+  candidate = scoped
+  suffix = 2
+  while candidate in used_ids:
+    candidate = f"{scoped}_{suffix}"
+    suffix += 1
+  return candidate
+
+
 def plot_workflow_graph(
     app_info: dict[str, Any],
     agent_state: dict[str, Any] | None = None,
@@ -144,7 +162,13 @@ def plot_workflow_graph(
   nodes = list(graph.get("nodes", []))
   edges = list(graph.get("edges", []))
 
-  # Inject tools as nodes
+  # Inject tools as nodes. Ids already used by agents must stay reserved
+  # so a tool of the same name does not collapse into that agent.
+  used_ids: set[str] = {
+      name
+      for node in nodes
+      if isinstance(name := node.get("name"), str) and name
+  }
   tool_nodes = {}
   tool_edges = []
   for node in nodes:
@@ -155,32 +179,36 @@ def plot_workflow_graph(
     tools = deque((node_name, tool) for tool in node.get("tools", []))
     while tools:
       parent_name, tool = tools.popleft()
-      tool_name = (
-          tool.get("id", tool.get("name"))
-          if isinstance(tool, dict)
-          else str(tool)
-      )
-      if tool_name:
-        if tool_name not in tool_nodes:
-          tool_type = (
-              tool.get("type", "tool") if isinstance(tool, dict) else "tool"
-          )
-          tool_nodes[tool_name] = {
-              "name": tool_name,
-              "label": (
-                  tool.get("name", tool_name)
-                  if isinstance(tool, dict)
-                  else tool_name
-              ),
-              "type": tool_type,
-          }
-        tool_edges.append({
-            "from_node": {"name": parent_name},
-            "to_node": {"name": tool_name},
-            "is_tool_edge": True,
-        })
-        if isinstance(tool, dict):
-          tools.extend((tool_name, child) for child in tool.get("children", []))
+      if isinstance(tool, dict):
+        # Explicit ids (toolsets) win. A child tool has only its name, which
+        # is also the label a tool-call event matches.
+        label = tool.get("name") or tool.get("id") or ""
+        node_id = tool.get("id") or tool.get("name") or ""
+        tool_type = tool.get("type", "tool")
+      else:
+        label = str(tool)
+        node_id = label
+        tool_type = "tool"
+      if not node_id:
+        continue
+      if node_id in used_ids:
+        node_id = _disambiguate_tool_node_id(
+            parent_name, label or node_id, used_ids
+        )
+      used_ids.add(node_id)
+      if node_id not in tool_nodes:
+        tool_nodes[node_id] = {
+            "name": node_id,
+            "label": label or node_id,
+            "type": tool_type,
+        }
+      tool_edges.append({
+          "from_node": {"name": parent_name},
+          "to_node": {"name": node_id},
+          "is_tool_edge": True,
+      })
+      if isinstance(tool, dict):
+        tools.extend((node_id, child) for child in tool.get("children", []))
 
   for n in tool_nodes.values():
     if not any(on.get("name") == n["name"] for on in nodes):
