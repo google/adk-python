@@ -22,12 +22,14 @@ import re
 import threading
 from typing import Any
 from typing import Optional
+from typing import TypedDict
 
 from google.api_core import client_options
 from google.api_core.exceptions import GoogleAPICallError
 import google.auth
 from google.cloud import discoveryengine_v1beta as discoveryengine
 from google.genai import types
+from typing_extensions import override
 
 from ..utils._mtls_utils import get_api_endpoint
 from .function_tool import FunctionTool
@@ -100,13 +102,18 @@ def _get_api_endpoint(location: str) -> str:
   )
 
 
+class _ClientOptionsKwargs(TypedDict, total=False):
+  api_endpoint: str
+  quota_project_id: str
+
+
 def _build_client_options(
     resource_id: str,
     quota_project_id: Optional[str],
     location: Optional[str],
 ) -> Optional[client_options.ClientOptions]:
   """Builds client options for Discovery Engine requests."""
-  client_options_kwargs = {}
+  client_options_kwargs: _ClientOptionsKwargs = {}
   resolved_location = _resolve_location(resource_id, location)
 
   if resolved_location != _GLOBAL_LOCATION:
@@ -144,6 +151,8 @@ class DiscoveryEngineSearchTool(FunctionTool):
       *,
       search_result_mode: Optional[SearchResultMode] = None,
       location: Optional[str] = None,
+      name: Optional[str] = None,
+      description: Optional[str] = None,
   ):
     """Initializes the DiscoveryEngineSearchTool.
 
@@ -152,7 +161,8 @@ class DiscoveryEngineSearchTool(FunctionTool):
         of
         "projects/{project}/locations/{location}/collections/{collection}/dataStores/{dataStore}".
       data_store_specs: Specifications that define the specific DataStores to be
-        searched. It should only be set if engine is used.
+        searched. It should only be set if engine is used. Dicts in the
+        Discovery Engine DataStoreSpec shape are also accepted.
       search_engine_id: The Vertex AI search engine resource ID in the format of
         "projects/{project}/locations/{location}/collections/{collection}/engines/{engine}".
       filter: The filter to be applied to the search request. Default is None.
@@ -164,8 +174,16 @@ class DiscoveryEngineSearchTool(FunctionTool):
       location: Optional endpoint location override.
         Examples: "global", "us", "eu". If not specified, location is inferred
           from `data_store_id` or `search_engine_id` and defaults to "global".
+      name: Optional override for the tool name advertised to the model.
+        Defaults to the function name, "discovery_engine_search".
+      description: Optional override for the tool description advertised to the
+        model. Defaults to the function docstring.
     """
     super().__init__(self.discovery_engine_search)
+    if name:
+      self.name = name
+    if description:
+      self.description = description
     if (data_store_id is None and search_engine_id is None) or (
         data_store_id is not None and search_engine_id is not None
     ):
@@ -199,6 +217,22 @@ class DiscoveryEngineSearchTool(FunctionTool):
     self._discovery_engine_client = discoveryengine.SearchServiceClient(
         credentials=credentials, client_options=options
     )
+
+  @override
+  def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
+    # FunctionTool builds the declaration from `self.func`, ignoring
+    # `self.name`. LlmRequest.append_tools advertises `declaration.name` to the
+    # model but keys dispatch on `tool.name`; if the two diverge the model emits
+    # a call that cannot be resolved. Keep them in sync here.
+    #
+    # Safe to mutate: FunctionTool._get_declaration() already returns
+    # `declaration.model_copy(deep=True)`, so the shared
+    # `_build_declaration_cached` lru_cache entry is not touched.
+    declaration = super()._get_declaration()
+    if declaration is not None:
+      declaration.name = self.name
+      declaration.description = self.description
+    return declaration
 
   def discovery_engine_search(
       self,
@@ -268,7 +302,14 @@ class DiscoveryEngineSearchTool(FunctionTool):
     )
 
     if self._data_store_specs:
-      request.data_store_specs = self._data_store_specs
+      request.data_store_specs = [
+          discoveryengine.SearchRequest.DataStoreSpec(
+              data_store=spec.data_store, filter=spec.filter
+          )
+          if isinstance(spec, types.VertexAISearchDataStoreSpec)
+          else spec
+          for spec in self._data_store_specs
+      ]
     if self._filter:
       request.filter = self._filter
     if self._max_results:

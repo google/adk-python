@@ -393,11 +393,21 @@ async def test_load_artifacts_converts_docx_with_custom_namespace_prefix_to_text
 
 
 @pytest.mark.asyncio
-async def test_load_artifacts_keeps_supported_mime_types():
-  """Supported inline MIME types are passed through unchanged."""
+@pytest.mark.parametrize(
+    ('mime_type', 'expected_mime_type'),
+    [
+        ('application/pdf', 'application/pdf'),
+        ('APPLICATION/PDF', 'application/pdf'),
+        ('Image/PNG; charset=UTF-8', 'image/png; charset=UTF-8'),
+    ],
+)
+async def test_load_artifacts_keeps_supported_mime_types(
+    mime_type: str, expected_mime_type: str
+) -> None:
+  """Supported inline MIME types are kept with a normalized MIME type."""
   artifact_name = 'test.pdf'
   artifact = types.Part(
-      inline_data=types.Blob(data=b'%PDF-1.4', mime_type='application/pdf')
+      inline_data=types.Blob(data=b'%PDF-1.4', mime_type=mime_type)
   )
 
   tool_context = _StubToolContext({artifact_name: artifact})
@@ -423,13 +433,22 @@ async def test_load_artifacts_keeps_supported_mime_types():
 
   artifact_part = llm_request.contents[-1].parts[1]
   assert artifact_part.inline_data is not None
-  assert artifact_part.inline_data.mime_type == 'application/pdf'
+  assert artifact_part.inline_data.mime_type == expected_mime_type
+  assert artifact.inline_data is not None
+  assert artifact.inline_data.mime_type == mime_type
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     'mime_type',
-    ['image/svg+xml', 'image/svg', 'application/svg+xml', 'image/xml'],
+    [
+        'image/svg+xml',
+        'image/svg',
+        'application/svg+xml',
+        'image/xml',
+        'Image/SVG+XML; charset=UTF-8',
+        'APPLICATION/SVG+XML',
+    ],
 )
 async def test_load_artifacts_converts_svg_to_text(mime_type):
   """SVG/XML image variants are rejected by Gemini with 400 INVALID_ARGUMENT,
@@ -487,10 +506,10 @@ def test_maybe_base64_to_bytes_decodes_urlsafe_base64():
   assert _maybe_base64_to_bytes(encoded) == original
 
 
-def test_maybe_base64_to_bytes_returns_none_for_invalid():
+@pytest.mark.parametrize('data', ['x', 'good days', 'hello world!'])
+def test_maybe_base64_to_bytes_returns_none_for_invalid(data):
   """Invalid base64 strings return None."""
-  # Single character is invalid (base64 requires length % 4 == 0 after padding)
-  assert _maybe_base64_to_bytes('x') is None
+  assert _maybe_base64_to_bytes(data) is None
 
 
 def test_get_declaration_with_json_schema_feature_enabled():

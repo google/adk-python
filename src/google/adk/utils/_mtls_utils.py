@@ -19,13 +19,18 @@ from __future__ import annotations
 import enum
 import logging
 import os
+import ssl
 import tempfile
 import threading
+import time
+from typing import Any
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 from urllib.parse import urlunsplit
 
+from google.auth import exceptions as ga_exceptions
 from google.auth.transport import mtls
+import httpx
 
 if TYPE_CHECKING:
   import requests
@@ -34,6 +39,16 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _GOOGLEAPIS_SUFFIX = ".googleapis.com"
 _MTLS_GOOGLEAPIS_SUFFIX = ".mtls.googleapis.com"
+# Multi-region endpoints have no .mtls DNS records, so they are never rewritten.
+_NO_MTLS_GOOGLEAPIS_SUFFIXES = (
+    ".us.rep.googleapis.com",
+    ".eu.rep.googleapis.com",
+)
+# Certificates rotate, so a loaded one is reused only for this long.
+_CLIENT_CERT_CACHE_SECONDS = 300.0
+
+_client_cert_cache: dict[bool | str, tuple[ssl.SSLContext | None, float]] = {}
+_client_cert_cache_lock = threading.Lock()
 
 
 class MtlsEndpoint(enum.Enum):
@@ -82,8 +97,12 @@ def get_api_endpoint(
       default_template: Template for default regional endpoint (e.g.
         "secretmanager.{location}.rep.googleapis.com").
       mtls_template: Template for mTLS regional endpoint (e.g.
-        "secretmanager.{location}.rep.mtls.googleapis.com").
+        "secretmanager.{location}.rep.mtls.googleapis.com"). Not used for
+        multi-region endpoints, which have no mTLS variant.
   """
+  default_endpoint = default_template.format(location=location)
+  if _is_multi_region_endpoint(default_endpoint):
+    return default_endpoint
   use_mtls_endpoint = _mtls_endpoint_setting()
   if (use_mtls_endpoint == MtlsEndpoint.ALWAYS) or (
       use_mtls_endpoint == MtlsEndpoint.AUTO
@@ -91,16 +110,40 @@ def get_api_endpoint(
       and mtls.has_default_client_cert_source()
   ):
     return mtls_template.format(location=location)
-  return default_template.format(location=location)
+  return default_endpoint
+
+
+def _is_multi_region_endpoint(endpoint: str) -> bool:
+  """Returns whether endpoint, a url or bare host, is a multi-region host."""
+  if "://" not in endpoint:
+    endpoint = f"//{endpoint}"
+  host = urlsplit(endpoint).hostname or ""
+  return host.endswith(_NO_MTLS_GOOGLEAPIS_SUFFIXES)
+
+
+def is_googleapis_url(url: str) -> bool:
+  """Returns whether url is an https *.googleapis.com url, mTLS or not."""
+  if not url:
+    return False
+  parsed = urlsplit(url)
+  return parsed.scheme == "https" and (parsed.hostname or "").endswith(
+      _GOOGLEAPIS_SUFFIX
+  )
 
 
 def is_non_mtls_googleapis_endpoint(url: str) -> bool:
-  """Returns whether url points at a *.googleapis.com host without the mTLS infix."""
+  """Returns whether url is a *.googleapis.com url with an mTLS variant to use.
+
+  False for hosts that are already mTLS hosts and for multi-region hosts,
+  which have no mTLS variant.
+  """
   if not url:
     return False
   host = urlsplit(url).hostname or ""
   return (
-      host.endswith(_GOOGLEAPIS_SUFFIX) and _MTLS_GOOGLEAPIS_SUFFIX not in host
+      host.endswith(_GOOGLEAPIS_SUFFIX)
+      and _MTLS_GOOGLEAPIS_SUFFIX not in host
+      and not _is_multi_region_endpoint(url)
   )
 
 
@@ -124,6 +167,22 @@ def effective_googleapis_endpoint(url: str) -> str:
   )
 
 
+def plain_googleapis_url(url: str) -> str:
+  """Rewrites a *.mtls.googleapis.com url to its plain *.googleapis.com variant.
+
+  Other urls are returned unchanged.
+  """
+  parsed = urlsplit(url)
+  host = parsed.hostname or ""
+  if not host.endswith(_MTLS_GOOGLEAPIS_SUFFIX):
+    return url
+  new_host = host[: -len(_MTLS_GOOGLEAPIS_SUFFIX)] + _GOOGLEAPIS_SUFFIX
+  netloc = f"{new_host}:{parsed.port}" if parsed.port else new_host
+  return urlunsplit(
+      (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+  )
+
+
 def configure_session_for_mtls(session: requests.Session) -> bool:
   """Mounts a mutual-TLS adapter on a requests session when a client cert exists.
 
@@ -135,7 +194,6 @@ def configure_session_for_mtls(session: requests.Session) -> bool:
   Returns True if a client certificate was found and the adapter was mounted.
   """
   try:
-    from google.auth import exceptions as ga_exceptions
     from google.auth.transport import _mtls_helper
     from google.auth.transport.requests import _MutualTlsAdapter
   except ImportError:
@@ -159,6 +217,84 @@ def configure_session_for_mtls(session: requests.Session) -> bool:
   if is_mtls:
     session.mount("https://", _MutualTlsAdapter(cert, key))
   return bool(is_mtls)
+
+
+def _client_cert_ssl_context(
+    verify: bool | str = True,
+) -> ssl.SSLContext | None:
+  """Returns an httpx SSL context that presents the default client certificate.
+
+  Args:
+      verify: Server verification, as httpx's ``verify`` takes it: True for the
+        default CA bundle, False to skip verification, or a CA bundle path.
+
+  Returns:
+      None when client certificates are disabled or unavailable, or when the
+      certificate fails to load, so callers keep their plain TLS client. The
+      result, including a failed load, is reused for a few minutes.
+  """
+  if (
+      not use_client_cert_effective()
+      or not mtls.has_default_client_cert_source()
+  ):
+    return None
+  # Older google-auth releases lack this; they keep the plain TLS client.
+  load_default_client_cert = getattr(mtls, "load_default_client_cert", None)
+  if load_default_client_cert is None:
+    return None
+  with _client_cert_cache_lock:
+    cached = _client_cert_cache.get(verify)
+    if cached is not None and time.monotonic() < cached[1]:
+      return cached[0]
+    ctx = httpx.create_ssl_context(verify=verify)
+    try:
+      if not load_default_client_cert(ctx):
+        ctx = None
+    except ga_exceptions.MutualTLSChannelError as e:
+      logger.warning(
+          "Could not load client certificate for mTLS; falling back to"
+          " non-mTLS: %s",
+          e,
+      )
+      ctx = None
+    _client_cert_cache[verify] = (
+        ctx,
+        time.monotonic() + _CLIENT_CERT_CACHE_SECONDS,
+    )
+    return ctx
+
+
+async def _route_googleapis_request_to_mtls(request: httpx.Request) -> None:
+  """httpx request hook that sends *.googleapis.com requests to the mTLS host.
+
+  Certificate-bound tokens are only accepted on mtls.googleapis.com, so a
+  client that presents the certificate must also use those hosts.
+  """
+  url = str(request.url)
+  mtls_url = effective_googleapis_endpoint(url)
+  if mtls_url != url:
+    request.url = httpx.URL(mtls_url)
+    request.headers["Host"] = request.url.netloc.decode("ascii")
+
+
+def client_cert_httpx_kwargs(
+    verify: bool | str = True, *, url: str | None = None
+) -> dict[str, Any]:
+  """Returns httpx.AsyncClient kwargs that present the default client cert.
+
+  Empty when no client certificate is configured, so the client keeps its
+  defaults. When ``url`` is given, also empty unless it is a *.googleapis.com
+  url, so the certificate is not sent to other hosts.
+  """
+  if url is not None and not is_googleapis_url(url):
+    return {}
+  ctx = _client_cert_ssl_context(verify)
+  if ctx is None:
+    return {}
+  return {
+      "verify": ctx,
+      "event_hooks": {"request": [_route_googleapis_request_to_mtls]},
+  }
 
 
 class MtlsClientCerts:

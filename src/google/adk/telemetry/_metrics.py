@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from google.adk import version
 from google.adk.telemetry import _adk_attributes
 from google.adk.telemetry import _hallucination
+from google.adk.telemetry import _schema_version
 from google.adk.telemetry import tracing
 from google.adk.telemetry._decorators import experimental_telemetry
 from google.adk.telemetry._token_usage import CACHE_READ_INPUT_TOKENS_MEANING
@@ -302,6 +303,18 @@ _invoke_workflow_skill_loads = meter.create_histogram(
     description=f"Number of skill loads over {_PER_WORKFLOW}.",
     explicit_bucket_boundaries_advisory=_CALL_COUNT_BUCKET_BOUNDS,
 )
+_invoke_workflow_compactions = meter.create_histogram(
+    "adk.experimental.invoke_workflow.compactions",
+    unit="1",
+    description=(
+        f"Number of conversation compactions over {_PER_WORKFLOW}. Counts"
+        " every summary produced, including one the runner then discards"
+        " because a newer turn changed the session meanwhile. Recorded whether"
+        " or not the workflow compacted, so the share of turns that do is"
+        " readable off the unnested datapoints."
+    ),
+    explicit_bucket_boundaries_advisory=_CALL_COUNT_BUCKET_BOUNDS,
+)
 _skill_script_executions = meter.create_counter(
     "adk.experimental.skill.script.executions",
     unit="1",
@@ -568,11 +581,11 @@ def record_client_token_usage(
   if not responses:
     return
 
-  # The assumption is that token usage in streaming responses is cumulative.
-  # The last response chunk contains the total usage for the entire request.
-  # Summing them up across all response chunks would result in overcounting.
-  last_response = responses[-1]
-  if not last_response.usage_metadata:
+  # Usage in streaming responses is cumulative, so summing it would overcount.
+  # The newest report is the whole figure. It is not always on the last
+  # response: a stream cut off inside a tool call ends with one that has none.
+  token_usage = TokenUsage.from_llm_responses(responses)
+  if token_usage is None:
     logger.warning(
         "Skipping missing token usage metadata for agent %s and model %s",
         agent_name,
@@ -586,10 +599,9 @@ def record_client_token_usage(
   # thoughts tokens for "output".
   # `cached_content_token_count` is omitted as it's already included in prompt tokens.
   # `total_token_count` is omitted as SemConv expects input/output breakdown.
-  token_usage = TokenUsage.from_usage_metadata(last_response.usage_metadata)
   input_token_count = token_usage.input_tokens or 0
   output_token_count = token_usage.output_tokens or 0
-  response_model = last_response.model_version or llm_request.model
+  response_model = responses[-1].model_version or llm_request.model
   base_attrs = {
       gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
       gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",
@@ -614,7 +626,12 @@ def record_client_token_usage(
 
 
 def _get_provider_name(model: str | None) -> str:
-  return tracing._resolve_gen_ai_system_name(model)
+  # Schema v1 keeps the `gen_ai.system` value (`gemini`) consumers pinned on.
+  if _schema_version.resolve_schema_version() < (
+      _schema_version.SCHEMA_VERSION_SEMCONV_ALIGNED
+  ):
+    return tracing._resolve_gen_ai_system_name(model)
+  return tracing._resolve_gen_ai_provider_name(model)
 
 
 def get_elapsed_s(
@@ -721,3 +738,24 @@ def record_invoke_workflow_skill_loads(
   """
   attrs = _invoke_workflow_attrs(root_agent_name, workflow_name, nested)
   _invoke_workflow_skill_loads.record(count, attributes=attrs)
+
+
+@experimental_telemetry(gate=["compaction", "workflow"])
+def record_invoke_workflow_compactions(
+    *,
+    root_agent_name: str,
+    workflow_name: str | None,
+    count: int,
+    nested: bool,
+) -> None:
+  """Records the conversation compactions made across one workflow.
+
+  Args:
+    root_agent_name: The runner's agent.
+    workflow_name: The workflow this datapoint covers.
+    count: Compactions produced anywhere inside it, by an agent mid-turn or by
+      the runner afterwards.
+    nested: Whether another workflow enclosed this one.
+  """
+  attrs = _invoke_workflow_attrs(root_agent_name, workflow_name, nested)
+  _invoke_workflow_compactions.record(count, attributes=attrs)

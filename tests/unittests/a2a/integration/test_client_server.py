@@ -48,6 +48,8 @@ from google.adk.platform import uuid as platform_uuid
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
+import httpx
+from pydantic import BaseModel
 import pytest
 
 pytestmark = pytest.mark.skipif(
@@ -771,6 +773,146 @@ async def test_task_mode_follow_up_after_the_task_completes():
       "the completed task kept the delegation open, so the follow-up never"
       " reached the remote agent"
   )
+
+
+class _Answer(BaseModel):
+  answer: str
+
+
+async def _failing_run_async(**kwargs):
+  del kwargs
+  yield Event(
+      author="FakeAgent",
+      error_code="INTERNAL",
+      error_message="remote task blew up",
+  )
+
+
+async def _unreachable_app(scope, receive, send):
+  raise httpx.ConnectError("peer is down")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("make_app", "error_prefix"),
+    [
+        (
+            lambda: create_server_app(_failing_run_async),
+            "Remote A2A task failed",
+        ),
+        (lambda: _unreachable_app, "A2A request failed"),
+    ],
+    ids=["remote_task_failed", "peer_unreachable"],
+)
+async def test_task_mode_failure_answers_the_coordinator(
+    make_app, error_prefix
+):
+  """A failed task must answer the delegating call and return control.
+
+  The coordinator only regains the conversation once its delegating call gets a
+  response. The failure arrives as an error response rather than a result, so
+  the remote agent's output schema, which it cannot satisfy, does not reject it.
+  """
+  remote_agent = create_client(make_app(), mode="task")
+  remote_agent.output_schema = _Answer
+  coordinator = LlmAgent(
+      name="coordinator",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name="remote_agent", args={}),
+              "coordinator reply",
+          ]
+      ),
+      sub_agents=[remote_agent],
+  )
+
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+  client_runner = Runner(
+      app_name="ClientApp",
+      agent=coordinator,
+      session_service=session_service,
+  )
+
+  delegation_responses = []
+  last_event = None
+  async for event in client_runner.run_async(
+      user_id="test_user",
+      session_id="test_session",
+      new_message=types.Content(
+          parts=[types.Part(text="book a flight")], role="user"
+      ),
+  ):
+    delegation_responses.extend(
+        fr.response
+        for fr in event.get_function_responses()
+        if fr.name == "remote_agent"
+    )
+    last_event = event
+
+  assert len(delegation_responses) == 1, "the delegating call got no response"
+  assert delegation_responses[0]["error"].startswith(error_prefix)
+  assert last_event.content.parts[0].text == "coordinator reply"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("force_new_version", "use_legacy"),
+    [
+        pytest.param(True, True, id="forced_new_server_default_client"),
+        pytest.param(False, False, id="default_server_non_legacy_client"),
+    ],
+)
+async def test_peer_state_delta_is_logged_and_not_applied(
+    caplog, streaming, force_new_version, use_legacy
+):
+  """A remote output_key never reaches caller state, and the drop is logged.
+
+  The new executor marks its responses for ``_handle_a2a_response_v2``, which
+  reads actions from the nested message and artifact metadata, even when the
+  client did not request the new integration. The legacy executor cannot run on
+  this harness's mocked artifact service, so the legacy response path is
+  covered by the 1.x client-server tests and the RemoteA2aAgent unit tests.
+  """
+
+  async def mock_run_async(**kwargs):
+    # What a remote LlmAgent(output_key="findings") emits as its final event.
+    yield Event(
+        author="FakeAgent",
+        content=types.Content(parts=[types.Part(text="the findings")]),
+        actions=EventActions(state_delta={"findings": "the findings"}),
+    )
+
+  app = create_server_app(mock_run_async, force_new_version=force_new_version)
+  agent = create_client(app, streaming=streaming, use_legacy=use_legacy)
+
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+  client_runner = Runner(
+      app_name="ClientApp", agent=agent, session_service=session_service
+  )
+
+  texts = []
+  with caplog.at_level("WARNING"):
+    async for event in client_runner.run_async(
+        user_id="test_user",
+        session_id="test_session",
+        new_message=types.Content(parts=[types.Part(text="Hi")], role="user"),
+    ):
+      if event.content and event.content.parts:
+        texts.extend(part.text for part in event.content.parts if part.text)
+
+  session = await session_service.get_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+  assert "the findings" in texts
+  assert "findings" not in session.state
+  assert "Ignoring a session state delta from a remote A2A peer" in caplog.text
 
 
 @pytest.mark.asyncio

@@ -32,6 +32,7 @@ from ..flows.llm_flows.core._resume import ResumeRoute
 from ..flows.llm_flows.extensions._agent_transfer import _get_transfer_targets
 from ..flows.llm_flows.tools._functions import _collect_function_call_ids
 from ..flows.llm_flows.tools._functions import find_matching_function_call
+from ..utils._agent_mode import DELEGATED_TASK_MODES
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
@@ -130,6 +131,19 @@ def is_transferable_across_agent_tree(agent_to_run: BaseAgent) -> bool:
   return True
 
 
+def _resolve_task_delegator(
+    agent: BaseAgent, root_agent: BaseAgent
+) -> BaseAgent:
+  """Maps an agent inside a task delegation to the agent that delegated it."""
+  delegator = agent
+  current = agent
+  while current is not root_agent and current.parent_agent is not None:
+    if getattr(current, "mode", None) in DELEGATED_TASK_MODES:
+      delegator = current.parent_agent
+    current = current.parent_agent
+  return delegator
+
+
 def find_agent_to_run(
     session: Session,
     root_agent: BaseAgent,
@@ -144,6 +158,10 @@ def find_agent_to_run(
   - The root agent.
   - An LlmAgent who replied last and is capable to transfer to any other agent
     in the agent hierarchy.
+  - The target of the latest valid transfer_to_agent, when the target has not
+    replied since (e.g. it failed before yielding any event).
+
+  An agent inside a task delegation is replaced by the agent that delegated it.
 
   Args:
       session: The session to find the agent for.
@@ -202,7 +220,7 @@ def find_agent_to_run(
               root_agent, event, filtered_events
           )
       ) is not None:
-        return resumed_agent
+        return _resolve_task_delegator(resumed_agent, root_agent)
 
   def _event_filter(event: Event) -> bool:
     """Filters out user, abort-sealing and agent state change events."""
@@ -210,9 +228,26 @@ def find_agent_to_run(
       return False
     if event.actions.agent_state is not None or event.actions.end_of_agent:
       return False
+    # A node failure is recorded as an error event without content. It is not
+    # a reply, and its author may be inherited from the parent context, so it
+    # must not decide which agent owns the conversation.
+    if event.error_code and not (event.content and event.content.parts):
+      return False
     return True
 
   for event in filter(_event_filter, reversed(filtered_events)):
+    # The target of an unanswered transfer owns the turn. Resolving it among
+    # the author's transfer targets leaves transfers the scheduler rejected
+    # out of routing.
+    if (target_name := event.actions.transfer_to_agent) and (
+        source := root_agent.find_agent(event.author)
+    ):
+      target = next(
+          (a for a in _get_transfer_targets(source) if a.name == target_name),
+          None,
+      )
+      if target is not None and is_transferable_across_agent_tree(target):
+        return target
     if event.author == root_agent.name:
       # Found root agent.
       return root_agent
@@ -226,7 +261,7 @@ def find_agent_to_run(
       continue
     transferable = is_transferable_across_agent_tree(agent)
     if transferable:
-      return agent
+      return _resolve_task_delegator(agent, root_agent)
   # Falls back to root agent if no suitable agents are found in the session.
   return root_agent
 

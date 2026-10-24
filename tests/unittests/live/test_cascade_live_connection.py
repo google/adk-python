@@ -1033,7 +1033,7 @@ async def test_video_frames_are_dropped_not_sent_to_stt(caplog):
 async def test_receive_reports_close_instead_of_spinning():
   """A closed connection must end the flow's receive loop, not re-arm it.
 
-  `_receive_from_model` re-enters `receive()` in a ``while True:``
+  `receive_from_model` re-enters `receive()` in a ``while True:``
   (base_llm_flow.py:1085), so a sentinel left on the queue is read again
   immediately and the flow spins forever. This mirrors that loop, under a
   timeout so a regression fails instead of hanging the suite.

@@ -18,6 +18,7 @@ import json
 import os
 import re
 import threading
+from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -43,6 +44,7 @@ from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
 import httpx
+from pydantic import BaseModel
 import pytest
 
 
@@ -821,6 +823,431 @@ async def test_generate_content_async_collects_declarations_from_all_tools(
   ]
 
 
+class _Person(BaseModel):
+  name: str
+  age: int
+
+
+def _tool_use_message(tool_input: dict[str, Any]) -> anthropic_types.Message:
+  """A message whose only block is a call to the output schema tool."""
+  return anthropic_types.Message(
+      id="msg_vrtx_testid",
+      content=[
+          anthropic_types.ToolUseBlock(
+              id="toolu_testid",
+              name="structured_output",
+              input=tool_input,
+              type="tool_use",
+          )
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="tool_use",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=0,
+          input_tokens=13,
+          output_tokens=12,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+
+@pytest.mark.asyncio
+async def test_output_schema_without_tools_is_forced_as_a_tool_call():
+  """A response schema Claude cannot take becomes a tool it must call."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[Content(role="user", parts=[Part.from_text(text="Who?")])],
+      config=types.GenerateContentConfig(
+          response_schema=_Person,
+          response_mime_type="application/json",
+      ),
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_tool_use_message({"name": "Ada", "age": 36})
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert [tool["name"] for tool in kwargs["tools"]] == ["structured_output"]
+  assert sorted(kwargs["tools"][0]["input_schema"]["properties"]) == [
+      "age",
+      "name",
+  ]
+  assert kwargs["tool_choice"] == {
+      "type": "tool",
+      "name": "structured_output",
+      "disable_parallel_tool_use": True,
+  }
+  assert len(responses) == 1
+  part = responses[0].content.parts[0]
+  assert part.function_call is None
+  assert json.loads(part.text) == {"name": "Ada", "age": 36}
+
+
+@pytest.mark.parametrize("thinking_budget", [2048, -1])
+@pytest.mark.asyncio
+async def test_output_schema_with_thinking_is_offered_not_forced(
+    thinking_budget,
+):
+  """Claude rejects a forced tool call outright while thinking is on."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[Content(role="user", parts=[Part.from_text(text="Who?")])],
+      config=types.GenerateContentConfig(
+          response_schema=_Person,
+          thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
+      ),
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_tool_use_message({"name": "Ada", "age": 36})
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert [tool["name"] for tool in kwargs["tools"]] == ["structured_output"]
+  assert kwargs["tool_choice"] == {
+      "type": "auto",
+      "disable_parallel_tool_use": True,
+  }
+  assert json.loads(responses[0].content.parts[0].text) == {
+      "name": "Ada",
+      "age": 36,
+  }
+
+
+@pytest.mark.asyncio
+async def test_output_schema_drops_the_prose_written_beside_the_call():
+  """Offered rather than forced, Claude narrates, and only the call answers."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  message = _tool_use_message({"name": "Ada", "age": 36})
+  message.content = [
+      anthropic_types.ThinkingBlock(
+          thinking="Who is meant here?",
+          signature="sig",
+          type="thinking",
+      ),
+      anthropic_types.TextBlock(text="Here is the answer.", type="text"),
+      *message.content,
+  ]
+  llm_request = LlmRequest(
+      contents=[Content(role="user", parts=[Part.from_text(text="Who?")])],
+      config=types.GenerateContentConfig(
+          response_schema=_Person,
+          thinking_config=types.ThinkingConfig(thinking_budget=2048),
+      ),
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=message)
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  parts = responses[0].content.parts
+  assert [part.thought for part in parts] == [True, None]
+  assert parts[0].text == "Who is meant here?"
+  assert json.loads(parts[1].text) == {"name": "Ada", "age": 36}
+
+
+@pytest.mark.asyncio
+async def test_output_schema_alongside_tools_is_not_carried():
+  """With tools in the request the turn is multi-step, so no schema goes."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[Content(role="user", parts=[Part.from_text(text="Who?")])],
+      config=types.GenerateContentConfig(
+          response_schema=_Person,
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name="lookup")
+                  ]
+              )
+          ],
+      ),
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_tool_use_message({"name": "Ada", "age": 36})
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert [tool["name"] for tool in kwargs["tools"]] == ["lookup"]
+  assert kwargs["tool_choice"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_output_schema_given_as_a_genai_schema():
+  """A genai Schema names its types in upper case, which Claude rejects."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[Content(role="user", parts=[Part.from_text(text="Who?")])],
+      config=types.GenerateContentConfig(
+          response_schema=types.Schema(
+              type=types.Type.OBJECT,
+              properties={"name": types.Schema(type=types.Type.STRING)},
+              required=["name"],
+          )
+      ),
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_tool_use_message({"name": "Ada"})
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  _, kwargs = mock_client.messages.create.call_args
+  input_schema = kwargs["tools"][0]["input_schema"]
+  assert input_schema["type"] == "object"
+  assert input_schema["properties"]["name"]["type"] == "string"
+  assert json.loads(responses[0].content.parts[0].text) == {"name": "Ada"}
+
+
+@pytest.mark.asyncio
+async def test_output_schema_that_is_not_an_object_round_trips():
+  """A tool input must be an object, so a list schema is nested and unnested."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[Content(role="user", parts=[Part.from_text(text="Name two")])],
+      config=types.GenerateContentConfig(response_schema=list[str]),
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_tool_use_message({"response": ["Ada", "Grace"]})
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  _, kwargs = mock_client.messages.create.call_args
+  input_schema = kwargs["tools"][0]["input_schema"]
+  assert input_schema["type"] == "object"
+  assert input_schema["properties"]["response"]["type"] == "array"
+  assert json.loads(responses[0].content.parts[0].text) == ["Ada", "Grace"]
+
+
+@pytest.mark.asyncio
+async def test_nested_output_schema_keeps_defs_at_the_document_root():
+  """A $ref in a nested schema still resolves, so $defs stays at the root."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[Content(role="user", parts=[Part.from_text(text="Name two")])],
+      config=types.GenerateContentConfig(response_schema=list[_Person]),
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_tool_use_message({"response": [{"name": "Ada", "age": 36}]})
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  _, kwargs = mock_client.messages.create.call_args
+  input_schema = kwargs["tools"][0]["input_schema"]
+  ref = input_schema["properties"]["response"]["items"]["$ref"]
+  assert ref == "#/$defs/_Person"
+  assert "_Person" in input_schema["$defs"]
+  assert "$defs" not in input_schema["properties"]["response"]
+  assert json.loads(responses[0].content.parts[0].text) == [
+      {"name": "Ada", "age": 36}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_streaming_output_schema_yields_text_not_a_function_call():
+  """The forced call streams as the structured answer it carries."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=20, output_tokens=0),
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.ToolUseBlock(
+              id="toolu_testid",
+              name="structured_output",
+              input={},
+              type="tool_use",
+          ),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.InputJSONDelta(
+              partial_json='{"name": "Ada", ',
+              type="input_json_delta",
+          ),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.InputJSONDelta(
+              partial_json='"age": 36}',
+              type="input_json_delta",
+          ),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="tool_use"),
+          usage=MagicMock(output_tokens=12),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Who?")])],
+      config=types.GenerateContentConfig(response_schema=_Person),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  assert not any(
+      part.function_call
+      for response in responses
+      for part in response.content.parts
+  )
+  assert [response.content.parts[0].text for response in responses] == [
+      '{"name": "Ada", ',
+      '"age": 36}',
+      '{"name": "Ada", "age": 36}',
+  ]
+  assert [response.partial for response in responses] == [True, True, False]
+
+
+@pytest.mark.asyncio
+async def test_streaming_output_schema_that_is_not_an_object_holds_the_value():
+  """A nested schema streams the wrapper too, so only the whole value ships."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=20, output_tokens=0),
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.ToolUseBlock(
+              id="toolu_testid",
+              name="structured_output",
+              input={},
+              type="tool_use",
+          ),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.InputJSONDelta(
+              partial_json='{"response": ["Ada", ',
+              type="input_json_delta",
+          ),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.InputJSONDelta(
+              partial_json='"Grace"]}',
+              type="input_json_delta",
+          ),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="tool_use"),
+          usage=MagicMock(output_tokens=12),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Name two")])],
+      config=types.GenerateContentConfig(response_schema=list[str]),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  assert [response.partial for response in responses] == [False]
+  assert json.loads(responses[0].content.parts[0].text) == ["Ada", "Grace"]
+
+
 def test_claude_vertex_client_uses_tracking_headers():
   """Tests that Claude vertex client is called with tracking headers."""
   with mock.patch.object(
@@ -950,6 +1377,24 @@ def test_part_to_message_block_with_multiple_content_items():
   assert isinstance(result, dict)
   # Multiple text items should be joined with newlines
   assert result["content"] == "First part\nSecond part"
+
+
+@pytest.mark.parametrize("error_key", ["isError", "is_error"])
+def test_part_to_message_block_marks_mcp_error_result_as_error(error_key):
+  """An MCP CallToolResult with isError reaches Claude as an error result."""
+  response_part = types.Part.from_function_response(
+      name="mcp_tool",
+      response={
+          "content": [{"type": "text", "text": "file not found"}],
+          error_key: True,
+      },
+  )
+  response_part.function_response.id = "test_id_mcp_error"
+
+  result = part_to_message_block(response_part)
+
+  assert result["content"] == "file not found"
+  assert result["is_error"] is True
 
 
 def test_part_to_message_block_tool_result_with_image():
@@ -2448,8 +2893,19 @@ def test_message_to_generate_content_response_reports_cache_creation_tokens():
   response = message_to_generate_content_response(message)
 
   assert response.usage_metadata.cache_creation_input_tokens == 50
+  # Serializable mirror: the usage_metadata attribute above is dropped by
+  # model_dump (google.genai forbids extra fields), so the count is also
+  # exposed on LlmResponse.cache_creation_token_count for event consumers.
+  assert response.cache_creation_token_count == 50
+  assert (
+      response.model_dump(by_alias=True, exclude_none=True)[
+          "cacheCreationTokenCount"
+      ]
+      == 50
+  )
   dumped = response.model_dump()
   assert "usage_metadata" in dumped
+  assert "cache_creation_input_tokens" not in dumped["usage_metadata"]
 
 
 def test_message_to_generate_content_response_no_cache_creation_tokens():
@@ -2479,6 +2935,7 @@ def test_message_to_generate_content_response_no_cache_creation_tokens():
   response = message_to_generate_content_response(message)
 
   assert not hasattr(response.usage_metadata, "cache_creation_input_tokens")
+  assert response.cache_creation_token_count is None
 
 
 @pytest.mark.asyncio
@@ -2536,8 +2993,10 @@ async def test_streaming_reports_cache_creation_tokens():
   assert len(responses) == 2
   final_response = responses[-1]
   assert final_response.usage_metadata.cache_creation_input_tokens == 50
+  assert final_response.cache_creation_token_count == 50
   dumped = final_response.model_dump()
   assert "usage_metadata" in dumped
+  assert "cache_creation_input_tokens" not in dumped["usage_metadata"]
 
 
 async def test_streaming_sets_model_version():
@@ -3816,6 +4275,7 @@ async def test_generate_content_async_excludes_sampling_when_effort(
         ("stop_sequence", types.FinishReason.STOP),
         ("tool_use", types.FinishReason.STOP),
         ("max_tokens", types.FinishReason.MAX_TOKENS),
+        ("model_context_window_exceeded", types.FinishReason.MAX_TOKENS),
         ("pause_turn", types.FinishReason.STOP),
         ("refusal", types.FinishReason.SAFETY),
         (None, None),

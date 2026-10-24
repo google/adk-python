@@ -307,6 +307,30 @@ async def test_empty_contents_leaves_saved_parts_pending(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "retention,state_key",
+    [
+        ("session", _CURRENT_TURN_PARTS_ID),
+        ("next_model_call", PARTS_RETURNED_BY_TOOLS_ID),
+    ],
+)
+async def test_last_content_without_parts_gets_the_saved_parts(
+    retention, state_key
+):
+  """A last content carrying no parts is given the saved parts, not rejected."""
+  plugin = MultimodalToolResultsPlugin(retention=retention)
+  callback_context = Mock(spec=CallbackContext)
+  callback_context.state = {state_key: [types.Part(text="p")]}
+  llm_request = LlmRequest(contents=[types.Content(role="user")])
+
+  await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=llm_request
+  )
+
+  assert llm_request.contents[-1].parts == [types.Part(text="p")]
+
+
+@pytest.mark.asyncio
 async def test_session_retention_reattaches_parts_across_turns():
   """Verify that saved parts survive a real turn boundary in session retention mode.
 

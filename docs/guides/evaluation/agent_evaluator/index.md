@@ -217,7 +217,7 @@ the manager without it raises `ValueError` before anything runs.
 `LocalEvalSetResultsManager(agents_dir=...)` writes a single
 `*.evalset_result.json` per evaluated eval set under
 `<agents_dir>/<app_name>/.adk/eval_history/`, holding one `EvalCaseResult` for
-each of the `num_runs` runs.
+each of the `num_runs` runs, labeled with its 0-based `repetition_index`.
 
 `output_file` is the flat alternative: one CSV row per metric per invocation,
 carrying the threshold, the score, the status, the prompt, and both the expected

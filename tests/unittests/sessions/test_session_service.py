@@ -68,6 +68,7 @@ def test_get_session_config_rejects_negative_num_recent_events():
   """A negative recent-event limit is rejected at configuration time."""
   with pytest.raises(ValueError, match='greater than or equal to 0'):
     GetSessionConfig(num_recent_events=-1)
+  assert GetSessionConfig(num_recent_events=None).num_recent_events is None
 
 
 class SessionServiceType(enum.Enum):
@@ -1328,6 +1329,77 @@ async def test_number_valued_state_delta_is_stored_exactly(
   assert {key: reloaded.state[key] for key in numbers} == numbers
 
 
+# Integers outside the signed 64-bit range, such as an unsigned 64-bit hash.
+_LARGE_INTEGERS = {
+    'uint64_hash': 2**64 - 1,
+    'big_negative': -(2**70) - 1,
+}
+
+
+@pytest.mark.skipif(
+    sqlite3.sqlite_version_info < (3, 38),
+    reason='Exact large integers need the SQLite 3.38+ -> operator.',
+)
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prefix', ['', 'user:', 'app:'])
+async def test_large_integers_survive_unrelated_state_delta(
+    session_service, prefix
+):
+  """Integers beyond 64 bits stay exact ints after an unrelated state_delta."""
+  numbers = {prefix + key: value for key, value in _LARGE_INTEGERS.items()}
+  session = await session_service.create_session(
+      app_name='my_app', user_id='u1', session_id='s1', state=numbers
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={prefix + 'other': 1}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  reloaded_numbers = {key: reloaded.state[key] for key in numbers}
+  assert reloaded_numbers == numbers
+  assert all(type(value) is int for value in reloaded_numbers.values())
+
+
+@pytest.mark.skipif(
+    sqlite3.sqlite_version_info < (3, 38),
+    reason='Exact large integers need the SQLite 3.38+ -> operator.',
+)
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prefix', ['', 'user:', 'app:'])
+async def test_large_integer_state_delta_is_stored_exactly(
+    session_service, prefix
+):
+  """Integers beyond 64 bits written by a state_delta stay exact ints."""
+  numbers = {prefix + key: value for key, value in _LARGE_INTEGERS.items()}
+  # Seed the scope so the delta is merged into existing state.
+  session = await session_service.create_session(
+      app_name='my_app',
+      user_id='u1',
+      session_id='s1',
+      state={prefix + 'seed': 1},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta=numbers),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name='my_app', user_id='u1', session_id='s1'
+  )
+
+  reloaded_numbers = {key: reloaded.state[key] for key in numbers}
+  assert reloaded_numbers == numbers
+  assert all(type(value) is int for value in reloaded_numbers.values())
+
+
 @pytest.mark.asyncio
 async def test_temp_state_is_not_persisted_in_state_or_events(session_service):
   app_name = 'my_app'
@@ -1501,6 +1573,55 @@ async def test_delete_session_removes_session_by_id_passed_to_create(
       )
       is None
   )
+
+
+@pytest.mark.asyncio
+async def test_delete_session_removes_events_with_caller_owned_sqlite_engine(
+    tmp_path,
+):
+  """DatabaseSessionService with a caller-supplied SQLite engine must purge
+
+  events on delete_session even when PRAGMA foreign_keys is not enabled.
+  """
+  db_path = tmp_path / 'caller_owned.db'
+  engine = create_async_engine(f'sqlite+aiosqlite:///{db_path}')
+  try:
+    service = DatabaseSessionService(db_engine=engine)
+    session = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    event = Event(
+        id='e1',
+        invocation_id='inv1',
+        author='user',
+        content=types.Content(
+            parts=[types.Part.from_text(text='hello')], role='user'
+        ),
+    )
+    await service.append_event(session, event)
+
+    await service.delete_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    assert (
+        await service.get_session(
+            app_name='app', user_id='user', session_id='s1'
+        )
+    ) is None
+
+    # Re-create session with the same id and verify previous events do not reappear
+    recreated = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    assert recreated.events == []
+
+    fetched = await service.get_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    assert fetched is not None
+    assert fetched.events == []
+  finally:
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -2390,6 +2511,13 @@ async def test_get_session_with_config(session_service):
   assert len(events) == num_test_events - after_event_index + 1
   assert events[0].timestamp == after_timestamp
 
+  # The first event's own timestamp keeps every event, the first included.
+  config = GetSessionConfig(after_timestamp=base_timestamp + 1)
+  session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id, config=config
+  )
+  assert len(session.events) == num_test_events
+
   # Expect no events if none are > after_timestamp.
   way_after_timestamp = base_timestamp + num_test_events * 10
   config = GetSessionConfig(after_timestamp=way_after_timestamp)
@@ -2418,8 +2546,9 @@ async def test_partial_events_are_not_persisted(session_service):
       app_name=app_name, user_id=user_id
   )
   event = Event(author='user', partial=True)
-  await session_service.append_event(session, event)
+  returned = await session_service.append_event(session, event)
 
+  assert returned is event
   # Check in-memory session
   assert len(session.events) == 0
   # Check persisted session

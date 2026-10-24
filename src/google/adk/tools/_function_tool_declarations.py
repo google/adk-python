@@ -36,7 +36,6 @@ from typing import cast
 from typing import ForwardRef
 from typing import get_args
 from typing import get_origin
-from typing import get_type_hints
 from typing import Literal
 from typing import Optional
 from typing import Type
@@ -46,11 +45,13 @@ from google.genai import types
 import pydantic
 from pydantic import create_model
 from pydantic import fields as pydantic_fields
+from pydantic_core import PydanticUndefined
 from typing_extensions import Annotated
 
 from ..events.event import Event
 from ..events.request_input import RequestInput
 from ..utils._callable_utils import get_callable_doc
+from ..utils._callable_utils import get_type_hints_cached
 from ..utils.variant_utils import get_google_llm_variant
 from ..utils.variant_utils import GoogleLLMVariant
 
@@ -254,7 +255,7 @@ def _get_function_fields(
 
   # Get type hints with forward reference resolution
   try:
-    type_hints = get_type_hints(func, include_extras=True)
+    type_hints = get_type_hints_cached(func, include_extras=True)
   except (TypeError, NameError, AttributeError):
     # TypeError can happen with mock objects or complex annotations. NameError
     # / AttributeError happen when an annotation is an unresolvable forward
@@ -298,7 +299,7 @@ def _get_function_fields(
     ann = _collapse_redundant_outer_optional(ann)
 
     if param.default is inspect._empty:
-      default = pydantic_fields.PydanticUndefined
+      default = PydanticUndefined
     else:
       default = param.default
 
@@ -439,9 +440,10 @@ def _build_parameters_json_schema(
 
   # Create a Pydantic model dynamically
   func_name = get_callable_name(func)
-  model = create_model(
+  model: type[pydantic.BaseModel] = create_model(
       f'{func_name}Params',
-      **fields,  # type: ignore[arg-type]
+      # mypy matches the unpacked fields against create_model's typed options.
+      **fields,  # type: ignore[call-overload]
   )
 
   return model.model_json_schema()
@@ -464,7 +466,7 @@ def _build_response_json_schema(
     return None
 
   try:
-    type_hints = get_type_hints(func, include_extras=True)
+    type_hints = get_type_hints_cached(func, include_extras=True)
     return_annotation = type_hints.get('return', return_annotation)
   except (TypeError, NameError, AttributeError):
     func_globals = _get_callable_globals(func)
@@ -488,7 +490,7 @@ def _build_response_json_schema(
     except pydantic.PydanticUserError as e:
       # If it failed, maybe it was because of the config argument (e.g. for dataclasses).
       # Retry without config.
-      logging.debug(
+      logger.debug(
           'Failed to build schema with config, retrying without config for'
           ' %s: %s',
           get_callable_name(func),
@@ -497,7 +499,7 @@ def _build_response_json_schema(
       adapter = pydantic.TypeAdapter(return_annotation)
     return adapter.json_schema()
   except Exception:
-    logging.warning(
+    logger.warning(
         'Failed to build response JSON schema for %s',
         get_callable_name(func),
         exc_info=True,

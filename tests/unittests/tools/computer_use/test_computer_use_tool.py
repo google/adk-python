@@ -219,6 +219,20 @@ class TestComputerUseTool:
       tool._normalize_y("invalid")
 
   @pytest.mark.asyncio
+  async def test_run_async_with_state_without_screenshot_raises(
+      self, tool_context
+  ):
+    """A returned state with no screenshot is reported, not base64-encoded."""
+
+    async def take_screenshot():
+      return ComputerState(url="https://example.com")
+
+    tool = ComputerUseTool(func=take_screenshot, screen_size=(1920, 1080))
+
+    with pytest.raises(ValueError, match="no screenshot"):
+      await tool.run_async(args={}, tool_context=tool_context)
+
+  @pytest.mark.asyncio
   async def test_run_async_with_coordinates(
       self, mock_computer_function, tool_context
   ):
@@ -616,3 +630,93 @@ class TestComputerUseTool:
     # Check that normalization was logged
     assert "Normalized x: 500 -> 960" in caplog.text
     assert "Normalized y: 300 -> 324" in caplog.text
+
+  @pytest.mark.asyncio
+  async def test_run_async_legacy_drag_and_drop_fields_still_work(
+      self, tool_context
+  ):
+    """Gemini 2.x x/y/destination_x/destination_y args still normalize."""
+    calls = []
+    mock_state = ComputerState(
+        screenshot=b"test_screenshot", url="https://example.com"
+    )
+
+    async def legacy_drag_and_drop(
+        x: int, y: int, destination_x: int, destination_y: int
+    ) -> ComputerState:
+      calls.append((x, y, destination_x, destination_y))
+      return mock_state
+
+    tool = ComputerUseTool(func=legacy_drag_and_drop, screen_size=(1920, 1080))
+    args = {
+        "x": 200,
+        "y": 300,
+        "destination_x": 800,
+        "destination_y": 700,
+    }
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert calls == [(384, 324, 1536, 756)]
+    assert args == {
+        "x": 384,
+        "y": 324,
+        "destination_x": 1536,
+        "destination_y": 756,
+    }
+    assert result["url"] == "https://example.com"
+
+  @pytest.mark.asyncio
+  async def test_run_async_modern_drag_and_drop_mapped_to_legacy(
+      self, tool_context
+  ):
+    """Test modern start_x/start_y/end_x/end_y args normalize and map to legacy drag_and_drop signature."""
+    calls = []
+    mock_state = ComputerState(
+        screenshot=b"test_screenshot", url="https://example.com"
+    )
+
+    async def legacy_drag_and_drop(
+        x: int, y: int, destination_x: int, destination_y: int
+    ) -> ComputerState:
+      calls.append((x, y, destination_x, destination_y))
+      return mock_state
+
+    tool = ComputerUseTool(func=legacy_drag_and_drop, screen_size=(1920, 1080))
+    args = {
+        "start_x": 200,
+        "start_y": 300,
+        "end_x": 800,
+        "end_y": 700,
+        "intent": "drag item across screen",
+    }
+    await tool.run_async(args=args, tool_context=tool_context)
+
+    assert calls == [(384, 324, 1536, 756)]
+
+  @pytest.mark.asyncio
+  async def test_run_async_modern_drag_and_drop_preserved_for_modern_sig(
+      self, tool_context
+  ):
+    """Test modern start_x/start_y/end_x/end_y args normalize in-place when func accepts start_x."""
+    calls = []
+    mock_state = ComputerState(
+        screenshot=b"test_screenshot", url="https://example.com"
+    )
+
+    async def modern_drag_and_drop(
+        start_x: int, start_y: int, end_x: int, end_y: int
+    ) -> ComputerState:
+      calls.append((start_x, start_y, end_x, end_y))
+      return mock_state
+
+    tool = ComputerUseTool(func=modern_drag_and_drop, screen_size=(1920, 1080))
+    args = {
+        "start_x": 200,
+        "start_y": 300,
+        "end_x": 800,
+        "end_y": 700,
+        "intent": "drag item across screen",
+    }
+    await tool.run_async(args=args, tool_context=tool_context)
+
+    assert calls == [(384, 324, 1536, 756)]

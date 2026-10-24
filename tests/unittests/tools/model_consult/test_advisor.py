@@ -20,17 +20,23 @@ import asyncio
 from typing import AsyncGenerator
 from unittest import mock
 
+from google.adk import version
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.registry import LLMRegistry
+from google.adk.telemetry import _genai_instrumentor
 from google.adk.telemetry import _metrics
-from google.adk.telemetry import tracing
 from google.adk.tools.model_consult._advisor import AdvisorError
 from google.adk.tools.model_consult._advisor import AdvisorUsage
 from google.adk.tools.model_consult._advisor import call_advisor
 from google.adk.tools.model_consult._advisor import resolve_advisor_llm
 from google.adk.tools.model_consult._advisor import resolve_thinking_level
+from google.adk.utils import _client_labels_utils
+from google.adk.utils._client_labels_utils import client_label_context
+from google.adk.utils._client_labels_utils import EVAL_CLIENT_LABEL
+from google.adk.utils._client_labels_utils import get_client_labels
+from google.adk.utils._client_labels_utils import MODEL_CONSULT_CLIENT_LABEL
 from google.genai import types
 from pydantic import Field
 import pytest
@@ -663,8 +669,13 @@ async def test_call_advisor_timeout_bounds_total_wall_clock_across_retry():
 
 
 @pytest.mark.asyncio
-async def test_call_advisor_skips_native_telemetry_when_genai_instrumented():
+async def test_call_advisor_skips_native_telemetry_when_genai_instrumented(
+    monkeypatch: pytest.MonkeyPatch,
+):
   """Skips native OTel metrics for Gemini when genai OTel lib is active."""
+  monkeypatch.setenv(
+      'OTEL_SEMCONV_STABILITY_OPT_IN', 'gen_ai_latest_experimental'
+  )
   gemini_llm = _FakeAdvisorLlm(
       model='gemini-2.5-pro',
       scripted_outcomes=[[
@@ -702,8 +713,8 @@ async def test_call_advisor_skips_native_telemetry_when_genai_instrumented():
 
   with (
       mock.patch.object(
-          tracing,
-          '_instrumented_with_opentelemetry_instrumentation_google_genai',
+          _genai_instrumentor,
+          'is_instrumented',
           return_value=True,
       ),
       mock.patch.object(
@@ -728,3 +739,191 @@ async def test_call_advisor_skips_native_telemetry_when_genai_instrumented():
     )
     mock_duration.assert_called_once()
     mock_tokens.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_call_advisor_enters_client_label_context():
+  """Enters client_label_context with MODEL_CONSULT_CLIENT_LABEL during call."""
+  observed_labels_during_call: list[list[str]] = []
+
+  class _LabelInspectingLlm(_FakeAdvisorLlm):
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+      observed_labels_during_call.append(get_client_labels())
+      async for resp in super().generate_content_async(
+          llm_request, stream=stream
+      ):
+        yield resp
+
+  llm = _LabelInspectingLlm(
+      scripted_outcomes=[[
+          LlmResponse(
+              finish_reason=types.FinishReason.STOP,
+              content=types.Content(
+                  role='model',
+                  parts=[types.Part.from_text(text='Tagged advice.')],
+              ),
+          )
+      ]]
+  )
+
+  await call_advisor(
+      llm,
+      _sample_contents(),
+      system_instruction='Advisor system prompt.',
+  )
+
+  assert observed_labels_during_call == [[
+      f'google-adk/{version.__version__}',
+      observed_labels_during_call[0][1],
+      MODEL_CONSULT_CLIENT_LABEL,
+  ]]
+  # ContextVar resets cleanly after the call completes.
+  assert MODEL_CONSULT_CLIENT_LABEL not in get_client_labels()
+  # No manual headers are injected into config.http_options so adapters like
+  # LiteLlm do not forward ADK tracking headers to non-Google providers.
+  assert llm.recorded_requests[0].config.http_options is None
+
+
+@pytest.mark.asyncio
+async def test_call_advisor_preserves_custom_http_options_and_outer_label():
+  """Preserves outer client_label_context and caller http_options untouched."""
+  base_cfg = types.GenerateContentConfig(
+      http_options=types.HttpOptions(
+          timeout=5000,
+          headers={'x-custom': 'keep-me'},
+      )
+  )
+  observed_labels_during_call: list[list[str]] = []
+
+  class _LabelInspectingLlm(_FakeAdvisorLlm):
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+      observed_labels_during_call.append(get_client_labels())
+      async for resp in super().generate_content_async(
+          llm_request, stream=stream
+      ):
+        yield resp
+
+  llm = _LabelInspectingLlm(
+      scripted_outcomes=[[
+          LlmResponse(
+              finish_reason=types.FinishReason.STOP,
+              content=types.Content(
+                  role='model',
+                  parts=[types.Part.from_text(text='Nested label advice.')],
+              ),
+          )
+      ]]
+  )
+
+  with client_label_context(EVAL_CLIENT_LABEL):
+    await call_advisor(
+        llm,
+        _sample_contents(),
+        system_instruction='Advisor system prompt.',
+        generate_content_config=base_cfg,
+    )
+
+  assert observed_labels_during_call == [[
+      f'google-adk/{version.__version__}',
+      observed_labels_during_call[0][1],
+      EVAL_CLIENT_LABEL,
+  ]]
+  sent_http = llm.recorded_requests[0].config.http_options
+  assert sent_http.timeout == 5000
+  assert sent_http.headers == {'x-custom': 'keep-me'}
+
+
+@pytest.mark.asyncio
+async def test_call_advisor_enters_client_label_context_with_extra_default_labels(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Enters client_label_context even when more than two default labels exist."""
+  extra_defaults = [
+      f'google-adk/{version.__version__}',
+      'adk-runtime/cloud_run',
+      'gl-python/3.12.0',
+      'adk-deployed-by/adk-cli-2.11.0',
+  ]
+  monkeypatch.setattr(
+      _client_labels_utils,
+      '_get_default_labels',
+      lambda framework_label=None: list(extra_defaults),
+  )
+
+  observed_labels_during_call: list[list[str]] = []
+
+  class _LabelInspectingLlm(_FakeAdvisorLlm):
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+      observed_labels_during_call.append(get_client_labels())
+      async for resp in super().generate_content_async(
+          llm_request, stream=stream
+      ):
+        yield resp
+
+  llm = _LabelInspectingLlm(
+      scripted_outcomes=[[
+          LlmResponse(
+              finish_reason=types.FinishReason.STOP,
+              content=types.Content(
+                  role='model',
+                  parts=[types.Part.from_text(text='Tagged advice.')],
+              ),
+          )
+      ]]
+  )
+
+  await call_advisor(
+      llm,
+      _sample_contents(),
+      system_instruction='Advisor system prompt.',
+  )
+
+  assert observed_labels_during_call == [
+      [*extra_defaults, MODEL_CONSULT_CLIENT_LABEL]
+  ]
+  assert get_client_labels() == extra_defaults
+
+
+@pytest.mark.asyncio
+async def test_call_advisor_records_native_telemetry_on_schema_v1(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Schema v1 keeps ADK's stable-semconv metrics even when instrumented."""
+  monkeypatch.setenv('ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN', '1')
+  monkeypatch.delenv('OTEL_SEMCONV_STABILITY_OPT_IN', raising=False)
+  gemini_llm = _FakeAdvisorLlm(
+      model='gemini-2.5-pro',
+      scripted_outcomes=[[
+          LlmResponse(
+              finish_reason=types.FinishReason.STOP,
+              content=types.Content(
+                  role='model', parts=[types.Part.from_text(text='Advice.')]
+              ),
+          )
+      ]],
+  )
+
+  with (
+      mock.patch.object(
+          _genai_instrumentor, 'is_instrumented', return_value=True
+      ),
+      mock.patch.object(
+          _metrics, 'record_client_operation_duration', autospec=True
+      ) as mock_duration,
+  ):
+    await call_advisor(
+        gemini_llm,
+        _sample_contents(),
+        system_instruction='Advisor system prompt.',
+    )
+
+  mock_duration.assert_called_once()

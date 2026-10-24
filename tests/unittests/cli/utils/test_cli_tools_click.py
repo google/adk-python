@@ -38,11 +38,19 @@ from google.adk.agents.run_config import StreamingMode
 from google.adk.cli import cli_tools_click
 from google.adk.cli.deployers import DeployerFactory
 from google.adk.cli.utils import gcp_utils
+from google.adk.evaluation.base_eval_service import InferenceConfig
 from google.adk.evaluation.eval_case import EvalCase
+from google.adk.evaluation.eval_case import Invocation
+from google.adk.evaluation.eval_metrics import EvalMetricResult
+from google.adk.evaluation.eval_metrics import EvalMetricResultPerInvocation
+from google.adk.evaluation.eval_metrics import EvalStatus
+from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from google.adk.evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from google.adk.events.event import Event
+from google.genai import types
+from google.genai import types as genai_types
 from pydantic import BaseModel
 import pytest
 
@@ -900,6 +908,25 @@ def test_cli_run_auto_resume_with_query(
   assert part.function_response.response == {"result": "approve"}
 
 
+def _confirmation_request_event() -> Event:
+  """Returns an agent event paused on confirmation request interrupt_123."""
+  return Event(
+      invocation_id="invocation_123",
+      author="agent",
+      long_running_tool_ids={"interrupt_123"},
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="interrupt_123", name="adk_request_confirmation"
+                  )
+              )
+          ],
+      ),
+  )
+
+
 def test_cli_run_auto_resume_with_query_confirmation_yes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -916,18 +943,7 @@ def test_cli_run_auto_resume_with_query_confirmation_yes(
   mock_session.user_id = "u123"
   mock_session.app_name = "agent_resume_confirm_yes"
 
-  # Create a mock event with long_running_tool_ids
-  mock_event = mock.Mock()
-  mock_event.long_running_tool_ids = ["interrupt_123"]
-  mock_event.invocation_id = "invocation_123"
-
-  # Mock get_function_calls to return adk_request_confirmation
-  fc = mock.Mock()
-  fc.id = "interrupt_123"
-  fc.name = "adk_request_confirmation"
-  mock_event.get_function_calls.return_value = [fc]
-
-  mock_session.events = [mock_event]
+  mock_session.events = [_confirmation_request_event()]
 
   mock_session_service = mock.AsyncMock()
   mock_session_service.get_session.return_value = mock_session
@@ -1020,17 +1036,7 @@ def test_cli_run_auto_resume_with_query_confirmation_no(
   mock_session.user_id = "u123"
   mock_session.app_name = "agent_resume_confirm_no"
 
-  # Create a mock event with long_running_tool_ids
-  mock_event = mock.Mock()
-  mock_event.long_running_tool_ids = ["interrupt_123"]
-
-  # Mock get_function_calls to return adk_request_confirmation
-  fc = mock.Mock()
-  fc.id = "interrupt_123"
-  fc.name = "adk_request_confirmation"
-  mock_event.get_function_calls.return_value = [fc]
-
-  mock_session.events = [mock_event]
+  mock_session.events = [_confirmation_request_event()]
 
   mock_session_service = mock.AsyncMock()
   mock_session_service.get_session.return_value = mock_session
@@ -1122,17 +1128,7 @@ def test_cli_run_auto_resume_with_query_confirmation_json(
   mock_session.user_id = "u123"
   mock_session.app_name = "agent_resume_confirm_json"
 
-  # Create a mock event with long_running_tool_ids
-  mock_event = mock.Mock()
-  mock_event.long_running_tool_ids = ["interrupt_123"]
-
-  # Mock get_function_calls to return adk_request_confirmation
-  fc = mock.Mock()
-  fc.id = "interrupt_123"
-  fc.name = "adk_request_confirmation"
-  mock_event.get_function_calls.return_value = [fc]
-
-  mock_session.events = [mock_event]
+  mock_session.events = [_confirmation_request_event()]
 
   mock_session_service = mock.AsyncMock()
   mock_session_service.get_session.return_value = mock_session
@@ -1210,6 +1206,105 @@ def test_cli_run_auto_resume_with_query_confirmation_json(
       "confirmed": True,
       "payload": {"amount": 100},
   }
+
+
+def test_cli_run_with_query_after_answered_interrupt_sends_user_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A query after an answered interrupt reaches the agent as a user message.
+
+  Setup: the session paused on a tool confirmation, a later run answered it,
+    and the agent finished its reply.
+  Act: run `adk run` with a new query and the same --session_id.
+  Assert: the query is sent as a new text message, not as another response
+    to the confirmation that was already answered.
+  """
+  agent_dir = tmp_path / "agent_resume_answered"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  mock_session = mock.Mock()
+  mock_session.id = "s123"
+  mock_session.user_id = "u123"
+  mock_session.app_name = "agent_resume_answered"
+  mock_session.events = [
+      _confirmation_request_event(),
+      Event(
+          invocation_id="invocation_123",
+          author="user",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="interrupt_123",
+                          name="adk_request_confirmation",
+                          response={"confirmed": True},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="invocation_123",
+          author="agent",
+          content=types.Content(
+              role="model", parts=[types.Part(text="File deleted.")]
+          ),
+      ),
+  ]
+
+  mock_session_service = mock.AsyncMock()
+  mock_session_service.get_session.return_value = mock_session
+  monkeypatch.setattr(
+      "google.adk.cli.cli.create_session_service_from_options",
+      mock.Mock(return_value=mock_session_service),
+  )
+
+  mock_agent_loader = mock.Mock()
+  mock_agent_loader.load_agent.return_value = mock.Mock(
+      name="agent_resume_answered"
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli.AgentLoader",
+      mock.Mock(return_value=mock_agent_loader),
+  )
+
+  mock_runner_instance = mock.Mock()
+
+  async def mock_run_async(*args, **kwargs):
+    ev = mock.Mock()
+    ev.author = "agent"
+    ev.node_info = mock.Mock(path="node")
+    ev.content = None
+    ev.long_running_tool_ids = []
+    ev.model_dump.return_value = {"author": "agent", "node_path": "node"}
+    yield ev
+
+  mock_runner_instance.run_async.side_effect = mock_run_async
+  mock_runner_instance.close = mock.AsyncMock()
+  monkeypatch.setattr(
+      "google.adk.cli.cli.Runner",
+      mock.Mock(return_value=mock_runner_instance),
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli._to_app",
+      mock.Mock(return_value=mock.Mock(name="agent_resume_answered")),
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["run", str(agent_dir), "what time is it?", "--session_id", "s123"],
+  )
+
+  assert result.exit_code == 0
+  kwargs = mock_runner_instance.run_async.call_args.kwargs
+  assert kwargs["invocation_id"] is None
+  assert kwargs["new_message"] == types.Content(
+      role="user", parts=[types.Part(text="what time is it?")]
+  )
+  assert "Auto-resuming" not in result.output
 
 
 def test_cli_run_all_options_with_query(
@@ -1349,6 +1444,29 @@ def test_cli_deploy_docker_success(
   )
   assert result.exit_code == 0
   assert rec.calls, "cli_deploy.run must be invoked"
+
+
+def test_cli_deploy_cloud_run_forwards_extra_packages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "cloud_run",
+          "--extra_packages=shared_a",
+          "--extra_packages=shared_b",
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert rec.calls[0][1]["extra_packages"] == ["shared_a", "shared_b"]
 
 
 def test_cli_deploy_cloud_run_failure(
@@ -1793,6 +1911,30 @@ def test_cli_deploy_gke_success(
   assert called_kwargs.get("cluster_name") == "my-cluster"
 
 
+def test_cli_deploy_gke_forwards_extra_packages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_gke", rec)
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "gke",
+          "--cluster_name=cluster",
+          "--extra_packages=shared_a",
+          "--extra_packages=shared_b",
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert rec.calls[0][1]["extra_packages"] == ["shared_a", "shared_b"]
+
+
 # cli eval
 def test_cli_eval_missing_deps_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1823,6 +1965,23 @@ def test_cli_eval_missing_deps_raises(
   from google.adk.evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 
   assert MISSING_EVAL_DEPENDENCIES_MESSAGE in result.output
+
+
+def test_cli_eval_rejects_num_runs_less_than_one(tmp_path: Path) -> None:
+  agent_dir = tmp_path / "agent_num_runs_validation"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  eval_file = tmp_path / "dummy.evalset.json"
+  eval_file.touch()
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["eval", str(agent_dir), str(eval_file), "--num_runs", "0"],
+  )
+
+  assert result.exit_code != 0
+  assert "Invalid value for '--num_runs'" in result.output
 
 
 # cli web & api_server (uvicorn patched)
@@ -2096,7 +2255,14 @@ def test_cli_eval_with_eval_set_file_path(
       [str(agent_path), str(eval_set_file)],
   )
 
-  assert result.exit_code == 0
+  # This eval case has no invocations and no configured criteria, so it
+  # never produces a PASSED verdict ("Tests failed: 1" in the printed
+  # summary, unchanged by this assertion) -- exit_code == 1 is the correct,
+  # honest reflection of that. This assertion used to read `== 0`, which
+  # was only ever true because `cli_eval`'s exit code carried no real
+  # signal at all prior to this fix; it was not a deliberate claim that
+  # this specific eval run passed.
+  assert result.exit_code == 1
   # Assert that we wrote eval set results
   eval_set_results_manager = LocalEvalSetResultsManager(
       agents_dir=str(tmp_path)
@@ -2135,7 +2301,11 @@ def test_cli_eval_with_eval_set_id(
       [str(agent_path), "test_eval_set_id:case1,case2"],
   )
 
-  assert result.exit_code == 0
+  # Same reasoning as test_cli_eval_with_eval_set_file_path above: both
+  # cases have no invocations and no configured criteria, so neither
+  # produces a PASSED verdict -- exit_code == 1 is what this run actually
+  # produces, now that the exit code reflects the real verdict.
+  assert result.exit_code == 1
   # Assert that we wrote eval set results
   eval_set_results_manager = LocalEvalSetResultsManager(
       agents_dir=str(tmp_path)
@@ -2144,6 +2314,613 @@ def test_cli_eval_with_eval_set_id(
       app_name=app_name
   )
   assert len(eval_set_results) == 1
+
+
+@pytest.mark.parametrize(
+    "final_eval_status, expected_exit_code",
+    [
+        (pytest.param("PASSED", 0, id="all_passed_exits_zero")),
+        (pytest.param("FAILED", 1, id="any_failed_exits_nonzero")),
+    ],
+)
+def test_cli_eval_exit_code_reflects_final_eval_status(
+    mock_load_eval_set_from_file,
+    mock_get_root_agent,
+    tmp_path,
+    final_eval_status,
+    expected_exit_code,
+):
+  """`cli_eval`'s process exit code must reflect PASSED/FAILED.
+
+  Before this fix, `cli_eval` never called `sys.exit` at all, so the
+  process always exited 0 regardless of the printed "Tests failed" count
+  -- indistinguishable from every test genuinely passing, which made the
+  command unusable as a CI gate on its own exit code.
+  """
+  from google.adk.evaluation.eval_result import EvalCaseResult
+  from google.adk.evaluation.evaluator import EvalStatus
+
+  agent_path = tmp_path / "my_agent"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  eval_set_file = tmp_path / "my_evals.json"
+  eval_set_file.write_text("{}")
+
+  mock_load_eval_set_from_file.return_value = EvalSet(
+      eval_set_id="my_evals",
+      eval_cases=[EvalCase(eval_id="case1", conversation=[])],
+  )
+
+  canned_result = EvalCaseResult(
+      eval_set_file="my_evals",
+      eval_set_id="my_evals",
+      eval_id="case1",
+      final_eval_status=getattr(EvalStatus, final_eval_status),
+      overall_eval_metric_results=[],
+      eval_metric_result_per_invocation=[],
+      session_id="",
+  )
+
+  with (
+      mock.patch(
+          "google.adk.cli.cli_eval._collect_inferences",
+          new_callable=mock.AsyncMock,
+          return_value=[],
+      ),
+      mock.patch(
+          "google.adk.cli.cli_eval._collect_eval_results",
+          new_callable=mock.AsyncMock,
+          return_value=[canned_result],
+      ),
+  ):
+    result = CliRunner().invoke(
+        cli_tools_click.cli_eval,
+        [str(agent_path), str(eval_set_file)],
+    )
+
+  assert result.exit_code == expected_exit_code, (
+      result.output,
+      result.exception,
+  )
+
+
+def test_cli_eval_empty_results_exits_nonzero(
+    mock_load_eval_set_from_file,
+    mock_get_root_agent,
+    tmp_path,
+):
+  """`cli_eval` must exit non-zero when no eval cases run."""
+  agent_path = tmp_path / "my_agent"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  eval_set_file = tmp_path / "my_evals.json"
+  eval_set_file.write_text("{}")
+
+  mock_load_eval_set_from_file.return_value = EvalSet(
+      eval_set_id="my_evals",
+      eval_cases=[],
+  )
+
+  with (
+      mock.patch(
+          "google.adk.cli.cli_eval._collect_inferences",
+          new_callable=mock.AsyncMock,
+          return_value=[],
+      ),
+      mock.patch(
+          "google.adk.cli.cli_eval._collect_eval_results",
+          new_callable=mock.AsyncMock,
+          return_value=[],
+      ),
+  ):
+    result = CliRunner().invoke(
+        cli_tools_click.cli_eval,
+        [str(agent_path), str(eval_set_file)],
+    )
+
+  assert result.exit_code == 1, (
+      result.output,
+      result.exception,
+  )
+
+
+def _make_agent_with_eval_set(
+    tmp_path: Path, app_name: str, eval_set_id: str
+) -> Path:
+  """Creates an agent folder whose eval set holds a single eval case, case1."""
+  agent_path = tmp_path / app_name
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+  eval_sets_manager = LocalEvalSetsManager(agents_dir=str(tmp_path))
+  eval_sets_manager.create_eval_set(app_name=app_name, eval_set_id=eval_set_id)
+  eval_sets_manager.add_eval_case(
+      app_name=app_name,
+      eval_set_id=eval_set_id,
+      eval_case=EvalCase(eval_id="case1", conversation=[]),
+  )
+  return agent_path
+
+
+def _run_result(
+    *, eval_set_id: str, score: float, repetition_index: Optional[int]
+) -> EvalCaseResult:
+  """Returns the result of one run of case1, scored on a single invocation."""
+  metric_result = EvalMetricResult(
+      metric_name="response_match_score",
+      threshold=0.8,
+      score=score,
+      eval_status=(EvalStatus.PASSED if score >= 0.8 else EvalStatus.FAILED),
+  )
+  return EvalCaseResult(
+      eval_set_id=eval_set_id,
+      eval_id="case1",
+      final_eval_status=metric_result.eval_status,
+      overall_eval_metric_results=[metric_result],
+      eval_metric_result_per_invocation=[
+          EvalMetricResultPerInvocation(
+              actual_invocation=Invocation(
+                  user_content=genai_types.Content(
+                      parts=[genai_types.Part(text="hi")]
+                  )
+              ),
+              eval_metric_results=[metric_result],
+          )
+      ],
+      session_id=f"session_{repetition_index}",
+      repetition_index=repetition_index,
+  )
+
+
+def _fake_inference_and_scoring(
+    monkeypatch: pytest.MonkeyPatch, eval_results: list[EvalCaseResult]
+) -> list[InferenceConfig]:
+  """Fakes inference and scoring so that scoring returns `eval_results`.
+
+  Returns:
+    A list that collects the inference config of each inference request the
+    CLI makes. The eval service, not the CLI, repeats the runs.
+  """
+  inference_configs: list[InferenceConfig] = []
+
+  async def _fake_collect_inferences(inference_requests, eval_service):
+    del eval_service
+    inference_configs.extend(
+        request.inference_config for request in inference_requests
+    )
+    return []
+
+  async def _fake_collect_eval_results(
+      inference_results, eval_service, eval_metrics
+  ):
+    del inference_results, eval_service, eval_metrics
+    return eval_results
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_eval._collect_inferences", _fake_collect_inferences
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli_eval._collect_eval_results",
+      _fake_collect_eval_results,
+  )
+  return inference_configs
+
+
+@pytest.mark.unmute_click
+def test_cli_eval_with_num_runs_aggregates_per_eval_case(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """The runs of an eval case are judged together in the summary."""
+  eval_set_id = "test_eval_set_num_runs"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_num_runs", eval_set_id
+  )
+  # Two runs of one case: the mean over invocations is (1.0 + 0.6) / 2 = 0.8,
+  # which meets the 0.8 threshold although the second run alone fails.
+  inference_configs = _fake_inference_and_scoring(
+      monkeypatch,
+      [
+          _run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0),
+          _run_result(eval_set_id=eval_set_id, score=0.6, repetition_index=1),
+      ],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["eval", str(agent_path), eval_set_id, "--num_runs", "2"],
+  )
+
+  assert result.exit_code == 0
+  assert [c.num_runs for c in inference_configs] == [2]
+  assert (
+      "Each eval case was run 2 times and judged on all 2 runs."
+      in result.output
+  )
+  assert "Tests passed: 1" in result.output
+  assert "Tests failed: 0" in result.output
+
+
+@pytest.mark.unmute_click
+def test_cli_eval_runs_each_case_once_by_default(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """With no --num_runs and no multi_run_config, each case runs once."""
+  eval_set_id = "test_eval_set_default_runs"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_default_runs", eval_set_id
+  )
+  inference_configs = _fake_inference_and_scoring(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["eval", str(agent_path), eval_set_id, "--print_detailed_results"],
+  )
+
+  assert result.exit_code == 0
+  assert [c.num_runs for c in inference_configs] == [1]
+  assert "Each eval case was run" not in result.output
+  assert "Run: " not in result.output
+
+
+@pytest.mark.unmute_click
+def test_cli_eval_reads_num_runs_from_eval_config(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """Without --num_runs, multi_run_config in the eval config sets the runs."""
+  eval_set_id = "test_eval_set_config_runs"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_config_runs", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {"num_runs": 3},
+      })
+  )
+  inference_configs = _fake_inference_and_scoring(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert [c.num_runs for c in inference_configs] == [3]
+  assert "Each eval case was run 3 times" in result.output
+
+
+def test_cli_eval_runs_each_case_once_when_the_config_omits_num_runs(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """With rules but no num_runs, and no --num_runs, each case runs once."""
+  eval_set_id = "test_eval_set_rules_only"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_rules_only", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {"cross_run_scoring": "min_over_runs"},
+      })
+  )
+  inference_configs = _fake_inference_and_scoring(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert [c.num_runs for c in inference_configs] == [1]
+
+
+def test_cli_eval_num_runs_flag_overrides_eval_config(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """--num_runs takes precedence over multi_run_config in the eval config."""
+  eval_set_id = "test_eval_set_flag_runs"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_flag_runs", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {"num_runs": 3},
+      })
+  )
+  inference_configs = _fake_inference_and_scoring(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+          "--num_runs",
+          "2",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert [c.num_runs for c in inference_configs] == [2]
+
+
+def test_cli_eval_with_num_runs_in_live_mode(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """--num_runs also reaches the eval service when the agent runs live."""
+  eval_set_id = "test_eval_set_live_runs"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_live_runs", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "live_model_config": {"timeout_seconds": 30},
+      })
+  )
+  inference_configs = _fake_inference_and_scoring(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+          "--num_runs",
+          "2",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert [(c.use_live, c.num_runs) for c in inference_configs] == [(True, 2)]
+
+
+@pytest.mark.unmute_click
+def test_cli_eval_with_num_runs_prints_runs_after_the_case_verdict(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """Detailed results show a case's verdict across runs, then each run.
+
+  Setup: two runs of one case, which arrive with the second run first.
+  Assert: the verdict across both runs, with the pooled score, is printed
+    first, followed by "Run: 1 of 2" and then "Run: 2 of 2".
+  """
+  eval_set_id = "test_eval_set_num_runs_details"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_num_runs_details", eval_set_id
+  )
+  _fake_inference_and_scoring(
+      monkeypatch,
+      [
+          _run_result(eval_set_id=eval_set_id, score=0.6, repetition_index=1),
+          _run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0),
+      ],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--num_runs",
+          "2",
+          "--print_detailed_results",
+      ],
+  )
+
+  assert result.exit_code == 0
+  verdict_at = result.output.index(
+      "Overall Eval Status across 2 runs (1 of 2 runs passed): PASSED"
+  )
+  first_run_at = result.output.index("Run: 1 of 2")
+  second_run_at = result.output.index("Run: 2 of 2")
+  assert verdict_at < first_run_at < second_run_at
+  assert (
+      "Metric: response_match_score, Method: mean_over_invocations,"
+      " Value: 0.8, Threshold: 0.8, Status: PASSED"
+      in result.output[verdict_at:first_run_at]
+  )
+
+
+@pytest.mark.unmute_click
+def test_cli_eval_judges_runs_by_the_multi_run_config(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """The eval config's rules for combining runs decide the case.
+
+  Setup: two runs of one case score 1.0 and 0.6, whose mean meets the 0.8
+    threshold, but a cross-run criterion asks for 80% of the runs to pass.
+  Assert: only one of the two runs passed, so the case fails.
+  """
+  eval_set_id = "test_eval_set_cross_run_criteria"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_cross_run_criteria", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {
+              "num_runs": 2,
+              "cross_run_criteria": [{"method": "pass_rate", "threshold": 0.8}],
+          },
+      })
+  )
+  _fake_inference_and_scoring(
+      monkeypatch,
+      [
+          _run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0),
+          _run_result(eval_set_id=eval_set_id, score=0.6, repetition_index=1),
+      ],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+      ],
+  )
+
+  assert result.exit_code == 1
+  assert "Tests failed: 1" in result.output
+
+
+@pytest.mark.unmute_click
+def test_cli_eval_prints_a_single_run_judged_by_cross_run_criteria(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """A case run once prints its verdict on its cross-run criteria."""
+  eval_set_id = "test_eval_set_single_run_criteria"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_single_run_criteria", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {
+              "cross_run_criteria": [{"method": "pass_rate", "threshold": 0.8}]
+          },
+      })
+  )
+  _fake_inference_and_scoring(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+          "--print_detailed_results",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert (
+      "Overall Eval Status across 1 run (1 of 1 runs passed): PASSED"
+      in result.output
+  )
+  assert (
+      "Cross-run criterion: pass_rate, Value: 1.0, Threshold: 0.8,"
+      " Status: PASSED"
+      in result.output
+  )
+
+
+def test_cli_eval_fails_before_inference_when_a_custom_method_cannot_load(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """A custom method that cannot be imported stops the eval first.
+
+  Setup: the eval config declares a custom method whose module does not exist.
+  Assert: the command fails with an error that names the method, and no
+    inference was requested.
+  """
+  eval_set_id = "test_eval_set_bad_custom_method"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_bad_custom_method", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {
+              "num_runs": 2,
+              "custom_methods": {
+                  "median_of_runs": {
+                      "code_config": {
+                          "name": "no_such_module_for_adk_tests.median_of_runs"
+                      },
+                      "uses_scores": True,
+                  }
+              },
+              "cross_run_scoring": "median_of_runs",
+          },
+      })
+  )
+  inference_configs = _fake_inference_and_scoring(monkeypatch, [])
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+      ],
+  )
+
+  assert result.exit_code != 0
+  assert "Could not import custom method 'median_of_runs'" in result.output
+  assert not inference_configs
 
 
 def test_cli_create_eval_set(tmp_path: Path):
@@ -2215,6 +2992,21 @@ def test_cli_add_eval_case_with_session(tmp_path: Path):
   eval_case = eval_set_data["eval_cases"][0]
   assert eval_case["eval_id"] == "734909ff"
   assert eval_case["session_input"]["app_name"] == "test_app_add_2"
+
+
+def test_cli_add_eval_case_requires_session_input_file(tmp_path: Path):
+  """Calling the command without a session input file fails clearly."""
+  scenarios_file = tmp_path / "scenarios.json"
+  scenarios_file.write_text('{"scenarios": []}')
+
+  with pytest.raises(
+      click.ClickException, match="--session_input_file is required"
+  ):
+    cli_tools_click.cli_add_eval_case.callback(
+        agent_module_file_path=str(tmp_path / "app"),
+        eval_set_id="set",
+        scenarios_file=str(scenarios_file),
+    )
 
 
 def test_cli_add_eval_case_skip_existing(tmp_path: Path):
@@ -2835,6 +3627,14 @@ def test_helpful_command_parse_args_defers_to_click_when_complete() -> None:
 
   assert leftover == []
   assert ctx.params == {"target_path": "some/path"}
+
+
+def test_helpful_command_format_missing_arg_error_requires_param() -> None:
+  """A MissingParameter without a parameter raises a clear ValueError."""
+  with pytest.raises(ValueError, match="does not name a parameter"):
+    cli_tools_click.HelpfulCommand._format_missing_arg_error(
+        click.MissingParameter()
+    )
 
 
 # adk_services_options
@@ -3560,6 +4360,47 @@ def test_cli_optimize_rejects_sampler_config_for_a_different_app(
   assert result.exit_code == 1
   assert "my_agent" in result.output
   assert "some_other_agent" in result.output
+
+
+def test_cli_optimize_raises_when_gepa_result_missing(tmp_path: Path) -> None:
+  """A result without gepa_result raises a clear ValueError."""
+  agent_path = tmp_path / "my_agent"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+  sampler_config_file = tmp_path / "sampler.json"
+  sampler_config_file.write_text(
+      json.dumps({
+          "eval_config": {"criteria": {}},
+          "app_name": "my_agent",
+          "train_eval_set": "train_set",
+      })
+  )
+  with (
+      mock.patch("google.adk.cli.cli_eval.get_root_agent", autospec=True),
+      mock.patch(
+          "google.adk.optimization.local_eval_sampler.LocalEvalSampler",
+          autospec=True,
+      ),
+      mock.patch(
+          "google.adk.optimization.gepa_root_agent_prompt_optimizer.GEPARootAgentPromptOptimizer",
+          autospec=True,
+      ) as mock_optimizer_class,
+  ):
+    mock_optimizer_class.return_value.optimize.return_value = SimpleNamespace(
+        gepa_result=None, optimized_agents=[]
+    )
+    result = CliRunner().invoke(
+        cli_tools_click.main,
+        [
+            "optimize",
+            str(agent_path),
+            "--sampler_config_file_path",
+            str(sampler_config_file),
+        ],
+    )
+
+  assert isinstance(result.exception, ValueError)
+  assert "gepa_result" in str(result.exception)
 
 
 # adk migrate session

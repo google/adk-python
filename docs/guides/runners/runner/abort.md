@@ -108,7 +108,7 @@ The execution context exposes a member for inspecting the signal:
 | :--------------- | :----- | :--------------------------- | :------------------------------------------------------------ |
 | `ctx.is_aborted` | `bool` | `ReadonlyContext`, `Context` | Returns `True` when an abort signal is present and triggered. |
 
-The `ctx.is_aborted` property allows tools and custom nodes to check whether an external abort has been requested. For voluntary termination from within tools or callbacks (as opposed to external cancellation), tools should set `ctx.end_invocation = True`.
+The `ctx.is_aborted` property allows tools and custom nodes to check whether an external abort has been requested. For voluntary early termination from within an agent turn rather than external cancellation, tools can set `ctx.actions.skip_summarization = True` to finish the turn after the tool response without another model call or `ctx.actions.escalate = True` to escalate out of a loop, `before_agent_callback` and `before_model_callback` can return a response to short-circuit the step, and custom `BaseAgent` subclasses that receive `InvocationContext` directly can set `end_invocation = True` as described in [InvocationContext](../../agents/invocation_context/index.md#short-circuiting-an-agent-call).
 
 ## Advanced applications
 

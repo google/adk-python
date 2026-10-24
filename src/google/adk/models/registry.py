@@ -212,7 +212,6 @@ class LLMRegistry:
           '\n\nProvider-style models (e.g., "provider/model-name") require'
           ' the litellm package.'
           '\nInstall it with: pip install google-adk[extensions]'
-          '\nOr: pip install litellm>=1.75.5'
           '\n\nSupported providers include: openai, groq, anthropic, and 100+'
           ' others.'
           '\nSee https://docs.litellm.ai/docs/providers for a full list.'

@@ -26,6 +26,7 @@ import logging
 import re
 from types import UnionType
 from typing import Any
+from typing import cast
 from typing import get_args
 from typing import get_origin
 from typing import Optional
@@ -37,6 +38,7 @@ from pydantic import TypeAdapter
 from typing_extensions import Annotated
 
 from . import _json_utils
+from .content_utils import extract_text_from_content
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -112,7 +114,8 @@ def get_list_inner_type(schema: SchemaType) -> Optional[type[BaseModel]]:
   inner_type = args[0]
   if get_origin(inner_type) is Annotated:
     inner_type = get_args(inner_type)[0]
-  return inner_type
+  # is_list_of_basemodel verified inner_type is a BaseModel subclass.
+  return cast(type[BaseModel], inner_type)
 
 
 def schema_to_json_schema(schema: SchemaType) -> dict[str, Any]:
@@ -248,28 +251,45 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
 
   if is_basemodel_schema(schema):
     # For regular BaseModel, use model_validate_json
-    return schema.model_validate_json(json_text).model_dump(exclude_none=True)
+    if get_origin(schema) is Annotated:
+      schema = get_args(schema)[0]
+    # is_basemodel_schema verified schema is now a BaseModel subclass.
+    model = cast(type[BaseModel], schema)
+    return model.model_validate_json(json_text).model_dump(exclude_none=True)
   elif is_list_of_basemodel(schema):
     # For list[BaseModel], use TypeAdapter to validate
-    type_adapter = TypeAdapter(schema)
-    validated: list[Any] = type_adapter.validate_json(json_text)
+    type_adapter: TypeAdapter[list[BaseModel]] = TypeAdapter(schema)
+    validated = type_adapter.validate_json(json_text)
     return [item.model_dump(exclude_none=True) for item in validated]
   else:
     # For other schema types (list[str], dict, Schema, etc.),
     return _json_utils.safe_json_loads(json_text, context="schema value")
 
 
+def _strip_annotated(tp: Any) -> Any:
+  """Returns the underlying type of an ``Annotated`` type, else ``tp``."""
+  return get_args(tp)[0] if get_origin(tp) is Annotated else tp
+
+
 def annotation_expects_str(annotated_type: Any) -> bool:
-  """Returns True if the annotation is or contains ``str``."""
+  """Returns True if the annotation expects ``str`` rather than JSON data."""
+  annotated_type = _strip_annotated(annotated_type)
   if annotated_type is str:
     return True
   if get_origin(annotated_type) in (Union, UnionType):
-    return any(annotation_expects_str(a) for a in get_args(annotated_type))
+    args = [_strip_annotated(a) for a in get_args(annotated_type)]
+    return any(annotation_expects_str(a) for a in args) and all(
+        annotation_expects_str(a)
+        or a is type(None)
+        or (isinstance(a, type) and issubclass(a, types.Content))
+        for a in args
+    )
   return False
 
 
 def annotation_accepts_content(annotated_type: Any) -> bool:
   """Returns True if the annotation accepts ``types.Content`` as-is."""
+  annotated_type = _strip_annotated(annotated_type)
   if annotated_type in (Any, object, types.Content):
     return True
   if isinstance(annotated_type, type) and issubclass(
@@ -279,6 +299,40 @@ def annotation_accepts_content(annotated_type: Any) -> bool:
   if get_origin(annotated_type) in (Union, UnionType):
     return any(annotation_accepts_content(a) for a in get_args(annotated_type))
   return False
+
+
+def _unwrap_content_payload(
+    content: types.Content,
+    annotation: Any = None,
+    *,
+    fan_out_list: bool = False,
+) -> Any:
+  """Unwraps non-thought text or parsed JSON from ``types.Content``."""
+  if not fan_out_list and annotation_expects_str(annotation):
+    return extract_text_from_content(content)
+  if not (
+      fan_out_list and _strip_annotated(annotation) in (Any, object)
+  ) and annotation_accepts_content(annotation):
+    return content
+  if fan_out_list and (
+      not content.parts or any(p.text is None for p in content.parts)
+  ):
+    return content
+
+  text_str = extract_text_from_content(content)
+  try:
+    # Kept as json.loads: the surrounding except json.JSONDecodeError
+    # distinguishes decode failure from schema validation failure.
+    parsed = json.loads(text_str)
+  except json.JSONDecodeError:
+    return text_str
+  if (
+      fan_out_list
+      and not isinstance(parsed, list)
+      and annotation_expects_str(annotation)
+  ):
+    return text_str
+  return parsed
 
 
 def validate_node_data(
@@ -307,28 +361,13 @@ def validate_node_data(
     validated: Any = TypeAdapter(schema).validate_python(val)
     return _to_serializable(validated)
 
-  # If schema expects Content, do not unwrap
-  if annotation_accepts_content(schema):
-    return _validate_python_object(data)
-
   if isinstance(data, types.Content):
-    # Extract text part
-    text_parts = [p.text for p in data.parts if p.text] if data.parts else []
-    text_str = "".join(text_parts)
-
-    # Validate the text
-    if schema is str:
-      validated_payload = text_str
-    else:
-      # Try to parse text as JSON first
-      try:
-        # Kept as json.loads: the surrounding except json.JSONDecodeError
-        # distinguishes decode failure from schema validation failure.
-        parsed_json = json.loads(text_str)
-        validated_payload = _validate_python_object(parsed_json)
-      except json.JSONDecodeError:
-        # Fallback to validate raw string
-        validated_payload = _validate_python_object(text_str)
+    payload = _unwrap_content_payload(data, schema)
+    if payload is data:
+      return _validate_python_object(data)
+    validated_payload = (
+        payload if schema is str else _validate_python_object(payload)
+    )
 
     if not preserve_content:
       return validated_payload
@@ -489,7 +528,7 @@ def preprocess_args(
         ):
           item_type = get_list_inner_type(target_type)
           if item_type is not None:
-            converted_list = []
+            converted_list: list[object] = []
             for item in args[param_name]:
               if isinstance(item, dict):
                 try:

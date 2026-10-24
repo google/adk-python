@@ -107,8 +107,8 @@ There are two enforcement styles, and the symptom differs.
 
 **A gated unit.** Some classes and functions carry one of the `@experimental`,
 `@working_in_progress` or `@stable` decorators, which call `is_feature_enabled`
-before running. `GCSToolset`, `SpannerToolset`, `ComputerUseTool` and the
-agent-config loaders are all gated this way. If the flag is off, constructing the
+before running. `GCSToolset`, `SpannerToolset` and `ComputerUseTool` are all
+gated this way. If the flag is off, constructing the
 class or calling the function raises a `RuntimeError` saying the feature is not
 enabled. The object is not half-built; the failure is immediate and total. Every
 such flag defaults to on in the releases shipped so far, so you reach this error
@@ -117,6 +117,17 @@ only after deliberately disabling one.
 **A gated code path.** Elsewhere the check sits inside a working feature and
 selects between an old and a new behavior. Nothing raises. The flag changes
 what happens, and the only way to know is the release note or the source.
+
+**A label with no flag.** Some older classes and functions, such as the
+credential services and several evaluators, carry the legacy `@experimental`
+from `google.adk.utils.feature_decorator` instead. It predates the registry: it
+has no `FeatureName`, so `ADK_ENABLE_<NAME>` and `ADK_DISABLE_<NAME>` do not
+apply, and it never blocks anything. It only warns, once per unit, with text of
+the form `[EXPERIMENTAL] <ClassName>: <message>`. Set
+`ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS=1` to silence those warnings; that
+variable has no effect on the registry's `[EXPERIMENTAL] feature <name>`
+warnings. New code does not use the legacy decorator, and a compliance check
+rejects new imports of it.
 
 ## Functions and types
 

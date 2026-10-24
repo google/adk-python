@@ -194,7 +194,7 @@ def _schema_to_dict(schema: object) -> dict[str, Any]:
         by_alias=True, exclude_none=True, mode='json'
     )
   elif isinstance(schema, type) and issubclass(schema, BaseModel):
-    schema_dict = cast(type[BaseModel], schema).model_json_schema()
+    schema_dict = schema.model_json_schema()
   elif isinstance(schema, BaseModel):
     schema_dict = type(schema).model_json_schema()
   elif isinstance(schema, Mapping):
@@ -317,6 +317,8 @@ def _inline_data_part_to_response_content(
     part: types.Part,
 ) -> ResponseInputContentParam:
   inline_data = part.inline_data
+  if inline_data is None:
+    raise ValueError('Part has no inline_data.')
   data = inline_data.data
   if isinstance(data, bytes):
     encoded = base64.b64encode(data).decode('utf-8')
@@ -342,6 +344,8 @@ def _file_data_part_to_response_content(
     part: types.Part,
 ) -> ResponseInputContentParam:
   file_data = part.file_data
+  if file_data is None:
+    raise ValueError('Part has no file_data.')
   file_uri = file_data.file_uri or ''
   mime_type = file_data.mime_type or ''
   if mime_type.startswith('image/'):
@@ -625,12 +629,13 @@ def _function_call_part(
   if not name:
     logger.warning('OpenAI Responses function call is missing a name.')
   arguments = _get_value(item, 'arguments')
-  part = types.Part.from_function_call(
-      name=name or '',
-      args=_loads_json_object(arguments),
+  return types.Part(
+      function_call=types.FunctionCall(
+          name=name or '',
+          args=_loads_json_object(arguments),
+          id=_get_value(item, 'call_id') or _get_value(item, 'id'),
+      )
   )
-  part.function_call.id = _get_value(item, 'call_id') or _get_value(item, 'id')
-  return part
 
 
 def _response_to_llm_response(
@@ -645,6 +650,7 @@ def _response_to_llm_response(
   unmapped_output = []
 
   for item in _get_value(response, 'output', []) or []:
+    item_type: str | None
     if isinstance(item, ResponseOutputMessage):
       parts.extend(_message_content_parts(item))
       item_type = item.type
@@ -1074,12 +1080,13 @@ class _StreamAccumulator:
 
   def _function_call_part_from_accumulator(self, key: int | str) -> types.Part:
     call = self.function_calls[key]
-    part = types.Part.from_function_call(
-        name=call.get('name') or '',
-        args=_loads_json_object(call.get('arguments')),
+    return types.Part(
+        function_call=types.FunctionCall(
+            name=call.get('name') or '',
+            args=_loads_json_object(call.get('arguments')),
+            id=call.get('call_id'),
+        )
     )
-    part.function_call.id = call.get('call_id')
-    return part
 
 
 class OpenAIResponsesLlm(BaseLlm):
@@ -1257,7 +1264,9 @@ class OpenAIResponsesLlm(BaseLlm):
     if reasoning is not _REASONING_NOT_GIVEN:
       kwargs['reasoning'] = reasoning
     tools: list[ToolParam] = []
-    for tool in config.tools or []:
+    for configured_tool in config.tools or []:
+      # ADK only places types.Tool in config.tools; agents reject other kinds.
+      tool = cast(types.Tool, configured_tool)
       if not tool.function_declarations:
         logger.warning(
             'Skipping a tool with no function declarations; only function'

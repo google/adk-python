@@ -48,15 +48,16 @@ from pydantic import ConfigDict
 from pydantic import Field
 from typing_extensions import override
 
+from ...agents._streaming_mode import StreamingMode
 from ...agents.base_agent import BaseAgent
 from ...agents.context import Context
 from ...agents.invocation_context import InvocationContext
-from ...agents.run_config import StreamingMode
 from ...events.event import Event
 from ...events.event_actions import EventActions
 from ...utils._agent_mode import AgentMode
 from ...utils._agent_mode import SingleTurnAgentMode
 from ...utils.content_utils import to_user_content
+from ...utils.context_utils import Aclosing
 from ._event_converter import convert_step_to_events
 from ._event_converter import drain_tool_results
 from ._event_converter import final_model_text
@@ -793,7 +794,6 @@ class AntigravityAgent(BaseAgent):
   ) -> AsyncGenerator[Event, None]:
     """Runs the agent as a node, threading node_input in and output out."""
     parent_context = ctx.get_invocation_context()
-    # A None node_input means a classic agent-tree run.
     if node_input is not None:
       parent_context = parent_context.model_copy(
           update={'user_content': to_user_content(node_input)}
@@ -802,15 +802,16 @@ class AntigravityAgent(BaseAgent):
     last_text: str | None = None
     # Keep in sync with BaseAgent._run_impl: super() cannot be delegated to,
     # since it re-derives the invocation context and would drop node_input.
-    async for event in self.run_async(parent_context=parent_context):
-      if event.author:
-        ctx.event_author = event.author
-      if not event.node_info.path and event.author == self.name:
-        event.node_info.path = ctx.node_path
-      text = final_model_text(event, self.name)
-      if text is not None:
-        last_text = text
-      yield event
+    async with Aclosing(self.run_async(parent_context=parent_context)) as agen:
+      async for event in agen:
+        if event.author:
+          ctx.event_author = event.author
+        if not event.node_info.path and event.author == self.name:
+          event.node_info.path = ctx.node_path
+        text = final_model_text(event, self.name)
+        if text is not None:
+          last_text = text
+        yield event
 
     # Both assignments are needed: NodeRunner._enrich_event reads
     # ctx.event_author, and a direct consumer reads author=.

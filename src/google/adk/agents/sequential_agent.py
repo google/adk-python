@@ -21,17 +21,17 @@ import logging
 from typing import AsyncGenerator
 from typing import ClassVar
 from typing import Type
+from typing import Union
 import warnings
 
 from typing_extensions import deprecated
 from typing_extensions import override
 
 from ..events.event import Event
-from ..features import experimental
-from ..features import FeatureName
 from ..tools.base_tool import BaseTool
 from ..utils.context_utils import Aclosing
 from ..utils.instructions_utils import InstructionProvider
+from ..workflow._base_node import BaseNode
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
@@ -54,8 +54,8 @@ with warnings.catch_warnings():
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-def _tool_name(tool: ToolUnion) -> str | None:
-  if isinstance(tool, BaseTool):
+def _tool_name(tool: Union[ToolUnion, BaseNode]) -> str | None:
+  if isinstance(tool, (BaseTool, BaseNode)):
     return tool.name
   if callable(tool):
     name = getattr(tool, '__name__', None)
@@ -78,7 +78,6 @@ def _append_instruction(
   return combined
 
 
-@experimental(FeatureName.AGENT_STATE)
 class SequentialAgentState(BaseAgentState):
   """State for SequentialAgent."""
 

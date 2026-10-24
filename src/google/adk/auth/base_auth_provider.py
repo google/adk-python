@@ -22,13 +22,10 @@ if TYPE_CHECKING:
   from .auth_schemes import AuthScheme
 
 from ..agents.callback_context import CallbackContext
-from ..features import experimental
-from ..features import FeatureName
 from .auth_credential import AuthCredential
 from .auth_tool import AuthConfig
 
 
-@experimental(FeatureName.PLUGGABLE_AUTH)
 class BaseAuthProvider(ABC):
   """Abstract base class for custom authentication providers."""
 

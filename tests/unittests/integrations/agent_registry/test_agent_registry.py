@@ -272,6 +272,97 @@ class TestAgentRegistry:
       )
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "uri, expected_destination_id",
+      [
+          (
+              (
+                  "//agentregistry.googleapis.com/projects/1234/locations/"
+                  "global/services/bigquery"
+              ),
+              (
+                  "//agentregistry.googleapis.com/projects/1234/locations/"
+                  "global/services/bigquery"
+              ),
+          ),
+          (
+              "",
+              "urn:mcp:googleapis.com:projects:1234:locations:global:bigquery",
+          ),
+          (
+              "   ",
+              "urn:mcp:googleapis.com:projects:1234:locations:global:bigquery",
+          ),
+          (
+              12345,
+              "urn:mcp:googleapis.com:projects:1234:locations:global:bigquery",
+          ),
+      ],
+  )
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager."
+      "MCPSessionManager.create_session",
+      new_callable=AsyncMock,
+  )
+  async def test_get_mcp_toolset_prefers_runtime_reference_uri(
+      self, mock_create_session, uri, expected_destination_id, registry
+  ):
+    """Destination ID prefers non-blank RuntimeReference.uri over mcpServerId.
+
+    The destination ID prefers a non-blank string RuntimeReference.uri (which
+    App Hub / Agent Platform Topology matches on) and otherwise falls back to
+    mcpServerId.
+    """
+    # Arrange
+    mcp_server_name = "test-mcp-server"
+    mock_api_response = MagicMock()
+    mock_api_response.json.return_value = {
+        "displayName": "TestPrefix",
+        "mcpServerId": (
+            "urn:mcp:googleapis.com:projects:1234:locations:global:bigquery"
+        ),
+        "attributes": {
+            "agentregistry.googleapis.com/system/RuntimeReference": {
+                "uri": uri,
+            },
+        },
+        "interfaces": [{
+            "url": "https://mcp.com",
+            "protocolBinding": "JSONRPC",
+        }],
+    }
+    registry._session.get.return_value = mock_api_response
+
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    mock_session = AsyncMock(spec=ClientSession)
+    mock_create_session.return_value = mock_session
+
+    mock_session.list_tools.return_value = ListToolsResult(
+        tools=[
+            Tool(
+                name="tool1",
+                description="d1",
+                inputs={},
+                outputs={},
+                inputSchema={},
+            ),
+        ]
+    )
+
+    # Act
+    toolset = registry.get_mcp_toolset(mcp_server_name)
+    tools = await toolset.get_tools()
+
+    # Assert
+    assert len(tools) == 1
+    assert (
+        tools[0].custom_metadata.get(GCP_MCP_SERVER_DESTINATION_ID)
+        == expected_destination_id
+    )
+
+  @pytest.mark.asyncio
   @patch(
       "google.adk.tools.mcp_tool.mcp_session_manager.MCPSessionManager.create_session",
       new_callable=AsyncMock,
@@ -1133,6 +1224,58 @@ class TestAgentRegistry:
     )
 
   @patch.object(AgentRegistry, "_make_request")
+  def test_deployed_toolset_with_runtime_reference_rebinds_with_mcp_server_id(
+      self, mock_make_request, registry, monkeypatch
+  ):
+    """Rebinding a deployed toolset uses mcpServerId, not RuntimeReference."""
+
+    def side_effect(path, *_args, **_kwargs):
+      if path == "test-mcp":
+        return {
+            "displayName": "TestPrefix",
+            "mcpServerId": _MCP_SERVER_ID,
+            "attributes": {
+                "agentregistry.googleapis.com/system/RuntimeReference": {
+                    "uri": (
+                        "//agentregistry.googleapis.com/projects/1234/"
+                        "locations/global/services/bigquery"
+                    ),
+                },
+            },
+            "interfaces": [{
+                "url": "https://mcp.com",
+                "protocolBinding": "JSONRPC",
+            }],
+        }
+      if path == "agents":
+        return {"agents": [_deployed_agent()]}
+      if path == "bindings":
+        return {"bindings": [_mcp_binding("stale", "2026-09-02T00:00:00Z")]}
+      if path == "bindings:fetchAvailable":
+        return {"bindings": [_mcp_binding("current", "2026-09-01T00:00:00Z")]}
+      return {}
+
+    mock_make_request.side_effect = side_effect
+    toolset = registry.get_mcp_toolset(
+        "test-mcp", continue_uri="https://override.com/continue"
+    )
+    assert toolset.get_auth_config().auth_scheme.name == _auth_provider("stale")
+
+    _enter_agent_engine(monkeypatch)
+    auth_config = toolset.get_auth_config()
+
+    assert auth_config is not None
+    assert auth_config.auth_scheme.name == _auth_provider("current")
+    mock_make_request.assert_called_with(
+        "bindings:fetchAvailable",
+        params={
+            "sourceIdentifier": _AGENT_SOURCE_ID,
+            "targetIdentifier": _MCP_SERVER_ID,
+        },
+        timeout=10.0,
+    )
+
+  @patch.object(AgentRegistry, "_make_request")
   def test_available_binding_for_this_agent_wins(
       self, mock_make_request, registry, monkeypatch
   ):
@@ -1204,6 +1347,31 @@ class TestAgentRegistry:
         "listed"
     )
     assert "bindings:fetchAvailable" not in _request_paths(mock_make_request)
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_toolset_pickled_without_mcp_server_id_rebinds_with_destination_id(
+      self, mock_make_request, registry, monkeypatch
+  ):
+    """Toolset pickled without _mcp_server_id falls back to destination ID."""
+    mock_make_request.side_effect = _mcp_server_side_effect(
+        list_bindings=[_mcp_binding("stale", "2026-09-02T00:00:00Z")],
+        available_bindings=[_mcp_binding("current", "2026-09-01T00:00:00Z")],
+    )
+    toolset = registry.get_mcp_toolset("test-mcp")
+    del toolset.__dict__["_mcp_server_id"]
+
+    _enter_agent_engine(monkeypatch)
+    auth_config = toolset.get_auth_config()
+
+    assert auth_config.auth_scheme.name == _auth_provider("current")
+    mock_make_request.assert_called_with(
+        "bindings:fetchAvailable",
+        params={
+            "sourceIdentifier": _AGENT_SOURCE_ID,
+            "targetIdentifier": _MCP_SERVER_ID,
+        },
+        timeout=10.0,
+    )
 
   @patch.object(AgentRegistry, "_make_request")
   def test_toolset_with_explicit_auth_scheme_is_not_rebound(

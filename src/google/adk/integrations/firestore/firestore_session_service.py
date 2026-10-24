@@ -368,7 +368,10 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
     """Lists sessions from Firestore."""
-    if user_id:
+    if user_id == "":
+      # Firestore rejects an empty document ID, so no session can exist here.
+      return ListSessionsResponse()
+    if user_id is not None:
       query = self._get_sessions_ref(app_name, user_id).where(
           filter=FieldFilter("appName", "==", app_name)
       )
@@ -392,7 +395,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
     app_state = app_doc.to_dict() if app_doc.exists else {}
 
     user_states_map = {}
-    if user_id:
+    if user_id is not None:
       user_ref = (
           self.client.collection(self.user_state_collection)
           .document(app_name)
