@@ -3179,6 +3179,39 @@ def test_agent_run_passes_state_delta(test_app, create_test_session):
   assert data[3]["actions"]["stateDelta"] == payload["state_delta"]
 
 
+@pytest.mark.parametrize("endpoint", ["/run", "/run_sse"])
+def test_recorded_tool_replay_requires_plugin(
+    test_app, create_test_session, monkeypatch, endpoint
+):
+  """A missing replay plugin rejects the request before running any tool."""
+  info = create_test_session
+  run_called = False
+
+  async def unexpected_run(*args, **kwargs):
+    nonlocal run_called
+    run_called = True
+    yield None
+
+  monkeypatch.setattr(Runner, "run_async", unexpected_run)
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+      "state_delta": {
+          "_adk_replay_config": {
+              "replay_tool_responses": {"agent_a": ["roll_die"]}
+          }
+      },
+  }
+
+  response = test_app.post(endpoint, json=payload)
+
+  assert response.status_code == 400
+  assert "ReplayPlugin" in response.json()["detail"]
+  assert not run_called
+
+
 def test_agent_run_passes_invocation_id(
     test_app, create_test_session, monkeypatch
 ):

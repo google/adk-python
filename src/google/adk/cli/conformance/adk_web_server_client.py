@@ -235,6 +235,7 @@ class AdkWebServerClient:
       mode: Optional[Literal["record", "replay"]] = None,
       test_case_dir: Optional[str] = None,
       user_message_index: Optional[int] = None,
+      replay_tool_responses: Optional[dict[str, list[str]]] = None,
   ) -> AsyncGenerator[Event, None]:
     """Run an agent with streaming Server-Sent Events response.
 
@@ -243,6 +244,7 @@ class AdkWebServerClient:
       mode: Optional conformance mode ("record" or "replay") to trigger recording
       test_case_dir: Optional test case directory path for conformance recording
       user_message_index: Optional user message index for conformance recording
+      replay_tool_responses: Agent tools that use recorded responses during replay
 
     Yields:
       Event objects streamed from the agent execution
@@ -271,6 +273,10 @@ class AdkWebServerClient:
             "dir": str(test_case_dir),
             "user_message_index": user_message_index,
         }
+        if mode == "replay" and replay_tool_responses:
+          request.state_delta["_adk_replay_config"][
+              "replay_tool_responses"
+          ] = replay_tool_responses
         if request.streaming:
           request.state_delta["_adk_replay_config"]["streaming_mode"] = "sse"
         else:

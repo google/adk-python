@@ -184,6 +184,7 @@ class ConformanceTestRunner:
           mode="replay",
           test_case_dir=str(test_case.dir),
           user_message_index=user_message_index,
+          replay_tool_responses=test_case.test_spec.replay_tool_responses,
       ):
         if getattr(event, "partial", False):
           continue
@@ -308,7 +309,22 @@ Found {len(test_cases)} test cases to run in {self.mode} mode for streaming mode
 
     results: list[_TestResult] = []
     for test_case in test_cases:
-      click.echo(f"Running {test_case.category}/{test_case.name}...", nl=False)
+      replayed_tools = [
+          f"{agent_name}.{tool_name}"
+          for agent_name, tool_names in (
+              test_case.test_spec.replay_tool_responses.items()
+          )
+          for tool_name in tool_names
+      ]
+      replay_detail = (
+          f" (recorded tool responses: {', '.join(replayed_tools)})"
+          if self.mode == "replay" and replayed_tools
+          else ""
+      )
+      click.echo(
+          f"Running {test_case.category}/{test_case.name}{replay_detail}...",
+          nl=False,
+      )
       if self.mode == "replay":
         result = await self._run_test_case_replay(test_case)
       else:
