@@ -38,12 +38,19 @@ from google.adk.agents.run_config import StreamingMode
 from google.adk.cli import cli_tools_click
 from google.adk.cli.deployers import DeployerFactory
 from google.adk.cli.utils import gcp_utils
+from google.adk.evaluation.base_eval_service import InferenceConfig
 from google.adk.evaluation.eval_case import EvalCase
+from google.adk.evaluation.eval_case import Invocation
+from google.adk.evaluation.eval_metrics import EvalMetricResult
+from google.adk.evaluation.eval_metrics import EvalMetricResultPerInvocation
+from google.adk.evaluation.eval_metrics import EvalStatus
+from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from google.adk.evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from google.adk.events.event import Event
 from google.genai import types
+from google.genai import types as genai_types
 from pydantic import BaseModel
 import pytest
 
@@ -1960,6 +1967,23 @@ def test_cli_eval_missing_deps_raises(
   assert MISSING_EVAL_DEPENDENCIES_MESSAGE in result.output
 
 
+def test_cli_eval_rejects_num_runs_less_than_one(tmp_path: Path) -> None:
+  agent_dir = tmp_path / "agent_num_runs_validation"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  eval_file = tmp_path / "dummy.evalset.json"
+  eval_file.touch()
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["eval", str(agent_dir), str(eval_file), "--num_runs", "0"],
+  )
+
+  assert result.exit_code != 0
+  assert "Invalid value for '--num_runs'" in result.output
+
+
 # cli web & api_server (uvicorn patched)
 @pytest.fixture()
 def _patch_uvicorn(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
@@ -2400,6 +2424,503 @@ def test_cli_eval_empty_results_exits_nonzero(
       result.output,
       result.exception,
   )
+
+
+def _make_agent_with_eval_set(
+    tmp_path: Path, app_name: str, eval_set_id: str
+) -> Path:
+  """Creates an agent folder whose eval set holds a single eval case, case1."""
+  agent_path = tmp_path / app_name
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+  eval_sets_manager = LocalEvalSetsManager(agents_dir=str(tmp_path))
+  eval_sets_manager.create_eval_set(app_name=app_name, eval_set_id=eval_set_id)
+  eval_sets_manager.add_eval_case(
+      app_name=app_name,
+      eval_set_id=eval_set_id,
+      eval_case=EvalCase(eval_id="case1", conversation=[]),
+  )
+  return agent_path
+
+
+def _run_result(
+    *, eval_set_id: str, score: float, repetition_index: Optional[int]
+) -> EvalCaseResult:
+  """Returns the result of one run of case1, scored on a single invocation."""
+  metric_result = EvalMetricResult(
+      metric_name="response_match_score",
+      threshold=0.8,
+      score=score,
+      eval_status=(EvalStatus.PASSED if score >= 0.8 else EvalStatus.FAILED),
+  )
+  return EvalCaseResult(
+      eval_set_id=eval_set_id,
+      eval_id="case1",
+      final_eval_status=metric_result.eval_status,
+      overall_eval_metric_results=[metric_result],
+      eval_metric_result_per_invocation=[
+          EvalMetricResultPerInvocation(
+              actual_invocation=Invocation(
+                  user_content=genai_types.Content(
+                      parts=[genai_types.Part(text="hi")]
+                  )
+              ),
+              eval_metric_results=[metric_result],
+          )
+      ],
+      session_id=f"session_{repetition_index}",
+      repetition_index=repetition_index,
+  )
+
+
+def _fake_inference_and_scoring(
+    monkeypatch: pytest.MonkeyPatch, eval_results: list[EvalCaseResult]
+) -> list[InferenceConfig]:
+  """Fakes inference and scoring so that scoring returns `eval_results`.
+
+  Returns:
+    A list that collects the inference config of each inference request the
+    CLI makes. The eval service, not the CLI, repeats the runs.
+  """
+  inference_configs: list[InferenceConfig] = []
+
+  async def _fake_collect_inferences(inference_requests, eval_service):
+    del eval_service
+    inference_configs.extend(
+        request.inference_config for request in inference_requests
+    )
+    return []
+
+  async def _fake_collect_eval_results(
+      inference_results, eval_service, eval_metrics
+  ):
+    del inference_results, eval_service, eval_metrics
+    return eval_results
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_eval._collect_inferences", _fake_collect_inferences
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli_eval._collect_eval_results",
+      _fake_collect_eval_results,
+  )
+  return inference_configs
+
+
+@pytest.mark.unmute_click
+def test_cli_eval_with_num_runs_aggregates_per_eval_case(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """The runs of an eval case are judged together in the summary."""
+  eval_set_id = "test_eval_set_num_runs"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_num_runs", eval_set_id
+  )
+  # Two runs of one case: the mean over invocations is (1.0 + 0.6) / 2 = 0.8,
+  # which meets the 0.8 threshold although the second run alone fails.
+  inference_configs = _fake_inference_and_scoring(
+      monkeypatch,
+      [
+          _run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0),
+          _run_result(eval_set_id=eval_set_id, score=0.6, repetition_index=1),
+      ],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["eval", str(agent_path), eval_set_id, "--num_runs", "2"],
+  )
+
+  assert result.exit_code == 0
+  assert [c.num_runs for c in inference_configs] == [2]
+  assert (
+      "Each eval case was run 2 times and judged on all 2 runs."
+      in result.output
+  )
+  assert "Tests passed: 1" in result.output
+  assert "Tests failed: 0" in result.output
+
+
+@pytest.mark.unmute_click
+def test_cli_eval_runs_each_case_once_by_default(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """With no --num_runs and no multi_run_config, each case runs once."""
+  eval_set_id = "test_eval_set_default_runs"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_default_runs", eval_set_id
+  )
+  inference_configs = _fake_inference_and_scoring(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["eval", str(agent_path), eval_set_id, "--print_detailed_results"],
+  )
+
+  assert result.exit_code == 0
+  assert [c.num_runs for c in inference_configs] == [1]
+  assert "Each eval case was run" not in result.output
+  assert "Run: " not in result.output
+
+
+@pytest.mark.unmute_click
+def test_cli_eval_reads_num_runs_from_eval_config(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """Without --num_runs, multi_run_config in the eval config sets the runs."""
+  eval_set_id = "test_eval_set_config_runs"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_config_runs", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {"num_runs": 3},
+      })
+  )
+  inference_configs = _fake_inference_and_scoring(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert [c.num_runs for c in inference_configs] == [3]
+  assert "Each eval case was run 3 times" in result.output
+
+
+def test_cli_eval_runs_each_case_once_when_the_config_omits_num_runs(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """With rules but no num_runs, and no --num_runs, each case runs once."""
+  eval_set_id = "test_eval_set_rules_only"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_rules_only", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {"cross_run_scoring": "min_over_runs"},
+      })
+  )
+  inference_configs = _fake_inference_and_scoring(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert [c.num_runs for c in inference_configs] == [1]
+
+
+def test_cli_eval_num_runs_flag_overrides_eval_config(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """--num_runs takes precedence over multi_run_config in the eval config."""
+  eval_set_id = "test_eval_set_flag_runs"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_flag_runs", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {"num_runs": 3},
+      })
+  )
+  inference_configs = _fake_inference_and_scoring(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+          "--num_runs",
+          "2",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert [c.num_runs for c in inference_configs] == [2]
+
+
+def test_cli_eval_with_num_runs_in_live_mode(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """--num_runs also reaches the eval service when the agent runs live."""
+  eval_set_id = "test_eval_set_live_runs"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_live_runs", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "live_model_config": {"timeout_seconds": 30},
+      })
+  )
+  inference_configs = _fake_inference_and_scoring(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+          "--num_runs",
+          "2",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert [(c.use_live, c.num_runs) for c in inference_configs] == [(True, 2)]
+
+
+@pytest.mark.unmute_click
+def test_cli_eval_with_num_runs_prints_runs_after_the_case_verdict(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """Detailed results show a case's verdict across runs, then each run.
+
+  Setup: two runs of one case, which arrive with the second run first.
+  Assert: the verdict across both runs, with the pooled score, is printed
+    first, followed by "Run: 1 of 2" and then "Run: 2 of 2".
+  """
+  eval_set_id = "test_eval_set_num_runs_details"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_num_runs_details", eval_set_id
+  )
+  _fake_inference_and_scoring(
+      monkeypatch,
+      [
+          _run_result(eval_set_id=eval_set_id, score=0.6, repetition_index=1),
+          _run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0),
+      ],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--num_runs",
+          "2",
+          "--print_detailed_results",
+      ],
+  )
+
+  assert result.exit_code == 0
+  verdict_at = result.output.index(
+      "Overall Eval Status across 2 runs (1 of 2 runs passed): PASSED"
+  )
+  first_run_at = result.output.index("Run: 1 of 2")
+  second_run_at = result.output.index("Run: 2 of 2")
+  assert verdict_at < first_run_at < second_run_at
+  assert (
+      "Metric: response_match_score, Method: mean_over_invocations,"
+      " Value: 0.8, Threshold: 0.8, Status: PASSED"
+      in result.output[verdict_at:first_run_at]
+  )
+
+
+@pytest.mark.unmute_click
+def test_cli_eval_judges_runs_by_the_multi_run_config(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """The eval config's rules for combining runs decide the case.
+
+  Setup: two runs of one case score 1.0 and 0.6, whose mean meets the 0.8
+    threshold, but a cross-run criterion asks for 80% of the runs to pass.
+  Assert: only one of the two runs passed, so the case fails.
+  """
+  eval_set_id = "test_eval_set_cross_run_criteria"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_cross_run_criteria", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {
+              "num_runs": 2,
+              "cross_run_criteria": [{"method": "pass_rate", "threshold": 0.8}],
+          },
+      })
+  )
+  _fake_inference_and_scoring(
+      monkeypatch,
+      [
+          _run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0),
+          _run_result(eval_set_id=eval_set_id, score=0.6, repetition_index=1),
+      ],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+      ],
+  )
+
+  assert result.exit_code == 1
+  assert "Tests failed: 1" in result.output
+
+
+@pytest.mark.unmute_click
+def test_cli_eval_prints_a_single_run_judged_by_cross_run_criteria(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """A case run once prints its verdict on its cross-run criteria."""
+  eval_set_id = "test_eval_set_single_run_criteria"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_single_run_criteria", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {
+              "cross_run_criteria": [{"method": "pass_rate", "threshold": 0.8}]
+          },
+      })
+  )
+  _fake_inference_and_scoring(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+          "--print_detailed_results",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert (
+      "Overall Eval Status across 1 run (1 of 1 runs passed): PASSED"
+      in result.output
+  )
+  assert (
+      "Cross-run criterion: pass_rate, Value: 1.0, Threshold: 0.8,"
+      " Status: PASSED"
+      in result.output
+  )
+
+
+def test_cli_eval_fails_before_inference_when_a_custom_method_cannot_load(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """A custom method that cannot be imported stops the eval first.
+
+  Setup: the eval config declares a custom method whose module does not exist.
+  Assert: the command fails with an error that names the method, and no
+    inference was requested.
+  """
+  eval_set_id = "test_eval_set_bad_custom_method"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_bad_custom_method", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "multi_run_config": {
+              "num_runs": 2,
+              "custom_methods": {
+                  "median_of_runs": {
+                      "code_config": {
+                          "name": "no_such_module_for_adk_tests.median_of_runs"
+                      },
+                      "uses_scores": True,
+                  }
+              },
+              "cross_run_scoring": "median_of_runs",
+          },
+      })
+  )
+  inference_configs = _fake_inference_and_scoring(monkeypatch, [])
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+      ],
+  )
+
+  assert result.exit_code != 0
+  assert "Could not import custom method 'median_of_runs'" in result.output
+  assert not inference_configs
 
 
 def test_cli_create_eval_set(tmp_path: Path):

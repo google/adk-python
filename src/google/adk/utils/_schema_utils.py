@@ -26,6 +26,7 @@ import logging
 import re
 from types import UnionType
 from typing import Any
+from typing import cast
 from typing import get_args
 from typing import get_origin
 from typing import Optional
@@ -113,7 +114,8 @@ def get_list_inner_type(schema: SchemaType) -> Optional[type[BaseModel]]:
   inner_type = args[0]
   if get_origin(inner_type) is Annotated:
     inner_type = get_args(inner_type)[0]
-  return inner_type
+  # is_list_of_basemodel verified inner_type is a BaseModel subclass.
+  return cast(type[BaseModel], inner_type)
 
 
 def schema_to_json_schema(schema: SchemaType) -> dict[str, Any]:
@@ -249,23 +251,33 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
 
   if is_basemodel_schema(schema):
     # For regular BaseModel, use model_validate_json
-    return schema.model_validate_json(json_text).model_dump(exclude_none=True)
+    if get_origin(schema) is Annotated:
+      schema = get_args(schema)[0]
+    # is_basemodel_schema verified schema is now a BaseModel subclass.
+    model = cast(type[BaseModel], schema)
+    return model.model_validate_json(json_text).model_dump(exclude_none=True)
   elif is_list_of_basemodel(schema):
     # For list[BaseModel], use TypeAdapter to validate
-    type_adapter = TypeAdapter(schema)
-    validated: list[Any] = type_adapter.validate_json(json_text)
+    type_adapter: TypeAdapter[list[BaseModel]] = TypeAdapter(schema)
+    validated = type_adapter.validate_json(json_text)
     return [item.model_dump(exclude_none=True) for item in validated]
   else:
     # For other schema types (list[str], dict, Schema, etc.),
     return _json_utils.safe_json_loads(json_text, context="schema value")
 
 
+def _strip_annotated(tp: Any) -> Any:
+  """Returns the underlying type of an ``Annotated`` type, else ``tp``."""
+  return get_args(tp)[0] if get_origin(tp) is Annotated else tp
+
+
 def annotation_expects_str(annotated_type: Any) -> bool:
   """Returns True if the annotation expects ``str`` rather than JSON data."""
+  annotated_type = _strip_annotated(annotated_type)
   if annotated_type is str:
     return True
   if get_origin(annotated_type) in (Union, UnionType):
-    args = get_args(annotated_type)
+    args = [_strip_annotated(a) for a in get_args(annotated_type)]
     return any(annotation_expects_str(a) for a in args) and all(
         annotation_expects_str(a)
         or a is type(None)
@@ -277,6 +289,7 @@ def annotation_expects_str(annotated_type: Any) -> bool:
 
 def annotation_accepts_content(annotated_type: Any) -> bool:
   """Returns True if the annotation accepts ``types.Content`` as-is."""
+  annotated_type = _strip_annotated(annotated_type)
   if annotated_type in (Any, object, types.Content):
     return True
   if isinstance(annotated_type, type) and issubclass(
@@ -298,7 +311,7 @@ def _unwrap_content_payload(
   if not fan_out_list and annotation_expects_str(annotation):
     return extract_text_from_content(content)
   if not (
-      fan_out_list and annotation in (Any, object)
+      fan_out_list and _strip_annotated(annotation) in (Any, object)
   ) and annotation_accepts_content(annotation):
     return content
   if fan_out_list and (
@@ -515,7 +528,7 @@ def preprocess_args(
         ):
           item_type = get_list_inner_type(target_type)
           if item_type is not None:
-            converted_list = []
+            converted_list: list[object] = []
             for item in args[param_name]:
               if isinstance(item, dict):
                 try:

@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 
@@ -589,4 +590,77 @@ async def test_add_session_leaves_no_temp_file_when_corpus_missing(temp_dir):
   with pytest.raises(ValueError, match="rag_corpus must be set"):
     await memory_service.add_session_to_memory(_session())
 
+  assert not list(temp_dir.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_thought_parts(
+    mocker: MockerFixture,
+    temp_dir: Path,
+) -> None:
+  """Thought parts are omitted when a session is added to RAG memory."""
+  memory_service = VertexAiRagMemoryService(rag_corpus="corpus")
+  uploaded: dict[str, str] = {}
+
+  async def upload_file(
+      *, path: str, display_name: str, **_kwargs: object
+  ) -> None:
+    with open(path, encoding="utf-8") as transcript:
+      uploaded["display_name"] = display_name
+      uploaded["text"] = transcript.read()
+
+  fake_client = _unlistable_client(mocker)
+  fake_client.rag.upload_file.side_effect = upload_file
+  fake_client.rag.retrieve_contexts.side_effect = (
+      lambda **_kwargs: SimpleNamespace(
+          contexts=SimpleNamespace(
+              contexts=[
+                  SimpleNamespace(
+                      source_display_name=uploaded["display_name"],
+                      text=uploaded["text"],
+                  )
+              ]
+          )
+      )
+  )
+  mocker.patch(
+      "agentplatform.Client", return_value=mocker.Mock(aio=fake_client)
+  )
+  session = Session(
+      app_name="demo",
+      user_id="alice",
+      id="session-1",
+      events=[
+          Event(
+              id="thought-only",
+              author="model",
+              timestamp=1.0,
+              content=types.Content(
+                  role="model",
+                  parts=[
+                      types.Part(text="Internal thought only", thought=True)
+                  ],
+              ),
+          ),
+          Event(
+              id="mixed",
+              author="model",
+              timestamp=2.0,
+              content=types.Content(
+                  role="model",
+                  parts=[
+                      types.Part(text="Consider a zeppelin.", thought=True),
+                      types.Part(text="Take the train to Paris."),
+                  ],
+              ),
+          ),
+      ],
+  )
+
+  await memory_service.add_session_to_memory(session)
+  response = await memory_service.search_memory(
+      app_name="demo", user_id="alice", query="Paris"
+  )
+
+  assert _memory_texts(response) == ["Take the train to Paris."]
   assert not list(temp_dir.iterdir())

@@ -116,11 +116,14 @@ asked each time.
 `ExampleTool` implements `process_llm_request`, the `BaseTool` hook that runs
 after the request is built and before it is sent. On every turn it:
 
-1.  Reads `tool_context.user_content.parts[0].text`, which is the text of the
-    current user message. If there are no parts, or the first part is not text,
-    it returns immediately and adds nothing.
-2.  Resolves the examples. A list is used as-is; a `BaseExampleProvider` has
-    `get_examples(query)` called with that text.
+1.  Checks that `tool_context.user_content` has parts (returning immediately if
+    missing or empty), then extracts the query text by joining all non-empty
+    text parts in `tool_context.user_content.parts` with spaces (ignoring
+    thought parts). If `examples` is a `BaseExampleProvider` and the extracted
+    query text is empty, it returns immediately and adds nothing.
+2.  Resolves the examples. A list is used as-is (`query` is discarded); a
+    `BaseExampleProvider` has `get_examples(query)` called with the joined query
+    text from step 1.
 3.  Renders them to a single string and appends it to the request's system
     instruction.
 
@@ -261,11 +264,13 @@ call it with. See `AgentCardBuilder`.
 
 ## Limitations
 
-*   **The tool silently does nothing on a non-text turn.** Audio, image, or
-    empty user content means the first part has no `text`, and
-    `process_llm_request` returns without appending anything. No warning is
-    logged. In a voice or multimodal agent the examples may effectively never
-    apply.
+*   **The tool silently does nothing on an empty turn, or on a non-text turn
+    with a provider.** If `user_content` is missing or has no parts, or if
+    `examples` is a `BaseExampleProvider` and `user_content` has no non-empty
+    (non-thought) text parts (such as an audio-only or image-only message),
+    `process_llm_request` returns without appending anything and logs no
+    warning. Static `list[Example]` configurations still apply when
+    `user_content` contains only non-text parts.
 *   **The fence heuristic misfires on Gemini 3.** The renderer tests for
     `"gemini-2"` in the model name, so Gemini 3 models receive the
     ```` ```tool_code ```` format meant for Gemini 1.5.

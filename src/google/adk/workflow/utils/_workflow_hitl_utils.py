@@ -255,9 +255,8 @@ async def process_auth_resume(
   Accepts multiple response formats (tried in order):
     1. A full AuthConfig dict (from web UI OAuth flow).
     2. An AuthCredential dict.
-    3. A plain value (string for API key). The node's
-       auth_config.raw_auth_credential.auth_type determines how the
-       value is interpreted.
+    3. A plain string value (e.g. API key or HTTP bearer token). The node's
+       auth_config.auth_scheme.type_ determines how the value is interpreted.
 
   The caller is responsible for unwrapping {"result": ...} wrappers
   before calling this function.

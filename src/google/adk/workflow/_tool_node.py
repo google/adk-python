@@ -226,8 +226,11 @@ class _ToolNode(BaseNode):
         # The failure is the call's result, so a confirmation or credential
         # the tool asked for before raising is dropped rather than left
         # pending.
-        ctx.actions.requested_tool_confirmations.pop(ctx.function_call_id, None)
-        ctx.actions.requested_auth_configs.pop(ctx.function_call_id, None)
+        if ctx.function_call_id is not None:
+          ctx.actions.requested_tool_confirmations.pop(
+              ctx.function_call_id, None
+          )
+          ctx.actions.requested_auth_configs.pop(ctx.function_call_id, None)
         response = await plugin_manager.run_on_tool_error_callback(
             tool=self.tool, tool_args=args, tool_context=ctx, error=error
         )

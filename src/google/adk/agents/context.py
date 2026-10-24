@@ -460,19 +460,22 @@ class Context(ReadonlyContext):
         callable that can be built into a node.
       node_input: The input data to be passed to the dynamically executed node.
         Defaults to None.
-      use_as_output: If True, the dynamic node's output is used as the
-        calling node's output. The calling node's own output event is
-        suppressed to avoid duplication.
-      run_id: An optional custom run ID for the dynamic node execution.
-        If not provided, a default run ID is generated. Useful for
-        correlating events across runs.
+      use_as_output: If True, the dynamic node's output is used as the calling
+        node's output. The calling node's own output event is suppressed to
+        avoid duplication, and non-tool output events from the child are
+        published on the outermost claiming ancestor's branch (so with
+        ``use_sub_branch`` tool calls, tool responses such as ``finish_task``,
+        and intermediate events stay isolated on the sub-branch).
+      run_id: An optional custom run ID for the dynamic node execution. If not
+        provided, a default run ID is generated. Useful for correlating events
+        across runs.
       use_sub_branch: If True, the dynamic node will be executed in a sub-branch
         to isolate its state and events from the main branch.
       override_branch: An optional branch to use instead of parent's branch.
       override_isolation_scope: An optional isolation scope to use instead of
         the parent's scope.
-      raise_on_wait: If True, raises NodeInterruptedError when the child node
-        is WAITING instead of returning None.
+      raise_on_wait: If True, raises NodeInterruptedError when the child node is
+        WAITING instead of returning None.
 
     Returns:
       The output of the dynamically executed node, once it finishes executing.

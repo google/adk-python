@@ -177,6 +177,14 @@ class TestParameterManagerClient:
     with pytest.raises(ValueError, match="Invalid service account JSON"):
       ParameterManagerClient(service_account_json="invalid-json")
 
+  def test_init_with_non_object_service_account_json(self):
+    """Test initialization with well-formed JSON that is not an object."""
+    # Execute and verify
+    with pytest.raises(
+        ValueError, match="Service account JSON must contain an object"
+    ):
+      ParameterManagerClient(service_account_json=json.dumps(["not", "object"]))
+
   def test_init_with_both_service_account_json_and_auth_token(self):
     """Test initialization rejects conflicting credential inputs."""
     with pytest.raises(

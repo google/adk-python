@@ -46,6 +46,12 @@ from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..sessions.state import State
 from ..tools.base_tool import BaseTool
+from ._callback_helpers import _classify_tool_result_error
+from ._callback_helpers import _is_durable_node_error
+from ._callback_helpers import _mark_tool_error_recorded
+from ._callback_helpers import _pop_tool_error_recorded
+from ._callback_helpers import _validate_tool_result_classifier
+from ._callback_helpers import ToolResultClassifier
 from .base_plugin import BasePlugin
 
 if TYPE_CHECKING:
@@ -237,11 +243,20 @@ class DebugLoggingPlugin(BasePlugin):
 
   This plugin records detailed interaction data including:
   - LLM requests (model, system instruction, contents, tools)
-  - LLM responses (content, usage metadata, errors)
+  - LLM responses (content, usage metadata, errors, and the finish reason of
+    a final response)
   - Function calls with arguments
   - Function responses with results
-  - Events yielded from the runner
+  - Events yielded from the runner, with the path, output and failure of the
+    workflow node that emitted them
   - Session state at the end of each invocation
+
+  A tool call gets a `tool_error` entry when the tool raises, and also when
+  its result reports a failure without raising: a `ReflectAndRetryToolPlugin`
+  answer, an MCP `CallToolResult` with `isError` set, or a result that
+  `tool_result_classifier` classifies as an error. A raised error is recorded
+  once, even when a later plugin's answer to it reaches `after_tool_callback`
+  as the call's result.
 
   The output is written as YAML format for human readability. Each invocation
   is appended to the file as a separate YAML document (separated by ---).
@@ -276,6 +291,7 @@ class DebugLoggingPlugin(BasePlugin):
       output_path: str = "adk_debug.yaml",
       include_session_state: bool = True,
       include_system_instruction: bool = True,
+      tool_result_classifier: ToolResultClassifier | None = None,
   ):
     """Initialize the debug logging plugin.
 
@@ -284,11 +300,24 @@ class DebugLoggingPlugin(BasePlugin):
       output_path: Path to the output file. Defaults to "adk_debug.yaml".
       include_session_state: Whether to include session state snapshot.
       include_system_instruction: Whether to include full system instructions.
+      tool_result_classifier: Classifies the results of the application's own
+        tools as a tool error or a completed call; see
+        `ToolResultClassifier`. One that raises or returns an unusable verdict
+        at run time is skipped with a warning that names only the tool, and
+        the built-in rule applies.
+
+    Raises:
+      ValueError: If `tool_result_classifier` is not callable, is
+        asynchronous, has no signature that `inspect` can read, or cannot take
+        the keyword arguments `tool`, `tool_args`, `tool_context` and
+        `result`.
     """
     super().__init__(name)
+    _validate_tool_result_classifier(tool_result_classifier)
     self._output_path = Path(output_path)
     self._include_session_state = include_session_state
     self._include_system_instruction = include_system_instruction
+    self._tool_result_classifier = tool_result_classifier
     self._invocation_states: dict[str, _InvocationDebugState] = {}
     self._warned_about_output_mode = False
 
@@ -536,6 +565,22 @@ class DebugLoggingPlugin(BasePlugin):
     if event.long_running_tool_ids:
       event_data["long_running_tool_ids"] = list(event.long_running_tool_ids)
 
+    # The same events BigQueryAgentAnalyticsPlugin records as NODE_OUTPUT and
+    # NODE_ERROR: a final event of a workflow node. An output its content
+    # already carries is not repeated, and an error code that is a model
+    # finish or block reason is a model termination, not a node failure.
+    node_info = event.node_info
+    if node_info.path:
+      event_data["node_path"] = node_info.path
+      if event.partial is not True:
+        if event.output is not None and node_info.message_as_output is not True:
+          event_data["node_output"] = self._safe_serialize(event.output)
+        if _is_durable_node_error(event):
+          event_data["node_error"] = {
+              "error_code": event.error_code,
+              "error_message": event.error_message,
+          }
+
     self._add_entry(
         invocation_id,
         "event",
@@ -691,14 +736,20 @@ class DebugLoggingPlugin(BasePlugin):
   async def after_model_callback(
       self, *, callback_context: CallbackContext, llm_response: LlmResponse
   ) -> LlmResponse | None:
-    """Log LLM response after receiving from model."""
+    """Log LLM response after receiving from model.
+
+    Only the final response of a model call records why the model stopped,
+    its finish reason and error: a streamed chunk can carry the same values,
+    and recording them there too would record one termination twice.
+    """
     response_data: dict[str, Any] = {
         "content": self._serialize_content(llm_response.content),
         "partial": llm_response.partial,
         "turn_complete": llm_response.turn_complete,
     }
+    is_final = llm_response.partial is not True
 
-    if llm_response.error_code:
+    if is_final and llm_response.error_code:
       response_data["error_code"] = llm_response.error_code
       response_data["error_message"] = llm_response.error_message
 
@@ -717,7 +768,7 @@ class DebugLoggingPlugin(BasePlugin):
     if llm_response.grounding_metadata:
       response_data["has_grounding_metadata"] = True
 
-    if llm_response.finish_reason:
+    if is_final and llm_response.finish_reason:
       response_data["finish_reason"] = str(llm_response.finish_reason)
 
     if llm_response.model_version:
@@ -778,7 +829,34 @@ class DebugLoggingPlugin(BasePlugin):
       tool_context: ToolContext,
       result: dict[str, Any],
   ) -> dict[str, Any] | None:
-    """Log tool execution completion."""
+    """Log tool execution completion, or the failure its result reports.
+
+    The answer a later plugin gave to an error this plugin's
+    `on_tool_error_callback` already recorded is not recorded again. A result
+    that reports a failure without raising gets a `tool_error` entry.
+    """
+    if _pop_tool_error_recorded(self, tool_context):
+      return None
+    error_message = _classify_tool_result_error(
+        tool=tool,
+        tool_args=tool_args,
+        tool_context=tool_context,
+        result=result,
+        tool_result_classifier=self._tool_result_classifier,
+        log=logger,
+    )
+    if error_message is not None:
+      self._add_entry(
+          tool_context.invocation_id,
+          "tool_error",
+          agent_name=tool_context.agent_name,
+          tool_name=tool.name,
+          function_call_id=tool_context.function_call_id,
+          args=self._safe_serialize(tool_args),
+          result=self._safe_serialize(result),
+          error_message=error_message,
+      )
+      return None
     self._add_entry(
         tool_context.invocation_id,
         "tool_response",
@@ -799,14 +877,17 @@ class DebugLoggingPlugin(BasePlugin):
       error: Exception,
   ) -> dict[str, Any] | None:
     """Log tool error."""
-    self._add_entry(
-        tool_context.invocation_id,
-        "tool_error",
-        agent_name=tool_context.agent_name,
-        tool_name=tool.name,
-        function_call_id=tool_context.function_call_id,
-        args=self._safe_serialize(tool_args),
-        error_type=type(error).__name__,
-        error_message=str(error),
-    )
+    entry_data: dict[str, Any] = {
+        "agent_name": tool_context.agent_name,
+        "tool_name": tool.name,
+        "function_call_id": tool_context.function_call_id,
+        "args": self._safe_serialize(tool_args),
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+    }
+    # Marked once the entry's data is built: after_tool_callback skips a
+    # marked call, so failing to build it must not leave the call marked
+    # without its entry.
+    _mark_tool_error_recorded(self, tool_context)
+    self._add_entry(tool_context.invocation_id, "tool_error", **entry_data)
     return None

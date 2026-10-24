@@ -177,7 +177,7 @@ class CascadeLiveConnection(BaseLlmConnection):
     self._ingress_task = asyncio.create_task(self._pump_ingress())
 
   # ------------------------------------------------------------------
-  # Inbound: the flow's `_send_to_model` calls these.
+  # Inbound: `send_to_model` calls these.
   # ------------------------------------------------------------------
 
   async def send_history(self, history: list[types.Content]) -> None:
@@ -227,7 +227,7 @@ class CascadeLiveConnection(BaseLlmConnection):
       )
 
   # ------------------------------------------------------------------
-  # Outbound: the flow's `_receive_from_model` drives this.
+  # Outbound: `receive_from_model` drives this.
   # ------------------------------------------------------------------
 
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:

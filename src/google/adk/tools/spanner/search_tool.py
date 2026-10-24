@@ -24,7 +24,6 @@ from typing import cast
 from typing import Dict
 from typing import List
 from typing import Optional
-from typing import TYPE_CHECKING
 
 from google.auth.credentials import Credentials
 from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
@@ -36,10 +35,6 @@ from . import utils
 from .settings import APPROXIMATE_NEAREST_NEIGHBORS
 from .settings import EXACT_NEAREST_NEIGHBORS
 from .settings import SpannerToolSettings
-
-if TYPE_CHECKING:
-  from google.cloud import spanner
-  from google.cloud.spanner_v1.database import Database
 
 # Pattern for valid SQL identifiers: alphanumeric, underscores,
 # dots (for schema-qualified names), and backtick/double-quote quoting.
@@ -588,8 +583,8 @@ async def _similarity_search_internal(
     additional_filter: Optional[str] = None,
     search_options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-  spanner_client: spanner.Client | None = None
-  database: Database | None = None
+  spanner_client: client._SpannerClient | None = None
+  database: client._SpannerDatabase | None = None
   try:
 
     # Get Spanner client

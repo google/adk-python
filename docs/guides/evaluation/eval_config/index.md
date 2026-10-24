@@ -78,7 +78,8 @@ metric has options you want to set:
 ```
 
 `threshold` is required in the object form. The metric passes when the mean of
-its per-invocation scores, across every run, is greater than or equal to it.
+its per-invocation scores, across every run, is greater than or equal to it,
+unless `multi_run_config` combines the runs another way.
 
 Keys may be written in `snake_case` or `camelCase`, so `match_type` and
 `matchType` both parse. That holds for every key in the file, at every level.
@@ -272,11 +273,11 @@ getting that wrong fails loudly. The other is that the key really is
 `metric_info`, or `metricInfo`. A `metric` key is not a field, so it is dropped
 and the metric silently gets default info instead.
 
-## The other two top-level keys
+## The other top-level keys
 
-`EvalConfig` accepts four keys in all. Two of them, `criteria` and
-`custom_metrics`, are covered above. The remaining two are
-`user_simulator_config` and `live_model_config`.
+`EvalConfig` accepts five keys in all. Two of them, `criteria` and
+`custom_metrics`, are covered above. The remaining three are
+`user_simulator_config`, `live_model_config` and `multi_run_config`.
 
 `user_simulator_config` replaces the recorded user turns with a model that plays
 the user against a scenario. Which simulator you get is chosen by a `type`
@@ -297,6 +298,253 @@ audio settings of its own on top of them.
 `live_model_config` switches inference to bidirectional streaming mode, which is
 required for Live API models. Its only key is `timeout_seconds`, default `300`,
 the time to wait for a model turn to complete.
+
+`multi_run_config` runs each eval case more than once. An agent can answer the
+same case differently from one run to the next, so a single run can pass or
+fail by chance. `num_runs` says how many times:
+
+```json
+{
+  "criteria": {
+    "response_match_score": 0.8
+  },
+  "multi_run_config": {
+    "num_runs": 3
+  }
+}
+```
+
+With `num_runs` above 1, three things change.
+
+*   **Each run starts from a fresh session.** A `session_id` pinned in the eval
+    case's `session_input` is ignored, with a warning in the log, so every run
+    starts from the case's initial state instead of from the session an earlier
+    run left behind.
+*   **Every run is kept.** Each run produces its own `EvalCaseResult`, and
+    `adk eval` saves all of them to the eval history. Each result carries the
+    0-based `repetition_index` of its run, which is always 0 when a case runs
+    once.
+*   **The case is judged on all of its runs.** By default each metric's
+    per-invocation scores from every run are averaged together, and the metric
+    passes when that mean meets its threshold. A case can therefore pass with a
+    failing run among its runs, if the others scored high enough to carry the
+    mean. A run that crashed before it could be scored is left out, and by
+    default fails the case outright; see [Crashed runs](#crashed-runs).
+
+`adk eval --num_runs N` overrides `num_runs` for one command, and if neither is
+set each case runs once. With `--print_detailed_results`, each case's verdict
+across its runs is printed first, followed by the results of each of its runs.
+`AgentEvaluator` does not read `multi_run_config`; it takes the number of runs
+as its own `num_runs` argument, which defaults to `2`.
+
+Unlike a criterion, `multi_run_config` rejects keys it does not recognize, so a
+misspelled `num_run` fails when the file is read instead of silently running
+each case once. The top-level key itself gets no such check: misspell
+`multi_run_config` and the whole entry is dropped.
+
+### How the runs are combined
+
+Three more keys of `multi_run_config` decide how the runs make the verdict.
+Each is optional, and they can be combined.
+
+| Key | Judges | Value |
+| :--- | :--- | :--- |
+| `cross_run_scoring` | Every metric not named in `cross_run_scoring_by_metric`. | A method name, or a rule object. Default `"mean_over_invocations"`. |
+| `cross_run_scoring_by_metric` | The metrics it names. Each must be in `criteria`. | A map from metric name to a method name or a rule object. |
+| `cross_run_criteria` | The eval case as a whole. | A list of rule objects. |
+
+A **method name** combines scores, and the result is compared with the
+metric's threshold in `criteria`:
+
+*   `mean_over_invocations`, the default, averages every invocation of every
+    run. A run with no per-invocation score, as for a metric scored only for
+    the whole conversation, counts once, with its overall score.
+*   `mean_of_runs` averages the overall scores of the runs, so each run weighs
+    the same however many invocations it has.
+*   `min_over_runs` takes the worst run's score: the lowest, or the highest for
+    a metric where lower is better. The metric therefore passes only if every
+    run met its threshold.
+
+As in `AgentEvaluator`, the comparison goes the way the metric's evaluator
+judged its scores: if each score it passed is below the threshold and each one
+it failed is above, lower is better, so the result passes at or below the
+threshold and the output adds `lower is better`; otherwise it passes at or
+above the threshold.
+
+A **rule object**, `{"method": ..., "threshold": ...}`, counts the runs that
+passed and compares the result with its own `threshold`, from 0 to 1. Each run
+is first judged on its own, as a single run would be. The one such method so
+far is `pass_rate`: the runs that passed, divided by the runs that passed or
+failed. pass@k and pass^k are planned as further methods of this kind.
+
+The case passes when its metrics pass, combined as for a single run, and every
+cross-run criterion passes, unless more of its runs crashed than
+`max_crashed_runs` allows.
+
+Take one case run three times, scored with `tool_trajectory_avg_score` at a
+threshold of 1.0 and `response_match_score` at 0.6:
+
+| Run | `tool_trajectory_avg_score` | `response_match_score` | Whole run |
+| :--- | :--- | :--- | :--- |
+| 1 | 1.0, passed | 0.875, passed | passed |
+| 2 | 1.0, passed | 0.182, failed | failed |
+| 3 | 1.0, passed | 0.875, passed | passed |
+
+By default the case passes: `response_match_score` averages 0.644. Each way of
+combining the runs can turn that around.
+
+*   **By score**, with `{"response_match_score": "min_over_runs"}` in
+    `cross_run_scoring_by_metric`: the lowest run, 0.182, is below 0.6, so the
+    metric fails, and with it the case.
+*   **By how often a metric passed**, with
+    `{"response_match_score": {"method": "pass_rate", "threshold": 0.9}}` in
+    `cross_run_scoring_by_metric`: the metric passed in 2 of 3 runs, and 0.67 is
+    short of 0.9, so the metric fails, and with it the case.
+*   **By how often the whole case passed**, with
+    `[{"method": "pass_rate", "threshold": 0.9}]` as `cross_run_criteria`:
+    2 of 3 runs passed as a whole, so the criterion fails the case although
+    every metric passes on its mean.
+
+A rule that cannot produce a value, because no run produced a score or no run
+passed or failed, is `NOT_EVALUATED`. The output says why, and the rule is
+skipped when the verdict is decided, as a metric that was not evaluated is. For
+`cross_run_criteria`, a run in which any metric was not evaluated counts as
+neither passed nor failed, since the missing result could have been a failure.
+
+The file fails to load when a method name is unknown, when `pass_rate` is given
+as a bare name without a threshold, when a method that combines scores is given
+as a rule object or in `cross_run_criteria`, when a key of
+`cross_run_scoring_by_metric` is not in `criteria`, when a `threshold` is
+outside 0 to 1, when `max_crashed_runs` is negative, or when a rule object has
+a key it does not recognize.
+
+A rule object judges a case run once as well, so with one configured,
+`adk eval --print_detailed_results` prints every case the way it prints a case
+run several times: each metric with its method and value, then each cross-run
+criterion, then the runs. `AgentEvaluator`, which pytest suites call, and
+`adk web` ignore these keys for now.
+
+### Crashed runs
+
+A run crashes when it fails without producing any metric results, which is
+what happens when inference raises. Such a run has no verdict, so it is left
+out of every count of passing runs, by a metric's rule and by
+`cross_run_criteria` alike. `max_crashed_runs`, default `0`, says how many
+crashed runs a case tolerates: the case fails if more of its runs crashed than
+that. A case also needs at least one run that did not crash to pass, so a case
+whose runs all crashed never passes.
+
+```json
+{
+  "criteria": {
+    "response_match_score": 0.8
+  },
+  "multi_run_config": {
+    "num_runs": 4,
+    "max_crashed_runs": 1,
+    "cross_run_criteria": [{"method": "pass_rate", "threshold": 0.75}]
+  }
+}
+```
+
+If 3 runs pass and 1 crashes, `pass_rate` is 3 of 3, which is 1.0, and the case
+passes. `--print_detailed_results` counts the runs as
+`3 of 4 runs passed, 1 crashed`, in the case's header and in the note of every
+rule that counts passing runs, and adds
+`1 of 4 runs failed without producing any metric results (up to 1 allowed).`
+With the default `max_crashed_runs` of 0 the same runs fail the case, and so
+would a second crash here, since 2 is more than the 1 allowed. A case run once
+without a rule object keeps that run's own verdict, so a crash fails it
+whatever `max_crashed_runs` is. `adk eval` does not retry a crashed run.
+
+### Custom methods
+
+When no built-in method fits, write one in Python and declare it under
+`custom_methods`. Its key is the name the rules use and the name the output
+shows:
+
+```json
+{
+  "criteria": {
+    "tool_trajectory_avg_score": 1.0,
+    "response_match_score": 0.6
+  },
+  "multi_run_config": {
+    "num_runs": 5,
+    "custom_methods": {
+      "passed_at_least_twice": {
+        "code_config": {"name": "my_project.eval.methods.passed_at_least_twice"},
+        "uses_scores": false
+      },
+      "median_of_runs": {
+        "code_config": {"name": "my_project.eval.methods.median_of_runs"},
+        "uses_scores": true
+      }
+    },
+    "cross_run_scoring": "median_of_runs",
+    "cross_run_criteria": [
+      {"method": "passed_at_least_twice", "threshold": 1.0}
+    ]
+  }
+}
+```
+
+A method has the signature of a built-in one: it takes one `RunResult` per
+run, for one metric or for the whole case, and returns a number, or `None`
+when the runs allow no value.
+
+```python
+# my_project/eval/methods.py
+from collections.abc import Sequence
+import statistics
+
+from google.adk.evaluation import RunResult
+from google.adk.evaluation.evaluator import EvalStatus
+
+
+def median_of_runs(runs: Sequence[RunResult]) -> float | None:
+  scores = [run.score for run in runs if run.score is not None]
+  return statistics.median(scores) if scores else None
+
+
+def passed_at_least_twice(runs: Sequence[RunResult]) -> float | None:
+  passed = sum(1 for run in runs if run.status == EvalStatus.PASSED)
+  return 1.0 if passed >= 2 else 0.0
+```
+
+`uses_scores` is required, and says which kind of method it is:
+
+*   **`true`**, a method that combines scores: it reads `score`, the run's
+    overall score, or `invocation_scores`. It is written as a method name in
+    `cross_run_scoring` or `cross_run_scoring_by_metric`, and its value is
+    compared with the metric's threshold in `criteria`. It receives the raw
+    scores, so a method that picks a run, such as the worst, must handle the
+    metric's direction itself.
+*   **`false`**, a method that counts passing runs: it reads `status`. It is
+    written as a rule object with a threshold of its own, and can also be used
+    in `cross_run_criteria`, where each `RunResult` is a whole run, with no
+    score, and a run that crashed is `NOT_EVALUATED`.
+
+The method only computes the number; the threshold and the verdict are applied
+as for a built-in method. A method that returns `None` leaves its rule
+`NOT_EVALUATED`, with a note, and the rule is skipped when the verdict is
+decided. Returning anything else that is not a number, even a `bool`, stops the
+eval with a `TypeError` naming the method, and an exception the method raises
+is not caught. As with a built-in method, a case run once keeps the run's own
+score instead of being re-scored by a method that combines scores.
+
+The file fails to load when a custom method has the name of a built-in one,
+when a rule names a method that is neither built in nor declared, or when a
+method is written in the form of the other kind. Reading the file does not
+import the functions: `adk eval` imports them before it runs any eval case, so
+a path that does not import, or names something that is not callable, stops
+it at once with an error naming the method. As with the rest of
+`multi_run_config`, only `adk eval` reads them.
+
+`code_config` takes no arguments, so a method with parameters is made in Python
+and referenced by its full name: with
+`pass_at_3 = functools.partial(pass_at_k, k=3)` in `my_project/eval/methods.py`,
+the config names `my_project.eval.methods.pass_at_3`.
 
 ## How validation actually works
 
@@ -334,7 +582,7 @@ to parse.
 
 *   **`EvalConfig` is not re-exported.** Import it as
     `from google.adk.evaluation.eval_config import EvalConfig`; the package
-    `__init__` exports only `AgentEvaluator`.
+    `__init__` exports only `AgentEvaluator` and `RunResult`.
 *   **Parsing a config works on a base install; running one does not.**
     `eval_config` and `eval_metrics` import with no extras, so you can validate
     a file anywhere. The metric registry that turns a metric name into an

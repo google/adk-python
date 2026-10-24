@@ -75,6 +75,7 @@ class APIHubToolset(BaseToolset):
       # Optionally, you can provide a custom API Hub client
       apihub_client: BaseAPIHubClient | None = None,
       tool_filter: ToolPredicate | list[str] | None = None,
+      allow_private_network_access: bool = False,
   ):
     """Initializes the APIHubTool with the given parameters.
 
@@ -132,6 +133,11 @@ class APIHubToolset(BaseToolset):
         tool_filter: The filter used to filter the tools in the toolset. It can
           be either a tool predicate or a list of tool names of the tools to
           expose.
+        allow_private_network_access: By default, generated tools refuse
+          loopback, private, link-local (including cloud metadata), and
+          ``*.internal`` / ``*.local`` targets and return an error response. Set
+          this to ``True`` to allow requests to private networks, localhost, and
+          custom non-DNS transports.
     """
     super().__init__(tool_filter=tool_filter)
     self.name = name
@@ -146,6 +152,7 @@ class APIHubToolset(BaseToolset):
     self._openapi_toolset: OpenAPIToolset | None = None
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    self._allow_private_network_access = allow_private_network_access
     # Store auth config as instance variable so ADK can populate
     # exchanged_auth_credential in-place before calling get_tools()
     self._auth_config: AuthConfig | None = (
@@ -206,6 +213,7 @@ class APIHubToolset(BaseToolset):
         auth_credential=self._auth_credential,
         auth_scheme=self._auth_scheme,
         tool_filter=self.tool_filter,
+        allow_private_network_access=self._allow_private_network_access,
     )
 
   @override

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 from typing import Any
@@ -47,6 +48,8 @@ if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+_MAX_CHILD_AGENT_CACHE_TTL_S = 300
 
 
 def _part_to_text(part: types.Part) -> str:
@@ -229,6 +232,7 @@ class AgentTool(BaseTool):
   ) -> Any:
     from ..runners import Runner
     from ..sessions.in_memory_session_service import InMemorySessionService
+    from ..sessions.state import State
 
     if self.skip_summarization:
       tool_context.actions.skip_summarization = True
@@ -280,12 +284,46 @@ class AgentTool(BaseTool):
     # the parent is still using them.
     if self.include_plugins:
       runner.plugin_manager.set_skip_closing_plugins(True)
+    # Each call runs the child in an empty session: Gemini creates an explicit
+    # cache only from call 2 within one run and never reuses it across calls
+    # (so the 300s cap bounds how long per-run caches linger), whereas
+    # prefix-marking models (Anthropic, LiteLLM) mark breakpoints from call 1
+    # (using the 5m tier even under a ttl_seconds >= 3600 parent, as composite
+    # child trees may mix model families). Assigning this attribute after
+    # Runner.__init__ leaves context_cache_config as None during init, so
+    # _warn_uncached_agent_transfer logs once per app if the wrapped agent can
+    # transfer between sub-agents.
+    parent_cache_config = (
+        invocation_context.context_cache_config
+        if invocation_context is not None
+        else None
+    )
+    if parent_cache_config is not None:
+      runner.context_cache_config = parent_cache_config.model_copy(
+          update={
+              'ttl_seconds': min(
+                  parent_cache_config.ttl_seconds,
+                  _MAX_CHILD_AGENT_CACHE_TTL_S,
+              )
+          }
+      )
 
     state_dict = {
         k: v
         for k, v in tool_context.state.to_dict().items()
-        if not k.startswith('_adk')  # Filter out adk internal states
+        # Filter out adk internal states, temp-scoped ones included.
+        if not k.startswith(('_adk', f'{State.TEMP_PREFIX}_adk'))
     }
+    # create_session drops temp: keys, since they are never stored. Hand them
+    # to the nested run as a state delta instead, the way run_async applies
+    # temp: state for one invocation. Containers are shallow-copied so in-place
+    # edits in the nested run do not leak back into the caller's state, while
+    # other values such as client handles keep their identity.
+    temp_state: dict[str, Any] = {}
+    for k in list(state_dict):
+      if k.startswith(State.TEMP_PREFIX):
+        v = state_dict.pop(k)
+        temp_state[k] = copy.copy(v) if isinstance(v, (dict, list, set)) else v
     session = await runner.session_service.create_session(
         app_name=child_app_name,
         user_id=tool_context._invocation_context.user_id,
@@ -302,7 +340,7 @@ class AgentTool(BaseTool):
     if nested_run_config is not None and nested_run_config.support_cfc:
       # CFC describes how the caller's own model executes. Handing it to
       # another agent replaces that agent's code executor and refuses to run it
-      # at all unless its model happens to be a Gemini 2 one.
+      # at all unless its model is a Gemini model with live-API support.
       nested_run_config = nested_run_config.model_copy(
           update={'support_cfc': False}
       )
@@ -358,6 +396,7 @@ class AgentTool(BaseTool):
             user_id=session.user_id,
             session_id=session.id,
             new_message=content,
+            state_delta=temp_state or None,
             run_config=nested_run_config,
             abort_signal=abort_signal,
         )
@@ -424,12 +463,17 @@ class AgentTool(BaseTool):
       cls, config: ToolArgsConfig, config_abs_path: str
   ) -> AgentTool:
     from ..agents import config_agent_utils
+    from ..agents.base_agent import BaseAgent
 
     agent_tool_config = AgentToolConfig.model_validate(config.model_dump())
 
     agent = config_agent_utils.resolve_agent_reference(
         agent_tool_config.agent, config_abs_path
     )
+    if not isinstance(agent, BaseAgent):
+      raise ValueError(
+          f'AgentTool requires an agent, got {type(agent).__name__}.'
+      )
     return cls(
         agent=agent,
         skip_summarization=agent_tool_config.skip_summarization,

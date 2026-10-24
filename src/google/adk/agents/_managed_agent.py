@@ -53,11 +53,11 @@ from ..utils.context_utils import Aclosing
 from ..utils.env_utils import is_enterprise_mode_enabled
 from ..utils.instructions_utils import inject_session_state
 from ..utils.instructions_utils import InstructionProvider
+from ._streaming_mode import StreamingMode
 from .base_agent import BaseAgent
 from .context import Context
 from .invocation_context import InvocationContext
 from .readonly_context import ReadonlyContext
-from .run_config import StreamingMode
 
 if TYPE_CHECKING:
   from google.genai import Client
@@ -366,12 +366,13 @@ class ManagedAgent(BaseAgent):
       parent_context = parent_context.model_copy(
           update={'user_content': to_user_content(node_input)}
       )
-    async for event in self.run_async(parent_context=parent_context):
-      if event.author:
-        ctx.event_author = event.author
-      if not event.node_info.path and event.author == self.name:
-        event.node_info.path = ctx.node_path
-      yield event
+    async with Aclosing(self.run_async(parent_context=parent_context)) as agen:
+      async for event in agen:
+        if event.author:
+          ctx.event_author = event.author
+        if not event.node_info.path and event.author == self.name:
+          event.node_info.path = ctx.node_path
+        yield event
 
   async def _run_async_impl(
       self, ctx: InvocationContext

@@ -68,6 +68,8 @@ class FeatureName(str, Enum):
   # Off by default since it changes wire behavior. Enable with
   # `ADK_ENABLE_MCP_MODERN_PROTOCOL=1`. No effect on MCP SDK 1.x.
   _MCP_MODERN_PROTOCOL = "MCP_MODERN_PROTOCOL"
+  MONGODB_MEMORY_SERVICE = "MONGODB_MEMORY_SERVICE"
+  MONGODB_SESSION_SERVICE = "MONGODB_SESSION_SERVICE"
   MONGODB_TOOLSET = "MONGODB_TOOLSET"
   MONGODB_TOOL_SETTINGS = "MONGODB_TOOL_SETTINGS"
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
@@ -79,6 +81,7 @@ class FeatureName(str, Enum):
   SPANNER_ADMIN_TOOLSET = "SPANNER_ADMIN_TOOLSET"
   SPANNER_TOOL_SETTINGS = "SPANNER_TOOL_SETTINGS"
   SPANNER_VECTOR_STORE = "SPANNER_VECTOR_STORE"
+  TOOL_ARGS_MATCHER = "TOOL_ARGS_MATCHER"
   TOOL_CONFIG = "TOOL_CONFIG"
   TOOL_CONFIRMATION = "TOOL_CONFIRMATION"
   PLUGGABLE_AUTH = "PLUGGABLE_AUTH"
@@ -117,19 +120,19 @@ class FeatureConfig:
 # Central registry: FeatureName -> FeatureConfig
 _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.AGENT_CONFIG: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.AGENT_ENGINE_SANDBOX_ENVIRONMENT: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.AGENT_STATE: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.AUTHENTICATED_FUNCTION_TOOL: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.BASE_AUTHENTICATED_TOOL: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.BIG_QUERY_TOOLSET: FeatureConfig(
         FeatureStage.STABLE, default_on=True
@@ -198,13 +201,13 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.GOOGLE_CREDENTIALS_CONFIG: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.GOOGLE_TOOL: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.JSON_SCHEMA_FOR_FUNC_DECL: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.LIVEKIT: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
@@ -213,10 +216,16 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName._MCP_GRACEFUL_ERROR_HANDLING: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName._MCP_MODERN_PROTOCOL: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=False
+    ),
+    FeatureName.MONGODB_MEMORY_SERVICE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.MONGODB_SESSION_SERVICE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.MONGODB_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
@@ -225,7 +234,7 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.PROGRESSIVE_SSE_STREAMING: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.PUBSUB_TOOL_CONFIG: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
@@ -251,14 +260,17 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.SPANNER_VECTOR_STORE: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
-    FeatureName.TOOL_CONFIG: FeatureConfig(
+    FeatureName.TOOL_ARGS_MATCHER: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.TOOL_CONFIG: FeatureConfig(
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.TOOL_CONFIRMATION: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.PLUGGABLE_AUTH: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.SNAKE_CASE_SKILL_NAME: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=False

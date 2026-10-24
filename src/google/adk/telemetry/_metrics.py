@@ -581,11 +581,11 @@ def record_client_token_usage(
   if not responses:
     return
 
-  # The assumption is that token usage in streaming responses is cumulative.
-  # The last response chunk contains the total usage for the entire request.
-  # Summing them up across all response chunks would result in overcounting.
-  last_response = responses[-1]
-  if not last_response.usage_metadata:
+  # Usage in streaming responses is cumulative, so summing it would overcount.
+  # The newest report is the whole figure. It is not always on the last
+  # response: a stream cut off inside a tool call ends with one that has none.
+  token_usage = TokenUsage.from_llm_responses(responses)
+  if token_usage is None:
     logger.warning(
         "Skipping missing token usage metadata for agent %s and model %s",
         agent_name,
@@ -599,10 +599,9 @@ def record_client_token_usage(
   # thoughts tokens for "output".
   # `cached_content_token_count` is omitted as it's already included in prompt tokens.
   # `total_token_count` is omitted as SemConv expects input/output breakdown.
-  token_usage = TokenUsage.from_usage_metadata(last_response.usage_metadata)
   input_token_count = token_usage.input_tokens or 0
   output_token_count = token_usage.output_tokens or 0
-  response_model = last_response.model_version or llm_request.model
+  response_model = responses[-1].model_version or llm_request.model
   base_attrs = {
       gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
       gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",

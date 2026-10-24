@@ -298,7 +298,7 @@ async def _process_function_live_helper(
     # orders the two, so the request can be missing from the emitted event.
 
     # For input-streaming tools (those with `input_stream: LiveRequestQueue`),
-    # create a dedicated LiveRequestQueue that _send_to_model copies live
+    # create a dedicated LiveRequestQueue that send_to_model copies live
     # requests into. It must exist before the task first runs, since the tool
     # receives it as an argument.
     sig = inspect.signature(streaming_tool.func)

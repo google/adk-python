@@ -26,6 +26,7 @@ import contextvars
 import logging
 import time
 from typing import Any
+from typing import cast
 from typing import Literal
 from typing import TYPE_CHECKING
 
@@ -57,12 +58,12 @@ _DEFAULT_TOKEN_TIMEOUT = 3600
 _TOKEN_REFRESH_BUFFER = 60
 
 # Resources of the session whose tool call is running in the current task
-_bound_resources: contextvars.ContextVar[dict[str, Any] | None] = (
+_bound_resources: contextvars.ContextVar[dict[str, str] | None] = (
     contextvars.ContextVar("adk_vmaas_bound_resources", default=None)
 )
 
 
-def _get_bound_resources() -> dict[str, Any]:
+def _get_bound_resources() -> dict[str, str]:
   """Returns the resources of the session whose tool call is running.
 
   Raises:
@@ -188,7 +189,7 @@ class AgentEngineSandboxComputer(BaseComputer):
     # from there would attach these tools to the browser of whoever owns that
     # sandbox.
     self._resources_by_session: collections.OrderedDict[
-        tuple[str, str, str], dict[str, Any]
+        tuple[str, str, str], dict[str, str]
     ] = collections.OrderedDict()
 
     # Access token cache. Held on the instance rather than in session state:
@@ -242,14 +243,15 @@ class AgentEngineSandboxComputer(BaseComputer):
     client = self._get_client()
 
     agent_engine = await asyncio.to_thread(client.runtimes.create)
-    agent_engine_name = agent_engine.api_resource.name
+    # The service assigns the resource name of every engine it creates.
+    agent_engine_name = cast(str, agent_engine.api_resource.name)
 
     resources[_STATE_KEY_AGENT_ENGINE_NAME] = agent_engine_name
     logger.info("Created agent engine: %s", agent_engine_name)
 
     return agent_engine_name
 
-  async def _get_sandbox(self) -> tuple[str, Any]:
+  async def _get_sandbox(self) -> tuple[str, object]:
     """Get the sandbox, creating one if needed.
 
     Returns:
@@ -260,7 +262,7 @@ class AgentEngineSandboxComputer(BaseComputer):
     # Check if provided in constructor (BYOS mode)
     if self._sandbox_name:
       # Get sandbox object from name
-      sandbox = await asyncio.to_thread(
+      sandbox: object = await asyncio.to_thread(
           client.sandboxes.get, name=self._sandbox_name
       )
       return self._sandbox_name, sandbox
@@ -331,10 +333,14 @@ class AgentEngineSandboxComputer(BaseComputer):
     logger.debug("Generating new access token for sandbox: %s", sandbox_name)
     client = self._get_client()
 
-    token = await asyncio.to_thread(
-        client.sandboxes.generate_access_token,
-        service_account_email=self._service_account_email,
-        timeout=_DEFAULT_TOKEN_TIMEOUT,
+    # generate_access_token is declared to return str.
+    token = cast(
+        str,
+        await asyncio.to_thread(
+            client.sandboxes.generate_access_token,
+            service_account_email=self._service_account_email,
+            timeout=_DEFAULT_TOKEN_TIMEOUT,
+        ),
     )
 
     self._access_token = token

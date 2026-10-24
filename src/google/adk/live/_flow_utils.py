@@ -137,7 +137,7 @@ async def stop_background_tool_tasks(
   # current any more, whether or not the task honored the cancellation. A tool
   # drops its own entry when it finishes, so what is left here belongs to a
   # task that ignored the cancellation or was cancelled before it first ran.
-  # Letting go of the streams is what matters most: ``_send_to_model`` copies
+  # Letting go of the streams is what matters most: ``send_to_model`` copies
   # every live request into each registered stream, so one left behind by a
   # tool that no longer reads it grows for as long as the session lasts, an
   # entry per audio chunk the user speaks.
