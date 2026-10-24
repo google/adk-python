@@ -330,7 +330,7 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
       elif app_details.agent_details:
         agent_name = next(iter(app_details.agent_details))
 
-      if agent_name:
+      if agent_name and agent_name in app_details.agent_details:
         developer_instructions = app_details.get_developer_instructions(
             agent_name=agent_name
         )
