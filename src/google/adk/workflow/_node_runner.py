@@ -81,6 +81,27 @@ def _explicit_output_claimer(ctx: Context) -> Context | None:
   return claimer
 
 
+class EventAppendsBarrier:
+  """Queue-only marker that waits out every event appended before it.
+
+  Enqueued by ``NodeRunner._wait_for_enqueued_events`` (not by user code),
+  it never becomes an ``Event``: ``Runner._consume_event_queue`` recognises
+  it and just sets the paired processed signal once every earlier queue item
+  has been handled — no plugin callbacks, no session append, and no empty
+  event yielded to ``run_async`` consumers.
+  """
+
+  _instance: EventAppendsBarrier | None = None
+
+  def __new__(cls) -> EventAppendsBarrier:
+    if cls._instance is None:
+      cls._instance = super().__new__(cls)
+    return cls._instance
+
+
+EVENT_APPENDS_BARRIER = EventAppendsBarrier()
+
+
 class NodeRunner:
   """Per-node executor. Drives BaseNode.run(), enriches events.
 
@@ -222,6 +243,32 @@ class NodeRunner:
           self._node.name,
       )
       attempt_count += 1
+      await self._wait_for_enqueued_events(ctx)
+
+  async def _wait_for_enqueued_events(self, ctx: Context) -> None:
+    """Waits until every event enqueued so far has been appended to the session.
+
+    A retried node rebuilds its state from session events. Sibling tasks that
+    finished around the failure may still have their final events sitting in
+    the runner's event queue: the task blocks in ``_enqueue_event`` until the
+    main loop appends the event, and a task cancelled there leaves its queued
+    event to be appended later. A rescan that reads ``ic.session.events``
+    before those appends complete misses the siblings' outputs and the retry
+    re-executes work that already happened.
+
+    An ``EventAppendsBarrier`` marker is never appended to the session, never
+    passed to plugin callbacks, and never yielded to ``run_async`` consumers;
+    the runner's main loop just sets its processed signal after handling
+    everything queued ahead of it, which is exactly the barrier the retry
+    needs.
+    """
+    event_queue = ctx._invocation_context._event_queue  # pylint: disable=protected-access
+    if event_queue is None:
+      return
+
+    processed = asyncio.Event()
+    await event_queue.put((EVENT_APPENDS_BARRIER, processed))
+    await processed.wait()
 
   def _snapshot_dynamic_children(
       self, ctx: Context

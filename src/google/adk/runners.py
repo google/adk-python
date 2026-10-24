@@ -770,6 +770,8 @@ class Runner:
     """Consume events from ic._event_queue until done_sentinel."""
     event_queue: asyncio.Queue[_EventQueueItem] | None = ic._event_queue
     assert event_queue is not None
+    from .workflow._node_runner import EVENT_APPENDS_BARRIER
+
     if ic.is_aborted and event_queue.empty():
       return
     abort_task: asyncio.Task[bool] | None = None
@@ -803,6 +805,14 @@ class Runner:
           get_task = None
         if event_or_done is done_sentinel:
           break
+        if event_or_done is EVENT_APPENDS_BARRIER:
+          # FIFO barrier marker enqueued by NodeRunner._wait_for_enqueued_events
+          # before a node retry: everything queued ahead of it has been
+          # handled, so release the waiting node without plugin callbacks,
+          # session appends, or yielding an empty event to the caller.
+          if isinstance(processed_signal, asyncio.Event):
+            processed_signal.set()
+          continue
         if not isinstance(event_or_done, Event):
           raise TypeError(
               'Unexpected node event queue item:'
