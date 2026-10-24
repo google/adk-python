@@ -20,8 +20,8 @@ doing so as you.
 `BaseCodeExecutor` puts that whole decision behind one object. The agent hands it
 a code block and gets back standard output, standard error, and any files the
 code produced, while everything about where the code actually ran stays the
-implementation's business. Six implementations ship in
-`google.adk.code_executors`, and a seventh lives alongside its integration in
+implementation's business. Seven implementations ship in
+`google.adk.code_executors`, and an eighth lives alongside its integration in
 `google.adk.integrations.cloud_run`. What separates them is almost entirely how
 much isolation they give you.
 
@@ -95,7 +95,7 @@ implementation:
 `optimize_data_file` makes the flow search the user's message for `text/csv`
 parts, parse them, and put them on `CodeExecutionInput.input_files`. The
 generated code can then load the dataset by filename, with no upload code of your
-own anywhere. Only three implementations accept it, though.
+own anywhere. Only four implementations accept it, though.
 
 `stateful` says whether a variable defined in one turn is still around in the
 next. A stateless executor starts a fresh process every time, so the model has to
@@ -148,6 +148,10 @@ the model writes.
 
 *   **`ContainerCodeExecutor`** starts a local or self-hosted Docker container
     with the network disabled and Linux capabilities dropped.
+*   **`SmolCodeExecutor`** creates and deletes a local microVM for each snippet,
+    with guest networking disabled by default. It needs Linux KVM or macOS
+    Hypervisor.framework, but no container daemon. Set `target="cloud"` to
+    run the same executor on Smol Cloud instead.
 *   **`GkeCodeExecutor`** runs the snippet on a Kubernetes cluster in
     gVisor-sandboxed Pods, or through the Agent Sandbox client, so the code
     talks to a sandboxed kernel rather than the node's own.
@@ -175,10 +179,10 @@ account, a quota, and code executing somewhere you do not administer.
 Once you have settled on a level of trust, two details can take a choice away
 from you again.
 
-If your agent needs a variable to survive from one snippet to the next, or wants
-a CSV attached for it, three of the seven are already out.
-`UnsafeLocalCodeExecutor`, `ContainerCodeExecutor` and
-`CloudRunSandboxCodeExecutor` reject `stateful` and `optimize_data_file`.
+If your agent needs a variable to survive from one snippet to the next,
+`SmolCodeExecutor` is also stateless: it creates a fresh VM per code block.
+For attached CSV files, `UnsafeLocalCodeExecutor`, `ContainerCodeExecutor`
+and `CloudRunSandboxCodeExecutor` reject `optimize_data_file`.
 
 If you pick `CloudRunSandboxCodeExecutor`, read its options before you configure
 it, because it is the one implementation that changes a base default. Its
@@ -216,6 +220,29 @@ agent = LlmAgent(
 )
 ```
 
+### Run in a local or Cloud microVM
+
+Install `pip install "google-adk[smol]"` and use a local VM without a Docker daemon:
+
+```python
+from google.adk.agents import LlmAgent
+from google.adk.code_executors import SmolCodeExecutor
+
+agent = LlmAgent(
+    name="microvm_code_agent",
+    code_executor=SmolCodeExecutor(timeout_seconds=60),
+)
+```
+
+The executor creates a fresh VM per code block, uploads Python and any input
+files into `/workspace`, runs the code with a bounded timeout, and deletes
+the VM. Set `optimize_data_file=True` to attach CSV files from the request. Guest egress is off by default. To run on Smol Cloud, provide
+`SMOL_CLOUD_TOKEN` and set `target="cloud"`; `network_enabled=True` explicitly
+allows the guest to access the network. Cloud VMs also have an expiry time in
+case the client process stops before deletion. Each code block starts with a
+clean filesystem, so Python variables and generated files do not persist
+between blocks. The SDK supports Linux and macOS hosts.
+
 ### Run in a gVisor sandbox on Kubernetes
 
 `GkeCodeExecutor` creates one short-lived Job per execution on the gVisor
@@ -252,11 +279,12 @@ agent = LlmAgent(
     `UnsafeLocalCodeExecutor`, `ContainerCodeExecutor` and
     `CloudRunSandboxCodeExecutor` raise `ValueError` at construction if you set
     either to `True`, with a message naming the class.
-*   **Four implementations need extra packages.** `VertexAiCodeExecutor`,
+*   **Five implementations need extra packages.** `VertexAiCodeExecutor`,
     `ContainerCodeExecutor`, `GkeCodeExecutor` and
     `AgentEngineSandboxCodeExecutor` arrive with
     `pip install "google-adk[extensions]"`. Without them the import still
-    succeeds, and construction is where it fails.
+    succeeds, and construction is where it fails. `SmolCodeExecutor` instead
+    uses `pip install "google-adk[smol]"`; its SDK is loaded on execution.
 
 ## Related samples
 
