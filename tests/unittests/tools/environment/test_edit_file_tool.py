@@ -148,3 +148,53 @@ class TestEditFileTool:
     assert result["status"] == "ok"
     data = await env.read_file("test.txt")
     assert data == b"replaced\nline2"
+
+  @pytest.mark.asyncio
+  async def test_edit_file_preserves_non_utf8_bytes(
+      self, env: LocalEnvironment
+  ):
+    """Bytes outside the edited region survive the write-back."""
+    # Arrange
+    tool = EditFileTool(env)
+    await env.write_file("notes.py", b"# header \xe9\nOLD\n")
+
+    args = {
+        "path": "notes.py",
+        "old_string": "OLD",
+        "new_string": "NEW",
+    }
+
+    # Act
+    result = await tool.run_async(args=args, tool_context=None)
+
+    # Assert
+    assert result["status"] == "ok"
+    data = await env.read_file("notes.py")
+    assert data == b"# header \xe9\nNEW\n"
+
+  @pytest.mark.asyncio
+  async def test_edit_file_reports_unencodable_new_string(
+      self, env: LocalEnvironment
+  ):
+    """An unencodable `new_string` is refused and the file is left alone.
+
+    U+D800 is outside the U+DC80-U+DCFF range that surrogateescape can encode,
+    and it reaches the tool from ordinary model output because `json` accepts it.
+    """
+    # Arrange
+    tool = EditFileTool(env)
+    original = b"# header \xe9\nOLD\n"
+    await env.write_file("notes.py", original)
+
+    args = {
+        "path": "notes.py",
+        "old_string": "OLD",
+        "new_string": "\ud800",
+    }
+
+    # Act
+    result = await tool.run_async(args=args, tool_context=None)
+
+    # Assert
+    assert result["status"] == "error"
+    assert await env.read_file("notes.py") == original
