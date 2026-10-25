@@ -37,6 +37,7 @@ from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_ENV_VA
 from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_TAG
 from google.adk.utils._google_client_headers import get_tracking_headers
 from google.adk.utils.variant_utils import GoogleLLMVariant
+from google.genai import Client
 from google.genai import types
 from google.genai.errors import ClientError
 from google.genai.types import Content
@@ -660,6 +661,147 @@ def test_client_version_header_with_agent_engine(monkeypatch):
       sdk in user_agent_header
       for sdk in ["google-genai-sdk/", "vertex-genai-modules/"]
   )
+
+
+@pytest.mark.parametrize("attribute", ["api_client", "_live_api_client"])
+@pytest.mark.parametrize(
+    "http_options",
+    [
+        {"base_url": "https://gateway.example.com", "headers": {"x-key": "k"}},
+        types.HttpOptions(
+            base_url="https://gateway.example.com", headers={"x-key": "k"}
+        ),
+    ],
+    ids=["dict", "http_options"],
+)
+def test_client_kwargs_http_options_keep_tracking_headers(
+    attribute, http_options
+):
+  model = Gemini(
+      model="gemini-2.5-flash", client_kwargs={"http_options": http_options}
+  )
+
+  client = getattr(model, attribute)
+
+  client_http_options = client._api_client._http_options
+  adk_label = f"google-adk/{adk_version.__version__}"
+  assert adk_label in client_http_options.headers["x-goog-api-client"]
+  assert adk_label in client_http_options.headers["user-agent"]
+  assert client_http_options.headers["x-key"] == "k"
+  assert client_http_options.base_url == "https://gateway.example.com"
+
+
+def test_client_kwargs_http_options_keep_custom_tracking_header_values():
+  model = Gemini(
+      model="gemini-2.5-flash",
+      client_kwargs={
+          "http_options": {"headers": {"x-goog-api-client": "my-app/1.0"}}
+      },
+  )
+
+  header = model._live_api_client._api_client._http_options.headers[
+      "x-goog-api-client"
+  ]
+
+  assert f"google-adk/{adk_version.__version__}" in header
+  assert "my-app/1.0" in header
+
+
+def test_client_kwargs_http_options_are_not_mutated():
+  http_options = types.HttpOptions(headers={"x-key": "k"})
+  model = Gemini(
+      model="gemini-2.5-flash", client_kwargs={"http_options": http_options}
+  )
+
+  _ = model._live_api_client
+
+  assert http_options.headers == {"x-key": "k"}
+
+
+@pytest.mark.parametrize("attribute", ["api_client", "_live_api_client"])
+def test_client_kwargs_http_options_keep_base_url(attribute):
+  model = Gemini(
+      model="gemini-2.5-flash",
+      base_url="https://gateway.example.com",
+      client_kwargs={"http_options": {"timeout": 30000}},
+  )
+
+  client_http_options = getattr(model, attribute)._api_client._http_options
+
+  assert client_http_options.base_url == "https://gateway.example.com"
+  assert client_http_options.timeout == 30000
+
+
+def test_api_client_client_kwargs_http_options_keep_retry_and_api_version():
+  retry_options = types.HttpRetryOptions(attempts=7)
+  model = Gemini(
+      model="gemini-2.5-flash",
+      api_version="v1",
+      retry_options=retry_options,
+      client_kwargs={"http_options": {"timeout": 30000}},
+  )
+
+  client_http_options = model.api_client._api_client._http_options
+
+  assert client_http_options.api_version == "v1"
+  assert client_http_options.retry_options == retry_options
+
+
+def test_api_client_client_kwargs_http_options_keep_env_api_version(
+    monkeypatch,
+):
+  monkeypatch.setenv("GOOGLE_GENAI_API_VERSION", "v1")
+  model = Gemini(
+      model="gemini-2.5-flash",
+      client_kwargs={"http_options": {"timeout": 30000}},
+  )
+
+  assert model.api_client._api_client._http_options.api_version == "v1"
+
+
+def test_live_api_client_client_kwargs_http_options_keep_live_api_version():
+  model = Gemini(
+      model="gemini-2.5-flash",
+      client_kwargs={"http_options": {"timeout": 30000}},
+  )
+
+  with mock.patch.object(model, "_api_backend", GoogleLLMVariant.GEMINI_API):
+    client = model._live_api_client
+
+  assert client._api_client._http_options.api_version == "v1alpha"
+
+
+@pytest.mark.parametrize("attribute", ["api_client", "_live_api_client"])
+def test_client_kwargs_http_options_fields_take_precedence(attribute):
+  retry_options = types.HttpRetryOptions(attempts=3)
+  model = Gemini(
+      model="gemini-2.5-flash",
+      base_url="https://gateway.example.com",
+      api_version="v1",
+      retry_options=types.HttpRetryOptions(attempts=7),
+      client_kwargs={
+          "http_options": types.HttpOptions(
+              base_url="https://other.example.com",
+              api_version="v1beta",
+              retry_options=retry_options,
+          )
+      },
+  )
+
+  client_http_options = getattr(model, attribute)._api_client._http_options
+
+  assert client_http_options.base_url == "https://other.example.com"
+  assert client_http_options.api_version == "v1beta"
+  assert client_http_options.retry_options == retry_options
+
+
+def test_live_api_client_leaves_provided_client_headers_unchanged():
+  provided_client = Client()
+  headers = dict(provided_client._api_client._http_options.headers)
+  model = Gemini(model="gemini-2.5-flash", client=provided_client)
+
+  assert model._live_api_client is provided_client
+  assert provided_client._api_client._http_options.headers == headers
 
 
 def test_api_client_uses_api_version_from_google_base_url():
@@ -1564,49 +1706,20 @@ def test_live_api_client_properties(gemini_llm):
 
 
 @pytest.mark.asyncio
-async def test_connect_with_custom_headers(gemini_llm, llm_request):
-  """Test that connect method updates tracking headers and API version when custom headers are provided."""
-  # Setup request with live connect config and custom headers
-  custom_headers = {"custom-live-header": "live-value"}
+async def test_connect_rejects_live_connect_config_http_options(
+    gemini_llm, llm_request
+):
+  """google-genai only takes Live API http_options on the client."""
   llm_request.live_connect_config = types.LiveConnectConfig(
-      http_options=types.HttpOptions(headers=custom_headers)
+      http_options=types.HttpOptions(headers={"custom-live-header": "v"})
   )
 
-  mock_live_session = mock.AsyncMock()
-
-  # Mock the _live_api_client to return a mock client
   with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
-    # Create a mock context manager
-    class MockLiveConnect:
-
-      async def __aenter__(self):
-        return mock_live_session
-
-      async def __aexit__(self, *args):
+    with pytest.raises(ValueError, match="client_kwargs"):
+      async with gemini_llm.connect(llm_request):
         pass
 
-    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
-
-    async with gemini_llm.connect(llm_request) as connection:
-      # Verify that the connect method was called with the right config
-      mock_live_client.aio.live.connect.assert_called_once()
-      call_args = mock_live_client.aio.live.connect.call_args
-      config_arg = call_args.kwargs["config"]
-
-      # Verify that tracking headers were merged with custom headers
-      expected_headers = custom_headers.copy()
-      expected_headers.update(get_tracking_headers())
-      assert config_arg.http_options.headers == expected_headers
-
-      # Verify that API version was set
-      assert config_arg.http_options.api_version == gemini_llm._live_api_version
-
-      # Verify that system instruction and tools were set
-      assert config_arg.system_instruction is not None
-      assert config_arg.tools == llm_request.config.tools
-
-      # Verify connection is properly wrapped
-      assert isinstance(connection, GeminiLlmConnection)
+  mock_live_client.aio.live.connect.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -3539,51 +3652,6 @@ async def test_generate_content_async_does_not_log_request_headers(
   # The log is still emitted and still useful.
   assert "LLM Request:" in caplog.text
   assert "'temperature': 0.1" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_connect_does_not_log_request_headers(
-    gemini_llm, llm_request, caplog
-):
-  """Custom headers can carry credentials, so they must stay out of the log."""
-  sentinel = "sentinel-live-credential"
-  llm_request.config.http_options = types.HttpOptions(
-      headers={"Authorization": f"Bearer {sentinel}"}
-  )
-  llm_request.live_connect_config = types.LiveConnectConfig(
-      response_modalities=[types.Modality.AUDIO],
-      http_options=types.HttpOptions(
-          headers={"Authorization": f"Bearer {sentinel}"}
-      ),
-  )
-
-  mock_live_session = mock.AsyncMock()
-
-  with caplog.at_level(logging.DEBUG, logger="google_adk"):
-    with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
-
-      class MockLiveConnect:
-
-        async def __aenter__(self):
-          return mock_live_session
-
-        async def __aexit__(self, *args):
-          pass
-
-      mock_live_client.aio.live.connect.return_value = MockLiveConnect()
-
-      async with gemini_llm.connect(llm_request):
-        pass
-
-  assert sentinel not in caplog.text
-  # The header is still forwarded to the live API, only the log omits it.
-  config_arg = mock_live_client.aio.live.connect.call_args.kwargs["config"]
-  assert (
-      config_arg.http_options.headers["Authorization"] == f"Bearer {sentinel}"
-  )
-  # The log is still emitted and still useful.
-  assert "gemini-2.5-flash" in caplog.text
-  assert "Modality.AUDIO" in caplog.text
 
 
 @pytest.mark.asyncio

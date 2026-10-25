@@ -2675,8 +2675,13 @@ async def test_token_threshold_counts_the_summary_its_own_summary_replaces():
       ],
   )
 
-  compacted = await compaction_module._run_compaction_for_token_threshold(
-      app, session, AsyncMock(spec=BaseSessionService)
+  compacted = (
+      await compaction_module._run_compaction_for_token_threshold_config(
+          config=app.events_compaction_config,
+          session=session,
+          session_service=AsyncMock(spec=BaseSessionService),
+          agent=app.root_agent,
+      )
   )
 
   assert compacted

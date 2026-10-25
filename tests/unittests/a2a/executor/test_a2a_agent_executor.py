@@ -417,6 +417,54 @@ class TestA2aAgentExecutor:
     assert result == mock_session
     self.mock_runner.session_service.create_session.assert_not_called()
 
+  @pytest.mark.asyncio
+  async def test_executor_context_uses_prepared_session_id(self):
+    """An overridden _prepare_session that leaves session_id unset still names the session."""
+    adk_event = Mock(spec=Event)
+    self.mock_event_converter.return_value = [Mock(spec=A2AEvent)]
+    self.mock_request_converter.return_value = AgentRunRequest(
+        user_id="test-user",
+        new_message=Mock(spec=Content),
+        run_config=RunConfig(),
+    )
+    prepared_session = Mock()
+    prepared_session.id = "prepared-session"
+    self.executor._prepare_session = AsyncMock(return_value=prepared_session)
+
+    run_async_kwargs = {}
+
+    async def mock_run_async(**kwargs):
+      run_async_kwargs.update(kwargs)
+      yield adk_event
+
+    self.mock_runner.run_async = mock_run_async
+    self.mock_runner._new_invocation_context.return_value = Mock()
+    interceptor = Mock(spec=ExecuteInterceptor)
+    interceptor.before_agent = None
+    interceptor.after_agent = None
+    interceptor.after_event = AsyncMock(
+        side_effect=lambda context, a2a_event, event: a2a_event
+    )
+    self.mock_config.execute_interceptors = [interceptor]
+    self.mock_context.current_task = Mock()
+
+    with patch(
+        "google.adk.a2a.executor.a2a_agent_executor.TaskResultAggregator"
+    ) as mock_agg_class:
+      mock_agg = Mock()
+      mock_agg.task_status_message = None
+      mock_agg.task_state = _compat.TS_WORKING
+      mock_agg_class.return_value = mock_agg
+      await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    executor_context = interceptor.after_event.call_args.args[0]
+    assert executor_context.session_id == "prepared-session"
+    assert run_async_kwargs["session_id"] == "prepared-session"
+    status_metadata = (
+        self.mock_event_queue.enqueue_event.call_args_list[0].args[0].metadata
+    )
+    assert status_metadata["adk_session_id"] == "prepared-session"
+
   def test_constructor_with_callable_runner(self):
     """Test constructor with callable runner."""
     callable_runner = Mock()

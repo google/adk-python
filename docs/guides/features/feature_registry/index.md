@@ -107,8 +107,8 @@ There are two enforcement styles, and the symptom differs.
 
 **A gated unit.** Some classes and functions carry one of the `@experimental`,
 `@working_in_progress` or `@stable` decorators, which call `is_feature_enabled`
-before running. `GCSToolset`, `SpannerToolset`, `ComputerUseTool` and the
-agent-config loaders are all gated this way. If the flag is off, constructing the
+before running. `GCSToolset`, `SpannerToolset` and `ComputerUseTool` are all
+gated this way. If the flag is off, constructing the
 class or calling the function raises a `RuntimeError` saying the feature is not
 enabled. The object is not half-built; the failure is immediate and total. Every
 such flag defaults to on in the releases shipped so far, so you reach this error

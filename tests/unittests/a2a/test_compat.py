@@ -29,6 +29,7 @@ from __future__ import annotations
 import base64
 import json
 
+from a2a.client.client import ClientConfig
 from a2a.client.client_factory import ClientFactory
 from a2a.types import AgentCapabilities
 from a2a.types import AgentProvider
@@ -40,6 +41,7 @@ from google.protobuf import descriptor_pb2
 from google.protobuf import proto_builder
 from google.protobuf.json_format import ParseDict
 from google.protobuf.struct_pb2 import Struct
+import httpx
 import pytest
 
 v03_only = pytest.mark.skipif(
@@ -80,6 +82,28 @@ def _task():
       context_id='ctx-1',
       status=_compat.make_task_status(_compat.TS_WORKING),
   )
+
+
+# -----------------------------------------------------------------------------
+# make_task
+# -----------------------------------------------------------------------------
+def test_make_task_defaults_context_id():
+  task = _compat.make_task(
+      id='task-default',
+      status=_compat.make_task_status(_compat.TS_WORKING),
+  )
+  assert task.id == 'task-default'
+  assert task.context_id == ''
+
+
+def test_make_task_with_explicit_context_id():
+  task = _compat.make_task(
+      id='task-explicit',
+      context_id='ctx-custom',
+      status=_compat.make_task_status(_compat.TS_WORKING),
+  )
+  assert task.id == 'task-explicit'
+  assert task.context_id == 'ctx-custom'
 
 
 # -----------------------------------------------------------------------------
@@ -270,6 +294,99 @@ def test_rebind_client_factory_httpx_preserves_config_consumers_transports():
   assert rebound._config.streaming is True
   assert rebound._consumers == [consumer]
   assert rebound._registry['custom-transport'] is _custom_transport_producer
+
+
+@pytest.mark.asyncio
+async def test_rebind_client_factory_httpx_preserves_subclass():
+  class CustomFactory(ClientFactory):
+    pass
+
+  old_client, new_client = httpx.AsyncClient(), httpx.AsyncClient()
+  factory = CustomFactory(_compat.make_client_config(httpx_client=old_client))
+  rebound = _compat.rebind_client_factory_httpx(factory, new_client)
+
+  try:
+    assert isinstance(rebound, CustomFactory)
+    assert rebound is not factory
+    assert rebound._config.httpx_client is new_client
+    assert factory._config.httpx_client is old_client
+  finally:
+    await old_client.aclose()
+    await new_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rebind_client_factory_httpx_preserves_subclass_init_args():
+  class CustomFactoryWithArgs(ClientFactory):
+
+    def __init__(self, custom_arg: str, *, config: Any = None):
+      super().__init__(config=config)
+      self.custom_arg = custom_arg
+
+  old_client, new_client = httpx.AsyncClient(), httpx.AsyncClient()
+  factory = CustomFactoryWithArgs(
+      'custom_value',
+      config=_compat.make_client_config(httpx_client=old_client),
+  )
+  rebound = _compat.rebind_client_factory_httpx(factory, new_client)
+
+  try:
+    assert isinstance(rebound, CustomFactoryWithArgs)
+    assert rebound is not factory
+    assert rebound.custom_arg == 'custom_value'
+    assert rebound._config.httpx_client is new_client
+    assert factory._config.httpx_client is old_client
+  finally:
+    await old_client.aclose()
+    await new_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rebind_client_factory_httpx_defaults_protocol_bindings():
+  if not _compat.IS_A2A_V1:
+    pytest.skip('supported_protocol_bindings defaulting is 1.x only')
+  old_client, new_client = httpx.AsyncClient(), httpx.AsyncClient()
+  factory = ClientFactory(ClientConfig(httpx_client=old_client))
+  rebound = _compat.rebind_client_factory_httpx(factory, new_client)
+
+  try:
+    assert _compat.TP_JSONRPC in rebound._config.supported_protocol_bindings
+    assert _compat.TP_HTTP_JSON in rebound._config.supported_protocol_bindings
+    assert _compat.TP_JSONRPC in rebound._registry
+    assert _compat.TP_HTTP_JSON in rebound._registry
+  finally:
+    await old_client.aclose()
+    await new_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rebind_client_factory_httpx_preserves_protocol_bindings():
+  old_client, new_client = httpx.AsyncClient(), httpx.AsyncClient()
+  if _compat.IS_A2A_V1:
+    config = ClientConfig(
+        httpx_client=old_client,
+        supported_protocol_bindings=[_compat.TP_HTTP_JSON],
+    )
+  else:
+    config = ClientConfig(
+        httpx_client=old_client,
+        supported_transports=[_compat.TP_HTTP_JSON],
+    )
+  factory = ClientFactory(config)
+  rebound = _compat.rebind_client_factory_httpx(factory, new_client)
+
+  try:
+    if _compat.IS_A2A_V1:
+      assert rebound._config.supported_protocol_bindings == [
+          _compat.TP_HTTP_JSON
+      ]
+      assert _compat.TP_HTTP_JSON in rebound._registry
+      assert _compat.TP_JSONRPC not in rebound._registry
+    else:
+      assert rebound._config.supported_transports == [_compat.TP_HTTP_JSON]
+  finally:
+    await old_client.aclose()
+    await new_client.aclose()
 
 
 # -----------------------------------------------------------------------------

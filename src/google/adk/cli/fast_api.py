@@ -182,7 +182,8 @@ def get_fast_api_app(
       value turns on DNS-rebinding protection, which rejects requests addressed
       to any other host. A non-loopback value logs a startup warning that the
       app has no authentication. Leave it None to serve the app yourself
-      without either.
+      without either. Internal agents, such as the agent builder assistant,
+      are served only when this is a loopback address.
     port: Port number for the server (defaults to 8000).
     url_prefix: Optional prefix for all URL routes.
     trace_to_cloud: Whether to export traces to Google Cloud Trace.
@@ -277,9 +278,10 @@ def get_fast_api_app(
   # dev server has no authentication, so they are only safe where nobody else
   # can reach it: a loopback bind, which the DNS-rebinding and Origin guards
   # also cover. An unknown bind (None) is treated as exposed.
-  agent_loader._allow_special_agents = (
+  allow_special_agents = (
       web and bind_host is not None and _is_loopback_address(bind_host)
   )
+  agent_loader._allow_special_agents = allow_special_agents
 
   # services.py lives in the folder the user passed, not the rewritten parent.
   load_services_module(original_agents_dir)
@@ -364,8 +366,11 @@ def get_fast_api_app(
   )
   # DevServer allows the built-in agents by default. Follow the loader, so a
   # refused request gets the server's 403 rather than a 500 from the loader's
-  # PermissionError.
-  adk_web_server._allow_special_agents = agent_loader._allow_special_agents
+  # PermissionError. Only ever narrows: ApiServer stays closed even if web fell
+  # back to it.
+  adk_web_server._allow_special_agents = (
+      adk_web_server._allow_special_agents and allow_special_agents
+  )
 
   # In single agent mode, use that agent as the default app.
   if is_single_agent:

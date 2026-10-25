@@ -30,6 +30,7 @@ from pydantic import SerializeAsAny
 
 from ..agents.common_configs import CodeConfig
 from ..evaluation.eval_metrics import EvalMetric
+from ._multi_run_aggregation_methods import get_built_in_aggregation_methods
 from .constants import DEFAULT_LIVE_TIMEOUT_SECONDS
 from .eval_metrics import BaseCriterion
 from .eval_metrics import MetricInfo
@@ -93,6 +94,239 @@ class LiveModelConfig(BaseModel):
           " live mode."
       ),
   )
+
+
+class MultiRunCriterion(BaseModel):
+  """A rule that counts the runs that passed, with a threshold of its own.
+
+  Each run is first judged on its own, as a single run would be. The method
+  turns those verdicts into one number, such as the fraction of runs that
+  passed, and the rule passes when that number is at least `threshold`.
+  """
+
+  model_config = ConfigDict(
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+      # A misspelled key would otherwise be dropped, silently changing the
+      # rule.
+      extra="forbid",
+      use_attribute_docstrings=True,
+  )
+
+  method: str
+  """The name of a method that counts passing runs, such as "pass_rate".
+
+  It can also name a method declared in `custom_methods`.
+  """
+
+  threshold: float = Field(ge=0.0, le=1.0)
+  """The lowest value of `method` that passes, from 0.0 to 1.0."""
+
+
+class CustomCrossRunMethodConfig(BaseModel):
+  """A cross-run method of your own, written as a Python function.
+
+  Like a built-in method, it only turns an eval case's runs into one number.
+  Comparing that number with a threshold, and deciding the verdict, are done
+  as for a built-in method of the same kind.
+  """
+
+  model_config = ConfigDict(
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+      # A misspelled key would otherwise be dropped, silently changing the
+      # method.
+      extra="forbid",
+      use_attribute_docstrings=True,
+  )
+
+  code_config: CodeConfig
+  """The fully qualified name of the function, e.g. "my_project.methods.p25".
+
+  The function receives a sequence of `RunResult`, one target's result in each
+  run of the eval case, where the target is a metric or the whole eval case.
+  It returns a number, or None when the runs allow no value.
+  """
+
+  uses_scores: bool
+  """Whether the method combines scores, rather than counting passing runs.
+
+  True: it combines scores, so it is written as a plain name in
+  `cross_run_scoring` or `cross_run_scoring_by_metric`, and its value is judged
+  against the metric's threshold in `criteria`. False: it counts passing runs,
+  so it is written as an object with a threshold of its own, and can also be
+  used in `cross_run_criteria`.
+  """
+
+
+class MultiRunConfig(BaseModel):
+  """Configuration for running each eval case more than once.
+
+  An agent can answer the same eval case differently from one run to the next,
+  so a single run can pass or fail by chance. Running each case several times
+  and judging it on all of its runs gives a steadier verdict.
+  """
+
+  model_config = ConfigDict(
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+      # A misspelled key would otherwise be dropped, silently running each
+      # eval case once.
+      extra="forbid",
+  )
+
+  num_runs: Optional[int] = Field(
+      default=None,
+      ge=1,
+      description=(
+          "Number of times to run each eval case, each in a fresh session. If"
+          " unset, `adk eval` uses its `--num_runs` flag, or 1."
+      ),
+  )
+
+  max_crashed_runs: int = Field(
+      default=0,
+      ge=0,
+      description=(
+          "How many runs of an eval case may crash, failing without producing"
+          " any metric results, before the case fails. A crashed run has no"
+          " verdict, so it is left out of every count of passing runs, and a"
+          " case needs at least one run that did not crash to pass. The"
+          " default, 0, fails a case on any crash. A case run once with no"
+          " rule that counts passing runs keeps that run's own verdict, so a"
+          " crash fails it whatever this is."
+      ),
+  )
+
+  cross_run_scoring: Union[str, MultiRunCriterion] = Field(
+      default="mean_over_invocations",
+      description=(
+          "How each metric's run scores become its case score, unless"
+          " `cross_run_scoring_by_metric` names the metric. A string names a"
+          " method that combines scores, and the metric passes when the result"
+          ' meets its threshold in `criteria`: "mean_over_invocations"'
+          " averages every invocation of every run, a run scored only as a"
+          ' whole counting once with its overall score; "mean_of_runs"'
+          ' averages the overall scores of the runs; and "min_over_runs"'
+          " takes the worst run's score: the lowest, or the highest for a"
+          " metric where lower is better. An object, such as"
+          ' {"method": "pass_rate", "threshold": 0.8}, names a method that'
+          " counts the runs in which the metric passed, and carries its own"
+          " threshold."
+      ),
+  )
+
+  cross_run_scoring_by_metric: Optional[
+      dict[str, Union[str, MultiRunCriterion]]
+  ] = Field(
+      default=None,
+      description=(
+          "Like `cross_run_scoring`, for individual metrics, keyed by metric"
+          " name. Each value takes either form of `cross_run_scoring` and"
+          " replaces it for that metric. Every key must be a metric in"
+          " `criteria`."
+      ),
+  )
+
+  cross_run_criteria: Optional[list[MultiRunCriterion]] = Field(
+      default=None,
+      description=(
+          "Rules that judge the eval case on its runs as a whole, on top of"
+          " the per-metric rules. A run counts as passed when it passed and"
+          " every one of its metrics was evaluated, and as failed when a"
+          " metric failed. Any other run is left out, as is a run that"
+          " crashed without producing any metric results. Each entry names a"
+          ' method that counts passing runs, such as "pass_rate", and its'
+          " threshold. The case fails if any entry fails."
+      ),
+  )
+
+  custom_methods: Optional[dict[str, CustomCrossRunMethodConfig]] = Field(
+      default=None,
+      description=(
+          "Methods of your own, keyed by name. `cross_run_scoring`,"
+          " `cross_run_scoring_by_metric` and `cross_run_criteria` refer to a"
+          " custom method by this name, as they do to a built-in one, and the"
+          " output shows it under this name. A name cannot be that of a"
+          " built-in method. The functions are imported when the eval runs,"
+          " not when the config is read."
+      ),
+  )
+
+  @model_validator(mode="after")
+  def _validate_methods(self) -> MultiRunConfig:
+    """Rejects a rule whose method is unknown or written in the wrong form.
+
+    A method that combines scores is written as a plain name and judged
+    against the metric's threshold in `criteria`. A method that counts passing
+    runs is written as an object with a threshold of its own, and only such a
+    method can judge the whole eval case. Every rule is checked here, not on
+    its own field, because a rule can name a custom method. A custom method's
+    kind is read from its `uses_scores`, so its function is not imported.
+    """
+    custom_methods = self.custom_methods or {}
+    built_in_methods = get_built_in_aggregation_methods()
+    for name in custom_methods:
+      if name in built_in_methods:
+        raise ValueError(
+            f"custom_methods[{name!r}]: {name!r} is the name of a"
+            " built-in method. Give the custom method another name."
+        )
+    uses_scores = {
+        name: method.uses_scores for name, method in built_in_methods.items()
+    }
+    uses_scores.update(
+        (name, config.uses_scores) for name, config in custom_methods.items()
+    )
+
+    # Each rule as where it is written, the method it names, and whether it is
+    # written as an object, with a threshold of its own.
+    rules: list[tuple[str, str, bool]] = []
+    metric_rules = [
+        ("cross_run_scoring", self.cross_run_scoring),
+        *(
+            (f"cross_run_scoring_by_metric[{metric_name!r}]", rule)
+            for metric_name, rule in (
+                self.cross_run_scoring_by_metric or {}
+            ).items()
+        ),
+    ]
+    for where, rule in metric_rules:
+      if isinstance(rule, str):
+        rules.append((where, rule, False))
+      elif isinstance(rule, MultiRunCriterion):
+        rules.append((where, rule.method, True))
+      else:
+        raise TypeError(f"Unsupported aggregation rule: {rule!r}.")
+    rules.extend(
+        (f"cross_run_criteria[{index}]", criterion.method, True)
+        for index, criterion in enumerate(self.cross_run_criteria or [])
+    )
+
+    for where, method, has_threshold in rules:
+      if method not in uses_scores:
+        message = (
+            f"{where}: Unknown method: {method!r}. Built-in"
+            f" methods: {sorted(built_in_methods)}."
+        )
+        if custom_methods:
+          message += f" Custom methods: {sorted(custom_methods)}."
+        raise ValueError(message)
+      if uses_scores[method] and has_threshold:
+        raise ValueError(
+            f"{where}: {method!r} combines scores, so it is judged against the"
+            " metric's threshold in `criteria` and cannot have a threshold of"
+            " its own. Write it as a plain name in `cross_run_scoring` or"
+            " `cross_run_scoring_by_metric`, or use a method that counts"
+            " passing runs, such as 'pass_rate'."
+        )
+      if not uses_scores[method] and not has_threshold:
+        raise ValueError(
+            f"{where}: {method!r} counts passing runs, so it needs a threshold"
+            f' of its own: write {{"method": "{method}", "threshold": ...}}'
+            " instead of the plain name."
+        )
+    return self
 
 
 class EvalConfig(BaseModel):
@@ -203,6 +437,60 @@ Example:
       ),
   )
 
+  multi_run_config: Optional[MultiRunConfig] = Field(
+      default=None,
+      description="""Config for running each eval case more than once.
+
+When `num_runs` is greater than 1, each eval case is run that many times, each
+time in a fresh session. The result of every run is saved, and the case is
+judged on all of its runs.
+
+How the runs are combined can be configured in three ways, which can be used
+together:
+- `cross_run_scoring` combines each metric's runs: by default the mean of its
+  per-invocation scores over every run, a run scored only as a whole counting
+  once with its overall score, compared with its threshold in `criteria`. A
+  string names a method that combines scores; an object names a method that
+  counts the runs in which the metric passed, with its own threshold. The
+  metrics then decide the case as they do for a single run.
+- `cross_run_scoring_by_metric` replaces `cross_run_scoring` for the metrics
+  it names.
+- `cross_run_criteria` adds rules that count the runs that passed as a whole.
+  The case fails if any of them fails.
+Without these fields, each metric's runs are combined by the default above.
+Besides the built-in methods, these fields can name methods of your own:
+Python functions declared in `custom_methods`.
+
+A run that crashed, failing without producing any metric results, has no
+verdict, so all of these leave it out. Instead the case fails if more of its
+runs crashed than `max_crashed_runs` allows, by default any, and it needs at
+least one run that did not crash to pass.
+
+In the sample below, each eval case is run 3 times. `response_match_score`
+passes if no run scored below 0.8, `tool_trajectory_avg_score` passes if it
+passed in at least 90% of the runs, and at least 80% of the runs must pass as a
+whole.
+{
+  "criteria": {
+    "tool_trajectory_avg_score": 1.0,
+    "response_match_score": 0.8
+  },
+  "multi_run_config": {
+    "num_runs": 3,
+    "cross_run_scoring_by_metric": {
+      "response_match_score": "min_over_runs",
+      "tool_trajectory_avg_score": {"method": "pass_rate", "threshold": 0.9}
+    },
+    "cross_run_criteria": [{"method": "pass_rate", "threshold": 0.8}]
+  }
+}
+
+`adk eval` reads this field; `--num_runs` overrides `num_runs`, and if neither
+is set each case runs once. `AgentEvaluator` and `adk web` do not read it yet;
+`AgentEvaluator` takes the number of runs as its own `num_runs` argument.
+""",
+  )
+
   @model_validator(mode="before")
   @classmethod
   def _inject_default_user_simulator_type(cls, values: Any) -> Any:
@@ -238,6 +526,24 @@ Example:
             key: {**inner, "type": _LEGACY_DEFAULT_USER_SIMULATOR_TYPE},
         }
     return values
+
+  @model_validator(mode="after")
+  def _validate_cross_run_scoring_by_metric(self) -> EvalConfig:
+    """Rejects a multi-run rule for a metric that is not in `criteria`.
+
+    Only the metrics in `criteria` can be configured, so a rule for any other
+    name, such as a misspelled one, would silently never apply.
+    """
+    if self.multi_run_config is None:
+      return self
+    rules = self.multi_run_config.cross_run_scoring_by_metric or {}
+    unknown_metrics = sorted(set(rules) - set(self.criteria))
+    if unknown_metrics:
+      raise ValueError(
+          "multi_run_config.cross_run_scoring_by_metric has rules for metrics"
+          f" that are not in criteria: {unknown_metrics}."
+      )
+    return self
 
 
 _DEFAULT_EVAL_CONFIG = EvalConfig(

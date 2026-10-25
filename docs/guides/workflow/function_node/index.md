@@ -87,6 +87,23 @@ coerced. There is no opt-out, and no kind of hint is exempt:
 A parameter with no annotation is passed through untouched, since there is
 nothing to build an adapter from.
 
+### Synchronous and asynchronous execution
+
+`FunctionNode` accepts synchronous `def` functions, `async def` coroutines,
+synchronous generators, and asynchronous generators. Coroutines and
+asynchronous generators execute on the caller event loop. By default,
+synchronous functions and synchronous generators also execute inline on the
+event loop thread; when the run's `RunConfig` sets `tool_thread_pool_config`,
+synchronous callables (including a synchronous callable
+`require_confirmation`) and synchronous generator steps run on the configured
+tool thread pool instead so blocking I/O does not stall concurrent branches.
+
+When a synchronous callable runs on the pool, a node `timeout` raises
+`NodeTimeoutError` on schedule without waiting for the blocked call, while the
+underlying worker thread continues running in the background until the call
+returns. Until then, it continues holding a `max_workers` slot and can overlap
+with subsequent attempts if `retry_config` is also configured on the node.
+
 ### Event normalization
 
 Whatever your function returns or yields is turned into an `Event` before the

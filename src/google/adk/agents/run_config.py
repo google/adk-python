@@ -55,8 +55,16 @@ def _default_max_llm_calls() -> int:
 class ToolThreadPoolConfig(BaseModel):
   """Configuration for the tool thread pool executor.
 
-  Set through `RunConfig.tool_thread_pool_config`. Outside live mode only
-  synchronous function tools an `LlmAgent` calls use the pool.
+  Set through `RunConfig.tool_thread_pool_config`. Outside live mode,
+  synchronous `FunctionTool` and `FunctionNode` callables (including callable
+  `require_confirmation` predicates) run on the pool in both `LlmAgent` tool
+  calls and direct `Workflow` execution.
+
+  Timeout and retry caveat: Python threads cannot be forcibly preempted, so if
+  a node or caller times out (`NodeTimeoutError`) or cancels while a synchronous
+  callable is in flight, awaiting resumes immediately on schedule while the
+  worker thread continues running until the call returns (holding a
+  `max_workers` slot and potentially overlapping with retry attempts).
 
   Attributes:
     max_workers: Maximum number of worker threads in the pool. Defaults to 4.
@@ -205,16 +213,15 @@ class RunConfig(BaseModel):
   in a new event loop within the background thread, which helps catch blocking
   I/O mistakenly used inside async functions.
 
-  Outside live mode, only synchronous function tools an `LlmAgent` calls use
-  the pool, and only their own synchronous callables run there: the tool
-  function and a callable `require_confirmation`. Argument handling and
-  callbacks stay on the event loop, and async tools run on the event loop as
-  they do without this config. A tool used directly as a `Workflow` node also
-  runs on the event loop, because a tool node calls the tool itself rather
-  than through the `LlmAgent` tool pipeline this config applies to. Parallel
-  calls to synchronous function tools then overlap, so their functions must
-  be safe to run at the same time and on a thread other than the event
-  loop's.
+  Outside live mode, synchronous `FunctionTool` and `FunctionNode` callables
+  use the pool — whether called by an `LlmAgent` or run directly as `Workflow`
+  nodes — and only their own synchronous callables run there: the tool or node
+  function, synchronous generator steps, and a synchronous callable
+  `require_confirmation`. Argument handling and callbacks stay on the event
+  loop, and async tools and async nodes run on the event loop as they do
+  without this config. Parallel synchronous calls then overlap, so their
+  functions must be safe to run at the same time and on a thread other than the
+  event loop's.
 
   IMPORTANT - GIL (Global Interpreter Lock) Considerations:
 

@@ -16,8 +16,6 @@ from __future__ import annotations
 
 from pydantic import model_validator
 
-from ...features import experimental
-from ...features import FeatureName
 from .._google_credentials import BaseGoogleCredentialsConfig
 
 SPANNER_TOKEN_CACHE_KEY = "spanner_token_cache"
@@ -27,12 +25,8 @@ SPANNER_DEFAULT_SCOPE = [
 ]
 
 
-@experimental(FeatureName.GOOGLE_CREDENTIALS_CONFIG)
 class SpannerCredentialsConfig(BaseGoogleCredentialsConfig):
-  """Spanner Credentials Configuration for Google API tools (Experimental).
-
-  Please do not use this in production, as it may be deprecated later.
-  """
+  """Spanner Credentials Configuration for Google API tools."""
 
   @model_validator(mode="after")
   def __post_init__(self) -> SpannerCredentialsConfig:

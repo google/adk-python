@@ -53,6 +53,7 @@ from .scenarios.agent import run_streaming_agent_scenario
 from .scenarios.compaction import CompactionSetup
 from .scenarios.compaction import run_compaction_scenario
 from .scenarios.conversation import AGENT_TOOL_TURNS
+from .scenarios.conversation import GROUNDING_METADATA
 from .scenarios.conversation import MULTI_AGENT_TURNS
 from .scenarios.conversation import NESTED_WORKFLOW_TURNS
 from .scenarios.conversation import StreamedTurn
@@ -108,6 +109,9 @@ class FunctionalTestCase:
   mcp_over_http: bool = False
   # The compaction scenarios only: how the app compacts.
   compaction_setup: CompactionSetup | None = None
+  # When set, the model's final answer carries ``GROUNDING_METADATA``, as a
+  # turn grounded by a built-in search tool such as ``google_search`` does.
+  grounding: bool = False
   # Anything else the case needs in the environment, applied last.
   env: dict[str, str] = field(default_factory=dict)
 
@@ -298,6 +302,7 @@ async def _run_scenario(
       turns=_turns(case),
       streamed_turns=_streamed_turns(case),
       model_exception=case.model_exception,
+      grounding_metadata=GROUNDING_METADATA if case.grounding else None,
   ) as model:
     match case.scenario:
       case "agent":

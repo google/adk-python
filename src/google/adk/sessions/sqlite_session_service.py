@@ -56,6 +56,19 @@ PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
 # json_group_object writes a REAL with 15 significant digits, which rounds
 # floats such as 0.1 + 0.2 for every key in the row. A REAL is written with 17
 # digits when 15 do not read back as the same value, so floats round-trip.
+#
+# SQLite parses an integer outside the signed 64-bit range as a REAL, so its
+# json_each value has already lost digits. The `->` operator (SQLite 3.38+)
+# returns the element's JSON text as stored, which keeps such an integer exact.
+# Each `->` lookup searches the whole object, so it runs only for those values;
+# running it for every key would make the merge quadratic in the key count.
+# Older SQLite has no `->`, and there such an integer still reads back rounded.
+_JSON_TEXT_SQL = (
+    "CASE WHEN type = 'integer' AND typeof(value) = 'real'"
+    " THEN {source} -> fullkey END"
+    if sqlite3.sqlite_version_info >= (3, 38)
+    else "NULL"
+)
 _MERGE_STATE_SQL = """
         SELECT json_group_object(
                  key,
@@ -68,15 +81,20 @@ _MERGE_STATE_SQL = """
                          THEN printf('%!.15g', value)
                        ELSE printf('%!.17g', value)
                      END)
+                   WHEN type = 'integer' AND typeof(value) = 'real'
+                     AND raw_json IS NOT NULL THEN json(raw_json)
                    ELSE value
                  END)
         FROM (
-          SELECT key, value, type FROM json_each({delta})
+          SELECT key, value, type, {delta_json} AS raw_json
+            FROM json_each({delta})
           UNION ALL
-          SELECT key, value, type FROM json_each({state})
+          SELECT key, value, type, {state_json} FROM json_each({state})
            WHERE key NOT IN (SELECT key FROM json_each({delta}))
         )
-      """
+      """.replace(
+    "{delta_json}", _JSON_TEXT_SQL.format(source="{delta}")
+).replace("{state_json}", _JSON_TEXT_SQL.format(source="{state}"))
 
 APP_STATES_TABLE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_states (
@@ -672,14 +690,14 @@ class SqliteSessionService(BaseSessionService):
       now: float,
   ) -> None:
     """Atomically updates session state with dict.update() semantics."""
-    delta_json = json.dumps(delta)
+    # ?1 binds the delta everywhere the merge reads it; the plain ? that
+    # follow it are numbered 2 onwards.
     await db.execute(
         "UPDATE sessions SET"
-        f" state=({_MERGE_STATE_SQL.format(delta='?', state='state')}),"
+        f" state=({_MERGE_STATE_SQL.format(delta='?1', state='state')}),"
         " update_time=? WHERE app_name=? AND user_id=? AND id=?",
         (
-            delta_json,
-            delta_json,
+            json.dumps(delta),
             now,
             app_name,
             user_id,

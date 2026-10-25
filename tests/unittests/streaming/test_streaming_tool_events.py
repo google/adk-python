@@ -48,6 +48,13 @@ from .. import testing_utils
 
 _TOOL_NAME = 'analyze'
 
+# Every debug line the live path emits per event, by message prefix.
+_EVENT_LOG_PREFIXES = (
+    'Receive new event:',
+    'Sending back last function response event:',
+    'Appending live event:',
+)
+
 
 def _texts(events: list[Event]) -> list[str]:
   """Returns the text of every event carrying a single text part."""
@@ -201,6 +208,38 @@ async def test_plain_value_goes_to_model_as_function_response(
   )
 
   assert {'stage': 'partial', 'rows': 10} in _function_responses(to_model)
+
+
+@pytest.mark.asyncio
+async def test_live_debug_logging_carries_no_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+  """Live debug logging says what passed through it, never what it carried."""
+  caplog.set_level('DEBUG', logger='google_adk')
+
+  async def analyze(query: str) -> dict[str, Any]:
+    del query  # Unused.
+    return {'api_token': 'token-in-tool-result'}
+
+  events, _ = await _run_live_until(
+      analyze,
+      stop_when=lambda evs, _: len(evs) >= 3,
+      monkeypatch=monkeypatch,
+  )
+
+  logged = [
+      record.getMessage()
+      for record in caplog.records
+      if record.getMessage().startswith(_EVENT_LOG_PREFIXES)
+  ]
+  assert [e for e in events if 'token-in-tool-result' in '%s' % e]
+  assert all(
+      any(line.startswith(prefix) for line in logged)
+      for prefix in _EVENT_LOG_PREFIXES
+  )
+  assert 'token-in-tool-result' not in caplog.text
+  assert any(event.id in line for event in events for line in logged)
 
 
 @pytest.mark.asyncio

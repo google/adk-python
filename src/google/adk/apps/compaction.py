@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from contextlib import aclosing
 import json
 import logging
 import math
@@ -726,30 +727,32 @@ async def _run_compaction_for_token_threshold_config(
   return False
 
 
-async def _run_compaction_for_token_threshold(
-    app: App, session: Session, session_service: BaseSessionService
-):
-  """Runs post-invocation compaction based on a token threshold.
-
-  If triggered, this compacts older raw events and keeps the last
-  `event_retention_size` raw events un-compacted.
-  """
-  if app.root_agent is None:
-    return None
-  return await _run_compaction_for_token_threshold_config(
-      config=app.events_compaction_config,
-      session=session,
-      session_service=session_service,
-      agent=app.root_agent,
-      agent_name='',
-      current_branch=None,
-  )
-
-
 async def _run_compaction_for_sliding_window(
     app: App,
     session: Session,
     session_service: BaseSessionService,
+) -> AsyncGenerator[Event, None]:
+  """Runs sliding-window compaction with the app's compaction config."""
+  if app.root_agent is None:
+    return
+  async with aclosing(
+      _run_compaction_for_sliding_window_config(
+          config=app.events_compaction_config,
+          session=session,
+          session_service=session_service,
+          agent=app.root_agent,
+      )
+  ) as compaction_events:
+    async for compaction_event in compaction_events:
+      yield compaction_event
+
+
+async def _run_compaction_for_sliding_window_config(
+    *,
+    config: EventsCompactionConfig | None,
+    session: Session,
+    session_service: BaseSessionService,
+    agent: BaseNode,
 ) -> AsyncGenerator[Event, None]:
   """Runs sliding-window compaction over the session's events.
 
@@ -771,10 +774,12 @@ async def _run_compaction_for_sliding_window(
   produces a summary, this returns without a sliding-window summary.
 
   Args:
-    app: The application instance.
+    config: The compaction config to apply. None means no compaction.
     session: The session containing events to compact.
     session_service: The session service, used by the token-threshold path,
       which appends its own event directly.
+    agent: The root agent, whose model builds the summarizer when the config
+      has none.
 
   Yields:
     The sliding-window compaction event, if one is produced. The caller (the
@@ -792,14 +797,16 @@ async def _run_compaction_for_sliding_window(
   if not events:
     return
 
-  config = app.events_compaction_config
   if config is None:
     return
 
   # Prefer token-threshold compaction if configured and triggered.
   if _has_token_threshold_config(config):
-    token_compacted = await _run_compaction_for_token_threshold(
-        app, session, session_service
+    token_compacted = await _run_compaction_for_token_threshold_config(
+        config=config,
+        session=session,
+        session_service=session_service,
+        agent=agent,
     )
     if token_compacted:
       return
@@ -818,7 +825,7 @@ async def _run_compaction_for_sliding_window(
       break
 
   # Get unique invocation IDs and their latest timestamps.
-  invocation_latest_timestamps = {}
+  invocation_latest_timestamps: dict[str, float] = {}
   for event in events:
     # Only consider non-compaction events for unique invocation IDs.
     if event.invocation_id and not event.actions.compaction:
@@ -886,9 +893,7 @@ async def _run_compaction_for_sliding_window(
   ):
     return
 
-  if app.root_agent is None:
-    return
-  _ensure_compaction_summarizer(config=config, agent=app.root_agent)
+  _ensure_compaction_summarizer(config=config, agent=agent)
   if config.summarizer is None:
     return
 

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from typing import Optional
 from typing import Union
@@ -72,23 +73,32 @@ class LangchainTool(FunctionTool):
       )
 
     # Determine which function to use
+    func: Optional[Callable[..., Any]] = None
     if isinstance(tool, StructuredTool):
       func = tool.func
       # For async tools, func might be None but coroutine exists
       if func is None and hasattr(tool, 'coroutine') and tool.coroutine:
         func = tool.coroutine
-    elif hasattr(tool, '_run') or hasattr(tool, 'run'):
-      func = (
-          getattr(tool, '_run')
-          if hasattr(tool, '_run')
-          else getattr(tool, 'run')
-      )
-    else:
-      raise ValueError(
-          "This is not supported. Tool must be a Langchain tool, have a 'run'"
-          " or '_run' method. The tool is: ",
-          type(tool),
-      )
+      # StructuredTool._run takes a config argument the model cannot supply.
+      if func is None and type(tool)._run is StructuredTool._run:
+        raise ValueError(
+            'This is not supported. A StructuredTool must have a func, a'
+            ' coroutine, or a subclass that overrides _run. The tool is:'
+            f' {type(tool)}'
+        )
+    if func is None:
+      if hasattr(tool, '_run') or hasattr(tool, 'run'):
+        func = (
+            getattr(tool, '_run')
+            if hasattr(tool, '_run')
+            else getattr(tool, 'run')
+        )
+      else:
+        raise ValueError(
+            'This is not supported. Tool must be a Langchain tool, have a'
+            " 'run' or '_run' method. The tool is: ",
+            type(tool),
+        )
 
     super().__init__(func)
     # run_manager is a special parameter for langchain tool
@@ -157,7 +167,7 @@ class LangchainTool(FunctionTool):
               False,
               self.name,
               self.description,
-              tool_wrapper.func,
+              self.func,
               tool_wrapper.args,
           )
 

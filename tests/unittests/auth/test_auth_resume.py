@@ -252,11 +252,10 @@ class TestStoreAuthResponse:
       [
           ("bare-api-key-value", "bare-api-key-value"),
           (12345678, "12345678"),
-          (12.5, "12.5"),
       ],
   )
   async def test_accepts_bare_api_key_payloads(self, payload, expected):
-    """Converts bare string and numeric payloads into API_KEY credentials."""
+    """Converts bare string and int payloads into API_KEY credentials."""
     requested = _api_key_auth_config("cred_key")
     state = _empty_state()
 
@@ -271,14 +270,15 @@ class TestStoreAuthResponse:
     assert state["temp:cred_key"].api_key == expected
 
   @pytest.mark.asyncio
-  async def test_rejects_boolean_as_bare_api_key(self):
-    """Rejects boolean payloads even though bool subclasses int."""
+  @pytest.mark.parametrize("payload", [True, 12.5])
+  async def test_rejects_boolean_and_float_as_bare_api_key(self, payload):
+    """Rejects boolean and float payloads as bare API keys."""
     requested = _api_key_auth_config("cred_key")
     state = _empty_state()
 
     stored = await store_auth_response(
         requested=requested,
-        response=True,
+        response=payload,
         state=state,
         interrupt_id="int-1",
     )

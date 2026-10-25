@@ -25,6 +25,7 @@ import time
 from typing import Any
 from typing import cast
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from ...errors.already_exists_error import AlreadyExistsError
 from ...errors.session_not_found_error import SessionNotFoundError
@@ -38,10 +39,13 @@ from ...sessions.session import Session
 from ...sessions.state import State
 from ._config import RedisSessionServiceConfig
 
-try:
+if TYPE_CHECKING:
   import redis.asyncio as redis_asyncio
-except ImportError:
-  redis_asyncio = None
+else:
+  try:
+    import redis.asyncio as redis_asyncio
+  except ImportError:
+    redis_asyncio = None
 
 logger = logging.getLogger("google_adk." + __name__)
 

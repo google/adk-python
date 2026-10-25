@@ -40,17 +40,19 @@ queue.close()
 
 `LiveRequestQueue` wraps an internal `asyncio.Queue` of `LiveRequest` objects. When consumed by the live execution flow, requests are prioritized as follows:
 `activity_start` > `activity_end` > `audio_stream_end` > `blob` > `content`.
+If `state_delta` is set on a `LiveRequest`, those state changes are applied to the session regardless of which other fields are present, even when the request carries no content or a partial or function-response turn.
 
 ### Stream Control Methods
 
-`LiveRequestQueue` provides helper methods for queueing requests:
+`LiveRequestQueue` provides helper methods and properties for managing the stream:
 
 - `send_realtime(blob: types.Blob)`: Enqueues a realtime media blob.
 - `send_content(content: types.Content, partial: bool = False)`: Enqueues turn-by-turn content.
 - `send_activity_start()`: Enqueues an `ActivityStart` signal to mark the beginning of user activity.
 - `send_activity_end()`: Enqueues an `ActivityEnd` signal to mark the end of user activity.
 - `send_audio_stream_end()`: Enqueues an audio stream end signal (`LiveRequest(audio_stream_end=True)`).
-- `close()`: Enqueues a close signal to terminate queue processing.
+- `close()`: Marks `closed` as `True` and enqueues a close signal to terminate queue processing.
+- `closed`: Sticky boolean property indicating whether the client has closed this queue via `close()` or `send(LiveRequest(close=True))`.
 
 ### Audio Stream End vs. Voice Activity Detection (VAD)
 
@@ -70,6 +72,9 @@ from google.adk.live import LiveRequest
 
 # Send an audio stream end signal directly
 queue.send(LiveRequest(audio_stream_end=True))
+
+# Apply a session state update without sending a user turn
+queue.send(LiveRequest(state_delta={"user_muted": True}))
 ```
 
 > [!IMPORTANT]

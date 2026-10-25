@@ -134,6 +134,60 @@
         "example_otel_instrumentation_value": [],
         "kind": "otel_bug",
         "reason": "A streamed chunk carries `FINISH_REASON_UNSPECIFIED`, which the instrumentor lumps in with `OTHER` and reports as `error`; ADK reports it as unfinished. Nothing failed, so calling the chunk an error is wrong."
+      },
+      {
+        "path": [
+          "attributes",
+          "adk.experimental.grounding.query_count"
+        ],
+        "example_native_instrumentation_value": 2,
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "ADK records grounding metadata under `adk.experimental.grounding.*` on its own inference span; the instrumentor does not record grounding metadata from the response."
+      },
+      {
+        "path": [
+          "attributes",
+          "adk.experimental.grounding.chunk_count"
+        ],
+        "example_native_instrumentation_value": 2,
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "ADK records grounding metadata under `adk.experimental.grounding.*` on its own inference span; the instrumentor does not record grounding metadata from the response."
+      },
+      {
+        "path": [
+          "attributes",
+          "adk.experimental.grounding.web_search_queries"
+        ],
+        "example_native_instrumentation_value": [
+          "adk release",
+          "google-adk pypi"
+        ],
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "ADK records grounding metadata under `adk.experimental.grounding.*` on its own inference span; the instrumentor does not record grounding metadata from the response."
+      },
+      {
+        "path": [
+          "attributes",
+          "adk.experimental.grounding.source_uris"
+        ],
+        "example_native_instrumentation_value": [
+          "https://a.test/1",
+          "https://b.test/2"
+        ],
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "ADK records grounding metadata under `adk.experimental.grounding.*` on its own inference span; the instrumentor does not record grounding metadata from the response."
       }
     ]
   },

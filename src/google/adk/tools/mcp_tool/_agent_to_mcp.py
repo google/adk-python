@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import logging
 from typing import Any
 from typing import MutableMapping
 from typing import Optional
@@ -37,8 +39,11 @@ from ...memory.in_memory_memory_service import InMemoryMemoryService
 from ...runners import Runner
 from ...sessions.in_memory_session_service import InMemorySessionService
 
+logger = logging.getLogger("google_adk." + __name__)
+
 _MCP_USER_ID = "mcp_user"
 _INLINE_RESOURCE_URI = "resource://adk-agent/inline-data"
+_MAX_REAP_ATTEMPTS = 3
 
 
 def _build_runner(agent: BaseAgent) -> Runner:
@@ -109,11 +114,86 @@ def _connection_key(ctx: Context[ServerSession, Any]) -> object:
   return getattr(session, "_connection", session)
 
 
+async def _reap_orphaned_sessions(
+    runner: Runner,
+    sessions: MutableMapping[object, str],
+    created: set[str],
+    reap_failures: Optional[MutableMapping[str, int]] = None,
+) -> None:
+  """Deletes ADK sessions whose MCP connection is gone.
+
+  ``sessions`` holds its connections weakly, so an entry vanishes when its
+  connection is garbage-collected; the ADK session it pointed to would stay
+  in the session service forever. Under a stateless streamable HTTP transport
+  the connection lives for a single request, which turns that into one leaked
+  session per tool call. Reaping runs lazily from the next tool call because
+  a GC callback may fire without a running event loop.
+
+  Args:
+    runner: The Runner whose session service owns the sessions.
+    sessions: Per-connection map from MCP connection to ADK session id.
+    created: Ids of every session ever entered into ``sessions``. Ids no
+      longer reachable through ``sessions`` are deleted and removed from it.
+    reap_failures: Optional map tracking failure counts for failed session
+      deletions, bounding retries to at most `_MAX_REAP_ATTEMPTS`.
+  """
+  live = set(sessions.values())
+  if not isinstance(runner.session_service, InMemorySessionService):
+    return
+  for session_id in created - live:
+    if session_id not in created:
+      # A concurrent reap already took this one; the discard below and this
+      # check share one synchronous stretch, so each id is deleted once.
+      continue
+    created.discard(session_id)
+    try:
+      await runner.session_service.delete_session(
+          app_name=runner.app_name,
+          user_id=_MCP_USER_ID,
+          session_id=session_id,
+      )
+      if reap_failures is not None:
+        reap_failures.pop(session_id, None)
+    except Exception:  # pylint: disable=broad-exception-caught
+      # Reaping is housekeeping; it must not fail the tool call that
+      # triggered it. Put the id back so a later call retries the delete,
+      # up to _MAX_REAP_ATTEMPTS times.
+      attempts = (
+          reap_failures.get(session_id, 0) + 1
+          if reap_failures is not None
+          else 1
+      )
+      if reap_failures is None or attempts < _MAX_REAP_ATTEMPTS:
+        if reap_failures is not None:
+          reap_failures[session_id] = attempts
+        created.add(session_id)
+        logger.warning(
+            "Failed to delete orphaned MCP agent session %s; will retry on a"
+            " later tool call.",
+            session_id,
+            exc_info=True,
+        )
+      else:
+        reap_failures.pop(session_id, None)
+        logger.warning(
+            "Failed to delete orphaned MCP agent session %s after %d attempts;"
+            " dropping.",
+            session_id,
+            _MAX_REAP_ATTEMPTS,
+            exc_info=True,
+        )
+    except BaseException:
+      created.add(session_id)
+      raise
+
+
 async def _run_agent(
     runner: Runner,
     request: str,
     ctx: Optional[Context[ServerSession, Any]] = None,
     sessions: Optional[MutableMapping[object, str]] = None,
+    created: Optional[set[str]] = None,
+    locks: Optional[MutableMapping[object, asyncio.Lock]] = None,
 ) -> list[mcp_types.ContentBlock]:
   """Runs the agent for one request and returns its final response content.
 
@@ -128,6 +208,10 @@ async def _run_agent(
     request: The user request text for this call.
     ctx: The MCP tool call context, used for progress and session reuse.
     sessions: Per-connection map from MCP connection to ADK session id.
+    created: Set recording the id of every session entered into ``sessions``,
+      so `_reap_orphaned_sessions` can delete the ones whose connection dies.
+    locks: Per-connection locks preventing concurrent session creation on the
+      same connection.
 
   Returns:
     The agent's final response as a list of MCP content blocks (text plus any
@@ -139,12 +223,34 @@ async def _run_agent(
     connection = _connection_key(ctx)
     session_id = sessions.get(connection)
   if session_id is None:
-    session = await runner.session_service.create_session(
-        app_name=runner.app_name, user_id=_MCP_USER_ID
-    )
-    session_id = session.id
-    if sessions is not None and connection is not None:
-      sessions[connection] = session_id
+    if locks is not None and connection is not None and sessions is not None:
+      lock = locks.get(connection)
+      if lock is None:
+        lock = asyncio.Lock()
+        locks[connection] = lock
+      async with lock:
+        session_id = sessions.get(connection)
+        if session_id is None:
+          session = await runner.session_service.create_session(
+              app_name=runner.app_name, user_id=_MCP_USER_ID
+          )
+          session_id = session.id
+          # No await between the two writes: an id is either absent from both or
+          # present in both, so the reaper never sees a session it cannot delete.
+          sessions[connection] = session_id
+          if created is not None:
+            created.add(session_id)
+    else:
+      session = await runner.session_service.create_session(
+          app_name=runner.app_name, user_id=_MCP_USER_ID
+      )
+      session_id = session.id
+      if sessions is not None and connection is not None:
+        # No await between the two writes: an id is either absent from both or
+        # present in both, so the reaper never sees a session it cannot delete.
+        sessions[connection] = session_id
+        if created is not None:
+          created.add(session_id)
   new_message = types.Content(role="user", parts=[types.Part(text=request)])
   final_content: list[mcp_types.ContentBlock] = []
   async for event in runner.run_async(
@@ -183,11 +289,18 @@ def to_mcp_server(
   lets harnesses that speak MCP drive an ADK agent.
 
   One ADK session is kept per MCP connection, so successive tool calls on the
-  same connection form a single multi-turn conversation.
+  same connection form a single multi-turn conversation. When using an
+  in-memory session service (such as the default), orphaned ADK sessions whose
+  connection has closed are deleted on subsequent tool calls so a long-running
+  server does not accumulate dead conversations. Caller-supplied persistent
+  session services retain their sessions.
 
   The caller chooses the transport, e.g. ``server.run(transport="stdio")`` for
   a local host or ``server.run(transport="streamable-http")`` for a networked
-  one.
+  one. A stateless streamable HTTP deployment (``stateless_http=True``, e.g.
+  behind an autoscaler) gets a fresh connection per request, so every tool
+  call is its own single-turn conversation whose session is likewise
+  reclaimed when using an in-memory session service.
 
   Args:
     agent: The ADK agent to serve.
@@ -208,16 +321,39 @@ def to_mcp_server(
   tool_name = name or agent.name or "adk_agent"
   server = FastMCP(name=tool_name, instructions=instructions)
   agent_runner = runner if runner is not None else _build_runner(agent)
+  reap_sessions = isinstance(
+      agent_runner.session_service, InMemorySessionService
+  )
   # Maps each MCP connection to its ADK session; WeakKeyDictionary drops the
   # entry when the connection is garbage-collected. pylint wrongly flags the
   # WeakKeyDictionary() instantiation below as abstract-class-instantiated.
   # pylint: disable-next=abstract-class-instantiated
   sessions: MutableMapping[object, str] = weakref.WeakKeyDictionary()
+  # Ids of every session in `sessions`, kept strongly so the sessions of
+  # collected connections can still be found and deleted.
+  created_session_ids: set[str] = set()
+  # Failure count per session id to bound retries on service outages.
+  reap_failures: dict[str, int] = {}
+  # Per-connection lock ensuring concurrent first calls on one connection do
+  # not both create and overwrite an ADK session.
+  # pylint: disable-next=abstract-class-instantiated
+  locks: MutableMapping[object, asyncio.Lock] = weakref.WeakKeyDictionary()
 
   async def call_agent(
       request: str, ctx: Context[ServerSession, Any]
   ) -> list[mcp_types.ContentBlock]:
-    return await _run_agent(agent_runner, request, ctx, sessions)
+    if reap_sessions:
+      await _reap_orphaned_sessions(
+          agent_runner, sessions, created_session_ids, reap_failures
+      )
+    return await _run_agent(
+        agent_runner,
+        request,
+        ctx,
+        sessions,
+        created_session_ids if reap_sessions else None,
+        locks,
+    )
 
   server.add_tool(
       call_agent,
