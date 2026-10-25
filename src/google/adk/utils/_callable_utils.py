@@ -179,7 +179,9 @@ def get_callable_doc(func: Callable[..., Any]) -> str:
 
   A functools.partial without a docstring of its own resolves to the wrapped
   callable's docstring, and a callable object without one falls back to its
-  `__call__` docstring.
+  `__call__` docstring. Note that with `JSON_SCHEMA_FOR_FUNC_DECL` off,
+  `from_function_with_options` still reads `func.__doc__` directly for routines,
+  so the two can differ there.
   """
   doc = _clean_doc(func)
   if isinstance(func, functools.partial) and doc == _DEFAULT_PARTIAL_DOC:

@@ -103,7 +103,7 @@ class InMemoryMemoryService(BaseMemoryService):
       deleted_ids = self._deleted_memory_ids.get(user_key, set())
       self._session_events[user_key] = self._session_events.get(user_key, {})
       self._session_events[user_key][session.id] = [
-          event
+          event.model_copy(deep=True)
           for event in session.events
           if event.content
           and event.content.parts
@@ -136,7 +136,7 @@ class InMemoryMemoryService(BaseMemoryService):
       existing_ids = {event.id for event in existing_events}
       for event in events_to_add:
         if event.id not in existing_ids and event.id not in deleted_ids:
-          existing_events.append(event)
+          existing_events.append(event.model_copy(deep=True))
           existing_ids.add(event.id)
       self._session_events[user_key][scoped_session_id] = existing_events
 
@@ -163,8 +163,11 @@ class InMemoryMemoryService(BaseMemoryService):
       for event in session_events:
         if not event.content or not event.content.parts:
           continue
+        visible_parts = [
+            part for part in event.content.parts if not part.thought
+        ]
         event_text = ' '.join(
-            [part.text for part in event.content.parts if part.text]
+            [part.text for part in visible_parts if part.text]
         )
         words_in_event = _extract_searchable_words(event_text)
         if not words_in_event:
@@ -182,7 +185,15 @@ class InMemoryMemoryService(BaseMemoryService):
               matched_words,
               MemoryEntry(
                   id=event.id,
-                  content=event.content,
+                  content=event.content.model_copy(
+                      deep=True,
+                      update={
+                          'parts': [
+                              part.model_copy(deep=True)
+                              for part in visible_parts
+                          ]
+                      },
+                  ),
                   author=event.author,
                   timestamp=_utils.format_timestamp(event.timestamp),
               ),

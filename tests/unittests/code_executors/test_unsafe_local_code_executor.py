@@ -94,6 +94,14 @@ class TestUnsafeLocalCodeExecutor:
     executor = UnsafeLocalCodeExecutor()
     assert not executor.stateful
     assert not executor.optimize_data_file
+    # Bounded by default, so generated code that never terminates cannot hang
+    # the agent waiting on it.
+    assert executor.timeout_seconds == 300
+
+  def test_init_accepts_timeout_seconds_none(self):
+    """Asking for no timeout at all is still allowed, as on the base class."""
+    executor = UnsafeLocalCodeExecutor(timeout_seconds=None)
+    assert executor.timeout_seconds is None
 
   def test_init_stateful_raises_error(self):
     with pytest.raises(

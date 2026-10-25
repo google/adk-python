@@ -53,6 +53,7 @@ from .scenarios.agent import run_streaming_agent_scenario
 from .scenarios.compaction import CompactionSetup
 from .scenarios.compaction import run_compaction_scenario
 from .scenarios.conversation import AGENT_TOOL_TURNS
+from .scenarios.conversation import GROUNDING_METADATA
 from .scenarios.conversation import MULTI_AGENT_TURNS
 from .scenarios.conversation import NESTED_WORKFLOW_TURNS
 from .scenarios.conversation import StreamedTurn
@@ -75,6 +76,7 @@ from .scenarios.telemetry_setup import TelemetryProviders
 
 if TYPE_CHECKING:
   from google.adk.events.event import Event
+  from opentelemetry.sdk._logs import ReadableLogRecord
   from opentelemetry.sdk.trace import ReadableSpan
 
 
@@ -107,6 +109,9 @@ class FunctionalTestCase:
   mcp_over_http: bool = False
   # The compaction scenarios only: how the app compacts.
   compaction_setup: CompactionSetup | None = None
+  # When set, the model's final answer carries ``GROUNDING_METADATA``, as a
+  # turn grounded by a built-in search tool such as ``google_search`` does.
+  grounding: bool = False
   # Anything else the case needs in the environment, applied last.
   env: dict[str, str] = field(default_factory=dict)
 
@@ -165,6 +170,7 @@ class Recording:
   instrumentation: InferenceInstrumentation
   digest: TelemetryDigest
   spans: tuple[ReadableSpan, ...]
+  logs: tuple[ReadableLogRecord, ...]
   events: list[Event]
 
 
@@ -175,6 +181,9 @@ async def check_case(case: FunctionalTestCase) -> Recording:
   is held to the gaps already explained: one that is new, or recorded without
   a ``kind`` and a ``reason``, fails. Returns the native recording, the one
   the goldens are of.
+
+  Under the stable semconv ADK records the call on both sides, and the
+  instrumentor is skipped.
   """
   recordings = await record_case(case)
   native = recordings["native"]
@@ -210,13 +219,16 @@ async def record_case(
 
 
 async def _record(
-    case: FunctionalTestCase, instrumentation: InferenceInstrumentation
+    case: FunctionalTestCase,
+    instrumentation: InferenceInstrumentation,
+    *,
+    log_exporter: InMemoryLogRecordExporter | None = None,
 ) -> Recording:
   with pytest.MonkeyPatch.context() as monkeypatch:
     case.apply_env(monkeypatch)
 
     span_exporter = InMemorySpanExporter()
-    log_exporter = InMemoryLogRecordExporter()
+    log_exporter = log_exporter or InMemoryLogRecordExporter()
     metric_reader = InMemoryMetricReader()
     providers = install_telemetry(
         monkeypatch, span_exporter, log_exporter, metric_reader
@@ -233,14 +245,14 @@ async def _record(
         )
 
     spans = span_exporter.get_finished_spans()
+    logs = log_exporter.get_finished_logs()
     return Recording(
         instrumentation=instrumentation,
         digest=TelemetryDigest.build(
-            spans,
-            log_exporter.get_finished_logs(),
-            metric_reader.get_metrics_data(),
+            spans, logs, metric_reader.get_metrics_data()
         ),
         spans=spans,
+        logs=logs,
         events=events,
     )
 
@@ -290,6 +302,7 @@ async def _run_scenario(
       turns=_turns(case),
       streamed_turns=_streamed_turns(case),
       model_exception=case.model_exception,
+      grounding_metadata=GROUNDING_METADATA if case.grounding else None,
   ) as model:
     match case.scenario:
       case "agent":

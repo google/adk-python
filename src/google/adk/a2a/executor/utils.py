@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from a2a.server.agent_execution.context import RequestContext
 from a2a.server.events import Event as A2AEvent
@@ -26,6 +27,9 @@ from ...events.event import Event
 from ..converters.utils import _get_adk_metadata_key as _get_adk_metadata_key
 from .config import ExecuteInterceptor
 from .executor_context import ExecutorContext
+
+if TYPE_CHECKING:
+  from ..converters.request_converter import AgentRunRequest
 
 
 async def _enqueue_canceled_task_event(
@@ -60,6 +64,13 @@ def _require_request_context(
   if not context.context_id:
     raise ValueError('A2A request must have a context ID')
   return message, context.task_id, context.context_id
+
+
+def _require_user_id(run_request: AgentRunRequest) -> str:
+  """Return the request's user ID, which every session service requires."""
+  if run_request.user_id is None:
+    raise ValueError('The A2A request converter returned no user ID')
+  return run_request.user_id
 
 
 async def execute_before_agent_interceptors(

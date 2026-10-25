@@ -189,13 +189,19 @@ class MultimodalToolResultsPlugin(BasePlugin):
         callback_context.state.update({current_turn_key: []})
 
       if parts_to_attach:
-        llm_request.contents[-1].parts += parts_to_attach
+        last_content = llm_request.contents[-1]
+        if last_content.parts is None:
+          last_content.parts = []
+        last_content.parts += parts_to_attach
 
     else:
       # Default mode
       temp_key = PARTS_RETURNED_BY_TOOLS_ID
       if temp_parts := callback_context.state.get(temp_key, None):
-        llm_request.contents[-1].parts += temp_parts
+        last_content = llm_request.contents[-1]
+        if last_content.parts is None:
+          last_content.parts = []
+        last_content.parts += temp_parts
         callback_context.state.update({temp_key: []})
 
     return None

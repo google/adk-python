@@ -158,6 +158,23 @@ class TestAgentEngineSandboxCodeExecutor:
     ]
 
   @patch("agentplatform.Client")
+  def test_execute_code_rejects_agentplatform_before_2_2(
+      self,
+      mock_agentplatform_client,
+      mock_invocation_context,
+  ):
+    """Test execute_code raises ImportError on a pre-2.2 agentplatform."""
+    mock_agentplatform_client.return_value = MagicMock(spec=["agent_engines"])
+    executor = AgentEngineSandboxCodeExecutor(
+        sandbox_resource_name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
+    )
+
+    with pytest.raises(ImportError, match="has no runtimes, sandboxes"):
+      executor.execute_code(
+          mock_invocation_context, CodeExecutionInput(code='print("hi")')
+      )
+
+  @patch("agentplatform.Client")
   def test_execute_code_recreates_sandbox_when_get_returns_none(
       self,
       mock_agentplatform_client,

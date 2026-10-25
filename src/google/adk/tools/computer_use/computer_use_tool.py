@@ -177,6 +177,10 @@ class ComputerUseTool(FunctionTool):
       # Process the result if it's an EnvironmentState
       response = result
       if isinstance(result, ComputerState):
+        if result.screenshot is None:
+          raise ValueError(
+              "A computer action returned a state with no screenshot"
+          )
         response = {
             "image": {
                 "mimetype": "image/png",

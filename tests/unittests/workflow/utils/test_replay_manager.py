@@ -15,11 +15,16 @@
 """Tests for ReplayManager utility."""
 
 import asyncio
+from typing import Any
 from unittest.mock import MagicMock
 
+from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.event_actions import EventActions
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.adk.workflow.utils._replay_manager import ReplayManager
 from google.genai import types
 import pytest
@@ -1015,3 +1020,75 @@ def test_scan_workflow_events_registers_parent_sequence_barrier():
   barrier = mgr.prepare_parent_sequence_barrier(ctx, "wf@1")
   assert barrier is mgr.sequence_barrier
   assert barrier.sequence == ["alpha@1", "beta@1"]
+
+
+def _workflow_ctx(events: list[Event]) -> Context:
+  """A Context for workflow `wf@1` whose session holds `events`."""
+  ic = InvocationContext(
+      invocation_id="inv-1",
+      session=Session(id="s", app_name="app", user_id="u", events=events),
+      session_service=InMemorySessionService(),
+  )
+  return Context(ic, node_path="wf@1")
+
+
+def _child_event(child: str, **fields: Any) -> Event:
+  """An event emitted by direct child `child` of workflow `wf@1`."""
+  return Event(
+      author="node",
+      node_info=NodeInfo(path=f"wf@1/{child}", run_id="1"),
+      invocation_id="inv-1",
+      **fields,
+  )
+
+
+def test_scan_workflow_events_sequence_skips_child_that_only_failed() -> None:
+  """A child whose only outcome is an error has no place in the replay order.
+
+  It did not complete, so it runs again on resume instead of being replayed.
+  """
+  events = [
+      _child_event("flaky@1", error_code="ValueError"),
+      _child_event("steady@1", output="steady_out"),
+  ]
+
+  _, sequence = ReplayManager().scan_workflow_events(_workflow_ctx(events))
+
+  assert sequence == ["steady@1"]
+
+
+def test_scan_workflow_events_sequence_orders_retried_child_by_its_success() -> (
+    None
+):
+  """A child that failed and then succeeded is ordered where it succeeded."""
+  events = [
+      _child_event("flaky@1", error_code="ValueError"),
+      _child_event("steady@1", output="steady_out"),
+      _child_event("flaky@1", output="flaky_out"),
+  ]
+
+  _, sequence = ReplayManager().scan_workflow_events(_workflow_ctx(events))
+
+  assert sequence == ["steady@1", "flaky@1"]
+
+
+def test_scan_workflow_events_sequence_keeps_error_event_with_transfer() -> (
+    None
+):
+  """An error event that also carries a transfer counts as a completed result."""
+  events = [
+      _child_event(
+          "router@1",
+          error_code="MAX_TOKENS",
+          actions=EventActions(transfer_to_agent="agent_b"),
+      ),
+      _child_event("steady@1", output="steady_out"),
+  ]
+
+  recovered, sequence = ReplayManager().scan_workflow_events(
+      _workflow_ctx(events)
+  )
+
+  assert recovered["router@1"].error_code is None
+  assert recovered["router@1"].transfer_to_agent == "agent_b"
+  assert sequence == ["router@1", "steady@1"]

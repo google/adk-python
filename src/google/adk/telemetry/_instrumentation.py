@@ -60,6 +60,7 @@ _AGENT_INVOCATION_SCOPE_KEY = context_api.create_key("agent_invocation_scope")
 _TOOL_EXECUTION_TELEMETRY_KEY = context_api.create_key(
     "tool_execution_telemetry"
 )
+_INFERENCE_SCOPE_KEY = context_api.create_key("adk_inference_scope")
 _WORKFLOW_SCOPE_KEY = context_api.create_key("adk_workflow_scope")
 _BUSY_INTERVALS_KEY = context_api.create_key("adk_busy_intervals")
 
@@ -513,6 +514,13 @@ def record_response_source(
     invocation_context: InvocationContext,
 ) -> None:
   """Names the callback that produced the response recorded on ``span``."""
+  if (
+      source in ("before_model_callback", "on_model_error_callback")
+      and resolve_schema_version() >= SCHEMA_VERSION_SEMCONV_ALIGNED
+  ):
+    # Schema v2 has no `call_llm` span: `span` is the agent span, which covers
+    # every model call of the turn, so it cannot name one call's callback.
+    return
   _set_response_source(
       tracing._telemetry_config_from_invocation_context(invocation_context),
       span,
@@ -547,6 +555,8 @@ class ToolScope:
 class InferenceScope:
   """What one model call collects while its inference span is open."""
 
+  llm_request: LlmRequest
+  user_id: str
   span: tracing.GenerateContentSpan | trace.Span | None = None
   _llm_responses: list[LlmResponse] = dataclasses.field(default_factory=list)
   _inference_span_ended: bool = False
@@ -670,6 +680,14 @@ def _agent_invocation_scope() -> _AgentInvocationScope | None:
   """Returns the agent invocation's scope."""
   value = context_api.get_value(_AGENT_INVOCATION_SCOPE_KEY)
   return value if isinstance(value, _AgentInvocationScope) else None
+
+
+def inference_scope(
+    otel_context: context_api.Context | None = None,
+) -> InferenceScope | None:
+  """Returns the InferenceScope published on ``otel_context`` (default: current)."""
+  value = context_api.get_value(_INFERENCE_SCOPE_KEY, context=otel_context)
+  return value if isinstance(value, InferenceScope) else None
 
 
 def _workflow_scope(
@@ -1021,7 +1039,16 @@ async def record_inference_telemetry(
   """Unified async context manager for consolidated inference metrics."""
   start_time = time.monotonic()
   workflow_scope = _workflow_scope()
-  tel_ctx = InferenceScope()
+  tel_ctx = InferenceScope(
+      llm_request=llm_request,
+      user_id=invocation_context.session.user_id,
+  )
+  # Current until the caller finishes consuming the call, so log records
+  # emitted during it can find it. Held across the caller's yields, so the
+  # caller runs in its own context (`_stream_in_caller_scope`).
+  token = context_api.attach(
+      context_api.set_value(_INFERENCE_SCOPE_KEY, tel_ctx)
+  )
   try:
     async with tracing.use_inference_span(
         llm_request,
@@ -1031,6 +1058,7 @@ async def record_inference_telemetry(
       tel_ctx.span = gc_span
       yield tel_ctx
   finally:
+    context_api.detach(token)
     inference_error = sys.exc_info()[1]
     _accumulate_inference_call(workflow_scope)
     usage = _token_usage.TokenUsage.from_llm_responses(tel_ctx.llm_responses)
@@ -1039,7 +1067,9 @@ async def record_inference_telemetry(
     agent = invocation_context.agent
     elapsed_s = _metrics.get_elapsed_s(tel_ctx.span, start_time)
     try:
-      if agent is not None and tracing._should_emit_native_telemetry(agent):
+      if agent is not None and isinstance(
+          tel_ctx.span, tracing.GenerateContentSpan
+      ):
         _metrics.record_client_operation_duration(
             agent_name=agent.name,
             elapsed_s=elapsed_s,

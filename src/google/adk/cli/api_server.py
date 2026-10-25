@@ -21,6 +21,7 @@ import base64
 import binascii
 from contextlib import asynccontextmanager
 import contextvars
+from dataclasses import dataclass
 import importlib
 import inspect
 import json
@@ -56,10 +57,10 @@ from fastapi.websockets import WebSocket
 from fastapi.websockets import WebSocketDisconnect
 from google.genai import types
 from opentelemetry import trace
+from opentelemetry.sdk._logs.export import SimpleLogRecordProcessor
 import opentelemetry.sdk.environment_variables as otel_env
 from opentelemetry.sdk.trace import export as export_lib
 from opentelemetry.sdk.trace import ReadableSpan
-from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider
 from pydantic import Field
 from pydantic import ValidationError
@@ -79,6 +80,8 @@ from ..artifacts.base_artifact_service import ArtifactVersion
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.auth_credential import _redact_credential_secrets
 from ..auth.credential_service.base_credential_service import BaseCredentialService
+from ..errors._invocation_not_found_error import InvocationNotFoundError
+from ..errors._stale_session_error import StaleSessionError
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.input_validation_error import InputValidationError
 from ..errors.session_not_found_error import SessionNotFoundError
@@ -94,7 +97,11 @@ from ..models._service_tier import ServiceTier
 from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
+from ..sessions.base_session_service import GetSessionConfig
 from ..sessions.session import Session
+from ..telemetry._web_ui import WebUiLogExporter
+from ..telemetry.setup import maybe_set_otel_providers
+from ..telemetry.setup import OTelHooks
 from ..utils._function_call_names import CLIENT_FUNCTION_CALL_NAMES as _CLIENT_FUNCTION_CALL_NAMES
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils.agent_info import AgentInfo
@@ -464,6 +471,33 @@ def _with_abort_signal_kwarg(
   return kwargs
 
 
+async def _monitor_client_disconnect(
+    request: Request,
+    session_id: str,
+    abort_signal: asyncio.Event,
+    task_to_cancel: asyncio.Task[Any],
+    on_disconnect: Optional[Callable[[], None]] = None,
+) -> None:
+  """Monitors the ASGI receive channel and aborts on client disconnect."""
+  try:
+    while True:
+      message = await request.receive()
+      if message.get("type") == "http.disconnect":
+        logger.warning(
+            "Client disconnected. Aborting agent run for session %s.",
+            session_id,
+        )
+        abort_signal.set()
+        if on_disconnect is not None:
+          on_disconnect()
+        task_to_cancel.cancel()
+        break
+  except asyncio.CancelledError:
+    pass
+  except Exception as e:  # pylint: disable=broad-exception-caught
+    logger.error("Exception in disconnect monitor: %s", e, exc_info=True)
+
+
 _current_session_options: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("current_session_options", default=None)
 )
@@ -578,10 +612,14 @@ class ApiServerSpanExporter(export_lib.SpanExporter):
       self, spans: typing.Sequence[ReadableSpan]
   ) -> export_lib.SpanExportResult:
     for span in spans:
+      # Schema v1 emits both `call_llm` and `generate_content`; v2 emits only
+      # `generate_content`. In v1 `call_llm` ends later, so it overwrites
+      # `generate_content` in `trace_dict`.
       if (
           span.name == "call_llm"
           or span.name == "send_data"
           or span.name.startswith("execute_tool")
+          or span.name.startswith("generate_content")
       ):
         # ReadableSpan.attributes wraps its attributes and is never None.
         attributes = dict(cast("Mapping[str, AttributeValue]", span.attributes))
@@ -773,6 +811,22 @@ class UpdateSessionRequest(common.BaseModel):
   """The state changes to apply to the session."""
 
 
+class RewindSessionRequest(common.BaseModel):
+  """Request to rewind a session to before a given invocation."""
+
+  rewind_before_invocation_id: str
+  """The invocation ID to rewind the session to before."""
+
+
+@dataclass
+class _LiveSessionRun:
+  """A live /run or /run_sse invocation whose abort_signal rewind can trip."""
+
+  abort_signal: asyncio.Event
+  finished: asyncio.Event
+  next_step_event: Optional[asyncio.Event] = None
+
+
 class FinalizeAgentIdentityCredentialsRequest(common.BaseModel):
   """Request to finalize a 3LO consent for an Agent Identity connector."""
 
@@ -801,27 +855,33 @@ class ListAppsResponse(common.BaseModel):
 
 def _setup_telemetry(
     otel_to_cloud: bool = False,
-    internal_exporters: Optional[list[SpanProcessor]] = None,
+    internal_processors: Optional[OTelHooks] = None,
 ) -> None:
+  internal_processors = internal_processors or OTelHooks()
   # TODO - remove the else branch here once maybe_set_otel_providers is no
   # longer experimental.
   if otel_to_cloud:
-    _setup_gcp_telemetry(internal_exporters=internal_exporters)
+    _setup_gcp_telemetry(internal_processors)
   elif _otel_env_vars_enabled():
-    _setup_telemetry_from_env(internal_exporters=internal_exporters)
+    _setup_telemetry_from_env(internal_processors)
   else:
     # Old logic - to be removed when above leaves experimental.
     tracer_provider = trace.get_tracer_provider()
     is_proxy = isinstance(tracer_provider, trace.ProxyTracerProvider)
     if is_proxy:
       tracer_provider = TracerProvider()
-    if internal_exporters is not None:
-      add_proc = getattr(tracer_provider, "add_span_processor", None)
-      if callable(add_proc):
-        for exporter in internal_exporters:
-          add_proc(exporter)
+    add_proc = getattr(tracer_provider, "add_span_processor", None)
+    if callable(add_proc):
+      for processor in internal_processors.span_processors:
+        add_proc(processor)
     if is_proxy:
       trace.set_tracer_provider(tracer_provider=tracer_provider)
+    # Logs never had the old logic: a provider set elsewhere is left alone.
+    maybe_set_otel_providers([
+        OTelHooks(
+            log_record_processors=internal_processors.log_record_processors
+        )
+    ])
 
 
 def _otel_env_vars_enabled() -> bool:
@@ -836,62 +896,34 @@ def _otel_env_vars_enabled() -> bool:
   ])
 
 
-def _setup_gcp_telemetry(
-    internal_exporters: Optional[list[SpanProcessor]] = None,
-) -> None:
-  if typing.TYPE_CHECKING:
-    from ..telemetry.setup import OTelHooks
-
-  otel_hooks_to_add: list[OTelHooks] = []
-
-  if internal_exporters:
-    from ..telemetry.setup import OTelHooks
-
-    # Register ADK-specific exporters in trace provider.
-    otel_hooks_to_add.append(OTelHooks(span_processors=internal_exporters))
-
+def _setup_gcp_telemetry(internal_processors: OTelHooks) -> None:
   import google.auth
 
   from ..telemetry.google_cloud import _CLOUD_PLATFORM_SCOPE
   from ..telemetry.google_cloud import get_gcp_exporters
   from ..telemetry.google_cloud import get_gcp_resource
-  from ..telemetry.setup import maybe_set_otel_providers
 
   credentials, project_id = google.auth.default(scopes=[_CLOUD_PLATFORM_SCOPE])
 
-  otel_hooks_to_add.append(
-      get_gcp_exporters(
-          # TODO - use trace_to_cloud here as well once otel_to_cloud is no
-          # longer experimental.
-          enable_cloud_tracing=True,
-          enable_cloud_metrics=True,
-          enable_cloud_logging=True,
-          google_auth=(credentials, project_id),
-      )
-  )
-  otel_resource = get_gcp_resource(project_id)
-
   maybe_set_otel_providers(
-      otel_hooks_to_setup=otel_hooks_to_add,
-      otel_resource=otel_resource,
+      otel_hooks_to_setup=[
+          internal_processors,
+          get_gcp_exporters(
+              # TODO - use trace_to_cloud here as well once otel_to_cloud is no
+              # longer experimental.
+              enable_cloud_tracing=True,
+              enable_cloud_metrics=True,
+              enable_cloud_logging=True,
+              google_auth=(credentials, project_id),
+          ),
+      ],
+      otel_resource=get_gcp_resource(project_id),
   )
   _setup_instrumentation_lib_if_installed()
 
 
-def _setup_telemetry_from_env(
-    internal_exporters: Optional[list[SpanProcessor]] = None,
-) -> None:
-  from ..telemetry.setup import maybe_set_otel_providers
-
-  otel_hooks_to_add = []
-
-  if internal_exporters:
-    from ..telemetry.setup import OTelHooks
-
-    # Register ADK-specific exporters in trace provider.
-    otel_hooks_to_add.append(OTelHooks(span_processors=internal_exporters))
-
-  maybe_set_otel_providers(otel_hooks_to_setup=otel_hooks_to_add)
+def _setup_telemetry_from_env(internal_processors: OTelHooks) -> None:
+  maybe_set_otel_providers(otel_hooks_to_setup=[internal_processors])
   _setup_instrumentation_lib_if_installed()
 
 
@@ -906,7 +938,7 @@ def _setup_instrumentation_lib_if_installed() -> None:
   except ImportError:
     logger.warning(
         "Unable to import GoogleGenAiSdkInstrumentor - some"
-        " telemetry will be disabled. Make sure to install google-adk[otel-gcp]"
+        " telemetry will be disabled. Make sure to install google-adk[otel]"
     )
   if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID"):
     # Set up HTTPX and gRPC instrumentation for A2A multi-agent observability.
@@ -917,7 +949,7 @@ def _setup_instrumentation_lib_if_installed() -> None:
     except (ImportError, AttributeError):
       logger.warning(
           "telemetry enabled but proceeding without HTTPX instrumentation,"
-          " because google-adk[otel-gcp] has not been installed"
+          " because google-adk[otel] has not been installed"
       )
     try:
       from opentelemetry.instrumentation.grpc import GrpcInstrumentorClient
@@ -926,7 +958,7 @@ def _setup_instrumentation_lib_if_installed() -> None:
     except (ImportError, AttributeError):
       logger.warning(
           "telemetry enabled but proceeding without gRPC instrumentation,"
-          " because google-adk[otel-gcp] has not been installed"
+          " because google-adk[otel] has not been installed"
       )
 
 
@@ -1067,6 +1099,76 @@ class ApiServer:
     self.avatar_config = avatar_config
     self.max_llm_calls = max_llm_calls
     self.default_app_name = os.getenv("ADK_DEFAULT_APP_NAME")
+    self._live_session_runs: dict[
+        tuple[str, str, str], list[_LiveSessionRun]
+    ] = {}
+
+  def _live_session_key(
+      self, app_name: str, user_id: str, session_id: str
+  ) -> tuple[str, str, str]:
+    return (app_name, user_id, session_id)
+
+  def _register_live_session_run(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      live_run: _LiveSessionRun,
+  ) -> None:
+    key = self._live_session_key(app_name, user_id, session_id)
+    self._live_session_runs.setdefault(key, []).append(live_run)
+
+  def _unregister_live_session_run(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      live_run: _LiveSessionRun,
+  ) -> None:
+    key = self._live_session_key(app_name, user_id, session_id)
+    runs = self._live_session_runs.get(key)
+    if not runs:
+      return
+    try:
+      runs.remove(live_run)
+    except ValueError:
+      return
+    if not runs:
+      del self._live_session_runs[key]
+
+  async def _abort_live_session_runs(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      timeout: float = 10.0,
+  ) -> None:
+    """Trips abort_signal on live /run and /run_sse runs for this session."""
+    key = self._live_session_key(app_name, user_id, session_id)
+    runs = list(self._live_session_runs.get(key, ()))
+    if not runs:
+      return
+    for live_run in runs:
+      live_run.abort_signal.set()
+      if live_run.next_step_event is not None:
+        live_run.next_step_event.set()
+    try:
+      await asyncio.wait_for(
+          asyncio.gather(*(live_run.finished.wait() for live_run in runs)),
+          timeout=timeout,
+      )
+    except asyncio.TimeoutError as e:
+      logger.warning(
+          "Timed out waiting for live runs to abort for session %s",
+          session_id,
+      )
+      raise HTTPException(
+          status_code=409,
+          detail=(
+              "Timed out waiting for live runs to abort for session"
+              f" {session_id}"
+          ),
+      ) from e
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
@@ -1075,7 +1177,8 @@ class ApiServer:
           status_code=403,
           detail=(
               "Access to internal special agents is disabled in API server"
-              " mode."
+              " mode and on a development server not known to be bound to a"
+              " loopback address."
           ),
       )
     # Handle cleanup
@@ -1379,17 +1482,21 @@ class ApiServer:
 
     memory_exporter = InMemoryExporter(session_trace_dict)
     self._memory_exporter = memory_exporter
+    self._log_exporter = WebUiLogExporter()
 
-    internal_exporters: list[SpanProcessor] = []
+    internal_processors = None
     if self._serves_debug_trace_endpoints:
-      internal_exporters = [
-          export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
-          export_lib.SimpleSpanProcessor(memory_exporter),
-      ]
+      internal_processors = OTelHooks(
+          span_processors=[
+              export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
+              export_lib.SimpleSpanProcessor(memory_exporter),
+          ],
+          log_record_processors=[SimpleLogRecordProcessor(self._log_exporter)],
+      )
 
     _setup_telemetry(
         otel_to_cloud=otel_to_cloud,
-        internal_exporters=internal_exporters,
+        internal_processors=internal_processors,
     )
     tracer_provider = trace.get_tracer_provider()
     if hasattr(tracer_provider, "add_span_processor"):
@@ -1684,7 +1791,8 @@ class ApiServer:
             status_code=403,
             detail=(
                 "Access to internal special agents is disabled in API server"
-                " mode."
+                " mode and on a development server not known to be bound to a"
+                " loopback address."
             ),
         )
       agent_or_app = self._load_agent_or_raise(app_name)
@@ -1852,6 +1960,73 @@ class ApiServer:
           session=session, event=state_update_event
       )
 
+      return _redacted_session_response(session)
+
+    @app.post(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/rewind",
+        response_model=Session,
+        response_model_exclude_none=True,
+    )
+    async def rewind_session(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        req: RewindSessionRequest,
+    ) -> Response:
+      """Rewinds a session to before the specified invocation.
+
+      Args:
+          app_name: The name of the application.
+          user_id: The ID of the user.
+          session_id: The ID of the session to rewind.
+          req: The rewind request identifying the invocation to rewind to.
+
+      Returns:
+          The rewound session.
+
+      Raises:
+          HTTPException: If the session or invocation is not found, or if the
+              session was modified concurrently.
+      """
+      self.current_app_name_ref.value = app_name
+      session = await self.session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+      runner = await self.get_runner_async(app_name)
+      _set_telemetry_context_if_needed(runner)
+      if self._live_session_runs.get(
+          self._live_session_key(app_name, user_id, session_id)
+      ):
+        if not any(
+            event.invocation_id == req.rewind_before_invocation_id
+            for event in session.events
+        ):
+          raise HTTPException(
+              status_code=404,
+              detail=(
+                  f"Invocation ID not found: {req.rewind_before_invocation_id}"
+              ),
+          )
+        await self._abort_live_session_runs(app_name, user_id, session_id)
+      try:
+        await runner.rewind_async(
+            user_id=user_id,
+            session_id=session_id,
+            rewind_before_invocation_id=req.rewind_before_invocation_id,
+        )
+      except (InvocationNotFoundError, SessionNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+      except StaleSessionError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+      session = await self.session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
       return _redacted_session_response(session)
 
     @app.get(
@@ -2123,46 +2298,44 @@ class ApiServer:
         )
 
       abort_signal = asyncio.Event()
+      live_run = _LiveSessionRun(
+          abort_signal=abort_signal,
+          finished=asyncio.Event(),
+      )
+      self._register_live_session_run(
+          app_name, req.user_id, req.session_id, live_run
+      )
 
       async def worker() -> list[Event]:
-        run_async_kwargs = _with_abort_signal_kwarg(
-            runner,
-            {
-                "user_id": req.user_id,
-                "session_id": req.session_id,
-                "new_message": req.new_message,
-                "state_delta": req.state_delta,
-                "invocation_id": req.invocation_id,
-                "run_config": run_config,
-            },
-            abort_signal,
-        )
         try:
+          run_async_kwargs = _with_abort_signal_kwarg(
+              runner,
+              {
+                  "user_id": req.user_id,
+                  "session_id": req.session_id,
+                  "new_message": req.new_message,
+                  "state_delta": req.state_delta,
+                  "invocation_id": req.invocation_id,
+                  "run_config": run_config,
+              },
+              abort_signal,
+          )
           async with Aclosing(runner.run_async(**run_async_kwargs)) as agen:
             return [public_event(event) async for event in agen]
         except SessionNotFoundError as e:
           raise HTTPException(status_code=404, detail=str(e)) from e
+        finally:
+          live_run.finished.set()
+          self._unregister_live_session_run(
+              app_name, req.user_id, req.session_id, live_run
+          )
 
       worker_task = asyncio.create_task(worker())
-
-      async def monitor() -> None:
-        try:
-          while True:
-            message = await request.receive()
-            if message.get("type") == "http.disconnect":
-              logger.warning(
-                  "Client disconnected. Aborting agent run for session %s.",
-                  req.session_id,
-              )
-              abort_signal.set()
-              worker_task.cancel()
-              break
-        except asyncio.CancelledError:
-          pass
-        except Exception as e:  # pylint: disable=broad-exception-caught
-          logger.error("Exception in disconnect monitor: %s", e, exc_info=True)
-
-      monitor_task = asyncio.create_task(monitor())
+      monitor_task = asyncio.create_task(
+          _monitor_client_disconnect(
+              request, req.session_id, abort_signal, worker_task
+          )
+      )
 
       try:
         events = await worker_task
@@ -2184,9 +2357,17 @@ class ApiServer:
         raise
       finally:
         monitor_task.cancel()
+        if worker_task.done():
+          live_run.finished.set()
+          self._unregister_live_session_run(
+              app_name, req.user_id, req.session_id, live_run
+          )
 
     @app.post("/run_sse")
-    async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
+    async def run_agent_sse(
+        req: RunAgentRequest,
+        request: Request,
+    ) -> StreamingResponse:
       app_name = req.app_name or self.default_app_name
       if not app_name:
         raise HTTPException(
@@ -2228,6 +2409,7 @@ class ApiServer:
             app_name=req.app_name,
             user_id=req.user_id,
             session_id=req.session_id,
+            config=GetSessionConfig(num_recent_events=0),
         )
         if not session:
           raise HTTPException(
@@ -2242,6 +2424,14 @@ class ApiServer:
         abort_signal = asyncio.Event()
         event_queue: asyncio.Queue[Optional[Event]] = asyncio.Queue()
         next_step_event = asyncio.Event()
+        live_run = _LiveSessionRun(
+            abort_signal=abort_signal,
+            finished=asyncio.Event(),
+            next_step_event=next_step_event,
+        )
+        self._register_live_session_run(
+            app_name, req.user_id, req.session_id, live_run
+        )
 
         async def _produce_events() -> None:
           nonlocal is_closing, original_exc
@@ -2262,8 +2452,9 @@ class ApiServer:
               try:
                 async for event in agen:
                   await event_queue.put(event)
-                  await next_step_event.wait()
-                  next_step_event.clear()
+                  if not abort_signal.is_set():
+                    await next_step_event.wait()
+                    next_step_event.clear()
               except (GeneratorExit, asyncio.CancelledError) as e:
                 if not is_closing and original_exc is None:
                   is_closing = True
@@ -2274,14 +2465,33 @@ class ApiServer:
                 original_exc = e
                 raise
           finally:
+            live_run.finished.set()
+            self._unregister_live_session_run(
+                app_name, req.user_id, req.session_id, live_run
+            )
             await event_queue.put(None)
 
         producer_task = asyncio.create_task(_produce_events())
+
+        def _on_sse_disconnect() -> None:
+          nonlocal is_closing
+          is_closing = True
+          next_step_event.set()
+
+        monitor_task = asyncio.create_task(
+            _monitor_client_disconnect(
+                request,
+                req.session_id,
+                abort_signal,
+                producer_task,
+                on_disconnect=_on_sse_disconnect,
+            )
+        )
         try:
           try:
             while True:
               event = await event_queue.get()
-              if event is None:
+              if event is None or is_closing:
                 break
               # ADK Web renders artifacts from `actions.artifactDelta`
               # during part processing *and* during action processing
@@ -2301,6 +2511,8 @@ class ApiServer:
                 events_to_stream = [content_event, artifact_event]
 
               for event_to_stream in events_to_stream:
+                if is_closing:
+                  break
                 sse_event = pydantic_core.to_json(
                     _redact_credential_secrets(
                         public_event(event_to_stream).model_dump(
@@ -2325,6 +2537,7 @@ class ApiServer:
             abort_signal.set()
             raise
           finally:
+            monitor_task.cancel()
             with anyio.CancelScope(shield=True):
               if not producer_task.done():
                 producer_task.cancel()
@@ -2362,6 +2575,11 @@ class ApiServer:
               "Error during generator cleanup after completion: %s", e
           )
           raise e
+        finally:
+          live_run.finished.set()
+          self._unregister_live_session_run(
+              app_name, req.user_id, req.session_id, live_run
+          )
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(

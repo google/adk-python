@@ -24,6 +24,7 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from google.adk.integrations.vmaas import _agent_engine_environment
 from google.adk.integrations.vmaas import AgentEngineEnvironment
 from google.genai.errors import APIError
 from google.genai.errors import ClientError
@@ -256,6 +257,117 @@ async def test_execute_reports_timeout(error):
   result = await environment.execute("sleep 999", timeout=1)
 
   assert result.timed_out
+
+
+async def test_timeout_reported_as_failed_precondition_runs_command_once():
+  """A timeout reported as FAILED_PRECONDITION is timed out and not retried.
+
+  The service reports a command the shell server killed for running too long
+  as FAILED_PRECONDITION with DEADLINE_EXCEEDED in the message. Even if the
+  sandbox is no longer running when the timeout returns, the command is not
+  retried and the sandbox state is not queried.
+  """
+  client = _make_client()
+  environment = await _make_environment(client)
+  client.sandboxes.states[environment.sandbox_name] = "STATE_PAUSED"
+  client.sandboxes.get = MagicMock(wraps=client.sandboxes.get)
+  client.sandboxes.execute_bash = MagicMock(
+      side_effect=ClientError(
+          400,
+          {
+              "error": {
+                  "code": 400,
+                  "status": "FAILED_PRECONDITION",
+                  "message": (
+                      "Execution Failed. Error: DEADLINE_EXCEEDED on URL"
+                      " `https://sandbox/exec`."
+                  ),
+              }
+          },
+      )
+  )
+
+  result = await environment.execute("sleep 999", timeout=2)
+
+  assert result.timed_out
+  client.sandboxes.execute_bash.assert_called_once()
+  client.sandboxes.get.assert_not_called()
+  assert not client.sandboxes.resume_calls
+
+
+async def test_error_from_running_sandbox_is_raised_without_retry():
+  """A FAILED_PRECONDITION from a running sandbox raises and does not rerun."""
+  client = _make_client()
+  environment = await _make_environment(client)
+  error = ClientError(
+      400, {"error": {"code": 400, "status": "FAILED_PRECONDITION"}}
+  )
+  client.sandboxes.execute_bash = MagicMock(side_effect=error)
+
+  with pytest.raises(ClientError):
+    await environment.execute("echo once")
+
+  client.sandboxes.execute_bash.assert_called_once()
+
+
+def _unreachable_error():
+  return ClientError(
+      400,
+      {
+          "error": {
+              "code": 400,
+              "status": "FAILED_PRECONDITION",
+              "message": (
+                  "Execution Failed. Error: INTERNAL on URL"
+                  " `https://sandbox/exec`. Error Details: Bad Gateway:"
+                  " Unable to reach the sandbox environment."
+              ),
+          }
+      },
+  )
+
+
+async def test_command_the_sandbox_cannot_receive_yet_is_resent(monkeypatch):
+  """A command the service could not deliver to the sandbox is sent again."""
+  monkeypatch.setattr(
+      _agent_engine_environment, "_UNREACHABLE_RETRY_INTERVAL_SECONDS", 0
+  )
+  client = _make_client()
+  environment = await _make_environment(client)
+  execute_bash = client.sandboxes.execute_bash
+  calls = []
+
+  def unreachable_once(**kwargs):
+    calls.append(kwargs)
+    if len(calls) == 1:
+      raise _unreachable_error()
+    return execute_bash(**kwargs)
+
+  client.sandboxes.execute_bash = unreachable_once
+
+  result = await environment.execute("echo hi")
+
+  assert result.stdout == "hi\n"
+  assert len(calls) == 2
+
+
+async def test_sandbox_that_stays_unreachable_raises(monkeypatch):
+  """A sandbox the service cannot reach for too long raises without resuming."""
+  monkeypatch.setattr(
+      _agent_engine_environment, "_UNREACHABLE_RETRY_SECONDS", 0
+  )
+  client = _make_client()
+  environment = await _make_environment(client)
+  client.sandboxes.states[environment.sandbox_name] = "STATE_PAUSED"
+  client.sandboxes.get = MagicMock(wraps=client.sandboxes.get)
+  client.sandboxes.execute_bash = MagicMock(side_effect=_unreachable_error())
+
+  with pytest.raises(ClientError, match="Unable to reach"):
+    await environment.execute("echo hi")
+
+  client.sandboxes.execute_bash.assert_called_once()
+  client.sandboxes.get.assert_not_called()
+  assert not client.sandboxes.resume_calls
 
 
 async def test_execute_on_paused_sandbox_resumes_and_runs():

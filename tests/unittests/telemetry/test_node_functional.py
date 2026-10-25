@@ -28,7 +28,10 @@ from .functional._recording import check_case
 from .functional.scenarios.agent import run_node_scenario
 from .functional.scenarios.conversation import TOOL_ERROR
 from .functional.scenarios.inference import mock_test_model
+from .functional.scenarios.telemetry_setup import ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN
+from .functional.scenarios.telemetry_setup import EXPERIMENTAL_OPT_IN
 from .functional.scenarios.telemetry_setup import install_telemetry
+from .functional.scenarios.telemetry_setup import OTEL_OPT_IN
 from .functional_node_test_cases import ALL_NODE_CASES
 
 if TYPE_CHECKING:
@@ -151,11 +154,7 @@ async def test_exception_preserves_attributes(
       "gen_ai.tool.description": "A sample tool.",
       "gen_ai.tool.type": "FunctionTool",
       "error.type": "ValueError",
-      "gcp.vertex.agent.llm_request": "{}",
-      "gcp.vertex.agent.llm_response": "{}",
-      "gcp.vertex.agent.tool_call_args": '{"arg1": "val1"}',
       "gen_ai.tool.call.id": tool_call_id,
-      "gcp.vertex.agent.tool_response": '{"result": "<not specified>"}',
   }
 
 
@@ -204,11 +203,21 @@ async def test_failed_turn_is_not_reported_as_a_successful_workflow(
   assert error_types == ["ValueError"]
 
 
+@pytest.mark.parametrize(
+    "semconv_opt_in,adk_records",
+    [
+        (EXPERIMENTAL_OPT_IN, False),
+        (None, True),
+    ],
+    ids=["experimental_defers_to_instrumentor", "stable_is_recorded_by_adk"],
+)
 @pytest.mark.asyncio
-async def test_no_generate_content_for_gemini_model_when_already_instrumented(
+async def test_who_records_the_inference_when_already_instrumented(
     monkeypatch: pytest.MonkeyPatch,
+    semconv_opt_in: str | None,
+    adk_records: bool,
 ):
-  """Tests that generate_content span is not created if already instrumented."""
+  """Which of ADK and the instrumentor records the inference, under a node."""
 
   span_exporter = InMemorySpanExporter()
   install_telemetry(
@@ -219,10 +228,13 @@ async def test_no_generate_content_for_gemini_model_when_already_instrumented(
   )
 
   # Arrange
+  if semconv_opt_in is None:
+    monkeypatch.delenv(OTEL_OPT_IN, raising=False)
+    monkeypatch.setenv(ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN, "1")
+  else:
+    monkeypatch.setenv(OTEL_OPT_IN, semconv_opt_in)
   monkeypatch.setattr(
-      tracing,
-      "_instrumented_with_opentelemetry_instrumentation_google_genai",
-      lambda: True,
+      "google.adk.telemetry._genai_instrumentor.is_instrumented", lambda: True
   )
   monkeypatch.setattr(
       tracing,
@@ -232,6 +244,9 @@ async def test_no_generate_content_for_gemini_model_when_already_instrumented(
 
   _ = await run_node_scenario(mock_test_model())
 
-  # Assert
+  # `MockModel` never reaches the wrapped SDK, so these spans are ADK's.
   spans = span_exporter.get_finished_spans()
-  assert not any(span.name.startswith("generate_content") for span in spans)
+  recorded_natively = any(
+      span.name.startswith("generate_content") for span in spans
+  )
+  assert recorded_natively == adk_records

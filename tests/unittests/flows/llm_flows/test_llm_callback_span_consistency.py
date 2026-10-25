@@ -42,6 +42,12 @@ from ... import testing_utils
 _SPAN_ID_INVALID = 0
 
 
+@pytest.fixture(autouse=True, params=['1', '2'], ids=['schema-v1', 'schema-v2'])
+def schema_version(request, monkeypatch) -> str:
+  monkeypatch.setenv('ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN', request.param)
+  return request.param
+
+
 class _SpanCapture:
   """Stores the span observed from within a callback."""
 
@@ -222,6 +228,7 @@ def test_short_circuit_before_callback_sees_valid_span():
   assert plugin.after_capture.span_id == _SPAN_ID_INVALID
 
 
+@pytest.mark.parametrize('schema_version', ['1'], indirect=True)
 def test_short_circuit_call_llm_span_has_attributes():
   """A short-circuited model call still records the call_llm attributes.
 
@@ -267,6 +274,7 @@ def test_short_circuit_call_llm_span_has_attributes():
     )
 
 
+@pytest.mark.parametrize('schema_version', ['1'], indirect=True)
 def test_short_circuit_call_llm_span_names_the_callback(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -294,6 +302,32 @@ def test_short_circuit_call_llm_span_names_the_callback(
   )
 
 
+@pytest.mark.parametrize('schema_version', ['2'], indirect=True)
+def test_short_circuit_under_schema_v2_names_no_callback(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Schema v2 has no call_llm span, so the agent span names no callback."""
+  monkeypatch.setenv('ADK_EXPERIMENTAL_TELEMETRY', 'true')
+  plugin = SpanCapturingPlugin()
+  plugin._short_circuit_before = True
+  plugin._short_circuit_response = LlmResponse(
+      content=testing_utils.ModelContent(
+          [types.Part.from_text(text='short_circuited')]
+      )
+  )
+  mock_model = testing_utils.MockModel.create(responses=['unused'])
+  agent = Agent(name='root_agent', model=mock_model)
+  runner = testing_utils.InMemoryRunner(agent, plugins=[plugin])
+
+  runner.run('test')
+
+  span = plugin.before_capture.span
+  assert span is not None, 'no agent span was captured'
+  assert span.name == 'invoke_agent root_agent'
+  assert 'adk.experimental.response.source' not in dict(span.attributes or {})
+
+
+@pytest.mark.parametrize('schema_version', ['1'], indirect=True)
 def test_model_call_span_names_no_callback():
   """A response the model produced carries no response source."""
   plugin = SpanCapturingPlugin()
@@ -341,6 +375,7 @@ def test_all_three_callbacks_share_span_on_error():
   ), 'before and after callbacks saw different spans on error recovery'
 
 
+@pytest.mark.parametrize('schema_version', ['1'], indirect=True)
 def test_error_recovery_call_llm_span_names_the_callback(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -439,15 +474,17 @@ async def test_cfc_before_and_after_callbacks_share_same_span():
   )
 
   responses = []
-  async with Aclosing(
-      flow._call_llm_async(
-          invocation_context,
-          LlmRequest(model='mock'),
-          model_response_event,
-      )
-  ) as agen:
-    async for resp in agen:
-      responses.append(resp)
+  # The runner's agent span, which schema v2 callbacks observe.
+  with _provider.get_tracer(__name__).start_as_current_span('invoke_agent'):
+    async with Aclosing(
+        flow._call_llm_async(
+            invocation_context,
+            LlmRequest(model='mock'),
+            model_response_event,
+        )
+    ) as agen:
+      async for resp in agen:
+        responses.append(resp)
 
   assert len(responses) >= 1
   assert (
@@ -497,15 +534,17 @@ async def test_cfc_error_callback_shares_span():
   )
 
   responses = []
-  async with Aclosing(
-      flow._call_llm_async(
-          invocation_context,
-          LlmRequest(model='mock'),
-          model_response_event,
-      )
-  ) as agen:
-    async for resp in agen:
-      responses.append(resp)
+  # The runner's agent span, which schema v2 callbacks observe.
+  with _provider.get_tracer(__name__).start_as_current_span('invoke_agent'):
+    async with Aclosing(
+        flow._call_llm_async(
+            invocation_context,
+            LlmRequest(model='mock'),
+            model_response_event,
+        )
+    ) as agen:
+      async for resp in agen:
+        responses.append(resp)
 
   assert (
       plugin.before_capture.span_id != _SPAN_ID_INVALID

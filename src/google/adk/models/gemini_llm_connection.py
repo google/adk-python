@@ -141,7 +141,9 @@ class GeminiLlmConnection(BaseLlmConnection):
     """
     assert content.parts
     if all(p.function_response for p in content.parts):
-      function_responses = [p.function_response for p in content.parts]
+      function_responses = [
+          p.function_response for p in content.parts if p.function_response
+      ]
       logger.debug('Sending LLM function response: %s', function_responses)
       await self._gemini_session.send_tool_response(
           function_responses=function_responses
@@ -387,8 +389,8 @@ class GeminiLlmConnection(BaseLlmConnection):
                 or message.server_content.interrupted
                 or message.tool_call is not None
             )
-            flushed_part_ids = set()
-            accumulated_parts = []
+            flushed_part_ids: set[int] = set()
+            accumulated_parts: list[types.Part] = []
             for part in content.parts:
               if part.text:
                 current_is_thought = getattr(part, 'thought', False)
@@ -416,14 +418,16 @@ class GeminiLlmConnection(BaseLlmConnection):
             if will_flush:
               flushed_part_ids.update(id(p) for p in accumulated_parts)
               accumulated_parts = []
+            response_content = content
             if flushed_part_ids:
-              llm_response.content = types.Content(
+              response_content = types.Content(
                   role=content.role,
                   parts=[
                       p for p in content.parts if id(p) not in flushed_part_ids
                   ],
               )
-            if llm_response.content.parts:
+              llm_response.content = response_content
+            if response_content.parts:
               yield llm_response
           # Note: in some cases, tool_call may arrive before
           # generation_complete, causing transcription to appear after

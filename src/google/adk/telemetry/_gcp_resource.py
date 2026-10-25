@@ -441,6 +441,12 @@ class _Project(NamedTuple):
   number: str
 
 
+# Memoization lives in a module dict rather than a `functools.cache`
+# decorator, which would key on the credentials as well as the project and
+# would memoize failures just as readily as answers.
+_project_cache: dict[str, _Project] = {}
+
+
 def _fetch_project(
     project: str | None,
     credentials: Credentials | None = None,
@@ -470,7 +476,7 @@ def _fetch_project(
   """
   if not project:
     return _Project(id="", number="")
-  if cached := _fetch_project.cache.get(project):
+  if cached := _project_cache.get(project):
     return cached
 
   # Only the lookup below tells a number from one of the roughly 20k legacy
@@ -500,17 +506,11 @@ def _fetch_project(
     )
     return known
 
-  if len(_fetch_project.cache) >= _PROJECT_CACHE_SIZE:
+  if len(_project_cache) >= _PROJECT_CACHE_SIZE:
     # Evict the oldest rather than clear: a process this busy is redirecting
     # telemetry per request, and the project it started with is the one it is
     # least likely to need next. Two threads can pick the same key to evict, so
     # the second pop has to tolerate a miss.
-    _ = _fetch_project.cache.pop(next(iter(_fetch_project.cache)), None)
-  _fetch_project.cache[project] = resolved
+    _ = _project_cache.pop(next(iter(_project_cache)), None)
+  _project_cache[project] = resolved
   return resolved
-
-
-# Memoization lives on the function rather than in a `functools.cache`
-# decorator, which would key on the credentials as well as the project and
-# would memoize failures just as readily as answers.
-_fetch_project.cache: dict[str, _Project] = {}

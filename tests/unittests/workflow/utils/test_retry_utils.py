@@ -17,8 +17,12 @@ from __future__ import annotations
 import random
 
 from google.adk import platform as adk_platform
+from google.adk.workflow._base_node import BaseNode
+from google.adk.workflow._node import Node
 from google.adk.workflow._node_state import NodeState
+from google.adk.workflow._parallel_worker import _ParallelWorker
 from google.adk.workflow._retry_config import RetryConfig
+from google.adk.workflow.utils._retry_utils import _delegates_item_retry
 from google.adk.workflow.utils._retry_utils import _get_retry_delay
 from google.adk.workflow.utils._retry_utils import _should_retry_node
 import pytest
@@ -216,3 +220,22 @@ class TestShouldRetryNode:
         )
         is True
     )
+
+
+class TestDelegatesItemRetry:
+
+  @pytest.mark.parametrize(
+      ("target_node", "expected"),
+      [
+          (_ParallelWorker(node=BaseNode(name="item")), True),
+          (Node(name="parallel", parallel_worker=True), True),
+          (Node(name="sequential", parallel_worker=False), False),
+          (BaseNode(name="plain"), False),
+      ],
+      ids=["parallel_worker", "parallel_node", "sequential_node", "base_node"],
+  )
+  def test_delegates_item_retry(
+      self, target_node: BaseNode, expected: bool
+  ) -> None:
+    """Returns True only for _ParallelWorker and Node(parallel_worker=True)."""
+    assert _delegates_item_retry(target_node) is expected

@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from authlib.oauth2.rfc6749 import OAuth2Error
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlowClientCredentials
@@ -27,6 +28,7 @@ from fastapi.openapi.models import SecurityBase
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
+from google.adk.auth import oauth2_credential_util
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
@@ -36,6 +38,7 @@ from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.auth_schemes import AuthSchemeType
 from google.adk.auth.auth_schemes import CustomAuthScheme
 from google.adk.auth.auth_schemes import ExtendedOAuth2
+from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.base_auth_provider import BaseAuthProvider
 from google.adk.auth.credential_manager import _rehydrate_custom_scheme
@@ -672,6 +675,208 @@ class TestCredentialManager:
         "token_user_a",
         "token_user_b",
     ]
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "auth_code, auth_response_uri",
+      [
+          ("a-code-the-server-already-consumed", None),
+          (None, "https://example.com/callback?code=spent"),
+      ],
+  )
+  async def test_get_auth_credential_discards_a_spent_authorization_code(
+      self, mocker, auth_code, auth_response_uri
+  ):
+    """A code the exchange failed to redeem must not be kept or returned."""
+    unexchanged = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_code=auth_code,
+            auth_response_uri=auth_response_uri,
+        ),
+    )
+    auth_config = AuthConfig(auth_scheme=_authorization_code_scheme())
+    manager = CredentialManager(auth_config)
+    manager._validate_credential = mocker.AsyncMock()
+    manager._is_credential_ready = mocker.Mock(return_value=False)
+    manager._load_existing_credential = mocker.AsyncMock(return_value=None)
+    manager._load_from_auth_response = mocker.AsyncMock(
+        return_value=unexchanged
+    )
+    # The exchanger swallowed the token-endpoint error and returned its input.
+    manager._exchange_credential = mocker.AsyncMock(
+        return_value=(unexchanged, False)
+    )
+    manager._refresh_credential = mocker.AsyncMock(
+        return_value=(unexchanged, False)
+    )
+    manager._save_credential = mocker.AsyncMock()
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result is None
+    manager._save_credential.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_keeps_a_redeemed_authorization_code(
+      self, mocker
+  ):
+    """The same path still saves and returns a credential that has a token."""
+    redeemed = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_code="a-code-the-server-already-consumed",
+            access_token="an-access-token",
+        ),
+    )
+    auth_config = AuthConfig(auth_scheme=_authorization_code_scheme())
+    manager = CredentialManager(auth_config)
+    manager._validate_credential = mocker.AsyncMock()
+    manager._is_credential_ready = mocker.Mock(return_value=False)
+    manager._load_existing_credential = mocker.AsyncMock(return_value=None)
+    manager._load_from_auth_response = mocker.AsyncMock(return_value=redeemed)
+    manager._exchange_credential = mocker.AsyncMock(
+        return_value=(redeemed, True)
+    )
+    manager._refresh_credential = mocker.AsyncMock(
+        return_value=(redeemed, False)
+    )
+    manager._save_credential = mocker.AsyncMock()
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result == redeemed
+    manager._save_credential.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_discards_a_spent_oidc_code(self, mocker):
+    """OIDC shares the oauth2 payload and exchanger, so it spends codes too."""
+    unexchanged = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_code="a-code-the-server-already-consumed",
+        ),
+    )
+    auth_config = AuthConfig(
+        auth_scheme=OpenIdConnectWithConfig(
+            authorization_endpoint="https://example.com/auth",
+            token_endpoint="https://example.com/token",
+        )
+    )
+    manager = CredentialManager(auth_config)
+    manager._validate_credential = mocker.AsyncMock()
+    manager._is_credential_ready = mocker.Mock(return_value=False)
+    manager._load_existing_credential = mocker.AsyncMock(return_value=None)
+    manager._load_from_auth_response = mocker.AsyncMock(
+        return_value=unexchanged
+    )
+    manager._exchange_credential = mocker.AsyncMock(
+        return_value=(unexchanged, False)
+    )
+    manager._refresh_credential = mocker.AsyncMock(
+        return_value=(unexchanged, False)
+    )
+    manager._save_credential = mocker.AsyncMock()
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result is None
+    manager._save_credential.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_prefers_auth_response_over_spent_store(
+      self, mocker
+  ):
+    """A stored dead code must not shadow a newly granted credential."""
+    stored_spent = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_code="a-code-the-server-already-consumed",
+        ),
+    )
+    freshly_granted = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_code="a-brand-new-code",
+            access_token="an-access-token",
+        ),
+    )
+    auth_config = AuthConfig(auth_scheme=_authorization_code_scheme())
+    manager = CredentialManager(auth_config)
+    manager._validate_credential = mocker.AsyncMock()
+    manager._is_credential_ready = mocker.Mock(return_value=False)
+    manager._load_existing_credential = mocker.AsyncMock(
+        return_value=stored_spent
+    )
+    manager._load_from_auth_response = mocker.AsyncMock(
+        return_value=freshly_granted
+    )
+    manager._exchange_credential = mocker.AsyncMock(
+        return_value=(freshly_granted, True)
+    )
+    manager._refresh_credential = mocker.AsyncMock(
+        return_value=(freshly_granted, False)
+    )
+    manager._save_credential = mocker.AsyncMock()
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result == freshly_granted
+    manager._load_from_auth_response.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_discards_code_the_real_exchanger_rejected(
+      self, mocker
+  ):
+    """The real exchanger runs here; only the token endpoint is stubbed out."""
+    mock_oauth2_session = mocker.patch.object(
+        oauth2_credential_util, "OAuth2Session", autospec=True
+    )
+    mock_client = mock_oauth2_session.return_value
+    mock_client.fetch_token.side_effect = OAuth2Error(error="invalid_grant")
+    unexchanged = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_code="a-code-the-server-already-consumed",
+        ),
+    )
+    auth_config = AuthConfig(auth_scheme=_authorization_code_scheme())
+    manager = CredentialManager(auth_config)
+    manager._validate_credential = mocker.AsyncMock()
+    manager._is_credential_ready = mocker.Mock(return_value=False)
+    manager._load_existing_credential = mocker.AsyncMock(return_value=None)
+    manager._load_from_auth_response = mocker.AsyncMock(
+        return_value=unexchanged
+    )
+    manager._save_credential = mocker.AsyncMock()
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result is None
+    mock_client.fetch_token.assert_called_once()
+    manager._save_credential.assert_not_called()
 
   @pytest.mark.asyncio
   async def test_load_existing_credential_already_exchanged(self):
@@ -1328,6 +1533,19 @@ class TestCredentialManager:
     manager = CredentialManager(auth_config)
 
     assert manager._is_client_credentials_flow() is False
+
+
+def _authorization_code_scheme():
+  """A real OAuth2 authorization-code scheme, which AuthConfig will validate."""
+  return OAuth2(
+      flows=OAuthFlows(
+          authorizationCode=OAuthFlowAuthorizationCode(
+              authorizationUrl="https://example.com/auth",
+              tokenUrl="https://example.com/token",
+              scopes={},
+          )
+      )
+  )
 
 
 @pytest.fixture

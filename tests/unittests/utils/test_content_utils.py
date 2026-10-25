@@ -326,13 +326,25 @@ def test_filter_media_parts_does_not_mutate_input():
 
 
 def test_extract_text_from_content_concatenates_text_parts_verbatim():
-  # Parts are joined with no separator: the model emits a single logical
-  # string that is chunked arbitrarily across parts.
+  # Parts are joined with no separator by default: the model emits a single
+  # logical string that is chunked arbitrarily across parts.
   content = types.Content(
       role='model',
       parts=[types.Part(text='hello '), types.Part(text='world')],
   )
   assert extract_text_from_content(content) == 'hello world'
+
+
+def test_extract_text_from_content_with_splitter():
+  content = types.Content(
+      role='user',
+      parts=[
+          types.Part.from_bytes(data=b'data', mime_type='image/png'),
+          types.Part(text='hello'),
+          types.Part(text='world'),
+      ],
+  )
+  assert extract_text_from_content(content, splitter=' ') == 'hello world'
 
 
 def test_extract_text_from_content_omits_thought_parts():

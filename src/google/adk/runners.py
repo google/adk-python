@@ -41,9 +41,6 @@ from .agents.base_agent import BaseAgent
 from .agents.context_cache_config import ContextCacheConfig
 from .agents.invocation_context import InvocationContext
 from .agents.invocation_context import new_invocation_context_id
-from .agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
-from .agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
-from .agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from .agents.run_config import RunConfig
 from .artifacts.base_artifact_service import BaseArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
@@ -53,6 +50,7 @@ from .events._abort_events import _build_abort_events
 from .events._abort_events import _is_abort_event
 from .events._internal_metadata import internal_metadata
 from .events._internal_metadata import without_internal_metadata
+from .events._isolation_scope import _find_finished_scope_runs
 from .events._rewind_events import _apply_rewinds
 from .events.event import Event
 from .events.event_actions import EventActions
@@ -69,6 +67,9 @@ from .utils import _lazy
 from .utils._agent_mode import AgentMode as _AgentMode
 from .utils._debug_output import print_event
 from .utils._runner_utils import _notify_run_error
+from .utils.model_name_utils import is_gemini_model
+from .utils.model_name_utils import is_gemini_model_id_check_disabled
+from .workflow._base_node import _walk_static_nodes
 from .workflow._base_node import BaseNode
 
 if TYPE_CHECKING:
@@ -99,15 +100,12 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
       scope = ``<node_name>@<run_id>``, stamped on every event the
       task agent emits.
 
-  Both close on a terminal ``finish_task`` FunctionResponse containing a
-  'result' key matching ``FINISH_TASK_SUCCESS_RESULT`` or
-  ``FINISH_TASK_ERROR_RESULT``. A FunctionResponse containing an 'error' key
-  (indicating a tool validation failure) does NOT close the scope: the task
-  agent is still active, will see the validation error, and retry. Scopes whose
-  invocation was aborted are also closed, since the task agent was cancelled
-  without calling ``finish_task``. Walking backward, the first non-empty scope
-  we encounter that hasn't been closed is the paused task awaiting the user's
-  next reply.
+  A scoped run ``(scope, invocation_id)`` closes on a terminal ``finish_task``
+  FunctionResponse (``SUCCESS`` or ``ERROR``) or when its invocation was
+  aborted. A FunctionResponse containing an ``'error'`` key (tool validation
+  failure) keeps the run active so the task agent can retry. Keying finished
+  runs by ``(scope, invocation_id)`` lets a workflow task node open a fresh
+  scoped run on a later invocation in the same session.
 
   Used by ``Runner._append_user_event`` to scope the new user message
   to that task agent's view.
@@ -116,40 +114,16 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
     A tuple of (isolation_scope, invocation_id) for the active task if found,
     or None if no active task scope is found.
   """
-  # Pass 1: Scan forward to find all scopes that have successfully finished.
-  # We must do this in a separate pass because walking backward directly would
-  # hit post-finish events (like status updates or duplicate FRs) before hitting
-  # the older success FR, falsely indicating the scope is still active.
   live_events = _apply_rewinds(session.events)
-  finished_scopes: set[str] = set()
-  aborted_invocations: set[str] = set()
-  for event in live_events:
-    if _is_abort_event(event):
-      aborted_invocations.add(event.invocation_id)
-    scope = event.isolation_scope
-    if not scope:
-      continue
-    if event.content and event.content.parts:
-      for part in event.content.parts:
-        fr = part.function_response
-        if fr and fr.name == FINISH_TASK_TOOL_NAME:
-          response = fr.response or {}
-          if response.get('result') in (
-              FINISH_TASK_SUCCESS_RESULT,
-              FINISH_TASK_ERROR_RESULT,
-          ):
-            finished_scopes.add(scope)
-          break
+  finished_runs = _find_finished_scope_runs(live_events)
 
-  # Pass 2: Walk backward to find the latest active scope that is not finished.
   for event in reversed(live_events):
+    if event.actions and event.actions.compaction:
+      continue
     scope = event.isolation_scope
     if not scope:
       continue
-    if (
-        scope not in finished_scopes
-        and event.invocation_id not in aborted_invocations
-    ):
+    if (scope, event.invocation_id) not in finished_runs:
       return scope, event.invocation_id
   return None
 
@@ -927,27 +901,33 @@ class Runner:
   async def _run_post_invocation_compaction(
       self,
       *,
-      session: Session,
+      invocation_context: InvocationContext,
   ) -> None:
     """Run best-effort derived compaction after a completed invocation.
+
+    The config comes from the invocation, so a before_run_callback that
+    replaced or cleared it for this session is honored here too.
 
     A later turn is allowed to update the same session while summarization is
     running. If that happens, the old summary is discarded rather than making
     an already answered invocation fail. Raw events remain persisted and a
     later turn can re-evaluate compaction against its newer snapshot.
     """
-    if not self.app or not self.app.events_compaction_config:
+    config = invocation_context.events_compaction_config
+    if not config:
       return
 
-    from google.adk.apps.compaction import _run_compaction_for_sliding_window
+    from .apps.compaction import _run_compaction_for_sliding_window_config
 
+    session = invocation_context.session
     logger.debug('Running event compactor.')
     try:
       async with aclosing(
-          _run_compaction_for_sliding_window(
-              self.app,
-              session,
-              self.session_service,
+          _run_compaction_for_sliding_window_config(
+              config=config,
+              session=session,
+              session_service=self.session_service,
+              agent=self.agent,
           )
       ) as compaction_events:
         async for compaction_event in compaction_events:
@@ -1018,10 +998,10 @@ class Runner:
       This sync interface is only for local testing and convenience purpose.
       Consider using `run_async` for production usage.
 
-    If event compaction is enabled in the App configuration, it will be
-    performed after all agent events for the current invocation have been
-    yielded. The generator will only finish iterating after event
-    compaction is complete.
+    If event compaction is enabled for the invocation, by the App or by a
+    plugin's before_run_callback, it will be performed after all agent events
+    for the current invocation have been yielded. The generator will only
+    finish iterating after event compaction is complete.
 
     Args:
       user_id: The user ID of the session.
@@ -1139,11 +1119,12 @@ class Runner:
   ) -> AsyncGenerator[Event, None]:
     """Main entry method to run the agent in this runner.
 
-    If event compaction is enabled in the App configuration, it will be
-    performed after all agent events for the current invocation have been
-    yielded. The async generator will only finish iterating after event
-    compaction is complete. However, this does not block new `run_async`
-    calls for subsequent user queries, which can be started concurrently.
+    If event compaction is enabled for the invocation, by the App or by a
+    plugin's before_run_callback, it will be performed after all agent events
+    for the current invocation have been yielded. The async generator will only
+    finish iterating after event compaction is complete. However, this does not
+    block new `run_async` calls for subsequent user queries, which can be
+    started concurrently.
 
     Args:
       user_id: The user ID of the session.
@@ -1376,7 +1357,7 @@ class Runner:
         # (We don't compact in the middle of an invocation, we only compact at
         # the end of an invocation.)
         await self._run_post_invocation_compaction(
-            session=invocation_context.session,
+            invocation_context=invocation_context,
         )
 
     from .telemetry import _instrumentation
@@ -1558,7 +1539,11 @@ class Runner:
       if output_event.partial is not True and self._should_append_event(
           output_event, is_live_call
       ):
-        logger.debug('Appending live event: %s', output_event)
+        logger.debug(
+            'Appending live event: %s, author: %s',
+            output_event.id,
+            output_event.author,
+        )
         await self.session_service.append_event(
             session=invocation_context.session, event=output_event
         )
@@ -2179,13 +2164,20 @@ class Runner:
 
     if run_config.support_cfc and hasattr(self.agent, 'canonical_model'):
       from .agents.llm_agent import LlmAgent
+      from .models.base_llm import BaseLlm
 
       cfc_agent = cast(LlmAgent, self.agent)
-      model_name = cfc_agent.canonical_model.model
-      if not model_name.startswith('gemini-2'):
+      canonical_model = cfc_agent.canonical_model
+      model_name = canonical_model.model
+      # CFC is served over the live API, so the model must implement connect.
+      supports_cfc = type(canonical_model).connect is not BaseLlm.connect and (
+          is_gemini_model(model_name) or is_gemini_model_id_check_disabled()
+      )
+      if not supports_cfc:
         raise ValueError(
             f'CFC is not supported for model: {model_name} in agent:'
-            f' {cfc_agent.name}'
+            f' {cfc_agent.name}. CFC requires a Gemini model served over the'
+            ' live API, so the model class must implement connect.'
         )
 
     return self._create_invocation_context(
@@ -2260,36 +2252,15 @@ class Runner:
   def _collect_toolset(
       self, root: BaseNode, visited: set[int] | None = None
   ) -> set[BaseToolset]:
+    del visited  # Retained for subclass override compatibility.
     if not isinstance(root, BaseNode):
       return set()
-    if visited is None:
-      visited = set()
-    root_id = id(root)
-    if root_id in visited:
-      return set()
-    visited.add(root_id)
-
     toolsets: set[BaseToolset] = set()
-    if hasattr(root, 'tools'):
-      for tool_union in getattr(root, 'tools', ()) or ():
-        if isinstance(tool_union, BaseToolset):
-          toolsets.add(tool_union)
-    if hasattr(root, 'sub_agents'):
-      for sub_agent in getattr(root, 'sub_agents', ()) or ():
-        toolsets.update(self._collect_toolset(sub_agent, visited))
-    if hasattr(root, 'graph') and getattr(root, 'graph', None):
-      graph = getattr(root, 'graph')
-      nodes = getattr(graph, 'nodes', None)
-      if nodes:
-        node_iter = nodes.values() if isinstance(nodes, dict) else nodes
-        for node in node_iter:
-          toolsets.update(self._collect_toolset(node, visited))
-    if hasattr(root, '_node') and getattr(root, '_node', None):
-      toolsets.update(self._collect_toolset(getattr(root, '_node'), visited))
-    if hasattr(root, '_inner_node') and getattr(root, '_inner_node', None):
-      toolsets.update(
-          self._collect_toolset(getattr(root, '_inner_node'), visited)
-      )
+    for node in _walk_static_nodes(root):
+      if hasattr(node, 'tools'):
+        for tool_union in getattr(node, 'tools', ()) or ():
+          if isinstance(tool_union, BaseToolset):
+            toolsets.add(tool_union)
     return toolsets
 
   async def _cleanup_toolsets(
