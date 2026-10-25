@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from typing import AsyncGenerator
+from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
@@ -29,6 +30,20 @@ from ....utils._agent_mode import AgentMode
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..core._utils import as_llm_agent
 from ..core._utils import require_agent_name
+from ..extensions._agent_transfer import _get_transfer_targets
+
+if TYPE_CHECKING:
+  from ....agents.llm_agent import LlmAgent
+
+
+def has_function_tools(agent: LlmAgent) -> bool:
+  """Returns whether the agent's requests will declare function tools.
+
+  Agent transfer is offered as the `transfer_to_agent` function tool, so an
+  agent with transfer targets declares a function even when it has no tools
+  of its own.
+  """
+  return bool(agent.tools) or bool(_get_transfer_targets(agent))
 
 
 class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
@@ -47,7 +62,7 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
     # schema with tools
     if (
         not agent.output_schema
-        or not agent.tools
+        or not has_function_tools(agent)
         or agent.canonical_model.capabilities.output_schema_and_tools
         or getattr(agent, 'mode', None) == AgentMode.TASK
     ):
