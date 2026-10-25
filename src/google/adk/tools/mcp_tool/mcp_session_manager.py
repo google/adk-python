@@ -1144,6 +1144,23 @@ class MCPSessionManager:
     if session_key in self._sessions:
       self._session_last_used[session_key] = time.monotonic()
 
+  def get_session_instructions(
+      self, headers: Optional[Dict[str, str]] = None
+  ) -> Optional[str]:
+    """Returns the server's handshake ``instructions`` for a pooled session.
+
+    Reads what the ``SessionContext`` captured when the session for these
+    headers was brought up, so it works on every supported MCP SDK major.
+    Returns None when no session exists for these headers yet (call
+    ``create_session`` first) or when the server sent no instructions.
+
+    Args:
+        headers: The headers the caller passed to ``create_session``.
+    """
+    session_key = self._generate_session_key(self._merge_headers(headers))
+    ctx = self._session_contexts.get(session_key)
+    return ctx.instructions if ctx is not None else None
+
   def _discard_session(
       self,
       headers: Optional[Dict[str, str]] = None,

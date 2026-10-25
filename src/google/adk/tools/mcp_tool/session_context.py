@@ -47,7 +47,7 @@ _T = TypeVar('_T')
 _CLIENT_INFO = types.Implementation(name='google-adk', version=__version__)
 
 
-async def _connect(session: ClientSession) -> None:
+async def _connect(session: ClientSession) -> str | None:
   """Connects ``session`` using the newest protocol both sides support.
 
   When enabled, tries the modern protocol (``server/discover``) first, which
@@ -56,15 +56,40 @@ async def _connect(session: ClientSession) -> None:
 
   Args:
     session: The session to bring up.
+
+  Returns:
+    The ``instructions`` text the server sent in its handshake result, or None
+    when it sent none. The text is server-supplied and untrusted; callers
+    decide whether it reaches the model.
   """
   # pylint: disable-next=protected-access
   if not is_feature_enabled(FeatureName._MCP_MODERN_PROTOCOL):
-    await session.initialize()
+    result = await session.initialize()
   elif negotiate_auto is None:
     _warn_probe_unavailable()
-    await session.initialize()
+    result = await session.initialize()
   else:
+    # The probe does the handshake itself and returns nothing, but the 2.x
+    # session remembers the result either way.
     await negotiate_auto(session)
+    result = None
+  return _server_instructions(session, result)
+
+
+def _server_instructions(session: ClientSession, result: Any) -> str | None:
+  """Reads the server's ``instructions`` from a finished handshake.
+
+  Looks at the ``InitializeResult`` first, which is what MCP SDK 1.x hands
+  back; 2.x also exposes the text on the session itself, which is the only
+  place to find it after ``negotiate_auto``. A test double that returns None
+  from ``initialize()`` yields None here rather than an AttributeError.
+  """
+  instructions = getattr(result, 'instructions', None)
+  if instructions is None:
+    instructions = getattr(session, 'instructions', None)
+  if not isinstance(instructions, str) or not instructions.strip():
+    return None
+  return instructions
 
 
 # Cached so it only logs once.
@@ -216,6 +241,7 @@ class SessionContext:
     self._sse_read_timeout = sse_read_timeout
     self._is_stdio = is_stdio
     self._session: ClientSession | None = None
+    self._instructions: str | None = None
     self._ready_event = asyncio.Event()
     self._close_event = asyncio.Event()
     self._task: asyncio.Task[None] | None = None
@@ -228,6 +254,15 @@ class SessionContext:
   def session(self) -> Optional[ClientSession]:
     """Get the managed ClientSession, if available."""
     return self._session
+
+  @property
+  def instructions(self) -> Optional[str]:
+    """Server-supplied ``instructions`` from the handshake, if any.
+
+    None until the session is ready, and None when the server sent no
+    instructions. The text comes from the server, so treat it as untrusted.
+    """
+    return self._instructions
 
   @property
   def _is_task_alive(self) -> bool:
@@ -478,11 +513,14 @@ class SessionContext:
           import anyio
 
           with anyio.fail_after(self._timeout):
-            await _connect(session)
+            instructions = await _connect(session)
         else:
-          await asyncio.wait_for(_connect(session), timeout=self._timeout)
+          instructions = await asyncio.wait_for(
+              _connect(session), timeout=self._timeout
+          )
         logger.debug('Session has been successfully initialized')
 
+        self._instructions = instructions
         self._session = session
         self._ready_event.set()
 
