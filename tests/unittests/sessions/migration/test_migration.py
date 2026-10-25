@@ -15,9 +15,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from datetime import datetime
 from datetime import timezone
+import json
 import logging
 import os
 import pickle
@@ -36,6 +38,7 @@ from google.adk.sessions.migration import migrate_from_sqlalchemy_sqlite as mfss
 from google.adk.sessions.migration import migration_runner
 from google.adk.sessions.schemas import v0
 from google.adk.sessions.schemas import v1
+from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.genai import types
 import pytest
@@ -583,6 +586,11 @@ def _pinned_local_timezone(name: str):
   ``time.tzset`` is POSIX-only, so on other platforms the block runs in the
   host zone instead. Restoring ``TZ`` without a second ``tzset`` would leave
   the C library pinned for the rest of the session, so both are undone.
+
+  Without tzdata the C library silently falls back to UTC, reporting either
+  "UTC" (musl) or the zone name's first part (glibc) in ``time.tzname`` with a
+  zero offset. The test is skipped then instead of failing with a confusing
+  mismatch. ``name`` must be a zone whose offset is not always zero.
   """
   if not hasattr(time, "tzset"):
     yield
@@ -591,6 +599,13 @@ def _pinned_local_timezone(name: str):
   os.environ["TZ"] = name
   time.tzset()
   try:
+    if name != "UTC" and (
+        "UTC" in time.tzname or time.timezone == time.altzone == 0
+    ):
+      pytest.skip(
+          f"TZ={name} resolved to UTC after tzset (time.tzname="
+          f"{time.tzname}); tzdata is probably not installed"
+      )
     yield
   finally:
     if previous is None:
@@ -649,6 +664,158 @@ def test_migrate_from_sqlalchemy_pickle_reads_naive_timestamp_as_local():
     })
 
     assert event.timestamp == original_epoch
+
+
+def _create_v0_db_with_events(db_path, timestamps: list[datetime]) -> str:
+  """Creates a v0 database holding one session with one event per timestamp."""
+  db_url = f"sqlite:///{db_path}"
+  engine = create_engine(db_url)
+  v0.Base.metadata.create_all(engine)
+  session = sessionmaker(bind=engine)()
+  now = datetime.now(timezone.utc)
+  session.add(
+      v0.StorageSession(
+          app_name="app1",
+          user_id="user1",
+          id="session1",
+          state={},
+          create_time=now,
+          update_time=now,
+      )
+  )
+  for i, timestamp in enumerate(timestamps):
+    session.add(
+        v0.StorageEvent(
+            id=f"event{i}",
+            app_name="app1",
+            user_id="user1",
+            session_id="session1",
+            invocation_id="invoke1",
+            author="user",
+            actions=EventActions(),
+            timestamp=timestamp,
+        )
+    )
+  session.commit()
+  session.close()
+  engine.dispose()
+  return db_url
+
+
+def _migrate_v0_events_both_ways(
+    tmp_path, zone: str, wall_clock: list[datetime]
+) -> dict[str, list[float]]:
+  """Migrates the same naive v0 events with both paths under a pinned zone.
+
+  Returns the migrated epochs, in event order, from every place they land:
+  the pickle output's event_data, and the sqlite output's timestamp column,
+  event_data JSON and the Event objects SqliteSessionService loads.
+  """
+  with _pinned_local_timezone(zone):
+    pickle_dest_url = f"sqlite:///{tmp_path / 'dest_pickle.db'}"
+    mfsp.migrate(
+        _create_v0_db_with_events(tmp_path / "src_pickle.db", wall_clock),
+        pickle_dest_url,
+    )
+    sqlite_dest_path = tmp_path / "dest_sqlite.db"
+    mfss.migrate(
+        _create_v0_db_with_events(tmp_path / "src_sqlite.db", wall_clock),
+        str(sqlite_dest_path),
+    )
+
+  pickle_engine = create_engine(pickle_dest_url)
+  pickle_session = sessionmaker(bind=pickle_engine)()
+  pickle_epochs = [
+      event.event_data["timestamp"]
+      for event in pickle_session.query(v1.StorageEvent).order_by(
+          v1.StorageEvent.id
+      )
+  ]
+  pickle_session.close()
+  pickle_engine.dispose()
+
+  with contextlib.closing(sqlite3.connect(sqlite_dest_path)) as conn:
+    rows = conn.execute(
+        "SELECT timestamp, event_data FROM events ORDER BY id"
+    ).fetchall()
+  sqlite_epochs = [row[0] for row in rows]
+  sqlite_event_data_epochs = [json.loads(row[1])["timestamp"] for row in rows]
+  # The Event objects SqliteSessionService loads from the migrated database.
+  sqlite_session = asyncio.run(
+      SqliteSessionService(str(sqlite_dest_path)).get_session(
+          app_name="app1", user_id="user1", session_id="session1"
+      )
+  )
+  sqlite_event_object_epochs = [
+      event.timestamp for event in sqlite_session.events
+  ]
+
+  return {
+      "pickle event_data": pickle_epochs,
+      "sqlite column": sqlite_epochs,
+      "sqlite event_data": sqlite_event_data_epochs,
+      "sqlite Event": sqlite_event_object_epochs,
+  }
+
+
+@pytest.mark.skipif(
+    not hasattr(time, "tzset"), reason="time.tzset is required to pin TZ"
+)
+@pytest.mark.parametrize(
+    "zone,expected_epochs",
+    [
+        # EST (UTC-5) in January, EDT (UTC-4) in June. Neither value is near
+        # the 2025-11-02 01:00-02:00 fall-back hour.
+        ("America/New_York", [1736953200.0, 1749996000.0]),
+        ("Asia/Kolkata", [1736915400.0, 1749961800.0]),
+    ],
+)
+def test_v0_migrations_agree_on_naive_local_event_timestamps(
+    tmp_path, zone, expected_epochs
+):
+  """Both v0 migration paths read a naive event timestamp as local time.
+
+  Pre-2.7.0 v0 writers stored naive local time. The sqlite path used to go
+  through v0.StorageEvent.to_event, which reads naive values as UTC, so it
+  disagreed with the pickle path by the host's UTC offset.
+  """
+  # Naive wall-clock values as a pre-2.7.0 writer in `zone` would store them,
+  # one on each side of the New York DST change.
+  wall_clock = [
+      datetime(2025, 1, 15, 10, 0, 0),
+      datetime(2025, 6, 15, 10, 0, 0),
+  ]
+
+  migrated = _migrate_v0_events_both_ways(tmp_path, zone, wall_clock)
+
+  assert migrated == {name: expected_epochs for name in migrated}
+
+
+@pytest.mark.skipif(
+    not hasattr(time, "tzset"), reason="time.tzset is required to pin TZ"
+)
+def test_v0_migrations_lose_fall_back_hour_to_first_occurrence(tmp_path):
+  """A naive value in the repeated fall-back hour migrates as its first pass.
+
+  This is a known, unrecoverable loss: a pre-2.7.0 writer stored both
+  2025-11-02T05:30Z and 06:30Z as the same naive 01:30 in America/New_York,
+  and nothing records which pass it was. Both migrations read it as the first
+  occurrence (fold=0, EDT), so the second event comes back 3600s early.
+  """
+  first_pass = 1762061400.0  # 2025-11-02T05:30:00Z, 01:30 EDT
+  second_pass = 1762065000.0  # 2025-11-02T06:30:00Z, 01:30 EST
+  with _pinned_local_timezone("America/New_York"):
+    wall_clock = [
+        datetime.fromtimestamp(first_pass),
+        datetime.fromtimestamp(second_pass),
+    ]
+  assert wall_clock == [datetime(2025, 11, 2, 1, 30)] * 2
+
+  migrated = _migrate_v0_events_both_ways(
+      tmp_path, "America/New_York", wall_clock
+  )
+
+  assert migrated == {name: [first_pass, first_pass] for name in migrated}
 
 
 def test_migrate_from_sqlalchemy_pickle_blocks_unsafe_actions_pickle(

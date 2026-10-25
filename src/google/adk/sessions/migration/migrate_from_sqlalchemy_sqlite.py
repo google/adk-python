@@ -129,7 +129,16 @@ def migrate(source_db_url: str, dest_db_path: str) -> None:
     skipped_event_ids = []
     for storage_event in events:
       try:
-        event_obj = storage_event.to_event()
+        # to_event() builds the event, but its timestamp comes from the shared
+        # helper that reads naive v0 values as local time, so the conversion
+        # logic lives only in that helper and matches the pickle migration.
+        event_obj = storage_event.to_event().model_copy(
+            update={
+                "timestamp": _schema_check_utils.v0_event_timestamp_to_epoch(
+                    storage_event.timestamp
+                )
+            }
+        )
         event_data = event_obj.model_dump_json(exclude_none=True)
         dest_cursor.execute(
             "INSERT INTO events (id, app_name, user_id, session_id,"
