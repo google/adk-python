@@ -112,6 +112,7 @@ validation_join = JoinNode(
 
 - **The output is always a dictionary.** A `JoinNode` emits predecessor names mapped to their outputs and nothing else. When you need a different shape, transform it in the node downstream of the join.
 - **A predecessor on an untaken conditional path stops the join firing.** If a `JoinNode` declares a predecessor that sits on a conditional path, and that path is not taken, the join never triggers. The run does not hang waiting for it. The workflow finishes as soon as the branches that did run are done, and the join and everything after it is skipped silently, with no error anywhere. Every static predecessor a join declares in the graph has to execute before the join fires.
+- **In a loop, a `JoinNode` waits for every predecessor to arrive again in the current iteration.** If the loop restarts before the join fires, the arrivals already recorded carry over and the next firing can combine outputs from different iterations.
 
 ## Related samples
 

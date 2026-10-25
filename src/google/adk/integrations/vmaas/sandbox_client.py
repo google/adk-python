@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import logging
 from typing import Any
+from typing import cast
 from typing import Literal
 from typing import TYPE_CHECKING
 
@@ -132,8 +133,12 @@ class SandboxClient:
       The parsed JSON response as a dict.
     """
     if hasattr(response, "body") and response.body:
-      return _json_utils.safe_json_loads(
-          response.body, context="sandbox response"
+      # The sandbox service answers every command with a JSON object.
+      return cast(
+          dict[str, Any],
+          _json_utils.safe_json_loads(
+              response.body, context="sandbox response"
+          ),
       )
     return {}
 
@@ -208,7 +213,8 @@ class SandboxClient:
           request_dict=request_dict,
       )
       parsed = self._parse_response(response)
-      return parsed.get("results", [])
+      # The batch endpoint reports one result object per command.
+      return cast(list[dict[str, Any]], parsed.get("results", []))
     except Exception as e:
       # Batch endpoint not available, fall back to sequential
       if "404" in str(e) or "not found" in str(e).lower():
@@ -217,7 +223,7 @@ class SandboxClient:
         logger.warning("Batch CDP failed: %s, falling back to sequential", e)
 
     # Sequential fallback
-    results = []
+    results: list[dict[str, Any]] = []
     for cmd in commands:
       try:
         result = await self.make_cdp_request(
@@ -302,7 +308,8 @@ class SandboxClient:
 
         for tab in parsed.get("all_tabs", []):
           if tab.get("id") == active_tab_id:
-            return tab.get("url")
+            # The tabs endpoint reports each tab's URL as a string.
+            return cast("str | None", tab.get("url"))
 
         return None
       except Exception as e:

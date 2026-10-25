@@ -250,7 +250,12 @@ class InvocationContext(BaseModel):
   """The resumability config that applies to all agents under this invocation."""
 
   events_compaction_config: EventsCompactionConfig | None = None
-  """The compaction config for this invocation."""
+  """The compaction config for this invocation.
+
+  Starts as the App's config, the same object in every invocation. A plugin's
+  before_run_callback can assign another config, or None to skip compaction,
+  for this invocation; editing the shared object in place affects every session.
+  """
 
   token_compaction_checked: bool = False
   """Whether the compaction request processor compacted before a model call.

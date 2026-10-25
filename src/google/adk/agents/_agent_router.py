@@ -32,6 +32,7 @@ from ..flows.llm_flows.core._resume import ResumeRoute
 from ..flows.llm_flows.extensions._agent_transfer import _get_transfer_targets
 from ..flows.llm_flows.tools._functions import _collect_function_call_ids
 from ..flows.llm_flows.tools._functions import find_matching_function_call
+from ..utils._agent_mode import DELEGATED_TASK_MODES
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
@@ -137,7 +138,7 @@ def _resolve_task_delegator(
   delegator = agent
   current = agent
   while current is not root_agent and current.parent_agent is not None:
-    if getattr(current, "mode", None) == "task":
+    if getattr(current, "mode", None) in DELEGATED_TASK_MODES:
       delegator = current.parent_agent
     current = current.parent_agent
   return delegator

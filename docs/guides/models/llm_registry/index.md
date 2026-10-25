@@ -13,12 +13,14 @@ the contract — accept an `LlmRequest`, yield `LlmResponse` objects — and
 `LLMRegistry` maps model-name regexes to the classes that implement it.
 
 `LlmAgent.model` accepts either a string or a `BaseLlm` instance. Given a
-string, `LlmAgent.canonical_model` calls `LLMRegistry.new_llm` once and caches
-the instance, resolving again only if `model` is reassigned. An agent with no
-model of its own inherits from the nearest `LlmAgent` ancestor, and failing that
-gets `LlmAgent.DEFAULT_MODEL` (currently `gemini-3.5-flash`) unless
-`LlmAgent.set_default_model` has overridden it. Live mode resolves separately,
-through `canonical_live_model` and `LlmAgent.DEFAULT_LIVE_MODEL`.
+string, `LlmAgent.canonical_model` calls `LLMRegistry.new_llm` once per model
+name and running event loop, and shares the instance with copies of the agent,
+so each run reuses it until `model` is reassigned. An agent with no model of
+its own inherits from the nearest `LlmAgent` ancestor, and failing that gets
+`LlmAgent.DEFAULT_MODEL` (currently `gemini-3.5-flash`) unless
+`LlmAgent.set_default_model` has overridden it; that default is cached the same
+way. Live mode resolves separately, through `canonical_live_model` and
+`LlmAgent.DEFAULT_LIVE_MODEL`.
 
 Plugging in a model ADK does not ship therefore has two forms. Pass an instance
 and the registry is never consulted. Register the class and a plain model name

@@ -35,12 +35,13 @@ class TestInjectionConfig:
     with pytest.raises(ValidationError, match="but not both, and not neither"):
       InjectionConfig()
 
-  def test_both_error_and_response_raises(self):
+  @pytest.mark.parametrize("response", [{}, {"status": "ok"}])
+  def test_both_error_and_response_raises(self, response):
     """The two are mutually exclusive: a call cannot both fail and succeed."""
     with pytest.raises(ValidationError, match="but not both, and not neither"):
       InjectionConfig(
           injected_error=_injected_error(),
-          injected_response={"status": "ok"},
+          injected_response=response,
       )
 
   def test_only_error_is_accepted(self):
@@ -49,10 +50,11 @@ class TestInjectionConfig:
     assert config.injected_error.injected_http_error_code == 404
     assert config.injected_response is None
 
-  def test_only_response_is_accepted(self):
-    config = InjectionConfig(injected_response={"status": "ok"})
+  @pytest.mark.parametrize("response", [{}, {"status": "ok"}])
+  def test_only_response_is_accepted(self, response):
+    config = InjectionConfig(injected_response=response)
 
-    assert config.injected_response == {"status": "ok"}
+    assert config.injected_response == response
     assert config.injected_error is None
 
 

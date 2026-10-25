@@ -195,7 +195,11 @@ def test_public_exports_and_prompt_constants():
   expected_all = {
       'ForceEscalationPlugin',
       'ModelConsultContextConfig',
+      'ModelConsultObservabilityPlugin',
+      'ModelConsultReport',
+      'ModelConsultStats',
       'ModelConsultTool',
+      'ModelConsultUsage',
   }
   assert set(model_consult_pkg.__all__) == expected_all
   for private_name in (

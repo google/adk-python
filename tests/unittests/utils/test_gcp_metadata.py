@@ -17,6 +17,9 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+import subprocess
+import sys
 
 from google.adk.utils import _gcp_metadata
 from google.adk.utils._gcp_metadata import get_gcp_client_defaults
@@ -585,3 +588,53 @@ def test_get_gcp_client_defaults_uses_strict_genai_env_parsing(
     defaults = get_gcp_client_defaults()
 
   assert defaults == expected
+
+
+def test_importing_gcp_metadata_defers_transport_imports(
+    tmp_path: Path,
+) -> None:
+  """Importing Agent and _gcp_metadata defers metadata transport imports."""
+  src_root = str(Path(_gcp_metadata.__file__).parents[3])
+  existing_pythonpath = os.environ.get('PYTHONPATH')
+  env = {
+      **os.environ,
+      'PYTHONPATH': (
+          src_root
+          if not existing_pythonpath
+          else os.pathsep.join((src_root, existing_pythonpath))
+      ),
+  }
+  result = subprocess.run(
+      [
+          sys.executable,
+          '-c',
+          (
+              'import sys\n'
+              'from google.adk.agents import Agent\n'
+              'import google.adk.utils._gcp_metadata\n'
+              'forbidden = (\n'
+              '    "google.auth.compute_engine",\n'
+              '    "google.auth.transport.requests",\n'
+              '    "cryptography",\n'
+              '    "requests",\n'
+              '    "urllib3",\n'
+              '    "bcrypt",\n'
+              ')\n'
+              'loaded = [\n'
+              '    prefix\n'
+              '    for prefix in forbidden\n'
+              '    if any(\n'
+              '        name == prefix or name.startswith(prefix + ".")\n'
+              '        for name in sys.modules\n'
+              '    )\n'
+              ']\n'
+              'assert not loaded, loaded\n'
+          ),
+      ],
+      cwd=tmp_path,
+      env=env,
+      capture_output=True,
+      text=True,
+      check=False,
+  )
+  assert result.returncode == 0, result.stderr

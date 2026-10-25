@@ -39,11 +39,13 @@ async def call_unstable_api(node_input: str):
 
 When a node with a `RetryConfig` raises an exception, five things happen in order.
 
-1. **Exception matching.** The exception's class name is checked against `RetryConfig.exceptions`. When `exceptions` is left as `None`, which is the default, every exception matches.
+1. **Exception matching.** Every class in the raised exception's inheritance hierarchy, `type(exception).__mro__` excluding `object`, has its class name checked against `RetryConfig.exceptions`. When `exceptions` is left as `None`, which is the default, every exception matches.
 2. **Attempt count check.** The node is retried only while `attempt_count` is below `max_attempts`. That counter starts at 1 for the original run, so `max_attempts=3` buys you the original plus two retries.
 3. **Delay calculation.** The base delay grows exponentially with the number of attempts already made, as `initial_delay * backoff_factor ** (attempt - 1)`.
 4. **Capping, then jitter.** If `jitter` is greater than 0.0, the base delay is first capped at `max_delay / (1 + jitter)`, and a random offset is then drawn uniformly from `-jitter * delay` to `+jitter * delay`. The order matters and it is deliberate. Capping afterwards would still hold the ceiling, but it would collapse every overshooting draw onto exactly `max_delay`, firing at one instant the very retries that jitter exists to spread out. With the defaults of `jitter=1.0` and `max_delay=60.0`, the pre-jitter delay therefore never exceeds 30 seconds, and the widest positive draw lands on 60. The result is then clamped to be non-negative and capped at `max_delay` once more.
 5. **Pause, then retry.** The workflow waits for that delay and then runs the node again. Inside the node, `ctx.attempt_count` tells you which attempt you are on.
+
+What the retry runs again depends on what failed. After the node's own exception, the retry runs the node again in full, including the children it starts with `ctx.run_node()`, so a node that rejects a child's result gets a new one. After one of those children failed, the retry replays the children that the failed attempt had completed, at any depth below the node, and runs the failed child again.
 
 ## Configuration options
 
@@ -76,7 +78,7 @@ retry_config = RetryConfig(
 )
 ```
 
-A class you pass is normalized to its `__name__` at validation time, and matching at retry time compares `type(exception).__name__` against that list. **The match is on the exact class name, not `isinstance`.** Listing `ConnectionError` therefore does not retry a `ConnectionResetError`, and listing `Exception` retries nothing at all. Name every concrete class you want to catch, or leave `exceptions` as `None` to retry on everything.
+A class you pass is normalized to its `__name__` at validation time, and matching at retry time checks the `__name__` of every class in `type(exception).__mro__`, except `object`, against that list. **Subclasses therefore match a base class you list:** naming `ConnectionError` also retries `ConnectionResetError`, and naming `Exception` retries every `Exception` subclass. Because matching compares unqualified class names, a string name such as `"TimeoutError"` matches any exception class or base class with that `__name__`, regardless of which module defines it.
 
 ### Retrying a nested workflow
 
@@ -122,7 +124,8 @@ test_retry_config = RetryConfig(
 
 - **The attempt counter does not survive an interrupt.** It is **not** persisted. If the workflow is interrupted, whether by a human-in-the-loop input downstream or by the application restarting, and is later resumed, a node that has to run again starts counting from 1 with its full budget of attempts back.
 - **Retries are local to the node.** They happen inside that node's execution and nowhere else. Once a node has used up its attempts it enters the `FAILED` state, and the workflow execution fails with it, or follows whatever error handling you have configured.
-- **A retried node runs again in full.** When the node is a `Workflow`, a child that produced no output and no state change also runs again, because the replay has no record that it completed. See [Retrying a nested workflow](#retrying-a-nested-workflow).
+- **A retried `Workflow` runs some finished children again.** A child that produced no output and no state change runs again, because the replay has no record that it completed. See [Retrying a nested workflow](#retrying-a-nested-workflow).
+- **A cancelled child can be replayed as finished.** A child that was cancelled right after it emitted an event without an output, such as a progress message, looks finished to the replay. The retry then hands back no output for it instead of running it again. A parallel worker item that is cancelled because another item failed is the usual case.
 
 ## Related samples
 

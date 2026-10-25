@@ -23,11 +23,15 @@ from unittest import mock
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.flows.llm_flows.core import _function_call_postprocessor
+from google.adk.flows.llm_flows.core._resume import decide_step_resume
+from google.adk.flows.llm_flows.core._resume import ResumeAction
 from google.adk.flows.llm_flows.tools import _batch_executor as _batch_tool_executor
 from google.adk.flows.llm_flows.tools._caller import _PreparedFunctionCall
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
+from google.adk.workflow._errors import NodeInterruptedError
 from google.genai import types
 import pytest
 
@@ -437,6 +441,133 @@ async def test_keep_completed_responses_skips_live_or_aborted_invocation(
   await task
 
   assert _batch_tool_executor._keep_completed_responses(mock_ic, [task]) is None
+
+
+@pytest.mark.asyncio
+async def test_execute_and_postprocess_preserve_completed_responses_on_node_interrupted() -> (
+    None
+):
+  """Completed sibling tool responses are yielded on Turn 1 and skipped on Turn 2 resume."""
+  # Arrange
+  mock_ic = mock.MagicMock()
+  mock_ic.session.state = {}
+  mock_ic.live_request_queue = None
+  mock_ic.is_aborted = False
+  mock_ic.is_resumable = True
+  mock_ic.branch = None
+  mock_ic.agent.name = 'agent'
+  mock_ic.should_pause_invocation.return_value = False
+
+  prepared_1 = _prepared_call_with_snapshot('call-1')
+  prepared_1.function_call = types.FunctionCall(
+      name='fast', id='call-1', args={}
+  )
+  prepared_1.tool = BaseTool(name='fast', description='desc')
+  prepared_2 = _prepared_call_with_snapshot('call-2')
+  prepared_2.function_call = types.FunctionCall(
+      name='slow', id='call-2', args={}
+  )
+  prepared_2.tool = BaseTool(name='slow', description='desc')
+
+  fast_event = _response_event('fast', state_delta={'saved': True})
+  fast_event.content.parts[0].function_response.id = 'call-1'
+  slow_event = _response_event('slow', state_delta={'finished': True})
+  slow_event.content.parts[0].function_response.id = 'call-2'
+
+  fast_runs = 0
+  slow_runs = 0
+
+  async def run_one(prepared: _PreparedFunctionCall) -> Event | None:
+    nonlocal fast_runs, slow_runs
+    if prepared is prepared_1:
+      fast_runs += 1
+      return fast_event
+    slow_runs += 1
+    await asyncio.sleep(0)
+    if slow_runs == 1:
+      raise NodeInterruptedError()
+    return slow_event
+
+  async def fake_handle_function_calls(ic, fc_event, tools_dict):
+    call_ids = {fc.id for fc in fc_event.get_function_calls()}
+    active_prepared = [
+        p
+        for p in (prepared_1, prepared_2)
+        if not call_ids or p.function_call.id in call_ids
+    ]
+    return await _batch_tool_executor._execute_prepared_function_calls(
+        ic, active_prepared, call_executor=run_one
+    )
+
+  llm_request = mock.MagicMock()
+  llm_request.tools_dict = {'fast': prepared_1.tool, 'slow': prepared_2.tool}
+  fc_event = Event(
+      invocation_id='inv-1',
+      author='agent',
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(function_call=prepared_1.function_call),
+              types.Part(function_call=prepared_2.function_call),
+          ],
+      ),
+  )
+
+  # Act / Assert - Turn 1: fast completes and is yielded before NodeInterruptedError.
+  emitted: list[Event] = []
+  with mock.patch(
+      'google.adk.flows.llm_flows.functions.handle_function_calls_async',
+      side_effect=fake_handle_function_calls,
+  ):
+    with pytest.raises(NodeInterruptedError):
+      async for (
+          ev
+      ) in _function_call_postprocessor.postprocess_handle_function_calls_async(
+          mock_ic, fc_event, llm_request
+      ):
+        emitted.append(ev)
+
+    assert [ev.id for ev in emitted] == [fast_event.id]
+    assert emitted[0].actions.state_delta == {'saved': True}
+    assert fast_runs == 1
+    assert slow_runs == 1
+
+    # Turn 2: resume replays only slow (call-2) without re-running fast (call-1).
+    sub_reply = Event(
+        invocation_id='inv-1',
+        author='user',
+        branch='agent.slow@call-2',
+        content=types.Content(
+            role='user',
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id='sub-1',
+                        name='adk_request_input',
+                        response={'answer': 'ok'},
+                    )
+                )
+            ],
+        ),
+    )
+    mock_ic._get_events.return_value = [fc_event, *emitted, sub_reply]
+    decision = decide_step_resume(mock_ic, llm_request.tools_dict)
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert [fc.id for fc in decision.replay_event().get_function_calls()] == [
+        'call-2'
+    ]
+
+    turn2_emitted: list[Event] = []
+    async for (
+        ev
+    ) in _function_call_postprocessor.postprocess_handle_function_calls_async(
+        mock_ic, decision.replay_event(), llm_request
+    ):
+      turn2_emitted.append(ev)
+
+  assert [ev.id for ev in turn2_emitted] == [slow_event.id]
+  assert fast_runs == 1
+  assert slow_runs == 2
 
 
 @pytest.mark.asyncio

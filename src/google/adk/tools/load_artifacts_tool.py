@@ -85,7 +85,7 @@ def _normalize_mime_type(mime_type: str | None) -> str | None:
   """Returns the normalized MIME type, without parameters like charset."""
   if not mime_type:
     return None
-  return mime_type.split(';', 1)[0].strip()
+  return mime_type.split(';', 1)[0].strip().lower()
 
 
 def _is_inline_mime_type_supported(mime_type: str | None) -> bool:
@@ -235,12 +235,21 @@ def as_safe_part_for_llm(
   if inline_data is None:
     return artifact
 
-  if _is_inline_mime_type_supported(inline_data.mime_type):
-    return artifact
+  mime_type = _normalize_mime_type(inline_data.mime_type)
+  if inline_data.mime_type and _is_inline_mime_type_supported(mime_type):
+    base, sep, params = inline_data.mime_type.partition(';')
+    canonical_mime_type = f'{base.strip().lower()}{sep}{params}'
+    if inline_data.mime_type == canonical_mime_type:
+      return artifact
+    return artifact.model_copy(
+        update={
+            'inline_data': inline_data.model_copy(
+                update={'mime_type': canonical_mime_type}
+            )
+        }
+    )
 
-  mime_type = _normalize_mime_type(inline_data.mime_type) or (
-      'application/octet-stream'
-  )
+  mime_type = mime_type or 'application/octet-stream'
   data = inline_data.data
   if data is None:
     return types.Part.from_text(

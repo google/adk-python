@@ -90,6 +90,9 @@ from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
 from ..sessions.session import Session
+from ..telemetry._web_ui import ui_telemetry_from_otel
+from ..telemetry._web_ui import WebUiLogExporter
+from ..telemetry._web_ui import WebUiSpan
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
 from ._dev_deploy import register_dev_deploy_endpoints
@@ -632,6 +635,7 @@ class DevServer(ApiServer):
       app: FastAPI,
       trace_dict: dict[str, dict[str, AttributeValue]],
       memory_exporter: Any,
+      log_exporter: WebUiLogExporter,
       web_assets_dir: Optional[str] = None,
   ) -> None:
     """Register all development-only endpoints.
@@ -979,22 +983,13 @@ class DevServer(ApiServer):
         "/dev/apps/{app_name}/debug/trace/session/{session_id}",
         tags=[TAG_DEBUG],
     )
-    async def get_session_trace(app_name: str, session_id: str) -> Any:
+    async def get_session_trace(
+        app_name: str, session_id: str
+    ) -> list[WebUiSpan]:
       spans = memory_exporter.get_finished_spans(session_id)
       if not spans:
         return []
-      return [
-          {
-              "name": s.name,
-              "span_id": s.context.span_id,
-              "trace_id": s.context.trace_id,
-              "start_time": s.start_time,
-              "end_time": s.end_time,
-              "attributes": dict(s.attributes),
-              "parent_span_id": s.parent.span_id if s.parent else None,
-          }
-          for s in spans
-      ]
+      return ui_telemetry_from_otel(spans, log_exporter.get_finished_logs())
 
     if web_assets_dir:
       # TODO: remove this endpoint once build_graph_image is completed
@@ -1831,7 +1826,11 @@ class DevServer(ApiServer):
 
     web_assets_dir = kwargs.get("web_assets_dir", None)
     self._register_dev_endpoints(
-        app, self._trace_dict, self._memory_exporter, web_assets_dir
+        app,
+        self._trace_dict,
+        self._memory_exporter,
+        self._log_exporter,
+        web_assets_dir,
     )
 
     return app

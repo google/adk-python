@@ -80,8 +80,20 @@ Specifies the underlying text reasoning model. This can be a model name string o
 Because `CascadeLive` implements `generate_content_async`, agents defined with `CascadeLive` can be executed across both live and non-live interfaces without code alterations:
 
 ```python
-runner = Runner(agent=agent, session_service=session_service)
-events = runner.run_async(session_id=session_id, user_message='What is the weather?')
+from google.adk.apps import App
+from google.adk.runners import Runner
+from google.genai import types
+
+app = App(name='weather_app', root_agent=agent)
+runner = Runner(app=app, session_service=session_service)
+events = runner.run_async(
+    user_id=user_id,
+    session_id=session_id,
+    new_message=types.Content(
+        role='user',
+        parts=[types.Part.from_text(text='What is the weather?')],
+    ),
+)
 ```
 
 Non-live calls bypass STT and TTS entirely, invoking the underlying text model directly.

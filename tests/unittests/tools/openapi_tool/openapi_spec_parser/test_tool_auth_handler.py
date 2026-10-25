@@ -1045,10 +1045,10 @@ async def test_handle_unauthorized_error_forced_expiry_reaches_token_endpoint(
   mock_client.refresh_token.assert_called_once_with(
       url='https://test.com/token', refresh_token='valid_refresh_token'
   )
-  # The credential handed to the session carries the forced expiry. It has to
-  # be truthy, not merely non-None: authlib < 1.7 returns None from
-  # is_expired() for a falsy expires_at, so 0 would skip the refresh on the
-  # oldest version the authlib>=1.6.6,<2 pin allows.
+  # The credential handed to the session carries the forced expiry. A timestamp
+  # of 1 (Jan 1, 1970 00:00:01 UTC) is expired under every version the
+  # authlib>=1.9.1,<2 pin allows (and remains truthy for any older authlib < 1.7
+  # environment where is_expired() returned None for a falsy expires_at).
   assert forced_expiry == {'expires_at': 1, 'expires_in': 0}
   updated = store.get_credential(
       openid_connect_scheme, openid_connect_credential

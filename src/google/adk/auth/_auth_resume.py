@@ -27,8 +27,9 @@ from pydantic import ValidationError
 
 from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from .auth_credential import AuthCredential
-from .auth_credential import AuthCredentialTypes
+from .auth_handler import _credential_from_string
 from .auth_handler import AuthHandler
+from .auth_schemes import AuthSchemeType
 from .auth_tool import AuthConfig
 from .auth_tool import AuthToolArguments
 
@@ -99,21 +100,19 @@ def _build_credential_from_value(
 ) -> AuthCredential:
   """Builds an AuthCredential from a raw user-provided value.
 
-  For API_KEY, a bare string or numeric value is used as the key string
-  directly.
-  For all other cases, the value is parsed as an AuthCredential.
+  For API key and non-basic HTTP schemes, a bare string (or an int produced
+  when _unwrap_response JSON-parses an all-digit string) is wrapped via
+  _credential_from_string. For all other cases, the value is parsed as an
+  AuthCredential.
   """
-  raw_cred = auth_config.raw_auth_credential
-  if (
-      raw_cred is not None
-      and raw_cred.auth_type == AuthCredentialTypes.API_KEY
-      and isinstance(value, (str, int, float))
-      and not isinstance(value, bool)
+  if isinstance(value, int) and not isinstance(value, bool):
+    value = str(value)
+  auth_scheme = auth_config.auth_scheme
+  if isinstance(value, str) and getattr(auth_scheme, "type_", None) in (
+      AuthSchemeType.apiKey,
+      AuthSchemeType.http,
   ):
-    return AuthCredential(
-        auth_type=AuthCredentialTypes.API_KEY,
-        api_key=str(value),
-    )
+    return _credential_from_string(value, auth_scheme)
   return AuthCredential.model_validate(value)
 
 
@@ -154,10 +153,11 @@ async def store_auth_response(
   """Pins the client's auth response to `requested` and stores the credential.
 
   Accepts an `AuthConfig` dict/model, an `AuthCredential` dict/model, or a bare
-  API-key string/number. When an OAuth state or PKCE verifier was recorded in
-  `state` for `interrupt_id`, verifies the state round-trip and restores the
-  PKCE verifier onto the credential before backfilling OAuth2 fields from
-  `requested` and storing the credential via `AuthHandler`.
+  string or integer key/token for API key and non-basic HTTP schemes. When an
+  OAuth state or PKCE verifier was recorded in `state` for `interrupt_id`,
+  verifies the state round-trip and restores the PKCE verifier onto the
+  credential before backfilling OAuth2 fields from `requested` and storing the
+  credential via `AuthHandler`.
 
   Args:
     requested: The server-issued `AuthConfig` from the credential request or
@@ -177,7 +177,7 @@ async def store_auth_response(
   except (ValidationError, TypeError):
     try:
       exchanged_credential = _build_credential_from_value(requested, response)
-    except (ValidationError, TypeError):
+    except (ValidationError, TypeError, ValueError):
       logger.warning(
           "Ignoring malformed auth response for function call ID %r.",
           interrupt_id,

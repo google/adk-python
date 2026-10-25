@@ -769,11 +769,14 @@ class AgentEvaluator:
 
     # Generate inferences
     inference_results = []
-    for inference_request in inference_requests:
+    for repetition_index, inference_request in enumerate(inference_requests):
       async with Aclosing(
           eval_service.perform_inference(inference_request=inference_request)
       ) as agen:
         async for inference_result in agen:
+          # Each request runs every eval case once, so the request's position
+          # is the run index.
+          inference_result.repetition_index = repetition_index
           inference_results.append(inference_result)
 
     # Evaluate metrics

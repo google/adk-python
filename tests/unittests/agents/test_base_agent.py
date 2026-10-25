@@ -29,6 +29,7 @@ import warnings
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import ResumabilityConfig
@@ -37,6 +38,7 @@ from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.utils.context_utils import Aclosing
 from google.adk.workflow import BaseNode
 from google.genai import types
 import pytest
@@ -187,6 +189,15 @@ def test_user_agent_name_validation():
 
   agent_all_caps = _TestingAgent(name='USER')
   assert agent_all_caps.name == 'USER'
+
+
+def test_base_agent_iter_static_children_yields_sub_agents():
+  """BaseAgent._iter_static_children yields direct sub-agents in order."""
+  sub1 = _TestingAgent(name='sub1')
+  sub2 = _TestingAgent(name='sub2')
+  parent = _TestingAgent(name='parent', sub_agents=[sub1, sub2])
+
+  assert list(parent._iter_static_children()) == [sub1, sub2]
 
 
 @pytest.mark.asyncio
@@ -1374,7 +1385,7 @@ def test_validate_sub_agents_unique_names_single_duplicate(
         name=f'{request.function.__name__}_parent',
         sub_agents=[sub_agent_1, sub_agent_2],
     )
-  assert f'Found duplicate sub-agent names: `{duplicate_name}`' in caplog.text
+  assert f'Found duplicate agent names: `{duplicate_name}`' in caplog.text
 
 
 def test_validate_sub_agents_unique_names_multiple_duplicates(
@@ -1454,6 +1465,157 @@ def test_validate_sub_agents_unique_names_no_duplicates(
   assert parent.sub_agents[2].name == f'{request.function.__name__}_sub_agent_3'
 
 
+def test_validate_sub_agents_unique_names_across_parents(
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """Cousins under different parents that share a name must warn."""
+  shared = f'{request.function.__name__}_shared'
+  left = _TestingAgent(
+      name=f'{request.function.__name__}_left',
+      sub_agents=[_TestingAgent(name=shared)],
+  )
+  right = _TestingAgent(
+      name=f'{request.function.__name__}_right',
+      sub_agents=[_TestingAgent(name=shared)],
+  )
+
+  with caplog.at_level(logging.WARNING):
+    root = _TestingAgent(
+        name=f'{request.function.__name__}_root',
+        sub_agents=[left, right],
+    )
+
+  assert f'Found duplicate agent names: `{shared}`' in caplog.text
+  assert 'unique names' in caplog.text
+  # First DFS match wins; the other cousin is unreachable by name.
+  found = root.find_agent(shared)
+  assert found is not None
+  assert found is left.sub_agents[0]
+
+
+def test_validate_sub_agents_unique_names_parent_shares_name_with_descendant(
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """A parent sharing a name with a descendant must warn."""
+  shared = f'{request.function.__name__}_shared'
+  grandchild = _TestingAgent(name=shared)
+  child = _TestingAgent(
+      name=f'{request.function.__name__}_child',
+      sub_agents=[grandchild],
+  )
+
+  with caplog.at_level(logging.WARNING):
+    root = _TestingAgent(
+        name=shared,
+        sub_agents=[child],
+    )
+
+  assert f'Found duplicate agent names: `{shared}`' in caplog.text
+  assert 'unique names' in caplog.text
+  # Parent matches first in DFS; the descendant is shadowed.
+  found = root.find_agent(shared)
+  assert found is root
+
+
+def test_validate_sub_agents_unique_names_tolerates_mock_without_sub_agents(
+    request: pytest.FixtureRequest,
+) -> None:
+  """Mocks standing in for sub-agents without sub_agents must survive."""
+  mock_agent = mock.MagicMock(spec=BaseAgent)
+  mock_agent.name = f'{request.function.__name__}_mock'
+  mock_agent.parent_agent = None
+  parent = _TestingAgent(
+      name=f'{request.function.__name__}_parent',
+      sub_agents=[mock_agent],
+  )
+  assert len(parent.sub_agents) == 1
+
+
+def test_validate_sub_agents_unique_names_direct_call_backward_compatibility(
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """Direct invocation without validation context stays backward compatible."""
+  shared = f'{request.function.__name__}_shared'
+  sub_agents: list[BaseAgent] = [
+      _TestingAgent(name=shared),
+      _TestingAgent(name=shared),
+  ]
+  with caplog.at_level(logging.WARNING):
+    result = BaseAgent.validate_sub_agents_unique_names(sub_agents)
+
+  assert result == sub_agents
+  assert f'Found duplicate agent names: `{shared}`' in caplog.text
+
+
+def test_validate_sub_agents_unique_names_cousins_warn_with_internal_duplicates(
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """Cousin collisions must warn even when a subtree has internal duplicates."""
+  internal_dup = f'{request.function.__name__}_internal_dup'
+  cousin_shared = f'{request.function.__name__}_cousin_shared'
+  left = _TestingAgent(
+      name=f'{request.function.__name__}_left',
+      sub_agents=[
+          _TestingAgent(name=internal_dup),
+          _TestingAgent(name=internal_dup),
+          _TestingAgent(name=cousin_shared),
+      ],
+  )
+  right = _TestingAgent(
+      name=f'{request.function.__name__}_right',
+      sub_agents=[_TestingAgent(name=cousin_shared)],
+  )
+
+  with caplog.at_level(logging.WARNING):
+    caplog.clear()
+    _ = _TestingAgent(
+        name=f'{request.function.__name__}_root',
+        sub_agents=[left, right],
+    )
+  assert internal_dup not in caplog.text
+  assert f'Found duplicate agent names: `{cousin_shared}`' in caplog.text
+
+
+def test_validate_sub_agents_ancestor_does_not_rewarn_child_internal_duplicates(
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """Ancestors must not re-warn on duplicates internal to a child branch."""
+  shared = f'{request.function.__name__}_shared'
+  child = _TestingAgent(
+      name=f'{request.function.__name__}_child',
+      sub_agents=[
+          _TestingAgent(name=shared),
+          _TestingAgent(name=shared),
+      ],
+  )
+
+  caplog.clear()
+  with caplog.at_level(logging.WARNING):
+    root = _TestingAgent(
+        name=f'{request.function.__name__}_root',
+        sub_agents=[child],
+    )
+  assert root.sub_agents == [child]
+  assert f'Found duplicate agent names: `{shared}`' not in caplog.text
+
+
+def test_validate_sub_agents_unique_names_same_instance_twice_warns(
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """Passing the same agent instance twice to the validator must warn."""
+  name = f'{request.function.__name__}_agent'
+  agent: BaseAgent = _TestingAgent(name=name)
+  with caplog.at_level(logging.WARNING):
+    BaseAgent.validate_sub_agents_unique_names([agent, agent])
+  assert f'Found duplicate agent names: `{name}`' in caplog.text
+
+
 def test_validate_sub_agents_unique_names_empty_list(
     request: pytest.FixtureRequest,
 ):
@@ -1490,6 +1652,49 @@ def test_abstract_subclass_cannot_be_instantiated():
 
   with pytest.raises(TypeError, match='abstract'):
     _Incomplete(name='incomplete')
+
+
+@pytest.mark.asyncio
+async def test_run_impl_aclose_closes_inner_run_async_generator(
+    request: pytest.FixtureRequest,
+):
+  """Closing _run_impl early deterministically closes inner run_async."""
+  cleaned_up = False
+
+  class _CleanupTrackingAgent(BaseAgent):
+    """Agent that tracks whether _run_async_impl cleanup ran."""
+
+    @override
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      nonlocal cleaned_up
+      try:
+        yield Event(
+            author=self.name,
+            invocation_id=ctx.invocation_id,
+            content=types.Content(parts=[types.Part(text='first')]),
+        )
+        yield Event(
+            author=self.name,
+            invocation_id=ctx.invocation_id,
+            content=types.Content(parts=[types.Part(text='second')]),
+        )
+      finally:
+        await asyncio.sleep(0)
+        cleaned_up = True
+
+  agent = _CleanupTrackingAgent(name=f'{request.function.__name__}_agent')
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  ctx = Context(parent_ctx, node=agent)
+
+  async with Aclosing(agent.run(ctx=ctx, node_input=None)) as agen:
+    event = await anext(agen)
+    assert event.content.parts[0].text == 'first'
+
+  assert cleaned_up
 
 
 if __name__ == '__main__':

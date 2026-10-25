@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 
+from google.adk.agents.context import Context
 from google.adk.apps import App
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -29,6 +30,7 @@ from google.adk.workflow._workflow import Workflow
 from google.genai import types
 import pytest
 
+from .. import testing_utils
 from .._invariants import InvariantPlugin
 
 # ---------------------------------------------------------------------------
@@ -202,3 +204,69 @@ async def test_nested_workflow_timeout():
     await _run_workflow(outer_wf)
 
   assert 'inner_wf' in str(exc_info.value)
+
+
+async def test_timeout_awaits_cleanup_before_retry() -> None:
+  """A timed-out attempt releases its resource before the next attempt starts.
+
+  Setup: a worker with a timeout and one retry blocks on its first attempt.
+  Act: hold its asynchronous finalizer open after the deadline, then release it.
+  Assert: retry starts only after cleanup, receives attempt_count=2, and
+    produces the only downstream result.
+  """
+  cleanup_started = asyncio.Event()
+  release_cleanup = asyncio.Event()
+  lifecycle: list[tuple[str, int]] = []
+  received: list[str] = []
+
+  @node(
+      timeout=0.05,
+      retry_config=RetryConfig(max_attempts=2, initial_delay=0, jitter=0),
+  )
+  async def worker(ctx: Context) -> str:
+    attempt = ctx.attempt_count
+    lifecycle.append(('start', attempt))
+    try:
+      if attempt == 1:
+        await asyncio.Event().wait()
+      return 'recovered'
+    finally:
+      if attempt == 1:
+        cleanup_started.set()
+        await release_cleanup.wait()
+      lifecycle.append(('release', attempt))
+
+  @node
+  async def downstream(node_input: str) -> str:
+    received.append(node_input)
+    return f'processed: {node_input}'
+
+  wf = Workflow(name='wf', edges=[(START, worker, downstream)])
+  runner = testing_utils.InMemoryRunner(node=wf)
+  run_task = asyncio.create_task(runner.run_async('start'))
+
+  try:
+    await asyncio.wait_for(cleanup_started.wait(), timeout=5)
+    # A timeout must not bypass the blocked finalizer to start the retry.
+    done, _ = await asyncio.wait({run_task}, timeout=0.1)
+    assert not done
+    assert lifecycle == [('start', 1)]
+    release_cleanup.set()
+    events = await asyncio.wait_for(run_task, timeout=5)
+
+    assert lifecycle == [
+        ('start', 1),
+        ('release', 1),
+        ('start', 2),
+        ('release', 2),
+    ]
+    assert received == ['recovered']
+    assert [e.output for e in events if e.output is not None] == [
+        'recovered',
+        'processed: recovered',
+    ]
+  finally:
+    release_cleanup.set()
+    if not run_task.done():
+      run_task.cancel()
+    await asyncio.gather(run_task, return_exceptions=True)

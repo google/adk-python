@@ -243,11 +243,27 @@ runs the agent.
 | `labels` | `dict[str, str] \| None` | `None` | Metadata attached for billing breakdown. |
 | `use_live` | `bool` | `False` | Use bidirectional streaming. Required for Live API models. |
 | `live_timeout_seconds` | `int` | `300` | How long to wait for a model turn in live mode. |
+| `num_runs` | `int` | `1` | How many times each eval case is run. Each run is yielded as its own `InferenceResult`. |
 
 `parallelism` is bounded by your model quota, not your CPU. Models enforce
 per-minute limits, so raising it on a large eval set is a reliable way to start
 collecting rate-limit errors, and those arrive as failed inferences rather than
 as an exception you would notice.
+
+`num_runs` above 1 runs every selected case that many times, through the same
+`parallelism` pool. Every `InferenceResult` carries a 0-based
+`repetition_index` naming the run it came from, 0 when a case runs once, and
+`evaluate` copies it onto the matching `EvalCaseResult`, so the runs of one case
+stay apart in what is yielded and saved. Results arrive in completion order, so
+group the runs of a case by its id and `repetition_index` rather than by
+position. With more than one run, each run starts from a fresh session: a
+`SessionInput.session_id` pinned by the case is ignored, and a warning naming
+the case and the session is logged once per case, so a case that pins its
+session to find a pre-loaded artifact will not find it. The service does not
+combine the runs into one verdict. That is left to the caller; `adk eval`
+judges each case on all of its runs, by default on each metric's
+per-invocation scores pooled across the runs, as `multi_run_config` in
+[EvalConfig](../eval_config/index.md) describes.
 
 ### EvaluateConfig
 
@@ -315,7 +331,11 @@ There are two abstract methods to fill in, both async generators. The usual
 reason to write your own is a remote evaluation backend, with inference in your
 process and scoring by a hosted service, or the other way round. Keep the
 streaming contract when you do, yielding each result as it is ready rather than
-collecting a list, because callers rely on that to report progress.
+collecting a list, because callers rely on that to report progress. Honor
+`InferenceConfig.num_runs` too: yield one `InferenceResult` per run of each
+case, labeled with its `repetition_index`, and carry that index onto the
+`EvalCaseResult` that `evaluate` yields for it, so callers can tell the runs of
+a case apart.
 
 ## Limitations
 

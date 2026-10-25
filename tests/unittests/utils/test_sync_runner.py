@@ -16,13 +16,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
+import threading
 from typing import Any
+from unittest.mock import MagicMock
 
+from google.adk.agents.context import Context
+from google.adk.agents.run_config import RunConfig
+from google.adk.agents.run_config import ToolThreadPoolConfig
+from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_confirmation import ToolConfirmation
+from google.adk.tools.tool_context import ToolContext
 from google.adk.utils._sync_runner import _invoke_callable
 from google.adk.utils._sync_runner import _SYNC_CALLABLE_RUNNER
+from google.adk.utils._sync_runner import _use_sync_callable_context
 from google.adk.utils._sync_runner import _use_sync_callable_runner
 import pytest
+
+from .. import testing_utils
 
 
 @pytest.mark.asyncio
@@ -116,3 +128,89 @@ async def test_invoke_callable_awaits_awaitable_from_sync_wrapper() -> None:
 
   with _use_sync_callable_runner(passthrough_runner):
     assert await _invoke_callable(sync_wrapper, {'x': 5}) == 15
+
+
+@pytest.mark.asyncio
+async def test_invoke_callable_uses_context_pool_and_runs_nested_inline() -> (
+    None
+):
+  """Resolves tool_thread_pool_config from context without nested deadlock."""
+  seen_threads: list[str] = []
+  agent = testing_utils.create_test_agent()
+  ctx = Context(
+      await testing_utils.create_invocation_context(
+          agent=agent,
+          run_config=RunConfig(
+              tool_thread_pool_config=ToolThreadPoolConfig(max_workers=1)
+          ),
+      )
+  )
+  default_ctx = Context(
+      await testing_utils.create_invocation_context(
+          agent=agent, run_config=RunConfig()
+      )
+  )
+
+  def inner(value: int) -> int:
+    seen_threads.append(threading.current_thread().name)
+    return value + 1
+
+  def outer(value: int) -> Any:
+    seen_threads.append(threading.current_thread().name)
+    return asyncio.run(_invoke_callable(inner, {'value': value}))
+
+  with _use_sync_callable_context(ctx):
+    result = await asyncio.wait_for(
+        _invoke_callable(outer, {'value': 41}), timeout=5
+    )
+
+  assert result == 42
+  assert len(seen_threads) == 2
+  assert seen_threads[0].startswith('adk_tool_executor')
+  assert seen_threads[1] == seen_threads[0]
+  with _use_sync_callable_context(default_ctx):
+    assert await _invoke_callable(inner, {'value': 1}) == 2
+  assert seen_threads[2] != seen_threads[0]
+  with _use_sync_callable_context(MagicMock()):
+    assert await _invoke_callable(inner, {'value': 1}) == 2
+
+
+@pytest.mark.asyncio
+async def test_function_tool_preserves_two_arg_invoke_callable_override() -> (
+    None
+):
+  """Subclasses overriding 2-arg _invoke_callable inherit thread pool runs."""
+  seen_threads: list[str] = []
+
+  class _TwoArgSubclassTool(FunctionTool):
+
+    async def _invoke_callable(
+        self, target: Any, args_to_call: dict[str, Any]
+    ) -> Any:
+      return await super()._invoke_callable(target, args_to_call)
+
+  def pred(x: int) -> bool:
+    del x
+    seen_threads.append(threading.current_thread().name)
+    return True
+
+  def op(x: int) -> int:
+    seen_threads.append(threading.current_thread().name)
+    return x + 1
+
+  tool = _TwoArgSubclassTool(op, require_confirmation=pred)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=testing_utils.create_test_agent(),
+      run_config=RunConfig(
+          tool_thread_pool_config=ToolThreadPoolConfig(max_workers=1)
+      ),
+  )
+  tool_context = ToolContext(
+      invocation_context=invocation_context,
+      function_call_id='call_1',
+      tool_confirmation=ToolConfirmation(confirmed=True),
+  )
+
+  assert await tool.run_async(args={'x': 41}, tool_context=tool_context) == 42
+  assert len(seen_threads) == 2
+  assert all(name.startswith('adk_tool_executor') for name in seen_threads)

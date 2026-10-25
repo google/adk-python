@@ -623,8 +623,22 @@ class TestConvertPartToInteractionContent:
         'id': '',
         'arguments': {
             'code': 'print("hello")',
-            'language': 'PYTHON',
+            'language': 'python',
         },
+    }
+
+  def test_executable_code_without_code_or_language(self):
+    """Test that unset code and an unspecified language are omitted."""
+    part = types.Part(
+        executable_code=types.ExecutableCode(
+            language=types.Language.LANGUAGE_UNSPECIFIED,
+        )
+    )
+    result = interactions_utils._convert_part_to_interaction_content(part)
+    assert result == {
+        'type': 'code_execution_call',
+        'id': '',
+        'arguments': {},
     }
 
   def test_empty_part(self):
@@ -784,6 +798,20 @@ class TestDeprecatedConvertPartToInteractionContent:
     assert result['type'] == 'code_execution_result'
     assert result['result'] == '7'
     assert result['is_error'] is expected_is_error
+
+  def test_executable_code_sends_lowercase_language(self):
+    """The API rejects the uppercase enum value with a 400."""
+    part = types.Part(
+        executable_code=types.ExecutableCode(
+            code='print(1)', language=types.Language.PYTHON
+        )
+    )
+    result = interactions_utils.convert_part_to_interaction_content(part)
+    assert result == {
+        'type': 'code_execution_call',
+        'id': '',
+        'arguments': {'code': 'print(1)', 'language': 'python'},
+    }
 
   def test_thought_part_only_carries_base64_signature(self):
     """A thought part has no plaintext; only the signature round-trips."""
@@ -3910,6 +3938,19 @@ class TestWaitForInteraction:
     )
 
     assert result.status == 'completed'
+
+  async def test_pending_without_id_raises(self, recorded_sleeps):
+    """A pending interaction with no id cannot be polled."""
+    api_client = _FakeApiClient(
+        poll_results=[_interaction_with_status('completed', text='Done.')]
+    )
+    pending = _interaction_with_status('queued').model_copy(update={'id': None})
+
+    with pytest.raises(ValueError, match='no id to poll'):
+      await interactions_utils._wait_for_interaction(api_client, pending)
+
+    assert not api_client.get_calls
+    assert not recorded_sleeps
 
   async def test_forwards_extra_headers_to_each_poll(self, recorded_sleeps):
     """Per-request headers ride along on the polls, not just the create."""

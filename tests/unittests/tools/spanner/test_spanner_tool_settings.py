@@ -26,9 +26,12 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def reset_warned_features():
-  """Reset warned features before each test."""
+def reset_warned_features(monkeypatch):
+  """Reset warned features and warning suppression before each test."""
   _WARNED_FEATURES.clear()
+  monkeypatch.delenv(
+      "ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", raising=False
+  )
 
 
 def common_spanner_vector_store_settings(vector_length=None):
@@ -46,6 +49,7 @@ def common_spanner_vector_store_settings(vector_length=None):
 def test_spanner_tool_settings_experimental_warning():
   """Test SpannerToolSettings experimental warning."""
   with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
     SpannerToolSettings()
     assert len(w) == 1
     assert "SPANNER_TOOL_SETTINGS is enabled." in str(w[0].message)

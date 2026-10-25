@@ -29,6 +29,7 @@ from google.adk.a2a.converters.part_converter import A2A_DATA_PART_END_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_START_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_TEXT_MIME_TYPE
+from google.adk.a2a.converters.to_adk_event import _artifact_event_id
 from google.adk.a2a.converters.to_adk_event import _extract_all_metadata_fields
 from google.adk.a2a.converters.to_adk_event import _extract_genai_metadata
 from google.adk.a2a.converters.to_adk_event import _PEER_SETTABLE_ACTION_FIELDS
@@ -39,6 +40,7 @@ from google.adk.a2a.converters.to_adk_event import convert_a2a_task_to_event
 from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
 from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
+from google.adk.a2a.converters.utils import A2A_TASK_FAILED_ERROR_CODE
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import _internal_metadata
 from google.adk.events import Event
@@ -225,6 +227,70 @@ class TestToAdk:
     assert event.invocation_id == "test-invocation"
     assert len(event.content.parts) == 1
     assert event.content.parts[0] == mock_genai_part
+
+  def test_convert_a2a_task_to_event_failed_status_sets_error(self):
+    """Test failed A2A task status maps to an error Event."""
+    a2a_part = _make_a2a_part_for_test({})
+    failed_message = Message(
+        message_id="msg-failed",
+        role=_compat.ROLE_AGENT,
+        parts=[a2a_part],
+    )
+    task = _compat.make_task(
+        id="task-failed",
+        status=_compat.make_task_status(
+            _compat.TS_FAILED, message=failed_message
+        ),
+    )
+    mock_part_converter = Mock(
+        return_value=[
+            genai_types.Part.from_text(text="Remote agent task failed")
+        ]
+    )
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event is not None
+    assert event.error_code == A2A_TASK_FAILED_ERROR_CODE
+    assert event.error_message == "Remote agent task failed"
+    assert event.content.parts[0].text == "Remote agent task failed"
+
+  def test_convert_a2a_task_to_event_failed_status_preserves_error_code(
+      self,
+  ):
+    """Test failed A2A task status preserves error_code from metadata."""
+    metadata = {_get_adk_metadata_key("error_code"): "SAFETY"}
+    failed_message = Message(
+        message_id="msg-failed",
+        role=_compat.ROLE_AGENT,
+        parts=[_make_a2a_part_for_test({})],
+        metadata=metadata,
+    )
+    task = _compat.make_task(
+        id="task-failed",
+        status=_compat.make_task_status(
+            _compat.TS_FAILED, message=failed_message
+        ),
+    )
+    mock_part_converter = Mock(
+        return_value=[genai_types.Part.from_text(text="Blocked by safety")]
+    )
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event is not None
+    assert event.error_code == "SAFETY"
+    assert event.error_message == "Blocked by safety"
 
   def test_convert_a2a_task_to_event_returns_action_only_event(self):
     """Test A2A task conversion returns action-only events."""
@@ -881,6 +947,26 @@ class TestToAdk:
     assert len(event.content.parts) == 1
     assert event.content.parts[0] == mock_genai_part
 
+  def test_convert_a2a_status_update_to_event_failed_status_without_message(
+      self,
+  ):
+    """Test failed status update without message still emits an error event."""
+    update = _compat.make_task_status_update_event(
+        task_id="task-failed",
+        status=_compat.make_task_status(_compat.TS_FAILED),
+        context_id="context-1",
+        final=False,
+    )
+
+    event = convert_a2a_status_update_to_event(
+        update, "test-author", self.mock_context, Mock()
+    )
+
+    assert event is not None
+    assert event.error_code == A2A_TASK_FAILED_ERROR_CODE
+    assert event.error_message == "Remote agent task failed"
+    assert event.content is None
+
   def test_convert_a2a_status_update_to_event_none(self):
     """Test convert_a2a_status_update_to_event with None."""
     with pytest.raises(ValueError, match="A2A status update cannot be None"):
@@ -914,6 +1000,63 @@ class TestToAdk:
     assert event.partial is True
     assert len(event.content.parts) == 1
     assert event.content.parts[0] == mock_genai_part
+
+  def test_chunks_of_one_artifact_share_the_event_id(self):
+    """The chunks of one artifact and the update that closes it share an id.
+
+    ADK's A2A server ends a streamed response with a ``last_chunk`` update that
+    replaces the artifact with the full text (``append=False``). The shared id,
+    as in local streaming, tells a consumer it replaces the chunks.
+    """
+
+    def chunk(text, *, append, last_chunk, artifact_id="art-1"):
+      return TaskArtifactUpdateEvent(
+          task_id="task-1",
+          context_id="context-1",
+          append=append,
+          last_chunk=last_chunk,
+          artifact=_compat.make_artifact(
+              artifact_id=artifact_id,
+              parts=[_compat.make_text_part(text)],
+          ),
+      )
+
+    events = [
+        convert_a2a_artifact_update_to_event(
+            update, author="test-author", invocation_context=self.mock_context
+        )
+        for update in (
+            chunk("Hello, ", append=False, last_chunk=False),
+            chunk("world!", append=True, last_chunk=False),
+            chunk("Hello, world!", append=False, last_chunk=True),
+        )
+    ]
+    other = convert_a2a_artifact_update_to_event(
+        chunk(
+            "Another answer.",
+            append=False,
+            last_chunk=True,
+            artifact_id="art-2",
+        ),
+        author="test-author",
+        invocation_context=self.mock_context,
+    )
+
+    assert [event.partial for event in events] == [True, True, False]
+    assert len({event.id for event in events}) == 1
+    assert other.id != events[0].id
+
+  def test_artifact_event_id_is_scoped_to_the_invocation(self):
+    """The same artifact id in another invocation gives another event id."""
+    other_context = Mock(spec=InvocationContext)
+    other_context.invocation_id = "other-invocation"
+    other_context.branch = None
+
+    assert _artifact_event_id("art-1", self.mock_context) != _artifact_event_id(
+        "art-1", other_context
+    )
+    assert _artifact_event_id("", self.mock_context) is None
+    assert _artifact_event_id("art-1", None) is None
 
   def test_convert_a2a_artifact_update_to_event_none(self):
     """Test convert_a2a_artifact_update_to_event with None."""

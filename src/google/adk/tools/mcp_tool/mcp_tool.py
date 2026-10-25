@@ -91,6 +91,24 @@ _RESERVED_TOOL_NAMES = frozenset({
 _UNSET = object()
 
 
+def _merge_auth_and_provider_headers(
+    *,
+    auth_headers: dict[str, str] | None,
+    provider_headers: dict[str, str] | None,
+) -> dict[str, str]:
+  """Merges MCP session headers, with explicit auth taking precedence."""
+  headers = dict(provider_headers or {})
+  if auth_headers:
+    auth_header_names = {name.lower() for name in auth_headers}
+    headers = {
+        name: value
+        for name, value in headers.items()
+        if name.lower() not in auth_header_names
+    }
+    headers.update(auth_headers)
+  return headers
+
+
 # Values the server owns: free-form JSON, not model fields. A `_meta` inside
 # one is the server's own -- a JSON Schema may even declare a property by that
 # name -- so the walk below must not descend into them.
@@ -205,6 +223,9 @@ class ProgressFnT(Protocol):
     ...
 
 
+_ConfirmationPredicate = Callable[..., bool | Awaitable[bool]]
+
+
 @runtime_checkable
 class ProgressCallbackFactory(Protocol):
   """Factory protocol for creating per-tool progress callbacks.
@@ -294,7 +315,7 @@ class McpTool(BaseAuthenticatedTool):
       ) = None,
       progress_callback: ProgressFnT | ProgressCallbackFactory | None = None,
       propagate_grounding_metadata: bool = False,
-  ):
+  ) -> None:
     """Initializes an McpTool.
 
     This tool wraps an MCP Tool interface and uses a session manager to
@@ -464,7 +485,8 @@ class McpTool(BaseAuthenticatedTool):
     # Format: meta.ui.visibility
     ui = meta.get("ui", {})
     if isinstance(ui, dict):
-      return ui.get("visibility", [])
+      # The MCP Apps extension defines visibility as a list of strings.
+      return cast(list[str], ui.get("visibility", []))
     return []
 
   @property
@@ -497,11 +519,16 @@ class McpTool(BaseAuthenticatedTool):
     return None
 
   async def _invoke_callable(
-      self, target: Callable[..., Any], args_to_call: dict[str, Any]
-  ) -> Any:
+      self,
+      target: _ConfirmationPredicate,
+      args_to_call: dict[str, Any],
+  ) -> bool:
     """Invokes a callable, handling both sync and async cases."""
-    return await _invoke_callable(
-        target, args_to_call, unwrapped=unwrap_callable(target)
+    return cast(
+        bool,
+        await _invoke_callable(
+            target, args_to_call, unwrapped=unwrap_callable(target)
+        ),
     )
 
   def _prepare_callable_args(
@@ -634,7 +661,11 @@ class McpTool(BaseAuthenticatedTool):
 
   @override
   async def _run_async_impl(
-      self, *, args, tool_context: ToolContext, credential: AuthCredential
+      self,
+      *,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+      credential: AuthCredential,
   ) -> dict[str, Any]:
     """Runs the tool asynchronously.
 
@@ -647,19 +678,20 @@ class McpTool(BaseAuthenticatedTool):
     """
     # Extract headers from credential for session pooling
     auth_headers = await self._get_headers(tool_context, credential)
-    dynamic_headers = None
+    dynamic_headers: dict[str, str] | None = None
     if self._header_provider:
-      dynamic_headers = self._header_provider(
+      provided_headers = self._header_provider(
           ReadonlyContext(tool_context._invocation_context)  # pylint: disable=protected-access
       )
-      if inspect.isawaitable(dynamic_headers):
-        dynamic_headers = await dynamic_headers
+      if inspect.isawaitable(provided_headers):
+        dynamic_headers = await provided_headers
+      else:
+        dynamic_headers = provided_headers
 
-    headers: dict[str, str] = {}
-    if auth_headers:
-      headers.update(auth_headers)
-    if dynamic_headers:
-      headers.update(dynamic_headers)
+    headers = _merge_auth_and_provider_headers(
+        auth_headers=auth_headers,
+        provider_headers=dynamic_headers,
+    )
     final_headers = headers if headers else None
 
     # Propagate trace context in the _meta field as sprcified by MCP protocol.
@@ -829,7 +861,7 @@ class McpTool(BaseAuthenticatedTool):
     return cast(ProgressFnT, self._progress_callback)
 
   async def _get_headers(
-      self, tool_context: ToolContext, credential: AuthCredential
+      self, tool_context: ToolContext, credential: AuthCredential | None
   ) -> dict[str, str] | None:
     """Extracts authentication headers from credentials.
 
@@ -847,7 +879,13 @@ class McpTool(BaseAuthenticatedTool):
     headers: dict[str, str] | None = None
     if credential:
       if credential.oauth2:
-        headers = {"Authorization": f"Bearer {credential.oauth2.access_token}"}
+        # Mirror build_auth_headers: an OAuth2 credential stays on this branch
+        # even without a token, so an empty token yields no header rather than
+        # falling through to an unrelated HTTP credential on the same object.
+        if credential.oauth2.access_token:
+          headers = {
+              "Authorization": f"Bearer {credential.oauth2.access_token}"
+          }
       elif credential.http:
         # Handle HTTP authentication schemes
         if (
@@ -881,10 +919,11 @@ class McpTool(BaseAuthenticatedTool):
           headers = headers or {}
           headers.update(credential.http.additional_headers)
       elif credential.api_key:
-        if (
-            not self._credentials_manager
-            or not self._credentials_manager._auth_config
-        ):
+        credentials_manager = self._credentials_manager
+        auth_config = (
+            credentials_manager._auth_config if credentials_manager else None
+        )
+        if auth_config is None:
           error_msg = (
               "Cannot find corresponding auth scheme for API key credential."
           )
@@ -895,7 +934,7 @@ class McpTool(BaseAuthenticatedTool):
           # carry them too, so read them off the scheme rather than requiring
           # an APIKey instance. A scheme with neither used to raise
           # AttributeError here.
-          scheme = self._credentials_manager._auth_config.auth_scheme
+          scheme = auth_config.auth_scheme
           key_location = getattr(scheme, "in_", None)
           key_name = getattr(scheme, "name", None)
           if key_location != APIKeyIn.header:
@@ -927,7 +966,7 @@ class McpTool(BaseAuthenticatedTool):
 class MCPTool(McpTool):
   """Deprecated name, use `McpTool` instead."""
 
-  def __init__(self, *args, **kwargs):
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
     warnings.warn(
         "MCPTool class is deprecated, use `McpTool` instead.",
         DeprecationWarning,

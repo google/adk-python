@@ -19,79 +19,99 @@
         "status": "UNSET",
         "children": [
           {
-            "name": "call_llm",
+            "name": "generate_content gemini-2.5-flash",
             "attributes": {
-              "gen_ai.system": "gcp.vertex.agent",
+              "gen_ai.operation.name": "generate_content",
               "gen_ai.request.model": "gemini-2.5-flash",
-              "gcp.vertex.agent.invocation_id": "PRESENT",
-              "gcp.vertex.agent.session_id": "PRESENT",
+              "gen_ai.agent.name": "some_root_agent",
+              "gen_ai.conversation.id": "PRESENT",
               "gcp.vertex.agent.event_id": "PRESENT",
-              "gcp.vertex.agent.llm_request": "{}",
-              "gcp.vertex.agent.llm_response": "{}",
+              "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gen_ai.provider.name": "gcp.gemini",
+              "gen_ai.response.finish_reasons": [
+                "stop"
+              ],
               "gen_ai.usage.input_tokens": 100,
               "gen_ai.usage.output_tokens": 25,
               "gen_ai.usage.cache_read.input_tokens": 40,
               "gen_ai.usage.reasoning.output_tokens": 5,
-              "gen_ai.response.finish_reasons": [
-                "stop"
+              "gen_ai.tool.definitions": [
+                {
+                  "name": "list_skills",
+                  "description": "Lists all available skills with their names and descriptions.",
+                  "type": "function"
+                },
+                {
+                  "name": "load_skill",
+                  "description": "Loads the SKILL.md instructions for a given skill.",
+                  "type": "function"
+                },
+                {
+                  "name": "load_skill_resource",
+                  "description": "Loads a resource file (from references/, assets/, or scripts/) from within a skill.",
+                  "type": "function"
+                },
+                {
+                  "name": "run_skill_script",
+                  "description": "Executes a script from a skill's scripts/ directory.",
+                  "type": "function"
+                },
+                {
+                  "name": "search_skills",
+                  "description": "Searches for relevant skills in the registry based on a semantic or keyword query.",
+                  "type": "function"
+                }
               ]
             },
             "status": "UNSET",
-            "children": [
+            "children": [],
+            "logs": [
               {
-                "name": "generate_content gemini-2.5-flash",
+                "event_name": "gen_ai.client.inference.operation.details",
+                "body": null,
                 "attributes": {
-                  "gen_ai.system": "gemini",
-                  "gen_ai.operation.name": "generate_content",
-                  "gen_ai.request.model": "gemini-2.5-flash",
                   "gen_ai.agent.name": "some_root_agent",
                   "gen_ai.conversation.id": "PRESENT",
                   "gcp.vertex.agent.event_id": "PRESENT",
                   "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "gen_ai.provider.name": "gcp.gemini",
                   "gen_ai.response.finish_reasons": [
                     "stop"
                   ],
                   "gen_ai.usage.input_tokens": 100,
                   "gen_ai.usage.output_tokens": 25,
                   "gen_ai.usage.cache_read.input_tokens": 40,
-                  "gen_ai.usage.reasoning.output_tokens": 5
-                },
-                "status": "UNSET",
-                "children": [],
-                "logs": [
-                  {
-                    "event_name": "gen_ai.system.message",
-                    "body": {
-                      "content": "<elided>"
+                  "gen_ai.usage.reasoning.output_tokens": 5,
+                  "gen_ai.tool.definitions": [
+                    {
+                      "name": "list_skills",
+                      "description": "Lists all available skills with their names and descriptions.",
+                      "type": "function"
                     },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  },
-                  {
-                    "event_name": "gen_ai.user.message",
-                    "body": {
-                      "content": "<elided>"
+                    {
+                      "name": "load_skill",
+                      "description": "Loads the SKILL.md instructions for a given skill.",
+                      "type": "function"
                     },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  },
-                  {
-                    "event_name": "gen_ai.choice",
-                    "body": {
-                      "content": "<elided>",
-                      "index": 0,
-                      "finish_reason": "STOP"
+                    {
+                      "name": "load_skill_resource",
+                      "description": "Loads a resource file (from references/, assets/, or scripts/) from within a skill.",
+                      "type": "function"
                     },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
+                    {
+                      "name": "run_skill_script",
+                      "description": "Executes a script from a skill's scripts/ directory.",
+                      "type": "function"
+                    },
+                    {
+                      "name": "search_skills",
+                      "description": "Searches for relevant skills in the registry based on a semantic or keyword query.",
+                      "type": "function"
                     }
-                  }
-                ]
+                  ]
+                }
               }
-            ],
-            "logs": []
+            ]
           },
           {
             "name": "execute_tool load_skill_resource registry-skill fake/file/not/existing",
@@ -102,12 +122,8 @@
               "gen_ai.tool.type": "LoadSkillResourceTool",
               "gen_ai.agent.name": "some_root_agent",
               "error.type": "INVALID_RESOURCE_PATH",
-              "gcp.vertex.agent.llm_request": "{}",
-              "gcp.vertex.agent.llm_response": "{}",
-              "gcp.vertex.agent.tool_call_args": "{}",
               "gen_ai.tool.call.id": "PRESENT",
               "gcp.vertex.agent.event_id": "PRESENT",
-              "gcp.vertex.agent.tool_response": "{}",
               "gen_ai.skill.name": "registry-skill",
               "gen_ai.skill.source.uri": "https://fake-registry.com/skill/registry-skill",
               "gen_ai.skill.description": "A sample skill.",
@@ -118,97 +134,99 @@
             "logs": []
           },
           {
-            "name": "call_llm",
+            "name": "generate_content gemini-2.5-flash",
             "attributes": {
-              "gen_ai.system": "gcp.vertex.agent",
+              "gen_ai.operation.name": "generate_content",
               "gen_ai.request.model": "gemini-2.5-flash",
-              "gcp.vertex.agent.invocation_id": "PRESENT",
-              "gcp.vertex.agent.session_id": "PRESENT",
+              "gen_ai.agent.name": "some_root_agent",
+              "gen_ai.conversation.id": "PRESENT",
               "gcp.vertex.agent.event_id": "PRESENT",
-              "gcp.vertex.agent.llm_request": "{}",
-              "gcp.vertex.agent.llm_response": "{}",
+              "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gen_ai.provider.name": "gcp.gemini",
+              "gen_ai.response.finish_reasons": [
+                "stop"
+              ],
               "gen_ai.usage.input_tokens": 100,
               "gen_ai.usage.output_tokens": 25,
               "gen_ai.usage.cache_read.input_tokens": 40,
               "gen_ai.usage.reasoning.output_tokens": 5,
-              "gen_ai.response.finish_reasons": [
-                "stop"
+              "gen_ai.tool.definitions": [
+                {
+                  "name": "list_skills",
+                  "description": "Lists all available skills with their names and descriptions.",
+                  "type": "function"
+                },
+                {
+                  "name": "load_skill",
+                  "description": "Loads the SKILL.md instructions for a given skill.",
+                  "type": "function"
+                },
+                {
+                  "name": "load_skill_resource",
+                  "description": "Loads a resource file (from references/, assets/, or scripts/) from within a skill.",
+                  "type": "function"
+                },
+                {
+                  "name": "run_skill_script",
+                  "description": "Executes a script from a skill's scripts/ directory.",
+                  "type": "function"
+                },
+                {
+                  "name": "search_skills",
+                  "description": "Searches for relevant skills in the registry based on a semantic or keyword query.",
+                  "type": "function"
+                }
               ]
             },
             "status": "UNSET",
-            "children": [
+            "children": [],
+            "logs": [
               {
-                "name": "generate_content gemini-2.5-flash",
+                "event_name": "gen_ai.client.inference.operation.details",
+                "body": null,
                 "attributes": {
-                  "gen_ai.system": "gemini",
-                  "gen_ai.operation.name": "generate_content",
-                  "gen_ai.request.model": "gemini-2.5-flash",
                   "gen_ai.agent.name": "some_root_agent",
                   "gen_ai.conversation.id": "PRESENT",
                   "gcp.vertex.agent.event_id": "PRESENT",
                   "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "gen_ai.provider.name": "gcp.gemini",
                   "gen_ai.response.finish_reasons": [
                     "stop"
                   ],
                   "gen_ai.usage.input_tokens": 100,
                   "gen_ai.usage.output_tokens": 25,
                   "gen_ai.usage.cache_read.input_tokens": 40,
-                  "gen_ai.usage.reasoning.output_tokens": 5
-                },
-                "status": "UNSET",
-                "children": [],
-                "logs": [
-                  {
-                    "event_name": "gen_ai.system.message",
-                    "body": {
-                      "content": "<elided>"
+                  "gen_ai.usage.reasoning.output_tokens": 5,
+                  "gen_ai.tool.definitions": [
+                    {
+                      "name": "list_skills",
+                      "description": "Lists all available skills with their names and descriptions.",
+                      "type": "function"
                     },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  },
-                  {
-                    "event_name": "gen_ai.user.message",
-                    "body": {
-                      "content": "<elided>"
+                    {
+                      "name": "load_skill",
+                      "description": "Loads the SKILL.md instructions for a given skill.",
+                      "type": "function"
                     },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  },
-                  {
-                    "event_name": "gen_ai.user.message",
-                    "body": {
-                      "content": "<elided>"
+                    {
+                      "name": "load_skill_resource",
+                      "description": "Loads a resource file (from references/, assets/, or scripts/) from within a skill.",
+                      "type": "function"
                     },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  },
-                  {
-                    "event_name": "gen_ai.user.message",
-                    "body": {
-                      "content": "<elided>"
+                    {
+                      "name": "run_skill_script",
+                      "description": "Executes a script from a skill's scripts/ directory.",
+                      "type": "function"
                     },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
+                    {
+                      "name": "search_skills",
+                      "description": "Searches for relevant skills in the registry based on a semantic or keyword query.",
+                      "type": "function"
                     }
-                  },
-                  {
-                    "event_name": "gen_ai.choice",
-                    "body": {
-                      "content": "<elided>",
-                      "index": 0,
-                      "finish_reason": "STOP"
-                    },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  }
-                ]
+                  ]
+                }
               }
-            ],
-            "logs": []
+            ]
           },
           {
             "name": "execute_tool load_skill_resource registry-skill references/nope/never",
@@ -219,12 +237,8 @@
               "gen_ai.tool.type": "LoadSkillResourceTool",
               "gen_ai.agent.name": "some_root_agent",
               "error.type": "RESOURCE_NOT_FOUND",
-              "gcp.vertex.agent.llm_request": "{}",
-              "gcp.vertex.agent.llm_response": "{}",
-              "gcp.vertex.agent.tool_call_args": "{}",
               "gen_ai.tool.call.id": "PRESENT",
               "gcp.vertex.agent.event_id": "PRESENT",
-              "gcp.vertex.agent.tool_response": "{}",
               "gen_ai.skill.name": "registry-skill",
               "gen_ai.skill.source.uri": "https://fake-registry.com/skill/registry-skill",
               "gen_ai.skill.description": "A sample skill.",
@@ -235,115 +249,99 @@
             "logs": []
           },
           {
-            "name": "call_llm",
+            "name": "generate_content gemini-2.5-flash",
             "attributes": {
-              "gen_ai.system": "gcp.vertex.agent",
+              "gen_ai.operation.name": "generate_content",
               "gen_ai.request.model": "gemini-2.5-flash",
-              "gcp.vertex.agent.invocation_id": "PRESENT",
-              "gcp.vertex.agent.session_id": "PRESENT",
+              "gen_ai.agent.name": "some_root_agent",
+              "gen_ai.conversation.id": "PRESENT",
               "gcp.vertex.agent.event_id": "PRESENT",
-              "gcp.vertex.agent.llm_request": "{}",
-              "gcp.vertex.agent.llm_response": "{}",
+              "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gen_ai.provider.name": "gcp.gemini",
+              "gen_ai.response.finish_reasons": [
+                "stop"
+              ],
               "gen_ai.usage.input_tokens": 150,
               "gen_ai.usage.output_tokens": 50,
               "gen_ai.usage.cache_read.input_tokens": 60,
               "gen_ai.usage.reasoning.output_tokens": 15,
-              "gen_ai.response.finish_reasons": [
-                "stop"
+              "gen_ai.tool.definitions": [
+                {
+                  "name": "list_skills",
+                  "description": "Lists all available skills with their names and descriptions.",
+                  "type": "function"
+                },
+                {
+                  "name": "load_skill",
+                  "description": "Loads the SKILL.md instructions for a given skill.",
+                  "type": "function"
+                },
+                {
+                  "name": "load_skill_resource",
+                  "description": "Loads a resource file (from references/, assets/, or scripts/) from within a skill.",
+                  "type": "function"
+                },
+                {
+                  "name": "run_skill_script",
+                  "description": "Executes a script from a skill's scripts/ directory.",
+                  "type": "function"
+                },
+                {
+                  "name": "search_skills",
+                  "description": "Searches for relevant skills in the registry based on a semantic or keyword query.",
+                  "type": "function"
+                }
               ]
             },
             "status": "UNSET",
-            "children": [
+            "children": [],
+            "logs": [
               {
-                "name": "generate_content gemini-2.5-flash",
+                "event_name": "gen_ai.client.inference.operation.details",
+                "body": null,
                 "attributes": {
-                  "gen_ai.system": "gemini",
-                  "gen_ai.operation.name": "generate_content",
-                  "gen_ai.request.model": "gemini-2.5-flash",
                   "gen_ai.agent.name": "some_root_agent",
                   "gen_ai.conversation.id": "PRESENT",
                   "gcp.vertex.agent.event_id": "PRESENT",
                   "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "gen_ai.provider.name": "gcp.gemini",
                   "gen_ai.response.finish_reasons": [
                     "stop"
                   ],
                   "gen_ai.usage.input_tokens": 150,
                   "gen_ai.usage.output_tokens": 50,
                   "gen_ai.usage.cache_read.input_tokens": 60,
-                  "gen_ai.usage.reasoning.output_tokens": 15
-                },
-                "status": "UNSET",
-                "children": [],
-                "logs": [
-                  {
-                    "event_name": "gen_ai.system.message",
-                    "body": {
-                      "content": "<elided>"
+                  "gen_ai.usage.reasoning.output_tokens": 15,
+                  "gen_ai.tool.definitions": [
+                    {
+                      "name": "list_skills",
+                      "description": "Lists all available skills with their names and descriptions.",
+                      "type": "function"
                     },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  },
-                  {
-                    "event_name": "gen_ai.user.message",
-                    "body": {
-                      "content": "<elided>"
+                    {
+                      "name": "load_skill",
+                      "description": "Loads the SKILL.md instructions for a given skill.",
+                      "type": "function"
                     },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  },
-                  {
-                    "event_name": "gen_ai.user.message",
-                    "body": {
-                      "content": "<elided>"
+                    {
+                      "name": "load_skill_resource",
+                      "description": "Loads a resource file (from references/, assets/, or scripts/) from within a skill.",
+                      "type": "function"
                     },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  },
-                  {
-                    "event_name": "gen_ai.user.message",
-                    "body": {
-                      "content": "<elided>"
+                    {
+                      "name": "run_skill_script",
+                      "description": "Executes a script from a skill's scripts/ directory.",
+                      "type": "function"
                     },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
+                    {
+                      "name": "search_skills",
+                      "description": "Searches for relevant skills in the registry based on a semantic or keyword query.",
+                      "type": "function"
                     }
-                  },
-                  {
-                    "event_name": "gen_ai.user.message",
-                    "body": {
-                      "content": "<elided>"
-                    },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  },
-                  {
-                    "event_name": "gen_ai.user.message",
-                    "body": {
-                      "content": "<elided>"
-                    },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  },
-                  {
-                    "event_name": "gen_ai.choice",
-                    "body": {
-                      "content": "<elided>",
-                      "index": 0,
-                      "finish_reason": "STOP"
-                    },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  }
-                ]
+                  ]
+                }
               }
-            ],
-            "logs": []
+            ]
           }
         ],
         "logs": []
@@ -503,7 +501,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent",
           "gen_ai.operation.name": "generate_content",
-          "gen_ai.provider.name": "gemini",
+          "gen_ai.provider.name": "gcp.gemini",
           "gen_ai.request.model": "gemini-2.5-flash",
           "gen_ai.response.model": "gemini-2.5-flash"
         },
@@ -515,7 +513,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent",
           "gen_ai.operation.name": "generate_content",
-          "gen_ai.provider.name": "gemini",
+          "gen_ai.provider.name": "gcp.gemini",
           "gen_ai.request.model": "gemini-2.5-flash",
           "gen_ai.response.model": "gemini-2.5-flash",
           "gen_ai.token.type": "input"
@@ -526,7 +524,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent",
           "gen_ai.operation.name": "generate_content",
-          "gen_ai.provider.name": "gemini",
+          "gen_ai.provider.name": "gcp.gemini",
           "gen_ai.request.model": "gemini-2.5-flash",
           "gen_ai.response.model": "gemini-2.5-flash",
           "gen_ai.token.type": "output"

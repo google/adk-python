@@ -49,7 +49,6 @@ _EXCLUDED_FROM_MTLS = {
     'tests/unittests/tools/google_api_tool/test_docs_batchupdate.py',
     'tests/unittests/tools/openapi_tool/auth/credential_exchangers/test_service_account_exchanger.py',
     'tests/unittests/tools/openapi_tool/openapi_spec_parser/test_openapi_toolset.py',
-    'tests/unittests/tools/openapi_tool/openapi_spec_parser/test_rest_api_tool.py',
     'tests/unittests/tools/test_base_google_credentials_manager.py',
     'tests/unittests/workflow/utils/test_workflow_hitl_utils.py',
 }
