@@ -112,6 +112,29 @@ def test_format_auto_rater_prompt_with_basic_invocation(
   ) in prompt
 
 
+def test_format_auto_rater_prompt_excludes_thought_parts(
+    evaluator: RubricBasedFinalResponseQualityV1Evaluator,
+):
+  """Tests format_auto_rater_prompt excludes thought parts from the response."""
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="User input here.")]
+      ),
+      final_response=genai_types.Content(
+          parts=[
+              genai_types.Part(
+                  text="Considering how to respond.", thought=True
+              ),
+              genai_types.Part(text="Final agent response."),
+          ]
+      ),
+  )
+  prompt = evaluator.format_auto_rater_prompt(invocation, None)
+
+  assert "Considering how to respond." not in prompt
+  assert "Final agent response." in prompt
+
+
 def test_format_auto_rater_prompt_with_app_details(
     evaluator: RubricBasedFinalResponseQualityV1Evaluator,
 ):

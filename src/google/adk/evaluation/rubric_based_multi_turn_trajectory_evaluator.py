@@ -30,6 +30,7 @@ from .eval_metrics import RubricsBasedCriterion
 from .evaluator import _validate_invocation_lengths
 from .evaluator import EvaluationResult
 from .evaluator import PerInvocationResult
+from .llm_as_judge_utils import get_text_parts
 from .rubric_based_evaluator import RubricBasedEvaluator
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -193,7 +194,7 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
     for turn_index, invocation in enumerate(actual_invocations):
       # USER TURN
       if invocation.user_content and invocation.user_content.parts:
-        text_parts = [p.text for p in invocation.user_content.parts if p.text]
+        text_parts = get_text_parts(invocation.user_content)
         if text_parts:
           dialogue_lines.append(
               f"USER TURN {turn_index + 1}: {' '.join(text_parts)}"
@@ -208,7 +209,7 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
               else f"AGENT ({event.author})"
           )
           if event.content and event.content.parts:
-            text_parts = [p.text for p in event.content.parts if p.text]
+            text_parts = get_text_parts(event.content)
             if text_parts:
               dialogue_lines.append(
                   f"{role} TURN {turn_index + 1}: {' '.join(text_parts)}"
@@ -245,7 +246,7 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
         ):
           agent_name = intermediate_data.invocation_events[0].author
         role = f"AGENT ({agent_name})"
-        text_parts = [p.text for p in invocation.final_response.parts if p.text]
+        text_parts = get_text_parts(invocation.final_response)
         if text_parts:
           dialogue_lines.append(
               f"{role} TURN {turn_index + 1}: {' '.join(text_parts)}"
