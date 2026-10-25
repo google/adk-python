@@ -469,6 +469,39 @@ class TestLowercaseSchemaTypes:
     assert schema["type"] == "object"
     assert schema["default"]["type"] == "NOT_A_SCHEMA"
 
+  @pytest.mark.parametrize("keyword", ["additionalItems", "unevaluatedItems"])
+  @pytest.mark.parametrize("allowed", [True, False])
+  def test_boolean_array_tail_schema_is_preserved(self, keyword, allowed):
+    schema = {"type": "ARRAY", keyword: allowed}
+
+    lowercase_schema_types(schema)
+
+    assert schema == {"type": "array", keyword: allowed}
+
+  @pytest.mark.parametrize("keyword", ["additionalItems", "unevaluatedItems"])
+  def test_array_tail_schema_keeps_nested_data_values(self, keyword):
+    tail = {
+        "type": "OBJECT",
+        "properties": {"name": {"type": "STRING"}},
+        "default": {"type": "DEFAULT_DATA"},
+        "enum": [{"type": "ENUM_DATA"}],
+        "examples": [{"type": "EXAMPLE_DATA"}],
+    }
+    schema = {"type": "ARRAY", keyword: tail}
+
+    lowercase_schema_types(schema)
+
+    assert schema == {
+        "type": "array",
+        keyword: {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "default": {"type": "DEFAULT_DATA"},
+            "enum": [{"type": "ENUM_DATA"}],
+            "examples": [{"type": "EXAMPLE_DATA"}],
+        },
+    }
+
   def test_a_genai_schema_dump_is_lowercased(self):
     schema = types.Schema(
         type=types.Type.OBJECT,
