@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import logging
+from typing import Callable
+from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -38,12 +40,32 @@ class PreloadMemoryTool(BaseTool):
   called by the model.
 
   NOTE: Currently this tool only uses text part from the memory.
+
+  By default a failing memory search is logged and the request proceeds without
+  memories (fail-open). Use `on_error` to observe such failures, or
+  `raise_on_error` to fail closed.
   """
 
-  def __init__(self) -> None:
+  def __init__(
+      self,
+      *,
+      raise_on_error: bool = False,
+      on_error: Optional[Callable[[Exception, ToolContext], None]] = None,
+  ) -> None:
+    """Initializes the PreloadMemoryTool.
+
+    Args:
+      raise_on_error: Whether to re-raise exceptions from the memory search
+        instead of continuing without memories.
+      on_error: Optional callback invoked with the exception and the tool
+        context when the memory search raises. Exceptions raised by the
+        callback itself are logged and do not affect the request.
+    """
     # Name and description are not used because this tool only
     # changes llm_request.
     super().__init__(name='preload_memory', description='preload_memory')
+    self._raise_on_error = raise_on_error
+    self._on_error = on_error
 
   @override
   async def process_llm_request(
@@ -60,12 +82,21 @@ class PreloadMemoryTool(BaseTool):
 
     try:
       response = await tool_context.search_memory(user_query)
-    except Exception:
+    except Exception as e:
       logger.warning(
           'Failed to preload memory (query length: %d)',
           len(user_query),
           exc_info=True,
       )
+      if self._on_error is not None:
+        try:
+          self._on_error(e, tool_context)
+        except Exception:
+          logger.warning(
+              'PreloadMemoryTool on_error callback failed', exc_info=True
+          )
+      if self._raise_on_error:
+        raise
       return
 
     if not response.memories:

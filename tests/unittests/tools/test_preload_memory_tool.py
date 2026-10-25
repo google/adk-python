@@ -22,6 +22,7 @@ from google.adk.memory.memory_entry import MemoryEntry
 from google.adk.models.gemini_context_cache_manager import GeminiContextCacheManager
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.session import Session
+from google.adk.tools.preload_memory_tool import preload_memory_tool
 from google.adk.tools.preload_memory_tool import PreloadMemoryTool
 from google.genai import types
 import pytest
@@ -378,3 +379,123 @@ async def test_preload_memory_logs_search_failure_on_own_logger(caplog):
   assert warnings[0].name == 'google_adk.google.adk.tools.preload_memory_tool'
   assert warnings[0].exc_info is not None
   assert 'current query' not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_preload_memory_search_failure_default_fails_open(caplog):
+  """The default singleton still logs and swallows search failures."""
+  request = LlmRequest(contents=[types.UserContent('current query')])
+  original = request.model_copy(deep=True)
+  tool_context = _tool_context()
+  tool_context.search_memory.side_effect = RuntimeError('unavailable')
+
+  with caplog.at_level(logging.WARNING, logger='google_adk'):
+    await preload_memory_tool.process_llm_request(
+        tool_context=tool_context,
+        llm_request=request,
+    )
+
+  assert request == original
+  assert 'Failed to preload memory' in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_preload_memory_raise_on_error_propagates_search_failure(caplog):
+  """raise_on_error=True lets callers fail closed on retrieval errors."""
+  request = LlmRequest(contents=[types.UserContent('current query')])
+  original = request.model_copy(deep=True)
+  error = RuntimeError('unavailable')
+  tool_context = _tool_context()
+  tool_context.search_memory.side_effect = error
+
+  with caplog.at_level(logging.WARNING, logger='google_adk'):
+    with pytest.raises(RuntimeError) as exc_info:
+      await PreloadMemoryTool(raise_on_error=True).process_llm_request(
+          tool_context=tool_context,
+          llm_request=request,
+      )
+
+  assert exc_info.value is error
+  assert request == original
+  assert 'Failed to preload memory' in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_preload_memory_on_error_receives_exception_and_context():
+  """on_error is called with the search exception and the tool context."""
+  request = LlmRequest(contents=[types.UserContent('current query')])
+  original = request.model_copy(deep=True)
+  error = RuntimeError('unavailable')
+  tool_context = _tool_context()
+  tool_context.search_memory.side_effect = error
+  on_error = mock.Mock()
+
+  await PreloadMemoryTool(on_error=on_error).process_llm_request(
+      tool_context=tool_context,
+      llm_request=request,
+  )
+
+  on_error.assert_called_once_with(error, tool_context)
+  assert request == original
+
+
+@pytest.mark.asyncio
+async def test_preload_memory_on_error_not_called_on_success():
+  """on_error is not called when the search succeeds with no memories."""
+  on_error = mock.Mock()
+
+  await PreloadMemoryTool(on_error=on_error).process_llm_request(
+      tool_context=_tool_context(),
+      llm_request=LlmRequest(),
+  )
+
+  on_error.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_preload_memory_on_error_called_before_raise():
+  """With both options set, the callback runs and the error still raises."""
+  error = RuntimeError('unavailable')
+  tool_context = _tool_context()
+  tool_context.search_memory.side_effect = error
+  on_error = mock.Mock()
+
+  with pytest.raises(RuntimeError) as exc_info:
+    await PreloadMemoryTool(
+        raise_on_error=True, on_error=on_error
+    ).process_llm_request(
+        tool_context=tool_context,
+        llm_request=LlmRequest(),
+    )
+
+  assert exc_info.value is error
+  on_error.assert_called_once_with(error, tool_context)
+
+
+@pytest.mark.parametrize('raise_on_error', [False, True])
+@pytest.mark.asyncio
+async def test_preload_memory_failing_on_error_callback_is_contained(
+    raise_on_error: bool, caplog
+) -> None:
+  """A failing callback is logged and does not replace the search error."""
+  error = RuntimeError('unavailable')
+  tool_context = _tool_context()
+  tool_context.search_memory.side_effect = error
+  tool = PreloadMemoryTool(
+      raise_on_error=raise_on_error,
+      on_error=mock.Mock(side_effect=ValueError('callback bug')),
+  )
+
+  with caplog.at_level(logging.WARNING, logger='google_adk'):
+    if raise_on_error:
+      with pytest.raises(RuntimeError) as exc_info:
+        await tool.process_llm_request(
+            tool_context=tool_context, llm_request=LlmRequest()
+        )
+      assert exc_info.value is error
+    else:
+      await tool.process_llm_request(
+          tool_context=tool_context, llm_request=LlmRequest()
+      )
+
+  assert 'on_error callback failed' in caplog.text
