@@ -1764,9 +1764,9 @@ def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
   every batch is dropped without a single attempt.
 
   Raises:
-      ValueError: If any batch, queue, duration, retry, or callback setting is
-        invalid, or ``tool_result_classifier`` cannot be called as the plugin
-        calls it.
+      ValueError: If any batch, queue, duration, retry, callback, or workflow
+        observation setting is invalid, or ``tool_result_classifier`` cannot
+        be called as the plugin calls it.
   """
   _require_count("batch_size", config.batch_size, 1)
   _require_finite("batch_flush_interval", config.batch_flush_interval, 0)
@@ -1826,6 +1826,11 @@ def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
         "on_schema_ready must be a synchronous callable or None, got"
         f" {config.on_schema_ready!r}."
     )
+  _require_count(
+      "max_observation_summaries_per_segment",
+      config.max_observation_summaries_per_segment,
+      1,
+  )
   _validate_tool_result_classifier(config.tool_result_classifier)
 
 
@@ -2445,7 +2450,13 @@ class BigQueryLoggerConfig:
       batch_size: Number of rows per batch.
       batch_flush_interval: Max time to wait before flushing a batch.
       shutdown_timeout: Max time to wait for shutdown.
-      queue_max_size: Max size of the in-memory queue.
+      queue_max_size: Max size of the in-memory queue. For ``queue_max_size >
+        1``, ``min(max(2, queue_max_size // 100), queue_max_size - 1)`` slots
+        (``0`` for ``queue_max_size <= 1``, ``1`` for ``queue_max_size == 2``,
+        ``100`` at the default ``queue_max_size=10000``), and never all of
+        them, are kept for ``INVOCATION_COMPLETED`` and ``INVOCATION_ERROR``
+        rows, so that rows written just before them cannot fill the queue and
+        drop the row that closes the invocation.
       exactly_once_delivery: Use one committed stream per event loop and
         explicit offsets to prevent ambiguous retries from producing duplicate
         rows. Stream rotation can consume additional ``CreateWriteStream``
@@ -2644,6 +2655,25 @@ class BigQueryLoggerConfig:
         turn is recognized only when its ``TOOL_PAUSED`` or ``HITL_*_REQUEST``
         event is logged, and otherwise is not ``eval_ready``. Any other
         value raises ``ValueError`` when the eval views are validated.
+      max_observation_summaries_per_segment: Most
+        ``WORKFLOW_NODE_OBSERVATION_SUMMARY`` rows written when a runner call
+        ends. Each ``before_run_callback`` (including resumed runs reusing an
+        ``invocation_id``) opens a new ``workflow_segment_id`` and emits
+        ``WORKFLOW_NODE_FIRST_OBSERVED`` once per ``(workflow_segment_id,
+        node_path)`` up to ``max(max_observation_summaries_per_segment,
+        _MAX_OBSERVED_NODE_PATHS_PER_SEGMENT)``. One summary is written per
+        workflow node path observed during the call, in the order the paths
+        were first observed. When more paths were observed, the last summary
+        written carries the number of distinct paths left out as
+        ``attributes.adk.truncated_node_count``, and ``get_drop_stats()``
+        counts them under ``workflow_observation_capacity``. Distinct overflow
+        path deduplication is bounded at ``max(
+        max_observation_summaries_per_segment,
+        _MAX_OBSERVED_NODE_PATHS_PER_SEGMENT)``, making ``truncated_node_count``
+        and ``workflow_observation_capacity`` exact up to that bound and a lower
+        bound once path-dedup memory saturates (with un-deduplicated events
+        beyond it exposed in ``attributes.adk.untracked_overflow_event_count``).
+        Must be an int >= 1.
   """
 
   enabled: bool = True
@@ -2744,6 +2774,13 @@ class BigQueryLoggerConfig:
   # rebuilt from) or "conversation_only" (just the user and model text events,
   # for deployments that leave the tool and model events out of the table).
   eval_view_mode: Literal["full", "conversation_only"] = "full"
+  # Cap on workflow observation summaries written per runner call.
+  max_observation_summaries_per_segment: int = 200
+
+
+_DEFAULT_MAX_OBSERVATION_SUMMARIES_PER_SEGMENT = (
+    BigQueryLoggerConfig.max_observation_summaries_per_segment
+)
 
 
 # ==============================================================================
@@ -2769,6 +2806,50 @@ _root_agent_name_ctx: contextvars.ContextVar[Optional[str]] = (
 _active_invocation_id_ctx: contextvars.ContextVar[Optional[str]] = (
     contextvars.ContextVar("_bq_analytics_active_invocation_id", default=None)
 )
+
+
+@dataclass
+class _WorkflowNodeObservation:
+  """Source-event facts observed for one workflow node in a segment."""
+
+  node_path: str
+  node_run_id: str | None
+  node_parent_run_id: str | None
+  first_source_event_id: str
+  last_source_event_id: str
+  first_source_event_timestamp: float | None = None
+  last_source_event_timestamp: float | None = None
+  observed_event_count: int = 1
+  node_interrupt_observed: bool = False
+  descendant_interrupt_observed: bool = False
+  node_error_observed_count: int = 0
+
+
+@dataclass
+class _WorkflowObservationSegment:
+  """Workflow observations scoped to one runner call."""
+
+  segment_id: str
+  nodes: dict[str, _WorkflowNodeObservation] = field(default_factory=dict)
+  overflow_node_paths: set[str] = field(default_factory=set)
+  untracked_path_events: int = 0
+  interrupted_ancestor_paths: set[str] = field(default_factory=set)
+
+
+# Most workflow observation segments a plugin keeps. A runner call whose task
+# is cancelled from outside skips both after_run_callback and
+# on_run_error_callback, so nothing removes its segment; past this many,
+# before_run_callback drops the oldest.
+_MAX_IN_FLIGHT_WORKFLOW_SEGMENTS = 4096
+# Bounds distinct overflow path deduplication per segment so truncated_node_count
+# and workflow_observation_capacity stay exact up to this cap and bounded above it.
+_MAX_OBSERVED_NODE_PATHS_PER_SEGMENT = 4096
+
+
+def _strict_ancestor_node_paths(node_path: str) -> tuple[str, ...]:
+  """Returns a node path's strict ancestors from root to parent."""
+  segments = node_path.split("/")
+  return tuple("/".join(segments[:end]) for end in range(1, len(segments)))
 
 
 @dataclass
@@ -3093,6 +3174,19 @@ class TraceManager:
 # ==============================================================================
 _SHUTDOWN_SENTINEL: None = None
 
+# Minimum queue slots that only the rows closing an invocation may take.
+# For queue_max_size > 1, BatchProcessor reserves
+# min(max(2, queue_max_size // 100), queue_max_size - 1) slots (0 for
+# queue_max_size <= 1, 1 for queue_max_size == 2, 100 at the default
+# queue_max_size=10000) and never every slot in the queue, so rows emitted just
+# before the terminal row, such as workflow observation summaries across
+# concurrent drains, cannot fill the queue and drop INVOCATION_COMPLETED or
+# INVOCATION_ERROR.
+_RESERVED_TERMINAL_QUEUE_SLOTS = 2
+_TERMINAL_QUEUE_EVENT_TYPES = frozenset(
+    {"INVOCATION_COMPLETED", "INVOCATION_ERROR"}
+)
+
 
 class _RetryableWriteResponseError(Exception):
   """A retryable error reported inside an AppendRows response."""
@@ -3124,7 +3218,13 @@ class BatchProcessor:
         batch_size: Number of rows per batch (defaults to 1).
         flush_interval: Max time to wait before flushing a batch.
         retry_config: Retry configuration.
-        queue_max_size: Max size of the in-memory queue.
+        queue_max_size: Max size of the in-memory queue. For
+          ``queue_max_size > 1``, ``min(max(2, queue_max_size // 100),
+          queue_max_size - 1)`` slots (``0`` for ``queue_max_size <= 1``, ``1``
+          for ``queue_max_size == 2``, ``100`` at the default
+          ``queue_max_size=10000``), and never all of them, are kept for
+          ``INVOCATION_COMPLETED`` and ``INVOCATION_ERROR`` rows; other rows see
+          a full queue once only those slots remain.
         shutdown_timeout: Max time to wait for shutdown.
         exactly_once_delivery: Whether to use committed-stream offsets to
           prevent retry duplicates. Replacement streams consume stream-creation
@@ -3158,6 +3258,16 @@ class BatchProcessor:
         maxsize=queue_max_size
     )
     self._queue_max_size = queue_max_size
+    # Never reserve every slot: a queue of size 1 keeps its only slot for
+    # any row, and an unbounded queue (maxsize <= 0) needs no reservation.
+    self._reserved_terminal_slots = (
+        0
+        if queue_max_size <= 1
+        else min(
+            max(_RESERVED_TERMINAL_QUEUE_SLOTS, queue_max_size // 100),
+            queue_max_size - 1,
+        )
+    )
     # Outstanding shutdown sentinels currently in the queue: lets
     # cancellation account for remaining rows in O(1) via qsize() instead
     # of a synchronous full drain.
@@ -3229,7 +3339,11 @@ class BatchProcessor:
   def _append_nowait(self, row: dict[str, Any]) -> None:
     """Appends a row to the queue for batching synchronously.
 
-    Must run on the processor's event loop.
+    Must run on the processor's event loop. Rows other than
+    ``INVOCATION_COMPLETED`` and ``INVOCATION_ERROR`` are dropped as
+    ``queue_full`` once only the slots reserved for those rows remain. Shutdown
+    sentinels (``None``) are enqueued directly by ``shutdown()`` after setting
+    ``self._shutdown = True`` rather than going through ``_append_nowait``.
     """
     if self._shutdown:
       self._record_drop("shutdown_cancelled", 1)
@@ -3238,15 +3352,27 @@ class BatchProcessor:
       )
       return
 
+    if (
+        self._reserved_terminal_slots
+        and row.get("event_type") not in _TERMINAL_QUEUE_EVENT_TYPES
+        and self._queue.qsize()
+        >= self._queue_max_size - self._reserved_terminal_slots
+    ):
+      self._record_queue_full_drop()
+      return
     try:
       self._queue.put_nowait(row)
     except asyncio.QueueFull:
-      total = self._record_drop("queue_full", 1)
-      logger.warning(
-          "BigQuery log queue full, dropping event. Total events dropped"
-          " (queue full): %s",
-          total,
-      )
+      self._record_queue_full_drop()
+
+  def _record_queue_full_drop(self) -> None:
+    """Counts and logs one row dropped for lack of queue room."""
+    total = self._record_drop("queue_full", 1)
+    logger.warning(
+        "BigQuery log queue full, dropping event. Total events dropped"
+        " (queue full): %s",
+        total,
+    )
 
   async def append(self, row: dict[str, Any]) -> None:
     """Appends a row to the queue for batching.
@@ -3273,7 +3399,10 @@ class BatchProcessor:
     Dropped rows are logged best-effort and never written, so these counters
     are the canonical signal that data was lost. Reasons:
 
-      ``queue_full``: the in-memory queue was full when the event arrived.
+      ``queue_full``: the in-memory queue was full when the event arrived,
+        or, for rows other than ``INVOCATION_COMPLETED`` and
+        ``INVOCATION_ERROR``, only the slots reserved for those rows were
+        free.
       ``arrow_prep_failed``: the batch could not be serialized to Arrow.
       ``retry_exhausted``: the write failed after exhausting all retries.
       ``non_retryable``: BigQuery rejected the write with a non-retryable
@@ -4941,6 +5070,12 @@ _VIEW_COMMON_COLUMNS = (
     "is_truncated",
 )
 
+_NODE_IDENTITY_VIEW_COLUMNS = (
+    "JSON_VALUE(attributes, '$.adk.node.path') AS node_path",
+    "JSON_VALUE(attributes, '$.adk.node.run_id') AS node_run_id",
+    "JSON_VALUE(attributes, '$.adk.node.parent_run_id') AS node_parent_run_id",
+)
+
 # Per-event-type column extractions.  Each value is a list of
 # ``"SQL_EXPR AS alias"`` strings that will be appended after the
 # common columns in the view SELECT.
@@ -5148,22 +5283,82 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
         "JSON_VALUE(attributes, '$.adk.function_call_id') AS function_call_id",
     ],
     "NODE_OUTPUT": [
-        "JSON_VALUE(attributes, '$.adk.node.path') AS node_path",
-        "JSON_VALUE(attributes, '$.adk.node.run_id') AS node_run_id",
-        (
-            "JSON_VALUE(attributes, '$.adk.node.parent_run_id')"
-            " AS node_parent_run_id"
-        ),
+        *_NODE_IDENTITY_VIEW_COLUMNS,
         "content AS output",
     ],
     "NODE_ERROR": [
-        "JSON_VALUE(attributes, '$.adk.node.path') AS node_path",
-        "JSON_VALUE(attributes, '$.adk.node.run_id') AS node_run_id",
-        (
-            "JSON_VALUE(attributes, '$.adk.node.parent_run_id')"
-            " AS node_parent_run_id"
-        ),
+        *_NODE_IDENTITY_VIEW_COLUMNS,
         "JSON_VALUE(content, '$.error_code') AS error_code",
+    ],
+    "WORKFLOW_NODE_FIRST_OBSERVED": [
+        "JSON_VALUE(attributes, '$.adk.app_name') AS app_name",
+        (
+            "JSON_VALUE(attributes, '$.adk.workflow_segment_id')"
+            " AS workflow_segment_id"
+        ),
+        *_NODE_IDENTITY_VIEW_COLUMNS,
+        "JSON_VALUE(attributes, '$.adk.source_event_id') AS source_event_id",
+        (
+            "SAFE.TIMESTAMP_MICROS(SAFE_CAST(SAFE_CAST(JSON_VALUE(attributes,"
+            " '$.adk.source_event_timestamp') AS FLOAT64) * 1000000"
+            " AS INT64)) AS source_event_timestamp"
+        ),
+        "JSON_VALUE(attributes, '$.adk.boundary_basis') AS boundary_basis",
+    ],
+    "WORKFLOW_NODE_OBSERVATION_SUMMARY": [
+        "JSON_VALUE(attributes, '$.adk.app_name') AS app_name",
+        (
+            "JSON_VALUE(attributes, '$.adk.workflow_segment_id')"
+            " AS workflow_segment_id"
+        ),
+        *_NODE_IDENTITY_VIEW_COLUMNS,
+        (
+            "JSON_VALUE(attributes, '$.adk.first_source_event_id')"
+            " AS first_source_event_id"
+        ),
+        (
+            "JSON_VALUE(attributes, '$.adk.last_source_event_id')"
+            " AS last_source_event_id"
+        ),
+        (
+            "SAFE.TIMESTAMP_MICROS(SAFE_CAST(SAFE_CAST(JSON_VALUE(attributes,"
+            " '$.adk.first_source_event_timestamp') AS FLOAT64) * 1000000"
+            " AS INT64)) AS first_source_event_timestamp"
+        ),
+        (
+            "SAFE.TIMESTAMP_MICROS(SAFE_CAST(SAFE_CAST(JSON_VALUE(attributes,"
+            " '$.adk.last_source_event_timestamp') AS FLOAT64) * 1000000"
+            " AS INT64)) AS last_source_event_timestamp"
+        ),
+        (
+            "SAFE_CAST(JSON_VALUE(attributes, '$.adk.source_event_span_ms')"
+            " AS FLOAT64) AS source_event_span_ms"
+        ),
+        (
+            "SAFE_CAST(JSON_VALUE(attributes, '$.adk.observed_event_count')"
+            " AS INT64) AS observed_event_count"
+        ),
+        (
+            "SAFE_CAST(JSON_VALUE(attributes,"
+            " '$.adk.node_interrupt_observed') AS BOOL)"
+            " AS node_interrupt_observed"
+        ),
+        (
+            "SAFE_CAST(JSON_VALUE(attributes,"
+            " '$.adk.descendant_interrupt_observed') AS BOOL)"
+            " AS descendant_interrupt_observed"
+        ),
+        (
+            "SAFE_CAST(JSON_VALUE(attributes,"
+            " '$.adk.node_error_observed_count') AS INT64)"
+            " AS node_error_observed_count"
+        ),
+        "JSON_VALUE(attributes, '$.adk.drain_callback') AS drain_callback",
+        "JSON_VALUE(attributes, '$.adk.boundary_basis') AS boundary_basis",
+        (
+            "SAFE_CAST(JSON_VALUE(attributes, '$.adk.truncated_node_count')"
+            " AS INT64) AS truncated_node_count"
+        ),
     ],
 }
 
@@ -6411,6 +6606,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # client and the executor it is not invalidated by shutdown, fork, or
     # pickling, and the check is not repeated once it has passed.
     self._schema_ready = False
+    # Workflow observation segments of the runner calls in flight, keyed by
+    # invocation ID: before_run_callback opens a call's segment, and
+    # after_run_callback or on_run_error_callback closes it. A nested runner
+    # that shares this plugin, such as an AgentTool's, has its own invocation
+    # ID, so it cannot replace or close its caller's segment. Calls cancelled
+    # from outside never close theirs, so the map holds at most
+    # _MAX_IN_FLIGHT_WORKFLOW_SEGMENTS segments, and shutdown() clears it.
+    self._workflow_segments: dict[str, _WorkflowObservationSegment] = {}
+    self._workflow_segments_guard = threading.Lock()
     self._init_pid = os.getpid()
     _LIVE_PLUGINS.add(self)
 
@@ -7070,8 +7274,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     ``formatter_failed`` and ``content_parse_failed`` mean the row WAS
     written with its content replaced by a sentinel; ``setup_unavailable``,
     ``shutdown_race``, ``shutdown_timeout``, ``shutdown_cancelled``, and
-    ``stale_loop`` mean the row was never written. Counters persist
-    across shutdown and loop cleanup.
+    ``stale_loop`` mean the row was never written.
+    ``workflow_observation_capacity`` counts workflow observation summaries
+    never written because a runner call observed more distinct node paths than
+    ``BigQueryLoggerConfig.max_observation_summaries_per_segment`` (exact up to
+    ``max(max_observation_summaries_per_segment,
+    _MAX_OBSERVED_NODE_PATHS_PER_SEGMENT)`` paths per segment and a lower bound
+    once overflow path deduplication saturates). Counters persist across
+    shutdown and loop cleanup.
 
     Returns:
         Per-reason counts: plugin-level incidents plus every live loop
@@ -8083,6 +8293,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # _is_shutting_down=True with no future and fall into overlapping
       # teardown.
       with self._setup_guard:
+        # Shutdown ends every observation window, including those of runner
+        # calls that were cancelled and never closed their segment.
+        with self._workflow_segments_guard:
+          self._workflow_segments.clear()
         self._is_shutting_down = False
         self._started = False
         completion, self._shutdown_future = self._shutdown_future, None
@@ -8112,10 +8326,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["_generation"] = 0
     state["_loop_states_guard"] = None
     state["_drop_counts_guard"] = None
+    state["_workflow_segments_guard"] = None
     state["client"] = None
     state["_loop_state_by_loop"] = {}
     state["_loop_state_futures"] = {}
     state["_builder_waiters"] = {}
+    state["_workflow_segments"] = {}
     state["_write_stream_name"] = None
     state["_executor"] = None
     state["offloader"] = None
@@ -8157,8 +8373,19 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._generation = 0
     self._loop_states_guard = threading.RLock()
     self._drop_counts_guard = threading.Lock()
+    self._workflow_segments_guard = threading.Lock()
     self._loop_state_futures = {}
     self._builder_waiters = {}
+    # Runner calls in flight are not pickled, and pickles from older code have
+    # no segment map.
+    self._workflow_segments = {}
+    if getattr(self, "config", None) is not None and isinstance(
+        getattr(self.config, "__dict__", None), dict
+    ):
+      self.config.__dict__.setdefault(
+          "max_observation_summaries_per_segment",
+          _DEFAULT_MAX_OBSERVATION_SUMMARIES_PER_SEGMENT,
+      )
     # Pickles from older code bypass __init__, so re-validate the restored
     # configuration: e.g. a legacy retry_config with max_retries=NaN would
     # otherwise skip the write loop silently.
@@ -8211,10 +8438,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._generation = 0
     self._loop_states_guard = threading.RLock()
     self._drop_counts_guard = threading.Lock()
+    self._workflow_segments_guard = threading.Lock()
     self.client = None
     self._loop_state_by_loop = {}
     self._loop_state_futures = {}
     self._builder_waiters = {}
+    self._workflow_segments = {}
     self._write_stream_name = None
     self._executor = None
     self.offloader = None
@@ -8226,11 +8455,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._is_shutting_down = False
     self._init_pid = os.getpid()
 
-  def _count_local_drop(self, reason: str) -> None:
-    """Counts a row lost before/outside any BatchProcessor."""
+  def _count_local_drop(self, reason: str, count: int = 1) -> None:
+    """Counts rows lost before/outside any BatchProcessor."""
     with self._drop_counts_guard:
       self._local_drop_counts[reason] = (
-          self._local_drop_counts.get(reason, 0) + 1
+          self._local_drop_counts.get(reason, 0) + count
       )
 
   async def close(
@@ -8909,6 +9138,120 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       attributes["custom_metadata"] = safe
     return bool(truncated)
 
+  def _workflow_observations_enabled(self) -> bool:
+    """Returns whether callbacks may create or mutate observation state."""
+    return self.config.enabled and not self._is_shutting_down
+
+  def _record_workflow_node_observation(
+      self,
+      event: "Event",
+      invocation_context: InvocationContext,
+  ) -> tuple[_WorkflowObservationSegment, bool, float | None] | None:
+    """Records a path-bearing event and reports whether it was the first.
+
+    The event is recorded in the segment of the runner call that raised it,
+    looked up by the invocation ID.
+    """
+    node_info = getattr(event, "node_info", None)
+    node_path = getattr(node_info, "path", "")
+    if not isinstance(node_path, str) or not node_path:
+      return None
+
+    raw_id = getattr(event, "id", None)
+    event_id = raw_id if isinstance(raw_id, str) else ""
+    raw_ts = getattr(event, "timestamp", None)
+    event_ts: float | None = None
+    if isinstance(raw_ts, (int, float)) and not isinstance(raw_ts, bool):
+      try:
+        candidate_ts = float(raw_ts)
+      except (OverflowError, TypeError, ValueError):
+        candidate_ts = math.nan
+      if math.isfinite(candidate_ts):
+        event_ts = candidate_ts
+
+    summary_cap = self.config.max_observation_summaries_per_segment
+    max_tracked_paths = max(summary_cap, _MAX_OBSERVED_NODE_PATHS_PER_SEGMENT)
+
+    with self._workflow_segments_guard:
+      segment = self._workflow_segments.get(invocation_context.invocation_id)
+      if segment is None:
+        return None
+
+      observation = segment.nodes.get(node_path)
+      is_first = False
+      if observation is None:
+        if len(segment.nodes) >= summary_cap:
+          if getattr(event, "long_running_tool_ids", None):
+            for ancestor_path in _strict_ancestor_node_paths(node_path):
+              if ancestor := segment.nodes.get(ancestor_path):
+                ancestor.descendant_interrupt_observed = True
+          if node_path in segment.overflow_node_paths:
+            return segment, False, event_ts
+          if (
+              len(segment.nodes) + len(segment.overflow_node_paths)
+              < max_tracked_paths
+          ):
+            segment.overflow_node_paths.add(node_path)
+            return segment, True, event_ts
+          segment.untracked_path_events += 1
+          return segment, False, event_ts
+        is_first = True
+        observation = _WorkflowNodeObservation(
+            node_path=node_path,
+            node_run_id=getattr(node_info, "run_id", None),
+            node_parent_run_id=getattr(node_info, "parent_run_id", None),
+            first_source_event_id=event_id,
+            last_source_event_id=event_id,
+            first_source_event_timestamp=event_ts,
+            last_source_event_timestamp=event_ts,
+        )
+        segment.nodes[node_path] = observation
+      else:
+        observation.last_source_event_id = event_id
+        if event_ts is not None:
+          if observation.first_source_event_timestamp is None:
+            observation.first_source_event_timestamp = event_ts
+          observation.last_source_event_timestamp = event_ts
+        observation.observed_event_count += 1
+
+      if getattr(event, "long_running_tool_ids", None):
+        observation.node_interrupt_observed = True
+        ancestor_paths = _strict_ancestor_node_paths(node_path)
+        segment.interrupted_ancestor_paths.update(ancestor_paths)
+        for ancestor_path in ancestor_paths:
+          if ancestor := segment.nodes.get(ancestor_path):
+            ancestor.descendant_interrupt_observed = True
+
+      if node_path in segment.interrupted_ancestor_paths:
+        observation.descendant_interrupt_observed = True
+
+      if getattr(event, "error_code", None) and _is_durable_node_error(event):
+        observation.node_error_observed_count += 1
+
+      return segment, is_first, event_ts
+
+  def _open_workflow_segment(self, invocation_id: str) -> None:
+    """Opens a runner call's segment, dropping the oldest at capacity."""
+    with self._workflow_segments_guard:
+      segments = self._workflow_segments
+      # A resumed invocation reuses its ID: reopen its segment as the newest
+      # entry rather than drop another call's segment to make room for it.
+      segments.pop(invocation_id, None)
+      while len(segments) >= _MAX_IN_FLIGHT_WORKFLOW_SEGMENTS:
+        segments.pop(next(iter(segments)), None)
+      segments[invocation_id] = _WorkflowObservationSegment(
+          segment_id=str(uuid.uuid4())
+      )
+
+  def _event_type_filtered(self, event_type: str) -> bool:
+    """Returns whether the event allowlist or denylist excludes a type."""
+    if self.config.event_denylist and event_type in self.config.event_denylist:
+      return True
+    return bool(
+        self.config.event_allowlist
+        and event_type not in self.config.event_allowlist
+    )
+
   async def _log_event(
       self,
       event_type: str,
@@ -8929,12 +9272,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """
     if not self.config.enabled or self._is_shutting_down:
       return
-    if self.config.event_denylist and event_type in self.config.event_denylist:
-      return
-    if (
-        self.config.event_allowlist
-        and event_type not in self.config.event_allowlist
-    ):
+    if self._event_type_filtered(event_type):
       return
 
     if not self._started:
@@ -9265,6 +9603,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> None:
     """Logs state changes, HITL events, A2A interactions, and agent responses.
 
+    - Records path-bearing source events for workflow observation windows.
     - Checks each event for a non-empty state_delta and logs it as a
       STATE_DELTA event.
     - Detects synthetic ``adk_request_*`` function calls (HITL pause
@@ -9300,6 +9639,31 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if getattr(event, "partial", None) is not True:
       TraceManager.pop_span(expected_kind="llm_request")
 
+    if self._workflow_observations_enabled():
+      try:
+        workflow_observation = self._record_workflow_node_observation(
+            event, invocation_context
+        )
+        if workflow_observation is not None:
+          segment, is_first, event_ts = workflow_observation
+          if is_first:
+            await self._log_event(
+                "WORKFLOW_NODE_FIRST_OBSERVED",
+                callback_ctx,
+                event_data=EventData(
+                    source_event=event,
+                    adk_extras={
+                        "workflow_segment_id": segment.segment_id,
+                        "boundary_basis": "event_observation",
+                        "source_event_timestamp": event_ts,
+                    },
+                ),
+            )
+      except Exception:
+        logger.warning(
+            "Could not record workflow-node observation; continuing."
+        )
+
     # --- State delta logging ---
     if event.actions.state_delta:
       await self._log_event(
@@ -9313,8 +9677,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     node_info = getattr(event, "node_info", None)
     node_path = getattr(node_info, "path", "")
-    if node_path and event.partial is not True:
-      if _is_durable_node_error(event):
+    if node_path and getattr(event, "partial", None) is not True:
+      if getattr(event, "error_code", None) and _is_durable_node_error(event):
         await self._log_event(
             "NODE_ERROR",
             callback_ctx,
@@ -9322,11 +9686,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             event_data=EventData(
                 source_event=event,
                 status="ERROR",
-                error_message=event.error_message,
+                error_message=getattr(event, "error_message", None),
             ),
         )
       if (
-          event.output is not None
+          getattr(event, "output", None) is not None
           and getattr(node_info, "message_as_output", None) is not True
       ):
         node_output, output_truncated = _recursive_smart_truncate(
@@ -9629,12 +9993,110 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         invocation_context: The context of the current invocation.
     """
     await self._ensure_started()
+    if self._workflow_observations_enabled():
+      self._open_workflow_segment(invocation_context.invocation_id)
     callback_ctx = CallbackContext(invocation_context)
     TraceManager.ensure_invocation_span(callback_ctx)
     await self._log_event(
         "INVOCATION_STARTING",
         callback_ctx,
     )
+
+  async def _drain_workflow_node_observations(
+      self,
+      callback_context: CallbackContext,
+      *,
+      drain_callback: str,
+  ) -> None:
+    """Emits factual summaries for the current runner-call segment.
+
+    At most ``config.max_observation_summaries_per_segment`` summaries are
+    written, in the order the node paths were first observed. When more
+    paths were observed, the last summary written carries
+    ``truncated_node_count`` and the paths left out are counted under the
+    ``workflow_observation_capacity`` drop reason.
+    """
+    if not self._workflow_observations_enabled():
+      return
+    with self._workflow_segments_guard:
+      segment = self._workflow_segments.get(callback_context.invocation_id)
+      if segment is None:
+        return
+      observations = list(segment.nodes.values())
+      overflow_path_count = len(segment.overflow_node_paths)
+      untracked_event_count = segment.untracked_path_events
+    if self._event_type_filtered("WORKFLOW_NODE_OBSERVATION_SUMMARY"):
+      return
+
+    # A runner call delivers its events sequentially before after_run_callback
+    # or on_run_error_callback, so reading _WorkflowNodeObservation fields after
+    # releasing _workflow_segments_guard is safe.
+    cap = self.config.max_observation_summaries_per_segment
+    kept = observations[:cap]
+    truncated_node_count = (len(observations) - len(kept)) + overflow_path_count
+    total_observed_paths = len(kept) + truncated_node_count
+    for index, observation in enumerate(kept, start=1):
+      try:
+        span_ms = (
+            (
+                observation.last_source_event_timestamp
+                - observation.first_source_event_timestamp
+            )
+            * 1000.0
+            if observation.first_source_event_timestamp is not None
+            and observation.last_source_event_timestamp is not None
+            else None
+        )
+        adk_extras: dict[str, Any] = {
+            "workflow_segment_id": segment.segment_id,
+            "node": {
+                "path": observation.node_path,
+                "run_id": observation.node_run_id,
+                "parent_run_id": observation.node_parent_run_id,
+            },
+            "first_source_event_id": observation.first_source_event_id,
+            "last_source_event_id": observation.last_source_event_id,
+            "first_source_event_timestamp": (
+                observation.first_source_event_timestamp
+            ),
+            "last_source_event_timestamp": (
+                observation.last_source_event_timestamp
+            ),
+            "source_event_span_ms": span_ms,
+            "observed_event_count": observation.observed_event_count,
+            "node_interrupt_observed": observation.node_interrupt_observed,
+            "descendant_interrupt_observed": (
+                observation.descendant_interrupt_observed
+            ),
+            "node_error_observed_count": observation.node_error_observed_count,
+            "drain_callback": drain_callback,
+            "boundary_basis": "event_observation",
+        }
+        if truncated_node_count and index == len(kept):
+          adk_extras["truncated_node_count"] = truncated_node_count
+        if untracked_event_count and index == len(kept):
+          adk_extras["untracked_overflow_event_count"] = untracked_event_count
+        await self._log_event(
+            "WORKFLOW_NODE_OBSERVATION_SUMMARY",
+            callback_context,
+            event_data=EventData(adk_extras=adk_extras),
+        )
+      except Exception:
+        logger.warning(
+            "Could not emit workflow-node observation summary; continuing."
+        )
+
+    if truncated_node_count:
+      self._count_local_drop(
+          "workflow_observation_capacity", count=truncated_node_count
+      )
+      logger.warning(
+          "Workflow observation summaries were not written for %d of %d"
+          " node paths: max_observation_summaries_per_segment is %d.",
+          truncated_node_count,
+          total_observed_paths,
+          cap,
+      )
 
   @_safe_callback
   async def after_run_callback(
@@ -9650,6 +10112,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # that INVOCATION_COMPLETED shares the same trace_id as all
       # earlier events in this invocation.
       callback_ctx = CallbackContext(invocation_context)
+      await self._drain_workflow_node_observations(
+          callback_ctx, drain_callback="after_run"
+      )
       trace_id = TraceManager.get_trace_id(callback_ctx)
 
       # Pop the invocation-root span pushed by ensure_invocation_span.
@@ -9669,6 +10134,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     finally:
       # Cleanup must run even if _log_event raises, otherwise
       # stale invocation metadata leaks into the next invocation.
+      with self._workflow_segments_guard:
+        self._workflow_segments.pop(invocation_context.invocation_id, None)
       TraceManager.clear_stack()
       _active_invocation_id_ctx.set(None)
       _root_agent_name_ctx.set(None)
@@ -10419,6 +10886,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """
     try:
       callback_ctx = CallbackContext(invocation_context)
+      await self._drain_workflow_node_observations(
+          callback_ctx, drain_callback="on_run_error"
+      )
       trace_id = TraceManager.get_trace_id(callback_ctx)
 
       # Guarded pop: only consume the invocation-root span. If the failure
@@ -10448,6 +10918,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       )
     finally:
       # Cleanup must run even if _log_event raises.
+      with self._workflow_segments_guard:
+        self._workflow_segments.pop(invocation_context.invocation_id, None)
       TraceManager.clear_stack()
       _active_invocation_id_ctx.set(None)
       _root_agent_name_ctx.set(None)

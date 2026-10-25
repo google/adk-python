@@ -87,6 +87,10 @@ Orchestrator
   then hands out the same run ids and replays the children the failed attempt
   completed, at any depth. A retry for the node's own exception keeps the
   counters, so its children run again.
+- A parallel worker (`_ParallelWorker`, or a `Node` with
+  `parallel_worker=True`) is not retried for an item's `DynamicNodeFailError`
+  (`_delegates_item_retry`): the item node already applied the retry policy
+  to that item.
 - A `Workflow` reports a failing child by setting `ctx.error` rather than
   raising, and NodeRunner applies the retry policy to that error as well.
 - When retries are exhausted, the error is recorded on `ctx.error` and

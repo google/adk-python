@@ -2683,7 +2683,6 @@ async def test_rewind_aborts_active_run_sse(
       new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
       streaming=True,
   )
-  response = await run_sse_handler(req)
 
   async def receive():
     await asyncio.Event().wait()
@@ -2694,9 +2693,13 @@ async def test_rewind_aborts_active_run_sse(
     if message.get("type") == "http.response.body" and message.get("body"):
       sent_chunks.append(message["body"].decode("utf-8"))
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+  response = await run_sse_handler(req, request)
+
   sse_task = asyncio.create_task(
       response(
-          {"type": "http", "asgi": {"spec_version": "2.1"}},
+          scope,
           receive,
           send,
       )
@@ -2913,7 +2916,6 @@ async def test_invalid_rewind_does_not_abort_active_run_sse(
       new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
       streaming=True,
   )
-  response = await run_sse_handler(req)
 
   async def receive():
     await asyncio.Event().wait()
@@ -2921,9 +2923,13 @@ async def test_invalid_rewind_does_not_abort_active_run_sse(
   async def send(message):
     del message
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+  response = await run_sse_handler(req, request)
+
   sse_task = asyncio.create_task(
       response(
-          {"type": "http", "asgi": {"spec_version": "2.1"}},
+          scope,
           receive,
           send,
       )
@@ -3021,7 +3027,6 @@ async def test_rewind_abort_timeout_returns_409(
       new_message={"role": "user", "parts": [{"text": "Run stuck tool"}]},
       streaming=True,
   )
-  response = await run_sse_handler(req)
 
   async def receive():
     await asyncio.Event().wait()
@@ -3029,9 +3034,13 @@ async def test_rewind_abort_timeout_returns_409(
   async def send(message):
     del message
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+  response = await run_sse_handler(req, request)
+
   sse_task = asyncio.create_task(
       response(
-          {"type": "http", "asgi": {"spec_version": "2.1"}},
+          scope,
           receive,
           send,
       )
@@ -4679,8 +4688,16 @@ async def test_agent_run_sse_disconnect_with_cleanup_exception(
       streaming=True,
   )
 
+  async def receive():
+    await asyncio.Event().wait()
+
+  request = starlette.requests.Request(
+      {"type": "http", "method": "POST", "path": "/run_sse", "headers": []},
+      receive=receive,
+  )
+
   # Call handler
-  response = await handler(req)
+  response = await handler(req, request)
   assert response.status_code == 200
 
   # Iterate generator and close it early
@@ -4752,8 +4769,16 @@ async def test_agent_run_sse_disconnect_with_cleanup_exception_and_cancellation(
       streaming=True,
   )
 
+  async def receive():
+    await asyncio.Event().wait()
+
+  request = starlette.requests.Request(
+      {"type": "http", "method": "POST", "path": "/run_sse", "headers": []},
+      receive=receive,
+  )
+
   # Call handler
-  response = await handler(req)
+  response = await handler(req, request)
   assert response.status_code == 200
 
   # Iterate generator
@@ -4869,9 +4894,6 @@ async def test_agent_run_sse_disconnect_seals_dangling_function_call(
       streaming=True,
   )
 
-  response = await handler(req)
-  assert response.status_code == 200
-
   sent_chunks: list[str] = []
 
   async def receive():
@@ -4882,8 +4904,14 @@ async def test_agent_run_sse_disconnect_seals_dangling_function_call(
     if message["type"] == "http.response.body" and message.get("body"):
       sent_chunks.append(message["body"].decode("utf-8"))
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+
+  response = await handler(req, request)
+  assert response.status_code == 200
+
   await response(
-      {"type": "http", "asgi": {"spec_version": "2.1"}},
+      scope,
       receive,
       send,
   )
@@ -4906,6 +4934,105 @@ async def test_agent_run_sse_disconnect_seals_dangling_function_call(
   frs = abort_events[0].get_function_responses()
   assert len(frs) == 1
   assert frs[0].id == "call_sse_1"
+  assert frs[0].name == "slow_tool"
+
+
+async def test_agent_run_sse_disconnect_aborts_under_asgi_2_4(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test /run_sse disconnect aborts under ASGI 2.4 when send() no-ops."""
+  info = create_test_session
+  captured_contexts = []
+  tool_in_flight = asyncio.Event()
+  after_run_flag = asyncio.Event()
+
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+  loaded_app = _slow_tool_app(
+      info,
+      captured_contexts,
+      tool_in_flight,
+      after_run_flag,
+      call_id="call_sse_asgi_24",
+  )
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: loaded_app
+  )
+
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  app = client.app
+  handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      handler = route.endpoint
+      break
+  assert handler is not None
+
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
+      streaming=True,
+  )
+
+  sent_chunks: list[str] = []
+
+  async def receive():
+    await tool_in_flight.wait()
+    return {"type": "http.disconnect"}
+
+  async def send(message):
+    if tool_in_flight.is_set():
+      return
+    if message["type"] == "http.response.body" and message.get("body"):
+      sent_chunks.append(message["body"].decode("utf-8"))
+
+  scope = {
+      "type": "http",
+      "asgi": {"spec_version": "2.4"},
+      "method": "POST",
+      "path": "/run_sse",
+      "headers": [],
+  }
+  request = starlette.requests.Request(scope, receive=receive)
+
+  response = await handler(req, request)
+  assert response.status_code == 200
+
+  await asyncio.wait_for(
+      response(scope, receive, send),
+      timeout=2.0,
+  )
+
+  assert any("slow_tool" in chunk for chunk in sent_chunks)
+  assert len(captured_contexts) == 1
+  assert captured_contexts[0].is_aborted
+  assert after_run_flag.is_set()
+
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  abort_events = [
+      e for e in session.events if e.error_code == "INVOCATION_ABORTED"
+  ]
+  assert len(abort_events) == 1
+  frs = abort_events[0].get_function_responses()
+  assert len(frs) == 1
+  assert frs[0].id == "call_sse_asgi_24"
   assert frs[0].name == "slow_tool"
 
 
@@ -4950,9 +5077,6 @@ async def test_agent_run_sse_consumer_exception_surfaces_error_event(
   monkeypatch.setattr(Event, "model_dump", _failing_model_dump_json)
   monkeypatch.setattr(Event, "model_dump_json", _failing_model_dump_json)
 
-  response = await handler(req)
-  assert response.status_code == 200
-
   sent_chunks: list[str] = []
 
   async def receive():
@@ -4963,8 +5087,14 @@ async def test_agent_run_sse_consumer_exception_surfaces_error_event(
     if message["type"] == "http.response.body" and message.get("body"):
       sent_chunks.append(message["body"].decode("utf-8"))
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+
+  response = await handler(req, request)
+  assert response.status_code == 200
+
   await response(
-      {"type": "http", "asgi": {"spec_version": "2.1"}},
+      scope,
       receive,
       send,
   )

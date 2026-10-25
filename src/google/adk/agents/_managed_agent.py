@@ -366,12 +366,13 @@ class ManagedAgent(BaseAgent):
       parent_context = parent_context.model_copy(
           update={'user_content': to_user_content(node_input)}
       )
-    async for event in self.run_async(parent_context=parent_context):
-      if event.author:
-        ctx.event_author = event.author
-      if not event.node_info.path and event.author == self.name:
-        event.node_info.path = ctx.node_path
-      yield event
+    async with Aclosing(self.run_async(parent_context=parent_context)) as agen:
+      async for event in agen:
+        if event.author:
+          ctx.event_author = event.author
+        if not event.node_info.path and event.author == self.name:
+          event.node_info.path = ctx.node_path
+        yield event
 
   async def _run_async_impl(
       self, ctx: InvocationContext

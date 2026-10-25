@@ -29,6 +29,11 @@ from google.genai import types as genai_types
 
 from ..agents.base_agent import BaseAgent
 from ..apps.app import App
+from ..evaluation._eval_case_result_multi_run_aggregator import count_runs_failed_without_metric_results
+from ..evaluation._eval_case_result_multi_run_aggregator import describe_run_statuses
+from ..evaluation._eval_case_result_multi_run_aggregator import get_run_status
+from ..evaluation._eval_case_result_multi_run_aggregator import MethodResult
+from ..evaluation._eval_case_result_multi_run_aggregator import MultiRunCaseResult
 from ..evaluation.base_eval_service import BaseEvalService
 from ..evaluation.base_eval_service import EvaluateConfig
 from ..evaluation.base_eval_service import EvaluateRequest
@@ -356,6 +361,106 @@ def _format_metric_cell(metric_result: EvalMetricResult) -> str:
         f" out {_format_token_count(token_details.output_tokens)})"
     )
   return f"{score:g}"
+
+
+def _format_method_result(method_result: MethodResult) -> str:
+  """Formats a rule's value, threshold and status, then its note if any."""
+  text = (
+      f"Value: {method_result.value}, "
+      f"Threshold: {method_result.threshold}, "
+      f"Status: {method_result.status.name}"
+  )
+  if method_result.note:
+    text += f" ({method_result.note})"
+  return text
+
+
+def _describe_crashed_runs(*, crashed: int, runs: int, allowed: int) -> str:
+  """Returns the line that says how many runs crashed, and how many may.
+
+  Args:
+    crashed: How many of the runs failed without producing metric results.
+    runs: How many runs the eval case had.
+    allowed: How many of the runs may crash before the case fails.
+  """
+  line = f"{crashed} of {runs} runs failed without producing any metric results"
+  if not allowed:
+    return f"{line}."
+  if crashed > allowed:
+    return f"{line}, more than the {allowed} allowed."
+  return f"{line} (up to {allowed} allowed)."
+
+
+def _pretty_print_eval_results_across_runs(
+    aggregate_eval_results: list[MultiRunCaseResult],
+    num_runs: int,
+) -> None:
+  """Pretty prints the results of eval cases judged on all of their runs.
+
+  Eval cases are printed one after another. For each one, its verdict across
+  all of its runs comes first, with how many of the runs passed as a whole and
+  how many crashed. Each metric follows, with the method that combined its
+  runs and the value that method gave, and then each cross-run criterion.
+  Each run comes last, in run order.
+
+  Args:
+    aggregate_eval_results: One result per eval case, aggregated across its
+      runs.
+    num_runs: How many times each eval case was run.
+  """
+  for aggregate_eval_result in aggregate_eval_results:
+    runs = aggregate_eval_result.runs
+    crashed_runs = count_runs_failed_without_metric_results(runs)
+    run_counts = describe_run_statuses(
+        [get_run_status(run) for run in runs], crashed=crashed_runs
+    )
+    click.echo(
+        "********************************************************************"
+    )
+    click.echo(f"Eval Set Id: {aggregate_eval_result.eval_set_id}")
+    click.echo(f"Eval Id: {aggregate_eval_result.eval_id}")
+    click.echo(
+        f"Overall Eval Status across {len(runs)}"
+        f" {'run' if len(runs) == 1 else 'runs'} ({run_counts}):"
+        f" {aggregate_eval_result.final_eval_status.name}"
+    )
+    # Crashed runs are left out of the values below; this line counts them,
+    # and says whether more crashed than allowed, which fails the case.
+    if crashed_runs:
+      click.echo(
+          _describe_crashed_runs(
+              crashed=crashed_runs,
+              runs=len(runs),
+              allowed=aggregate_eval_result.max_crashed_runs,
+          )
+      )
+    # Only the combined value is printed: details such as rubric scores belong
+    # to a single invocation, and are printed with the run they came from.
+    metric_methods = aggregate_eval_result.metric_methods
+    for metric_name, method_result in metric_methods.items():
+      click.echo(
+          "---------------------------------------------------------------------"
+      )
+      click.echo(
+          f"Metric: {metric_name}, Method: {method_result.name}, "
+          + _format_method_result(method_result)
+      )
+    for method_result in aggregate_eval_result.cross_run_results:
+      click.echo(
+          "---------------------------------------------------------------------"
+      )
+      click.echo(
+          f"Cross-run criterion: {method_result.name}, "
+          + _format_method_result(method_result)
+      )
+
+    for eval_result in runs:
+      click.echo(
+          "********************************************************************"
+      )
+      if eval_result.repetition_index is not None:
+        click.echo(f"Run: {eval_result.repetition_index + 1} of {num_runs}")
+      pretty_print_eval_result(eval_result)
 
 
 def pretty_print_eval_result(eval_result: EvalCaseResult) -> None:

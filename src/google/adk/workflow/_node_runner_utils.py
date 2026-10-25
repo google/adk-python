@@ -327,8 +327,8 @@ async def run_node_async(
         raise
     finally:
       # Success path (also caller early-stop via GeneratorExit,
-      # _CALLER_CLOSED_EARLY_MSG, or abort_signal): run after_run and
-      # compaction.
+      # _CALLER_CLOSED_EARLY_MSG, or abort_signal): run after_run, and run
+      # compaction only when the invocation completed without early close.
       # _cleanup_root_task has already run in the inner finally above when a
       # root task was created. A failure in this success cleanup (e.g. an
       # after_run plugin raising, which PluginManager surfaces as a
@@ -348,9 +348,12 @@ async def run_node_async(
       if run_error is None:
         try:
           await ic.plugin_manager.run_after_run_callback(invocation_context=ic)
-          if not ic.is_aborted:
+          # Compaction only runs after a fully drained invocation, matching
+          # Runner.run_async; a partially consumed stream is compacted by a
+          # later turn instead.
+          if not ic.is_aborted and not closing_early:
             await runner._run_post_invocation_compaction(  # pylint: disable=protected-access
-                session=session,
+                invocation_context=ic,
             )
         except Exception as e:
           await _notify_run_error(ic.plugin_manager, ic, e)

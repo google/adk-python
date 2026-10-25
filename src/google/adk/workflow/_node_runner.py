@@ -32,6 +32,7 @@ from ..events._branch_path import _BranchPath
 from ..events._node_path_builder import _NodePathBuilder
 from ..telemetry import node_tracing
 from ._errors import DynamicNodeFailError
+from .utils._retry_utils import _delegates_item_retry
 
 if TYPE_CHECKING:
   from ..agents.context import Context
@@ -182,7 +183,12 @@ class NodeRunner:
         raise
       except Exception as e:
         if isinstance(e, DynamicNodeFailError):
-          if not await self._attempt_retry(e.error, attempt_count):
+          # A parallel worker's item node already applied the retry policy to
+          # the failed item. Retrying the worker would cancel the items still
+          # running and give the failed item a fresh budget.
+          if _delegates_item_retry(self._node) or not await self._attempt_retry(
+              e.error, attempt_count
+          ):
             ctx._error = e.error
             ctx._error_node_path = e.error_node_path
             logger.debug("node %s end.", ctx.node_path)

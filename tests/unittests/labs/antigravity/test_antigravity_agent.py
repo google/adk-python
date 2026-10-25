@@ -42,6 +42,7 @@ from google.adk.labs.antigravity import _antigravity_agent
 from google.adk.labs.antigravity import _tool_result_capture
 from google.adk.labs.antigravity._antigravity_agent import AntigravityAgent
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.utils.context_utils import Aclosing
 from google.adk.workflow._node_runner import NodeRunner
 from google.antigravity import AgentConfig
 from google.antigravity import LocalAgentConfig
@@ -1066,6 +1067,49 @@ async def test_last_complete_response_becomes_node_output():
 
   outputs = [e.output for e in events if e.output is not None]
   assert outputs == ['Done: patch sent for review.']
+
+
+@pytest.mark.asyncio
+async def test_run_impl_early_close_closes_run_async():
+  """Closing AntigravityAgent._run_impl early closes run_async."""
+  cleaned_up = False
+
+  class _CleanupAntigravityAgent(AntigravityAgent):
+    """AntigravityAgent stub that tracks whether run_async cleanup ran."""
+
+    async def run_async(
+        self, parent_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      nonlocal cleaned_up
+      try:
+        yield Event(
+            invocation_id=parent_context.invocation_id,
+            author=self.name,
+            content=genai_types.Content(
+                role='model', parts=[genai_types.Part.from_text(text='first')]
+            ),
+        )
+        yield Event(
+            invocation_id=parent_context.invocation_id,
+            author=self.name,
+            content=genai_types.Content(
+                role='model', parts=[genai_types.Part.from_text(text='second')]
+            ),
+        )
+      finally:
+        await asyncio.sleep(0)
+        cleaned_up = True
+
+  agent = _CleanupAntigravityAgent(
+      name='agy', config=_make_config(), mode='single_turn'
+  )
+  ctx = await _node_ctx(agent=agent)
+
+  async with Aclosing(agent.run(ctx=ctx, node_input='go')) as agen:
+    first = await anext(agen)
+    assert first.content.parts[0].text == 'first'
+
+  assert cleaned_up
 
 
 def _tool_response_step(step_index: int, name: str) -> sdk_types.Step:

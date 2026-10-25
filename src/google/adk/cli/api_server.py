@@ -471,6 +471,33 @@ def _with_abort_signal_kwarg(
   return kwargs
 
 
+async def _monitor_client_disconnect(
+    request: Request,
+    session_id: str,
+    abort_signal: asyncio.Event,
+    task_to_cancel: asyncio.Task[Any],
+    on_disconnect: Optional[Callable[[], None]] = None,
+) -> None:
+  """Monitors the ASGI receive channel and aborts on client disconnect."""
+  try:
+    while True:
+      message = await request.receive()
+      if message.get("type") == "http.disconnect":
+        logger.warning(
+            "Client disconnected. Aborting agent run for session %s.",
+            session_id,
+        )
+        abort_signal.set()
+        if on_disconnect is not None:
+          on_disconnect()
+        task_to_cancel.cancel()
+        break
+  except asyncio.CancelledError:
+    pass
+  except Exception as e:  # pylint: disable=broad-exception-caught
+    logger.error("Exception in disconnect monitor: %s", e, exc_info=True)
+
+
 _current_session_options: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("current_session_options", default=None)
 )
@@ -2304,25 +2331,11 @@ class ApiServer:
           )
 
       worker_task = asyncio.create_task(worker())
-
-      async def monitor() -> None:
-        try:
-          while True:
-            message = await request.receive()
-            if message.get("type") == "http.disconnect":
-              logger.warning(
-                  "Client disconnected. Aborting agent run for session %s.",
-                  req.session_id,
-              )
-              abort_signal.set()
-              worker_task.cancel()
-              break
-        except asyncio.CancelledError:
-          pass
-        except Exception as e:  # pylint: disable=broad-exception-caught
-          logger.error("Exception in disconnect monitor: %s", e, exc_info=True)
-
-      monitor_task = asyncio.create_task(monitor())
+      monitor_task = asyncio.create_task(
+          _monitor_client_disconnect(
+              request, req.session_id, abort_signal, worker_task
+          )
+      )
 
       try:
         events = await worker_task
@@ -2351,7 +2364,10 @@ class ApiServer:
           )
 
     @app.post("/run_sse")
-    async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
+    async def run_agent_sse(
+        req: RunAgentRequest,
+        request: Request,
+    ) -> StreamingResponse:
       app_name = req.app_name or self.default_app_name
       if not app_name:
         raise HTTPException(
@@ -2456,11 +2472,26 @@ class ApiServer:
             await event_queue.put(None)
 
         producer_task = asyncio.create_task(_produce_events())
+
+        def _on_sse_disconnect() -> None:
+          nonlocal is_closing
+          is_closing = True
+          next_step_event.set()
+
+        monitor_task = asyncio.create_task(
+            _monitor_client_disconnect(
+                request,
+                req.session_id,
+                abort_signal,
+                producer_task,
+                on_disconnect=_on_sse_disconnect,
+            )
+        )
         try:
           try:
             while True:
               event = await event_queue.get()
-              if event is None:
+              if event is None or is_closing:
                 break
               # ADK Web renders artifacts from `actions.artifactDelta`
               # during part processing *and* during action processing
@@ -2480,6 +2511,8 @@ class ApiServer:
                 events_to_stream = [content_event, artifact_event]
 
               for event_to_stream in events_to_stream:
+                if is_closing:
+                  break
                 sse_event = pydantic_core.to_json(
                     _redact_credential_secrets(
                         public_event(event_to_stream).model_dump(
@@ -2504,6 +2537,7 @@ class ApiServer:
             abort_signal.set()
             raise
           finally:
+            monitor_task.cancel()
             with anyio.CancelScope(shield=True):
               if not producer_task.done():
                 producer_task.cancel()

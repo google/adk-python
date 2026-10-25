@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import json
 import logging
 import ssl
@@ -34,6 +35,7 @@ from ....agents.readonly_context import ReadonlyContext
 from ....auth.auth_credential import AuthCredential
 from ....auth.auth_schemes import AuthScheme
 from ....auth.auth_tool import AuthConfig
+from ...base_tool import BaseTool
 from ...base_toolset import BaseToolset
 from ...base_toolset import ToolPredicate
 from .openapi_spec_parser import OpenApiSpecParser
@@ -42,6 +44,21 @@ from .rest_api_tool import HttpxClientFactory
 from .rest_api_tool import RestApiTool
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _disambiguate_tool_names(tools: Sequence[BaseTool]) -> None:
+  """Disambiguates colliding tool names in-place within the length limit."""
+  reserved_names = {tool.name for tool in tools}
+  assigned_names: set[str] = set()
+  for tool in tools:
+    if tool.name in assigned_names:
+      base_name = tool.name
+      n = 2
+      while tool.name in assigned_names or tool.name in reserved_names:
+        suffix = f"_{n}"
+        tool.name = base_name[: _MAX_TOOL_NAME_LENGTH - len(suffix)] + suffix
+        n += 1
+    assigned_names.add(tool.name)
 
 
 class OpenAPIToolset(BaseToolset):
@@ -276,17 +293,8 @@ class OpenAPIToolset(BaseToolset):
         )
         for o in operations
     ]
-    reserved_names = {t.name for t in tools}
-    assigned_names: set[str] = set()
+    _disambiguate_tool_names(tools)
     for tool in tools:
-      if tool.name in assigned_names:
-        base_name = tool.name
-        n = 2
-        while tool.name in assigned_names or tool.name in reserved_names:
-          suffix = f"_{n}"
-          tool.name = base_name[: _MAX_TOOL_NAME_LENGTH - len(suffix)] + suffix
-          n += 1
-      assigned_names.add(tool.name)
       logger.info("Parsed tool: %s", tool.name)
     return tools
 
