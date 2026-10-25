@@ -148,3 +148,31 @@ class TestEditFileTool:
     assert result["status"] == "ok"
     data = await env.read_file("test.txt")
     assert data == b"replaced\nline2"
+
+  @pytest.mark.asyncio
+  async def test_edit_file_reports_path_escape_as_tool_error(
+      self, env: LocalEnvironment
+  ):
+    """A `..` path escaping the working dir returns an error, not a raise.
+
+    The environment resolver raises ValueError for such paths; ReadFile and
+    WriteFile already surface it to the model as a recoverable error dict.
+    """
+    # Arrange
+    tool = EditFileTool(env)
+    await env.write_file("inside.txt", "line1\nline2")
+
+    args = {
+        "path": "../outside.txt",
+        "old_string": "line1",
+        "new_string": "changed",
+    }
+
+    # Act
+    result = await tool.run_async(args=args, tool_context=None)
+
+    # Assert
+    assert result == {
+        "status": "error",
+        "error": "Path escapes working directory: ../outside.txt",
+    }

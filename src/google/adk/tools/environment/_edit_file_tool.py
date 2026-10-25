@@ -104,6 +104,8 @@ class EditFileTool(BaseTool):
       content = data_bytes.decode('utf-8', errors='replace')
     except FileNotFoundError:
       return {'status': 'error', 'error': f'File not found: {path}'}
+    except ValueError as e:
+      return {'status': 'error', 'error': str(e)}
 
     # Normalize line breaks in old_string to \n and use regex for flexible matching
     normalized_old = old_string.replace('\r\n', '\n')
