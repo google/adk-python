@@ -418,6 +418,22 @@ class CredentialManager:
     if await refresher.is_refresh_needed(
         credential, self._auth_config.auth_scheme
     ):
+      raw_auth_credential = self._auth_config.raw_auth_credential
+      if (
+          raw_auth_credential is not None
+          and self._is_client_credentials_flow()
+          and credential.oauth2
+          and not credential.oauth2.refresh_token
+      ):
+        # A client credentials token has no refresh token; get a new one from
+        # the client credentials instead. Copy them so the exchange does not
+        # mutate the shared tool config.
+        new_credential, was_exchanged = await self._exchange_credential(
+            raw_auth_credential.model_copy(deep=True)
+        )
+        if was_exchanged:
+          return new_credential, True
+        return credential, False
       refreshed_credential = await refresher.refresh(
           credential, self._auth_config.auth_scheme
       )

@@ -105,6 +105,14 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
           "expires_at": auth_credential.oauth2.expires_at,
           "expires_in": auth_credential.oauth2.expires_in,
       }).is_expired():
+        if not auth_credential.oauth2.refresh_token:
+          # Client credentials tokens, and some providers' user tokens, come
+          # without a refresh token. Keep the stale token, as for a failed
+          # refresh below.
+          logger.warning(
+              "OAuth2 token expired and has no refresh token; cannot refresh"
+          )
+          return auth_credential
         client, token_endpoint = create_oauth2_session(
             auth_scheme, auth_credential
         )
