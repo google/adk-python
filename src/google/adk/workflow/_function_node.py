@@ -32,6 +32,7 @@ from google.genai import types
 from pydantic import BaseModel
 from pydantic import PrivateAttr
 from pydantic import PydanticSchemaGenerationError
+from pydantic import PydanticUserError
 from pydantic import TypeAdapter
 from typing_extensions import override
 
@@ -288,6 +289,7 @@ class FunctionNode(BaseNode):
   _sig: inspect.Signature = PrivateAttr()
   _type_hints: dict[str, Any] = PrivateAttr()
   _type_adapters: dict[str, TypeAdapter[Any]] = PrivateAttr()
+  _failed_type_adapters: set[str] = PrivateAttr(default_factory=set)
   # Always assigned in __init__; 'ctx' is the fallback used when the wrapped
   # function declares no context parameter.
   _context_param_name: str = PrivateAttr(default="ctx")
@@ -377,7 +379,7 @@ class FunctionNode(BaseNode):
     )
 
     sig = spec.signature
-    type_hints = spec.type_hints
+    type_hints = spec.get_best_effort_type_hints()
 
     self._context_param_name = spec.context_param_name or "ctx"
 
@@ -387,13 +389,15 @@ class FunctionNode(BaseNode):
     self._sig = sig
     self._type_hints = type_hints
     self._type_adapters = {}
+    self._failed_type_adapters = set()
     for name, hint in type_hints.items():
       if name == "return" or name == self._context_param_name:
         continue
-      try:
-        self._type_adapters[name] = TypeAdapter(hint)
-      except (TypeError, PydanticSchemaGenerationError):
-        pass
+      adapter = self._build_type_adapter(name, hint)
+      if adapter is not None:
+        self._type_adapters[name] = adapter
+      else:
+        self._failed_type_adapters.add(name)
 
     # Infer schemas based on the parameter binding mode.
     if parameter_binding == "node_input":
@@ -451,9 +455,23 @@ class FunctionNode(BaseNode):
     from ..tools._function_tool_declarations import _build_response_json_schema
 
     ignore_params: list[str] = [self._context_param_name]
-    self.input_schema = _build_parameters_json_schema(
-        func, ignore_params=ignore_params
-    )
+    try:
+      self.input_schema = _build_parameters_json_schema(
+          func, ignore_params=ignore_params
+      )
+    except (
+        TypeError,
+        NameError,
+        PydanticSchemaGenerationError,
+        PydanticUserError,
+    ) as e:
+      logger.warning(
+          "Skipping input schema inference for FunctionNode '%s' due to"
+          " unhandled annotation type: %s",
+          self.name,
+          e,
+      )
+      self.input_schema = None
     response_schema = _build_response_json_schema(func)
     if response_schema is not None:
       self.output_schema = response_schema
@@ -624,6 +642,31 @@ class FunctionNode(BaseNode):
         state=state_delta,
     )
 
+  def _build_type_adapter(
+      self, param_name: str, annotated_type: Any
+  ) -> TypeAdapter[Any] | None:
+    """Builds a TypeAdapter for `annotated_type`, returning None when unsupported."""
+    try:
+      adapter = TypeAdapter(annotated_type)
+      if not adapter.pydantic_complete:
+        adapter.rebuild()
+      return adapter
+    except (
+        TypeError,
+        NameError,
+        PydanticSchemaGenerationError,
+        PydanticUserError,
+    ) as e:
+      logger.warning(
+          "Skipping coercion for parameter '%s' of FunctionNode '%s' due to"
+          " unhandled annotation type '%s': %s",
+          param_name,
+          self.name,
+          annotated_type,
+          e,
+      )
+      return None
+
   def _coerce_param(
       self,
       param_name: str,
@@ -651,9 +694,15 @@ class FunctionNode(BaseNode):
       if annotation_expects_str(annotated_type):
         _warn_on_non_text_parts(value, self.name, param_name)
       value = _unwrap_content_payload(value, annotated_type)
+    if param_name in self._failed_type_adapters:
+      return value
     adapter = self._type_adapters.get(param_name)
     if adapter is None:
-      adapter = TypeAdapter(annotated_type)
+      adapter = self._build_type_adapter(param_name, annotated_type)
+      if adapter is None:
+        self._failed_type_adapters.add(param_name)
+        return value
+      self._type_adapters[param_name] = adapter
     return adapter.validate_python(value)
 
   @override
