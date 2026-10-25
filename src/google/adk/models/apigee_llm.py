@@ -1036,6 +1036,29 @@ class ChatCompletionsResponseHandler:
       )
     choice = choices[0]
     message = choice.get('message', {})
+    incomplete_tool_args = False
+    if choice.get('finish_reason') == 'length':
+      tool_calls = list(message.get('tool_calls', []))
+      if message.get('function_call'):
+        tool_calls.append({'function': message['function_call']})
+      # Leave unsupported call types on their existing error path. Only JSON
+      # argument parsing failures qualify for the token-limit response.
+      if all(c.get('type') in (None, 'function') for c in tool_calls):
+        for tool_call in tool_calls:
+          arguments = tool_call.get('function', {}).get('arguments', '')
+          if not arguments or (
+              isinstance(arguments, str) and not arguments.strip()
+          ):
+            incomplete_tool_args = True
+            continue
+          try:
+            _json_utils.safe_json_loads(arguments)
+          except ValueError:
+            incomplete_tool_args = True
+        if incomplete_tool_args:
+          # Validate before _upsert_tool_call parses eagerly; retain text but
+          # discard the whole batch without mutating the provider response.
+          message = {**message, 'tool_calls': [], 'function_call': None}
     _, role = self._add_chat_completion_message(message)
     parts = self._get_content_parts()
 
@@ -1058,7 +1081,20 @@ class ChatCompletionsResponseHandler:
         custom_metadata[k] = v
 
     return LlmResponse(
-        content=types.Content(role=role, parts=parts),
+        content=(
+            None
+            if incomplete_tool_args and not parts
+            else types.Content(role=role, parts=parts)
+        ),
+        error_code=(
+            types.FinishReason.MAX_TOKENS if incomplete_tool_args else None
+        ),
+        error_message=(
+            'Tool call arguments were truncated and could not be parsed as'
+            ' valid JSON. Increase `max_output_tokens` and retry.'
+            if incomplete_tool_args
+            else None
+        ),
         usage_metadata=usage_metadata,
         finish_reason=self._map_finish_reason(choice.get('finish_reason')),
         logprobs_result=logprobs_result,
