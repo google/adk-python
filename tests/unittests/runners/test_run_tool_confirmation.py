@@ -32,6 +32,7 @@ from google.adk.apps.app import ResumabilityConfig
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_tool import AuthConfig
+from google.adk.events._internal_metadata import USER_MESSAGE_GROUP_KEY
 from google.adk.events.ui_widget import UiWidget
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.tools.function_tool import FunctionTool
@@ -1447,3 +1448,116 @@ class TestHITLConfirmationReplay:
         agent.name,
         "completed after auth",
     )
+
+
+@pytest.mark.parametrize("trailing_part_kind", ["image", "text"])
+async def test_combined_confirmations_with_trailing_non_response_part(
+    trailing_part_kind,
+):
+  """A trailing non-response part must not become a branch's last event.
+
+  Branch-less user events are visible to every branch, so emitting that group
+  last hid each branch's own answer from sub-agent resumption and the resume
+  crashed with "No agent to transfer to" on the resumable ParallelAgent path.
+  """
+  ran = []
+
+  def act(who: str) -> str:
+    ran.append(who)
+    return f"{who} acted"
+
+  models = {
+      who: testing_utils.MockModel.create(
+          responses=[
+              Part(
+                  function_call=FunctionCall(
+                      id=f"call-{who}", name="act", args={"who": who}
+                  )
+              ),
+              "done",
+          ]
+      )
+      for who in ("a", "b")
+  }
+  agents = [
+      LlmAgent(
+          name=who,
+          model=model,
+          tools=[FunctionTool(act, require_confirmation=True)],
+      )
+      for who, model in models.items()
+  ]
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name="test_app",
+          root_agent=ParallelAgent(name="root", sub_agents=agents),
+          resumability_config=ResumabilityConfig(is_resumable=True),
+      )
+  )
+
+  try:
+    events = await runner.run_async("go")
+    pending = {
+        event.author: call
+        for event in events
+        for call in event.get_function_calls()
+        if call.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+    }
+    assert set(pending) == {"a", "b"}
+    invocation_id = events[0].invocation_id
+
+    trailing_part = (
+        Part.from_bytes(data=b"chart", mime_type="image/png")
+        if trailing_part_kind == "image"
+        else Part(text="one more thing")
+    )
+    parts = [
+        Part(
+            function_response=FunctionResponse(
+                id=pending[who].id,
+                name=pending[who].name,
+                response={"confirmed": True},
+            )
+        )
+        for who in ("a", "b")
+    ] + [trailing_part]
+
+    resume_events = [
+        event
+        async for event in runner.runner.run_async(
+            user_id=runner.session.user_id,
+            session_id=runner.session.id,
+            new_message=Content(role="user", parts=parts),
+            invocation_id=invocation_id,
+            yield_user_message=True,
+        )
+    ]
+
+    assert sorted(ran) == ["a", "b"]
+    stored = await runner.runner.session_service.get_session(
+        app_name=runner.app_name,
+        user_id=runner.session.user_id,
+        session_id=runner.session.id,
+    )
+    grouped = [
+        event
+        for event in stored.events
+        if event.author == "user"
+        and (event.custom_metadata or {}).get(USER_MESSAGE_GROUP_KEY)
+    ]
+    # The branch-less event is emitted first; each branch's own answer is the
+    # last user event that branch sees.
+    assert len(grouped) == 3
+    assert grouped[0].branch is None
+    assert not grouped[0].get_function_responses()
+    for who in ("a", "b"):
+      assert len(models[who].requests) == 2
+      results = [
+          part.function_response.response
+          for content in models[who].requests[-1].contents
+          for part in content.parts or []
+          if part.function_response
+      ]
+      assert results == [{"result": f"{who} acted"}]
+  finally:
+    await runner.runner.close()

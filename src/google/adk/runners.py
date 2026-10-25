@@ -215,6 +215,7 @@ def _split_user_event_by_branch(
       if call.id
   }
   groups: dict[tuple[str | None, str | None], list[types.Part]] = {}
+  context_has_matched_response: dict[tuple[str | None, str | None], bool] = {}
   for part in event.content.parts or []:
     response = part.function_response
     call_event = (
@@ -225,12 +226,25 @@ def _split_user_event_by_branch(
         if call_event is not None
         else (None, event.isolation_scope)
     )
+    if call_event is not None:
+      context_has_matched_response[context] = True
     groups.setdefault(context, []).append(part)
   if len(groups) < 2:
     return [event]
 
+  # A non-response part (an image, free text) shares a group key with calls
+  # on the root branch, and its group is visible to every branch. Emitting
+  # such a group last would end every branch view on an event carrying no
+  # answer, hiding each branch's own response from sub-agent resumption. So
+  # groups without any matched response go first; groups that do carry
+  # answers (root-branch answers included) keep the message's part order.
+  ordered_groups = sorted(
+      groups.items(),
+      key=lambda item: context_has_matched_response.get(item[0], False),
+  )
+
   events: list[Event] = []
-  for (branch, isolation_scope), parts in groups.items():
+  for (branch, isolation_scope), parts in ordered_groups:
     # Each persisted event owns its content and actions. Apply the caller's
     # state delta only once, on the first event, and preserve input order
     # within each branch (including multiple responses on the same branch).
