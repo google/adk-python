@@ -30,6 +30,9 @@ from google.adk.cli.utils.graph_visualization import plot_workflow_graph
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_toolset import BaseToolset
+from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.workflow import START
 from google.adk.workflow import Workflow
 import pytest
@@ -288,15 +291,72 @@ async def test_toolset_resolution_without_a_root_returns_no_tools() -> None:
 async def test_toolset_discovery_does_not_swallow_cancellation() -> None:
   """Cancelled graph requests stop discovery rather than returning a fallback."""
 
-  class CancelledToolset(BaseToolset):
+  class CancelledToolset(McpToolset):
 
     async def get_tools(self, readonly_context=None):
       raise asyncio.CancelledError()
 
-  root = LlmAgent(name='root', tools=[CancelledToolset()])
+  root = LlmAgent(
+      name='root',
+      tools=[
+          CancelledToolset(
+              connection_params=StreamableHTTPConnectionParams(
+                  url='http://127.0.0.1:1/mcp'
+              )
+          )
+      ],
+  )
 
   with pytest.raises(asyncio.CancelledError):
     await resolve_toolsets(root)
+
+
+async def test_toolset_resolution_only_expands_mcp_toolsets() -> None:
+  """Non-MCP toolsets are never asked for tools just to draw the graph."""
+
+  def add(a: int, b: int) -> int:
+    return a + b
+
+  class FakeMcpToolset(McpToolset):
+
+    async def get_tools(self, readonly_context=None):
+      return [FunctionTool(add)]
+
+  class SandboxToolset(BaseToolset):
+    """Stands in for toolsets that start a sandbox or browser in get_tools."""
+
+    def __init__(self):
+      super().__init__()
+      self.get_tools_calls = 0
+
+    async def get_tools(self, readonly_context=None):
+      self.get_tools_calls += 1
+      return [FunctionTool(add)]
+
+  mcp_toolset = FakeMcpToolset(
+      connection_params=StreamableHTTPConnectionParams(
+          url='http://127.0.0.1:1/mcp'
+      )
+  )
+  sandbox_toolset = SandboxToolset()
+  root = LlmAgent(name='root', tools=[mcp_toolset, sandbox_toolset])
+
+  toolset_tools = await resolve_toolsets(root)
+  info = serialize_app_info(
+      App(name='demo', root_agent=root), toolset_tools=toolset_tools
+  )
+
+  assert sandbox_toolset.get_tools_calls == 0
+  assert list(toolset_tools) == [id(mcp_toolset)]
+  assert info['root_agent']['tools'] == [
+      {
+          'name': 'FakeMcpToolset',
+          'id': 'root/toolset_0',
+          'type': 'toolset',
+          'children': [{'name': 'add', 'type': 'tool'}],
+      },
+      {'name': 'SandboxToolset', 'type': 'tool'},
+  ]
 
 
 def test_serialize_agent_with_litellm_model_is_json_safe() -> None:

@@ -215,7 +215,7 @@ def serialize_agent(
 
         serialized_tools: list[object] = []
         for index, tool in enumerate(value):
-          if isinstance(tool, BaseToolset) and toolset_tools is not None:
+          if toolset_tools is not None and id(tool) in toolset_tools:
             serialized_tools.append({
                 "name": type(tool).__name__,
                 "id": f"{agent.name}/toolset_{index}",
@@ -277,13 +277,23 @@ def serialize_agent(
 
 
 async def resolve_toolsets(root: BaseNode | None) -> dict[int, list[BaseTool]]:
-  """Resolve graph tools without changing agents or opening a new event loop."""
+  """List the tools of each McpToolset for the graph.
+
+  Only MCP toolsets are expanded. Other toolsets can start real resources in
+  get_tools() (a sandbox, a browser), so they stay a single node and are never
+  touched just to draw the graph.
+  """
   toolset_tools: dict[int, list[BaseTool]] = {}
   if root is None:
     return toolset_tools
+  try:
+    from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+  except ImportError:
+    # MCP is an optional extra; without it there is nothing to expand.
+    return toolset_tools
   for node in _walk_static_nodes(root):
     for tool in getattr(node, "tools", []):
-      if not isinstance(tool, BaseToolset) or id(tool) in toolset_tools:
+      if not isinstance(tool, McpToolset) or id(tool) in toolset_tools:
         continue
       toolset_tools[id(tool)] = []
       try:

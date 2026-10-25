@@ -32,6 +32,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.cli import dev_server
 from google.adk.cli.fast_api import get_fast_api_app
+from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
@@ -340,6 +341,62 @@ def test_graph_image_expands_toolsets_inside_workflows(
   assert '"worker/toolset_0" -> add' in dot
   assert '"worker/toolset_0" -> greet' in dot
   assert '"worker/toolset_0" -> __END__' not in dot
+
+
+@pytest.mark.parametrize(
+    "path", ["/dev/apps/demo/build_graph", "/dev/apps/demo/build_graph_image"]
+)
+def test_graph_requests_do_not_initialize_non_mcp_toolsets(
+    test_client, monkeypatch, mcp_graph_session, path
+):
+  """Viewing the graph must not start a sandbox, browser or similar."""
+
+  class SandboxToolset(BaseToolset):
+    """Stands in for toolsets that start a sandbox or browser in get_tools."""
+
+    def __init__(self):
+      super().__init__()
+      self.get_tools_calls = 0
+
+    async def get_tools(self, readonly_context=None):
+      self.get_tools_calls += 1
+      return []
+
+  sandbox_toolset = SandboxToolset()
+  mcp_toolset = McpToolset(
+      connection_params=StreamableHTTPConnectionParams(
+          url="http://127.0.0.1:1/mcp"
+      )
+  )
+  runner = MagicMock(
+      app=App(
+          name="demo",
+          root_agent=LlmAgent(
+              name="root", tools=[mcp_toolset, sandbox_toolset]
+          ),
+      )
+  )
+  monkeypatch.setattr(
+      dev_server.DevServer, "get_runner_async", AsyncMock(return_value=runner)
+  )
+
+  response = test_client.get(path)
+
+  assert response.status_code == 200
+  assert sandbox_toolset.get_tools_calls == 0
+  mcp_graph_session.list_tools.assert_awaited_once()
+  if path.endswith("_image"):
+    dot = response.json()[""]["dotSrc"]
+    assert 'root -> "root/toolset_0"' in dot
+    assert '"root/toolset_0" -> add' in dot
+    assert "root -> SandboxToolset" in dot
+  else:
+    tools = response.json()["root_agent"]["tools"]
+    assert tools[0]["children"] == [
+        {"name": "add", "type": "tool"},
+        {"name": "greet", "type": "tool"},
+    ]
+    assert tools[1] == {"name": "SandboxToolset", "type": "tool"}
 
 
 def test_graph_requests_reuse_toolset_discovery(
