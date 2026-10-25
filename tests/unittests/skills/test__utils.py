@@ -113,6 +113,52 @@ Test instructions
   return skill_dir
 
 
+@pytest.mark.parametrize(
+    "description_line, expected",
+    [
+        ("description: Compare A --- B", "Compare A --- B"),
+        (
+            'description: "Draft notes --- never publish"',
+            "Draft notes --- never publish",
+        ),
+        (
+            "description: |\n  Summarise.\n  ---\n  Then stop.",
+            "Summarise.\n---\nThen stop.\n",
+        ),
+    ],
+    ids=["unquoted", "quoted", "block_scalar"],
+)
+def test__load_skill_from_dir_dashes_inside_frontmatter_value(
+    tmp_path, description_line, expected
+):
+  """A `---` inside a frontmatter value does not close the frontmatter."""
+  skill_dir = tmp_path / "test-skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_text(
+      f"---\nname: test-skill\n{description_line}\nlicense: MIT\n---\nBody\n"
+  )
+
+  skill = _load_skill_from_dir(skill_dir)
+
+  assert skill.frontmatter.description == expected
+  assert skill.frontmatter.license == "MIT"
+  assert skill.instructions == "Body"
+
+
+def test__load_skill_from_dir_crlf_frontmatter(tmp_path):
+  """Windows line endings around the delimiters still parse."""
+  skill_dir = tmp_path / "test-skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_bytes(
+      b"---\r\nname: test-skill\r\ndescription: Test\r\n---\r\nBody\r\n"
+  )
+
+  skill = _load_skill_from_dir(skill_dir)
+
+  assert skill.frontmatter.description == "Test"
+  assert skill.instructions == "Body"
+
+
 def test__load_skill_from_dir_nested_resources_use_forward_slash_keys(tmp_path):
   """Resources in subdirectories are keyed with forward slashes."""
   skill = _load_skill_from_dir(_write_nested_skill(tmp_path))
