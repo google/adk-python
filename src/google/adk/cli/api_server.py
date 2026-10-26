@@ -471,6 +471,33 @@ def _with_abort_signal_kwarg(
   return kwargs
 
 
+async def _monitor_client_disconnect(
+    request: Request,
+    session_id: str,
+    abort_signal: asyncio.Event,
+    task_to_cancel: asyncio.Task[Any],
+    on_disconnect: Optional[Callable[[], None]] = None,
+) -> None:
+  """Monitors the ASGI receive channel and aborts on client disconnect."""
+  try:
+    while True:
+      message = await request.receive()
+      if message.get("type") == "http.disconnect":
+        logger.warning(
+            "Client disconnected. Aborting agent run for session %s.",
+            session_id,
+        )
+        abort_signal.set()
+        if on_disconnect is not None:
+          on_disconnect()
+        task_to_cancel.cancel()
+        break
+  except asyncio.CancelledError:
+    pass
+  except Exception as e:  # pylint: disable=broad-exception-caught
+    logger.error("Exception in disconnect monitor: %s", e, exc_info=True)
+
+
 _current_session_options: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("current_session_options", default=None)
 )
@@ -2304,25 +2331,11 @@ class ApiServer:
           )
 
       worker_task = asyncio.create_task(worker())
-
-      async def monitor() -> None:
-        try:
-          while True:
-            message = await request.receive()
-            if message.get("type") == "http.disconnect":
-              logger.warning(
-                  "Client disconnected. Aborting agent run for session %s.",
-                  req.session_id,
-              )
-              abort_signal.set()
-              worker_task.cancel()
-              break
-        except asyncio.CancelledError:
-          pass
-        except Exception as e:  # pylint: disable=broad-exception-caught
-          logger.error("Exception in disconnect monitor: %s", e, exc_info=True)
-
-      monitor_task = asyncio.create_task(monitor())
+      monitor_task = asyncio.create_task(
+          _monitor_client_disconnect(
+              request, req.session_id, abort_signal, worker_task
+          )
+      )
 
       try:
         events = await worker_task
@@ -2351,7 +2364,10 @@ class ApiServer:
           )
 
     @app.post("/run_sse")
-    async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
+    async def run_agent_sse(
+        req: RunAgentRequest,
+        request: Request,
+    ) -> StreamingResponse:
       app_name = req.app_name or self.default_app_name
       if not app_name:
         raise HTTPException(
@@ -2456,11 +2472,26 @@ class ApiServer:
             await event_queue.put(None)
 
         producer_task = asyncio.create_task(_produce_events())
+
+        def _on_sse_disconnect() -> None:
+          nonlocal is_closing
+          is_closing = True
+          next_step_event.set()
+
+        monitor_task = asyncio.create_task(
+            _monitor_client_disconnect(
+                request,
+                req.session_id,
+                abort_signal,
+                producer_task,
+                on_disconnect=_on_sse_disconnect,
+            )
+        )
         try:
           try:
             while True:
               event = await event_queue.get()
-              if event is None:
+              if event is None or is_closing:
                 break
               # ADK Web renders artifacts from `actions.artifactDelta`
               # during part processing *and* during action processing
@@ -2480,6 +2511,8 @@ class ApiServer:
                 events_to_stream = [content_event, artifact_event]
 
               for event_to_stream in events_to_stream:
+                if is_closing:
+                  break
                 sse_event = pydantic_core.to_json(
                     _redact_credential_secrets(
                         public_event(event_to_stream).model_dump(
@@ -2504,6 +2537,7 @@ class ApiServer:
             abort_signal.set()
             raise
           finally:
+            monitor_task.cancel()
             with anyio.CancelScope(shield=True):
               if not producer_task.done():
                 producer_task.cancel()
@@ -2658,29 +2692,49 @@ class ApiServer:
                 ).decode("utf-8")
             )
 
-      async def process_messages() -> None:
-        try:
-          while True:
-            data = await websocket.receive_text()
-            # Validate and send the received message to the live queue.
-            live_request_queue.send(LiveRequest.model_validate_json(data))
-        except ValidationError as ve:
-          logger.error("Validation error in process_messages: %s", ve)
+      close_code: int | None = None
+      close_reason = ""
 
-      # Run both tasks concurrently and cancel all if one fails.
+      async def process_messages() -> None:
+        nonlocal close_code, close_reason
+        while True:
+          data = await websocket.receive_text()
+          # Guarded here, not around both tasks, so a ValidationError from the
+          # runner or a tool is not reported as a bad client frame.
+          try:
+            live_request = LiveRequest.model_validate_json(data)
+          except ValidationError as e:
+            # Only pydantic's error identifiers are logged: the rejected
+            # payload and even the field names it invents are end-user content.
+            logger.warning(
+                "Invalid live request: %s",
+                ", ".join(sorted({error["type"] for error in e.errors()})),
+            )
+            close_code = 1007
+            close_reason = "Invalid live request"
+            return
+          live_request_queue.send(live_request)
+
+      # Stop when either side finishes so its sibling cannot remain blocked.
       tasks = [
           asyncio.create_task(forward_events()),
           asyncio.create_task(process_messages()),
       ]
-      done, pending = await asyncio.wait(
-          tasks, return_when=asyncio.FIRST_EXCEPTION
-      )
       try:
-        # This will re-raise any exception from the completed tasks.
-        for task in done:
-          task.result()
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        # Iterate the task list rather than the `done` set so that the outcome
+        # reported below is stable when both tasks finish in the same pass.
+        for task in tasks:
+          if task in done:
+            # This will re-raise any exception from the completed tasks.
+            task.result()
+        # The stream is over, so close cleanly instead of letting the server
+        # drop the transport, which clients cannot tell from a network failure.
+        if close_code is None:
+          close_code = 1000
       except SessionNotFoundError:
-        await websocket.close(code=1002, reason="Session not found")
+        close_code = 1002
+        close_reason = "Session not found"
       except WebSocketDisconnect:
         # Disconnection could happen when receive or send text via websocket
         logger.info("Client disconnected during live session.")
@@ -2689,10 +2743,14 @@ class ApiServer:
         traceback.print_exc()
         WEBSOCKET_INTERNAL_ERROR_CODE = 1011
         WEBSOCKET_MAX_BYTES_FOR_REASON = 123
-        await websocket.close(
-            code=WEBSOCKET_INTERNAL_ERROR_CODE,
-            reason=str(e)[:WEBSOCKET_MAX_BYTES_FOR_REASON],
-        )
+        close_code = WEBSOCKET_INTERNAL_ERROR_CODE
+        close_reason = str(e)[:WEBSOCKET_MAX_BYTES_FOR_REASON]
       finally:
-        for task in pending:
+        live_request_queue.close()
+        for task in tasks:
           task.cancel()
+        # cancel() only requests it, so returning now would strand the runner.
+        await asyncio.wait(tasks)
+      # Skipped after a disconnect, when the server may cancel this handler.
+      if close_code is not None:
+        await websocket.close(code=close_code, reason=close_reason)

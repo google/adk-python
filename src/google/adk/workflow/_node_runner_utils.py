@@ -353,7 +353,7 @@ async def run_node_async(
           # later turn instead.
           if not ic.is_aborted and not closing_early:
             await runner._run_post_invocation_compaction(  # pylint: disable=protected-access
-                session=session,
+                invocation_context=ic,
             )
         except Exception as e:
           await _notify_run_error(ic.plugin_manager, ic, e)

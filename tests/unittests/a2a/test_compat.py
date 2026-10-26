@@ -85,6 +85,28 @@ def _task():
 
 
 # -----------------------------------------------------------------------------
+# make_task
+# -----------------------------------------------------------------------------
+def test_make_task_defaults_context_id():
+  task = _compat.make_task(
+      id='task-default',
+      status=_compat.make_task_status(_compat.TS_WORKING),
+  )
+  assert task.id == 'task-default'
+  assert task.context_id == ''
+
+
+def test_make_task_with_explicit_context_id():
+  task = _compat.make_task(
+      id='task-explicit',
+      context_id='ctx-custom',
+      status=_compat.make_task_status(_compat.TS_WORKING),
+  )
+  assert task.id == 'task-explicit'
+  assert task.context_id == 'ctx-custom'
+
+
+# -----------------------------------------------------------------------------
 # build_agent_card
 # -----------------------------------------------------------------------------
 def _build_card(**overrides):

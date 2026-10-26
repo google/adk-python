@@ -76,6 +76,11 @@ class EvalCaseResult(BaseModel):
   user_id: Optional[str] = None
   """User id used during inferencing/scraping stage of the eval."""
 
+  repetition_index: Optional[int] = None
+  """0-based index of the run this result is for, among the runs of the same
+  eval case (see `InferenceConfig.num_runs`). None if it was not recorded.
+  """
+
 
 class EvalSetResult(BaseModel):
   """Eval set level evaluation results."""

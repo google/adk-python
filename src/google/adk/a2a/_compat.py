@@ -1139,12 +1139,20 @@ def make_message(
   )
 
 
-def make_task(*, id: str, status: Any, **kwargs: Any) -> Any:
+def make_task(
+    *,
+    id: str,
+    status: Any,
+    context_id: str = "",
+    **kwargs: Any,
+) -> Any:
   """Build a Task, dropping 0.3-only kwargs (``kind``, ``metadata_version``) on 1.x."""
+  if "contextId" in kwargs:
+    context_id = kwargs.pop("contextId")
   if IS_A2A_V1:
     kwargs.pop("kind", None)
     kwargs.pop("metadata_version", None)
-  return Task(id=id, status=status, **kwargs)
+  return Task(id=id, context_id=context_id, status=status, **kwargs)
 
 
 def make_artifact(*, artifact_id: str, parts: Any = None, **kwargs: Any) -> Any:

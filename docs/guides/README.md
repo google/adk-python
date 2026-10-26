@@ -78,12 +78,16 @@ This directory contains specific developer guides for the ADK Python implementat
 * [GCSToolset and GCSAdminToolset](integrations/gcs/gcs_toolset/index.md) - Giving an agent access to Cloud Storage objects and buckets, read-only until you say otherwise.
 * [LangchainTool](integrations/langchain/langchain_tool/index.md) - Wrapping a LangChain tool so an ADK agent can call it.
 * [Model Armor](integrations/model_armor/index.md) - Screening user input and model output with Google Cloud Model Armor.
+* [MongoDbMemoryService](integrations/mongodb/memory_service/index.md) - Storing session events in a MongoDB collection and recalling them by keyword match.
+* [MongoDbSessionService](integrations/mongodb/session_service/index.md) - Sharing sessions across processes through MongoDB, with transactional writes where the deployment supports them.
 * [MongoDbToolset](integrations/mongodb/mongodb_toolset/index.md) - Vector and hybrid search over a MongoDB database, with the query text embedded on the way through.
 * [RedisSessionService](integrations/redis/redis_session_service/index.md) - Sharing sessions across processes through Redis, including the expiry every other backend lacks.
+* [TypesafeClassifier](integrations/typesafe/typesafe_classifier/index.md) - Answering `Choice`, `Binary`, and `Score` questions with TypeSafe's Jev decision models instead of a model turn.
 
 ### Labs
 * [AntigravityAgent](labs/antigravity/index.md) - Runs a Google Antigravity SDK agent as an ADK agent node.
 * [ClassifierNode](labs/classifiers/classifier_node/index.md) - Routing a workflow on a classifier's answer to one `Choice` or `Binary` question.
+* [LlmClassifier](labs/classifiers/llm_classifier/index.md) - Answering `Choice`, `Binary`, and `Score` questions with any model, in one structured-output call.
 
 ### Live
 * [Live tools](live/tools/index.md) - Asynchronous background execution and response scheduling for Gemini Live agents.

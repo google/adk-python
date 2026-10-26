@@ -30,6 +30,7 @@ from google.adk.evaluation import agent_evaluator as agent_evaluator_module
 from google.adk.evaluation.agent_evaluator import _EvalMetricResultWithInvocation
 from google.adk.evaluation.agent_evaluator import AgentEvaluator
 from google.adk.evaluation.agent_evaluator import load_json
+from google.adk.evaluation.base_eval_service import InferenceResult
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_config import EvalConfig
@@ -107,6 +108,59 @@ async def test_get_eval_results_by_eval_id_threads_live_model_config(
   assert inference_request.inference_config.use_live is expected_use_live
   if live_model_config:
     assert inference_request.inference_config.live_timeout_seconds == 600
+
+
+@pytest.mark.asyncio
+async def test_get_eval_results_by_eval_id_labels_each_run_with_its_index(
+    mocker,
+):
+  """The results of each repeated run carry that run's 0-based index."""
+
+  async def _perform_inference(inference_request):
+    # Every request runs each eval case once, so the service labels it run 0.
+    yield InferenceResult(
+        app_name=inference_request.app_name,
+        eval_set_id=inference_request.eval_set_id,
+        eval_case_id="case1",
+        session_id=None,
+        repetition_index=0,
+    )
+
+  async def _evaluate(evaluate_request):
+    for inference_result in evaluate_request.inference_results:
+      yield EvalCaseResult(
+          eval_set_id=inference_result.eval_set_id,
+          eval_id=inference_result.eval_case_id,
+          final_eval_status=EvalStatus.PASSED,
+          overall_eval_metric_results=[],
+          eval_metric_result_per_invocation=[],
+          session_id="",
+          repetition_index=inference_result.repetition_index,
+      )
+
+  mock_service = mocker.MagicMock()
+  mock_service.perform_inference = mocker.MagicMock(
+      side_effect=_perform_inference
+  )
+  mock_service.evaluate = mocker.MagicMock(side_effect=_evaluate)
+  mocker.patch(
+      "google.adk.evaluation.local_eval_service.LocalEvalService",
+      return_value=mock_service,
+  )
+
+  eval_results_by_eval_id = await AgentEvaluator._get_eval_results_by_eval_id(
+      agent_for_eval=mocker.MagicMock(),
+      eval_set=_make_eval_set(),
+      eval_metrics=[],
+      num_runs=3,
+      user_simulator_provider=UserSimulatorProvider(),
+      app_name="test_app",
+  )
+
+  assert [
+      eval_result.repetition_index
+      for eval_result in eval_results_by_eval_id["case1"]
+  ] == [0, 1, 2]
 
 
 @pytest.mark.asyncio

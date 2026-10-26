@@ -216,6 +216,30 @@ covers when each compaction trigger fires, and the
 [resumability guide](../resumability/index.md) covers pausing an invocation and
 resuming it later.
 
+Compaction can also differ from one session to the next. Each invocation's
+context starts with the App's `events_compaction_config`, and compaction reads
+it from there, so a plugin's `before_run_callback` can assign a different
+config, or `None` to skip compaction, based on the session's state or user.
+Assign a new object rather than changing fields on the one you find: it is the
+App's own, shared by every session.
+
+```python
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.plugins.base_plugin import BasePlugin
+
+
+class SessionCompactionPlugin(BasePlugin):
+
+  def __init__(self) -> None:
+    super().__init__(name="session_compaction")
+
+  async def before_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    if invocation_context.session.state.get("compaction") == "off":
+      invocation_context.events_compaction_config = None
+```
+
 ## Limitations
 
 *   **Experimental configs**: `EventsCompactionConfig` and `ResumabilityConfig`

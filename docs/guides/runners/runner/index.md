@@ -98,9 +98,11 @@ sequenceDiagram
 3. **Execution & Event Streaming:** The runner executes the root agent generator. Generated `Event` instances pass through `PluginManager.run_on_event_callback()` before being yielded to the caller. If `abort_signal` is set during execution, the runner cancels active tasks, emits an `INVOCATION_ABORTED` event, and seals any pending tool calls.
 4. **Session Persistence & Compaction:** Each non-partial event is appended to
    `session_service` before it is yielded to the caller; partial streaming
-   chunks (`event.partial=True`) are yielded without being persisted. If
-   `events_compaction_config` is set on `App`, event compaction runs after the
-   last event is yielded before the generator finishes.
+   chunks (`event.partial=True`) are yielded without being persisted. If the
+   invocation's `events_compaction_config` is set, event compaction runs after
+   the last event is yielded before the generator finishes. It starts as the
+   one on `App`, and a plugin's `before_run_callback` can replace it or set it
+   to `None`.
 
 ## Configuration options
 

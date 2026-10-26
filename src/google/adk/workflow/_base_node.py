@@ -103,6 +103,13 @@ class BaseNode(BaseModel, abc.ABC):
   produced an output or a state change are replayed rather than run again;
   a child that produced neither leaves nothing to replay and runs again.
 
+  On a parallel worker (``parallel_worker=True``), the policy applies to each
+  item: a failed item is retried in place while the other items keep
+  running, and the worker itself is not retried for an item's failure. The
+  policy does not cover a failure of the worker as a whole, such as its
+  ``timeout``, except on a ``Node`` subclass with ``parallel_worker=True``,
+  which keeps the policy on the worker as well.
+
   ``None`` means the node is not retried (the default).
   """
 

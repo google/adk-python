@@ -557,6 +557,152 @@ def test_update_state():
   assert runner.session.state['state_1'] == 'changed_value'
 
 
+@mark.parametrize(
+    'reader',
+    [
+        'instruction',
+        'optional_instruction',
+        'callback',
+        'tool',
+        'sequential_agent',
+        'input_schema',
+    ],
+)
+def test_agent_tool_reads_caller_temp_state(reader):
+  """The wrapped agent reads the caller's temp: state, but not adk's own."""
+
+  class _NotJsonSerializable:
+    """A value only temp: state can hold, since it is never persisted."""
+
+  class TicketInput(BaseModel):
+    custom_input: str
+
+  client = _NotJsonSerializable()
+  seen = {}
+  keys = ('temp:ticket', 'temp:client', 'plain', 'temp:_adk_internal')
+
+  def set_caller_state(callback_context: CallbackContext):
+    callback_context.state['temp:ticket'] = 'T-42'
+    callback_context.state['temp:client'] = client
+    callback_context.state['plain'] = 'P'
+    callback_context.state['temp:_adk_internal'] = 'X'
+
+  def read_in_callback(callback_context: CallbackContext):
+    for key in keys:
+      seen[key] = callback_context.state.get(key)
+
+  def read_in_tool(tool_context: ToolContext) -> str:
+    for key in keys:
+      seen[key] = tool_context.state.get(key)
+    return 'read'
+
+  template = 'ticket: {temp:ticket} plain: {plain}'
+  tool_call = (
+      function_call_custom
+      if reader == 'input_schema'
+      else function_call_no_schema
+  )
+  responses = ['response1', 'response2']
+  if reader == 'tool':
+    responses.insert(0, Part.from_function_call(name='read_in_tool', args={}))
+  mock_model = testing_utils.MockModel.create(responses=[tool_call, *responses])
+  if reader == 'sequential_agent':
+    tool_agent = SequentialAgent(
+        name='tool_agent',
+        sub_agents=[
+            Agent(name='inner_agent', model=mock_model, instruction=template)
+        ],
+    )
+  elif reader == 'input_schema':
+    tool_agent = Agent(
+        name='tool_agent',
+        model=mock_model,
+        input_schema=TicketInput,
+        instruction=template,
+    )
+  else:
+    tool_agent = Agent(
+        name='tool_agent',
+        model=mock_model,
+        instruction={
+            'instruction': template,
+            'optional_instruction': 'ticket: {temp:ticket?} plain: {plain?}',
+        }.get(reader, 'no template'),
+        before_agent_callback=(
+            read_in_callback if reader == 'callback' else None
+        ),
+        tools=[read_in_tool] if reader == 'tool' else [],
+    )
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      before_agent_callback=set_caller_state,
+      tools=[AgentTool(agent=tool_agent)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  runner.run('test1')
+
+  if reader in ('callback', 'tool'):
+    assert seen['temp:ticket'] == 'T-42'
+    assert seen['temp:client'] is client
+    assert seen['plain'] == 'P'
+    assert seen['temp:_adk_internal'] is None
+  else:
+    assert mock_model.requests[1].config.system_instruction.startswith(
+        'ticket: T-42 plain: P'
+    )
+
+
+def test_agent_tool_temp_state_is_not_copied_back_to_caller():
+  """temp: state the wrapped agent edits or writes stays in the nested run."""
+  child_parts = []
+
+  def set_caller_state(callback_context: CallbackContext):
+    callback_context.state['temp:ticket'] = 'T-42'
+    callback_context.state['temp:parts'] = []
+
+  def edit_temp_state(tool_context: ToolContext) -> str:
+    tool_context.state['temp:parts'] += ['child_part']
+    tool_context.state['temp:ticket'] = 'changed'
+    child_parts.append(list(tool_context.state['temp:parts']))
+    return 'edited'
+
+  caller_deltas = []
+  caller_parts = []
+
+  def record_caller_state(tool, args, tool_context, tool_response):
+    caller_deltas.append(dict(tool_context.actions.state_delta))
+    caller_parts.append(tool_context.state.get('temp:parts'))
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          function_call_no_schema,
+          Part.from_function_call(name='edit_temp_state', args={}),
+          'response1',
+          'response2',
+      ]
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=mock_model, tools=[edit_temp_state]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      before_agent_callback=set_caller_state,
+      after_tool_callback=record_caller_state,
+      tools=[AgentTool(agent=tool_agent)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  runner.run('test1')
+
+  assert child_parts == [['child_part']]
+  assert len(caller_deltas) == 1
+  assert not any(key.startswith('temp:') for key in caller_deltas[0])
+  assert caller_parts == [[]]
+
+
 @mark.asyncio
 async def test_update_artifacts():
   """The agent tool can read and write artifacts."""

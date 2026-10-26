@@ -1124,3 +1124,12 @@ class TestIsTerminalEvent:
     """A failed node occupies its slot in the sequence rather than vanishing."""
     event = Event(author="node", error_code="BOOM")
     assert is_terminal_event(event) is True
+
+  def test_finish_reason_error_event_is_terminal(self):
+    """An error event that also carries a finish reason is terminal."""
+    event = Event(
+        author="node",
+        error_code=types.FinishReason.MAX_TOKENS,
+        finish_reason=types.FinishReason.MAX_TOKENS,
+    )
+    assert is_terminal_event(event) is True
