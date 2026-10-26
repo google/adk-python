@@ -43,7 +43,9 @@ from ..version import __version__
 from .deployers import DeployerFactory
 from .deployers._dockerfile_template import _render_dockerfile
 from .deployers._dockerfile_template import _render_install_agent_deps
+from .deployers._dockerfile_template import _to_exec_form
 from .deployers._dockerfile_template import _validate_app_name
+from .deployers._dockerfile_template import _validate_dockerfile_literal
 from .utils import _onboarding
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -1054,6 +1056,23 @@ def _get_ignore_patterns_func(
   return shutil.ignore_patterns(*patterns)
 
 
+def _validate_extra_package_name(base: str) -> str:
+  """Validates an extra_packages basename before writing it into a Dockerfile."""
+  _validate_dockerfile_literal('extra_packages', base)
+  if (
+      not base
+      or base in ('.', '..')
+      or '"' in base
+      or '\\' in base
+      or '/' in base
+  ):
+    raise click.ClickException(
+        f'Invalid extra_packages entry {base!r}. The basename must not contain'
+        ' quotes, backslashes, or path separators.'
+    )
+  return base
+
+
 def _stage_extra_packages(
     requested_extra_packages: Sequence[tuple[str, str]],
     build_context: str,
@@ -1082,7 +1101,9 @@ def _stage_extra_packages(
     pkg_src = os.path.abspath(pkg_src)
     if not os.path.exists(pkg_src):
       raise click.ClickException(f'extra_packages path not found: {pkg}')
-    base = os.path.basename(os.path.normpath(pkg_src))
+    base = _validate_extra_package_name(
+        os.path.basename(os.path.normpath(pkg_src))
+    )
     dst = os.path.join(build_context, base)
     if os.path.exists(dst) or base in reserved_names:
       raise click.ClickException(
@@ -1097,19 +1118,54 @@ def _stage_extra_packages(
   return staged_extra_packages
 
 
+_INSTALLABLE_ARCHIVE_SUFFIXES: Final[tuple[str, ...]] = (
+    '.whl',
+    '.tar.gz',
+    '.tgz',
+    '.zip',
+)
+
+
 def _get_extra_packages_copy(
     staged_extra_packages: Sequence[str], build_context: str
 ) -> str:
-  """Returns the Dockerfile lines that copy staged extra packages."""
+  """Returns the Dockerfile lines that copy and install staged extra packages."""
   if not staged_extra_packages:
     return ''
-  copy_lines = [
-      f'COPY --chown=myuser:myuser "{base}/" "/app/{base}/"'
-      if os.path.isdir(os.path.join(build_context, base))
-      else f'COPY --chown=myuser:myuser "{base}" "/app/{base}"'
-      for base in staged_extra_packages
-  ]
-  copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
+  copy_lines: list[str] = []
+  installable_targets: list[str] = []
+  has_plain_packages = False
+  for base in staged_extra_packages:
+    _validate_extra_package_name(base)
+    staged_path = os.path.join(build_context, base)
+    if os.path.isdir(staged_path):
+      if os.path.isfile(
+          os.path.join(staged_path, 'pyproject.toml')
+      ) or os.path.isfile(os.path.join(staged_path, 'setup.py')):
+        copy_lines.append(
+            f'COPY --chown=myuser:myuser "{base}/"'
+            f' "/tmp/extra_packages/{base}/"'
+        )
+        installable_targets.append(f'/tmp/extra_packages/{base}')
+      else:
+        copy_lines.append(
+            f'COPY --chown=myuser:myuser "{base}/" "/app/{base}/"'
+        )
+        has_plain_packages = True
+    elif base.endswith(_INSTALLABLE_ARCHIVE_SUFFIXES):
+      copy_lines.append(
+          f'COPY --chown=myuser:myuser "{base}" "/tmp/extra_packages/{base}"'
+      )
+      installable_targets.append(f'/tmp/extra_packages/{base}')
+    else:
+      copy_lines.append(f'COPY --chown=myuser:myuser "{base}" "/app/{base}"')
+      has_plain_packages = True
+  if has_plain_packages:
+    copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
+  if installable_targets:
+    copy_lines.append(
+        _to_exec_form('RUN', ['pip', 'install', *installable_targets])
+    )
   return '\n'.join(copy_lines)
 
 
