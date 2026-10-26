@@ -231,6 +231,12 @@ environment's default. In particular, setting
 **`adk_experimental_telemetry_opt_in`** to `false` disables every
 experimental instrumentation.
 
+The blanket opt-in also records `execute_callback <qualified name>` child
+spans for canonical agent, model and tool callbacks. Each span covers the
+callback call and any awaited result. Skipped callbacks do not produce spans,
+and plugin hooks are not included. Callback arguments and return values are
+not added to these spans; an escaping exception is recorded by OpenTelemetry.
+
 ### Why one field drives four properties
 
 `capture_message_content` is read by four separate `should_*` properties
