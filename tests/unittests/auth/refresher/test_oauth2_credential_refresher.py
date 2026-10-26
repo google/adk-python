@@ -17,11 +17,13 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from authlib.oauth2.rfc6749 import OAuth2Token
+from authlib.oauth2.rfc6749.errors import InvalidGrantError
 from authlib.oauth2.rfc6749.errors import OAuth2Error
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
+from google.adk.auth.refresher.base_credential_refresher import CredentialRevokedError
 from google.adk.auth.refresher.oauth2_credential_refresher import OAuth2CredentialRefresher
 import pytest
 import requests
@@ -308,3 +310,90 @@ class TestOAuth2CredentialRefresher:
     refresher = OAuth2CredentialRefresher()
     with pytest.raises(ValueError, match="unexpected bug"):
       await refresher.refresh(credential, scheme)
+
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Token")
+  @pytest.mark.parametrize(
+      "error",
+      [
+          InvalidGrantError(description="Token has been revoked."),
+          OAuth2Error(error="invalid_grant"),
+      ],
+  )
+  @pytest.mark.asyncio
+  async def test_refresh_invalid_grant_raises_revoked(
+      self, mock_oauth2_token, mock_oauth2_session, error
+  ):
+    """invalid_grant means the refresh token is dead and must not be kept."""
+    mock_token_instance = Mock()
+    mock_token_instance.is_expired.return_value = True
+    mock_oauth2_token.return_value = mock_token_instance
+
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.refresh_token.side_effect = error
+
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid"],
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            access_token="old_token",
+            refresh_token="old_refresh_token",
+            expires_at=int(time.time()) - 3600,  # Expired
+        ),
+    )
+
+    refresher = OAuth2CredentialRefresher()
+    with pytest.raises(CredentialRevokedError):
+      await refresher.refresh(credential, scheme)
+
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Token")
+  @pytest.mark.asyncio
+  async def test_refresh_other_oauth2_error_returns_original(
+      self, mock_oauth2_token, mock_oauth2_session
+  ):
+    """An OAuth2 error other than invalid_grant is transient: keep the token."""
+    mock_token_instance = Mock()
+    mock_token_instance.is_expired.return_value = True
+    mock_oauth2_token.return_value = mock_token_instance
+
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.refresh_token.side_effect = OAuth2Error(error="server_error")
+
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid"],
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            access_token="old_token",
+            refresh_token="old_refresh_token",
+            expires_at=int(time.time()) - 3600,  # Expired
+        ),
+    )
+
+    refresher = OAuth2CredentialRefresher()
+    result = await refresher.refresh(credential, scheme)
+
+    assert result is credential
+    assert result.oauth2.access_token == "old_token"
