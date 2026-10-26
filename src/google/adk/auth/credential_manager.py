@@ -23,6 +23,7 @@ from weakref import WeakKeyDictionary
 from weakref import WeakValueDictionary
 
 from fastapi.openapi.models import OAuth2
+import httpx
 
 from ..agents.callback_context import CallbackContext
 from ..tools.openapi_tool.auth.credential_exchangers.service_account_exchanger import ServiceAccountCredentialExchanger
@@ -42,6 +43,35 @@ from .oauth2_discovery import OAuth2DiscoveryManager
 from .refresher.credential_refresher_registry import CredentialRefresherRegistry
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+_REJECTED_CREDENTIAL_STATUS_CODES = frozenset({401, 403})
+
+
+def _is_unauthorized_error(error: BaseException) -> bool:
+  """Whether an error says the server rejected the credential (HTTP 401/403).
+
+  Looks through the `__cause__` / `__context__` chain and the members of
+  exception groups, because transports and SDK wrappers routinely re-raise the
+  `httpx.HTTPStatusError` inside another exception.
+  """
+  pending: list[BaseException] = [error]
+  seen: set[int] = set()
+  while pending:
+    current = pending.pop()
+    if id(current) in seen:
+      continue
+    seen.add(id(current))
+    if (
+        isinstance(current, httpx.HTTPStatusError)
+        and current.response.status_code in _REJECTED_CREDENTIAL_STATUS_CODES
+    ):
+      return True
+    pending.extend(getattr(current, "exceptions", ()))
+    for linked in (current.__cause__, current.__context__):
+      if linked is not None:
+        pending.append(linked)
+  return False
 
 
 def _has_unredeemed_auth_code(credential: AuthCredential) -> bool:
@@ -225,6 +255,32 @@ class CredentialManager:
           " method, not a plain CallbackContext"
       )
     context.request_credential(self._auth_config)
+
+  async def discard_stored_credential(self, context: CallbackContext) -> None:
+    """Forgets the credential kept in the credential service.
+
+    Call this when the server rejected the credential (HTTP 401/403): the next
+    `get_auth_credential` then finds nothing to reuse, so the caller goes
+    through `request_credential` again instead of replaying the rejected
+    credential for the rest of the session.
+
+    Credentials that are never stored (a statically configured API key or HTTP
+    credential, or a custom auth scheme, which keeps its own state) and
+    invocations without a credential service are left alone.
+    """
+    if isinstance(self._auth_config.auth_scheme, CustomAuthScheme):
+      return
+    if self._is_credential_ready():
+      return
+    if not context._invocation_context.credential_service:
+      return
+    async with self._get_credential_lock(context):
+      await self._save_credential(context, None)
+    logger.info(
+        "Discarded the stored credential for auth scheme %s after the server"
+        " rejected it.",
+        type(self._auth_config.auth_scheme).__name__,
+    )
 
   async def get_auth_credential(
       self, context: CallbackContext
@@ -474,9 +530,12 @@ class CredentialManager:
     # Additional validation can be added here
 
   async def _save_credential(
-      self, context: CallbackContext, credential: AuthCredential
+      self, context: CallbackContext, credential: Optional[AuthCredential]
   ) -> None:
-    """Save credential to credential service if available."""
+    """Save credential to credential service if available.
+
+    `None` clears the stored credential.
+    """
     credential_service = context._invocation_context.credential_service
     if credential_service:
       auth_config_to_save = self._auth_config.model_copy(deep=True)
