@@ -1129,7 +1129,32 @@ _INSTALLABLE_ARCHIVE_SUFFIXES: Final[tuple[str, ...]] = (
 def _get_extra_packages_copy(
     staged_extra_packages: Sequence[str], build_context: str
 ) -> str:
-  """Returns the Dockerfile lines that copy and install staged extra packages."""
+  """Returns the Dockerfile lines that copy and install staged extra packages.
+
+  Each staged entry is handled one of two ways:
+
+  * An installable distribution (a file ending in one of
+    `_INSTALLABLE_ARCHIVE_SUFFIXES`, or a directory containing
+    `pyproject.toml` or `setup.py`) is copied to `/tmp/extra_packages/<base>`
+    and installed with `pip install`, so its modules land in site-packages
+    together with the dependencies it declares.
+  * Anything else (a plain module or a folder of modules) is copied to
+    `/app/<base>` and `/app` is added to PYTHONPATH.
+
+  Installable entries are deliberately kept out of `/app`: a flat-layout
+  package such as `my_pkg/pyproject.toml` + `my_pkg/my_pkg/__init__.py` copied
+  to `/app/my_pkg` would otherwise resolve as a PEP 420 namespace package
+  ahead of its own site-packages install. For the same reason PYTHONPATH is
+  only set when at least one plain entry is present.
+
+  Args:
+    staged_extra_packages: Basenames returned by `_stage_extra_packages`.
+    build_context: The folder the entries were staged into.
+
+  Returns:
+    The `COPY`, `ENV`, and `RUN` lines to splice into the Dockerfile, or an
+    empty string when nothing was staged.
+  """
   if not staged_extra_packages:
     return ''
   copy_lines: list[str] = []
@@ -1238,8 +1263,11 @@ def run(
     with_cloud_run_sandbox: Whether to enable the Cloud Run sandbox for code
       execution.
     extra_packages: Additional local file or directory paths to stage alongside
-      the agent and make importable in the image. A relative path is resolved
-      against the current working directory.
+      the agent and make importable in the image. A wheel, source archive, or
+      a directory containing `pyproject.toml` or `setup.py` is installed with
+      pip; any other entry is copied to `/app/<basename>` and `/app` is added
+      to PYTHONPATH. A relative path is resolved against the current working
+      directory.
   """
   _validate_trigger_options(
       trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
@@ -1543,7 +1571,10 @@ def to_agent_engine(
       deployment. If not specified, the version in the dev environment will be
       used.
     extra_packages (list[str]): Optional. Additional local file or directory
-      paths to stage alongside the agent and make importable in the image.
+      paths to stage alongside the agent and make importable in the image. A
+      wheel, source archive, or a directory containing `pyproject.toml` or
+      `setup.py` is installed with pip; any other entry is copied to
+      `/app/<basename>` and `/app` is added to PYTHONPATH.
     worker_pool (str): Optional. Full Cloud Build private worker pool resource
       name
       (`projects/{project}/locations/{location}/workerPools/{pool}`).
@@ -2031,8 +2062,11 @@ def to_gke(
     use_local_storage: Whether to use local .adk storage in the container.
     service_type: The Kubernetes Service type (default: ClusterIP).
     extra_packages: Additional local file or directory paths to stage alongside
-      the agent and make importable in the image. A relative path is resolved
-      against the current working directory.
+      the agent and make importable in the image. A wheel, source archive, or
+      a directory containing `pyproject.toml` or `setup.py` is installed with
+      pip; any other entry is copied to `/app/<basename>` and `/app` is added
+      to PYTHONPATH. A relative path is resolved against the current working
+      directory.
   """
   _validate_trigger_options(
       trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
