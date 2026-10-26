@@ -205,3 +205,7 @@ it with an empty one the next time it initializes.
 
 The `working_dir` property is not available until `initialize()` has run, and
 accessing it earlier raises `RuntimeError`.
+
+## Related samples
+
+- [agent_engine_environment](../../../../../contributing/samples/environment_and_skills/agent_engine_environment/agent.py) - A data analysis agent that writes and runs Python in an Agent Engine sandbox.
