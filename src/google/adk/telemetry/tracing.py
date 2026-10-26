@@ -1474,7 +1474,14 @@ def _resolve_gen_ai_system_name(model: str | None) -> str:
   Args:
     model: The model id the request is being served by, if known.
   """
-  if not model or is_gemini_model(model):
+  return _gen_ai_system_name_from_model(model) or _guess_gemini_system_name()
+
+
+def _gen_ai_system_name_from_model(model: str | None) -> str | None:
+  """Returns the system name `model` identifies, or None if it names none."""
+  if not model:
+    return None
+  if is_gemini_model(model):
     return _guess_gemini_system_name()
 
   model_name = extract_model_name(model)
@@ -1486,7 +1493,7 @@ def _resolve_gen_ai_system_name(model: str | None) -> str:
   if separator and provider and provider not in _RESOURCE_COLLECTION_SEGMENTS:
     return provider
 
-  return _guess_gemini_system_name()
+  return None
 
 
 # `gen_ai.provider.name` renamed the Google values of `gen_ai.system`; the rest
@@ -1523,8 +1530,12 @@ def _inference_system_name(
     llm_response: LlmResponse,
 ) -> str:
   """Returns the system name of the model that produced an inference result."""
-  model = llm_response.model_version
-  if not model and invocation_context is not None:
+  if system_name := _gen_ai_system_name_from_model(llm_response.model_version):
+    return system_name
+  # LiteLLM reports `model_version` without the provider prefix (`gpt-4o` for
+  # `openai/gpt-4o`), so fall back to the configured model the span reports.
+  model = None
+  if invocation_context is not None:
     agent = invocation_context.agent
     if agent is not None:
       model = _agent_model_name(agent)
