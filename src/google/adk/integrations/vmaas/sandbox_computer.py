@@ -30,8 +30,6 @@ from typing import cast
 from typing import Literal
 from typing import TYPE_CHECKING
 
-from ...features import experimental
-from ...features import FeatureName
 from ...tools.computer_use.base_computer import BaseComputer
 from ...tools.computer_use.base_computer import ComputerEnvironment
 from ...tools.computer_use.base_computer import ComputerState
@@ -79,7 +77,6 @@ def _get_bound_resources() -> dict[str, str]:
   return resources
 
 
-@experimental(FeatureName.COMPUTER_USE)
 class AgentEngineSandboxComputer(BaseComputer):
   """Computer implementation using Vertex AI Agent Engine Sandbox.
 

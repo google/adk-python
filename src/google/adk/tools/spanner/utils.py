@@ -30,8 +30,6 @@ from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
 from google.genai import types as genai_types
 
 from . import client
-from ...features import experimental
-from ...features import FeatureName
 from ..tool_context import ToolContext
 from .settings import QueryResultMode
 from .settings import SpannerToolSettings
@@ -193,7 +191,6 @@ async def embed_contents_async(
     raise RuntimeError(f"Failed to embed content: {ex!r}") from ex
 
 
-@experimental(FeatureName.SPANNER_VECTOR_STORE)
 class SpannerVectorStore:
   """A class for orchestrating and providing utility functions for a Spanner vector store.
 

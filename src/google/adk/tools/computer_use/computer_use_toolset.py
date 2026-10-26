@@ -38,8 +38,6 @@ from packaging.version import Version
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
-from ...features import experimental
-from ...features import FeatureName
 from ...models.llm_request import LlmRequest
 from ...utils.model_name_utils import extract_model_name
 from .._url_validator import _is_blocked_hostname
@@ -272,7 +270,6 @@ def _get_computer_execution_lock(computer: BaseComputer) -> asyncio.Lock:
 logger = logging.getLogger("google_adk." + __name__)
 
 
-@experimental(FeatureName.COMPUTER_USE)
 class ComputerUseToolset(BaseToolset):
 
   def __init__(

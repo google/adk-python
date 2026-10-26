@@ -68,6 +68,8 @@ class TestApplyFeatureOverrides:
     _apply_feature_overrides(
         enable_features=(" JSON_SCHEMA_FOR_FUNC_DECL , COMPUTER_USE ",)
     )
+    assert _FEATURE_OVERRIDES.get(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL) is True
+    assert _FEATURE_OVERRIDES.get(FeatureName.COMPUTER_USE) is True
     assert is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL)
     assert is_feature_enabled(FeatureName.COMPUTER_USE)
 
