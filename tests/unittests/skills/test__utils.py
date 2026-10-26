@@ -113,6 +113,84 @@ Test instructions
   return skill_dir
 
 
+@pytest.mark.parametrize(
+    "description_line, closing, expected",
+    [
+        ("description: Compare A --- B", "---", "Compare A --- B"),
+        (
+            'description: "Draft notes --- never publish"',
+            "---",
+            "Draft notes --- never publish",
+        ),
+        (
+            "description: |\n  Summarise.\n  ---\n  Then stop.",
+            "---",
+            "Summarise.\n---\nThen stop.\n",
+        ),
+        ("description: Compare A --- B", "--- ", "Compare A --- B"),
+        ("description: Compare A --- B", "---\t", "Compare A --- B"),
+    ],
+    ids=[
+        "unquoted",
+        "quoted",
+        "block_scalar",
+        "trailing_space",
+        "trailing_tab",
+    ],
+)
+def test__load_skill_from_dir_dashes_inside_frontmatter_value(
+    tmp_path, description_line, closing, expected
+):
+  """A `---` inside a frontmatter value does not close the frontmatter."""
+  skill_dir = tmp_path / "test-skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_text(
+      f"---\nname: test-skill\n{description_line}\nlicense: MIT\n"
+      f"{closing}\nBody\n"
+  )
+
+  skill = _load_skill_from_dir(skill_dir)
+
+  assert skill.frontmatter.description == expected
+  assert skill.frontmatter.license == "MIT"
+  assert skill.instructions == "Body"
+
+
+def test__load_skill_from_zip_bytes_crlf_frontmatter():
+  """Windows line endings around the delimiters still parse."""
+  # A zip member is decoded without newline translation, so the `\r` reaches
+  # the parser, unlike `read_text` in the directory loader.
+  zip_buffer = io.BytesIO()
+  with zipfile.ZipFile(zip_buffer, "w") as z:
+    z.writestr(
+        "SKILL.md",
+        b"---\r\nname: test-skill\r\ndescription: Test\r\n---\r\nBody\r\n",
+    )
+
+  skill = _load_skill_from_zip_bytes(zip_buffer.getvalue())
+
+  assert skill.frontmatter.description == "Test"
+  assert skill.instructions == "Body"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "---\nname: test-skill\ndescription: Test\nBody\n",
+        "---\nname: test-skill\ndescription: Test\n--- Body\n",
+    ],
+    ids=["no_closing_line", "text_after_closing_dashes"],
+)
+def test__load_skill_from_dir_unclosed_frontmatter_raises(tmp_path, content):
+  """Frontmatter without a whole closing `---` line is rejected."""
+  skill_dir = tmp_path / "test-skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_text(content)
+
+  with pytest.raises(ValueError, match="not properly closed"):
+    _load_skill_from_dir(skill_dir)
+
+
 def test__load_skill_from_dir_nested_resources_use_forward_slash_keys(tmp_path):
   """Resources in subdirectories are keyed with forward slashes."""
   skill = _load_skill_from_dir(_write_nested_skill(tmp_path))
