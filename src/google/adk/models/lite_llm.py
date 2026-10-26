@@ -138,6 +138,12 @@ _FINISH_REASON_MAPPING = {
     "content_filter": types.FinishReason.SAFETY,
 }
 
+_STREAM_ENDED_WITHOUT_FINISH_REASON = "stream_ended_without_finish_reason"
+"""Finish reason handed to the stream finalizers when a stream ended without
+ever delivering a finish_reason chunk. Unmapped on purpose, so it becomes
+``FinishReason.OTHER`` and the finalized response carries an ``error_code``
+instead of a clean ``STOP``."""
+
 
 def _quote_unquoted_json_object_keys(value: str) -> str:
   """Quotes simple unquoted object keys without touching string contents."""
@@ -4844,6 +4850,24 @@ class LiteLlm(BaseLlm):
           ]
         return thought_parts or None
 
+      def _stamp_final_finish_reason(
+          llm_response: LlmResponse, finish_reason: str
+      ) -> LlmResponse:
+        mapped_finish_reason = _map_finish_reason(finish_reason)
+        if _malformed_args_outrank_provider(
+            response_finish_reason=llm_response.finish_reason,
+            provider_finish_reason=mapped_finish_reason,
+        ):
+          return llm_response
+
+        _apply_provider_finish_reason(llm_response, mapped_finish_reason)
+        if finish_reason == _STREAM_ENDED_WITHOUT_FINISH_REASON:
+          llm_response.error_message = (
+              "The stream ended without a finish reason; the response may"
+              " be truncated."
+          )
+        return llm_response
+
       def _finalize_tool_call_response(
           *, model_version: str, finish_reason: str
       ) -> LlmResponse:
@@ -4949,15 +4973,7 @@ class LiteLlm(BaseLlm):
                 has_tool_calls=bool(tool_calls)
             ),
         )
-        mapped_finish_reason = _map_finish_reason(finish_reason)
-        if _malformed_args_outrank_provider(
-            response_finish_reason=llm_response.finish_reason,
-            provider_finish_reason=mapped_finish_reason,
-        ):
-          return llm_response
-
-        _apply_provider_finish_reason(llm_response, mapped_finish_reason)
-        return llm_response
+        return _stamp_final_finish_reason(llm_response, finish_reason)
 
       def _finalize_text_response(
           *, model_version: str, finish_reason: str
@@ -4971,15 +4987,7 @@ class LiteLlm(BaseLlm):
             model_version=model_version,
             thought_parts=_finalized_thought_parts(has_tool_calls=False),
         )
-        mapped_finish_reason = _map_finish_reason(finish_reason)
-        if _malformed_args_outrank_provider(
-            response_finish_reason=llm_response.finish_reason,
-            provider_finish_reason=mapped_finish_reason,
-        ):
-          return llm_response
-
-        _apply_provider_finish_reason(llm_response, mapped_finish_reason)
-        return llm_response
+        return _stamp_final_finish_reason(llm_response, finish_reason)
 
       def _reset_stream_buffers() -> None:
         nonlocal reasoning_parts, last_finish_reason, saw_structured_tool_calls
@@ -5259,6 +5267,9 @@ class LiteLlm(BaseLlm):
       if (
           function_calls or _has_held_back_tool_calls()
       ) and not aggregated_llm_response_with_tool_call:
+        # A tool call has its own completeness discriminator — whether its
+        # arguments parse — so a stream missing only its terminal chunk still
+        # yields the finished call; keep that pinned contract.
         aggregated_llm_response_with_tool_call = _finalize_tool_call_response(
             model_version=resolved_model_version,
             finish_reason=last_finish_reason or "tool_calls",
@@ -5280,7 +5291,9 @@ class LiteLlm(BaseLlm):
       if (text_parts or reasoning_parts) and not aggregated_llm_response:
         aggregated_llm_response = _finalize_text_response(
             model_version=resolved_model_version,
-            finish_reason=last_finish_reason or "stop",
+            finish_reason=(
+                last_finish_reason or _STREAM_ENDED_WITHOUT_FINISH_REASON
+            ),
         )
         _reset_stream_buffers()
       elif (
@@ -5292,6 +5305,8 @@ class LiteLlm(BaseLlm):
         # normal stop/tool_calls/function_call/EOF with empty deltas). Finalize
         # an empty response so the finish_reason, error, and usage are
         # preserved rather than ending the generator having yielded nothing.
+        # The clean-stop default stays: with nothing buffered there is no
+        # partial answer to report as truncated.
         aggregated_llm_response = _finalize_text_response(
             model_version=resolved_model_version,
             finish_reason=last_finish_reason or "stop",
