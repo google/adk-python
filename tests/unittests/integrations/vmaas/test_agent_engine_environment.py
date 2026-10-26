@@ -465,3 +465,18 @@ async def test_working_dir_is_workspace():
   environment = await _make_environment()
 
   assert str(environment.working_dir) == "/workspace"
+
+
+async def test_resolve_path_rejects_relative_escape():
+  """Model-supplied '..' paths cannot resolve outside the sandbox workspace."""
+  environment = AgentEngineEnvironment(vertexai_client=_make_client())
+
+  with pytest.raises(ValueError, match="escapes working directory"):
+    environment._resolve_path("../../etc/passwd")
+
+
+async def test_resolve_path_anchors_and_normalizes_relative_paths():
+  environment = AgentEngineEnvironment(vertexai_client=_make_client())
+
+  assert environment._resolve_path("sub/../notes.txt") == "/workspace/notes.txt"
+  assert environment._resolve_path("/etc/passwd") == "/etc/passwd"

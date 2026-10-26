@@ -33,6 +33,7 @@ from typing_extensions import override
 
 from ...environment._base_environment import BaseEnvironment
 from ...environment._base_environment import ExecutionResult
+from ...environment._base_environment import resolve_sandbox_path
 from ...features import experimental
 from ...features import FeatureName
 from ._sandbox_manager import SandboxManager
@@ -303,10 +304,7 @@ class AgentEngineEnvironment(BaseEnvironment):
 
   def _resolve_path(self, path: str | os.PathLike[str]) -> str:
     """Resolves a relative path against the sandbox working directory."""
-    pure = PurePosixPath(os.fspath(path))
-    if pure.is_absolute():
-      return str(pure)
-    return str(PurePosixPath(_WORKSPACE) / pure)
+    return resolve_sandbox_path(path, _WORKSPACE)
 
 
 def _is_timeout(error: APIError) -> bool:

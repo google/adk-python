@@ -19,13 +19,13 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
 from ...environment._base_environment import BaseEnvironment
 from ...environment._base_environment import ExecutionResult
+from ...environment._base_environment import resolve_sandbox_path
 from ...features import experimental
 from ...features import FeatureName
 
@@ -185,7 +185,4 @@ class E2BEnvironment(BaseEnvironment):
 
   def _resolve_path(self, path: str | os.PathLike[str]) -> str:
     """Resolve a relative path against the sandbox working directory."""
-    pure = PurePosixPath(os.fspath(path))
-    if pure.is_absolute():
-      return str(pure)
-    return str(PurePosixPath(_SANDBOX_HOME) / pure)
+    return resolve_sandbox_path(path, _SANDBOX_HOME)

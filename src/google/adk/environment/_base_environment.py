@@ -19,7 +19,10 @@ from __future__ import annotations
 from abc import ABC
 from abc import abstractmethod
 import dataclasses
+import os
 from pathlib import Path
+from pathlib import PurePosixPath
+import posixpath
 
 from ..utils.feature_decorator import experimental
 
@@ -132,3 +135,36 @@ class BaseEnvironment(ABC):
       path: Absolute or working-dir-relative path to the file.
       content: The string or raw bytes to write.
     """
+
+
+def resolve_sandbox_path(
+    path: str | os.PathLike[str], workspace_root: str
+) -> str:
+  """Resolves a file path against a remote sandbox workspace root.
+
+  Absolute paths pass through unchanged, matching the ``BaseEnvironment``
+  path contract. Relative paths are anchored at ``workspace_root`` and
+  normalized lexically; a relative path whose normalization escapes the
+  root raises ``ValueError``, so model-supplied ``..`` segments cannot
+  reach files outside the workspace. Normalization is lexical only: the
+  filesystem that would resolve symlinks lives inside the sandbox, not in
+  this process.
+
+  Args:
+    path: The model-supplied path to resolve.
+    workspace_root: The absolute workspace root relative paths anchor at.
+
+  Returns:
+    The resolved POSIX path.
+
+  Raises:
+    ValueError: If a relative path escapes ``workspace_root``.
+  """
+  candidate = PurePosixPath(os.fspath(path))
+  if candidate.is_absolute():
+    return str(candidate)
+  root = PurePosixPath(workspace_root)
+  anchored = PurePosixPath(posixpath.normpath(str(root / candidate)))
+  if not anchored.is_relative_to(root):
+    raise ValueError(f"Path escapes working directory: {path}")
+  return str(anchored)
