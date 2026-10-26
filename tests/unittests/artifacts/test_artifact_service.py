@@ -4266,3 +4266,76 @@ async def test_in_memory_slash_in_identifiers_keeps_scopes_separate(
   )
   assert reloaded_first is not None
   assert reloaded_first.text == "first scope value"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "filename", ["sub/notes.txt", "user:preferences/sub/style.json"]
+)
+async def test_in_memory_filename_with_slash_round_trips_in_listing(
+    filename,
+):
+  """A filename containing '/' keeps its exact form through save and list.
+
+  The storage key percent-encodes every segment, so a '/' inside the filename
+  cannot be mistaken for a scope boundary, and list_artifact_keys decodes the
+  filename back to the caller's original spelling.
+  """
+  artifact_service = InMemoryArtifactService()
+  assert (
+      await artifact_service.save_artifact(
+          app_name="app0",
+          user_id="user0",
+          session_id="sess0" if not filename.startswith("user:") else None,
+          filename=filename,
+          artifact=types.Part.from_text(text="value"),
+      )
+      == 0
+  )
+
+  assert await artifact_service.list_artifact_keys(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0" if not filename.startswith("user:") else None,
+  ) == [filename]
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0" if not filename.startswith("user:") else None,
+      filename=filename,
+  )
+  assert loaded is not None
+  assert loaded.text == "value"
+
+
+@pytest.mark.asyncio
+async def test_in_memory_hierarchical_app_name_lists_only_its_own_files():
+  """A hierarchical app_name lists its own artifacts, scope-exact.
+
+  Regression guard for the aliasing fix: the encoded key contains no raw '/',
+  so a trailing-slash prefix for app0's scope matches exactly that scope even
+  when app0 itself has an embedded '/'.
+  """
+  artifact_service = InMemoryArtifactService()
+  for app_name, user_id, filename in [
+      ("team/project", "alice", "shared.txt"),
+      ("team", "project/alice", "other.txt"),
+      ("team/project", "bob", "bob.txt"),
+  ]:
+    await artifact_service.save_artifact(
+        app_name=app_name,
+        user_id=user_id,
+        session_id="s1",
+        filename=filename,
+        artifact=types.Part.from_text(text="value"),
+    )
+
+  assert await artifact_service.list_artifact_keys(
+      app_name="team/project", user_id="alice", session_id="s1"
+  ) == ["shared.txt"]
+  assert await artifact_service.list_artifact_keys(
+      app_name="team", user_id="project/alice", session_id="s1"
+  ) == ["other.txt"]
+  assert await artifact_service.list_artifact_keys(
+      app_name="team/project", user_id="bob", session_id="s1"
+  ) == ["bob.txt"]
