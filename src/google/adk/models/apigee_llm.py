@@ -41,6 +41,7 @@ from typing_extensions import override
 from ..utils import _json_utils
 from ..utils import streaming_utils
 from ..utils._event_loop_cache import PerLoopCachedProperty
+from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.env_utils import is_enterprise_mode_enabled
 from .google_llm import Gemini
 from .llm_response import LlmResponse
@@ -241,7 +242,7 @@ class ApigeeLlm(Gemini):
     """Provides the completions HTTP client."""
     return CompletionsHTTPClient(
         base_url=self._require_proxy_url(),
-        headers=self._merge_tracking_headers(self._custom_headers),
+        headers=merge_tracking_headers(self._custom_headers),
         retry_options=self.retry_options,
     )
 
@@ -295,7 +296,7 @@ class ApigeeLlm(Gemini):
     http_options = types.HttpOptions(
         api_version=self._api_version or None,
         base_url=self._require_proxy_url(),
-        headers=self._merge_tracking_headers(self._custom_headers),
+        headers=merge_tracking_headers(self._custom_headers),
         retry_options=self.retry_options,
     )
 

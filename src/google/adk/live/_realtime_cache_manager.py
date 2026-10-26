@@ -119,6 +119,35 @@ class RealtimeCacheManager:
         len(cache),
     )
 
+  def cache_blob(
+      self,
+      invocation_context: InvocationContext,
+      blob: types.Blob,
+      cache_type: str,
+  ) -> None:
+    """Cache an incoming user or outgoing model blob if it is audio.
+
+    The audio cache concatenates every chunk into one audio file, so other
+    blobs (e.g. video frames) are skipped. Audio blobs are cached as copies,
+    so later changes to the caller's blob do not change the cache.
+
+    Args:
+      invocation_context: The current invocation context.
+      blob: The blob to cache.
+      cache_type: Type of data to cache, either 'input' or 'output'.
+
+    Raises:
+      ValueError: If the blob is audio and cache_type is not 'input' or
+        'output'.
+    """
+    # TODO: cache image blobs once media caching lands.
+    if blob.mime_type and blob.mime_type.startswith('audio/'):
+      self.cache_audio(
+          invocation_context,
+          types.Blob(data=blob.data, mime_type=blob.mime_type),
+          cache_type,
+      )
+
   async def flush_caches(
       self,
       invocation_context: InvocationContext,

@@ -34,7 +34,12 @@ if TYPE_CHECKING:
 
 
 class BaseLlm(BaseModel):
-  """The BaseLLM class."""
+  """The BaseLLM class.
+
+  One instance may serve concurrent calls: an LlmAgent and its copies share
+  the model they build from a name across the sessions and parallel branches
+  in one event loop.
+  """
 
   model_config = ConfigDict(
       # This allows us to use arbitrary types in the model. E.g. PIL.Image.

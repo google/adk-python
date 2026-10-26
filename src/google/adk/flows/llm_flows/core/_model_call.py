@@ -33,8 +33,8 @@ from ....live.live_request_queue import LiveRequestQueue
 from ....models.llm_request import LlmRequest
 from ....models.llm_response import LlmResponse
 from ....telemetry import _instrumentation
+from ....telemetry.tracing import _start_call_llm_span
 from ....telemetry.tracing import trace_call_llm
-from ....telemetry.tracing import tracer
 from ....utils.context_utils import Aclosing
 from ._finalizer import has_meaningful_content
 from ._utils import as_llm_agent as _as_llm_agent
@@ -185,8 +185,14 @@ async def call_llm_async(
   # each drive of the generator below, rather than by a `with` block inside
   # it: a token attached inside a generator and held across its `yield` is
   # detached by whoever closes the stream, in a context that never attached it.
-  span = tracer.start_span('call_llm', context=caller_context)
-  model_call_context = trace.set_span_in_context(span, caller_context)
+  call_llm_span = _start_call_llm_span(caller_context)
+  if call_llm_span is None:
+    # Schema v2 has no `call_llm` span; record onto the caller's span.
+    span = trace.get_current_span(caller_context)
+    model_call_context = caller_context
+  else:
+    span = call_llm_span
+    model_call_context = trace.set_span_in_context(span, caller_context)
 
   async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
     # Runs before_model_callback inside the call_llm span so
@@ -316,11 +322,12 @@ async def call_llm_async(
       async for event in agen:
         yield event
   except Exception as e:  # pylint: disable=broad-except
-    if span.is_recording():
-      span.record_exception(e)
-      span.set_status(
+    if call_llm_span is not None and call_llm_span.is_recording():
+      call_llm_span.record_exception(e)
+      call_llm_span.set_status(
           trace.Status(trace.StatusCode.ERROR, f'{type(e).__name__}: {e}')
       )
     raise
   finally:
-    span.end()
+    if call_llm_span is not None:
+      call_llm_span.end()

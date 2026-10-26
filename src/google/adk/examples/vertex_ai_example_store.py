@@ -71,9 +71,13 @@ class VertexAiExampleStore(BaseExampleProvider):
   @override
   def get_examples(self, query: str) -> list[Example]:
     from ..dependencies._agentplatform import agentplatform
+    from ..utils._dependency import require_agentplatform_attributes
 
     client = agentplatform.Client(
         project=self._project, location=self._location
+    )
+    require_agentplatform_attributes(
+        client, ("example_stores",), "VertexAiExampleStore"
     )
     response = client.example_stores.search_examples(
         name=self.examples_store_name,

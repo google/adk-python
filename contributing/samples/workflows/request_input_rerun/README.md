@@ -46,18 +46,19 @@ graph TD
        # ...
    ```
 
-1. Inside the node, check if you are being resumed by looking for the `interrupt_id` in `ctx.resume_inputs`.
+1. Inside the node, build an `interrupt_id` scoped by `ctx.invocation_id` and `ctx.run_id` (so each conversation turn and loop iteration gets a distinct ID while staying identical when the same iteration reruns on resume) and check `ctx.resume_inputs`:
 
    ```python
-   resume_input = ctx.resume_inputs.get('human_review')
+   interrupt_id = f"human_review_{ctx.invocation_id}_{ctx.run_id}"
+   resume_input = ctx.resume_inputs.get(interrupt_id)
    ```
 
-1. If `resume_input` is missing (i.e., this is the first time the node is executing), yield the `RequestInput` event to pause the workflow. Include an explicit `interrupt_id`.
+1. If `resume_input` is missing (i.e., this is the first time the node is executing in this iteration), yield the `RequestInput` event to pause the workflow with that `interrupt_id`.
 
    ```python
    if not resume_input:
        yield RequestInput(
-           interrupt_id="human_review",
+           interrupt_id=interrupt_id,
            message="Please review the draft...",
        )
        return # Important: Stop execution of this node for now

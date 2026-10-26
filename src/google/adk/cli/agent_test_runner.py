@@ -20,7 +20,9 @@ import os
 from pathlib import Path
 from typing import Any
 from typing import AsyncGenerator
+from typing import cast
 from typing import Optional
+from typing import TYPE_CHECKING
 from unittest import mock
 
 from google.adk.apps.app import App
@@ -39,6 +41,13 @@ from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.genai import types
 from pydantic import alias_generators
 import pytest
+
+if TYPE_CHECKING:
+  from collections.abc import Iterable
+  from collections.abc import Mapping
+
+  from google.adk.agents.base_agent import BaseAgent
+  from google.adk.sessions.session import Session
 
 EXCLUDED_EVENT_FIELDS = {
     "id",
@@ -68,7 +77,7 @@ _ALL_EXCLUDED_EVENT_FIELDS = (
 # Read target folder from environment
 def get_test_files(
     target_folder: str | None = None,
-) -> list[pytest.ParameterSet]:
+) -> list[pytest.ParameterSet]:  # type: ignore[name-defined]
   """Returns list of (agent_dir, test_file_path) recursively."""
   folder = target_folder or os.environ.get("ADK_TEST_FOLDER")
   if not folder:
@@ -116,7 +125,7 @@ class MockModel(BaseLlm):
   response_index: int = -1
 
   @classmethod
-  def create(cls, contents: list[types.Content]):
+  def create(cls, contents: list[types.Content]) -> MockModel:
     llm_responses = [LlmResponse(content=content) for content in contents]
     return cls(responses=llm_responses)
 
@@ -134,13 +143,16 @@ class MockModel(BaseLlm):
 
 class InMemoryRunner:
 
-  def __init__(self, root_agent=None, app=None):
+  def __init__(
+      self, root_agent: BaseAgent | None = None, app: App | None = None
+  ) -> None:
+    self._session_service = InMemorySessionService()
     if app:
       self.app_name = app.name
       self.runner = Runner(
           app=app,
           artifact_service=InMemoryArtifactService(),
-          session_service=InMemorySessionService(),
+          session_service=self._session_service,
           memory_service=InMemoryMemoryService(),
       )
     else:
@@ -149,24 +161,30 @@ class InMemoryRunner:
           app_name="test_app",
           agent=root_agent,
           artifact_service=InMemoryArtifactService(),
-          session_service=InMemorySessionService(),
+          session_service=self._session_service,
           memory_service=InMemoryMemoryService(),
       )
-    self.session_id = None
+    self.session_id: str | None = None
 
   @property
-  def session(self):
+  def session(self) -> Session | None:
     if not self.session_id:
-      session = self.runner.session_service.create_session_sync(
+      session = self._session_service.create_session_sync(
           app_name=self.app_name, user_id="test_user"
       )
       self.session_id = session.id
       return session
-    return self.runner.session_service.get_session_sync(
+    return self._session_service.get_session_sync(
         app_name=self.app_name, user_id="test_user", session_id=self.session_id
     )
 
-  def run(self, new_message) -> list[AdkEvent]:
+  def _session_or_raise(self) -> Session:
+    session = self.session
+    if session is None:
+      raise ValueError(f"Session {self.session_id} not found.")
+    return session
+
+  def run(self, new_message: types.Content | str) -> list[AdkEvent]:
     content = (
         new_message
         if isinstance(new_message, types.Content)
@@ -176,24 +194,28 @@ class InMemoryRunner:
     )
     return list(
         self.runner.run(
-            user_id=self.session.user_id,
-            session_id=self.session.id,
+            user_id=self._session_or_raise().user_id,
+            session_id=self._session_or_raise().id,
             new_message=content,
         )
     )
 
 
-def normalize_events(events, is_json=False):
+def normalize_events(
+    events: Iterable[AdkEvent] | Iterable[Mapping[str, object]],
+    is_json: bool = False,
+) -> list[dict[str, Any]]:
   normalized = []
   for e in events:
+    d: dict[str, Any]
     if is_json:
-      d = dict(e)
+      d = dict(cast("Mapping[str, object]", e))  # is_json: recorded JSON events
       for k in _ALL_EXCLUDED_EVENT_FIELDS:
         d.pop(k, None)
         d.pop(alias_generators.to_camel(k), None)
       d = {k: v for k, v in d.items() if v is not None}
     else:
-      d = e.model_dump(
+      d = cast(AdkEvent, e).model_dump(
           mode="json",
           by_alias=True,
           exclude=_ALL_EXCLUDED_EVENT_FIELDS,
@@ -247,13 +269,15 @@ def normalize_events(events, is_json=False):
   return normalized
 
 
-def make_sort_key(d):
+def make_sort_key(d: Mapping[str, Any]) -> tuple[str, str, str]:
   node_path = d.get("nodeInfo", {}).get("path", "")
   author = d.get("author", "")
   return (author, node_path, json.dumps(d, sort_keys=True))
 
 
-def _make_nodes_sequential(obj, visited=None):
+def _make_nodes_sequential(
+    obj: object, visited: set[int] | None = None
+) -> None:
   if visited is None:
     visited = set()
 
@@ -275,7 +299,7 @@ def _make_nodes_sequential(obj, visited=None):
       _make_nodes_sequential(obj._node, visited)
 
 
-def _extract_user_content(event: dict) -> Optional[types.Content]:
+def _extract_user_content(event: Mapping[str, Any]) -> Optional[types.Content]:
   """Extracts user content from an event dict and returns a types.Content object.
 
   Agent-emitted user-role events (e.g., task FRs synthesized by the Task
@@ -343,7 +367,7 @@ def _has_unmapped_function_response(
   )
 
 
-def _remap_node_path(path: str, id_map: dict[str, str]) -> str:
+def _remap_node_path(path: str, id_map: Mapping[str | None, str]) -> str:
   """Rewrite ``<name>@<id>`` segments in a node path using ``id_map``.
 
   Path segments encode ``<node_name>@<run_id>``; when the run_id was an
@@ -393,7 +417,7 @@ def _normalize_ids(events: list[AdkEvent]) -> list[AdkEvent]:
     for fc in e.get_function_calls():
       call_name_to_ids.setdefault(fc.name, []).append(fc.id)
 
-    if getattr(e, "branch", None) and e.branch.startswith("task:"):
+    if e.branch and e.branch.startswith("task:"):
       parts = e.branch.split(":")
       if len(parts) > 1:
         fc_id = parts[1]
@@ -453,7 +477,7 @@ def _normalize_ids(events: list[AdkEvent]) -> list[AdkEvent]:
   return events
 
 
-def _remap_ids_in_args(value: Any, id_map: dict[str, str]) -> None:
+def _remap_ids_in_args(value: Any, id_map: Mapping[str | None, str]) -> None:
   """Walk a FC ``args`` value and remap any ``id`` field that names an FC.
 
   Tool-confirmation FCs (``adk_request_confirmation``) carry the
@@ -606,7 +630,9 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
     if mock_responses:
       mock_model = MockModel.create(contents=mock_responses)
 
-      async def mock_gen_async(instance, llm_request, stream=False):
+      async def mock_gen_async(
+          instance: BaseLlm, llm_request: LlmRequest, stream: bool = False
+      ) -> AsyncGenerator[LlmResponse, None]:
         async for resp in mock_model.generate_content_async(
             llm_request, stream
         ):
@@ -621,7 +647,7 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
     # Make RequestInput IDs deterministic during replay as well
     fc_counter = 0
 
-    def get_next_fc_id():
+    def get_next_fc_id() -> str:
       nonlocal fc_counter
       fc_counter += 1
       return f"fc-{fc_counter}"
@@ -653,9 +679,10 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
     mocks_data = session_data.get("mocks", {})
     if mocks_data:
       if "random.random" in mocks_data:
-        random_values = list(mocks_data["random.random"])
+        # The fixture records the values random.random() returned.
+        random_values: list[float] = list(mocks_data["random.random"])
 
-        def mock_random():
+        def mock_random() -> float:
           if random_values:
             return random_values.pop(0)
           return 0.8
@@ -663,9 +690,10 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
         monkeypatch.setattr(random, "random", mock_random)
 
       if "random.randint" in mocks_data:
-        randint_values = list(mocks_data["random.randint"])
+        # The fixture records the values random.randint() returned.
+        randint_values: list[int] = list(mocks_data["random.randint"])
 
-        def mock_randint(a, b):
+        def mock_randint(a: int, b: int) -> int:
           if randint_values:
             return randint_values.pop(0)
           return b
@@ -739,7 +767,7 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
     sys.path = sys_path_saved
 
 
-def rebuild_tests(path: str):
+def rebuild_tests(path: str) -> None:
   """Discovers test files and rebuilds them by running the agent live."""
   import asyncio
   import json
@@ -762,7 +790,8 @@ def rebuild_tests(path: str):
     return
 
   for item in test_files:
-    agent_dir, test_file = item.values
+    # get_test_files builds every param from (agent_dir, test_file).
+    agent_dir, test_file = cast("tuple[Path, Path]", item.values)
     if expected_name and test_file.name != expected_name:
       continue
     print(f"Rebuilding {test_file}...")
@@ -797,9 +826,9 @@ def rebuild_tests(path: str):
       # Extract user messages
       user_messages = []
       for event in events_data:
-        content = _extract_user_content(event)
-        if content:
-          user_messages.append(content)
+        user_content = _extract_user_content(event)
+        if user_content:
+          user_messages.append(user_content)
 
       if not user_messages:
         print(f"No user messages found in {test_file}, skipping.")
@@ -819,10 +848,12 @@ def rebuild_tests(path: str):
       # one loop for all turns keeps the client valid across the conversation.
       rebuild_loop = asyncio.new_event_loop()
 
-      def run_turn(content):
+      def run_turn(content: types.Content) -> list[AdkEvent]:
         session = runner.session
+        if session is None:
+          raise ValueError(f"Session {runner.session_id} not found.")
 
-        async def _collect():
+        async def _collect() -> list[AdkEvent]:
           events = []
           async for event in runner.runner.run_async(
               user_id=session.user_id,
@@ -837,7 +868,7 @@ def rebuild_tests(path: str):
       new_events = []
       inv_counter = 1
 
-      def mock_inv_id():
+      def mock_inv_id() -> str:
         nonlocal inv_counter
         res = f"i-{inv_counter}"
         inv_counter += 1
@@ -845,14 +876,14 @@ def rebuild_tests(path: str):
 
       ev_counter = 1
 
-      def mock_ev_id():
+      def mock_ev_id() -> str:
         nonlocal ev_counter
         res = f"e-{ev_counter}"
         ev_counter += 1
         return res
 
       fc_counter = 0
-      orig_to_new_id = {}
+      orig_to_new_id: dict[str, str | None] = {}
 
       # Extract all function call IDs and response IDs from old events
       old_fc_ids = []
@@ -871,7 +902,7 @@ def rebuild_tests(path: str):
               if isinstance(fr, dict) and "id" in fr:
                 old_fr_ids.append(fr["id"])
 
-      def get_next_fc_id():
+      def get_next_fc_id() -> str:
         nonlocal fc_counter
         fc_counter += 1
         new_id = f"fc-{fc_counter}"

@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from collections.abc import Callable
 from collections.abc import Iterator
+import contextlib
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ import time
 from typing import TYPE_CHECKING
 
 from opentelemetry import context as context_api
+from opentelemetry import trace
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OPERATION_NAME
 from opentelemetry.trace import set_span_in_context
@@ -46,6 +48,7 @@ if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
   from ..events.event import Event
   from ..workflow._workflow import Workflow
+  from ._instrumentation import _WorkflowScope  # pylint: disable=g-import-not-at-top
 
 # Span/metric attribute flagging that an `invoke_workflow` span is nested
 # within another workflow. Only emitted for nested workflows; the root
@@ -62,6 +65,12 @@ class TelemetryContext:
 
   _associated_event_ids: list[str] = field(default_factory=list)
   """Event IDs added to the event queue within a given node."""
+
+  _entrypoint_scope: _WorkflowScope | None = None
+  """The scope of the span the runner opened for the workflow started under
+  this context, which runs in it rather than opening a span of its own. Set
+  only on the runner's root context, when it was entered at that workflow (see
+  `_instrumentation.record_invocation`)."""
 
   def add_event(self, event: Event) -> None:
     """Adds an event ID to the associated events list."""
@@ -145,27 +154,40 @@ def _invoke_agent_span(
 def _invoke_workflow_span(
     context: Context, workflow: Workflow, node_context: Context | None = None
 ) -> Iterator[TelemetryContext]:
-  """Opens an `invoke_workflow` span plus its duration metric for ``node``."""
+  """Opens an `invoke_workflow` span plus its duration metric for ``node``.
+
+  The workflow the runner was entered at runs inside the span the runner
+  already opened for it instead.
+  """
   from . import _instrumentation  # pylint: disable=g-import-not-at-top
 
-  with _use_invoke_workflow_span(
-      workflow.name,
-      context.session.id,
-      otel_context=context.telemetry_context.otel_context,
-      telemetry_config=_telemetry_config_from_invocation_context(
-          context.get_invocation_context()
-      ),
-      get_recorded_error=(
-          None if node_context is None else lambda: node_context.error
-      ),
-  ) as (span, scope_context):
+  entrypoint_scope = context.telemetry_context._entrypoint_scope  # pylint: disable=protected-access
+  with contextlib.ExitStack() as stack:
+    if entrypoint_scope is not None:
+      scope_context = entrypoint_scope.otel_context
+    else:
+      _, scope_context = stack.enter_context(
+          _use_invoke_workflow_span(
+              workflow.name,
+              context.session.id,
+              otel_context=context.telemetry_context.otel_context,
+              telemetry_config=_telemetry_config_from_invocation_context(
+                  context.get_invocation_context()
+              ),
+              get_recorded_error=(
+                  None if node_context is None else lambda: node_context.error
+              ),
+          )
+      )
     # `start_as_current_node_span` wraps an await rather than a yield that
     # escapes to a consumer, so attach and detach stay in one task here and
     # nested spans can keep reading the span off the ambient context.
     with _instrumentation._using(scope_context):
       tel_ctx = TelemetryContext(otel_context=scope_context)
       yield tel_ctx
-      _maybe_set_associated_events(span, tel_ctx)
+      _maybe_set_associated_events(
+          trace.get_current_span(scope_context), tel_ctx
+      )
 
 
 @contextmanager
@@ -284,14 +306,14 @@ def _use_invoke_workflow_span(
     # In the otel context rather than a ContextVar: a caller that abandons
     # the turn mid-iteration keeps its own pre-span context, so the scope
     # cannot outlive the span that owns it and no later turn can adopt it.
-    scope_context = context_api.set_value(
+    scope.otel_context = context_api.set_value(
         _instrumentation._WORKFLOW_SCOPE_KEY,
         scope,
         set_span_in_context(span, otel_context),
     )
     with _instrumentation._recording_span(span):
       try:
-        yield span, scope_context
+        yield span, scope.otel_context
       finally:
         _instrumentation._flush_workflow_metrics(scope)
         # A node hands its failure back as data rather than letting it unwind,

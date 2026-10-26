@@ -175,6 +175,9 @@ class MetricsCollector:
     for param in ctx.command.params:
       if len(used_params) >= _MAX_FLAGS_COUNT:
         break
+      # A parameter without a name has no recorded source.
+      if param.name is None:
+        continue
       if (
           ctx.get_parameter_source(param.name)
           == click.core.ParameterSource.COMMANDLINE

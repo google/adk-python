@@ -384,13 +384,14 @@ async def test_list_databases_success(
   )
 
 
+@pytest.mark.parametrize("database_id", ["db-1", "a" * 30])
 @pytest.mark.asyncio
 @patch(
     "google.adk.tools.spanner.admin_tool.DatabaseAdminAsyncClient",
     autospec=True,
 )
 async def test_create_database_success(
-    mock_db_admin_client_cls, mock_credentials
+    mock_db_admin_client_cls, mock_credentials, database_id
 ):
   """Tests the create_database function in admin_tool."""
   mock_db_admin_client = _mock_admin_client(mock_db_admin_client_cls)
@@ -402,10 +403,44 @@ async def test_create_database_success(
   result = await admin_tool.create_database(
       project_id="test-project",
       instance_id="test-instance",
-      database_id="db-1",
+      database_id=database_id,
       credentials=mock_credentials,
   )
   assert result == {
       "status": "SUCCESS",
   }
   mock_db_admin_client.create_database.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "database_id",
+    [
+        "db-1`; DROP TABLE users; --",
+        "a",
+        "a" * 31,
+        "1db",
+        "db-",
+        "Db1",
+    ],
+)
+@pytest.mark.asyncio
+@patch(
+    "google.adk.tools.spanner.admin_tool.DatabaseAdminAsyncClient",
+    autospec=True,
+)
+async def test_create_database_rejects_unsafe_database_id(
+    mock_db_admin_client_cls, mock_credentials, database_id
+):
+  """Tests that create_database rejects a database id outside the grammar."""
+  mock_db_admin_client = _mock_admin_client(mock_db_admin_client_cls)
+
+  result = await admin_tool.create_database(
+      project_id="test-project",
+      instance_id="test-instance",
+      database_id=database_id,
+      credentials=mock_credentials,
+  )
+
+  assert result["status"] == "ERROR"
+  assert "Invalid Spanner database id" in result["error_details"]
+  mock_db_admin_client.create_database.assert_not_called()

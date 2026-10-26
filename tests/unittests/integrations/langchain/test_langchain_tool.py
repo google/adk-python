@@ -115,6 +115,32 @@ async def test_raw_sync_function_with_annotation_works():
 
 
 @pytest.mark.asyncio
+async def test_structured_tool_subclass_without_func_uses_run():
+  """A StructuredTool subclass that overrides _run runs through _run."""
+
+  class AddTool(StructuredTool):
+
+    def _run(self, x: int, y: int) -> int:
+      return x + y
+
+  langchain_tool = LangchainTool(
+      tool=AddTool(name="add", description="Adds", args_schema=AddSchema)
+  )
+  result = await langchain_tool.run_async(
+      args={"x": 1, "y": 3}, tool_context=MagicMock()
+  )
+  assert result == 4
+
+
+def test_plain_structured_tool_without_func_raises():
+  """A plain StructuredTool has no runnable function, so it is rejected."""
+  tool = StructuredTool(name="add", description="Adds", args_schema=AddSchema)
+
+  with pytest.raises(ValueError, match="must have a func"):
+    LangchainTool(tool=tool)
+
+
+@pytest.mark.asyncio
 async def test_return_direct_sets_skip_summarization():
   """A tool with return_direct=True skips summarization on run."""
   langchain_tool = LangchainTool(tool=direct_add)

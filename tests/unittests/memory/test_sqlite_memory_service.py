@@ -745,6 +745,21 @@ async def test_search_cjk_mixed_latin_query(tmp_path, fts_mode):
 
 
 @pytest.mark.asyncio
+async def test_search_matches_word_with_capital_dotted_i(tmp_path, fts_mode):
+  """A stored word with a capital dotted I is found by searching for it."""
+  db_path = tmp_path / "memory.db"
+  service = SqliteMemoryService(db_path=db_path, fts=fts_mode)
+  session = _make_session([_make_event("user", "İstanbul trip", 1.0)])
+  await service.add_session_to_memory(session)
+  response = await service.search_memory(
+      app_name="app", user_id="user", query="İstanbul"
+  )
+  assert len(response.memories) == 1
+  assert response.memories[0].content.parts[0].text == "İstanbul trip"
+  await service.close()
+
+
+@pytest.mark.asyncio
 async def test_incompatible_schema_version_raises(tmp_path):
   """Initializing with an incompatible schema version raises a RuntimeError."""
   db_path = tmp_path / "memory.db"

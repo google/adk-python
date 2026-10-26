@@ -455,6 +455,51 @@ class TestConnectionsClient:
       with pytest.raises(ValueError, match="Request error"):
         client.get_action_schema("action1")
 
+  def test_poll_operation_done_on_first_poll_does_not_sleep(
+      self, project, location, connection_name
+  ):
+    credentials = {"email": "test@example.com"}
+    client = ConnectionsClient(project, location, connection_name, credentials)
+    mock_response = mock.MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"done": True, "response": {"a": 1}}
+
+    with mock.patch.object(
+        client, "_execute_api_call", return_value=mock_response
+    ) as mock_execute_api_call:
+      with mock.patch(
+          "google.adk.tools.application_integration_tool.clients.connections_client.time.sleep"
+      ) as mock_sleep:
+        result = client._poll_operation("operations/test_op")
+
+    assert result == {"done": True, "response": {"a": 1}}
+    assert mock_execute_api_call.call_count == 1
+    assert mock_sleep.call_count == 0
+
+  def test_poll_operation_sleeps_only_between_polls(
+      self, project, location, connection_name
+  ):
+    credentials = {"email": "test@example.com"}
+    client = ConnectionsClient(project, location, connection_name, credentials)
+    responses = []
+    for done in (False, False, True):
+      mock_response = mock.MagicMock()
+      mock_response.status_code = 200
+      mock_response.json.return_value = {"done": done}
+      responses.append(mock_response)
+
+    with mock.patch.object(
+        client, "_execute_api_call", side_effect=responses
+    ) as mock_execute_api_call:
+      with mock.patch(
+          "google.adk.tools.application_integration_tool.clients.connections_client.time.sleep"
+      ) as mock_sleep:
+        result = client._poll_operation("operations/test_op")
+
+    assert result == {"done": True}
+    assert mock_execute_api_call.call_count == 3
+    assert mock_sleep.call_args_list == [mock.call(1), mock.call(1)]
+
   def test_get_connector_base_spec(self):
     spec = ConnectionsClient.get_connector_base_spec()
     assert "openapi" in spec

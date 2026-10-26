@@ -146,6 +146,37 @@ class BaseComputer(abc.ABC):
       The current state after typing.
     """
 
+  async def type_text(
+      self,
+      text: str,
+      press_enter: bool = False,
+  ) -> ComputerState:
+    """Types text into the currently focused element.
+
+    By default, this calls `key_combination([char])` once per character in
+    `text` (and once for `"Enter"` when `press_enter` is True). Because
+    `key_combination` is designed for key names and typically captures a new
+    screenshot on every call, this fallback incurs one round-trip and screenshot
+    per character and relies on the backend accepting single-character strings
+    in `key_combination`. Subclasses should override this method to use native
+    bulk text input.
+
+    Args:
+      text: The text to type.
+      press_enter: Whether to press ENTER after typing.
+
+    Returns:
+      The current state after typing.
+    """
+    state: Optional[ComputerState] = None
+    for char in text:
+      state = await self.key_combination([char])
+    if press_enter:
+      state = await self.key_combination(["Enter"])
+    if state is None:
+      return await self.current_state()
+    return state
+
   @abc.abstractmethod
   async def scroll_document(
       self, direction: Literal["up", "down", "left", "right"]

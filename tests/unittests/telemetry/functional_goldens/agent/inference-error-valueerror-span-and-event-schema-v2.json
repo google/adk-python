@@ -1,0 +1,178 @@
+{
+  "root_span": {
+    "name": "invoke_workflow some_root_agent",
+    "attributes": {
+      "gen_ai.operation.name": "invoke_workflow",
+      "gen_ai.conversation.id": "PRESENT",
+      "gen_ai.workflow.name": "some_root_agent"
+    },
+    "status": "ERROR",
+    "children": [
+      {
+        "name": "invoke_agent some_root_agent",
+        "attributes": {
+          "gen_ai.operation.name": "invoke_agent",
+          "gen_ai.agent.description": "A sample root agent.",
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.conversation.id": "PRESENT"
+        },
+        "status": "ERROR",
+        "children": [
+          {
+            "name": "generate_content gemini-2.5-flash",
+            "attributes": {
+              "gen_ai.operation.name": "generate_content",
+              "gen_ai.request.model": "gemini-2.5-flash",
+              "gen_ai.agent.name": "some_root_agent",
+              "gen_ai.conversation.id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gen_ai.provider.name": "gcp.gemini",
+              "gen_ai.input.messages": [
+                {
+                  "role": "user",
+                  "parts": [
+                    {
+                      "content": "hello",
+                      "type": "text"
+                    }
+                  ]
+                }
+              ],
+              "gen_ai.system_instructions": [
+                {
+                  "content": "you are helpful\n\nYou are an agent. Your internal name is \"some_root_agent\". The description about you is \"A sample root agent.\".",
+                  "type": "text"
+                }
+              ],
+              "gen_ai.tool.definitions": [
+                {
+                  "name": "some_tool",
+                  "description": "A sample tool.",
+                  "parameters": {
+                    "properties": {
+                      "arg1": {
+                        "title": "Arg1",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "arg1"
+                    ],
+                    "title": "some_toolParams",
+                    "type": "object"
+                  },
+                  "type": "function"
+                }
+              ]
+            },
+            "status": "ERROR",
+            "children": [],
+            "logs": [
+              {
+                "event_name": "gen_ai.client.inference.operation.details",
+                "body": null,
+                "attributes": {
+                  "gen_ai.agent.name": "some_root_agent",
+                  "gen_ai.conversation.id": "PRESENT",
+                  "gcp.vertex.agent.event_id": "PRESENT",
+                  "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "gen_ai.provider.name": "gcp.gemini",
+                  "user.id": "test_user",
+                  "gen_ai.input.messages": [
+                    {
+                      "role": "user",
+                      "parts": [
+                        {
+                          "content": "hello",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "gen_ai.system_instructions": [
+                    {
+                      "content": "you are helpful\n\nYou are an agent. Your internal name is \"some_root_agent\". The description about you is \"A sample root agent.\".",
+                      "type": "text"
+                    }
+                  ],
+                  "gen_ai.tool.definitions": [
+                    {
+                      "name": "some_tool",
+                      "description": "A sample tool.",
+                      "parameters": {
+                        "properties": {
+                          "arg1": {
+                            "title": "Arg1",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "arg1"
+                        ],
+                        "title": "some_toolParams",
+                        "type": "object"
+                      },
+                      "type": "function"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "logs": []
+      }
+    ],
+    "logs": []
+  },
+  "metric_points": {
+    "gen_ai.client.operation.duration": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "error.type": "ValueError"
+        },
+        "value": "PRESENT"
+      }
+    ],
+    "gen_ai.invoke_agent.duration": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "error.type": "ValueError"
+        },
+        "value": "PRESENT"
+      }
+    ],
+    "gen_ai.invoke_agent.inference_calls": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 1
+      }
+    ],
+    "gen_ai.invoke_agent.tool_calls": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 0
+      }
+    ],
+    "gen_ai.invoke_workflow.duration": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "invoke_workflow",
+          "error.type": "ValueError",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": "PRESENT"
+      }
+    ]
+  }
+}

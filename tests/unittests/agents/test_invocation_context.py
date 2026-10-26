@@ -26,9 +26,14 @@ from google.adk.apps import ResumabilityConfig
 from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.live import LiveRequestQueue
+from google.adk.live._active_background_tool import ActiveBackgroundTool
+from google.adk.live._active_streaming_tool import ActiveStreamingTool
+from google.adk.live._flow_utils import stop_background_tool_tasks
 from google.adk.platform.thread import create_thread
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
+from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.genai.types import Content
 from google.genai.types import FunctionCall
 from google.genai.types import FunctionResponse
@@ -603,6 +608,30 @@ class TestInvocationContextWithAppResumablity:
     )
 
     assert not invocation_context.should_pause_invocation(nonpausable_event)
+
+  def test_should_pause_on_legacy_request_input_call_without_lro_ids(
+      self, event_to_pause
+  ):
+    """A legacy HITL call with no long_running_tool_ids still pauses."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    legacy_event = event_to_pause.model_copy(
+        update={
+            'long_running_tool_ids': None,
+            'content': testing_utils.ModelContent([
+                Part(
+                    function_call=FunctionCall(
+                        id='req_1',
+                        name=REQUEST_INPUT_FUNCTION_CALL_NAME,
+                        args={},
+                    )
+                )
+            ]),
+        }
+    )
+
+    assert invocation_context.should_pause_invocation(legacy_event)
 
   def test_should_not_pause_invocation_with_no_function_calls(
       self, event_to_pause
@@ -1217,3 +1246,489 @@ def test_get_events_current_branch_filters_each_response_independently():
       reply_here,
       reply_child,
   ]
+
+
+def test_get_events_current_branch_filters_by_node_path_for_single_turn_agent():
+  """A branched single_turn agent drops events from sibling node_paths on the same branch."""
+  from google.adk.events.event import NodeInfo
+  from google.adk.utils._agent_mode import AgentMode
+
+  agent = Mock(spec=BaseAgent)
+  agent.mode = AgentMode.SINGLE_TURN
+
+  unscoped_user = Event(invocation_id='inv_1', author='user', branch=None)
+  sibling_node_event = Event(
+      invocation_id='inv_1',
+      author='node_a',
+      branch='agent_1',
+      node_info=NodeInfo(id='node_a', path='wf@1/node_a@1'),
+  )
+  sibling_user_event = Event(
+      invocation_id='inv_1',
+      author='user',
+      branch='agent_1',
+      node_info=NodeInfo(id='node_a', path='wf@1/node_a@1'),
+  )
+  own_node_event = Event(
+      invocation_id='inv_1',
+      author='node_b',
+      branch='agent_1',
+      node_info=NodeInfo(id='node_b', path='wf@1/node_b@1'),
+  )
+  descendant_node_event = Event(
+      invocation_id='inv_1',
+      author='child',
+      branch='agent_1',
+      node_info=NodeInfo(id='child', path='wf@1/node_b@1/child@1'),
+  )
+
+  ctx = InvocationContext(
+      session_service=Mock(spec=BaseSessionService),
+      agent=agent,
+      invocation_id='inv_1',
+      branch='agent_1',
+      node_path='wf@1/node_b@1',
+      session=Mock(
+          spec=Session,
+          events=[
+              unscoped_user,
+              sibling_node_event,
+              sibling_user_event,
+              own_node_event,
+              descendant_node_event,
+          ],
+      ),
+  )
+
+  assert ctx._get_events(current_branch=True) == [
+      unscoped_user,
+      own_node_event,
+      descendant_node_event,
+  ]
+
+
+def _background_ctx() -> InvocationContext:
+  return InvocationContext(
+      session_service=Mock(spec=BaseSessionService),
+      agent=Mock(spec=BaseAgent),
+      invocation_id='inv_1',
+      session=Mock(spec=Session, events=[]),
+  )
+
+
+async def _sleep_forever() -> None:
+  await asyncio.sleep(100)
+
+
+@pytest.fixture(name='background_tasks')
+async def _background_tasks_fixture():
+  """Two running tasks, cancelled when the test ends."""
+  tasks = [asyncio.create_task(_sleep_forever()) for _ in range(2)]
+  yield tasks
+  for task in tasks:
+    task.cancel()
+  await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_parallel_calls_to_one_tool_are_registered_separately(
+    background_tasks,
+):
+  """Parallel calls to the same tool are registered side by side."""
+  ctx = _background_ctx()
+  first, second = background_tasks
+
+  ctx._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='monitor', function_call_id='fc_1', task=first
+      )
+  )
+  ctx._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='monitor', function_call_id='fc_2', task=second
+      )
+  )
+
+  assert ctx._active_background_tools['fc_1'].task is first
+  assert ctx._active_background_tools['fc_2'].task is second
+
+
+async def test_copy_made_before_first_registration_has_its_own_tools(
+    background_tasks,
+):
+  """A sibling agent's context does not see this agent's background tools."""
+  parent = _background_ctx()
+  sibling = parent.model_copy()
+
+  parent._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='monitor', function_call_id='fc_1', task=background_tasks[0]
+      )
+  )
+
+  assert not sibling._active_background_tools
+
+
+async def test_deprecated_active_streaming_tools_view(background_tasks):
+  """The deprecated view lists streaming calls by tool name, latest call wins."""
+  ctx = _background_ctx()
+  first, second = background_tasks
+  stream = LiveRequestQueue()
+  ctx._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='monitor',
+          function_call_id='fc_1',
+          task=first,
+          is_generator=True,
+      )
+  )
+  ctx._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='monitor',
+          function_call_id='fc_2',
+          task=second,
+          input_stream=stream,
+          is_generator=True,
+      )
+  )
+  ctx._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='lookup', function_call_id='fc_3', task=first
+      )
+  )
+
+  with pytest.warns(DeprecationWarning, match='active_streaming_tools'):
+    view = ctx.active_streaming_tools
+
+  assert list(view) == ['monitor']
+  assert view['monitor'].task is second
+  assert view['monitor'].stream is stream
+
+
+async def test_deprecated_active_non_blocking_tool_tasks_view(
+    background_tasks,
+):
+  """The deprecated view lists non-blocking calls under their old keys."""
+  ctx = _background_ctx()
+  first, second = background_tasks
+  ctx._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='lookup', function_call_id='fc_1', task=first
+      )
+  )
+  ctx._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='monitor',
+          function_call_id='fc_2',
+          task=second,
+          is_generator=True,
+      )
+  )
+
+  with pytest.warns(DeprecationWarning, match='active_non_blocking_tool_tasks'):
+    view = ctx.active_non_blocking_tool_tasks
+
+  assert view == {'lookup_fc_1': first}
+
+
+def test_deprecated_views_are_none_before_any_registration():
+  """Like the fields they replace, the views are None until a tool runs."""
+  ctx = _background_ctx()
+
+  with pytest.warns(DeprecationWarning):
+    assert ctx.active_streaming_tools is None
+  with pytest.warns(DeprecationWarning):
+    assert ctx.active_non_blocking_tool_tasks is None
+
+
+async def test_deprecated_active_streaming_tools_writes_reach_registry(
+    background_tasks,
+):
+  """Code written against the old dict still drives the framework."""
+  ctx = _background_ctx()
+  first, second = background_tasks
+  stream = LiveRequestQueue()
+
+  with pytest.warns(DeprecationWarning):
+    if ctx.active_streaming_tools is None:
+      ctx.active_streaming_tools = {}
+  with pytest.warns(DeprecationWarning):
+    ctx.active_streaming_tools['monitor'] = ActiveStreamingTool(
+        task=first, stream=stream
+    )
+
+  (entry,) = ctx._active_background_tools.values()
+  assert entry.tool_name == 'monitor'
+  assert entry.task is first
+  assert entry.input_stream is stream
+  assert entry.is_generator
+
+  with pytest.warns(DeprecationWarning):
+    ctx.active_streaming_tools['monitor'].task = second
+  with pytest.warns(DeprecationWarning):
+    ctx.active_streaming_tools['monitor'].stream = None
+  assert entry.task is second
+  assert entry.input_stream is None
+
+  with pytest.warns(DeprecationWarning):
+    del ctx.active_streaming_tools['monitor']
+  assert not ctx._active_background_tools
+  assert not second.done()
+
+
+async def test_deprecated_active_streaming_tools_assignment_replaces_calls(
+    background_tasks,
+):
+  """Assigning a tool replaces all its calls, and other kinds are untouched."""
+  ctx = _background_ctx()
+  first, second = background_tasks
+  for function_call_id in ('fc_1', 'fc_2'):
+    ctx._add_background_tool(
+        ActiveBackgroundTool(
+            tool_name='monitor',
+            function_call_id=function_call_id,
+            task=first,
+            is_generator=True,
+        )
+    )
+  ctx._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='lookup', function_call_id='fc_3', task=first
+      )
+  )
+
+  with pytest.warns(DeprecationWarning):
+    ctx.active_streaming_tools['monitor'] = ActiveStreamingTool(task=second)
+
+  with pytest.warns(DeprecationWarning):
+    view = ctx.active_streaming_tools
+  assert len(view) == 1
+  assert view['monitor'].task is second
+  assert 'fc_3' in ctx._active_background_tools
+
+  with pytest.warns(DeprecationWarning):
+    ctx.active_streaming_tools = None
+  assert list(ctx._active_background_tools) == ['fc_3']
+
+
+async def test_deprecated_active_non_blocking_tool_tasks_writes_reach_registry(
+    background_tasks,
+):
+  """Tasks added or removed through the old dict are tracked accordingly."""
+  ctx = _background_ctx()
+  first, second = background_tasks
+  ctx._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='lookup', function_call_id='fc_1', task=first
+      )
+  )
+
+  with pytest.warns(DeprecationWarning):
+    ctx.active_non_blocking_tool_tasks['my_task'] = second
+  with pytest.warns(DeprecationWarning):
+    assert ctx.active_non_blocking_tool_tasks == {
+        'lookup_fc_1': first,
+        'my_task': second,
+    }
+
+  with pytest.warns(DeprecationWarning):
+    del ctx.active_non_blocking_tool_tasks['lookup_fc_1']
+  (entry,) = ctx._active_background_tools.values()
+  assert entry.task is second
+  assert not first.done()
+
+  with pytest.warns(DeprecationWarning):
+    ctx.active_non_blocking_tool_tasks.clear()
+  assert not ctx._active_background_tools
+
+
+async def test_tasks_written_through_deprecated_fields_are_stopped(
+    background_tasks,
+):
+  """The framework cancels tasks registered through the deprecated fields."""
+  ctx = _background_ctx()
+  first, second = background_tasks
+  with pytest.warns(DeprecationWarning):
+    ctx.active_streaming_tools = {'monitor': ActiveStreamingTool(task=first)}
+  with pytest.warns(DeprecationWarning):
+    ctx.active_non_blocking_tool_tasks = {'lookup_fc_1': second}
+
+  await stop_background_tool_tasks(ctx)
+
+  assert first.cancelled()
+  assert second.cancelled()
+  assert not ctx._active_background_tools
+
+
+@pytest.mark.parametrize(
+    'field', ['active_streaming_tools', 'active_non_blocking_tool_tasks']
+)
+def test_deprecated_constructor_arguments_are_applied(field):
+  """Passing a deprecated field to the constructor registers its entries."""
+  task = Mock(spec=asyncio.Task)
+  value = (
+      {'monitor': ActiveStreamingTool(task=task)}
+      if field == 'active_streaming_tools'
+      else {'lookup_fc_1': task}
+  )
+  with pytest.warns(DeprecationWarning, match=field):
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+        **{field: value},
+    )
+
+  (entry,) = ctx._active_background_tools.values()
+  assert entry.task is task
+  with pytest.warns(DeprecationWarning):
+    assert list(getattr(ctx, field)) == list(value)
+
+
+def test_deprecated_model_validate_applies_fields():
+  """model_validate accepts the deprecated fields like the constructor does."""
+  task = Mock(spec=asyncio.Task)
+
+  with pytest.warns(DeprecationWarning, match='active_non_blocking_tool_tasks'):
+    ctx = InvocationContext.model_validate({
+        'session_service': Mock(spec=BaseSessionService),
+        'invocation_id': 'inv_1',
+        'session': Mock(spec=Session, events=[]),
+        'active_non_blocking_tool_tasks': {'lookup_fc_1': task},
+    })
+
+  (entry,) = ctx._active_background_tools.values()
+  assert entry.task is task
+
+
+async def test_deprecated_views_raise_key_error_for_missing_keys(
+    background_tasks,
+):
+  """Missing keys raise KeyError, like the dicts the views replace."""
+  ctx = _background_ctx()
+  ctx._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='monitor',
+          function_call_id='fc_1',
+          task=background_tasks[0],
+          is_generator=True,
+      )
+  )
+
+  with pytest.warns(DeprecationWarning):
+    streaming = ctx.active_streaming_tools
+  with pytest.warns(DeprecationWarning):
+    non_blocking = ctx.active_non_blocking_tool_tasks
+  for view in (streaming, non_blocking):
+    with pytest.raises(KeyError):
+      _ = view['lookup']
+    with pytest.raises(KeyError):
+      del view['lookup']
+  assert 'monitor' in streaming
+  assert not non_blocking
+
+
+async def test_deprecated_active_non_blocking_tool_tasks_overwrites_key(
+    background_tasks,
+):
+  """Writing an existing key replaces that call's task in place."""
+  ctx = _background_ctx()
+  first, second = background_tasks
+  ctx._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='lookup', function_call_id='fc_1', task=first
+      )
+  )
+
+  with pytest.warns(DeprecationWarning):
+    ctx.active_non_blocking_tool_tasks['lookup_fc_1'] = second
+
+  assert list(ctx._active_background_tools) == ['fc_1']
+  assert ctx._active_background_tools['fc_1'].task is second
+
+
+async def test_deprecated_active_non_blocking_tool_tasks_assignment_replaces(
+    background_tasks,
+):
+  """Assigning the field replaces the non-blocking calls only."""
+  ctx = _background_ctx()
+  first, second = background_tasks
+  ctx._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='lookup', function_call_id='fc_1', task=first
+      )
+  )
+  ctx._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='monitor',
+          function_call_id='fc_2',
+          task=first,
+          is_generator=True,
+      )
+  )
+
+  with pytest.warns(DeprecationWarning):
+    ctx.active_non_blocking_tool_tasks = {'other_fc_3': second}
+
+  with pytest.warns(DeprecationWarning):
+    assert ctx.active_non_blocking_tool_tasks == {'other_fc_3': second}
+  assert 'fc_1' not in ctx._active_background_tools
+  assert 'fc_2' in ctx._active_background_tools
+
+
+@pytest.mark.parametrize(
+    'field', ['active_streaming_tools', 'active_non_blocking_tool_tasks']
+)
+async def test_deprecated_field_self_assignment_keeps_entries(
+    background_tasks, field
+):
+  """Assigning a field its own view keeps every entry."""
+  ctx = _background_ctx()
+  ctx._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='tool',
+          function_call_id='fc_1',
+          task=background_tasks[0],
+          is_generator=field == 'active_streaming_tools',
+      )
+  )
+
+  with pytest.warns(DeprecationWarning):
+    setattr(ctx, field, getattr(ctx, field))
+
+  (entry,) = ctx._active_background_tools.values()
+  assert entry.task is background_tasks[0]
+
+
+async def test_deprecated_views_repr_like_a_dict(background_tasks):
+  """The views print as the dicts they stand in for."""
+  ctx = _background_ctx()
+  ctx._add_background_tool(
+      ActiveBackgroundTool(
+          tool_name='lookup', function_call_id='fc_1', task=background_tasks[0]
+      )
+  )
+
+  with pytest.warns(DeprecationWarning):
+    non_blocking = ctx.active_non_blocking_tool_tasks
+  with pytest.warns(DeprecationWarning):
+    streaming = ctx.active_streaming_tools
+
+  assert repr(non_blocking) == repr({'lookup_fc_1': background_tasks[0]})
+  assert repr(streaming) == '{}'
+
+
+async def test_deprecated_views_keep_same_named_entries_apart(background_tasks):
+  """The same name written to both deprecated fields makes two entries."""
+  ctx = _background_ctx()
+  first, second = background_tasks
+
+  with pytest.warns(DeprecationWarning):
+    ctx.active_streaming_tools = {'lookup': ActiveStreamingTool(task=first)}
+  with pytest.warns(DeprecationWarning):
+    ctx.active_non_blocking_tool_tasks = {'lookup': second}
+
+  with pytest.warns(DeprecationWarning):
+    assert ctx.active_streaming_tools['lookup'].task is first
+  with pytest.warns(DeprecationWarning):
+    assert ctx.active_non_blocking_tool_tasks == {'lookup': second}
+  assert len(ctx._active_background_tools) == 2

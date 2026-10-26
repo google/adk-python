@@ -32,6 +32,7 @@ from google.genai import types
 from pydantic import BaseModel
 from pydantic import PrivateAttr
 from pydantic import PydanticSchemaGenerationError
+from pydantic import PydanticUserError
 from pydantic import TypeAdapter
 from typing_extensions import override
 
@@ -39,20 +40,22 @@ from ..auth.auth_tool import AuthConfig
 from ..events.event import Event
 from ..events.request_input import RequestInput
 from ..platform.thread import create_thread
-from ..tools.tool_confirmation import ToolConfirmation
 from ..utils._callable_utils import CallableSpec
 from ..utils._schema_utils import _unwrap_content_payload
 from ..utils._schema_utils import annotation_expects_str
-from ..utils._sync_runner import _SYNC_CALLABLE_RUNNER
+from ..utils._sync_runner import _invoke_callable
+from ..utils._sync_runner import _resolve_sync_callable_runner
+from ..utils._sync_runner import _use_sync_callable_runner
 from ..utils.context_utils import Aclosing
 from ._base_node import BaseNode
 from ._errors import WorkflowConfigurationError
 from ._errors import WorkflowDataError
 from ._retry_config import RetryConfig
-from .utils._workflow_hitl_utils import confirmation_interrupt_id
+from .utils._workflow_hitl_utils import apply_confirmation_resume
+from .utils._workflow_hitl_utils import auth_interrupt_id
 from .utils._workflow_hitl_utils import create_auth_request_event
+from .utils._workflow_hitl_utils import create_confirmation_request_input
 from .utils._workflow_hitl_utils import has_auth_credential
-from .utils._workflow_hitl_utils import parse_tool_confirmation
 from .utils._workflow_hitl_utils import process_auth_resume
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -71,7 +74,7 @@ async def _sync_to_async_gen(
   execute at once; between yields the dedicated thread is parked and holds no
   pool worker, so suspended generators cannot starve the pool.
   """
-  runner = _SYNC_CALLABLE_RUNNER.get()
+  runner = _resolve_sync_callable_runner()
   if runner is None:
     try:
       for item in sync_gen:
@@ -82,10 +85,6 @@ async def _sync_to_async_gen(
 
   sentinel = object()
   gen_context = contextvars.copy_context()
-  # Like any sync callable on the pool, the generator body runs with no runner
-  # bound, so a nested sync call it makes runs inline on its thread instead of
-  # waiting for the pool worker that this step is holding.
-  gen_context.run(_SYNC_CALLABLE_RUNNER.set, None)
   # Guards gen_thread, closed and finished, which the event loop, the pool
   # worker running a step and the generator thread all read.
   lock = threading.Lock()
@@ -99,32 +98,36 @@ async def _sync_to_async_gen(
 
   def _drive_sync_gen() -> None:
     nonlocal step_result, finished, close_error
-    try:
-      while True:
-        want_next.wait()
-        want_next.clear()
-        with lock:
-          if closed:
-            break
-        try:
-          item = next(sync_gen, sentinel)
-        except BaseException as exc:  # pylint: disable=broad-exception-caught
-          step_result = ("error", exc)
-          break
-        if item is sentinel:
-          step_result = ("done", None)
-          break
-        step_result = ("item", item)
-        step_done.set()
-    finally:
+    # Like any sync callable on the pool, the generator body runs with no
+    # runner bound, so a nested sync call runs inline on its thread instead of
+    # waiting for the pool worker that this step is holding.
+    with _use_sync_callable_runner(None):
       try:
-        sync_gen.close()
-      except BaseException as exc:  # pylint: disable=broad-exception-caught
-        close_error = exc
+        while True:
+          want_next.wait()
+          want_next.clear()
+          with lock:
+            if closed:
+              break
+          try:
+            item = next(sync_gen, sentinel)
+          except BaseException as exc:  # pylint: disable=broad-exception-caught
+            step_result = ("error", exc)
+            break
+          if item is sentinel:
+            step_result = ("done", None)
+            break
+          step_result = ("item", item)
+          step_done.set()
       finally:
-        with lock:
-          finished = True
-        step_done.set()
+        try:
+          sync_gen.close()
+        except BaseException as exc:  # pylint: disable=broad-exception-caught
+          close_error = exc
+        finally:
+          with lock:
+            finished = True
+          step_done.set()
 
   def _step_in_pool() -> tuple[str, Any]:
     # Runs on a pool worker and blocks it until the generator thread finishes
@@ -205,6 +208,24 @@ _GENERATOR_ORIGINS = (
 )
 
 
+class _ResolvedParameters(dict[str, Any]):
+  """Marker dict subclass indicating parameters have already been resolved.
+
+  ``source`` keeps the input they were resolved from. The first bind uses the
+  resolved values as they are; a later bind, such as a retry of the same node,
+  resolves again from ``source`` so values that coercion rebuilds are fresh
+  rather than carried over from a previous attempt.
+  """
+
+  source: Any
+  bound: bool
+
+  def __init__(self, values: dict[str, Any], *, source: Any = None):
+    super().__init__(values)
+    self.source = source
+    self.bound = False
+
+
 def _warn_on_non_text_parts(
     content: types.Content, func_name: str, param_name: str
 ) -> None:
@@ -220,26 +241,6 @@ def _warn_on_non_text_parts(
           param_name,
           func_name,
       )
-
-
-async def _invoke_callable(
-    target: Callable[..., Any],
-    kwargs: dict[str, Any],
-    *,
-    unwrapped: Callable[..., Any] | None = None,
-) -> Any:
-  """Invokes a sync or async callable, using the sync runner when configured."""
-  check_target = unwrapped or target
-  is_async = inspect.iscoroutinefunction(check_target) or (
-      hasattr(check_target, "__call__")
-      and inspect.iscoroutinefunction(check_target.__call__)
-  )
-  if is_async:
-    return await target(**kwargs)
-  runner = _SYNC_CALLABLE_RUNNER.get()
-  if runner is not None:
-    return await runner(target, kwargs)
-  return target(**kwargs)
 
 
 class FunctionNode(BaseNode):
@@ -288,6 +289,7 @@ class FunctionNode(BaseNode):
   _sig: inspect.Signature = PrivateAttr()
   _type_hints: dict[str, Any] = PrivateAttr()
   _type_adapters: dict[str, TypeAdapter[Any]] = PrivateAttr()
+  _failed_type_adapters: set[str] = PrivateAttr(default_factory=set)
   # Always assigned in __init__; 'ctx' is the fallback used when the wrapped
   # function declares no context parameter.
   _context_param_name: str = PrivateAttr(default="ctx")
@@ -377,7 +379,7 @@ class FunctionNode(BaseNode):
     )
 
     sig = spec.signature
-    type_hints = spec.type_hints
+    type_hints = spec.get_best_effort_type_hints()
 
     self._context_param_name = spec.context_param_name or "ctx"
 
@@ -387,13 +389,15 @@ class FunctionNode(BaseNode):
     self._sig = sig
     self._type_hints = type_hints
     self._type_adapters = {}
+    self._failed_type_adapters = set()
     for name, hint in type_hints.items():
       if name == "return" or name == self._context_param_name:
         continue
-      try:
-        self._type_adapters[name] = TypeAdapter(hint)
-      except (TypeError, PydanticSchemaGenerationError):
-        pass
+      adapter = self._build_type_adapter(name, hint)
+      if adapter is not None:
+        self._type_adapters[name] = adapter
+      else:
+        self._failed_type_adapters.add(name)
 
     # Infer schemas based on the parameter binding mode.
     if parameter_binding == "node_input":
@@ -451,38 +455,53 @@ class FunctionNode(BaseNode):
     from ..tools._function_tool_declarations import _build_response_json_schema
 
     ignore_params: list[str] = [self._context_param_name]
-    self.input_schema = _build_parameters_json_schema(
-        func, ignore_params=ignore_params
-    )
+    try:
+      self.input_schema = _build_parameters_json_schema(
+          func, ignore_params=ignore_params
+      )
+    except (
+        TypeError,
+        NameError,
+        PydanticSchemaGenerationError,
+        PydanticUserError,
+    ) as e:
+      logger.warning(
+          "Skipping input schema inference for FunctionNode '%s' due to"
+          " unhandled annotation type: %s",
+          self.name,
+          e,
+      )
+      self.input_schema = None
     response_schema = _build_response_json_schema(func)
     if response_schema is not None:
       self.output_schema = response_schema
 
-  def _bind_parameters(self, ctx: Context, node_input: Any) -> dict[str, Any]:
-    """Binds function parameters from the appropriate data source.
+  def _validates_by_resolving(self) -> bool:
+    """Returns whether input validation delegates to _resolve_parameters."""
+    return self.parameter_binding == "node_input" and (
+        self.input_schema is None
+        or isinstance(self.input_schema, (dict, types.Schema))
+    )
 
-    In ``'node_input'`` mode, non-context parameters are looked up in the
-    ``node_input`` dict.  In ``'state'`` mode, the ``node_input`` parameter
-    is passed through directly and all other non-context parameters are
-    looked up in ``ctx.state``.
-    """
-    from pydantic import BaseModel
-
+  def _resolve_parameters(
+      self,
+      node_input: Any,
+      *,
+      state: Any = None,
+  ) -> _ResolvedParameters:
+    """Resolves and coerces non-context function parameters."""
     input_bound = self.parameter_binding == "node_input"
-    source: Any
     if input_bound:
-      if isinstance(node_input, (dict, BaseModel)):
-        source = node_input
-      else:
-        source = {}
+      source: Any = (
+          node_input if isinstance(node_input, (dict, BaseModel)) else {}
+      )
+      source_name = "node_input"
     else:
-      source = ctx.state
-    source_name = "node_input" if input_bound else "state"
-
+      source = state if state is not None else {}
+      source_name = "state"
     kwargs: dict[str, Any] = {}
     for param_name, param in self._sig.parameters.items():
       if param_name == self._context_param_name:
-        kwargs[param_name] = ctx
         continue
       if param.kind == inspect.Parameter.VAR_POSITIONAL:
         continue
@@ -528,12 +547,12 @@ class FunctionNode(BaseNode):
           and param_name in self._type_hints
       ):
         try:
-          value = self._coerce_param(
+          kwargs[param_name] = self._coerce_param(
               param_name,
               node_input,
               self._type_hints[param_name],
           )
-          has_param = True
+          continue
         except Exception:
           pass
 
@@ -553,6 +572,31 @@ class FunctionNode(BaseNode):
             f' "{self.name}". It was not found in {source_name} and has no'
             " default value."
         )
+    return _ResolvedParameters(kwargs, source=node_input)
+
+  def _bind_parameters(self, ctx: Context, node_input: Any) -> dict[str, Any]:
+    """Binds function parameters from the appropriate data source.
+
+    In ``'node_input'`` mode, non-context parameters are looked up in the
+    ``node_input`` dict.  In ``'state'`` mode, the ``node_input`` parameter
+    is passed through directly and all other non-context parameters are
+    looked up in ``ctx.state``.
+    """
+    if (
+        self._validates_by_resolving()
+        and isinstance(node_input, _ResolvedParameters)
+        and not node_input.bound
+    ):
+      node_input.bound = True
+      kwargs: dict[str, Any] = dict(node_input)
+    else:
+      if isinstance(node_input, _ResolvedParameters):
+        # A retry gets the same resolved input the failed attempt may have
+        # mutated, so resolve again from the original input.
+        node_input = node_input.source
+      kwargs = dict(self._resolve_parameters(node_input, state=ctx.state))
+    if self._context_param_name in self._sig.parameters:
+      kwargs[self._context_param_name] = ctx
     return kwargs
 
   def _to_event(
@@ -598,6 +642,31 @@ class FunctionNode(BaseNode):
         state=state_delta,
     )
 
+  def _build_type_adapter(
+      self, param_name: str, annotated_type: Any
+  ) -> TypeAdapter[Any] | None:
+    """Builds a TypeAdapter for `annotated_type`, returning None when unsupported."""
+    try:
+      adapter = TypeAdapter(annotated_type)
+      if not adapter.pydantic_complete:
+        adapter.rebuild()
+      return adapter
+    except (
+        TypeError,
+        NameError,
+        PydanticSchemaGenerationError,
+        PydanticUserError,
+    ) as e:
+      logger.warning(
+          "Skipping coercion for parameter '%s' of FunctionNode '%s' due to"
+          " unhandled annotation type '%s': %s",
+          param_name,
+          self.name,
+          annotated_type,
+          e,
+      )
+      return None
+
   def _coerce_param(
       self,
       param_name: str,
@@ -625,68 +694,24 @@ class FunctionNode(BaseNode):
       if annotation_expects_str(annotated_type):
         _warn_on_non_text_parts(value, self.name, param_name)
       value = _unwrap_content_payload(value, annotated_type)
+    if param_name in self._failed_type_adapters:
+      return value
     adapter = self._type_adapters.get(param_name)
     if adapter is None:
-      adapter = TypeAdapter(annotated_type)
+      adapter = self._build_type_adapter(param_name, annotated_type)
+      if adapter is None:
+        self._failed_type_adapters.add(param_name)
+        return value
+      self._type_adapters[param_name] = adapter
     return adapter.validate_python(value)
 
   @override
   def _validate_input_data(self, data: Any) -> Any:
     """Validates input data for FunctionNode."""
-    if self.input_schema is not None and not isinstance(
-        self.input_schema, (dict, types.Schema)
-    ):
-      return super()._validate_input_data(data)
-
-    if self.parameter_binding == "node_input":
-      source: Any = data if isinstance(data, (dict, BaseModel)) else {}
-      validated: dict[str, Any] = {}
-      for param_name, param in self._sig.parameters.items():
-        if param_name == self._context_param_name:
-          continue
-        if param.kind == inspect.Parameter.VAR_POSITIONAL:
-          continue
-        if param.kind == inspect.Parameter.VAR_KEYWORD:
-          if isinstance(source, dict):
-            for k, v in source.items():
-              if (
-                  k not in self._sig.parameters
-                  and k != self._context_param_name
-              ):
-                validated[k] = v
-          continue
-
-        has_param = False
-        value = None
-        if isinstance(source, BaseModel):
-          if hasattr(source, param_name):
-            has_param = True
-            value = getattr(source, param_name)
-        else:
-          try:
-            if param_name in source:
-              has_param = True
-              value = source[param_name]
-          except (TypeError, KeyError):
-            pass
-
-        if has_param:
-          if param_name in self._type_hints:
-            value = self._coerce_param(
-                param_name,
-                value,
-                self._type_hints[param_name],
-            )
-          validated[param_name] = value
-        elif param.default is not inspect.Parameter.empty:
-          validated[param_name] = param.default
-        else:
-          raise WorkflowDataError(
-              f'Missing value for parameter "{param_name}" of function'
-              f' "{self.name}". It was not found in node_input and has no'
-              " default value."
-          )
-      return validated
+    if self._validates_by_resolving():
+      if isinstance(data, _ResolvedParameters):
+        return data
+      return self._resolve_parameters(data)
 
     return super()._validate_input_data(data)
 
@@ -793,10 +818,7 @@ class FunctionNode(BaseNode):
     # --- Confirmation gate ---
     resumed_confirmation = False
     if self.require_confirmation:
-      interrupt_id = confirmation_interrupt_id(ctx.node_path)
-      if (conf_response := ctx.resume_inputs.get(interrupt_id)) is not None:
-        resumed_confirmation = True
-        ctx.tool_confirmation = parse_tool_confirmation(conf_response)
+      resumed_confirmation = apply_confirmation_resume(ctx)
       if ctx.tool_confirmation is not None:
         if not ctx.tool_confirmation.confirmed:
           yield Event(output={"error": "This tool call is rejected."})
@@ -808,20 +830,16 @@ class FunctionNode(BaseNode):
         if await self._check_require_confirmation(
             ctx, node_input=node_input, bound_args=bound_args
         ):
-          yield RequestInput(
-              interrupt_id=interrupt_id,
-              message=f"Please approve or reject the tool call {self.name}().",
-              payload={
-                  "tool_name": self.name,
-                  "args": _ANY_TYPE_ADAPTER.dump_python(bound_args),
-              },
-              response_schema=ToolConfirmation,
+          yield create_confirmation_request_input(
+              node_path=ctx.node_path,
+              tool_name=self.name,
+              args=_ANY_TYPE_ADAPTER.dump_python(bound_args),
           )
           return
 
     # --- Auth gate ---
     if self.auth_config:
-      interrupt_id = f"wf_auth:{ctx.node_path}"
+      interrupt_id = auth_interrupt_id(ctx.node_path)
       auth_response = ctx.resume_inputs.get(interrupt_id)
       if auth_response is not None:
         await process_auth_resume(

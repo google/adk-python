@@ -132,7 +132,7 @@ def _get_enterprise_setting(
     if client_kwargs.get('enterprise') or client_kwargs.get('vertexai'):
       return True
   if _ENTERPRISE_ENV in os.environ:
-    return env_utils.is_env_enabled(_ENTERPRISE_ENV)
+    return env_utils._is_genai_env_enabled(_ENTERPRISE_ENV)
   if _VERTEXAI_ENV in os.environ:
     warnings.warn(
         'GOOGLE_GENAI_USE_VERTEXAI is deprecated, please use'
@@ -140,7 +140,7 @@ def _get_enterprise_setting(
         DeprecationWarning,
         stacklevel=2,
     )
-    return env_utils.is_env_enabled(_VERTEXAI_ENV)
+    return env_utils._is_genai_env_enabled(_VERTEXAI_ENV)
   return None
 
 

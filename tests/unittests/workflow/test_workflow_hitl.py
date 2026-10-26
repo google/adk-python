@@ -1053,29 +1053,13 @@ async def test_rerun_with_multiple_hitl_and_outputs(
   assert node_b.received_inputs == ['final_output']
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        False,
-        pytest.param(
-            True,
-            marks=pytest.mark.xfail(
-                reason=(
-                    'A rerun_on_resume node is re-run as soon as one interrupt'
-                    ' resolves instead of waiting for all pending interrupts;'
-                    ' fixing this needs a change to the shared replay'
-                    ' interception logic.'
-                )
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
-async def test_rerun_on_resume_waits_for_all_interrupts(
+async def test_rerun_on_resume_reruns_when_any_interrupt_resolves(
     request: pytest.FixtureRequest,
     resumable: bool,
 ):
-  """Tests that a rerun_on_resume node is not rerun until all pending interrupts are resolved."""
+  """A rerun_on_resume node reruns when any of its interrupts is answered."""
 
   class _SimultaneousInputsNode(BaseNode):
     """A node that requests multiple inputs simultaneously."""
@@ -1161,7 +1145,7 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
         'req2',
     }
 
-  # Run 2: provide only req1 — node should stay WAITING, NOT rerun.
+  # Run 2: provide only req1 — the node reruns and asks for req2 again.
   events2 = await runner.run_async(
       new_message=testing_utils.UserContent(
           create_request_input_response('req1', {'text': 'response 1'})
@@ -1174,7 +1158,6 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
       )
   )
 
-  # Node should remain WAITING with req2 still pending.
   if resumable:
     final_state2 = simplified2[-1][1]
     assert final_state2['nodes']['NodeA']['status'] == (
@@ -1182,14 +1165,9 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
     )
     assert final_state2['nodes']['NodeA']['interrupts'] == ['req2']
 
-  # The node should NOT have produced any RequestInput or data output in resumable mode.
-  # In non-resumable mode, it re-yields the pending interrupt 'req2'.
   req_events2 = workflow_testing_utils.get_request_input_events(events2)
-  if resumable:
-    assert len(req_events2) == 0
-  else:
-    assert len(req_events2) == 1
-    assert extract_event_interrupt_ids(req_events2[0]) == {'req2'}
+  assert len(req_events2) == 1
+  assert extract_event_interrupt_ids(req_events2[0]) == {'req2'}
 
   # Run 3: provide req2 — now all interrupts resolved, node should rerun.
   events3 = await runner.run_async(
@@ -1226,6 +1204,52 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
       'input1': 'response 1',
       'input2': 'response 2',
   }
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_rerun_on_resume_node_continues_with_first_answer(
+    request: pytest.FixtureRequest,
+    resumable: bool,
+):
+  """A node waiting on alternative inputs continues with the first answer."""
+
+  @node(rerun_on_resume=True)
+  def wait_for_either(ctx: Context):
+    for interrupt_id in ('approval', 'takeover'):
+      if interrupt_id in ctx.resume_inputs:
+        yield Event(output=ctx.resume_inputs[interrupt_id])
+        return
+    yield RequestInput(interrupt_id='approval', message='Approve?')
+    yield RequestInput(interrupt_id='takeover', message='Take over?')
+
+  capture = InputCapturingNode(name='capture')
+  agent = Workflow(
+      name='test_first_answer',
+      edges=[(START, wait_for_either, capture)],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  assert len(workflow_testing_utils.get_request_input_events(events1)) == 2
+  inv_id = events1[0].invocation_id
+
+  # The approval interrupt is never answered.
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response('takeover', {'result': 'manual'})
+      ),
+      invocation_id=inv_id,
+  )
+  assert not workflow_testing_utils.get_request_input_events(events2)
+  assert capture.received_inputs == ['manual']
 
 
 # ---------------------------------------------------------------------------
@@ -2316,3 +2340,148 @@ async def test_request_input_resume_after_earlier_invocation_completed(
       isinstance(output, str) and output.startswith('resumed:')
       for output in outputs3
   ), outputs3
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_parallel_request_input_answered_in_single_message_does_not_deadlock(
+    request: pytest.FixtureRequest,
+    resumable: bool,
+):
+  """Answering parallel RequestInput pauses in one message completes without barrier timeout."""
+  from google.adk.workflow import FunctionNode
+  from google.adk.workflow import JoinNode
+
+  def make_passthrough(name: str) -> FunctionNode:
+    def _run(node_input: Any) -> Any:
+      return node_input
+
+    return FunctionNode(func=_run, name=name)
+
+  def make_pause(name: str) -> FunctionNode:
+    async def _ask(ctx: Context, node_input: Any):
+      if name in ctx.resume_inputs:
+        yield Event(output=node_input)
+        return
+      yield RequestInput(interrupt_id=name, message=f'{name}?')
+
+    return FunctionNode(func=_ask, name=name, rerun_on_resume=True)
+
+  fork = make_passthrough('fork')
+  prepare = make_passthrough('prepare')
+  join = JoinNode(name='join')
+  approve = make_pause('approve')
+  confirm = make_pause('confirm')
+  step0 = make_passthrough('step0')
+  step1 = make_passthrough('step1')
+  step2 = make_passthrough('step2')
+
+  agent = Workflow(
+      name='parallel_hitl_wf',
+      edges=[
+          (START, fork),
+          (fork, [step0, prepare, confirm]),
+          (step0, step1),
+          (step1, step2),
+          (step2, join),
+          (prepare, approve),
+          (approve, join),
+          (confirm, join),
+      ],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('{"x": 0}'))
+  req_events = workflow_testing_utils.get_request_input_events(events1)
+  assert len(req_events) == 2
+  invocation_id = events1[0].invocation_id
+
+  # Respond to both parallel interrupts in a single user message.
+  events2 = await runner.run_async(
+      new_message=types.UserContent(
+          parts=[
+              create_request_input_response('confirm', {'ok': True}),
+              create_request_input_response('approve', {'ok': True}),
+          ]
+      ),
+      invocation_id=invocation_id,
+  )
+
+  assert workflow_testing_utils.get_request_input_events(events2) == []
+  outputs2 = [e.output for e in events2 if e.output is not None]
+  assert outputs2
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_parallel_nested_workflows_with_hitl_resume_does_not_deadlock(
+    request: pytest.FixtureRequest,
+    resumable: bool,
+):
+  """Resuming parallel sub-workflows where one paused and the other has a downstream node completes."""
+  from google.adk.workflow import FunctionNode
+  from google.adk.workflow import JoinNode
+
+  def make_passthrough(name: str) -> FunctionNode:
+    def _run(node_input: Any) -> Any:
+      return node_input
+
+    return FunctionNode(func=_run, name=name)
+
+  async def _ask_gate(ctx: Context, node_input: Any):
+    if 'gate' in ctx.resume_inputs:
+      yield Event(output=node_input)
+      return
+    yield RequestInput(interrupt_id='gate', message='gate?')
+
+  lint = make_passthrough('lint')
+  test_node = make_passthrough('test')
+  checks = Workflow(name='checks', edges=[(START, lint), (lint, test_node)])
+  gate = FunctionNode(func=_ask_gate, name='gate', rerun_on_resume=True)
+  record = make_passthrough('record')
+  review = Workflow(name='review', edges=[(START, gate), (gate, record)])
+  fork = make_passthrough('fork')
+  report = make_passthrough('report')
+  join = JoinNode(name='join')
+
+  agent = Workflow(
+      name='parent_wf',
+      edges=[
+          (START, fork),
+          (fork, [checks, review]),
+          (checks, report),
+          (report, join),
+          (review, join),
+      ],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('{"x": 0}'))
+  req_events = workflow_testing_utils.get_request_input_events(events1)
+  assert len(req_events) == 1
+  invocation_id = events1[0].invocation_id
+
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response('gate', {'ok': True})
+      ),
+      invocation_id=invocation_id,
+  )
+
+  assert workflow_testing_utils.get_request_input_events(events2) == []
+  outputs2 = [e.output for e in events2 if e.output is not None]
+  assert outputs2

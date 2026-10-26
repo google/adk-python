@@ -551,3 +551,228 @@ async def test_execute_tool_span_has_no_response_source_by_default(
 
   (span,) = span_exporter.get_finished_spans()
   assert 'adk.experimental.response.source' not in dict(span.attributes or {})
+
+
+class _ErrorHookRecorder(BasePlugin):
+  """Records the tool calls that started and the errors their hooks received."""
+
+  def __init__(
+      self,
+      *,
+      name: str = 'error_hook_recorder',
+      error_response: dict[str, Any] | None = None,
+      error_to_raise: BaseException | None = None,
+  ) -> None:
+    super().__init__(name=name)
+    self.started: list[str] = []
+    self.errors: list[tuple[str, type[BaseException]]] = []
+    self._error_response = error_response
+    self._error_to_raise = error_to_raise
+
+  async def before_tool_callback(
+      self,
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+  ) -> dict[str, Any] | None:
+    self.started.append(tool.name)
+    return None
+
+  async def on_tool_error_callback(
+      self,
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+      error: Exception,
+  ) -> dict[str, Any] | None:
+    self.errors.append((tool.name, type(error)))
+    if self._error_to_raise is not None:
+      raise self._error_to_raise
+    return self._error_response
+
+
+async def _cancel_while_tool_runs(
+    plugin: _ErrorHookRecorder,
+) -> testing_utils.MockModel:
+  """Runs an agent whose only tool never returns and cancels the run mid-call.
+
+  Args:
+    plugin: The plugin installed on the runner.
+
+  Returns:
+    The agent's model, whose recorded requests show whether the flow went on
+    to call the model again after the tool call.
+  """
+  tool_started = asyncio.Event()
+
+  async def slow_tool() -> dict[str, str]:
+    tool_started.set()
+    await asyncio.Event().wait()  # Returns only by being cancelled.
+    return {'result': 'unreachable'}
+
+  model = testing_utils.MockModel.create(
+      responses=[
+          [types.Part.from_function_call(name='slow_tool', args={})],
+          'done',
+      ]
+  )
+  agent = LlmAgent(name='agent', model=model, tools=[slow_tool])
+  runner = testing_utils.InMemoryRunner(root_agent=agent, plugins=[plugin])
+
+  run = asyncio.create_task(runner.run_async('hi'))
+  await tool_started.wait()
+  run.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await run
+  return model
+
+
+@pytest.mark.asyncio
+async def test_call_cancelled_by_failed_sibling_runs_on_tool_error() -> None:
+  """A call cancelled because a parallel call failed still reaches its hooks."""
+  slow_started = asyncio.Event()
+
+  async def slow_tool() -> dict[str, str]:
+    slow_started.set()
+    await asyncio.Event().wait()  # Returns only by being cancelled.
+    return {'result': 'unreachable'}
+
+  async def failing_tool() -> dict[str, str]:
+    await slow_started.wait()
+    raise ValueError('boom')
+
+  agent_errors: list[tuple[str, type[BaseException]]] = []
+
+  def on_tool_error(
+      tool: BaseTool,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+      error: Exception,
+  ) -> dict[str, Any] | None:
+    agent_errors.append((tool.name, type(error)))
+    return None
+
+  plugin = _ErrorHookRecorder()
+  model = testing_utils.MockModel.create(
+      responses=[[
+          types.Part.from_function_call(name='slow_tool', args={}),
+          types.Part.from_function_call(name='failing_tool', args={}),
+      ]]
+  )
+  agent = LlmAgent(
+      name='agent',
+      model=model,
+      tools=[slow_tool, failing_tool],
+      on_tool_error_callback=on_tool_error,
+  )
+  runner = testing_utils.InMemoryRunner(root_agent=agent, plugins=[plugin])
+
+  with pytest.raises(ValueError, match='boom'):
+    await runner.run_async('hi')
+
+  assert sorted(plugin.started) == ['failing_tool', 'slow_tool']
+  assert sorted(plugin.errors, key=lambda e: e[0]) == [
+      ('failing_tool', ValueError),
+      ('slow_tool', asyncio.CancelledError),
+  ]
+  assert sorted(agent_errors, key=lambda e: e[0]) == [
+      ('failing_tool', ValueError),
+      ('slow_tool', asyncio.CancelledError),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_run_cancelled_mid_tool_call_runs_on_tool_error() -> None:
+  """Cancelling a run mid-call reaches the error hooks; the run stays cancelled."""
+  plugin = _ErrorHookRecorder(error_response={'result': 'recovered'})
+
+  model = await _cancel_while_tool_runs(plugin)
+
+  assert plugin.errors == [('slow_tool', asyncio.CancelledError)]
+  # The hook's response was not fed back to the model as the tool result.
+  assert len(model.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_call_propagates_when_error_hook_raises() -> None:
+  """An error hook that raises must not replace the cancellation."""
+  plugin = _ErrorHookRecorder(error_to_raise=RuntimeError('cleanup failed'))
+
+  await _cancel_while_tool_runs(plugin)
+
+  assert plugin.errors == [('slow_tool', asyncio.CancelledError)]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_call_runs_all_plugins_and_agent_callbacks() -> None:
+  """On cancellation, all plugins and agent callbacks run despite returns, raises, and re-cancellations."""
+  plugin_a = _ErrorHookRecorder(
+      name='plugin_a', error_response={'result': 'recovered'}
+  )
+  plugin_b = _ErrorHookRecorder(
+      name='plugin_b', error_to_raise=RuntimeError('plugin b failed')
+  )
+  plugin_c = _ErrorHookRecorder(
+      name='plugin_c', error_to_raise=asyncio.CancelledError()
+  )
+  plugin_d = _ErrorHookRecorder(name='plugin_d')
+
+  agent_called: list[str] = []
+
+  async def on_agent_tool_error_cancelling(
+      tool: BaseTool,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+      error: Exception,
+  ) -> dict[str, Any] | None:
+    agent_called.append(f'first:{tool.name}')
+    raise asyncio.CancelledError()
+
+  def on_agent_tool_error(
+      tool: BaseTool,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+      error: Exception,
+  ) -> dict[str, Any] | None:
+    agent_called.append(f'second:{tool.name}')
+    return None
+
+  tool_started = asyncio.Event()
+
+  async def slow_tool() -> dict[str, str]:
+    tool_started.set()
+    await asyncio.Event().wait()
+    return {'result': 'unreachable'}
+
+  model = testing_utils.MockModel.create(
+      responses=[
+          [types.Part.from_function_call(name='slow_tool', args={})],
+          'done',
+      ]
+  )
+  agent = LlmAgent(
+      name='agent',
+      model=model,
+      tools=[slow_tool],
+      on_tool_error_callback=[
+          on_agent_tool_error_cancelling,
+          on_agent_tool_error,
+      ],
+  )
+  runner = testing_utils.InMemoryRunner(
+      root_agent=agent, plugins=[plugin_a, plugin_b, plugin_c, plugin_d]
+  )
+
+  run = asyncio.create_task(runner.run_async('hi'))
+  await tool_started.wait()
+  run.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await run
+
+  assert plugin_a.errors == [('slow_tool', asyncio.CancelledError)]
+  assert plugin_b.errors == [('slow_tool', asyncio.CancelledError)]
+  assert plugin_c.errors == [('slow_tool', asyncio.CancelledError)]
+  assert plugin_d.errors == [('slow_tool', asyncio.CancelledError)]
+  assert agent_called == ['first:slow_tool', 'second:slow_tool']

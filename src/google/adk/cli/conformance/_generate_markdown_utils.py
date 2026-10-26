@@ -25,6 +25,7 @@ import click
 
 if TYPE_CHECKING:
   from .cli_test import _ConformanceTestSummary
+  from .cli_test import _TestResult
 
 
 def generate_markdown_report(
@@ -45,7 +46,7 @@ def generate_markdown_report(
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
   # Collect all test results
-  test_results = {}
+  test_results: dict[tuple[str, str], dict[str, _TestResult]] = {}
   test_descriptions = {}
   streaming_modes = []
 
@@ -103,9 +104,9 @@ def generate_markdown_report(
       )
       row = [category, name, description]
       for mode in streaming_modes:
-        result = test_results[(category, name)].get(mode)
-        if result:
-          status_icon = "✅ PASS" if result.success else "❌ FAIL"
+        mode_result = test_results[(category, name)].get(mode)
+        if mode_result:
+          status_icon = "✅ PASS" if mode_result.success else "❌ FAIL"
         else:
           status_icon = "N/A"
         row.append(status_icon)

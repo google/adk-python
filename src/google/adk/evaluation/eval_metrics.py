@@ -389,6 +389,64 @@ class TokenUsageDetails(EvalBaseModel):
   )
 
 
+class DurationDetails(EvalBaseModel):
+  """Where the seconds behind an `invocation_duration_v1` score went.
+
+  Reported for every eval, with no configuration. The parts partition the turn
+  rather than nest, so they add back up to the total::
+
+      total_seconds
+        model_seconds
+        tool_seconds
+        framework_seconds
+
+  `framework_seconds` is what is left once the turn's model and tool time are
+  taken out -- ADK's own orchestration, plus anything else the turn waited on.
+  It is derived from the other three rather than measured, so the parts always
+  agree with the total.
+
+  The split is measured from the intervals each model call and each tool
+  execution actually occupied, and overlapping intervals count once: tools run
+  concurrently, sub-agents run concurrently within one turn, and an `AgentTool`
+  nests model calls inside a tool. `tool_seconds` therefore excludes time a
+  tool spent awaiting a model, which is reported as model time instead.
+
+  A field is None when the invocation carries no timing -- it was read back
+  from a stored session rather than run by this eval -- meaning the value is
+  unavailable (n/a) rather than zero.
+  """
+
+  total_seconds: Optional[float] = Field(
+      default=None,
+      description="Wall-clock seconds the whole invocation took.",
+  )
+
+  model_seconds: Optional[float] = Field(
+      default=None,
+      description=(
+          "Seconds with at least one model call in flight. Concurrent calls"
+          " count once, so this is time awaited rather than time summed."
+      ),
+  )
+
+  tool_seconds: Optional[float] = Field(
+      default=None,
+      description=(
+          "Seconds inside a tool that were not already spent awaiting a model."
+          " This is the tool's own work -- the function body and whatever it"
+          " calls out to -- not ADK's."
+      ),
+  )
+
+  framework_seconds: Optional[float] = Field(
+      default=None,
+      description=(
+          "Seconds the turn spent neither in a model call nor in a tool, i.e."
+          " ADK's own orchestration. Derived from the other three."
+      ),
+  )
+
+
 class EvalMetric(EvalBaseModel):
   """A metric used to evaluate a particular aspect of an eval case."""
 
@@ -445,6 +503,14 @@ class EvalMetricResultDetails(EvalBaseModel):
       description=(
           "The per-type token counts behind a token usage score. Populated"
           " only by the token usage metric."
+      ),
+  )
+
+  duration_details: Optional[DurationDetails] = Field(
+      default=None,
+      description=(
+          "Where the seconds behind an invocation duration score went."
+          " Populated only by the invocation duration metric."
       ),
   )
 

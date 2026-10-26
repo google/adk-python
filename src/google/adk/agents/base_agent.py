@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+from collections.abc import Iterator
 import inspect
 import logging
 from typing import Any
@@ -44,8 +45,6 @@ from typing_extensions import TypeAlias
 from ..events._node_path_builder import _NodePathBuilder
 from ..events.event import Event
 from ..events.event_actions import EventActions
-from ..features import experimental
-from ..features import FeatureName
 from ..utils._callback_pipeline import _normalize_callbacks
 from ..utils._callback_pipeline import _run_callbacks
 from ..utils._callback_pipeline import _stop_on_truthy
@@ -80,7 +79,6 @@ AfterAgentCallback: TypeAlias = Union[
 SelfAgent = TypeVar('SelfAgent', bound='BaseAgent')
 
 
-@experimental(FeatureName.AGENT_STATE)
 class BaseAgentState(BaseModel):
   """Base class for all agent states."""
 
@@ -102,6 +100,30 @@ def _agent_state_key(ctx: Any, agent_name: str) -> str:
   ):
     return node_path
   return agent_name
+
+
+def _subtree_names(agent: Any, visited: set[int]) -> set[str]:
+  if agent is None or id(agent) in visited:
+    return set()
+  visited.add(id(agent))
+  children = getattr(agent, 'sub_agents', None)
+  sub = children if isinstance(children, (list, tuple)) else ()
+  name = getattr(agent, 'name', None)
+  return ({name} if isinstance(name, str) else set()) | {
+      n for c in sub for n in _subtree_names(c, visited)
+  }
+
+
+def _warn_duplicate_agent_names(duplicates: set[str]) -> None:
+  if not duplicates:
+    return
+  duplicate_names_str = ', '.join(f'`{name}`' for name in sorted(duplicates))
+  logger.warning(
+      'Found duplicate agent names: %s. '
+      'All agents in the tree must have unique names. '
+      'find_agent() returns the first match in a depth-first walk.',
+      duplicate_names_str,
+  )
 
 
 # TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
@@ -367,16 +389,17 @@ class BaseAgent(BaseNode, abc.ABC):
       node_input: Any,
   ) -> AsyncGenerator[Any, None]:
     """Runs the agent as a node."""
-    async for event in self.run_async(
-        parent_context=ctx.get_invocation_context()
-    ):
-      # Preserve author by setting it in context for NodeRunner
-      if event.author:
-        ctx.event_author = event.author
+    async with Aclosing(
+        self.run_async(parent_context=ctx.get_invocation_context())
+    ) as agen:
+      async for event in agen:
+        # Preserve author by setting it in context for NodeRunner
+        if event.author:
+          ctx.event_author = event.author
 
-      if not event.node_info.path and event.author == self.name:
-        event.node_info.path = ctx.node_path
-      yield event
+        if not event.node_info.path and event.author == self.name:
+          event.node_info.path = ctx.node_path
+        yield event
 
   @final
   async def run_live(
@@ -527,6 +550,11 @@ class BaseAgent(BaseNode, abc.ABC):
         return result
     return None
 
+  @override
+  def _iter_static_children(self) -> Iterator[BaseNode]:
+    """Yields direct static children (sub-agents) of this agent."""
+    yield from self.sub_agents
+
   def _create_invocation_context(
       self, parent_context: InvocationContext
   ) -> InvocationContext:
@@ -569,7 +597,8 @@ class BaseAgent(BaseNode, abc.ABC):
       end_invocation_on_content: Whether returned content ends the invocation.
 
     Returns:
-      Optional[Event]: an event if a callback provides content or changed state.
+      Optional[Event]: an event if a callback provides content or changed state
+        or artifacts.
     """
     callback_context = CallbackContext(ctx)
 
@@ -581,8 +610,14 @@ class BaseAgent(BaseNode, abc.ABC):
     # If no overrides are provided from the plugins, further run the canonical
     # callbacks.
     if not callback_content and callbacks:
+      # _run_callbacks passes callback_context positionally when needed.
+      adaptable_callbacks: list[
+          Callable[
+              ..., Awaitable[Optional[types.Content]] | Optional[types.Content]
+          ]
+      ] = callbacks
       callback_content = await _run_callbacks(
-          callbacks,
+          adaptable_callbacks,
           _stop_on_truthy,
           callback_context=callback_context,
       )
@@ -595,13 +630,16 @@ class BaseAgent(BaseNode, abc.ABC):
           author=self.name,
           branch=ctx.branch,
           content=callback_content,
-          actions=callback_context._event_actions,
+          actions=callback_context.actions,
       )
       if end_invocation_on_content:
         ctx.end_invocation = True
       return ret_event
 
-    if callback_context.state.has_delta():
+    if (
+        callback_context.state.has_delta()
+        or callback_context._event_actions.artifact_delta
+    ):
       return Event(
           invocation_id=ctx.invocation_id,
           author=self.name,
@@ -620,7 +658,8 @@ class BaseAgent(BaseNode, abc.ABC):
       ctx: InvocationContext, the invocation context for this agent.
 
     Returns:
-      Optional[Event]: an event if callback provides content or changed state.
+      Optional[Event]: an event if a callback provides content or changed state
+        or artifacts.
     """
     return await self._handle_agent_callbacks(
         ctx,
@@ -639,7 +678,8 @@ class BaseAgent(BaseNode, abc.ABC):
         agent.
 
     Returns:
-      Optional[Event]: an event if callback provides content or changed state.
+      Optional[Event]: an event if a callback provides content or changed state
+        or artifacts.
     """
     return await self._handle_agent_callbacks(
         invocation_context,
@@ -680,6 +720,13 @@ class BaseAgent(BaseNode, abc.ABC):
   @override
   def model_post_init(self, __context: Any) -> None:
     super().model_post_init(__context)
+    # >= 2 branches already warned in validate_sub_agents_unique_names.
+    if (
+        isinstance(self.sub_agents, (list, tuple))
+        and sum(self.name in _subtree_names(c, set()) for c in self.sub_agents)
+        == 1
+    ):
+      _warn_duplicate_agent_names({self.name})
     self.__set_parent_agent_for_sub_agents()
 
   @field_validator('name', mode='after')
@@ -713,29 +760,13 @@ class BaseAgent(BaseNode, abc.ABC):
       The validated list of sub-agents.
 
     """
-    if not value:
-      return value
-
     seen_names: set[str] = set()
     duplicates: set[str] = set()
-
     for sub_agent in value:
-      name = sub_agent.name
-      if name in seen_names:
-        duplicates.add(name)
-      else:
-        seen_names.add(name)
-
-    if duplicates:
-      duplicate_names_str = ', '.join(
-          f'`{name}`' for name in sorted(duplicates)
-      )
-      logger.warning(
-          'Found duplicate sub-agent names: %s. '
-          'All sub-agents must have unique names.',
-          duplicate_names_str,
-      )
-
+      branch_names = _subtree_names(sub_agent, set())
+      duplicates |= seen_names & branch_names
+      seen_names |= branch_names
+    _warn_duplicate_agent_names(duplicates)
     return value
 
   def __set_parent_agent_for_sub_agents(self) -> BaseAgent:
@@ -755,7 +786,6 @@ class BaseAgent(BaseNode, abc.ABC):
       ' versions. Use `google.adk.agents.config_agent_utils.from_config`'
       ' instead.'
   )
-  @experimental(FeatureName.AGENT_CONFIG)
   def from_config(
       cls: Type[SelfAgent],
       config: Union[BaseModel, dict[str, Any]],
@@ -802,7 +832,6 @@ class BaseAgent(BaseNode, abc.ABC):
       ' versions. Please define fields directly on the class or use the dynamic'
       ' YAML loader.'
   )
-  @experimental(FeatureName.AGENT_CONFIG)
   def _parse_config(
       cls: Type[SelfAgent],
       config: Any,

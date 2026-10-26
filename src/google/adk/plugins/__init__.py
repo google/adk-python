@@ -21,6 +21,10 @@ from .base_plugin import BasePlugin
 from .plugin_manager import PluginManager
 
 if TYPE_CHECKING:
+  from ..tools.model_consult._force_escalation_plugin import ForceEscalationPlugin
+  from ..tools.model_consult._observability_plugin import ModelConsultObservabilityPlugin
+  from ._callback_helpers import ToolResultClassification
+  from ._callback_helpers import ToolResultClassifier
   from ._reflect_retry_model_plugin import ReflectAndRetryModelPlugin
   from ._tool_call_integrity_plugin import ToolCallIntegrityError
   from ._tool_call_integrity_plugin import ToolCallIntegrityPlugin
@@ -31,26 +35,38 @@ if TYPE_CHECKING:
 __all__ = [
     "BasePlugin",
     "DebugLoggingPlugin",
+    "ForceEscalationPlugin",
     "LoggingPlugin",
+    "ModelConsultObservabilityPlugin",
     "PluginManager",
     "ReflectAndRetryModelPlugin",
     "ReflectAndRetryToolPlugin",
     "ToolCallIntegrityError",
     "ToolCallIntegrityPlugin",
+    "ToolResultClassification",
+    "ToolResultClassifier",
 ]
 
 _LAZY_MEMBERS: dict[str, str] = {
     "DebugLoggingPlugin": "debug_logging_plugin",
+    "ForceEscalationPlugin": "..tools.model_consult._force_escalation_plugin",
     "LoggingPlugin": "logging_plugin",
+    "ModelConsultObservabilityPlugin": (
+        "..tools.model_consult._observability_plugin"
+    ),
     "ReflectAndRetryModelPlugin": "_reflect_retry_model_plugin",
     "ReflectAndRetryToolPlugin": "reflect_retry_tool_plugin",
     "ToolCallIntegrityError": "_tool_call_integrity_plugin",
     "ToolCallIntegrityPlugin": "_tool_call_integrity_plugin",
+    "ToolResultClassification": "_callback_helpers",
+    "ToolResultClassifier": "_callback_helpers",
 }
 
 
 def __getattr__(name: str) -> Any:
   if name in _LAZY_MEMBERS:
-    module = importlib.import_module(f"{__name__}.{_LAZY_MEMBERS[name]}")
+    target = _LAZY_MEMBERS[name]
+    module_name = target if target.startswith(".") else f".{target}"
+    module = importlib.import_module(module_name, __name__)
     return vars(module)[name]
   raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -25,6 +25,7 @@ from typing import Optional
 from fastapi.encoders import jsonable_encoder
 from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Parameter
+from fastapi.openapi.models import ParameterInType
 from fastapi.openapi.models import Reference
 from fastapi.openapi.models import RequestBody
 from fastapi.openapi.models import Response
@@ -35,6 +36,8 @@ from ..common.common import _schema_from_openapi
 from ..common.common import ApiParameter
 from ..common.common import PydocHelper
 from ..common.common import rename_python_keywords
+
+_MAX_TOOL_NAME_LENGTH = 60
 
 
 def _required_scheme_name(
@@ -139,8 +142,11 @@ class OperationParser:
       )
       if not schema.description:
         schema.description = description
-      # param.required can be None
-      required = param.required if param.required is not None else False
+      # OpenAPI requires `required: true` on every path parameter, and the URL
+      # cannot be built without one, so treat it as required even when the
+      # spec (e.g. an operation-level override) leaves the flag out.
+      # param.required can be None.
+      required = param.in_ == ParameterInType.path or bool(param.required)
 
       self._params.append(
           ApiParameter(
@@ -282,7 +288,7 @@ class OperationParser:
     operation_id = self._operation.operationId
     if not operation_id:
       raise ValueError('Operation ID is missing')
-    return _to_snake_case(operation_id)[:60]
+    return _to_snake_case(operation_id)[:_MAX_TOOL_NAME_LENGTH]
 
   def get_return_type_hint(self) -> str:
     """Returns the return type hint string (like 'str', 'int', etc.)."""

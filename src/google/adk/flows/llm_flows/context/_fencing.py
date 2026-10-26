@@ -157,7 +157,7 @@ def fence_schema_descriptions(
     elided.
   """
   if isinstance(schema, dict):
-    result = {}
+    result: dict[object, object] = {}
     for key, val in schema.items():
       elided_key = (
           elide_tool_description_markers(key) if isinstance(key, str) else key

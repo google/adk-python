@@ -16,6 +16,7 @@
 
 import asyncio
 import contextlib
+import dataclasses
 import gc
 import logging
 import time
@@ -23,12 +24,15 @@ from typing import AsyncGenerator
 from typing import Iterator
 from unittest import mock
 
+from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.runners import InMemoryRunner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.telemetry import _hallucination
 from google.adk.telemetry import _instrumentation
@@ -37,6 +41,7 @@ from google.adk.telemetry import node_tracing
 from google.adk.telemetry import tracing
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
+from google.adk.workflow._base_node import START
 from google.adk.workflow._workflow import Workflow
 from google.genai import types
 from opentelemetry import context as context_api
@@ -327,7 +332,7 @@ def _telemetry_fixture(monkeypatch: pytest.MonkeyPatch) -> _Telemetry:
   # The genai instrumentation library, when active, takes over the inference
   # span; pin it off so the tests exercise ADK's own path.
   monkeypatch.setattr(
-      "google.adk.telemetry.tracing._instrumented_with_opentelemetry_instrumentation_google_genai",
+      "google.adk.telemetry._genai_instrumentor.is_instrumented",
       lambda: False,
   )
   span_exporter = InMemorySpanExporter()
@@ -596,12 +601,13 @@ async def test_record_agent_invocation_reads_nothing_off_the_context(
 
 @pytest.mark.asyncio
 async def test_record_tool_execution_opens_named_execute_tool_span(
-    telemetry: _Telemetry,
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
 ):
   """The span is named after the tool and carries the tool identity, the
 
   arguments, and the response the caller handed back on the context.
   """
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "1")
   agent = _agent()
   ctx = await _invocation_context(agent)
   tool = _EchoTool(name="echo", description="echoes its input")
@@ -1326,6 +1332,105 @@ async def test_invoke_workflow_skill_loads_is_not_recorded_without_the_opt_in(
   assert telemetry.points(_INVOKE_WORKFLOW_SKILL_LOADS) == []
 
 
+# --- conversation compactions, per workflow --------------------------------
+
+_INVOKE_WORKFLOW_COMPACTIONS = "adk.experimental.invoke_workflow.compactions"
+
+
+@pytest.mark.asyncio
+async def test_compaction_during_an_agent_counts_for_the_workflow(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """A compaction an agent made belongs to the turn around it."""
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  with node_tracing._use_invoke_workflow_span(
+      "my_workflow", "conversation-1"
+  ) as (_, workflow_context):
+    with _instrumentation._using(workflow_context):
+      async with _instrumentation.record_agent_invocation(ctx, agent) as scope:
+        with _instrumentation._using(scope.otel_context):
+          _instrumentation.count_compaction()
+
+  assert telemetry.points(_INVOKE_WORKFLOW_COMPACTIONS) == [(
+      {
+          "adk.experimental.root_agent.name": "my_workflow",
+          "gen_ai.workflow.name": "my_workflow",
+      },
+      1,
+  )]
+
+
+@pytest.mark.asyncio
+async def test_compaction_after_the_agent_finished_counts_for_the_workflow(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """The runner's post-invocation pass lands outside every agent scope.
+
+  It still belongs to the turn, which is the whole reason the count is kept
+  per workflow: there is no agent left to attribute it to.
+  """
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  with node_tracing._use_invoke_workflow_span(
+      "my_workflow", "conversation-1"
+  ) as (_, workflow_context):
+    with _instrumentation._using(workflow_context):
+      async with _instrumentation.record_agent_invocation(ctx, agent):
+        pass
+      _instrumentation.count_compaction()
+
+  assert telemetry.points(_INVOKE_WORKFLOW_COMPACTIONS) == [(
+      {
+          "adk.experimental.root_agent.name": "my_workflow",
+          "gen_ai.workflow.name": "my_workflow",
+      },
+      1,
+  )]
+
+
+@pytest.mark.asyncio
+async def test_compaction_counts_into_every_enclosing_workflow(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """Outer totals stay inclusive, as they do for loads and call counts."""
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+
+  with node_tracing._use_invoke_workflow_span("outer", "conversation-1") as (
+      _,
+      outer_context,
+  ):
+    with _instrumentation._using(outer_context):
+      _instrumentation.count_compaction()
+      with node_tracing._use_invoke_workflow_span(
+          "inner", "conversation-1"
+      ) as (_, inner_context):
+        with _instrumentation._using(inner_context):
+          _instrumentation.count_compaction()
+
+  assert telemetry.points(_INVOKE_WORKFLOW_COMPACTIONS) == [
+      (
+          {
+              "adk.experimental.root_agent.name": "outer",
+              "gen_ai.workflow.name": "inner",
+              "gen_ai.workflow.nested": True,
+          },
+          1,
+      ),
+      (
+          {
+              "adk.experimental.root_agent.name": "outer",
+              "gen_ai.workflow.name": "outer",
+          },
+          2,
+      ),
+  ]
+
+
 # --- record_inference_telemetry + record_llm_response ----------------------
 
 
@@ -1402,7 +1507,7 @@ async def test_record_inference_telemetry_records_token_usage_per_direction(
   shared = {
       "gen_ai.agent.name": "root_agent",
       "gen_ai.operation.name": "generate_content",
-      "gen_ai.provider.name": "gemini",
+      "gen_ai.provider.name": "gcp.gemini",
       "gen_ai.request.model": "some-model",
       "gen_ai.response.model": "some-model-001",
   }
@@ -1442,7 +1547,7 @@ async def test_record_inference_telemetry_without_a_response_skips_token_usage(
   assert telemetry.point_attributes("gen_ai.client.operation.duration") == [{
       "gen_ai.agent.name": "root_agent",
       "gen_ai.operation.name": "generate_content",
-      "gen_ai.provider.name": "gemini",
+      "gen_ai.provider.name": "gcp.gemini",
       "gen_ai.request.model": "some-model",
   }]
 
@@ -1467,7 +1572,7 @@ async def test_record_inference_telemetry_failure_labels_operation_duration(
   assert telemetry.point_attributes("gen_ai.client.operation.duration") == [{
       "gen_ai.agent.name": "root_agent",
       "gen_ai.operation.name": "generate_content",
-      "gen_ai.provider.name": "gemini",
+      "gen_ai.provider.name": "gcp.gemini",
       "gen_ai.request.model": "some-model",
       "error.type": "ValueError",
   }]
@@ -1483,7 +1588,9 @@ async def test_record_llm_response_keeps_every_response_in_arrival_order(
   """
   agent = _agent()
   ctx = await _invocation_context(agent)
-  tel_ctx = _instrumentation.InferenceScope()
+  tel_ctx = _instrumentation.InferenceScope(
+      llm_request=LlmRequest(), user_id="u"
+  )
   first = _llm_response(partial=True, finish_reason=None)
   second = _llm_response()
 
@@ -1505,7 +1612,9 @@ async def test_record_llm_response_traces_the_result_onto_the_carried_span(
   """
   agent = _agent()
   ctx = await _invocation_context(agent)
-  tel_ctx = _instrumentation.InferenceScope()
+  tel_ctx = _instrumentation.InferenceScope(
+      llm_request=LlmRequest(), user_id="u"
+  )
 
   with tracing.tracer.start_as_current_span("test_span") as span:
     tel_ctx.span = span
@@ -1578,20 +1687,406 @@ def test_record_invocation_without_an_entrypoint_omits_the_workflow_name(
   assert "gen_ai.workflow.name" not in span.attributes
 
 
-def test_record_invocation_defers_to_a_workflow_entrypoints_own_span(
+def test_record_invocation_opens_the_entrypoint_span_for_a_workflow_too(
     telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
 ):
-  """A workflow entrypoint opens its own ``invoke_workflow`` span when the
-
-  node runs, so opening one here too would double-count the invocation.
-  """
+  """A workflow entrypoint gets the runner's span like any other entrypoint."""
   monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "2")
 
   with _instrumentation.record_invocation(Workflow(name="my_workflow"), "c-1"):
     pass
 
-  assert telemetry.spans() == []
-  assert telemetry.point_attributes("gen_ai.invoke_workflow.duration") == []
+  span = telemetry.only_span()
+  assert span.name == "invoke_workflow my_workflow"
+  assert dict(span.attributes) == {
+      "gen_ai.operation.name": "invoke_workflow",
+      "gen_ai.conversation.id": "c-1",
+      "gen_ai.workflow.name": "my_workflow",
+  }
+
+
+def _workflow_spans(telemetry: _Telemetry):
+  return [
+      span
+      for span in telemetry.spans()
+      if span.name.startswith("invoke_workflow")
+  ]
+
+
+def _root_context(
+    ic: InvocationContext,
+    entrypoint_scope: _instrumentation._WorkflowScope | None,
+) -> Context:
+  """Builds the context the runner starts its root node under."""
+  context = Context(ic)
+  context._telemetry_context = dataclasses.replace(
+      context.telemetry_context, _entrypoint_scope=entrypoint_scope
+  )
+  return context
+
+
+async def _run_once(runner: InMemoryRunner) -> None:
+  """Runs one turn of ``runner`` in a new session."""
+  session = await runner.session_service.create_session(
+      app_name=runner.app_name, user_id="test_user"
+  )
+  async for _ in runner.run_async(
+      user_id="test_user",
+      session_id=session.id,
+      new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
+  ):
+    pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schema_version", ["1", "2"])
+async def test_a_workflow_entrypoint_emits_one_invoke_workflow_span(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch, schema_version: str
+):
+  """The turn has one root `invoke_workflow`, the runner's."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", schema_version)
+  workflow = Workflow(name="my_workflow")
+  ic = await _invocation_context(_agent())
+
+  with _instrumentation.record_invocation(workflow, "conversation-1") as (
+      _,
+      entrypoint_scope,
+  ):
+    async with node_tracing.start_as_current_node_span(
+        _root_context(ic, entrypoint_scope), workflow
+    ):
+      pass
+
+  (span,) = _workflow_spans(telemetry)
+  assert span.name == "invoke_workflow my_workflow"
+  assert "gen_ai.workflow.nested" not in span.attributes
+  assert telemetry.point_attributes("gen_ai.invoke_workflow.duration") == [{
+      "gen_ai.operation.name": "invoke_workflow",
+      "gen_ai.workflow.name": "my_workflow",
+  }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schema_version", ["1", "2"])
+async def test_a_workflow_entrypoint_runs_in_the_context_the_runner_hands_it(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch, schema_version: str
+):
+  """Whatever its own context happened to capture."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", schema_version)
+  workflow = Workflow(name="my_workflow")
+  ic = await _invocation_context(_agent())
+  # Built outside the runner's span, so what it captured is not the runner's.
+  root_context = Context(ic)
+
+  with _instrumentation.record_invocation(workflow, "conversation-1") as (
+      _,
+      entrypoint_scope,
+  ):
+    root_context._telemetry_context = dataclasses.replace(
+        root_context.telemetry_context, _entrypoint_scope=entrypoint_scope
+    )
+    async with node_tracing.start_as_current_node_span(root_context, workflow):
+      with tracing.tracer.start_as_current_span("a child span"):
+        pass
+
+  (workflow_span,) = _workflow_spans(telemetry)
+  (child,) = [span for span in telemetry.spans() if span.name == "a child span"]
+  assert child.parent.span_id == workflow_span.context.span_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schema_version", ["1", "2"])
+async def test_a_workflow_entrypoint_counts_the_runners_post_invocation_work(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch, schema_version: str
+):
+  """The runner compacts after the root node, into the same one datapoint."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", schema_version)
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  workflow = Workflow(name="my_workflow")
+  ic = await _invocation_context(_agent())
+
+  with _instrumentation.record_invocation(workflow, "conversation-1") as (
+      invocation_context,
+      entrypoint_scope,
+  ):
+    async with node_tracing.start_as_current_node_span(
+        _root_context(ic, entrypoint_scope), workflow
+    ):
+      _instrumentation.count_compaction()
+    with _instrumentation._using(invocation_context):
+      _instrumentation.count_compaction()
+
+  assert telemetry.points(_INVOKE_WORKFLOW_COMPACTIONS) == [(
+      {
+          "adk.experimental.root_agent.name": "my_workflow",
+          "gen_ai.workflow.name": "my_workflow",
+      },
+      2,
+  )]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schema_version", ["1", "2"])
+async def test_a_workflow_in_the_entrypoint_is_nested_even_with_its_name(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch, schema_version: str
+):
+  """Only the entrypoint's root node runs in the runner's span."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", schema_version)
+  workflow = Workflow(name="my_workflow")
+  ic = await _invocation_context(_agent())
+
+  with _instrumentation.record_invocation(workflow, "conversation-1") as (
+      _,
+      entrypoint_scope,
+  ):
+    async with node_tracing.start_as_current_node_span(
+        _root_context(ic, entrypoint_scope), workflow
+    ) as root_telemetry:
+      parent = Context(ic)
+      parent._telemetry_context = root_telemetry
+      async with node_tracing.start_as_current_node_span(
+          parent, Workflow(name="my_workflow")
+      ):
+        pass
+
+  inner, outer = _workflow_spans(telemetry)
+  assert inner.attributes["gen_ai.workflow.nested"]
+  assert inner.parent.span_id == outer.context.span_id
+  assert "gen_ai.workflow.nested" not in outer.attributes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schema_version", ["1", "2"])
+async def test_a_workflow_entrypoint_started_inside_a_workflow_is_nested(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch, schema_version: str
+):
+  """A runner started from inside a workflow nests its entrypoint in it."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", schema_version)
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  outer, inner = Workflow(name="outer"), Workflow(name="inner")
+  ic = await _invocation_context(_agent())
+
+  with _instrumentation.record_invocation(outer, "conversation-1") as (
+      _,
+      entrypoint_scope,
+  ):
+    async with node_tracing.start_as_current_node_span(
+        _root_context(ic, entrypoint_scope), outer
+    ):
+      with _instrumentation.record_invocation(inner, "conversation-1") as (
+          _,
+          entrypoint_scope,
+      ):
+        async with node_tracing.start_as_current_node_span(
+            _root_context(ic, entrypoint_scope), inner
+        ):
+          _instrumentation.count_compaction()
+
+  inner_span, outer_span = _workflow_spans(telemetry)
+  assert inner_span.attributes["gen_ai.workflow.nested"]
+  assert "gen_ai.workflow.nested" not in outer_span.attributes
+  assert telemetry.points(_INVOKE_WORKFLOW_COMPACTIONS) == [
+      (
+          {
+              "adk.experimental.root_agent.name": "outer",
+              "gen_ai.workflow.name": "inner",
+              "gen_ai.workflow.nested": True,
+          },
+          1,
+      ),
+      (
+          {
+              "adk.experimental.root_agent.name": "outer",
+              "gen_ai.workflow.name": "outer",
+          },
+          1,
+      ),
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schema_version", ["1", "2"])
+async def test_a_retried_workflow_entrypoint_records_one_datapoint(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch, schema_version: str
+):
+  """Every attempt of the root node runs in the runner's span."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", schema_version)
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  workflow = Workflow(name="my_workflow")
+  ic = await _invocation_context(_agent())
+
+  with _instrumentation.record_invocation(workflow, "conversation-1") as (
+      _,
+      entrypoint_scope,
+  ):
+    root_context = _root_context(ic, entrypoint_scope)
+    for _ in range(2):
+      async with node_tracing.start_as_current_node_span(
+          root_context, workflow
+      ):
+        _instrumentation.count_compaction()
+
+  assert telemetry.points(_INVOKE_WORKFLOW_COMPACTIONS) == [(
+      {
+          "adk.experimental.root_agent.name": "my_workflow",
+          "gen_ai.workflow.name": "my_workflow",
+      },
+      2,
+  )]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schema_version", ["1", "2"])
+async def test_a_workflow_entrypoint_reports_even_if_its_root_node_never_ran(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch, schema_version: str
+):
+  """The runner's span reports either way."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", schema_version)
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+
+  with _instrumentation.record_invocation(
+      Workflow(name="my_workflow"), "c-1"
+  ) as (invocation_context, _):
+    with _instrumentation._using(invocation_context):
+      _instrumentation.count_compaction()
+
+  assert telemetry.points(_INVOKE_WORKFLOW_COMPACTIONS) == [(
+      {
+          "adk.experimental.root_agent.name": "my_workflow",
+          "gen_ai.workflow.name": "my_workflow",
+      },
+      1,
+  )]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schema_version", ["1", "2"])
+async def test_the_runners_post_invocation_spans_nest_in_a_workflow_entrypoint(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch, schema_version: str
+):
+  """What the runner does after the root node stays inside the turn."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", schema_version)
+  workflow = Workflow(name="my_workflow")
+  ic = await _invocation_context(_agent())
+
+  with _instrumentation.record_invocation(workflow, "conversation-1") as (
+      invocation_context,
+      entrypoint_scope,
+  ):
+    async with node_tracing.start_as_current_node_span(
+        _root_context(ic, entrypoint_scope), workflow
+    ):
+      pass
+    with _instrumentation._using(invocation_context):
+      with tracing.tracer.start_as_current_span(
+          "compact_events sliding_window"
+      ):
+        pass
+
+  (workflow_span,) = _workflow_spans(telemetry)
+  (compaction_span,) = [
+      span
+      for span in telemetry.spans()
+      if span.name == "compact_events sliding_window"
+  ]
+  assert compaction_span.parent.span_id == workflow_span.context.span_id
+  assert workflow_span.start_time <= compaction_span.start_time
+  assert compaction_span.end_time <= workflow_span.end_time
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schema_version", ["1", "2"])
+async def test_a_workflow_entrypoints_failure_marks_the_runners_span(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch, schema_version: str
+):
+  """The root node's failure is raised again through the runner's span."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", schema_version)
+
+  async def failing_node(ctx, node_input):
+    del ctx, node_input
+    raise ValueError("boom")
+
+  runner = InMemoryRunner(
+      app_name="test_app",
+      node=Workflow(name="my_workflow", edges=[(START, failing_node)]),
+  )
+  with pytest.raises(ValueError, match="boom"):
+    await _run_once(runner)
+
+  (span,) = _workflow_spans(telemetry)
+  assert span.name == "invoke_workflow my_workflow"
+  assert span.status.status_code is StatusCode.ERROR
+  assert telemetry.point_attributes("gen_ai.invoke_workflow.duration") == [{
+      "error.type": "ValueError",
+      "gen_ai.operation.name": "invoke_workflow",
+      "gen_ai.workflow.name": "my_workflow",
+  }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schema_version", ["1", "2"])
+async def test_a_runner_started_by_a_plugin_keeps_its_own_entrypoint_span(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch, schema_version: str
+):
+  """Even named like the outer entrypoint, it nests rather than taking it over.
+
+  So what that runner does after its root node still counts for its own turn.
+  """
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", schema_version)
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+
+  async def compacting_node(ctx, node_input):
+    del ctx, node_input
+    _instrumentation.count_compaction()
+
+  class _CompactsAfterRun(BasePlugin):
+
+    async def after_run_callback(self, *, invocation_context):
+      del invocation_context
+      _instrumentation.count_compaction()
+
+  class _RunsANestedRunner(BasePlugin):
+
+    async def before_run_callback(self, *, invocation_context):
+      del invocation_context
+      await _run_once(
+          InMemoryRunner(
+              app_name="nested_app",
+              node=Workflow(
+                  name="my_workflow", edges=[(START, compacting_node)]
+              ),
+              plugins=[_CompactsAfterRun(name="compacts_after_run")],
+          )
+      )
+
+  async def idle_node(ctx, node_input):
+    del ctx, node_input
+
+  await _run_once(
+      InMemoryRunner(
+          app_name="test_app",
+          node=Workflow(name="my_workflow", edges=[(START, idle_node)]),
+          plugins=[_RunsANestedRunner(name="runs_a_nested_runner")],
+      )
+  )
+
+  assert telemetry.points(_INVOKE_WORKFLOW_COMPACTIONS) == [
+      (
+          {
+              "adk.experimental.root_agent.name": "my_workflow",
+              "gen_ai.workflow.name": "my_workflow",
+              "gen_ai.workflow.nested": True,
+          },
+          2,
+      ),
+      (
+          {
+              "adk.experimental.root_agent.name": "my_workflow",
+              "gen_ai.workflow.name": "my_workflow",
+          },
+          2,
+      ),
+  ]
 
 
 @pytest.mark.asyncio
@@ -1900,7 +2395,7 @@ def test_record_invocation_does_not_attach_its_context(telemetry: _Telemetry):
 
   with _instrumentation.record_invocation(
       entrypoint_node=None, conversation_id="conversation-1"
-  ) as invocation_context:
+  ) as (invocation_context, _):
     assert context_api.get_current() == before
     assert trace.get_current_span(invocation_context) is not trace.INVALID_SPAN
 
@@ -1988,3 +2483,193 @@ async def test_stream_in_scope_propagates_cancellation_into_generator():
   with pytest.raises(asyncio.CancelledError):
     await agen.athrow(asyncio.CancelledError())
   assert cancelled_in_generator is True
+
+
+# ---------------------------------------------------------------------------
+# Busy interval collection (where a turn's wall-clock time went)
+# ---------------------------------------------------------------------------
+
+# Long enough that scheduling jitter cannot be mistaken for the interval, short
+# enough to keep these tests quick. Assertions allow half of it either way.
+_SLICE = 0.10
+
+
+def _fake_tool_and_agent():
+  """Returns the mocks `record_tool_execution` needs to run a tool."""
+  tool = mock.MagicMock()
+  tool.name = "sample_tool"
+  agent = mock.MagicMock()
+  agent.name = "sample_agent"
+  return tool, agent
+
+
+async def _run_tool(seconds: float = _SLICE) -> None:
+  """Runs a tool that occupies `seconds`, as the flow would."""
+  tool, agent = _fake_tool_and_agent()
+  async with _instrumentation.record_tool_execution(
+      tool=tool,
+      agent=agent,
+      function_args={},
+      invocation_context=mock.MagicMock(),
+  ):
+    await asyncio.sleep(seconds)
+
+
+async def _await_model(seconds: float = _SLICE, chunks: int = 1) -> None:
+  """Consumes a model stream whose every chunk takes `seconds` to arrive."""
+
+  async def responses():
+    for _ in range(chunks):
+      await asyncio.sleep(seconds)
+      yield mock.MagicMock(spec=LlmResponse)
+
+  async for _ in _instrumentation.time_model_awaits(responses()):
+    pass
+
+
+def _about(actual: float, expected: float) -> bool:
+  """Whether a measured duration is the expected one, allowing for jitter."""
+  return abs(actual - expected) < _SLICE / 2
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_does_nothing_reports_no_busy_time():
+  """Nothing in flight is a measured zero, not a missing measurement."""
+  with _instrumentation.collect_busy_intervals() as busy:
+    pass
+
+  assert busy.model_seconds() == 0.0
+  assert busy.tool_seconds() == 0.0
+  assert busy.busy_seconds() == 0.0
+
+
+@pytest.mark.asyncio
+async def test_sequential_tools_add_up():
+  """Tools that do not overlap occupy the sum of their stretches."""
+  with _instrumentation.collect_busy_intervals() as busy:
+    await _run_tool()
+    await _run_tool()
+
+  assert _about(busy.tool_seconds(), 2 * _SLICE)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_tools_count_their_overlap_once():
+  """Two tools in flight together occupy one stretch of wall clock, not two."""
+  with _instrumentation.collect_busy_intervals() as busy:
+    await asyncio.gather(_run_tool(), _run_tool())
+
+  assert _about(busy.tool_seconds(), _SLICE)
+
+
+@pytest.mark.asyncio
+async def test_a_model_awaited_inside_a_tool_is_model_time_not_tool_time():
+  """An `AgentTool` runs model calls inside its own tool interval.
+
+  Counting both in full would attribute the same seconds twice and leave the
+  framework remainder negative, so the nested model time is subtracted from
+  the tool's.
+  """
+  tool, agent = _fake_tool_and_agent()
+
+  with _instrumentation.collect_busy_intervals() as busy:
+    async with _instrumentation.record_tool_execution(
+        tool=tool,
+        agent=agent,
+        function_args={},
+        invocation_context=mock.MagicMock(),
+    ):
+      await _await_model()
+      await asyncio.sleep(_SLICE)
+
+  # The tool spanned both slices; one of them was spent awaiting the model.
+  assert _about(busy.model_seconds(), _SLICE)
+  assert _about(busy.tool_seconds(), _SLICE)
+  # Together they still occupy only the tool's own stretch of wall clock.
+  assert _about(busy.busy_seconds(), 2 * _SLICE)
+
+
+@pytest.mark.asyncio
+async def test_model_and_tool_time_sum_to_the_busy_total():
+  """What makes the framework figure a remainder the three parts partition."""
+  with _instrumentation.collect_busy_intervals() as busy:
+    await _await_model()
+    await _run_tool()
+
+  assert (
+      pytest.approx(busy.model_seconds() + busy.tool_seconds())
+      == busy.busy_seconds()
+  )
+
+
+@pytest.mark.asyncio
+async def test_every_chunk_of_a_streamed_response_is_timed():
+  """Model time is the sum of the waits, not the life of the stream."""
+  with _instrumentation.collect_busy_intervals() as busy:
+    await _await_model(chunks=3)
+
+  # Three chunk waits plus the pull that ends the stream, which waits too.
+  assert _about(busy.model_seconds(), 3 * _SLICE)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_model_call_still_counts_as_model_time():
+  """A call the flow recovers from waited on the model like any other.
+
+  Dropping it would quietly move that wait into the framework remainder.
+  """
+
+  async def responses():
+    await asyncio.sleep(_SLICE)
+    raise ValueError("model exploded")
+    yield  # pylint: disable=unreachable
+
+  with _instrumentation.collect_busy_intervals() as busy:
+    with pytest.raises(ValueError):
+      async for _ in _instrumentation.time_model_awaits(responses()):
+        pass
+
+  assert _about(busy.model_seconds(), _SLICE)
+
+
+@pytest.mark.asyncio
+async def test_work_outside_the_block_is_not_collected():
+  """A collector sees its own turn, not whatever ran before or after it."""
+  await _run_tool()
+
+  with _instrumentation.collect_busy_intervals() as busy:
+    pass
+
+  await _run_tool()
+
+  assert busy.tool_seconds() == 0.0
+
+
+@pytest.mark.asyncio
+async def test_collection_reaches_concurrently_spawned_tasks():
+  """Sub-agents run as tasks; their tool intervals still reach the collector.
+
+  The collector rides the otel context, which a task copies when it is
+  created, so work the turn fans out to is covered without being threaded
+  through by hand.
+  """
+  with _instrumentation.collect_busy_intervals() as busy:
+    await asyncio.gather(
+        asyncio.create_task(_run_tool()),
+        asyncio.create_task(_run_tool()),
+    )
+
+  assert _about(busy.tool_seconds(), _SLICE)
+
+
+@pytest.mark.asyncio
+async def test_a_run_nobody_is_collecting_for_still_works():
+  """The collector is optional; an uninstrumented run just is not measured."""
+  await _run_tool()
+  await _await_model()
+
+  with _instrumentation.collect_busy_intervals() as busy:
+    await _run_tool()
+
+  assert _about(busy.tool_seconds(), _SLICE)
+  assert busy.model_seconds() == 0.0

@@ -12,13 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Utility functions for retrying nodes in a workflow."""
+
 from __future__ import annotations
 
-"""Utility functions for retrying nodes in a workflow."""
+from typing import TYPE_CHECKING
 
 from ...platform import _random as platform_random
 from .._node_state import NodeState
 from .._retry_config import RetryConfig
+
+if TYPE_CHECKING:
+  from .._base_node import BaseNode
 
 
 def _should_retry_node(
@@ -51,6 +56,32 @@ def _should_retry_node(
       return False
 
   return True
+
+
+def _delegates_item_retry(node: BaseNode) -> bool:
+  """Returns whether a node leaves its item failures to the item node.
+
+  A ``_ParallelWorker`` runs each item of its input as a dynamic child, and a
+  ``Node`` with ``parallel_worker=True`` runs its items through an inner
+  ``_ParallelWorker``. Either way the item node applies the retry policy to
+  each item, so the node itself does not retry an item failure: a retry of the
+  whole node would cancel the items still running and give the failed item a
+  fresh budget.
+
+  Args:
+    node: The node to check.
+
+  Returns:
+    True if ``node`` is a ``_ParallelWorker`` or a ``Node`` with
+    ``parallel_worker=True``.
+  """
+  # Imported here to avoid import cycles with the node modules.
+  from .._node import Node
+  from .._parallel_worker import _ParallelWorker
+
+  return isinstance(node, _ParallelWorker) or (
+      isinstance(node, Node) and node.parallel_worker
+  )
 
 
 def _get_retry_delay(

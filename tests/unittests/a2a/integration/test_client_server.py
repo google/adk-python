@@ -48,6 +48,8 @@ from google.adk.platform import uuid as platform_uuid
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
+import httpx
+from pydantic import BaseModel
 import pytest
 
 pytestmark = pytest.mark.skipif(
@@ -771,6 +773,88 @@ async def test_task_mode_follow_up_after_the_task_completes():
       "the completed task kept the delegation open, so the follow-up never"
       " reached the remote agent"
   )
+
+
+class _Answer(BaseModel):
+  answer: str
+
+
+async def _failing_run_async(**kwargs):
+  del kwargs
+  yield Event(
+      author="FakeAgent",
+      error_code="INTERNAL",
+      error_message="remote task blew up",
+  )
+
+
+async def _unreachable_app(scope, receive, send):
+  raise httpx.ConnectError("peer is down")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("make_app", "error_prefix"),
+    [
+        (
+            lambda: create_server_app(_failing_run_async),
+            "Remote A2A task failed",
+        ),
+        (lambda: _unreachable_app, "A2A request failed"),
+    ],
+    ids=["remote_task_failed", "peer_unreachable"],
+)
+async def test_task_mode_failure_answers_the_coordinator(
+    make_app, error_prefix
+):
+  """A failed task must answer the delegating call and return control.
+
+  The coordinator only regains the conversation once its delegating call gets a
+  response. The failure arrives as an error response rather than a result, so
+  the remote agent's output schema, which it cannot satisfy, does not reject it.
+  """
+  remote_agent = create_client(make_app(), mode="task")
+  remote_agent.output_schema = _Answer
+  coordinator = LlmAgent(
+      name="coordinator",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name="remote_agent", args={}),
+              "coordinator reply",
+          ]
+      ),
+      sub_agents=[remote_agent],
+  )
+
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+  client_runner = Runner(
+      app_name="ClientApp",
+      agent=coordinator,
+      session_service=session_service,
+  )
+
+  delegation_responses = []
+  last_event = None
+  async for event in client_runner.run_async(
+      user_id="test_user",
+      session_id="test_session",
+      new_message=types.Content(
+          parts=[types.Part(text="book a flight")], role="user"
+      ),
+  ):
+    delegation_responses.extend(
+        fr.response
+        for fr in event.get_function_responses()
+        if fr.name == "remote_agent"
+    )
+    last_event = event
+
+  assert len(delegation_responses) == 1, "the delegating call got no response"
+  assert delegation_responses[0]["error"].startswith(error_prefix)
+  assert last_event.content.parts[0].text == "coordinator reply"
 
 
 @pytest.mark.asyncio

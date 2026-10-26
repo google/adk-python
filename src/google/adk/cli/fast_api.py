@@ -25,8 +25,11 @@ from typing import Any
 from typing import AsyncIterator
 from typing import Awaitable
 from typing import Callable
+from typing import cast
+from typing import Iterator
 from typing import Literal
 from typing import Mapping
+from typing import TYPE_CHECKING
 
 import click
 from fastapi import FastAPI
@@ -43,7 +46,6 @@ from opentelemetry.sdk.trace import TracerProvider
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from starlette.types import Lifespan
-from watchdog.observers import Observer
 
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..runners import Runner
@@ -62,6 +64,14 @@ from .utils.service_factory import _create_task_store_from_options
 from .utils.service_factory import create_artifact_service_from_options
 from .utils.service_factory import create_memory_service_from_options
 from .utils.service_factory import create_session_service_from_options
+
+if TYPE_CHECKING:
+  from collections.abc import Sequence
+
+  # watchdog types Observer as a factory, so type checkers see its base class.
+  from watchdog.observers.api import BaseObserver as Observer
+else:
+  from watchdog.observers import Observer
 
 _ALLOWED_AGENT_ENGINE_CLASS_METHODS = frozenset(
     method["name"] for method in _AGENT_ENGINE_CLASS_METHODS
@@ -83,7 +93,7 @@ _LAZY_SERVICE_IMPORTS: dict[str, str] = {
 }
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
   """Lazily import defaults so patching in tests keeps working."""
   if name not in _LAZY_SERVICE_IMPORTS:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -120,7 +130,9 @@ def get_fast_api_app(
     logo_text: str | None = None,
     logo_image_url: str | None = None,
     auto_create_session: bool = False,
-    trigger_sources: list[Literal["pubsub", "eventarc"]] | None = None,
+    trigger_sources: (
+        list[Literal["pubsub", "eventarc"]] | Sequence[str] | None
+    ) = None,
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: list[str] | None = None,
     trigger_auth_verifier: (
@@ -170,7 +182,8 @@ def get_fast_api_app(
       value turns on DNS-rebinding protection, which rejects requests addressed
       to any other host. A non-loopback value logs a startup warning that the
       app has no authentication. Leave it None to serve the app yourself
-      without either.
+      without either. Internal agents, such as the agent builder assistant,
+      are served only when this is a loopback address.
     port: Port number for the server (defaults to 8000).
     url_prefix: Optional prefix for all URL routes.
     trace_to_cloud: Whether to export traces to Google Cloud Trace.
@@ -265,9 +278,10 @@ def get_fast_api_app(
   # dev server has no authentication, so they are only safe where nobody else
   # can reach it: a loopback bind, which the DNS-rebinding and Origin guards
   # also cover. An unknown bind (None) is treated as exposed.
-  agent_loader._allow_special_agents = (
+  allow_special_agents = (
       web and bind_host is not None and _is_loopback_address(bind_host)
   )
+  agent_loader._allow_special_agents = allow_special_agents
 
   # services.py lives in the folder the user passed, not the rewritten parent.
   load_services_module(original_agents_dir)
@@ -285,7 +299,9 @@ def get_fast_api_app(
   session_service = create_session_service_from_options(
       base_dir=agents_dir,
       session_service_uri=session_service_uri,
-      session_db_kwargs=session_db_kwargs,
+      session_db_kwargs=(
+          dict(session_db_kwargs) if session_db_kwargs is not None else None
+      ),
       use_local_storage=use_local_storage,
   )
 
@@ -306,6 +322,7 @@ def get_fast_api_app(
   # Instantiate the appropriate server class based on web option
   # If web=True, use DevServer (includes all endpoints: production + dev)
   # If web=False, use ApiServer (production-safe endpoints only)
+  ServerClass: type[ApiServer]
   if web:
     try:
       from .dev_server import DevServer
@@ -349,8 +366,11 @@ def get_fast_api_app(
   )
   # DevServer allows the built-in agents by default. Follow the loader, so a
   # refused request gets the server's 403 rather than a 500 from the loader's
-  # PermissionError.
-  adk_web_server._allow_special_agents = agent_loader._allow_special_agents
+  # PermissionError. Only ever narrows: ApiServer stays closed even if web fell
+  # back to it.
+  adk_web_server._allow_special_agents = (
+      adk_web_server._allow_special_agents and allow_special_agents
+  )
 
   # In single agent mode, use that agent as the default app.
   if is_single_agent:
@@ -383,7 +403,7 @@ def get_fast_api_app(
 
   if reload_agents:
 
-    def setup_observer(observer: Observer, adk_web_server: ApiServer):
+    def setup_observer(observer: Observer, adk_web_server: ApiServer) -> None:
       agent_change_handler = AgentChangeEventHandler(
           agent_loader=agent_loader,
           runners_to_clean=adk_web_server.runners_to_clean,
@@ -392,7 +412,7 @@ def get_fast_api_app(
       observer.schedule(agent_change_handler, agents_dir, recursive=True)
       observer.start()
 
-    def tear_down_observer(observer: Observer, _: ApiServer):
+    def tear_down_observer(observer: Observer, _: ApiServer) -> None:
       observer.stop()
       observer.join()
 
@@ -422,18 +442,21 @@ def get_fast_api_app(
     outer_lifespan = lifespan
 
     @asynccontextmanager
-    async def _a2a_lifespan(app_instance: FastAPI):
+    async def _a2a_lifespan(
+        app_instance: FastAPI,
+    ) -> AsyncIterator[Mapping[str, Any] | None]:
       try:
         if outer_lifespan:
           async with outer_lifespan(app_instance) as ctx:
             yield ctx
         else:
-          yield
+          yield None
       finally:
         logger.info("Disposing A2A task store engine")
         await a2a_task_store.engine.dispose()
 
-    lifespan = _a2a_lifespan
+    # Stateless exactly when outer_lifespan is, since it yields outer's state.
+    lifespan = cast("Lifespan[FastAPI]", _a2a_lifespan)
 
   app = adk_web_server.get_fast_api_app(
       lifespan=lifespan,
@@ -456,7 +479,9 @@ def get_fast_api_app(
     # the root agents directory should be an existing folder
     if base_path.exists() and base_path.is_dir():
 
-      def create_a2a_runner_loader(captured_app_name: str):
+      def create_a2a_runner_loader(
+          captured_app_name: str,
+      ) -> Callable[[], Awaitable[Runner]]:
         """Factory function to create A2A runner with proper closure."""
 
         async def _get_a2a_runner_async() -> Runner:
@@ -630,7 +655,7 @@ def get_fast_api_app(
         response_model_exclude_none=True,
         response_class=JSONResponse,
     )
-    async def query(request: Request):
+    async def query(request: Request) -> JSONResponse:
       try:
         body = await request.json()
       except json.JSONDecodeError as exc:
@@ -673,7 +698,7 @@ def get_fast_api_app(
         response_model_exclude_none=True,
         response_class=StreamingResponse,
     )
-    async def stream_query(request: Request):
+    async def stream_query(request: Request) -> StreamingResponse:
       try:
         body = await request.json()
       except json.JSONDecodeError as exc:
@@ -708,7 +733,9 @@ def get_fast_api_app(
         # ``next`` avoids raising at the boundary entirely.
         _SENTINEL = object()
 
-        async def _aiter_from_iter(iterator):
+        async def _aiter_from_iter(
+            iterator: Iterator[object],
+        ) -> AsyncIterator[object]:
           while True:
             chunk = await run_in_threadpool(next, iterator, _SENTINEL)
             if chunk is _SENTINEL:

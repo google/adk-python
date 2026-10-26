@@ -93,7 +93,8 @@ edges, and the rule depends on how many of them ran.
     actually executed. If only one did, as happens with conditional branching
     where a single path is taken, its output becomes the workflow's output. If
     several executed and produced outputs, which is exactly what parallel
-    branches do, the workflow fails with a `ValueError` when it completes. A
+    branches do, the workflow fails with a `WorkflowConfigurationError`, a
+    `ValueError` subclass, when it completes. A
     node has one output, and nothing in the edge list says which of the
     competing results should become it, so the run stops rather than picking
     one for you.
@@ -145,7 +146,7 @@ The graph must contain the `START` sentinel, and nothing may point into it.
     run yet that could emit one.
 
 Beyond those three, [Workflow graphs](../graph/index.md) has the rest of the
-syntax, along with the nine rules your graph is checked against before it runs.
+syntax, along with the ten rules your graph is checked against before it runs.
 
 ### `max_concurrency`
 

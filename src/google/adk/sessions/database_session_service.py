@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 import copy
 from datetime import datetime
@@ -217,7 +218,8 @@ async def _get_or_create_state(
     return row
   try:
     async with sql_session.begin_nested():
-      row = state_model(**defaults)
+      new_state: Callable[..., _StorageStateT] = state_model
+      row = new_state(**defaults)
       sql_session.add(row)
     return row
   except IntegrityError:
@@ -658,12 +660,14 @@ class DatabaseSessionService(BaseSessionService):
       session_id = platform_uuid.new_uuid()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
-      if has_user_provided_id and await sql_session.get(
-          schema.StorageSession, (app_name, user_id, session_id)
-      ):
-        raise AlreadyExistsError(
-            f"Session with id {session_id} already exists."
+      if has_user_provided_id:
+        existing_session = await sql_session.get(
+            schema.StorageSession, (app_name, user_id, session_id)
         )
+        if existing_session:
+          raise AlreadyExistsError(
+              f"Session with id {session_id} already exists."
+          )
       # Get or create state rows, handling concurrent insert races.
       storage_app_state = await _get_or_create_state(
           sql_session=sql_session,
@@ -873,6 +877,12 @@ class DatabaseSessionService(BaseSessionService):
     await self.prepare_tables()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
+      delete_events_stmt = delete(schema.StorageEvent).where(
+          schema.StorageEvent.app_name == app_name,
+          schema.StorageEvent.user_id == user_id,
+          schema.StorageEvent.session_id == session_id,
+      )
+      await sql_session.execute(delete_events_stmt)
       stmt = delete(schema.StorageSession).where(
           schema.StorageSession.app_name == app_name,
           schema.StorageSession.user_id == user_id,

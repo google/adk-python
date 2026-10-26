@@ -38,10 +38,11 @@ draft_email = Agent(
 
 @node(rerun_on_resume=True)
 def human_review(draft: str, ctx: Context):
-  resume_input = ctx.resume_inputs.get("human_review")
+  interrupt_id = f"human_review_{ctx.invocation_id}_{ctx.run_id}"
+  resume_input = ctx.resume_inputs.get(interrupt_id)
   if not resume_input:
     yield RequestInput(
-        interrupt_id="human_review",
+        interrupt_id=interrupt_id,
         message=(
             "Please review the following draft email and provide 'approve',"
             f" 'reject', or feedback to revise.\n\n---\n{draft}\n---"

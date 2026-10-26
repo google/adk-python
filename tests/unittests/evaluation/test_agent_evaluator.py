@@ -30,6 +30,7 @@ from google.adk.evaluation import agent_evaluator as agent_evaluator_module
 from google.adk.evaluation.agent_evaluator import _EvalMetricResultWithInvocation
 from google.adk.evaluation.agent_evaluator import AgentEvaluator
 from google.adk.evaluation.agent_evaluator import load_json
+from google.adk.evaluation.base_eval_service import InferenceResult
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_config import EvalConfig
@@ -107,6 +108,59 @@ async def test_get_eval_results_by_eval_id_threads_live_model_config(
   assert inference_request.inference_config.use_live is expected_use_live
   if live_model_config:
     assert inference_request.inference_config.live_timeout_seconds == 600
+
+
+@pytest.mark.asyncio
+async def test_get_eval_results_by_eval_id_labels_each_run_with_its_index(
+    mocker,
+):
+  """The results of each repeated run carry that run's 0-based index."""
+
+  async def _perform_inference(inference_request):
+    # Every request runs each eval case once, so the service labels it run 0.
+    yield InferenceResult(
+        app_name=inference_request.app_name,
+        eval_set_id=inference_request.eval_set_id,
+        eval_case_id="case1",
+        session_id=None,
+        repetition_index=0,
+    )
+
+  async def _evaluate(evaluate_request):
+    for inference_result in evaluate_request.inference_results:
+      yield EvalCaseResult(
+          eval_set_id=inference_result.eval_set_id,
+          eval_id=inference_result.eval_case_id,
+          final_eval_status=EvalStatus.PASSED,
+          overall_eval_metric_results=[],
+          eval_metric_result_per_invocation=[],
+          session_id="",
+          repetition_index=inference_result.repetition_index,
+      )
+
+  mock_service = mocker.MagicMock()
+  mock_service.perform_inference = mocker.MagicMock(
+      side_effect=_perform_inference
+  )
+  mock_service.evaluate = mocker.MagicMock(side_effect=_evaluate)
+  mocker.patch(
+      "google.adk.evaluation.local_eval_service.LocalEvalService",
+      return_value=mock_service,
+  )
+
+  eval_results_by_eval_id = await AgentEvaluator._get_eval_results_by_eval_id(
+      agent_for_eval=mocker.MagicMock(),
+      eval_set=_make_eval_set(),
+      eval_metrics=[],
+      num_runs=3,
+      user_simulator_provider=UserSimulatorProvider(),
+      app_name="test_app",
+  )
+
+  assert [
+      eval_result.repetition_index
+      for eval_result in eval_results_by_eval_id["case1"]
+  ] == [0, 1, 2]
 
 
 @pytest.mark.asyncio
@@ -651,6 +705,382 @@ def test_process_metrics_thresholded_metric_below_threshold_still_fails():
 
   assert len(failures) == 1
   assert "response_match_score" in failures[0]
+
+
+class TestProcessMetricsAndGetFailures:
+  """_process_metrics_and_get_failures aggregates over the MEAN of an eval
+  metric's per-invocation scores compared to its threshold -- unchanged
+  from before this fix -- but must apply the CORRECT comparison direction
+  for that metric's polarity, inferred from each invocation's own
+  eval_status (set by the registered Evaluator). The original bug hardcoded
+  a higher-is-better `overall_score >= threshold` comparison for every
+  metric uniformly, which is backwards for any metric an Evaluator defines
+  as lower-is-better (a cost, latency, or error-rate metric -- PASSED when
+  `score <= threshold`). This fix corrects ONLY the comparison direction;
+  it does not change mean-vs-threshold aggregation into an
+  any-invocation-fails rule (see the mixed-invocation tests below, which
+  exist specifically to prove the mean-based contract survives)."""
+
+  def test_lower_is_better_metric_genuinely_passing_is_not_reported_as_failure(
+      self,
+  ):
+    """The directionality bug's core repro: a lower-is-better metric whose
+    own eval_status is PASSED (score below threshold, by that metric's own
+    correct accounting) used to be recomputed via `10.0 >= 100.0` (False)
+    and reported as a failure. It no longer is."""
+    eval_metric_results = {
+        "latency_ms": [
+            _make_result_with_invocation(
+                metric_name="latency_ms",
+                score=10.0,
+                threshold=100.0,
+                eval_status=EvalStatus.PASSED,
+                prompt="hi",
+                expected_response="",
+                actual_response="ok",
+            ),
+        ],
+    }
+
+    failures = AgentEvaluator._process_metrics_and_get_failures(
+        eval_metric_results=eval_metric_results,
+        print_detailed_results=False,
+        agent_module="my_agent",
+    )
+
+    assert failures == []
+
+  def test_lower_is_better_metric_genuinely_failing_is_still_reported(self):
+    """The same lower-is-better metric, but genuinely over threshold (its own
+    eval_status is FAILED) -- must still be reported. This is the case a
+    permissive "just always trust the metric" non-fix would have broken."""
+    eval_metric_results = {
+        "latency_ms": [
+            _make_result_with_invocation(
+                metric_name="latency_ms",
+                score=500.0,
+                threshold=100.0,
+                eval_status=EvalStatus.FAILED,
+                prompt="hi",
+                expected_response="",
+                actual_response="ok",
+            ),
+        ],
+    }
+
+    failures = AgentEvaluator._process_metrics_and_get_failures(
+        eval_metric_results=eval_metric_results,
+        print_detailed_results=False,
+        agent_module="my_agent",
+    )
+
+    assert len(failures) == 1
+    assert "latency_ms for my_agent Failed" in failures[0]
+
+  def test_higher_is_better_metric_still_works_as_before(self):
+    """Regression safety net: an ordinary higher-is-better metric (the
+    existing, common case -- PASSED when score >= threshold) must keep
+    working exactly as it did before this fix, since it was never the
+    metric shape this bug affected."""
+    eval_metric_results = {
+        "response_match_score": [
+            _make_result_with_invocation(
+                metric_name="response_match_score",
+                score=1.0,
+                threshold=0.8,
+                eval_status=EvalStatus.PASSED,
+                prompt="What is 2 + 2?",
+                expected_response="4",
+                actual_response="4",
+            ),
+        ],
+    }
+
+    failures = AgentEvaluator._process_metrics_and_get_failures(
+        eval_metric_results=eval_metric_results,
+        print_detailed_results=False,
+        agent_module="my_agent",
+    )
+
+    assert failures == []
+
+  def test_higher_is_better_metric_failure_still_reported(self):
+    eval_metric_results = {
+        "response_match_score": [
+            _make_result_with_invocation(
+                metric_name="response_match_score",
+                score=0.0,
+                threshold=0.8,
+                eval_status=EvalStatus.FAILED,
+                prompt="Capital of France?",
+                expected_response="Paris",
+                actual_response="London",
+            ),
+        ],
+    }
+
+    failures = AgentEvaluator._process_metrics_and_get_failures(
+        eval_metric_results=eval_metric_results,
+        print_detailed_results=False,
+        agent_module="my_agent",
+    )
+
+    assert len(failures) == 1
+    assert "response_match_score for my_agent Failed" in failures[0]
+
+  def test_mixed_invocations_where_the_mean_still_clears_the_threshold(self):
+    """Aggregation is over the MEAN of scores compared to the threshold --
+    NOT "any individual invocation failed" -- exactly the pre-existing
+    contract this fix must preserve, and exactly the gap a prior version of
+    this test suite failed to cover (it asserted "any-invocation-fails"
+    behavior instead of proving mean-aggregation survives). Two invocations
+    of a higher-is-better metric at threshold=0.5: scores 0.0 (individually
+    FAILED) and 1.0 (individually PASSED). The MEAN (0.5) clears the
+    threshold, so the metric as a whole must PASS -- an any-invocation-
+    fails rule would incorrectly report this as a failure since one
+    invocation individually failed."""
+    eval_metric_results = {
+        "response_match_score": [
+            _make_result_with_invocation(
+                metric_name="response_match_score",
+                score=0.0,
+                threshold=0.5,
+                eval_status=EvalStatus.FAILED,
+                prompt="q1",
+                expected_response="",
+                actual_response="wrong",
+            ),
+            _make_result_with_invocation(
+                metric_name="response_match_score",
+                score=1.0,
+                threshold=0.5,
+                eval_status=EvalStatus.PASSED,
+                prompt="q2",
+                expected_response="",
+                actual_response="right",
+            ),
+        ],
+    }
+
+    failures = AgentEvaluator._process_metrics_and_get_failures(
+        eval_metric_results=eval_metric_results,
+        print_detailed_results=False,
+        agent_module="my_agent",
+    )
+
+    assert failures == []
+
+  def test_mixed_invocations_where_the_mean_genuinely_fails_the_threshold(
+      self,
+  ):
+    """The counterpart to the above: when the mean genuinely does NOT clear
+    the threshold, the metric must still be reported as a failure -- a
+    permissive "just always pass on any individual success" non-fix would
+    have broken this. Higher-is-better metric, threshold=0.5: scores 0.0
+    and 0.4 -- mean is 0.2, below threshold, so this must fail even though
+    neither score individually triggers a different rule."""
+    eval_metric_results = {
+        "response_match_score": [
+            _make_result_with_invocation(
+                metric_name="response_match_score",
+                score=0.0,
+                threshold=0.5,
+                eval_status=EvalStatus.FAILED,
+                prompt="q1",
+                expected_response="",
+                actual_response="wrong",
+            ),
+            _make_result_with_invocation(
+                metric_name="response_match_score",
+                score=0.4,
+                threshold=0.5,
+                eval_status=EvalStatus.FAILED,
+                prompt="q2",
+                expected_response="",
+                actual_response="close",
+            ),
+        ],
+    }
+
+    failures = AgentEvaluator._process_metrics_and_get_failures(
+        eval_metric_results=eval_metric_results,
+        print_detailed_results=False,
+        agent_module="my_agent",
+    )
+
+    assert len(failures) == 1
+
+  def test_mixed_invocations_lower_is_better_mean_still_clears_threshold(
+      self,
+  ):
+    """Same mean-vs-threshold contract, for a lower-is-better metric
+    (the actual shape this whole fix exists for): threshold=100.0, one
+    invocation well under budget (score=10, individually PASSED) and one
+    modestly over (score=150, individually FAILED). Mean is 80.0, which
+    clears (is under) the threshold, so the metric as a whole must PASS."""
+    eval_metric_results = {
+        "latency_ms": [
+            _make_result_with_invocation(
+                metric_name="latency_ms",
+                score=10.0,
+                threshold=100.0,
+                eval_status=EvalStatus.PASSED,
+                prompt="q1",
+                expected_response="",
+                actual_response="ok",
+            ),
+            _make_result_with_invocation(
+                metric_name="latency_ms",
+                score=150.0,
+                threshold=100.0,
+                eval_status=EvalStatus.FAILED,
+                prompt="q2",
+                expected_response="",
+                actual_response="ok",
+            ),
+        ],
+    }
+
+    failures = AgentEvaluator._process_metrics_and_get_failures(
+        eval_metric_results=eval_metric_results,
+        print_detailed_results=False,
+        agent_module="my_agent",
+    )
+
+    assert failures == []
+
+  def test_mixed_invocations_lower_is_better_mean_genuinely_fails(self):
+    """Counterpart for a lower-is-better metric: one invocation cheap
+    (score=10, PASSED) and one wildly over budget (score=500, FAILED).
+    Mean is 255.0, well over the threshold=100.0, so this must still be
+    reported as a failure."""
+    eval_metric_results = {
+        "latency_ms": [
+            _make_result_with_invocation(
+                metric_name="latency_ms",
+                score=10.0,
+                threshold=100.0,
+                eval_status=EvalStatus.PASSED,
+                prompt="q1",
+                expected_response="",
+                actual_response="ok",
+            ),
+            _make_result_with_invocation(
+                metric_name="latency_ms",
+                score=500.0,
+                threshold=100.0,
+                eval_status=EvalStatus.FAILED,
+                prompt="q2",
+                expected_response="",
+                actual_response="ok",
+            ),
+        ],
+    }
+
+    failures = AgentEvaluator._process_metrics_and_get_failures(
+        eval_metric_results=eval_metric_results,
+        print_detailed_results=False,
+        agent_module="my_agent",
+    )
+
+    assert len(failures) == 1
+
+  def test_not_evaluated_with_no_scores_is_still_reported_as_failure(self):
+    """Unchanged from before this fix -- a metric that never produced a
+    real score (NOT_EVALUATED, no scores at all) is still treated as a
+    failure by this function, exactly as it was pre-fix. This function does
+    not change that; only the PASSED-vs-FAILED polarity for a metric that
+    genuinely did produce a score."""
+    eval_metric_results = {
+        "latency_ms": [
+            _make_result_with_invocation(
+                metric_name="latency_ms",
+                score=None,
+                threshold=100.0,
+                eval_status=EvalStatus.NOT_EVALUATED,
+                prompt="hi",
+                expected_response="",
+                actual_response="ok",
+            ),
+        ],
+    }
+
+    failures = AgentEvaluator._process_metrics_and_get_failures(
+        eval_metric_results=eval_metric_results,
+        print_detailed_results=False,
+        agent_module="my_agent",
+    )
+
+    assert len(failures) == 1
+
+  def test_disagreeing_invocation_directions_fall_back_to_higher_is_better(
+      self,
+  ) -> None:
+    """When scored invocations disagree on direction (e.g. a custom gate metric
+    whose per-invocation status is not purely score-vs-threshold), fall back to
+    `>=` rather than letting the first invocation invert the metric."""
+    failing_gate_results = {
+        "custom_gate": [
+            _make_result_with_invocation(
+                metric_name="custom_gate",
+                score=0.8,
+                threshold=0.6,
+                eval_status=EvalStatus.FAILED,
+                prompt="q1",
+                expected_response="",
+                actual_response="ok",
+            ),
+            _make_result_with_invocation(
+                metric_name="custom_gate",
+                score=0.2,
+                threshold=0.6,
+                eval_status=EvalStatus.FAILED,
+                prompt="q2",
+                expected_response="",
+                actual_response="ok",
+            ),
+        ],
+    }
+
+    failures = AgentEvaluator._process_metrics_and_get_failures(
+        eval_metric_results=failing_gate_results,
+        print_detailed_results=False,
+        agent_module="my_agent",
+    )
+
+    assert len(failures) == 1
+    assert "Expected 0.6, but got 0.5." in failures[0]
+
+    passing_gate_results = {
+        "custom_gate": [
+            _make_result_with_invocation(
+                metric_name="custom_gate",
+                score=0.2,
+                threshold=0.4,
+                eval_status=EvalStatus.PASSED,
+                prompt="q1",
+                expected_response="",
+                actual_response="ok",
+            ),
+            _make_result_with_invocation(
+                metric_name="custom_gate",
+                score=0.8,
+                threshold=0.4,
+                eval_status=EvalStatus.PASSED,
+                prompt="q2",
+                expected_response="",
+                actual_response="ok",
+            ),
+        ],
+    }
+
+    failures = AgentEvaluator._process_metrics_and_get_failures(
+        eval_metric_results=passing_gate_results,
+        print_detailed_results=False,
+        agent_module="my_agent",
+    )
+
+    assert failures == []
 
 
 def test_write_results_to_csv_writes_expected_file(tmp_path):

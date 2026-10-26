@@ -23,7 +23,8 @@ reports in:
   - `token_usage_v1`: tokens consumed -- a token count. The score is the total,
     and every token type is reported alongside it as a breakdown.
   - `invocation_duration_v1`: wall-clock time the turn took -- seconds, not
-    milliseconds.
+    milliseconds. The score is the total, and where it went -- model, tool,
+    framework -- is reported alongside it as a breakdown.
 
 Lower is better for all four. Every value is reported **per invocation** (per
 conversation turn): each per-invocation result holds that turn's own value, and
@@ -68,6 +69,7 @@ from .eval_case import get_all_usage_metadata
 from .eval_case import Invocation
 from .eval_case import InvocationEvent
 from .eval_case import InvocationEvents
+from .eval_metrics import DurationDetails
 from .eval_metrics import EvalMetric
 from .eval_metrics import TokenUsageDetails
 from .evaluator import EvalStatus
@@ -222,15 +224,26 @@ class _InferenceCallCountV1Evaluator(Evaluator):
 
 
 class _InvocationDurationV1Evaluator(Evaluator):
-  """Reports how long an invocation took, in seconds.
+  """Reports how long an invocation took, in seconds, and where the time went.
 
   Unit: seconds per invocation.
 
-  The value is measured while the agent runs and carried on the invocation; it
-  is never reconstructed from event timestamps, which mark when an event object
-  was built rather than when the model answered. An invocation that was not
-  produced by this eval run -- read back from a stored session, say -- carries
-  no timing and reports n/a.
+  The score is the total. Where it went is reported alongside it as
+  `DurationDetails`, splitting the turn three ways: time awaiting a model, time
+  inside tools, and the framework's own time. The three partition the turn, so
+  they add back up to the total -- unlike the token breakdown, whose counts
+  nest.
+
+  The split is what answers "is ADK itself the cost". Keeping tool time out of
+  the framework figure is the point: a tool body calling a slow external API is
+  the agent's cost, not the framework's, and folding it in would make ADK look
+  slow for work it never did.
+
+  Values are measured while the agent runs and carried on the invocation; they
+  are never reconstructed from event timestamps, which mark when an event
+  object was built rather than when the model answered. An invocation that was
+  not produced by this eval run -- read back from a stored session, say --
+  carries no timing and reports n/a for the total and every part.
 
   An eval invocation spans a whole turn (every sub-agent shares the turn's
   invocation id), so this is the quantity telemetry publishes per turn as
@@ -250,11 +263,70 @@ class _InvocationDurationV1Evaluator(Evaluator):
     _reject_threshold(eval_metric)
     self._eval_metric = eval_metric
 
-  def _compute_value(self, invocation: Invocation) -> Optional[float]:
-    # None here means the run did not record a duration, not that the turn took
-    # no time, so `_evaluate_efficiency_metric` leaves it out of the average
-    # rather than counting it as zero.
-    return invocation.duration
+  def _duration_details(self, invocation: Invocation) -> DurationDetails:
+    """Returns the three parts of one invocation's duration, plus the total.
+
+    All None when the run did not time the invocation: that means the turn was
+    not measured, not that it took no time, so nothing is reported as zero.
+    """
+    if invocation.duration is None:
+      return DurationDetails()
+    model_seconds = invocation.model_duration
+    tool_seconds = invocation.tool_duration
+    return DurationDetails(
+        total_seconds=invocation.duration,
+        model_seconds=model_seconds,
+        tool_seconds=tool_seconds,
+        framework_seconds=self._framework_seconds(
+            invocation.duration, model_seconds, tool_seconds
+        ),
+    )
+
+  @staticmethod
+  def _framework_seconds(
+      total: float,
+      model_seconds: Optional[float],
+      tool_seconds: Optional[float],
+  ) -> Optional[float]:
+    """Returns what is left of the turn once model and tool time are out.
+
+    Derived rather than measured, so the parts always agree with the total.
+    `tool_seconds` already excludes time a tool spent awaiting a model, so
+    subtracting both cannot double count what an `AgentTool` spent.
+
+    A part that was never measured makes the remainder unmeasurable too, so it
+    is None rather than the whole turn. An invocation timed before the split
+    existed -- a stored eval result, say -- carries a duration and no parts;
+    treating those as zero would report every one of its turns as pure
+    framework overhead, which is the reading this metric exists to prevent.
+    """
+    if model_seconds is None or tool_seconds is None:
+      return None
+    # Clamped at zero: the total and the parts are read off the same monotonic
+    # clock but closed at slightly different moments, so a turn that was
+    # entirely one model call can land a hair negative. Reporting a negative
+    # share of a turn would read as a bug in the agent rather than as the
+    # rounding it is.
+    return round(max(total - model_seconds - tool_seconds, 0.0), 3)
+
+  def _average(self, all_details: list[DurationDetails]) -> DurationDetails:
+    """Averages each part over the invocations that were timed.
+
+    An untimed invocation is left out entirely rather than counted as zero, the
+    same way `_evaluate_efficiency_metric` treats a None duration -- averaging
+    it in as zero would report a turn that was never measured as a fast one.
+    """
+    averaged = {}
+    for field in DurationDetails.model_fields:
+      present = [
+          value
+          for value in (getattr(details, field) for details in all_details)
+          if value is not None
+      ]
+      averaged[field] = (
+          round(sum(present) / len(present), 3) if present else None
+      )
+    return DurationDetails(**averaged)
 
   @override
   def evaluate_invocations(
@@ -266,7 +338,33 @@ class _InvocationDurationV1Evaluator(Evaluator):
     # Efficiency metrics are reference-free, so expected invocations and
     # conversation scenarios are not used.
     del expected_invocations, conversation_scenario
-    return _evaluate_efficiency_metric(actual_invocations, self._compute_value)
+
+    per_invocation_results = []
+    all_details = []
+    for actual in actual_invocations:
+      details = self._duration_details(actual)
+      all_details.append(details)
+      per_invocation_results.append(
+          PerInvocationResult(
+              actual_invocation=actual,
+              score=details.total_seconds,
+              # Informational: a value is reported but never passes or fails.
+              # The status is INFORMATIONAL even when the value is None (n/a).
+              eval_status=EvalStatus.INFORMATIONAL,
+              duration_details=details,
+          )
+      )
+
+    if not per_invocation_results:
+      return EvaluationResult(overall_eval_status=EvalStatus.INFORMATIONAL)
+
+    overall_details = self._average(all_details)
+    return EvaluationResult(
+        overall_score=overall_details.total_seconds,
+        overall_eval_status=EvalStatus.INFORMATIONAL,
+        per_invocation_results=per_invocation_results,
+        overall_duration_details=overall_details,
+    )
 
 
 class _TokenUsageV1Evaluator(Evaluator):

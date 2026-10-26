@@ -104,6 +104,17 @@ WORKDIR /app
 # Create a non-root user
 RUN adduser --disabled-password --gecos "" myuser
 
+# Optional Agent Gateway intercept CA (Cloud Build build-arg)
+ARG AGENT_GATEWAY_ROOT_CERTIFICATES
+RUN if [ -n "$AGENT_GATEWAY_ROOT_CERTIFICATES" ]; then \\
+      mkdir -p /usr/local/share/ca-certificates && \\
+      echo "$AGENT_GATEWAY_ROOT_CERTIFICATES" > /usr/local/share/ca-certificates/agw-ca.crt && \\
+      update-ca-certificates; \\
+    fi
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=/etc/ssl/certs/ca-certificates.crt
+
 # Switch to the non-root user
 USER myuser
 

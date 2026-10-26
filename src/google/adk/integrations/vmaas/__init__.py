@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Vertex AI Agent Engine Computer Use Sandbox integration.
+"""Vertex AI Agent Engine Sandbox integration.
 
 This module provides a BaseComputer implementation that uses Vertex AI
-Agent Engine Computer Use Sandbox as the remote browser environment.
+Agent Engine Computer Use Sandbox as the remote browser environment, and a
+BaseEnvironment implementation backed by an Agent Engine sandbox.
 
 Example:
   ```python
@@ -31,10 +32,12 @@ Example:
   ```
 """
 
+from ._agent_engine_environment import AgentEngineEnvironment
 from .sandbox_client import SandboxClient
 from .sandbox_computer import AgentEngineSandboxComputer
 
 __all__ = [
     "AgentEngineSandboxComputer",
+    "AgentEngineEnvironment",
     "SandboxClient",
 ]

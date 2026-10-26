@@ -25,7 +25,71 @@ permissions:
   pull-requests: write
 
 jobs:
+  # A published version can never be replaced, so nothing is built until the
+  # artifact-check job has passed in every Release: Artifact Check run on the
+  # commit being released and the commit carries a release/rc-gate status of
+  # success. The quickstart-smoke job calls a live model, so it does not gate.
+  release-checks:
+    if: github.repository == 'google/adk-python'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      statuses: read
+    steps:
+      - name: Require passing release checks on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC_GATE_CONTEXT: release/rc-gate
+        run: |
+          set -euo pipefail
+          # Without this, a failed jobs lookup inside $( ) drops that run silently.
+          shopt -s inherit_errexit
+          blocked=0
+
+          # A cancelled run was superseded by a newer one, so it decides nothing.
+          # The jobs endpoint reports each job's latest attempt, so a re-run counts.
+          jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-artifact-check.yml/runs?head_sha=$GITHUB_SHA&per_page=100" \
+              --jq '.workflow_runs[] | select(.conclusion != "cancelled") | "\(.id) \(.status) \(.html_url)"' \
+            | while read -r id status url; do
+                gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" \
+                  | jq -c --arg status "$status" --arg url "$url" \
+                    'first(.jobs[] | select(.name == "artifact-check") | {status, conclusion, url: .html_url}) // {status: $status, conclusion: null, url: $url}'
+              done | jq -s '.')
+          failed=$(jq -r '.[] | select(.status == "completed" and .conclusion != "success") | .url' <<< "$jobs")
+          running=$(jq -r '.[] | select(.status != "completed") | .url' <<< "$jobs")
+          passed=$(jq '[.[] | select(.conclusion == "success")] | length' <<< "$jobs")
+          if [[ -n "$failed" ]]; then
+            echo "::error::The artifact-check job failed on $GITHUB_SHA. Fix the candidate, or re-run the job if the failure was not caused by it: ${failed//$'\n'/ }"
+            blocked=1
+          elif [[ -n "$running" ]]; then
+            echo "::error::The artifact-check job is still running on $GITHUB_SHA. Publish again once it passes: ${running//$'\n'/ }"
+            blocked=1
+          elif [[ "$passed" -eq 0 ]]; then
+            echo "::error::Release: Artifact Check has not run on $GITHUB_SHA. Dispatch it on ${GITHUB_REF_NAME}, then publish again once it passes."
+            blocked=1
+          else
+            echo "The artifact-check job passed on $GITHUB_SHA ($passed run(s))."
+          fi
+
+          gate=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status" \
+            | jq -r --arg context "$RC_GATE_CONTEXT" \
+              'first(.statuses[] | select(.context == $context) | "\(.state)\t\(.description // "")") // "missing\t"')
+          state=${gate%%$'\t'*}
+          description=${gate#*$'\t'}
+          if [[ "$state" == "success" ]]; then
+            echo "$RC_GATE_CONTEXT is success on $GITHUB_SHA: $description"
+          elif [[ "$state" == "missing" ]]; then
+            echo "::error::$GITHUB_SHA has no $RC_GATE_CONTEXT status. Once release testing clears this commit, the release owner sets it with: gh api repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA -f context=$RC_GATE_CONTEXT -f state=success -f description='Release testing found no blockers'"
+            blocked=1
+          else
+            echo "::error::$RC_GATE_CONTEXT is $state on $GITHUB_SHA: $description"
+            blocked=1
+          fi
+
+          exit "$blocked"
+
   publish:
+    needs: release-checks
     if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     steps:

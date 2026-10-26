@@ -326,8 +326,11 @@ class SqliteMemoryService(BaseMemoryService):
       search_text = _extract_event_text(event)
       if not search_text:
         continue
-      search_text = unicodedata.normalize("NFC", search_text).lower()
-      search_text = _split_script_runs(search_text)
+      # Split script runs before lowercasing, the same order _extract_tokens
+      # uses for queries. "İ".lower() is "i" plus U+0307, which is not a
+      # Latin character, so splitting after lowercasing breaks the word apart.
+      search_text = unicodedata.normalize("NFC", search_text)
+      search_text = _split_script_runs(search_text).lower()
       search_text = _truncate_bytes(search_text, self._max_event_bytes)
       event_timestamp = float(
           event.timestamp

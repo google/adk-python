@@ -1,6 +1,6 @@
 # Workflow graphs
 
-A workflow in ADK 2.0 is a directed graph. The nodes are the work, the edges say what follows what, and execution moves along those edges until there is nothing left to run. The chain tuple shown on the [Workflow](../workflow/index.md) page is one of two ways to write that graph down, and whichever you use, the finished graph is checked against nine rules before it runs.
+A workflow in ADK 2.0 is a directed graph. The nodes are the work, the edges say what follows what, and execution moves along those edges until there is nothing left to run. The chain tuple shown on the [Workflow](../workflow/index.md) page is one of two ways to write that graph down, and whichever you use, the finished graph is checked against ten rules before it runs.
 
 ## Introduction
 
@@ -114,7 +114,8 @@ A chain tuple describes a run of nodes in the order they should execute, and nes
 
     Watch the end of that graph, though. As written it finishes with two
     terminal nodes, and if both of them produce an output the run fails with a
-    `ValueError` saying multiple terminal nodes produced output. Send the
+    `WorkflowConfigurationError`, a `ValueError` subclass, saying multiple
+    terminal nodes produced output. Send the
     branches into a `JoinNode` first, the way the fan-out example above does.
     [Workflow Output](../workflow/index.md#workflow-output) explains why the
     rule exists.
@@ -184,7 +185,7 @@ chain tuple but not here; pass the `START` object.
 
 ## Graph validation
 
-Initializing a `Workflow` builds the graph and checks it, so that a structural mistake surfaces while you are still writing the graph rather than in the middle of a run. There are nine rules, and all of them are enforced.
+Initializing a `Workflow` builds the graph and checks it, so that a structural mistake surfaces while you are still writing the graph rather than in the middle of a run. There are ten rules, and all of them are enforced.
 
 ### 1. Unique node names
 
@@ -204,7 +205,7 @@ Every node in the graph must be reachable from `START`. A node nothing points at
 
 ### 5. No duplicate edges
 
-The same two nodes may be joined only once. Listing `Edge(from_node=A, to_node=B)` twice in the same edge list fails, which is what catches the copy-and-paste slip. Repeating an edge is not how you make `B` run more than once. A second run comes from giving `B` another predecessor, or from a conditional loop back to it.
+Two edges between the same `from_node` and `to_node` may not both be unconditional, cannot combine an unconditional edge with a routed edge, and cannot share any route value. Listing `Edge(from_node=A, to_node=B)` twice in the same edge list, or giving two edges from `A` to `B` overlapping routes, fails validation, which catches copy-and-paste slips. Multiple conditional edges between `A` and `B` with disjoint route sets are valid. Repeating an edge is not how you make `B` run more than once; a second run comes from giving `B` another predecessor, or from a conditional loop back to it.
 
 ### 6. Default route constraints
 
@@ -221,6 +222,10 @@ If a node has an `output_schema` and its successor has an `input_schema`, the tw
 ### 9. Chat agent wiring
 
 An `LlmAgent` configured with `mode='chat'` may only follow the `START` node. A chat-mode agent manages its own conversational history and has no way to consume an input handed to it by a preceding node, so it cannot sit in the middle of a chain. Use `mode='single_turn'` for a step that takes input from the node before it.
+
+### 10. Node-specific outgoing edge checks
+
+After the graph-wide rules pass, each node validates its own outgoing edges. Specialized node types with a fixed set of routes reject edges naming routes the node can never emit, and reject graphs that leave one of the node's possible routes unhandled without a `DEFAULT_ROUTE` or an unconditional edge.
 
 ## Limitations
 

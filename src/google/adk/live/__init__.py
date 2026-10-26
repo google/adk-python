@@ -24,6 +24,8 @@ from ._cascade_live_events import IngressEvent
 from ._cascade_live_events import PartialTranscript
 from ._cascade_live_events import UserSpeechStarted
 from ._cascade_live_events import UserTurnFinished
+from ._gemini_stt import GeminiSTT
+from ._gemini_tts import GeminiTTS
 from ._transforms import LiveEgress
 from ._transforms import LiveIngress
 from .live_request_queue import LiveRequest
@@ -34,6 +36,8 @@ __all__ = [
     'AudioChunk',
     'CascadeLive',
     'EgressEvent',
+    'GeminiSTT',
+    'GeminiTTS',
     'IngressEvent',
     'LiveEgress',
     'LiveIngress',

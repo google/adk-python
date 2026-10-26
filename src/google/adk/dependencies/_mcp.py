@@ -49,9 +49,9 @@ from mcp.client.session import ElicitationFnT as ElicitationFnT
 from mcp.client.session import SamplingFnT as SamplingFnT
 from mcp.client.sse import sse_client as sse_client
 from mcp.client.stdio import stdio_client as stdio_client
-from mcp.client.streamable_http import create_mcp_http_client as create_mcp_http_client
 from mcp.client.streamable_http import streamable_http_client as streamable_http_client
 from mcp.server.session import ServerSession as ServerSession
+from mcp.shared._httpx_utils import create_mcp_http_client as create_mcp_http_client
 from mcp.types import ListResourcesResult as ListResourcesResult
 from mcp.types import ListToolsResult as ListToolsResult
 from mcp.types import Tool as Tool
@@ -59,7 +59,7 @@ from mcp.types import Tool as Tool
 try:
   from mcp.server.mcpserver import Context as Context
   from mcp.server.mcpserver import MCPServer as FastMCP
-  from mcp.shared.exceptions import MCPError as McpError
+  from mcp.shared.exceptions import MCPError as McpError  # type: ignore[attr-defined]  # mcp 2.x only
 
   # Which major resolved. Three places downstream need it and cannot ask the
   # SDK themselves: `_httpx` pairs the HTTP library to it, `session_context`

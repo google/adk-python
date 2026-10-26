@@ -202,7 +202,9 @@ class ContainerCodeExecutor(BaseCodeExecutor):
 
   _client: DockerClient | None = PrivateAttr(default=None)
   _container: Container | None = PrivateAttr(default=None)
-  _finalizer: weakref.finalize | None = PrivateAttr(default=None)
+  _finalizer: (
+      weakref.finalize[[Container | None], ContainerCodeExecutor] | None
+  ) = PrivateAttr(default=None)
 
   def __init__(
       self,

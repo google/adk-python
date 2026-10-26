@@ -76,7 +76,7 @@ pip install google-adk
 
 **Requirements:** Python 3.11+.
 
-For transitive dependency protection, we recommend to install with our companion
+For transitive dependency protection, we recommend installing with our companion
 constraints files (for python 3.11 to 3.15).
 
 Choose the constraints file matching your Python version:
@@ -220,7 +220,7 @@ of the ADK.
 
 ## Vibe Coding
 
-If you want to develop an agent via vibe coding the [llms.txt](https://adk.dev/llms.txt) and the [llms-full.txt](https://adk.dev/llms-full.txt) published on the ADK documentation site can be used as context to an LLM. While the former one is a summarized one and the latter one has the full information in case your LLM has a big enough context window.
+If you want to develop an agent via vibe coding, the [llms.txt](https://adk.dev/llms.txt) and [llms-full.txt](https://adk.dev/llms-full.txt) files published on the ADK documentation site can be used as context for an LLM. The former is a summarized version, while the latter contains the full documentation for LLMs with a large context window.
 
 ## Community Events
 

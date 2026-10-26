@@ -41,9 +41,12 @@ from google.adk.runners import Runner
 import google.adk.runners as _runners_module
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_configs import ToolArgsConfig
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils.variant_utils import GoogleLLMVariant
+from google.adk.workflow._function_node import FunctionNode
 from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
@@ -552,6 +555,152 @@ def test_update_state():
       'input: changed_value' in mock_model.requests[1].config.system_instruction
   )
   assert runner.session.state['state_1'] == 'changed_value'
+
+
+@mark.parametrize(
+    'reader',
+    [
+        'instruction',
+        'optional_instruction',
+        'callback',
+        'tool',
+        'sequential_agent',
+        'input_schema',
+    ],
+)
+def test_agent_tool_reads_caller_temp_state(reader):
+  """The wrapped agent reads the caller's temp: state, but not adk's own."""
+
+  class _NotJsonSerializable:
+    """A value only temp: state can hold, since it is never persisted."""
+
+  class TicketInput(BaseModel):
+    custom_input: str
+
+  client = _NotJsonSerializable()
+  seen = {}
+  keys = ('temp:ticket', 'temp:client', 'plain', 'temp:_adk_internal')
+
+  def set_caller_state(callback_context: CallbackContext):
+    callback_context.state['temp:ticket'] = 'T-42'
+    callback_context.state['temp:client'] = client
+    callback_context.state['plain'] = 'P'
+    callback_context.state['temp:_adk_internal'] = 'X'
+
+  def read_in_callback(callback_context: CallbackContext):
+    for key in keys:
+      seen[key] = callback_context.state.get(key)
+
+  def read_in_tool(tool_context: ToolContext) -> str:
+    for key in keys:
+      seen[key] = tool_context.state.get(key)
+    return 'read'
+
+  template = 'ticket: {temp:ticket} plain: {plain}'
+  tool_call = (
+      function_call_custom
+      if reader == 'input_schema'
+      else function_call_no_schema
+  )
+  responses = ['response1', 'response2']
+  if reader == 'tool':
+    responses.insert(0, Part.from_function_call(name='read_in_tool', args={}))
+  mock_model = testing_utils.MockModel.create(responses=[tool_call, *responses])
+  if reader == 'sequential_agent':
+    tool_agent = SequentialAgent(
+        name='tool_agent',
+        sub_agents=[
+            Agent(name='inner_agent', model=mock_model, instruction=template)
+        ],
+    )
+  elif reader == 'input_schema':
+    tool_agent = Agent(
+        name='tool_agent',
+        model=mock_model,
+        input_schema=TicketInput,
+        instruction=template,
+    )
+  else:
+    tool_agent = Agent(
+        name='tool_agent',
+        model=mock_model,
+        instruction={
+            'instruction': template,
+            'optional_instruction': 'ticket: {temp:ticket?} plain: {plain?}',
+        }.get(reader, 'no template'),
+        before_agent_callback=(
+            read_in_callback if reader == 'callback' else None
+        ),
+        tools=[read_in_tool] if reader == 'tool' else [],
+    )
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      before_agent_callback=set_caller_state,
+      tools=[AgentTool(agent=tool_agent)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  runner.run('test1')
+
+  if reader in ('callback', 'tool'):
+    assert seen['temp:ticket'] == 'T-42'
+    assert seen['temp:client'] is client
+    assert seen['plain'] == 'P'
+    assert seen['temp:_adk_internal'] is None
+  else:
+    assert mock_model.requests[1].config.system_instruction.startswith(
+        'ticket: T-42 plain: P'
+    )
+
+
+def test_agent_tool_temp_state_is_not_copied_back_to_caller():
+  """temp: state the wrapped agent edits or writes stays in the nested run."""
+  child_parts = []
+
+  def set_caller_state(callback_context: CallbackContext):
+    callback_context.state['temp:ticket'] = 'T-42'
+    callback_context.state['temp:parts'] = []
+
+  def edit_temp_state(tool_context: ToolContext) -> str:
+    tool_context.state['temp:parts'] += ['child_part']
+    tool_context.state['temp:ticket'] = 'changed'
+    child_parts.append(list(tool_context.state['temp:parts']))
+    return 'edited'
+
+  caller_deltas = []
+  caller_parts = []
+
+  def record_caller_state(tool, args, tool_context, tool_response):
+    caller_deltas.append(dict(tool_context.actions.state_delta))
+    caller_parts.append(tool_context.state.get('temp:parts'))
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          function_call_no_schema,
+          Part.from_function_call(name='edit_temp_state', args={}),
+          'response1',
+          'response2',
+      ]
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=mock_model, tools=[edit_temp_state]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      before_agent_callback=set_caller_state,
+      after_tool_callback=record_caller_state,
+      tools=[AgentTool(agent=tool_agent)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  runner.run('test1')
+
+  assert child_parts == [['child_part']]
+  assert len(caller_deltas) == 1
+  assert not any(key.startswith('temp:') for key in caller_deltas[0])
+  assert caller_parts == [[]]
 
 
 @mark.asyncio
@@ -1476,6 +1625,183 @@ async def test_run_async_skips_parts_without_text(empty_part: types.Part):
   assert result == 'after'
 
 
+@mark.asyncio
+async def test_run_async_reports_error_when_wrapped_agent_pauses() -> None:
+  """A HITL pause (adk_request_confirmation) must not look like a success.
+
+  The nested run's session is thrown away once AgentTool.run_async returns,
+  so a pending long_running_tool_ids call can never be resumed. The caller
+  must see an explicit error instead of {"result": ""}, which would make its
+  model believe the pending action already completed.
+  """
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id='adk-123',
+                          name='adk_request_confirmation',
+                          args={},
+                      )
+                  )
+              ],
+          ),
+          long_running_tool_ids={'adk-123'},
+      ),
+  ])
+  assert result == (
+      "Error: agent 'inner_agent' stopped waiting on unresolved"
+      " long-running tool call(s) (pending call ids: ['adk-123']),"
+      ' which AgentTool cannot resume.'
+  )
+
+
+@mark.asyncio
+async def test_run_async_reports_error_when_llm_agent_requires_confirmation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """End-to-end confirmation pause in a wrapped LlmAgent surfaces an error."""
+  called = False
+
+  def delete_item(item_id: str) -> str:
+    nonlocal called
+    called = True
+    return f'deleted {item_id}'
+
+  inner_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(name='delete_item', args={'item_id': '42'}),
+      ]
+  )
+  inner_agent = LlmAgent(
+      name='inner_agent',
+      description='Deletes items',
+      model=inner_model,
+      tools=[FunctionTool(delete_item, require_confirmation=True)],
+  )
+  root_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(
+              name='inner_agent', args={'request': 'delete 42'}
+          ),
+          Part.from_text(
+              text='Could not delete item because confirmation is required.'
+          ),
+      ]
+  )
+  root_agent = LlmAgent(
+      name='root_agent',
+      model=root_model,
+      tools=[AgentTool(agent=inner_agent, skip_summarization=True)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  with caplog.at_level('WARNING', logger='google_adk'):
+    events = await runner.run_async('please delete 42')
+
+  assert not called
+  function_responses = [
+      fr
+      for event in events
+      for fr in event.get_function_responses()
+      if fr.name == 'inner_agent'
+  ]
+  assert len(function_responses) == 1
+  assert function_responses[0].response is not None
+  error_text = function_responses[0].response['result']
+  assert error_text.startswith(
+      "Error: agent 'inner_agent' stopped waiting on unresolved"
+      ' long-running tool call(s) (pending call ids: ['
+  )
+  assert events[-1].content and events[-1].content.parts
+  assert events[-1].content.parts[0].text == (
+      'Could not delete item because confirmation is required.'
+  )
+  assert any(
+      "Agent 'inner_agent' paused with unresolved long-running tool call(s)"
+      in record.getMessage()
+      for record in caplog.records
+  )
+
+
+@mark.asyncio
+async def test_run_async_returns_answer_after_long_running_tool_resolves() -> (
+    None
+):
+  """A long-running call answered in the same or a later event is not a pause.
+
+  An ordinary LongRunningFunctionTool that returns a truthy progress value
+  (e.g. {'status': 'pending'}) gets an auto-built function response in the
+  very same turn (see _caller.py), and A2A converters may aggregate both the
+  long-running call and its response onto a single Event. In both cases the
+  call is resolved before the run ends, so AgentTool must return the genuine
+  final answer instead of the error.
+  """
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name='slow_tool', args={}, id='adk-123'
+                      )
+                  )
+              ],
+          ),
+          long_running_tool_ids={'adk-123'},
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='slow_tool',
+                          response={'status': 'pending'},
+                          id='adk-123',
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name='slow_tool', args={}, id='adk-456'
+                      )
+                  ),
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='slow_tool',
+                          response={'status': 'done'},
+                          id='adk-456',
+                      )
+                  ),
+              ],
+          ),
+          long_running_tool_ids={'adk-456'},
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='final answer after pending tool')],
+          ),
+      ),
+  ])
+  assert result == 'final answer after pending tool'
+
+
 class TestAgentToolWithCompositeAgents:
   """Tests for AgentTool wrapping composite agents (SequentialAgent, etc.)."""
 
@@ -2242,3 +2568,158 @@ async def test_agent_tool_in_tool_thread_pool_returns_nested_reply():
   )
 
   assert result == 'nested reply'
+
+
+@mark.asyncio
+@mark.parametrize(
+    ('parent_ttl_seconds', 'expected_child_ttl_seconds'),
+    [
+        (1800, 300),
+        (120, 120),
+        (None, None),
+    ],
+    ids=[
+        'ttl_above_cap_clamped_to_300s',
+        'ttl_below_cap_preserved',
+        'no_parent_cache_config_remains_none',
+    ],
+)
+async def test_agent_tool_propagates_cache_config(
+    parent_ttl_seconds: int | None,
+    expected_child_ttl_seconds: int | None,
+):
+  """The child sees the parent's cache config with its TTL capped at 300s."""
+  from google.adk.agents.context_cache_config import ContextCacheConfig
+  from google.adk.apps.app import App
+
+  child_model = testing_utils.MockModel.create(responses=['child result'])
+  child = LlmAgent(name='tool_agent', model=child_model)
+  parent_model = testing_utils.MockModel.create(
+      responses=[function_call_no_schema, 'done']
+  )
+  parent = LlmAgent(
+      name='root_agent', model=parent_model, tools=[AgentTool(agent=child)]
+  )
+  cache_config = (
+      ContextCacheConfig(
+          min_tokens=1024, ttl_seconds=parent_ttl_seconds, cache_intervals=5
+      )
+      if parent_ttl_seconds is not None
+      else None
+  )
+  app = App(
+      name='cached_parent_app',
+      root_agent=parent,
+      context_cache_config=cache_config,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async('go')
+
+  (child_request,) = child_model.requests
+  if expected_child_ttl_seconds is None:
+    assert [r.cache_config for r in parent_model.requests] == [None, None]
+    assert child_request.cache_config is None
+  else:
+    assert [r.cache_config.ttl_seconds for r in parent_model.requests] == [
+        parent_ttl_seconds,
+        parent_ttl_seconds,
+    ]
+    assert child_request.cache_config is not None
+    assert child_request.cache_config.ttl_seconds == expected_child_ttl_seconds
+    assert child_request.cache_config.min_tokens == 1024
+    assert child_request.cache_config.cache_intervals == 5
+
+
+@mark.asyncio
+async def test_agent_tool_child_cache_state_starts_empty_on_every_call():
+  """Each call runs the child in a new session, so no cache state carries over.
+
+  Gemini creates an explicit cache only when an earlier response in the same
+  session left cache metadata behind. That handoff happens within one AgentTool
+  call and never across calls.
+  """
+  from google.adk.agents.context_cache_config import ContextCacheConfig
+  from google.adk.apps.app import App
+  from google.adk.models.cache_metadata import CacheMetadata
+
+  fingerprint_only = CacheMetadata(fingerprint='child-fp', contents_count=0)
+  usage = types.GenerateContentResponseUsageMetadata(prompt_token_count=4096)
+
+  def lookup(query: str) -> str:
+    """Looks up a query."""
+    return f'result for {query}'
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          LlmResponse(
+              content=types.Content(
+                  role='model',
+                  parts=[
+                      Part.from_function_call(
+                          name='lookup', args={'query': 'a'}
+                      )
+                  ],
+              ),
+              cache_metadata=fingerprint_only,
+              usage_metadata=usage,
+          ),
+          LlmResponse(
+              content=types.Content(role='model', parts=[Part(text='first')]),
+              usage_metadata=usage,
+          ),
+          LlmResponse(
+              content=types.Content(role='model', parts=[Part(text='second')]),
+              cache_metadata=fingerprint_only,
+              usage_metadata=usage,
+          ),
+      ]
+  )
+  inner = LlmAgent(name='tool_agent', model=mock_model, tools=[lookup])
+  parent_model = testing_utils.MockModel.create(
+      responses=[
+          function_call_no_schema,
+          'first done',
+          function_call_no_schema,
+          'second done',
+      ]
+  )
+  parent = LlmAgent(
+      name='root_agent', model=parent_model, tools=[AgentTool(agent=inner)]
+  )
+  app = App(
+      name='cached_parent_app',
+      root_agent=parent,
+      context_cache_config=ContextCacheConfig(
+          min_tokens=1024, ttl_seconds=1800, cache_intervals=5
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async('one')
+  await runner.run_async('two')
+
+  first_call_start, first_call_after_tool, second_call_start = (
+      mock_model.requests
+  )
+  assert [r.cache_config.ttl_seconds for r in mock_model.requests] == [
+      300,
+      300,
+      300,
+  ]
+  assert first_call_start.cache_metadata is None
+  assert first_call_start.cacheable_contents_token_count is None
+  assert first_call_after_tool.cache_metadata == fingerprint_only
+  assert first_call_after_tool.cacheable_contents_token_count == 4096
+  assert second_call_start.cache_metadata is None
+  assert second_call_start.cacheable_contents_token_count is None
+
+
+_non_agent_node = FunctionNode(func=lambda: None, name='non_agent_node')
+
+
+def test_from_config_rejects_non_agent_node():
+  config = ToolArgsConfig(agent={'code': f'{__name__}._non_agent_node'})
+
+  with pytest.raises(ValueError, match='AgentTool requires an agent'):
+    AgentTool.from_config(config, '/tmp/root_agent.yaml')

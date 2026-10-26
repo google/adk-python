@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 from typing import Optional
@@ -212,6 +213,8 @@ class ReflectAndRetryToolPlugin(BasePlugin):
     Returns:
       An optional dictionary containing reflection guidance for the error.
     """
+    if isinstance(error, asyncio.CancelledError):
+      return None
     return await self._handle_tool_error(tool, tool_args, tool_context, error)
 
   async def _handle_tool_error(

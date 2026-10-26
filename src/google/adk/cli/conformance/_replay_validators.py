@@ -20,9 +20,13 @@ from dataclasses import dataclass
 import difflib
 import json
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from ...events.event import Event
 from ...sessions.session import Session
+
+if TYPE_CHECKING:
+  from pydantic.main import IncEx
 
 
 @dataclass
@@ -44,7 +48,9 @@ def _generate_mismatch_message(
 
 
 def _generate_diff_message(
-    context: str, actual_dict: dict, recorded_dict: dict
+    context: str,
+    actual_dict: dict[str, object],
+    recorded_dict: dict[str, object],
 ) -> str:
   """Generate a diff-based error message for comparison failures."""
   # Convert to pretty-printed JSON for better readability
@@ -74,7 +80,7 @@ def _compare_event(
 ) -> ComparisonResult:
   """Compare a single actual event with a recorded event."""
   # Comprehensive exclude dict for all fields that can differ between runs
-  excluded_fields = {
+  excluded_fields: dict[str, IncEx | bool] = {
       # Event-level fields that vary per run
       "id": True,
       "timestamp": True,
@@ -150,7 +156,7 @@ def compare_session(
     ComparisonResult with success status and optional error message
   """
   # Comprehensive exclude dict for all fields that can differ between runs
-  excluded_fields = {
+  excluded_fields: dict[str, IncEx | bool] = {
       # Session-level fields that vary per run
       "id": True,
       "last_update_time": True,

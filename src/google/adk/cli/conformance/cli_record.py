@@ -21,7 +21,7 @@ from pathlib import Path
 import click
 from google.genai import types
 
-from ...agents.run_config import StreamingMode
+from ...agents._streaming_mode import StreamingMode
 from ...utils.yaml_utils import dump_pydantic_to_yaml
 from ..adk_web_server import RunAgentRequest
 from ._generated_file_utils import load_test_case
@@ -60,7 +60,7 @@ async def _create_conformance_test_files(
     )
 
     # Run the agent with the user messages
-    function_call_name_to_id_map = {}
+    function_call_name_to_id_map: dict[str | None, list[str | None]] = {}
     for user_message_index, user_message in enumerate(
         test_case.test_spec.user_messages
     ):

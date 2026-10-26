@@ -21,9 +21,11 @@ import json
 import logging
 from typing import Any
 from typing import AsyncGenerator
+from typing import cast
 from typing import Dict
 from typing import Literal
 from typing import Optional
+from typing import TYPE_CHECKING
 
 import httpx
 
@@ -31,6 +33,9 @@ from ...artifacts.base_artifact_service import ArtifactVersion
 from ...events.event import Event
 from ...sessions.session import Session
 from ..adk_web_server import RunAgentRequest
+
+if TYPE_CHECKING:
+  from types import TracebackType
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -99,7 +104,12 @@ class AdkWebServerClient:
     """
     return self
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:  # pylint: disable=unused-argument
+  async def __aexit__(  # pylint: disable=unused-argument
+      self,
+      exc_type: Optional[type[BaseException]],
+      exc_val: Optional[BaseException],
+      exc_tb: Optional[TracebackType],
+  ) -> None:
     """Async context manager exit that closes the HTTP client."""
     await self.close()
 
@@ -216,7 +226,8 @@ class AdkWebServerClient:
     async with self._get_client() as client:
       response = await client.get("/version")
       response.raise_for_status()
-      return response.json()
+      # The /version route returns a dict[str, str].
+      return cast(Dict[str, str], response.json())
 
   async def run_agent(
       self,

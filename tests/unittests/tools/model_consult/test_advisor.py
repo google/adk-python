@@ -25,8 +25,8 @@ from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.registry import LLMRegistry
+from google.adk.telemetry import _genai_instrumentor
 from google.adk.telemetry import _metrics
-from google.adk.telemetry import tracing
 from google.adk.tools.model_consult._advisor import AdvisorError
 from google.adk.tools.model_consult._advisor import AdvisorUsage
 from google.adk.tools.model_consult._advisor import call_advisor
@@ -669,8 +669,13 @@ async def test_call_advisor_timeout_bounds_total_wall_clock_across_retry():
 
 
 @pytest.mark.asyncio
-async def test_call_advisor_skips_native_telemetry_when_genai_instrumented():
+async def test_call_advisor_skips_native_telemetry_when_genai_instrumented(
+    monkeypatch: pytest.MonkeyPatch,
+):
   """Skips native OTel metrics for Gemini when genai OTel lib is active."""
+  monkeypatch.setenv(
+      'OTEL_SEMCONV_STABILITY_OPT_IN', 'gen_ai_latest_experimental'
+  )
   gemini_llm = _FakeAdvisorLlm(
       model='gemini-2.5-pro',
       scripted_outcomes=[[
@@ -708,8 +713,8 @@ async def test_call_advisor_skips_native_telemetry_when_genai_instrumented():
 
   with (
       mock.patch.object(
-          tracing,
-          '_instrumented_with_opentelemetry_instrumentation_google_genai',
+          _genai_instrumentor,
+          'is_instrumented',
           return_value=True,
       ),
       mock.patch.object(
@@ -886,3 +891,39 @@ async def test_call_advisor_enters_client_label_context_with_extra_default_label
       [*extra_defaults, MODEL_CONSULT_CLIENT_LABEL]
   ]
   assert get_client_labels() == extra_defaults
+
+
+@pytest.mark.asyncio
+async def test_call_advisor_records_native_telemetry_on_schema_v1(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Schema v1 keeps ADK's stable-semconv metrics even when instrumented."""
+  monkeypatch.setenv('ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN', '1')
+  monkeypatch.delenv('OTEL_SEMCONV_STABILITY_OPT_IN', raising=False)
+  gemini_llm = _FakeAdvisorLlm(
+      model='gemini-2.5-pro',
+      scripted_outcomes=[[
+          LlmResponse(
+              finish_reason=types.FinishReason.STOP,
+              content=types.Content(
+                  role='model', parts=[types.Part.from_text(text='Advice.')]
+              ),
+          )
+      ]],
+  )
+
+  with (
+      mock.patch.object(
+          _genai_instrumentor, 'is_instrumented', return_value=True
+      ),
+      mock.patch.object(
+          _metrics, 'record_client_operation_duration', autospec=True
+      ) as mock_duration,
+  ):
+    await call_advisor(
+        gemini_llm,
+        _sample_contents(),
+        system_instruction='Advisor system prompt.',
+    )
+
+  mock_duration.assert_called_once()

@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import Mock
 from unittest.mock import patch
+import warnings
 
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
@@ -44,7 +45,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
-from google.adk.tools.mcp_tool.mcp_tool import MCPTool
+from google.adk.tools.mcp_tool.mcp_tool import McpTool
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolsetConfig
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
@@ -370,11 +371,13 @@ class TestMcpToolset:
     )
     toolset._mcp_session_manager = self.mock_session_manager
 
-    tools = await toolset.get_tools()
+    with warnings.catch_warnings():
+      warnings.simplefilter("error", DeprecationWarning)
+      tools = await toolset.get_tools()
 
     assert len(tools) == 4
     for tool in tools[:3]:
-      assert isinstance(tool, MCPTool)
+      assert type(tool) is McpTool
     assert isinstance(tools[3], LoadMcpResourceTool)
     assert tools[0].name == "tool1"
     assert tools[1].name == "tool2"
@@ -525,6 +528,38 @@ class TestMcpToolset:
     assert len(tools) == 2
     self.mock_session_manager.create_session.assert_called_once_with(
         headers=expected_headers
+    )
+
+  @pytest.mark.asyncio
+  async def test_get_tools_auth_overrides_duplicate_provider_header(self):
+    """Explicit auth is authoritative when provider headers overlap."""
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult([MockMCPTool("tool1")])
+    )
+    mock_readonly_context = Mock(spec=ReadonlyContext)
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        header_provider=Mock(
+            return_value={
+                "authorization": "Bearer provider-token",
+                "X-Tenant-ID": "test-tenant",
+            }
+        ),
+    )
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    with patch.object(
+        toolset,
+        "_get_auth_headers",
+        return_value={"Authorization": "Bearer auth-token"},
+    ):
+      await toolset.get_tools(readonly_context=mock_readonly_context)
+
+    self.mock_session_manager.create_session.assert_awaited_once_with(
+        headers={
+            "Authorization": "Bearer auth-token",
+            "X-Tenant-ID": "test-tenant",
+        }
     )
 
   @pytest.mark.asyncio
