@@ -165,7 +165,7 @@ of its own:
 
 | Key | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `judge_model` | `str` | `"gemini-2.5-flash"` | Model that grades the response. |
+| `judge_model` | `str` | `LlmAgent.DEFAULT_MODEL` (`"gemini-3.5-flash"`) | Model that grades the response. |
 | `num_samples` | `int` | `5` | How many times the judge is asked about each invocation before the answers are aggregated. |
 | `parallelism_limit` | `int` | `1` | Maximum concurrent judge calls. |
 | `judge_model_config` | object | `null` | A `GenerateContentConfig` for the judge. Accepted from JSON, but left out of the generated JSON schema, so no tooling will suggest it. |
@@ -289,7 +289,7 @@ audio settings of its own on top of them.
 | Key | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `type` | `str` | `"llm_backed"` | Which simulator implementation to use. |
-| `model` | `str` | `"gemini-2.5-flash"` | Model that plays the user. |
+| `model` | `str` | `LlmAgent.DEFAULT_MODEL` (`"gemini-3.5-flash"`) | Model that plays the user. |
 | `model_configuration` | `GenerateContentConfig` | thinking on, budget 10240 | Generation config for the simulator's model. The default asks for thoughts, so overriding it with a bare `{}` turns thinking off. |
 | `max_allowed_invocations` | `int` | `20` | Hard cap on conversation length. `-1` removes the cap, which is how a run-off conversation becomes a bill. |
 | `custom_instructions` | `str` | `null` | Replacement instructions for the simulator. It must contain the Jinja placeholders `{{ stop_signal }}`, `{{ conversation_plan }}` and `{{ conversation_history }}`, plus `{{ persona }}` if the scenario sets one; a validator rejects it otherwise. |

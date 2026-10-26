@@ -24,6 +24,7 @@ from pydantic import field_validator
 from typing_extensions import Literal
 from typing_extensions import override
 
+from ...agents.llm_agent import LlmAgent
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...models.registry import LLMRegistry
@@ -57,7 +58,7 @@ class LlmBackedUserSimulatorConfig(BaseUserSimulatorConfig):
   )
 
   model: str = Field(
-      default="gemini-2.5-flash",
+      default=LlmAgent.DEFAULT_MODEL,
       description="The model to use for user simulation.",
   )
 
