@@ -446,7 +446,7 @@ class _TokenUsageV1Evaluator(Evaluator):
     return totals
 
   def _average(self, all_details: list[TokenUsageDetails]) -> TokenUsageDetails:
-    """Averages each count over every invocation, not just those reporting it.
+    """Averages each count over the invocations that reported any usage.
 
     A backend omits a count for a call that did not spend it -- Gemini leaves
     `thoughts_token_count` out of a call the model did not think through -- so a
@@ -454,12 +454,24 @@ class _TokenUsageV1Evaluator(Evaluator):
     A count no invocation reported at all is a different thing: the backend does
     not report it, and it stays None rather than becoming 0.
 
+    An invocation that reported no usage at all is left out of the denominator,
+    the same way the other efficiency metrics leave out an n/a invocation: its
+    token count is unknown, not zero.
+
     One shared denominator also keeps `total` equal to `input` plus `output`
     after averaging.
     """
+    reported = [
+        details
+        for details in all_details
+        if any(
+            getattr(details, field) is not None
+            for field in TokenUsageDetails.model_fields
+        )
+    ]
     averaged = {}
     for field in TokenUsageDetails.model_fields:
-      values = [getattr(details, field) for details in all_details]
+      values = [getattr(details, field) for details in reported]
       present = [value for value in values if value is not None]
       averaged[field] = sum(present) / len(values) if present else None
     return TokenUsageDetails(**averaged)
