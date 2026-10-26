@@ -2692,29 +2692,49 @@ class ApiServer:
                 ).decode("utf-8")
             )
 
-      async def process_messages() -> None:
-        try:
-          while True:
-            data = await websocket.receive_text()
-            # Validate and send the received message to the live queue.
-            live_request_queue.send(LiveRequest.model_validate_json(data))
-        except ValidationError as ve:
-          logger.error("Validation error in process_messages: %s", ve)
+      close_code: int | None = None
+      close_reason = ""
 
-      # Run both tasks concurrently and cancel all if one fails.
+      async def process_messages() -> None:
+        nonlocal close_code, close_reason
+        while True:
+          data = await websocket.receive_text()
+          # Guarded here, not around both tasks, so a ValidationError from the
+          # runner or a tool is not reported as a bad client frame.
+          try:
+            live_request = LiveRequest.model_validate_json(data)
+          except ValidationError as e:
+            # Only pydantic's error identifiers are logged: the rejected
+            # payload and even the field names it invents are end-user content.
+            logger.warning(
+                "Invalid live request: %s",
+                ", ".join(sorted({error["type"] for error in e.errors()})),
+            )
+            close_code = 1007
+            close_reason = "Invalid live request"
+            return
+          live_request_queue.send(live_request)
+
+      # Stop when either side finishes so its sibling cannot remain blocked.
       tasks = [
           asyncio.create_task(forward_events()),
           asyncio.create_task(process_messages()),
       ]
-      done, pending = await asyncio.wait(
-          tasks, return_when=asyncio.FIRST_EXCEPTION
-      )
       try:
-        # This will re-raise any exception from the completed tasks.
-        for task in done:
-          task.result()
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        # Iterate the task list rather than the `done` set so that the outcome
+        # reported below is stable when both tasks finish in the same pass.
+        for task in tasks:
+          if task in done:
+            # This will re-raise any exception from the completed tasks.
+            task.result()
+        # The stream is over, so close cleanly instead of letting the server
+        # drop the transport, which clients cannot tell from a network failure.
+        if close_code is None:
+          close_code = 1000
       except SessionNotFoundError:
-        await websocket.close(code=1002, reason="Session not found")
+        close_code = 1002
+        close_reason = "Session not found"
       except WebSocketDisconnect:
         # Disconnection could happen when receive or send text via websocket
         logger.info("Client disconnected during live session.")
@@ -2723,10 +2743,14 @@ class ApiServer:
         traceback.print_exc()
         WEBSOCKET_INTERNAL_ERROR_CODE = 1011
         WEBSOCKET_MAX_BYTES_FOR_REASON = 123
-        await websocket.close(
-            code=WEBSOCKET_INTERNAL_ERROR_CODE,
-            reason=str(e)[:WEBSOCKET_MAX_BYTES_FOR_REASON],
-        )
+        close_code = WEBSOCKET_INTERNAL_ERROR_CODE
+        close_reason = str(e)[:WEBSOCKET_MAX_BYTES_FOR_REASON]
       finally:
-        for task in pending:
+        live_request_queue.close()
+        for task in tasks:
           task.cancel()
+        # cancel() only requests it, so returning now would strand the runner.
+        await asyncio.wait(tasks)
+      # Skipped after a disconnect, when the server may cancel this handler.
+      if close_code is not None:
+        await websocket.close(code=close_code, reason=close_reason)
