@@ -20,6 +20,7 @@ import asyncio
 import io
 import logging
 import pathlib
+import re
 from typing import Any
 from typing import Callable
 from typing import cast
@@ -41,6 +42,11 @@ _MAX_ZIP_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
 # How much of a member is decompressed per step. Reading in steps keeps the
 # transient buffer this size however much the member really expands.
 _ZIP_READ_CHUNK_BYTES = 64 * 1024
+
+_FRONTMATTER_DELIMITER = "---"
+# Every convention a text editor writes line breaks in, so a file split on
+# them is read the same way whatever it was saved with.
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
 
 _ALLOWED_FRONTMATTER_KEYS = frozenset({
     "name",
@@ -138,6 +144,41 @@ def _build_scripts(
   return scripts
 
 
+def _split_frontmatter(content: str) -> tuple[str, str]:
+  """Splits SKILL.md content into its YAML frontmatter and Markdown body.
+
+  The frontmatter opens on the first line and closes on the first line that
+  holds only the delimiter, so a delimiter inside a value -- a spaced em-dash
+  run in a plain description, a rule line in a `|` block scalar -- stays part
+  of that value instead of ending the frontmatter early. Only an unindented
+  delimiter closes it: one indented inside a block scalar is that scalar's
+  content, since YAML requires block content to be indented past its key.
+
+  Args:
+    content: The raw text of SKILL.md.
+
+  Returns:
+    Tuple of (frontmatter YAML text, body text stripped of surrounding
+    whitespace).
+
+  Raises:
+    ValueError: If the file does not open with the delimiter, or never closes
+      it.
+  """
+  lines = _LINE_BREAK.split(content)
+  if lines[0].rstrip() != _FRONTMATTER_DELIMITER:
+    raise ValueError("SKILL.md must start with YAML frontmatter (---)")
+
+  for index in range(1, len(lines)):
+    if lines[index].rstrip() == _FRONTMATTER_DELIMITER:
+      return (
+          "\n".join(lines[1:index]),
+          "\n".join(lines[index + 1 :]).strip(),
+      )
+
+  raise ValueError("SKILL.md frontmatter not properly closed with ---")
+
+
 def _parse_skill_md_content(content: str) -> tuple[dict[str, Any], str]:
   """Parse SKILL.md from raw content string.
 
@@ -150,15 +191,7 @@ def _parse_skill_md_content(content: str) -> tuple[dict[str, Any], str]:
   Raises:
     ValueError: If SKILL.md is invalid.
   """
-  if not content.startswith("---"):
-    raise ValueError("SKILL.md must start with YAML frontmatter (---)")
-
-  parts = content.split("---", 2)
-  if len(parts) < 3:
-    raise ValueError("SKILL.md frontmatter not properly closed with ---")
-
-  frontmatter_str = parts[1]
-  body = parts[2].strip()
+  frontmatter_str, body = _split_frontmatter(content)
 
   try:
     parsed = yaml.safe_load(frontmatter_str)

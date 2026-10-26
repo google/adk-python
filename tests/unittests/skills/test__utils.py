@@ -317,6 +317,139 @@ Body content
   assert fm.license == "MIT"
 
 
+@pytest.mark.parametrize(
+    "description",
+    [
+        "Compare two options --- pros, cons and a verdict.",
+        '"Draft release notes --- never publish them."',
+        "Trailing delimiter ---",
+    ],
+)
+def test_frontmatter_value_may_contain_delimiter(tmp_path, description):
+  """Tests that a delimiter inside a value does not end the frontmatter.
+
+  Only a line holding the delimiter alone closes the frontmatter, so a
+  description spelled with a spaced em-dash run keeps its tail instead of
+  leaking it into the instructions.
+
+  Args:
+    tmp_path: Pytest temporary directory.
+    description: The raw YAML spelling of the description value.
+  """
+  skill_dir = tmp_path / "my-skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_text(
+      f"---\nname: my-skill\ndescription: {description}\n---\n# Instructions\n"
+  )
+
+  skill = _load_skill_from_dir(skill_dir)
+
+  assert skill.frontmatter.description == description.strip('"')
+  assert skill.instructions == "# Instructions"
+
+
+def test_frontmatter_block_scalar_may_contain_delimiter_line(tmp_path):
+  """Tests that keys after a `|` block scalar holding a delimiter are kept.
+
+  Args:
+    tmp_path: Pytest temporary directory.
+  """
+  skill_dir = tmp_path / "my-skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_text(
+      "---\n"
+      "name: my-skill\n"
+      "description: |\n"
+      "  First step\n"
+      "  ---\n"
+      "  Third step\n"
+      "license: MIT\n"
+      "metadata:\n"
+      "  adk_additional_tools: [search]\n"
+      "---\n"
+      "Body\n"
+  )
+
+  skill = _load_skill_from_dir(skill_dir)
+
+  assert skill.frontmatter.description == "First step\n---\nThird step\n"
+  assert skill.frontmatter.license == "MIT"
+  assert skill.frontmatter.metadata == {"adk_additional_tools": ["search"]}
+  assert skill.instructions == "Body"
+
+
+def test_body_may_start_with_delimiter_line(tmp_path):
+  """Tests that a body opening with a rule line is not read as frontmatter.
+
+  Args:
+    tmp_path: Pytest temporary directory.
+  """
+  skill_dir = tmp_path / "my-skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_text(
+      "---\nname: my-skill\ndescription: A skill\n---\n---\nAfter the rule\n"
+  )
+
+  skill = _load_skill_from_dir(skill_dir)
+
+  assert skill.instructions == "---\nAfter the rule"
+
+
+@pytest.mark.parametrize("line_break", ["\r\n", "\r"])
+def test_frontmatter_tolerates_foreign_line_endings(tmp_path, line_break):
+  """Tests that a file saved with CRLF or CR breaks is split like an LF one.
+
+  Args:
+    tmp_path: Pytest temporary directory.
+    line_break: The line break the file is written with.
+  """
+  skill_dir = tmp_path / "my-skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_bytes(
+      line_break.join([
+          "---",
+          "name: my-skill",
+          "description: a --- b",
+          "---",
+          "Body",
+          "",
+      ]).encode()
+  )
+
+  skill = _load_skill_from_dir(skill_dir)
+
+  assert skill.frontmatter.description == "a --- b"
+  assert skill.instructions == "Body"
+
+
+def test_parse_skill_md_content_requires_the_delimiter_lines():
+  """Tests that a missing opening or closing delimiter raises ValueError."""
+  with pytest.raises(ValueError, match="must start with YAML frontmatter"):
+    _utils._parse_skill_md_content("name: my-skill\n---\nBody")
+
+  with pytest.raises(ValueError, match="not properly closed"):
+    _utils._parse_skill_md_content("---\nname: my-skill\nBody")
+
+  with pytest.raises(ValueError, match="not properly closed"):
+    _utils._parse_skill_md_content("---")
+
+
+def test__load_skill_from_zip_bytes_keeps_delimiter_in_value():
+  """Tests that the archive loader reads frontmatter the same way."""
+  zip_buffer = io.BytesIO()
+  with zipfile.ZipFile(zip_buffer, "w") as z:
+    z.writestr(
+        "SKILL.md",
+        "---\nname: my-skill\n"
+        "description: Compare --- then decide\n---\nBody instructions",
+    )
+
+  skill = _load_skill_from_zip_bytes(zip_buffer.getvalue())
+
+  assert skill.frontmatter.description == "Compare --- then decide"
+  assert skill.instructions == "Body instructions"
+
+
 @mock.patch("google.cloud.storage.Client")
 def test__list_skills_in_gcs_dir(mock_client_class):
 
