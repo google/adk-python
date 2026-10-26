@@ -29,6 +29,7 @@ from typing import Sequence
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter
 from opentelemetry.sdk.trace.export import SpanExportResult
+from opentelemetry.trace import Link
 from opentelemetry.trace import SpanContext
 from opentelemetry.trace import TraceFlags
 from opentelemetry.trace import TraceState
@@ -46,7 +47,8 @@ CREATE TABLE IF NOT EXISTS spans (
   end_time_unix_nano INTEGER,
   session_id TEXT,
   invocation_id TEXT,
-  attributes_json TEXT
+  attributes_json TEXT,
+  links_json TEXT NOT NULL DEFAULT '[]'
 );
 """
 
@@ -68,8 +70,9 @@ INSERT OR REPLACE INTO spans (
   end_time_unix_nano,
   session_id,
   invocation_id,
-  attributes_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+  attributes_json,
+  links_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 """
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -78,8 +81,9 @@ _DEFAULT_TIMEOUT_SECONDS = 30.0
 class SqliteSpanExporter(SpanExporter):
   """Exports spans to a local SQLite database.
 
-  This is intended for local development (e.g. `adk web`) to allow reloading
-  traces for older sessions after process restart.
+  This is intended for local development, allowing traces to be reloaded
+  after process restart. Existing databases are upgraded in place; spans
+  written by older versions have no links.
   """
 
   def __init__(self, *, db_path: str):
@@ -101,10 +105,20 @@ class SqliteSpanExporter(SpanExporter):
   def _ensure_schema(self) -> None:
     with self._lock:
       conn = self._get_connection()
-      conn.execute(_CREATE_SPANS_TABLE)
-      conn.execute(_CREATE_SESSION_INDEX)
-      conn.execute(_CREATE_TRACE_INDEX)
-      conn.commit()
+      with conn:
+        # Serialize the schema check with other exporter instances.
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(_CREATE_SPANS_TABLE)
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(spans)")
+        }
+        if "links_json" not in columns:
+          conn.execute(
+              "ALTER TABLE spans ADD COLUMN links_json TEXT NOT NULL DEFAULT"
+              " '[]'"
+          )
+        conn.execute(_CREATE_SESSION_INDEX)
+        conn.execute(_CREATE_TRACE_INDEX)
 
   def _serialize_attributes(
       self, attributes: Mapping[str, AttributeValue]
@@ -132,6 +146,54 @@ class SqliteSpanExporter(SpanExporter):
     if not isinstance(decoded, dict):
       return {}
     return cast(dict[str, AttributeValue], decoded)
+
+  def _serialize_links(self, links: Sequence[Link]) -> str:
+    return json.dumps(
+        [
+            {
+                "trace_id": format(link.context.trace_id, "032x"),
+                "span_id": format(link.context.span_id, "016x"),
+                "is_remote": link.context.is_remote,
+                "trace_flags": int(link.context.trace_flags),
+                "trace_state": link.context.trace_state.to_header(),
+                "attributes": (
+                    dict(link.attributes)
+                    if link.attributes is not None
+                    else None
+                ),
+            }
+            for link in links
+        ],
+        ensure_ascii=False,
+        default=lambda o: "<not serializable>",
+    )
+
+  def _deserialize_links(self, links_json: object) -> list[Link]:
+    if not isinstance(links_json, (str, bytes, bytearray)):
+      return []
+    try:
+      decoded: object = json.loads(links_json)
+    except (json.JSONDecodeError, TypeError) as e:
+      logger.debug("Failed to deserialize span links: %r", e)
+      return []
+    if not isinstance(decoded, list):
+      return []
+    links: list[Link] = []
+    for item in decoded:
+      if not isinstance(item, dict):
+        continue
+      try:
+        context = SpanContext(
+            trace_id=int(item["trace_id"], 16),
+            span_id=int(item["span_id"], 16),
+            is_remote=item["is_remote"],
+            trace_flags=TraceFlags(item["trace_flags"]),
+            trace_state=TraceState.from_header([item["trace_state"]]),
+        )
+        links.append(Link(context, attributes=item["attributes"]))
+      except (KeyError, TypeError, ValueError) as e:
+        logger.debug("Failed to deserialize span link: %r", e)
+    return links
 
   def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
     try:
@@ -167,6 +229,7 @@ class SqliteSpanExporter(SpanExporter):
               session_id,
               invocation_id,
               self._serialize_attributes(attributes),
+              self._serialize_links(span.links),
           ))
         conn.executemany(_INSERT_SPAN, rows)
         conn.commit()
@@ -222,6 +285,7 @@ class SqliteSpanExporter(SpanExporter):
         context=context,
         parent=parent,
         attributes=attributes,
+        links=self._deserialize_links(row["links_json"]),
         start_time=row["start_time_unix_nano"],
         end_time=row["end_time_unix_nano"],
     )
