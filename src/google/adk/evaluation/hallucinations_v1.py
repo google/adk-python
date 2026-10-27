@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import dataclasses
 import json
 import logging
@@ -509,8 +511,24 @@ class HallucinationsV1Evaluator(Evaluator):
 
     return "\n".join(context_parts)
 
+  async def _generate_content(
+      self,
+      llm_request: LlmRequest,
+      semaphore: Optional[asyncio.Semaphore] = None,
+  ) -> Optional[str]:
+    """Executes a single judge LLM request and returns its text content."""
+    async with semaphore if semaphore is not None else contextlib.nullcontext():
+      async with Aclosing(
+          self._judge_model.generate_content_async(llm_request)
+      ) as agen:
+        llm_response = await agen.__anext__()
+        return get_text_from_content(llm_response.content)
+
   async def _evaluate_nl_response(
-      self, nl_response: str, context: str
+      self,
+      nl_response: str,
+      context: str,
+      semaphore: Optional[asyncio.Semaphore] = None,
   ) -> tuple[Optional[float], str]:
     """Runs segmentation and validation for a single NL response."""
     # Segmentation step: split the NL response into sentences.
@@ -530,14 +548,12 @@ class HallucinationsV1Evaluator(Evaluator):
     )
     add_default_retry_options_if_not_present(segmenter_llm_request)
     try:
-      async with Aclosing(
-          self._judge_model.generate_content_async(segmenter_llm_request)
-      ) as agen:
-        segmenter_response = await agen.__anext__()
-        segmenter_text = get_text_from_content(segmenter_response.content)
-        if segmenter_text is None:
-          return None, "Segmenter returned no text."
-        sentences = _parse_sentences(segmenter_text)
+      segmenter_text = await self._generate_content(
+          segmenter_llm_request, semaphore=semaphore
+      )
+      if segmenter_text is None:
+        return None, "Segmenter returned no text."
+      sentences = _parse_sentences(segmenter_text)
     except Exception as e:
       return None, f"Error during sentence segmentation: {e}"
 
@@ -565,14 +581,12 @@ class HallucinationsV1Evaluator(Evaluator):
     )
     add_default_retry_options_if_not_present(validator_llm_request)
     try:
-      async with Aclosing(
-          self._judge_model.generate_content_async(validator_llm_request)
-      ) as agen:
-        validator_response = await agen.__anext__()
-        validator_text = get_text_from_content(validator_response.content)
-        if validator_text is None:
-          return None, "Sentence validator returned no text."
-        validation_results = _parse_validation_results(validator_text)
+      validator_text = await self._generate_content(
+          validator_llm_request, semaphore=semaphore
+      )
+      if validator_text is None:
+        return None, "Sentence validator returned no text."
+      validation_results = _parse_validation_results(validator_text)
     except Exception as e:
       return None, f"Error during sentence validation: {e}"
 
@@ -724,6 +738,48 @@ class HallucinationsV1Evaluator(Evaluator):
         per_invocation_results=per_invocation_results,
     )
 
+  async def _evaluate_invocation(
+      self,
+      actual: Invocation,
+      expected: Optional[Invocation],
+      semaphore: Optional[asyncio.Semaphore] = None,
+  ) -> PerInvocationResult:
+    """Evaluates all natural language steps within a single invocation."""
+    step_evaluations = self._get_steps_to_evaluate(actual)
+
+    if not step_evaluations:
+      return PerInvocationResult(
+          actual_invocation=actual,
+          expected_invocation=expected,
+          score=None,
+          eval_status=EvalStatus.NOT_EVALUATED,
+          rubric_scores=[],
+      )
+
+    step_results = await asyncio.gather(*[
+        self._evaluate_nl_response(
+            step.nl_response, step.context, semaphore=semaphore
+        )
+        for step in step_evaluations
+    ])
+    scores_per_step = [
+        fs_score for fs_score, _ in step_results if fs_score is not None
+    ]
+
+    invocation_score = (
+        statistics.mean(scores_per_step) if scores_per_step else None
+    )
+
+    return PerInvocationResult(
+        actual_invocation=actual,
+        expected_invocation=expected,
+        score=invocation_score,
+        eval_status=get_eval_status(
+            invocation_score, self._criterion.threshold
+        ),
+        rubric_scores=[],
+    )
+
   @override
   async def evaluate_invocations(
       self,
@@ -742,47 +798,13 @@ class HallucinationsV1Evaluator(Evaluator):
         else list(expected_invocations)
     )
 
-    per_invocation_results = []
-    for actual, expected in zip(
-        actual_invocations, expected_by_invocation, strict=True
-    ):
-      step_evaluations = self._get_steps_to_evaluate(actual)
-
-      if not step_evaluations:
-        per_invocation_results.append(
-            PerInvocationResult(
-                actual_invocation=actual,
-                expected_invocation=expected,
-                score=None,
-                eval_status=EvalStatus.NOT_EVALUATED,
-                rubric_scores=[],
-            )
+    semaphore = asyncio.Semaphore(self._judge_model_options.parallelism_limit)
+    per_invocation_results = await asyncio.gather(*[
+        self._evaluate_invocation(actual, expected, semaphore=semaphore)
+        for actual, expected in zip(
+            actual_invocations, expected_by_invocation, strict=True
         )
-        continue
-
-      scores_per_step = []
-      for step in step_evaluations:
-        fs_score, _ = await self._evaluate_nl_response(
-            step.nl_response, step.context
-        )
-        if fs_score is not None:
-          scores_per_step.append(fs_score)
-
-      invocation_score = (
-          statistics.mean(scores_per_step) if scores_per_step else None
-      )
-
-      per_invocation_results.append(
-          PerInvocationResult(
-              actual_invocation=actual,
-              expected_invocation=expected,
-              score=invocation_score,
-              eval_status=get_eval_status(
-                  invocation_score, self._criterion.threshold
-              ),
-              rubric_scores=[],
-          )
-      )
+    ])
 
     if per_invocation_results:
       return self._aggregate_invocation_results(per_invocation_results)

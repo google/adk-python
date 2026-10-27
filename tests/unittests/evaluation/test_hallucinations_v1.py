@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import json
 
 from google.adk.evaluation.app_details import AgentDetails
@@ -36,8 +37,9 @@ def mock_llm_registry(mocker):
   MockLLMRegistry = mocker.patch(
       "google.adk.evaluation.hallucinations_v1.LLMRegistry"
   )
-  MockLLMRegistry.return_value.resolve.return_value = mocker.MagicMock()
-  yield
+  mock_llm_cls = mocker.MagicMock()
+  MockLLMRegistry.return_value.resolve.return_value = mock_llm_cls
+  yield mock_llm_cls.return_value
 
 
 @pytest.fixture
@@ -859,7 +861,7 @@ tool_outputs:
 Agent2 response.
 """
 
-    async def mock_evaluate_nl_response(nl_response, context):
+    async def mock_evaluate_nl_response(nl_response, context, semaphore=None):
       if nl_response == "Hi, I am root.":
         assert context.strip() == expected_context0.strip()
         return 1.0, json.dumps(
@@ -995,7 +997,7 @@ tool_outputs:
 Agent2 response.
 """
 
-    async def mock_evaluate_nl_response(nl_response, context):
+    async def mock_evaluate_nl_response(nl_response, context, semaphore=None):
       # Expect only the final response to be evaluated.
       assert nl_response == "Final agent tree response."
       assert context.strip() == expected_context.strip()
@@ -1255,7 +1257,7 @@ tool_outputs:
 ]
 """
 
-    async def mock_evaluate_nl_response(nl_response, context):
+    async def mock_evaluate_nl_response(nl_response, context, semaphore=None):
       if nl_response == response1:
         assert context.strip() == expected_context_1.strip()
         sentence1, sentence2, sentence3, _ = response1.split(".")
@@ -1376,7 +1378,7 @@ tool_outputs:
 ]
 """
 
-    async def mock_evaluate_nl_response(nl_response, context):
+    async def mock_evaluate_nl_response(nl_response, context, semaphore=None):
       # Expect only the final response to be evaluated.
       assert nl_response == response2
       assert context.strip() == expected_context.strip()
@@ -1450,7 +1452,7 @@ async def test_evaluate_invocations_success_path(hallucinations_metric, mocker):
       ),
   )
 
-  async def mock_evaluate_nl_response(nl_response, context):
+  async def mock_evaluate_nl_response(nl_response, context, semaphore=None):
     if nl_response == "Intermediate NL response.":
       return 1.0, json.dumps(
           [{"sentence": "Intermediate NL response.", "label": "supported"}]
@@ -1575,7 +1577,7 @@ async def test_evaluate_all_invocations_not_evaluated(
       ),
   )
 
-  async def mock_evaluate_nl_response(nl_response, context):
+  async def mock_evaluate_nl_response(nl_response, context, semaphore=None):
     return None, "Judge model error."
 
   mocker.patch(
@@ -1644,7 +1646,7 @@ async def test_evaluate_invocations_partial_failure(
       ),
   )
 
-  async def mock_evaluate_nl_response(nl_response, context):
+  async def mock_evaluate_nl_response(nl_response, context, semaphore=None):
     if nl_response == "Intermediate NL response.":
       return 0.8, json.dumps(
           [{"sentence": "Intermediate NL response.", "label": "supported"}]
@@ -1718,3 +1720,188 @@ async def test_evaluate_nl_response_judge_request_disables_afc(
   for request in captured_requests:
     assert request.config.automatic_function_calling is not None
     assert request.config.automatic_function_calling.disable is True
+
+
+def _make_two_step_invocation(
+    invocation_id: str,
+    intermediate_text: str,
+    final_text: str,
+) -> Invocation:
+  """Builds an invocation with one intermediate NL event and a final response."""
+  return Invocation(
+      invocation_id=invocation_id,
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text=f"Query for {invocation_id}")]
+      ),
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="root",
+                  content=genai_types.Content(
+                      parts=[genai_types.Part(text=intermediate_text)]
+                  ),
+              )
+          ]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text=final_text)]
+      ),
+  )
+
+
+def _format_validator_block(sentence: str, label: str) -> str:
+  return (
+      f"sentence: {sentence}\n"
+      f"label: {label}\n"
+      "rationale: test rationale\n"
+      "supporting_excerpt: excerpt\n"
+      "contradicting_excerpt: null"
+  )
+
+
+async def test_evaluate_invocations_default_parallelism_limit_runs_sequentially(
+    mock_llm_registry, mocker
+):
+  """Default parallelism_limit=1 executes at most one judge LLM call at a time."""
+  criterion = HallucinationsCriterion(
+      threshold=0.5,
+      judge_model_options=JudgeModelOptions(judge_model="gemini-2.5-flash"),
+      evaluate_intermediate_nl_responses=True,
+  )
+  metric = HallucinationsV1Evaluator(
+      EvalMetric(
+          metric_name="hallucinations_v1", threshold=0.5, criterion=criterion
+      )
+  )
+
+  in_flight = 0
+  max_in_flight = 0
+  total_calls = 0
+
+  async def mock_generate(llm_request):
+    nonlocal in_flight, max_in_flight, total_calls
+    in_flight += 1
+    total_calls += 1
+    max_in_flight = max(max_in_flight, in_flight)
+    try:
+      await asyncio.sleep(0)
+      await asyncio.sleep(0)
+      prompt_text = llm_request.contents[0].parts[0].text
+      if "**Your Sentence Segmentation Output:**" in prompt_text:
+        text = "<sentence>claim</sentence>"
+      else:
+        text = _format_validator_block("claim", "supported")
+      response = mocker.MagicMock()
+      response.content = genai_types.Content(
+          parts=[genai_types.Part(text=text)]
+      )
+      yield response
+    finally:
+      in_flight -= 1
+
+  mock_llm_registry.generate_content_async = mock_generate
+  invocations = [
+      _make_two_step_invocation("inv_0", "inv0_inter", "inv0_final"),
+      _make_two_step_invocation("inv_1", "inv1_inter", "inv1_final"),
+  ]
+
+  result = await metric.evaluate_invocations(invocations)
+
+  # 2 invocations * 2 steps * (segmenter + validator) = 8 calls.
+  assert total_calls == 8
+  assert max_in_flight == 1
+  assert result.overall_score == 1.0
+
+
+async def test_evaluate_invocations_honors_parallelism_limit_and_preserves_order(
+    mock_llm_registry, mocker
+):
+  """Segmenter and validator calls share parallelism_limit and preserve order."""
+  criterion = HallucinationsCriterion(
+      threshold=0.5,
+      judge_model_options=JudgeModelOptions(
+          judge_model="gemini-2.5-flash",
+          parallelism_limit=3,
+      ),
+      evaluate_intermediate_nl_responses=True,
+  )
+  metric = HallucinationsV1Evaluator(
+      EvalMetric(
+          metric_name="hallucinations_v1", threshold=0.5, criterion=criterion
+      )
+  )
+
+  labels_by_sentence = {
+      "inv0_inter": "supported",
+      "inv0_final": "supported",
+      "inv1_inter": "supported",
+      "inv1_final": "contradictory",
+      "inv2_inter": "unsupported",
+      "inv2_final": "contradictory",
+  }
+  in_flight = 0
+  max_in_flight = 0
+  total_calls = 0
+  all_slots_filled = asyncio.Event()
+
+  async def mock_generate(llm_request):
+    nonlocal in_flight, max_in_flight, total_calls
+    in_flight += 1
+    total_calls += 1
+    max_in_flight = max(max_in_flight, in_flight)
+    if in_flight >= 3:
+      all_slots_filled.set()
+    try:
+      await asyncio.sleep(0)
+      await asyncio.wait_for(all_slots_filled.wait(), timeout=1.0)
+      prompt_text = llm_request.contents[0].parts[0].text
+      if "**Your Sentence Segmentation Output:**" in prompt_text:
+        body = prompt_text.rsplit("**Response Begin**\n", 1)[1].split(
+            "\n**Response End**"
+        )[0]
+        sentence = body.strip()
+        text = f"<sentence>{sentence}</sentence>"
+      else:
+        body = prompt_text.rsplit("**Sentences Begin**\n", 1)[1].split(
+            "\n**Sentences End**"
+        )[0]
+        sentence = _parse_sentences(body)[0]
+        text = _format_validator_block(sentence, labels_by_sentence[sentence])
+
+      if sentence.startswith("inv0_"):
+        # Delay inv_0 so it finishes after inv_1 and inv_2.
+        for _ in range(5):
+          await asyncio.sleep(0)
+      else:
+        await asyncio.sleep(0)
+
+      response = mocker.MagicMock()
+      response.content = genai_types.Content(
+          parts=[genai_types.Part(text=text)]
+      )
+      yield response
+    finally:
+      in_flight -= 1
+
+  mock_llm_registry.generate_content_async = mock_generate
+  invocations = [
+      _make_two_step_invocation("inv_0", "inv0_inter", "inv0_final"),
+      _make_two_step_invocation("inv_1", "inv1_inter", "inv1_final"),
+      _make_two_step_invocation("inv_2", "inv2_inter", "inv2_final"),
+  ]
+
+  result = await metric.evaluate_invocations(invocations)
+
+  # 3 invocations * 2 steps * (segmenter + validator) = 12 calls.
+  assert total_calls == 12
+  assert max_in_flight == 3
+  assert [
+      r.actual_invocation.invocation_id for r in result.per_invocation_results
+  ] == ["inv_0", "inv_1", "inv_2"]
+  assert [r.score for r in result.per_invocation_results] == [1.0, 0.5, 0.0]
+  assert [r.eval_status for r in result.per_invocation_results] == [
+      EvalStatus.PASSED,
+      EvalStatus.PASSED,
+      EvalStatus.FAILED,
+  ]
+  assert result.overall_score == pytest.approx(0.5)
