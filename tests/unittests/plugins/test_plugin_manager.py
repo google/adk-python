@@ -20,6 +20,9 @@ import asyncio
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 
+from google.adk.agents import CallbackInfo
+from google.adk.agents import CallbackType
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 # Assume the following path to your modules
@@ -46,56 +49,64 @@ class TestPlugin(BasePlugin):
     self.return_values: dict[PluginCallbackName, any] = {}
     # A map to configure exceptions to be raised by specific callbacks.
     self.exceptions_to_raise: dict[PluginCallbackName, Exception] = {}
+    self.callback_info_log: list[
+        tuple[PluginCallbackName, CallbackInfo | None]
+    ] = []
 
-  async def _handle_callback(self, name: PluginCallbackName):
+  async def _handle_callback(self, name: PluginCallbackName, **kwargs):
     """Generic handler for all callback methods."""
     self.call_log.append(name)
+    callback_context = kwargs.get("callback_context")
+    if callback_context is None:
+      callback_context = kwargs.get("tool_context")
+    if callback_context is not None:
+      self.callback_info_log.append((name, callback_context.callback_info))
     if name in self.exceptions_to_raise:
       raise self.exceptions_to_raise[name]
     return self.return_values.get(name)
 
   # Implement all callback methods from the BasePlugin interface.
   async def on_user_message_callback(self, **kwargs):
-    return await self._handle_callback("on_user_message_callback")
+    return await self._handle_callback("on_user_message_callback", **kwargs)
 
   async def before_run_callback(self, **kwargs):
-    return await self._handle_callback("before_run_callback")
+    return await self._handle_callback("before_run_callback", **kwargs)
 
   async def after_run_callback(self, **kwargs):
-    return await self._handle_callback("after_run_callback")
+    return await self._handle_callback("after_run_callback", **kwargs)
 
   async def on_event_callback(self, **kwargs):
-    return await self._handle_callback("on_event_callback")
+    return await self._handle_callback("on_event_callback", **kwargs)
 
   async def before_agent_callback(self, **kwargs):
-    return await self._handle_callback("before_agent_callback")
+    return await self._handle_callback("before_agent_callback", **kwargs)
 
   async def after_agent_callback(self, **kwargs):
-    return await self._handle_callback("after_agent_callback")
+    return await self._handle_callback("after_agent_callback", **kwargs)
 
   async def before_tool_callback(self, **kwargs):
-    return await self._handle_callback("before_tool_callback")
+    return await self._handle_callback("before_tool_callback", **kwargs)
 
   async def after_tool_callback(self, **kwargs):
-    return await self._handle_callback("after_tool_callback")
+    return await self._handle_callback("after_tool_callback", **kwargs)
 
   async def on_tool_error_callback(self, **kwargs):
-    return await self._handle_callback("on_tool_error_callback")
+    return await self._handle_callback("on_tool_error_callback", **kwargs)
 
   async def before_model_callback(self, **kwargs):
-    return await self._handle_callback("before_model_callback")
+    return await self._handle_callback("before_model_callback", **kwargs)
 
   async def after_model_callback(self, **kwargs):
-    return await self._handle_callback("after_model_callback")
+    return await self._handle_callback("after_model_callback", **kwargs)
 
   async def on_model_error_callback(self, **kwargs):
-    return await self._handle_callback("on_model_error_callback")
+    return await self._handle_callback("on_model_error_callback", **kwargs)
 
   async def on_agent_error_callback(self, **kwargs):
-    return await self._handle_callback("on_agent_error_callback")
+    return await self._handle_callback("on_agent_error_callback", **kwargs)
 
   async def on_run_error_callback(self, **kwargs):
-    return await self._handle_callback("on_run_error_callback")
+    return await self._handle_callback("on_run_error_callback", **kwargs)
 
 
 @pytest.fixture
@@ -219,6 +230,10 @@ async def test_all_callbacks_are_supported(
   service.register_plugin(plugin1)
   mock_context = Mock()
   mock_user_message = Mock()
+  mock_invocation_context = Mock()
+  mock_invocation_context.session.state = {}
+  mock_invocation_context._state_schema = None
+  callback_context = CallbackContext(mock_invocation_context)
 
   # Test all callbacks
   await service.run_on_user_message_callback(
@@ -230,37 +245,37 @@ async def test_all_callbacks_are_supported(
       invocation_context=mock_context, event=mock_context
   )
   await service.run_before_agent_callback(
-      agent=mock_context, callback_context=mock_context
+      agent=mock_context, callback_context=callback_context
   )
   await service.run_after_agent_callback(
-      agent=mock_context, callback_context=mock_context
+      agent=mock_context, callback_context=callback_context
   )
   await service.run_before_tool_callback(
-      tool=mock_context, tool_args={}, tool_context=mock_context
+      tool=mock_context, tool_args={}, tool_context=callback_context
   )
   await service.run_after_tool_callback(
-      tool=mock_context, tool_args={}, tool_context=mock_context, result={}
+      tool=mock_context, tool_args={}, tool_context=callback_context, result={}
   )
   await service.run_on_tool_error_callback(
       tool=mock_context,
       tool_args={},
-      tool_context=mock_context,
+      tool_context=callback_context,
       error=mock_context,
   )
   await service.run_before_model_callback(
-      callback_context=mock_context, llm_request=mock_context
+      callback_context=callback_context, llm_request=mock_context
   )
   await service.run_after_model_callback(
-      callback_context=mock_context, llm_response=mock_context
+      callback_context=callback_context, llm_response=mock_context
   )
   await service.run_on_model_error_callback(
-      callback_context=mock_context,
+      callback_context=callback_context,
       llm_request=mock_context,
       error=mock_context,
   )
   await service.run_on_agent_error_callback(
       agent=mock_context,
-      callback_context=mock_context,
+      callback_context=callback_context,
       error=mock_context,
   )
   await service.run_on_run_error_callback(
@@ -286,6 +301,141 @@ async def test_all_callbacks_are_supported(
       "on_run_error_callback",
   ]
   assert set(plugin1.call_log) == set(expected_callbacks)
+  assert plugin1.callback_info_log == [
+      (
+          f"{callback_type.value}_callback",
+          CallbackInfo(type=callback_type),
+      )
+      for callback_type in (
+          CallbackType.BEFORE_AGENT,
+          CallbackType.AFTER_AGENT,
+          CallbackType.BEFORE_TOOL,
+          CallbackType.AFTER_TOOL,
+          CallbackType.ON_TOOL_ERROR,
+          CallbackType.BEFORE_MODEL,
+          CallbackType.AFTER_MODEL,
+          CallbackType.ON_MODEL_ERROR,
+          CallbackType.ON_AGENT_ERROR,
+      )
+  ]
+
+
+@pytest.mark.asyncio
+async def test_plugin_callback_receives_current_callback_info():
+  """Callback info names the active plugin callback type only while it runs."""
+
+  class _RecordingPlugin(BasePlugin):
+
+    def __init__(self) -> None:
+      super().__init__(name="recording_plugin")
+      self.callback_info: CallbackInfo | None = None
+
+    async def before_model_callback(
+        self, *, callback_context, llm_request
+    ) -> None:
+      self.callback_info = callback_context.callback_info
+
+  invocation_context = Mock()
+  invocation_context.session.state = {}
+  invocation_context._state_schema = None
+  callback_context = CallbackContext(invocation_context)
+  plugin = _RecordingPlugin()
+  service = PluginManager(plugins=[plugin])
+
+  assert callback_context.callback_info is None
+
+  await service.run_before_model_callback(
+      callback_context=callback_context,
+      llm_request=Mock(),
+  )
+
+  assert plugin.callback_info == CallbackInfo(type=CallbackType.BEFORE_MODEL)
+  assert callback_context.callback_info is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_plugin_callbacks_keep_callback_info_isolated():
+  """Concurrent callbacks with separate contexts see only their own type."""
+  model_started = asyncio.Event()
+  tool_started = asyncio.Event()
+  model_observed = asyncio.Event()
+  observations = []
+
+  class _ConcurrentPlugin(BasePlugin):
+
+    async def before_model_callback(
+        self, *, callback_context, llm_request
+    ) -> None:
+      model_started.set()
+      await tool_started.wait()
+      observations.append(callback_context.callback_info.type)
+      model_observed.set()
+
+    async def before_tool_callback(
+        self, *, tool, tool_args, tool_context
+    ) -> None:
+      await model_started.wait()
+      tool_started.set()
+      await model_observed.wait()
+      observations.append(tool_context.callback_info.type)
+
+  invocation_context = Mock()
+  invocation_context.session.state = {}
+  invocation_context._state_schema = None
+  model_callback_context = CallbackContext(invocation_context)
+  tool_callback_context = CallbackContext(invocation_context)
+  service = PluginManager(plugins=[_ConcurrentPlugin("concurrent_plugin")])
+
+  await asyncio.gather(
+      service.run_before_model_callback(
+          callback_context=model_callback_context,
+          llm_request=Mock(),
+      ),
+      service.run_before_tool_callback(
+          tool=Mock(),
+          tool_args={},
+          tool_context=tool_callback_context,
+      ),
+  )
+
+  assert observations == [
+      CallbackType.BEFORE_MODEL,
+      CallbackType.BEFORE_TOOL,
+  ]
+  assert model_callback_context.callback_info is None
+  assert tool_callback_context.callback_info is None
+
+
+@pytest.mark.asyncio
+async def test_unmapped_plugin_callbacks_fall_back_to_nullcontext():
+  """Unmapped plugin callback names fall back to nullcontext()."""
+  observed_infos: list[CallbackInfo | None] = []
+
+  class _CustomPlugin(BasePlugin):
+
+    async def custom_callback(self, *, callback_context) -> None:
+      observed_infos.append(callback_context.callback_info)
+
+    async def custom_notification_callback(self, *, callback_context) -> None:
+      observed_infos.append(callback_context.callback_info)
+
+  invocation_context = Mock()
+  invocation_context.session.state = {}
+  invocation_context._state_schema = None
+  callback_context = CallbackContext(invocation_context)
+  service = PluginManager(plugins=[_CustomPlugin("custom_plugin")])
+
+  await service._run_callbacks(
+      "custom_callback",  # type: ignore[arg-type]
+      callback_context=callback_context,
+  )
+  await service._run_notification_callbacks(
+      "custom_notification_callback",  # type: ignore[arg-type]
+      callback_context=callback_context,
+  )
+
+  assert observed_infos == [None, None]
+  assert callback_context.callback_info is None
 
 
 @pytest.mark.asyncio

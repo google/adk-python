@@ -238,6 +238,45 @@ def _thinking_is_enabled(
   return thinking.get("type") in ("enabled", "adaptive")
 
 
+def _build_tool_choice(
+    config: Optional[types.GenerateContentConfig],
+    *,
+    forced_tool_use_blocked: bool,
+) -> anthropic_types.ToolChoiceParam:
+  """Maps the request's function calling mode to Claude's tool_choice.
+
+  Claude cannot restrict a call to a subset of several tools, so ``ANY`` with
+  more than one allowed function name becomes ``any``. Claude rejects forced
+  tool use with manual extended thinking, so ``ANY`` falls back to ``auto``
+  then.
+  """
+  function_calling_config = (
+      config.tool_config.function_calling_config
+      if config and config.tool_config
+      else None
+  )
+  if function_calling_config is None:
+    return anthropic_types.ToolChoiceAutoParam(type="auto")
+  mode = function_calling_config.mode
+  if mode == types.FunctionCallingConfigMode.NONE:
+    return anthropic_types.ToolChoiceNoneParam(type="none")
+  if mode == types.FunctionCallingConfigMode.ANY:
+    if forced_tool_use_blocked:
+      logger.warning(
+          "Claude does not allow forcing a tool call with manual extended"
+          " thinking; sending tool_choice 'auto' instead of the configured"
+          " function calling mode ANY."
+      )
+      return anthropic_types.ToolChoiceAutoParam(type="auto")
+    allowed_names = function_calling_config.allowed_function_names or []
+    if len(allowed_names) == 1:
+      return anthropic_types.ToolChoiceToolParam(
+          type="tool", name=allowed_names[0]
+      )
+    return anthropic_types.ToolChoiceAnyParam(type="any")
+  return anthropic_types.ToolChoiceAutoParam(type="auto")
+
+
 class AnthropicGenerateContentConfig(types.GenerateContentConfig):
   """Configuration options for Anthropic Claude content generation.
 
@@ -787,7 +826,15 @@ def _extract_cached_token_count(usage: Any) -> int | None:
   return cached if isinstance(cached, int) else None
 
 
-def _extract_prompt_token_count(usage: anthropic_types.Usage) -> int:
+def _extract_uncached_input_token_count(usage: Any) -> int | None:
+  """Returns ``input_tokens``, the part of the prompt outside the cache."""
+  value = getattr(usage, "input_tokens", None)
+  return value if isinstance(value, int) else None
+
+
+def _prompt_token_count(
+    *, uncached: int | None, cached: int | None, cache_creation: int | None
+) -> int:
   """Returns every input token billed for the turn.
 
   Anthropic reports tokens served from the prompt cache and tokens written to
@@ -795,16 +842,7 @@ def _extract_prompt_token_count(usage: anthropic_types.Usage) -> int:
   instead expects a single prompt count with the cached portion folded in --
   ``cached_content_token_count`` is a breakdown of it, not an addition to it.
   """
-  total = 0
-  for field in (
-      "input_tokens",
-      "cache_read_input_tokens",
-      "cache_creation_input_tokens",
-  ):
-    value = getattr(usage, field, None)
-    if isinstance(value, int):
-      total += value
-  return total
+  return (uncached or 0) + (cached or 0) + (cache_creation or 0)
 
 
 def _extract_thinking_token_count(
@@ -845,7 +883,13 @@ def message_to_generate_content_response(
 
   parts = [content_block_to_part(cb) for cb in message.content]
 
-  prompt_tokens = _extract_prompt_token_count(message.usage)
+  cached = _extract_cached_token_count(message.usage)
+  cache_creation = _extract_cache_creation_token_count(message.usage)
+  prompt_tokens = _prompt_token_count(
+      uncached=_extract_uncached_input_token_count(message.usage),
+      cached=cached,
+      cache_creation=cache_creation,
+  )
   thinking_tokens = _extract_thinking_token_count(message.usage)
   usage_metadata = types.GenerateContentResponseUsageMetadata(
       prompt_token_count=prompt_tokens,
@@ -853,10 +897,9 @@ def message_to_generate_content_response(
           message.usage.output_tokens - (thinking_tokens or 0)
       ),
       total_token_count=prompt_tokens + message.usage.output_tokens,
-      cached_content_token_count=_extract_cached_token_count(message.usage),
+      cached_content_token_count=cached,
       thoughts_token_count=thinking_tokens,
   )
-  cache_creation = _extract_cache_creation_token_count(message.usage)
   if cache_creation is not None:
     object.__setattr__(
         usage_metadata, "cache_creation_input_tokens", cache_creation
@@ -1264,12 +1307,17 @@ class AnthropicLlm(BaseLlm):
           function_declaration_to_tool_param(tool)
           for tool in function_declarations
       ]
+    thinking = _build_anthropic_thinking_param(llm_request.config)
     tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven] = (
-        anthropic_types.ToolChoiceAutoParam(type="auto")
+        _build_tool_choice(
+            llm_request.config,
+            forced_tool_use_blocked=(
+                isinstance(thinking, dict) and thinking.get("type") == "enabled"
+            ),
+        )
         if llm_request.tools_dict
         else NOT_GIVEN
     )
-    thinking = _build_anthropic_thinking_param(llm_request.config)
     # A requested schema rides along as a tool, since forcing a call on a
     # request that already declares tools would cut that turn short.
     output_schema_tool: Optional[_OutputSchemaTool] = None
@@ -1355,7 +1403,7 @@ class AnthropicLlm(BaseLlm):
     tool_use_blocks: dict[int, _ToolUseAccumulator] = {}
     thinking_blocks: dict[int, _ThinkingAccumulator] = {}
     redacted_thinking_blocks: dict[int, str] = {}
-    input_tokens = 0
+    uncached_input_tokens: int | None = None
     output_tokens = 0
     thinking_tokens: int | None = None
     cached_input_tokens: int | None = None
@@ -1365,7 +1413,9 @@ class AnthropicLlm(BaseLlm):
 
     async for event in raw_stream:
       if event.type == "message_start":
-        input_tokens = _extract_prompt_token_count(event.message.usage)
+        uncached_input_tokens = _extract_uncached_input_token_count(
+            event.message.usage
+        )
         output_tokens = event.message.usage.output_tokens
         thinking_tokens = _extract_thinking_token_count(event.message.usage)
         cached_input_tokens = _extract_cached_token_count(event.message.usage)
@@ -1503,6 +1553,17 @@ class AnthropicLlm(BaseLlm):
         # thinking detail is refreshed alongside the total it is nested in.
         output_tokens = event.usage.output_tokens
         thinking_tokens = _extract_thinking_token_count(event.usage)
+        # The input and cache counts are cumulative here too, and are final
+        # where ``message_start`` could only report what it knew up front.
+        final_uncached = _extract_uncached_input_token_count(event.usage)
+        if final_uncached is not None:
+          uncached_input_tokens = final_uncached
+        final_cached = _extract_cached_token_count(event.usage)
+        if final_cached is not None:
+          cached_input_tokens = final_cached
+        final_creation = _extract_cache_creation_token_count(event.usage)
+        if final_creation is not None:
+          cache_creation_tokens = final_creation
         if event.delta and event.delta.stop_reason:
           stop_reason = event.delta.stop_reason
 
@@ -1548,6 +1609,11 @@ class AnthropicLlm(BaseLlm):
         function_call.id = tool_acc.id
         all_parts.append(part)
 
+    input_tokens = _prompt_token_count(
+        uncached=uncached_input_tokens,
+        cached=cached_input_tokens,
+        cache_creation=cache_creation_tokens,
+    )
     usage_metadata = types.GenerateContentResponseUsageMetadata(
         prompt_token_count=input_tokens,
         candidates_token_count=output_tokens - (thinking_tokens or 0),

@@ -35,6 +35,7 @@ from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.genai import types
 
 from . import _error_handler as _tool_error_handler
+from ....agents._callback_metadata import CallbackType
 from ....events.event import Event
 from ....telemetry import _instrumentation
 from ....tools._confirmation_utils import apply_confirmation_gate
@@ -519,6 +520,7 @@ async def _execute_single_prepared_call(
           tool=tool,
           args=function_args,
           tool_context=tool_context,
+          callback_type=CallbackType.BEFORE_TOOL,
       )
     if function_response is not None:
       response_source = 'before_tool_callback'
@@ -616,6 +618,7 @@ async def _execute_single_prepared_call(
           args=function_args,
           tool_context=tool_context,
           tool_response=callback_tool_response,
+          callback_type=CallbackType.AFTER_TOOL,
       )
 
     # Step 6: If alternative response exists from after_tool_callback, use it

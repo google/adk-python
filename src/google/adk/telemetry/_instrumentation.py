@@ -29,6 +29,7 @@ from typing import TypeVar
 
 from opentelemetry import trace
 import opentelemetry.context as context_api
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from typing_extensions import assert_never
 
 from . import _adk_attributes
@@ -100,6 +101,7 @@ def _recording_span(span: trace.Span) -> Iterator[trace.Span]:
   except Exception as exc:  # pylint: disable=broad-except
     if span.is_recording():
       span.record_exception(exc)
+      span.set_attribute(ERROR_TYPE, tracing.resolve_error_type(exc))
       span.set_status(
           trace.Status(trace.StatusCode.ERROR, f"{type(exc).__name__}: {exc}")
       )

@@ -25,7 +25,6 @@ from google.genai import types
 from typing_extensions import override
 
 from ...environment._base_environment import BaseEnvironment
-from ...utils.feature_decorator import experimental
 from ..base_tool import BaseTool
 from ._constants import MAX_OUTPUT_CHARS
 from ._utils import truncate as _truncate
@@ -42,7 +41,6 @@ def _is_valid_line_number(value: Any) -> bool:
   return isinstance(value, int) and not isinstance(value, bool)
 
 
-@experimental
 class ReadFileTool(BaseTool):
   """Read a file from the environment."""
 

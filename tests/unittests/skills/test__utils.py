@@ -113,6 +113,84 @@ Test instructions
   return skill_dir
 
 
+@pytest.mark.parametrize(
+    "description_line, closing, expected",
+    [
+        ("description: Compare A --- B", "---", "Compare A --- B"),
+        (
+            'description: "Draft notes --- never publish"',
+            "---",
+            "Draft notes --- never publish",
+        ),
+        (
+            "description: |\n  Summarise.\n  ---\n  Then stop.",
+            "---",
+            "Summarise.\n---\nThen stop.\n",
+        ),
+        ("description: Compare A --- B", "--- ", "Compare A --- B"),
+        ("description: Compare A --- B", "---\t", "Compare A --- B"),
+    ],
+    ids=[
+        "unquoted",
+        "quoted",
+        "block_scalar",
+        "trailing_space",
+        "trailing_tab",
+    ],
+)
+def test__load_skill_from_dir_dashes_inside_frontmatter_value(
+    tmp_path, description_line, closing, expected
+):
+  """A `---` inside a frontmatter value does not close the frontmatter."""
+  skill_dir = tmp_path / "test-skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_text(
+      f"---\nname: test-skill\n{description_line}\nlicense: MIT\n"
+      f"{closing}\nBody\n"
+  )
+
+  skill = _load_skill_from_dir(skill_dir)
+
+  assert skill.frontmatter.description == expected
+  assert skill.frontmatter.license == "MIT"
+  assert skill.instructions == "Body"
+
+
+def test__load_skill_from_zip_bytes_crlf_frontmatter():
+  """Windows line endings around the delimiters still parse."""
+  # A zip member is decoded without newline translation, so the `\r` reaches
+  # the parser, unlike `read_text` in the directory loader.
+  zip_buffer = io.BytesIO()
+  with zipfile.ZipFile(zip_buffer, "w") as z:
+    z.writestr(
+        "SKILL.md",
+        b"---\r\nname: test-skill\r\ndescription: Test\r\n---\r\nBody\r\n",
+    )
+
+  skill = _load_skill_from_zip_bytes(zip_buffer.getvalue())
+
+  assert skill.frontmatter.description == "Test"
+  assert skill.instructions == "Body"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "---\nname: test-skill\ndescription: Test\nBody\n",
+        "---\nname: test-skill\ndescription: Test\n--- Body\n",
+    ],
+    ids=["no_closing_line", "text_after_closing_dashes"],
+)
+def test__load_skill_from_dir_unclosed_frontmatter_raises(tmp_path, content):
+  """Frontmatter without a whole closing `---` line is rejected."""
+  skill_dir = tmp_path / "test-skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_text(content)
+
+  with pytest.raises(ValueError, match="not properly closed"):
+    _load_skill_from_dir(skill_dir)
+
+
 def test__load_skill_from_dir_nested_resources_use_forward_slash_keys(tmp_path):
   """Resources in subdirectories are keyed with forward slashes."""
   skill = _load_skill_from_dir(_write_nested_skill(tmp_path))
@@ -407,7 +485,21 @@ def test__list_skills_in_gcs_dir_reports_invalid_to_on_error(
 
 
 @mock.patch("google.cloud.storage.Client")
-def test__load_skill_from_gcs_dir(mock_client_class):
+@pytest.mark.parametrize(
+    "skill_id, skills_base_path",
+    [
+        ("my-skill", "skills"),
+        ("team-a/my-skill", "skills"),
+        ("my-skill/", "skills"),
+        ("team-a/my-skill/", "skills"),
+        ("/my-skill", "skills"),
+        ("skills/my-skill/", ""),
+        ("skills/my-skill", ""),
+    ],
+)
+def test__load_skill_from_gcs_dir(
+    mock_client_class, skill_id, skills_base_path
+):
 
   mock_client = mock.MagicMock()
   mock_client_class.return_value = mock_client
@@ -439,14 +531,50 @@ def test__load_skill_from_gcs_dir(mock_client_class):
 
   mock_bucket.list_blobs.side_effect = list_blobs_side_effect
 
-  skill = _load_skill_from_gcs_dir("my-bucket", "skills/my-skill/")
+  skill = _load_skill_from_gcs_dir(
+      "my-bucket", skill_id, skills_base_path=skills_base_path
+  )
 
   assert skill.name == "my-skill"
   assert skill.description == "Test description"
   assert skill.instructions == "Test instructions"
   # Using dict access for reference
   assert skill.resources.get_reference("ref1.md") == "ref1 content"
-  assert skill._uri == "gs://my-bucket/skills/my-skill//"
+  expected_skill_id = skill_id.strip("/")
+  expected_base_prefix = skills_base_path.strip("/")
+  if expected_base_prefix:
+    expected_base_prefix += "/"
+  expected_prefix = f"{expected_base_prefix}{expected_skill_id}/"
+
+  assert skill._uri == f"gs://my-bucket/{expected_prefix}"
+
+  mock_bucket.blob.assert_called_once_with(f"{expected_prefix}SKILL.md")
+  mock_bucket.list_blobs.assert_has_calls([
+      mock.call(prefix=f"{expected_prefix}references/"),
+      mock.call(prefix=f"{expected_prefix}assets/"),
+      mock.call(prefix=f"{expected_prefix}scripts/"),
+  ])
+
+
+@mock.patch("google.cloud.storage.Client")
+@pytest.mark.parametrize(
+    "skill_id",
+    [
+        "../../other-tenant/secrets",
+        "skills/../../other-tenant/secrets",
+        "..",
+        "skills/..",
+        "team-a//my-skill",
+        "my\\skill",
+        "my\x00skill",
+    ],
+)
+def test__load_skill_from_gcs_dir_rejects_invalid(mock_client_class, skill_id):
+  """An invalid skill_id must be rejected before GCS client init."""
+  with pytest.raises(ValueError, match="skill_id"):
+    _load_skill_from_gcs_dir("my-bucket", skill_id, skills_base_path="skills")
+
+  mock_client_class.assert_not_called()
 
 
 @mock.patch("google.cloud.storage.Client")
@@ -487,7 +615,9 @@ def test__load_skill_from_gcs_dir_binary_resources(mock_client_class):
 
   mock_bucket.list_blobs.side_effect = list_blobs_side_effect
 
-  skill = _load_skill_from_gcs_dir("my-bucket", "skills/my-skill/")
+  skill = _load_skill_from_gcs_dir(
+      "my-bucket", "my-skill", skills_base_path="skills"
+  )
 
   assert skill.resources.get_asset("logo.png") == _PNG_HEADER
   assert not skill.resources.list_scripts()
@@ -798,7 +928,9 @@ def test__load_skill_from_gcs_dir_import_error():
 
   with mock.patch("builtins.__import__", mock_import):
     with pytest.raises(ImportError, match="google-cloud-storage is required"):
-      _load_skill_from_gcs_dir("my-bucket", "skills/my-skill/")
+      _load_skill_from_gcs_dir(
+          "my-bucket", "my-skill", skills_base_path="skills"
+      )
 
 
 def test__load_skills_from_dir(tmp_path):

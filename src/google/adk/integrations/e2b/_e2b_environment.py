@@ -26,8 +26,6 @@ from typing_extensions import override
 
 from ...environment._base_environment import BaseEnvironment
 from ...environment._base_environment import ExecutionResult
-from ...features import experimental
-from ...features import FeatureName
 
 if TYPE_CHECKING:
   from e2b import AsyncSandbox
@@ -39,7 +37,6 @@ _DEFAULT_TIMEOUT = 300
 _SANDBOX_HOME = "/home/user"
 
 
-@experimental(FeatureName.E2B_ENVIRONMENT)
 class E2BEnvironment(BaseEnvironment):
   """A persistent remote workspace backed by an E2B sandbox.
 

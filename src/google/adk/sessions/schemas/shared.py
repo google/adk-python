@@ -70,6 +70,16 @@ class DynamicJSON(TypeDecorator[dict[str, Any]]):  # type: ignore[misc]
     if value is not None:
       if dialect.name == "postgresql":
         return value  # JSONB handles dict directly
+      if dialect.name == "sqlite":
+        # Only SQLite TEXT is always Unicode; other backends' TEXT columns may
+        # use a non-UTF-8 charset, so they keep the ASCII-only escaped form.
+        text = json.dumps(value, ensure_ascii=False)
+        try:
+          text.encode("utf-8")
+        except UnicodeEncodeError:
+          # Lone surrogates cannot be written as UTF-8, so keep them escaped.
+          return json.dumps(value)
+        return text
       return json.dumps(value)  # Serialize to JSON string for TEXT
     return value
 

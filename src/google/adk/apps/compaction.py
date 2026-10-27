@@ -21,6 +21,7 @@ import math
 from typing import AsyncGenerator
 
 from google.genai import types
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.trace import Status
 from opentelemetry.trace import StatusCode
 
@@ -33,6 +34,7 @@ from ..sessions.session import Session
 from ..telemetry import _instrumentation
 from ..telemetry.tracing import _build_compaction_attributes
 from ..telemetry.tracing import _build_compaction_result_attributes
+from ..telemetry.tracing import resolve_error_type
 from ..telemetry.tracing import tracer
 from ..utils._function_call_names import CLIENT_FUNCTION_CALL_NAMES as _CLIENT_FUNCTION_CALL_NAMES
 from ..workflow import BaseNode
@@ -145,6 +147,7 @@ async def _summarize_events_with_trace(
       # be recorded as a successful compaction.
       span.record_exception(e)
       span.set_status(Status(StatusCode.ERROR, type(e).__name__))
+      span.set_attribute(ERROR_TYPE, resolve_error_type(e))
       logger.warning(
           'Event compaction failed; continuing with the uncompacted history.',
           exc_info=True,

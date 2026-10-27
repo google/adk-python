@@ -14,18 +14,55 @@
 
 from __future__ import annotations
 
+import logging
+import re
 import time
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.live._realtime_cache_manager import RealtimeCacheConfig
 from google.adk.live._realtime_cache_manager import RealtimeCacheEntry
 from google.adk.live._realtime_cache_manager import RealtimeCacheManager
+from google.adk.live._visual_frames import unpack_visual_frames
+from google.adk.platform import time as platform_time
+from google.adk.utils.content_utils import _filter_media_parts
 from google.genai import types
 import pydantic
 import pytest
 
 from .. import testing_utils
+
+
+def _image(data: bytes | None, mime_type: str = 'image/jpeg') -> types.Blob:
+  return types.Blob(data=data, mime_type=mime_type)
+
+
+async def _context_with_artifact_service() -> InvocationContext:
+  """Returns a context whose artifact service records every save."""
+  context = await testing_utils.create_invocation_context(
+      testing_utils.create_test_agent()
+  )
+  artifact_service = AsyncMock()
+  artifact_service.save_artifact.return_value = 0
+  context.artifact_service = artifact_service
+  return context
+
+
+def _saved_blobs(context: InvocationContext) -> list[types.Blob]:
+  """Returns the blobs passed to save_artifact, in call order."""
+  return [
+      call.kwargs['artifact'].inline_data
+      for call in context.artifact_service.save_artifact.call_args_list
+  ]
+
+
+def _saved_frames(context: InvocationContext) -> list[list[bytes]]:
+  """Returns the frame bytes in each archive passed to save_artifact."""
+  return [
+      [frame.blob.data for frame in unpack_visual_frames(blob.data)[0]]
+      for blob in _saved_blobs(context)
+  ]
 
 
 class TestRealtimeCacheEntry:
@@ -72,6 +109,17 @@ class TestRealtimeCacheConfig:
     assert config.max_cache_size_bytes == 5 * 1024 * 1024
     assert config.max_cache_duration_seconds == 120.0
     assert config.auto_flush_threshold == 50
+
+  def test_visual_frame_limit_default(self):
+    """The frame cache holds at most 600 frames by default."""
+    config = RealtimeCacheConfig()
+
+    assert config.max_visual_cache_frames == 600
+
+  def test_rejects_a_visual_frame_limit_below_one(self):
+    """A frame limit below 1 is rejected when the config is built."""
+    with pytest.raises(ValueError, match='must be at least 1'):
+      RealtimeCacheConfig(max_visual_cache_frames=0)
 
 
 class TestRealtimeCacheManager:
@@ -574,8 +622,8 @@ class TestRealtimeCacheManager:
     assert events[0].content.role == 'model'  # Role is still 'model'
 
   @pytest.mark.asyncio
-  async def test_cache_blob_routes_audio_and_skips_non_audio(self):
-    """Verifies cache_blob routes audio/* blobs and skips non-audio blobs."""
+  async def test_cache_blob_keeps_non_audio_blobs_out_of_audio_caches(self):
+    """Only audio/* blobs reach the audio caches."""
     ctx = await testing_utils.create_invocation_context(
         testing_utils.create_test_agent()
     )
@@ -605,3 +653,309 @@ class TestRealtimeCacheManager:
     blob.data = b'chunk_2'
 
     assert [e.data.data for e in ctx.input_realtime_cache] == [b'chunk_1']
+
+  @pytest.mark.asyncio
+  async def test_cache_blob_saves_image_frames_on_flush(self):
+    """The user's image frames are cached and saved on the next flush."""
+    context = await _context_with_artifact_service()
+    self.manager.cache_blob(context, _image(b'user_frame'), 'input')
+
+    events = await self.manager.flush_caches(context)
+
+    assert [event.author for event in events] == ['user']
+    assert _saved_frames(context) == [[b'user_frame']]
+
+  @pytest.mark.asyncio
+  async def test_cache_blob_does_not_save_image_frames_from_the_model(self):
+    """Live models send no image frames, so any from the model are not saved."""
+    context = await _context_with_artifact_service()
+    self.manager.cache_blob(
+        context, _image(b'model_frame', 'image/png'), 'output'
+    )
+
+    events = await self.manager.flush_caches(context)
+
+    assert not events
+    context.artifact_service.save_artifact.assert_not_called()
+
+  @pytest.mark.parametrize(
+      'mime_type',
+      ['video/mp4', 'application/octet-stream', None, 'IMAGE/JPEG'],
+  )
+  @pytest.mark.asyncio
+  async def test_cache_blob_skips_video_and_unknown_blobs(self, mime_type):
+    """Blobs that are neither audio/* nor image/* are not saved."""
+    context = await _context_with_artifact_service()
+    self.manager.cache_blob(
+        context, types.Blob(data=b'blob', mime_type=mime_type), 'input'
+    )
+
+    events = await self.manager.flush_caches(context)
+
+    assert not events
+    context.artifact_service.save_artifact.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_cache_blob_warns_once_per_kind_of_unsaved_blob(self, caplog):
+    """The first unsaved blob of each kind logs a warning; repeats don't."""
+    context = await _context_with_artifact_service()
+    unsaved = [
+        (types.Blob(data=b'chunk', mime_type='video/mp4'), 'output'),
+        (types.Blob(data=b'raw'), 'input'),
+        (_image(b'model_frame'), 'output'),
+    ]
+
+    with caplog.at_level(logging.WARNING, logger='google_adk'):
+      for blob, cache_type in unsaved + unsaved:
+        self.manager.cache_blob(context, blob, cache_type)
+      self.manager.cache_blob(context, _image(b'user_frame'), 'input')
+
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 3
+    assert "output live blobs of type 'video/mp4'" in warnings[0]
+    assert 'input live blobs of type None' in warnings[1]
+    assert "output live blobs of type 'image/jpeg'" in warnings[2]
+
+  @pytest.mark.parametrize('data', [None, b''])
+  @pytest.mark.asyncio
+  async def test_cache_blob_skips_image_frames_without_data(self, data):
+    """An image frame with no bytes is skipped instead of failing the batch."""
+    context = await _context_with_artifact_service()
+    self.manager.cache_blob(context, _image(data), 'input')
+
+    events = await self.manager.flush_caches(context)
+
+    assert not events
+    context.artifact_service.save_artifact.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_cache_blob_caches_a_copy_of_an_image_frame(self):
+    """Later changes to the caller's blob don't change the cached frame."""
+    context = await _context_with_artifact_service()
+    blob = _image(b'frame_1')
+    self.manager.cache_blob(context, blob, 'input')
+    blob.data = b'frame_2'
+
+    await self.manager.flush_caches(context)
+
+    assert _saved_frames(context) == [[b'frame_1']]
+
+  @pytest.mark.asyncio
+  async def test_cache_blob_rejects_an_unknown_cache_type_for_images(self):
+    """An image frame with a cache_type other than input or output raises."""
+    context = await _context_with_artifact_service()
+
+    with pytest.raises(ValueError, match="either 'input' or 'output'"):
+      self.manager.cache_blob(context, _image(b'frame'), 'sideways')
+
+  @pytest.mark.asyncio
+  async def test_visual_cache_drops_the_oldest_frames_over_the_frame_limit(
+      self,
+  ):
+    """Past the frame limit, the oldest frames make room for new ones."""
+    manager = RealtimeCacheManager(
+        RealtimeCacheConfig(max_visual_cache_frames=2)
+    )
+    context = await _context_with_artifact_service()
+    for data in (b'frame_1', b'frame_2', b'frame_3'):
+      manager.cache_blob(context, _image(data), 'input')
+
+    await manager.flush_caches(context)
+
+    (archive,) = _saved_blobs(context)
+    frames, _ = unpack_visual_frames(archive.data)
+    assert [frame.blob.data for frame in frames] == [b'frame_2', b'frame_3']
+
+  @pytest.mark.asyncio
+  async def test_flush_saves_a_single_frame_as_a_zip(self):
+    """One cached frame is saved as a one-frame archive, like several are."""
+    context = await _context_with_artifact_service()
+    self.manager.cache_blob(context, _image(b'frame', 'image/png'), 'input')
+
+    events = await self.manager.flush_caches(context)
+
+    save_kwargs = context.artifact_service.save_artifact.call_args.kwargs
+    archive = save_kwargs['artifact'].inline_data
+    frames, manifest = unpack_visual_frames(archive.data)
+    assert archive.mime_type == 'application/zip'
+    assert re.fullmatch(
+        r'adk_live_visual_storage_input_visual_\d+\.zip',
+        save_kwargs['filename'],
+    )
+    assert [(frame.blob.data, frame.blob.mime_type) for frame in frames] == [
+        (b'frame', 'image/png')
+    ]
+    assert save_kwargs['custom_metadata'] == {
+        key: value for key, value in manifest.items() if key != 'frames'
+    }
+    file_data = events[0].content.parts[0].file_data
+    assert file_data.mime_type == 'application/zip'
+    assert file_data.file_uri.endswith(
+        f"/_adk_live/{save_kwargs['filename']}#0"
+    )
+
+  @pytest.mark.asyncio
+  async def test_flush_packs_several_frames_into_one_zip(self):
+    """Several frames are saved as one ZIP archive with summary metadata."""
+    context = await _context_with_artifact_service()
+    self.manager.cache_blob(context, _image(b'jpeg_frame'), 'input')
+    self.manager.cache_blob(context, _image(b'png_frame', 'image/png'), 'input')
+
+    events = await self.manager.flush_caches(context)
+
+    save_kwargs = context.artifact_service.save_artifact.call_args.kwargs
+    archive = save_kwargs['artifact'].inline_data
+    frames, manifest = unpack_visual_frames(archive.data)
+    assert archive.mime_type == 'application/zip'
+    assert save_kwargs['filename'].endswith('.zip')
+    assert [(frame.blob.data, frame.blob.mime_type) for frame in frames] == [
+        (b'jpeg_frame', 'image/jpeg'),
+        (b'png_frame', 'image/png'),
+    ]
+    assert save_kwargs['custom_metadata'] == {
+        key: value for key, value in manifest.items() if key != 'frames'
+    }
+    assert events[0].content.parts[0].file_data.mime_type == 'application/zip'
+
+  @pytest.mark.asyncio
+  async def test_flush_packs_frames_when_the_clock_steps_back(self):
+    """A wall clock that steps back doesn't stop the frames being packed."""
+    context = await _context_with_artifact_service()
+    timestamps = iter([100.0, 99.0, 101.0])
+    platform_time.set_time_provider(lambda: next(timestamps))
+    try:
+      for data in (b'frame_1', b'frame_2', b'frame_3'):
+        self.manager.cache_blob(context, _image(data), 'input')
+    finally:
+      platform_time.reset_time_provider()
+
+    events = await self.manager.flush_caches(context)
+
+    (archive,) = _saved_blobs(context)
+    _, manifest = unpack_visual_frames(archive.data)
+    assert len(events) == 1
+    assert [entry['offsetMs'] for entry in manifest['frames']] == [0, 0, 1000]
+
+  @pytest.mark.asyncio
+  async def test_flush_names_an_archive_after_its_start_timestamp(self):
+    """An archive's name carries the same millisecond as its manifest."""
+    context = await _context_with_artifact_service()
+    timestamps = iter([1760000000.0006, 1760000000.2])
+    platform_time.set_time_provider(lambda: next(timestamps))
+    try:
+      for data in (b'frame_1', b'frame_2'):
+        self.manager.cache_blob(context, _image(data), 'input')
+    finally:
+      platform_time.reset_time_provider()
+
+    await self.manager.flush_caches(context)
+
+    save_kwargs = context.artifact_service.save_artifact.call_args.kwargs
+    _, manifest = unpack_visual_frames(save_kwargs['artifact'].inline_data.data)
+    assert manifest['startTimestampMs'] == 1760000000001
+    assert save_kwargs['filename'] == (
+        'adk_live_visual_storage_input_visual_1760000000001.zip'
+    )
+
+  @pytest.mark.asyncio
+  async def test_flush_keeps_frames_when_not_selected(self):
+    """Frames that aren't flushed stay cached for a later flush."""
+    context = await _context_with_artifact_service()
+    self.manager.cache_blob(context, _image(b'user_frame'), 'input')
+
+    events = await self.manager.flush_caches(context, flush_user_visual=False)
+    later_events = await self.manager.flush_caches(context)
+
+    assert not events
+    assert [event.author for event in later_events] == ['user']
+
+  @pytest.mark.asyncio
+  async def test_flush_orders_audio_before_visual_frames(self):
+    """A flush saves user audio, model audio, then the user's frames."""
+    context = await _context_with_artifact_service()
+    self.manager.cache_blob(context, _image(b'user_frame'), 'input')
+    self.manager.cache_blob(
+        context,
+        types.Blob(data=b'model_audio', mime_type='audio/pcm'),
+        'output',
+    )
+    self.manager.cache_blob(
+        context, types.Blob(data=b'user_audio', mime_type='audio/pcm'), 'input'
+    )
+
+    await self.manager.flush_caches(context)
+
+    user_audio, model_audio, archive = _saved_blobs(context)
+    assert (user_audio.data, model_audio.data) == (
+        b'user_audio',
+        b'model_audio',
+    )
+    frames, _ = unpack_visual_frames(archive.data)
+    assert [frame.blob.data for frame in frames] == [b'user_frame']
+
+  @pytest.mark.asyncio
+  async def test_flush_keeps_frames_cached_while_saving(self):
+    """Frames arriving during the save belong to the next flush."""
+    context = await _context_with_artifact_service()
+
+    def cache_while_saving(**kwargs):
+      self.manager.cache_blob(context, _image(b'mid_flush'), 'input')
+      return 0
+
+    context.artifact_service.save_artifact.side_effect = cache_while_saving
+    self.manager.cache_blob(context, _image(b'first_turn'), 'input')
+
+    await self.manager.flush_caches(context)
+    await self.manager.flush_caches(context)
+
+    assert _saved_frames(context) == [[b'first_turn'], [b'mid_flush']]
+
+  @pytest.mark.asyncio
+  async def test_failed_visual_flush_drops_its_frames(self):
+    """Frames whose save failed are not saved again with the next turn."""
+    context = await _context_with_artifact_service()
+    context.artifact_service.save_artifact.side_effect = [
+        Exception('Artifact service error'),
+        0,
+    ]
+    self.manager.cache_blob(context, _image(b'first_turn'), 'input')
+    events = await self.manager.flush_caches(context)
+    self.manager.cache_blob(context, _image(b'second_turn'), 'input')
+
+    await self.manager.flush_caches(context)
+
+    assert not events
+    assert _saved_frames(context)[-1] == [b'second_turn']
+
+  @pytest.mark.asyncio
+  async def test_flush_without_artifact_service_drops_frames(self):
+    """Frames that can't be saved are dropped rather than accumulated."""
+    context = await testing_utils.create_invocation_context(
+        testing_utils.create_test_agent()
+    )
+    context.artifact_service = None
+    self.manager.cache_blob(context, _image(b'first_turn'), 'input')
+    events = await self.manager.flush_caches(context)
+    context.artifact_service = AsyncMock()
+
+    later_events = await self.manager.flush_caches(context)
+
+    assert not events
+    assert not later_events
+    context.artifact_service.save_artifact.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_flushed_frame_events_are_dropped_from_live_history(self):
+    """Saved frame archives aren't replayed to the model."""
+    context = await _context_with_artifact_service()
+    self.manager.cache_blob(context, _image(b'frame_1'), 'input')
+    self.manager.cache_blob(context, _image(b'frame_2'), 'input')
+
+    events = await self.manager.flush_caches(context)
+
+    assert len(events) == 1
+    assert _filter_media_parts(events[0].content) is None

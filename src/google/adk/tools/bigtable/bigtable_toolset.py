@@ -30,8 +30,6 @@ from typing_extensions import override
 
 from . import metadata_tool
 from . import query_tool
-from ...features import experimental
-from ...features import FeatureName
 from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
@@ -290,7 +288,6 @@ class BigtableParameterizedViewTool(GoogleTool):
 DEFAULT_BIGTABLE_TOOL_NAME_PREFIX = "bigtable"
 
 
-@experimental(FeatureName.BIGTABLE_TOOLSET)
 class BigtableToolset(BaseToolset):
   """Bigtable Toolset contains tools for interacting with Bigtable data and metadata.
 
