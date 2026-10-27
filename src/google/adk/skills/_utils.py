@@ -21,6 +21,7 @@ import io
 import logging
 import pathlib
 import re
+import stat
 from typing import Any
 from typing import Callable
 from typing import cast
@@ -598,11 +599,13 @@ def _list_skills_in_dir(
     return skills
 
   for skill_dir in sorted(skills_base_path.iterdir()):
-    if not skill_dir.is_dir():
-      continue
-
     skill_id = skill_dir.name
     try:
+      # Use Path.stat() + S_ISDIR so OSError (e.g. PermissionError) still
+      # surfaces on Python 3.14+, where Path.is_dir() returns False instead
+      # of raising (https://docs.python.org/3.14/library/pathlib.html).
+      if not stat.S_ISDIR(skill_dir.stat().st_mode):
+        continue
       frontmatter = _read_skill_properties(skill_dir)
       if skill_id != frontmatter.name:
         raise ValueError(
@@ -610,7 +613,7 @@ def _list_skills_in_dir(
             f" name '{skill_id}'."
         )
       skills[skill_id] = frontmatter
-    except (FileNotFoundError, ValueError, ValidationError) as e:
+    except (FileNotFoundError, ValueError, ValidationError, OSError) as e:
       if on_error is not None:
         on_error(skill_id, e)
         continue

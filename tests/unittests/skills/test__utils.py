@@ -16,6 +16,9 @@
 
 import asyncio
 import builtins
+import errno
+import os
+import stat
 import io
 import pathlib
 import struct
@@ -714,6 +717,49 @@ def test_list_skills_in_dir_on_error_can_abort(tmp_path):
 
   with pytest.raises(ValueError, match="does not match directory"):
     list_skills_in_dir(_skills_dir_with_one_invalid(tmp_path), on_error=strict)
+
+
+
+def test_list_skills_in_dir_reports_inaccessible_child_via_on_error(
+    tmp_path, monkeypatch
+):
+  """Permission failures while probing a child must reach on_error.
+
+  Python 3.14+ Path.is_dir() returns False for OSError instead of raising.
+  Listing must use Path.stat() so the failure stays observable on every
+  supported Python version (google/adk-python#7749).
+  """
+  skills_dir = tmp_path / "skills"
+  skills_dir.mkdir()
+  blocked = skills_dir / "blocked-skill"
+  blocked.mkdir()
+  (blocked / "SKILL.md").write_text(
+      "---\nname: blocked-skill\ndescription: x\n---\n", encoding="utf-8"
+  )
+
+  real_stat = os.stat
+  blocked_path = os.fspath(blocked.resolve())
+
+  def fake_stat(path, *args, **kwargs):
+    if os.fspath(path) == blocked_path:
+      raise PermissionError(
+          errno.EACCES, "controlled metadata permission failure", os.fspath(path)
+      )
+    return real_stat(path, *args, **kwargs)
+
+  errors: list[tuple[str, Exception]] = []
+
+  def on_error(skill_id, error):
+    errors.append((skill_id, error))
+
+  monkeypatch.setattr(os, "stat", fake_stat)
+  skills = list_skills_in_dir(skills_dir, on_error=on_error)
+
+  assert skills == {}
+  assert len(errors) == 1
+  assert errors[0][0] == "blocked-skill"
+  assert isinstance(errors[0][1], PermissionError)
+
 
 
 def test__load_skill_from_zip_bytes():
