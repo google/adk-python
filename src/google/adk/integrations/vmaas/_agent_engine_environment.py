@@ -66,6 +66,11 @@ _WRITE_CHUNK_BYTES = 96 * 1024
 # this bounds how long a single write can take.
 _MAX_WRITE_BYTES = 64 * 1024 * 1024
 
+# The service gives up on a command after about 600 seconds, whatever timeout
+# the command asked for, so longer timeouts are lowered to this to let the
+# sandbox stop the command and report the timeout first.
+_MAX_TIMEOUT_SECONDS = 570
+
 _SANDBOX_STATE_RUNNING = "STATE_RUNNING"
 
 # How long to keep resending a command the service could not deliver to the
@@ -214,6 +219,14 @@ class AgentEngineEnvironment(BaseEnvironment):
       timeout: float | None = None,
   ) -> ExecutionResult:
     timeout_seconds = math.ceil(timeout) if timeout is not None else None
+    if timeout_seconds is not None and timeout_seconds > _MAX_TIMEOUT_SECONDS:
+      logger.warning(
+          "Lowering the command timeout from %d to %d seconds, the longest the"
+          " sandbox service waits for a command",
+          timeout_seconds,
+          _MAX_TIMEOUT_SECONDS,
+      )
+      timeout_seconds = _MAX_TIMEOUT_SECONDS
     try:
       result = await self._execute_bash(command, timeout=timeout_seconds)
     except APIError as e:
@@ -393,11 +406,13 @@ class AgentEngineEnvironment(BaseEnvironment):
 def _is_timeout(error: APIError) -> bool:
   """Returns whether an error reports a command the sandbox killed for time."""
   # The service reports the shell server's timeout as FAILED_PRECONDITION with
-  # DEADLINE_EXCEEDED in the message, rather than as a 504.
+  # DEADLINE_EXCEEDED in the message, rather than as a 504, and its own
+  # deadline as INTERNAL with DEADLINE_EXCEEDED only in the error details.
   return (
       error.code == 504
       or error.status == "DEADLINE_EXCEEDED"
       or "DEADLINE_EXCEEDED" in (error.message or "")
+      or "DEADLINE_EXCEEDED" in str(error.details)
   )
 
 

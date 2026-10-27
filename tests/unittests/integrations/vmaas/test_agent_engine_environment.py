@@ -240,13 +240,39 @@ async def test_execute_passes_timeout_in_whole_seconds():
   assert client.sandboxes.commands[-1]["timeout"] == 3
 
 
+async def test_execute_lowers_timeout_the_service_cannot_wait_for():
+  """A timeout longer than the service waits for a command is lowered."""
+  client = _make_client()
+  environment = await _make_environment(client)
+
+  await environment.execute("true", timeout=900)
+
+  assert client.sandboxes.commands[-1]["timeout"] == 570
+
+
 @pytest.mark.parametrize(
     "error",
     [
         ServerError(504, {"error": {"code": 504}}),
         APIError(0, {"error": {"status": "DEADLINE_EXCEEDED"}}),
+        ServerError(
+            500,
+            {
+                "error": {
+                    "code": 500,
+                    "status": "INTERNAL",
+                    "message": "Internal error encountered.",
+                    "details": [{
+                        "detail": (
+                            "Fetch failed: URL_REJECTED-REJECTED_DEADLINE_"
+                            "EXCEEDED; Failed to ExecuteSandboxEnvironment"
+                        )
+                    }],
+                }
+            },
+        ),
     ],
-    ids=["http_504", "deadline_exceeded"],
+    ids=["http_504", "deadline_exceeded", "service_deadline"],
 )
 async def test_execute_reports_timeout(error):
   """A command the sandbox kills for running too long is reported timed out."""

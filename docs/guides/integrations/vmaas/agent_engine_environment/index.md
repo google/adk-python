@@ -93,7 +93,10 @@ agent's next command still runs.
 code as an `ExecutionResult`. A non-zero exit code is a normal result, not an
 exception, so the agent can read the error and react. A command that runs past
 its timeout is stopped by the sandbox and reported with `timed_out` set to
-`True`. `EnvironmentToolset` gives each command a 30 second timeout.
+`True`. `EnvironmentToolset` gives each command a 30 second timeout. The
+sandbox service stops waiting for a command after about 10 minutes, so a
+longer timeout is lowered to 570 seconds, and a command without a timeout gets
+the sandbox's default of 300 seconds.
 
 `read_file()` and `write_file()` move file contents through shell commands in
 the sandbox. A relative path resolves against the sandbox working directory,
