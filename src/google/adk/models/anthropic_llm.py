@@ -238,6 +238,45 @@ def _thinking_is_enabled(
   return thinking.get("type") in ("enabled", "adaptive")
 
 
+def _build_tool_choice(
+    config: Optional[types.GenerateContentConfig],
+    *,
+    forced_tool_use_blocked: bool,
+) -> anthropic_types.ToolChoiceParam:
+  """Maps the request's function calling mode to Claude's tool_choice.
+
+  Claude cannot restrict a call to a subset of several tools, so ``ANY`` with
+  more than one allowed function name becomes ``any``. Claude rejects forced
+  tool use with manual extended thinking, so ``ANY`` falls back to ``auto``
+  then.
+  """
+  function_calling_config = (
+      config.tool_config.function_calling_config
+      if config and config.tool_config
+      else None
+  )
+  if function_calling_config is None:
+    return anthropic_types.ToolChoiceAutoParam(type="auto")
+  mode = function_calling_config.mode
+  if mode == types.FunctionCallingConfigMode.NONE:
+    return anthropic_types.ToolChoiceNoneParam(type="none")
+  if mode == types.FunctionCallingConfigMode.ANY:
+    if forced_tool_use_blocked:
+      logger.warning(
+          "Claude does not allow forcing a tool call with manual extended"
+          " thinking; sending tool_choice 'auto' instead of the configured"
+          " function calling mode ANY."
+      )
+      return anthropic_types.ToolChoiceAutoParam(type="auto")
+    allowed_names = function_calling_config.allowed_function_names or []
+    if len(allowed_names) == 1:
+      return anthropic_types.ToolChoiceToolParam(
+          type="tool", name=allowed_names[0]
+      )
+    return anthropic_types.ToolChoiceAnyParam(type="any")
+  return anthropic_types.ToolChoiceAutoParam(type="auto")
+
+
 class AnthropicGenerateContentConfig(types.GenerateContentConfig):
   """Configuration options for Anthropic Claude content generation.
 
@@ -1268,12 +1307,17 @@ class AnthropicLlm(BaseLlm):
           function_declaration_to_tool_param(tool)
           for tool in function_declarations
       ]
+    thinking = _build_anthropic_thinking_param(llm_request.config)
     tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven] = (
-        anthropic_types.ToolChoiceAutoParam(type="auto")
+        _build_tool_choice(
+            llm_request.config,
+            forced_tool_use_blocked=(
+                isinstance(thinking, dict) and thinking.get("type") == "enabled"
+            ),
+        )
         if llm_request.tools_dict
         else NOT_GIVEN
     )
-    thinking = _build_anthropic_thinking_param(llm_request.config)
     # A requested schema rides along as a tool, since forcing a call on a
     # request that already declares tools would cut that turn short.
     output_schema_tool: Optional[_OutputSchemaTool] = None
