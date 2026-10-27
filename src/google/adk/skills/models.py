@@ -29,10 +29,12 @@ from pydantic import field_validator
 from ..features import FeatureName
 from ..features import is_feature_enabled
 
-_KEBAB_NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+_KEBAB_NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*\Z")
 _SNAKE_OR_KEBAB_NAME_PATTERN = re.compile(
-    r"^([a-z0-9]+(-[a-z0-9]+)*|[a-z0-9]+(_[a-z0-9]+)*)$"
+    r"^([a-z0-9]+(-[a-z0-9]+)*|[a-z0-9]+(_[a-z0-9]+)*)\Z"
 )
+# `\Z` rather than `$`, which also matches just before a trailing newline and
+# would let `"my-skill\n"` through to the registry path a skill name builds.
 
 
 class Frontmatter(BaseModel):

@@ -36,7 +36,13 @@ __all__ = [
     "validate_app_name",
 ]
 
-_VALID_APP_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
+_VALID_APP_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*\Z")
+r"""Matches an app name in full.
+
+Anchored with ``\Z`` rather than ``$``: ``$`` also matches just before a
+trailing newline, which would let ``"my_app\n"`` through validation and then
+reach the filesystem, url and storage paths an app name is used to build.
+"""
 
 
 def validate_app_name(name: str) -> None:
