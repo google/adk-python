@@ -6724,8 +6724,7 @@ async def test_generate_content_async_stream_without_finish_reason_reports_trunc
   assert responses[0].finish_reason == types.FinishReason.OTHER
   assert responses[0].error_code == types.FinishReason.OTHER
   assert responses[0].error_message == (
-      "The stream ended without a finish reason; the response may be"
-      " truncated."
+      "The stream ended without a finish reason; the response may be truncated."
   )
 
 
