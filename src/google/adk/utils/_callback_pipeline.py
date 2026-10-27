@@ -17,13 +17,16 @@ from __future__ import annotations
 from collections.abc import Awaitable
 from collections.abc import Callable
 from collections.abc import Sequence
+from contextlib import nullcontext
 import inspect
 from typing import Any
+from typing import cast
 from typing import TypeVar
 
-from typing_extensions import ParamSpec
+from ..agents._callback_metadata import _callback_scope
+from ..agents._callback_metadata import _CallbackContext
+from ..agents._callback_metadata import CallbackType
 
-_P = ParamSpec('_P')
 _TCallback = TypeVar('_TCallback', bound=Callable[..., object])
 _TResult = TypeVar('_TResult')
 
@@ -78,28 +81,45 @@ def _invoke_callback(
   return _callback(*args, **kwargs)
 
 
+# Not ParamSpec: PEP 612 forbids the keyword-only callback_type after
+# *args: _P.args, and callers pass keyword arguments to positional callback
+# types that _invoke_callback adapts, which ParamSpec could not check anyway.
 async def _run_callbacks(
     callbacks: Sequence[
         Callable[
-            _P,
+            ...,
             Awaitable[_TResult | None] | _TResult | None,
         ]
     ],
     _stop_condition: Callable[[_TResult | None], bool],
-    *args: _P.args,
-    **kwargs: _P.kwargs,
+    *args: object,
+    callback_type: CallbackType | None = None,
+    **kwargs: object,
 ) -> _TResult | None:
   """Runs callbacks in order while preserving their stop semantics."""
-  result: _TResult | None = None
-  for callback in callbacks:
-    callback_result = _invoke_callback(callback, *args, **kwargs)
-    if inspect.isawaitable(callback_result):
-      result = await callback_result
-    else:
-      result = callback_result
-    if _stop_condition(result):
-      return result
-  return result
+  callback_context = kwargs.get('callback_context')
+  if callback_context is None:
+    callback_context = kwargs.get('tool_context')
+  callback_scope = (
+      _callback_scope(
+          callback_type,
+          # callback_context and tool_context kwargs are Context instances.
+          cast(_CallbackContext, callback_context),
+      )
+      if callback_context is not None and callback_type is not None
+      else nullcontext()
+  )
+  with callback_scope:
+    result: _TResult | None = None
+    for callback in callbacks:
+      callback_result = _invoke_callback(callback, *args, **kwargs)
+      if inspect.isawaitable(callback_result):
+        result = await callback_result
+      else:
+        result = callback_result
+      if _stop_condition(result):
+        return result
+    return result
 
 
 def _normalize_callbacks(

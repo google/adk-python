@@ -3346,6 +3346,50 @@ async def test_get_user_state_copies_to_session_state_depth(light_copy):
     )
 
 
+@pytest.mark.parametrize('light_copy', [False, True])
+@pytest.mark.parametrize('synchronous', [False, True])
+async def test_in_memory_initial_state_uses_configured_copy_depth(
+    light_copy, synchronous
+):
+  """Initial state is stored as deeply copied as the configured copy depth."""
+  override_feature_enabled(
+      FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, light_copy
+  )
+  try:
+    service = InMemorySessionService()
+    initial_state = {
+        'app:config': {'values': ['original']},
+        'user:profile': {'values': ['original']},
+        'cart': {'values': ['original']},
+        # Dropped temporary values must not be traversed by deepcopy.
+        'temp:ignored': threading.Lock(),
+    }
+    kwargs = dict(
+        app_name='my_app', user_id='u1', session_id='s1', state=initial_state
+    )
+    if synchronous:
+      service.create_session_sync(**kwargs)
+    else:
+      await service.create_session(**kwargs)
+
+    for key in ('app:config', 'user:profile', 'cart'):
+      initial_state[key]['values'].append('changed')
+    initial_state['added'] = {'values': ['changed']}
+    stored = await service.get_session(
+        app_name='my_app', user_id='u1', session_id='s1'
+    )
+
+    expected_values = ['original', 'changed'] if light_copy else ['original']
+    assert stored.state == {
+        key: {'values': expected_values}
+        for key in ('app:config', 'user:profile', 'cart')
+    }
+  finally:
+    override_feature_enabled(
+        FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, False
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('light_copy', [False, True])
 @pytest.mark.parametrize('session_source', ['create', 'get', 'list'])

@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
+from ._callback_metadata import CallbackInfo
 from .readonly_context import ReadonlyContext
 
 if TYPE_CHECKING:
@@ -119,6 +120,7 @@ class Context(ReadonlyContext):
   """
 
   _workflow_scheduler: DynamicNodeScheduler | None = None
+  _callback_info: CallbackInfo | None = None
 
   def __init__(
       self,
@@ -193,6 +195,7 @@ class Context(ReadonlyContext):
     # Tool Execution
     self._function_call_id = function_call_id
     self._tool_confirmation = tool_confirmation
+    self._callback_info: CallbackInfo | None = None
 
     # Workflow Execution
     effective_node_path = node_path
@@ -254,6 +257,11 @@ class Context(ReadonlyContext):
   def function_call_id(self, value: str | None) -> None:
     """Sets the function call id of the current tool call."""
     self._function_call_id = value
+
+  @property
+  def callback_info(self) -> CallbackInfo | None:
+    """Returns metadata for the callback currently being invoked, if any."""
+    return self._callback_info
 
   @property
   def branch(self) -> str | None:

@@ -17,14 +17,20 @@ from __future__ import annotations
 import random
 
 from google.adk import platform as adk_platform
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.workflow._base_node import BaseNode
+from google.adk.workflow._errors import WorkflowConfigurationError
+from google.adk.workflow._errors import WorkflowInvariantError
 from google.adk.workflow._node import Node
 from google.adk.workflow._node_state import NodeState
 from google.adk.workflow._parallel_worker import _ParallelWorker
 from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow.utils._retry_utils import _delegates_item_retry
 from google.adk.workflow.utils._retry_utils import _get_retry_delay
+from google.adk.workflow.utils._retry_utils import _has_own_retry_config
+from google.adk.workflow.utils._retry_utils import _node_retry_config
 from google.adk.workflow.utils._retry_utils import _should_retry_node
+from google.adk.workflow.utils._retry_utils import _with_retry_config
 import pytest
 
 
@@ -221,6 +227,22 @@ class TestShouldRetryNode:
         is True
     )
 
+  @pytest.mark.parametrize(
+      "error",
+      [WorkflowConfigurationError("bad config"), WorkflowInvariantError("bug")],
+  )
+  def test_configuration_and_invariant_errors_are_never_retried(
+      self, error: Exception
+  ) -> None:
+    """Deterministic configuration and invariant errors are never retried."""
+    config = RetryConfig(
+        max_attempts=3, exceptions=[Exception, ValueError, RuntimeError]
+    )
+
+    assert (
+        _should_retry_node(error, config, NodeState(attempt_count=1)) is False
+    )
+
 
 class TestDelegatesItemRetry:
 
@@ -239,3 +261,113 @@ class TestDelegatesItemRetry:
   ) -> None:
     """Returns True only for _ParallelWorker and Node(parallel_worker=True)."""
     assert _delegates_item_retry(target_node) is expected
+
+
+class TestNodeRetryConfig:
+
+  def test_returns_wrapped_node_policy_for_parallel_worker(self) -> None:
+    """Returns the wrapped node's policy when worker.retry_config is None."""
+    item_policy = RetryConfig(max_attempts=2)
+    worker = _ParallelWorker(
+        node=BaseNode(name="item"),
+        retry_config=item_policy,
+    )
+
+    assert worker.retry_config is None
+    assert _node_retry_config(worker) is item_policy
+
+  def test_outer_worker_policy_wins_when_set_after_construction(self) -> None:
+    """Returns worker.retry_config when set directly after construction."""
+    item_policy = RetryConfig(max_attempts=2)
+    outer_policy = RetryConfig(max_attempts=4)
+    worker = _ParallelWorker(
+        node=BaseNode(name="item"),
+        retry_config=item_policy,
+    )
+    worker.retry_config = outer_policy
+
+    assert _node_retry_config(worker) is outer_policy
+
+
+class TestHasOwnRetryConfig:
+
+  @pytest.mark.parametrize(
+      ("target_node", "expected"),
+      [
+          (BaseNode(name="plain"), False),
+          (
+              BaseNode(
+                  name="retried", retry_config=RetryConfig(max_attempts=2)
+              ),
+              True,
+          ),
+          (_ParallelWorker(node=BaseNode(name="item")), False),
+          (
+              _ParallelWorker(
+                  node=BaseNode(name="item"),
+                  retry_config=RetryConfig(max_attempts=2),
+              ),
+              True,
+          ),
+          (
+              _ParallelWorker(
+                  node=_ParallelWorker(
+                      node=BaseNode(name="item"),
+                      retry_config=RetryConfig(max_attempts=2),
+                  )
+              ),
+              True,
+          ),
+      ],
+      ids=[
+          "base_node_without_retry",
+          "base_node_with_retry",
+          "parallel_worker_without_retry",
+          "parallel_worker_with_retry",
+          "nested_parallel_worker_with_retry",
+      ],
+  )
+  def test_checks_node_and_parallel_worker_inner_node(
+      self, target_node: BaseNode, expected: bool
+  ) -> None:
+    """Returns True only when a node has a retry_config of its own.
+
+    For a ParallelWorker, the retry_config of its item node counts.
+    """
+    assert _has_own_retry_config(target_node) is expected
+
+
+class TestWithRetryConfig:
+
+  def test_copies_base_node_and_preserves_original(self) -> None:
+    """Copies a BaseNode with the given retry_config without mutating it."""
+    original = BaseNode(name="step")
+    policy = RetryConfig(max_attempts=3)
+
+    with_policy = _with_retry_config(original, policy)
+    cleared = _with_retry_config(with_policy, None)
+
+    assert original.retry_config is None
+    assert with_policy is not original
+    assert with_policy.retry_config == policy
+    assert cleared.retry_config is None
+
+  def test_clones_agent_and_preserves_parent_agent(self) -> None:
+    """Clones a BaseAgent with retry_config while keeping parent_agent."""
+    parent = BaseAgent(
+        name="parent",
+        sub_agents=[
+            BaseAgent(name="child", sub_agents=[BaseAgent(name="grandchild")])
+        ],
+    )
+    child = parent.sub_agents[0]
+    policy = RetryConfig(max_attempts=2)
+
+    cloned = _with_retry_config(child, policy)
+
+    assert isinstance(cloned, BaseAgent)
+    assert cloned is not child
+    assert child.retry_config is None
+    assert cloned.retry_config == policy
+    assert cloned.parent_agent is parent
+    assert cloned.sub_agents[0].parent_agent is cloned

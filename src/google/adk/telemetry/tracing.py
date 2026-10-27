@@ -33,6 +33,7 @@ from contextlib import ExitStack
 import logging
 import os
 import re
+from typing import Any
 from typing import Final
 from typing import TYPE_CHECKING
 
@@ -223,6 +224,21 @@ def resolve_error_type(error: BaseException) -> str:
   if isinstance(error, genai_errors.APIError):
     return str(error.code)
   return type(error).__name__
+
+
+@contextmanager
+def _start_as_current_span(name: str, **kwargs: Any) -> Iterator[Span]:
+  """Opens a span with ``tracer`` that names the error escaping it, if any.
+
+  OpenTelemetry marks such a span ERROR on its own, but only ``error.type``
+  says which error it was, and the metric for the same operation records it.
+  """
+  with tracer.start_as_current_span(name, **kwargs) as span:
+    try:
+      yield span
+    except Exception as e:
+      span.set_attribute(ERROR_TYPE, resolve_error_type(e))
+      raise
 
 
 def trace_agent_invocation(
@@ -1248,7 +1264,7 @@ def _use_native_generate_content_span_stable_semconv(
 ) -> Iterator[GenerateContentSpan]:
   telemetry_config = telemetry_config or TelemetryConfig()
   system_name = _resolve_gen_ai_system_name(llm_request.model)
-  with tracer.start_as_current_span(
+  with _start_as_current_span(
       f"generate_content {llm_request.model or ''}".strip()
   ) as span:
     span.set_attribute(GEN_AI_SYSTEM, system_name)
@@ -1304,7 +1320,7 @@ def _use_native_generate_content_span(
       yield gc_span
     return
 
-  with tracer.start_as_current_span(
+  with _start_as_current_span(
       f"generate_content {llm_request.model or ''}".strip()
   ) as span:
     _set_common_generate_content_attributes(
@@ -1474,7 +1490,14 @@ def _resolve_gen_ai_system_name(model: str | None) -> str:
   Args:
     model: The model id the request is being served by, if known.
   """
-  if not model or is_gemini_model(model):
+  return _gen_ai_system_name_from_model(model) or _guess_gemini_system_name()
+
+
+def _gen_ai_system_name_from_model(model: str | None) -> str | None:
+  """Returns the system name `model` identifies, or None if it names none."""
+  if not model:
+    return None
+  if is_gemini_model(model):
     return _guess_gemini_system_name()
 
   model_name = extract_model_name(model)
@@ -1486,7 +1509,7 @@ def _resolve_gen_ai_system_name(model: str | None) -> str:
   if separator and provider and provider not in _RESOURCE_COLLECTION_SEGMENTS:
     return provider
 
-  return _guess_gemini_system_name()
+  return None
 
 
 # `gen_ai.provider.name` renamed the Google values of `gen_ai.system`; the rest
@@ -1523,8 +1546,12 @@ def _inference_system_name(
     llm_response: LlmResponse,
 ) -> str:
   """Returns the system name of the model that produced an inference result."""
-  model = llm_response.model_version
-  if not model and invocation_context is not None:
+  if system_name := _gen_ai_system_name_from_model(llm_response.model_version):
+    return system_name
+  # LiteLLM reports `model_version` without the provider prefix (`gpt-4o` for
+  # `openai/gpt-4o`), so fall back to the configured model the span reports.
+  model = None
+  if invocation_context is not None:
     agent = invocation_context.agent
     if agent is not None:
       model = _agent_model_name(agent)

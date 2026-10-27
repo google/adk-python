@@ -553,6 +553,8 @@ def _escape_like_query(word: str) -> str:
 
 def _row_to_memory_entry(row: aiosqlite.Row) -> MemoryEntry:
   content = types.Content.model_validate_json(row["content_json"])
+  if content.parts:
+    content.parts = [part for part in content.parts if not part.thought]
   return MemoryEntry(
       id=str(row["id"]),
       content=content,

@@ -1359,7 +1359,11 @@ def analyze_contribution(
   try:
     execute_sql_settings = settings
     if execute_sql_settings.write_mode == WriteMode.BLOCKED:
-      raise ValueError("analyze_contribution is not allowed in this session.")
+      raise ValueError(
+          "analyze_contribution is not allowed in this session. To enable"
+          " analyze_contribution, set write_mode to WriteMode.PROTECTED or"
+          " WriteMode.ALLOWED in BigQueryToolConfig."
+      )
     elif execute_sql_settings.write_mode != WriteMode.PROTECTED:
       # Running create temp model requires a session. So we set the write mode
       # to PROTECTED to run the create model query and job query in the same
@@ -1656,7 +1660,11 @@ def detect_anomalies(
   try:
     execute_sql_settings = settings
     if execute_sql_settings.write_mode == WriteMode.BLOCKED:
-      raise ValueError("anomaly detection is not allowed in this session.")
+      raise ValueError(
+          "anomaly detection is not allowed in this session. To enable"
+          " anomaly detection, set write_mode to WriteMode.PROTECTED or"
+          " WriteMode.ALLOWED in BigQueryToolConfig."
+      )
     elif execute_sql_settings.write_mode != WriteMode.PROTECTED:
       # Running create temp model requires a session. So we set the write mode
       # to PROTECTED to run the create model query and job query in the same
