@@ -33,6 +33,7 @@ Run with Application Default Credentials, for example:
 """
 
 import contextlib
+import hashlib
 import os
 import time
 
@@ -173,6 +174,39 @@ async def test_command_to_paused_sandbox_resumes_it(agent_engine_name):
     assert await manager.get_sandbox_state(environment.sandbox_name) == (
         "STATE_RUNNING"
     )
+
+
+@_SINGLE_RUN
+async def test_large_files_round_trip(agent_engine_name):
+  """Files larger than one command are written and read in chunks.
+
+  Act: write a 1 MiB file, which takes several commands, and read it back;
+    create a 3 MiB file in the sandbox and read it, which takes several
+    slices.
+  Assert: both files read back unchanged, and no temporary file is left.
+  """
+  async with _environment(agent_engine_name) as environment:
+    content = os.urandom(1024 * 1024)
+
+    with _timed("write 1 MiB"):
+      await environment.write_file("large/one.bin", content)
+    with _timed("read 1 MiB"):
+      read_back = await environment.read_file("large/one.bin")
+    await environment.execute(
+        "head -c 3145728 /dev/urandom > large/three.bin"
+        " && sha256sum large/three.bin > large/three.sha256"
+    )
+    with _timed("read 3 MiB"):
+      three = await environment.read_file("large/three.bin")
+    expected_digest = (
+        await environment.read_file("large/three.sha256")
+    ).split()[0]
+    listing = await environment.execute("ls -A large")
+
+    assert read_back == content
+    assert len(three) == 3 * 1024 * 1024
+    assert hashlib.sha256(three).hexdigest().encode() == expected_digest
+    assert listing.stdout.split() == ["one.bin", "three.bin", "three.sha256"]
 
 
 @_SINGLE_RUN

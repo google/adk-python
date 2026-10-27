@@ -92,7 +92,7 @@ sequenceDiagram
 2. **Asynchronous Input Ingestion:** `LiveRequestQueue` wraps an `asyncio.Queue[LiveRequest]`. The caller streams audio PCM chunks (`queue.send_realtime()`) or text tokens (`queue.send_content()`), which `run_live` forwards over the open WebSocket.
 3. **Event Categorization & Session Filtering:**
    * **Inline Audio Events (`inline_data`):** Streamed directly to callers for low-latency audio playback, but **not** saved to session history to prevent session bloat.
-   * **Artifact Media Events (`save_live_blob`):** Video and audio data are saved to artifact storage and persisted to session history when `save_live_blob` is set to `True` on `RunConfig`.
+   * **Artifact Media Events (`save_live_blob`):** With `save_live_blob=True` on `RunConfig`, each turn's audio is saved to artifact storage as one audio file, and the image frames the user sends, such as camera or screen-share frames, as one uncompressed `.zip` with a `metadata.json` index. Session history gets an event that references each saved file.
    * **Transcriptions & Tool Calls:** Non-partial transcriptions, usage metadata, and function calls are always saved to session history.
 4. **Non-Blocking Background Tools:** Streaming tools, which are async generator functions, and tools declared non-blocking run as background tasks, so audio output is not blocked while they work. The [Live background tools](../../live/tools/index.md) guide explains how to declare a tool non-blocking. Once complete, tool execution results are pushed back into `LiveRequestQueue` to update the model.
 
@@ -116,7 +116,7 @@ Configured via `run_config=RunConfig(...)`; see [RunConfig](../../agents/run_con
 | :--- | :--- | :--- | :--- |
 | `speech_config` | `types.SpeechConfig \| None` | `None` | Voice selection and audio encoding configuration for live agents. |
 | `response_modalities` | `list[types.Modality] \| None` | `None` | Output modalities returned by the model (`AUDIO` or `TEXT`). |
-| `save_live_blob` | `bool` | `False` | Saves live video and audio data to session and artifact service. |
+| `save_live_blob` | `bool` | `False` | Saves each turn's live audio and the user's image frames to the artifact service, with an event in the session that references each file. |
 | `session_resumption` | `types.SessionResumptionConfig \| None` | `None` | Configures transparent session resumption mechanism. |
 | `tool_thread_pool_config` | `ToolThreadPoolConfig \| None` | `None` | Runs tools in a background thread pool executor to keep event loop responsive. |
 
@@ -143,6 +143,7 @@ A streaming tool can also declare a parameter named `input_stream` with the type
 
 *   **Gemini Live Model Requirement:** `run_live` requires model endpoints that support the Gemini Multimodal Live API. An `LlmAgent` with no `model` set uses `LlmAgent.DEFAULT_LIVE_MODEL` (`gemini-live-2.5-flash-native-audio`) in live mode.
 *   **Inline Audio Persistence:** Raw PCM audio blobs (`inline_data`) are intentionally omitted from session storage. To retain session audio and video history, set `save_live_blob=True` on `RunConfig`.
+*   **Frame Limit:** With `save_live_blob=True`, ADK keeps at most 600 of the user's image frames until the turn ends. Past the limit, the oldest frames are dropped.
 *   **Experimental API:** `run_live` is marked experimental, and its API or behavior may change in future releases.
 
 ## Related guides & samples

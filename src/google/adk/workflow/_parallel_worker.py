@@ -29,7 +29,6 @@ from pydantic import Field
 from pydantic import PrivateAttr
 from typing_extensions import override
 
-from ..agents.base_agent import BaseAgent
 from ..agents.context import Context
 from ..utils._schema_utils import _unwrap_content_payload
 from ._base_node import BaseNode
@@ -37,6 +36,7 @@ from ._errors import NodeInterruptedError
 from ._errors import WorkflowConfigurationError
 from ._graph import NodeLike
 from ._retry_config import RetryConfig
+from .utils._retry_utils import _with_retry_config
 from .utils._workflow_graph_utils import build_node
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -64,31 +64,6 @@ def _unwrap_content_input(
       _get_node_input_annotation(inner_node),
       fan_out_list=True,
   )
-
-
-def _with_retry_config(
-    node: BaseNode, retry_config: RetryConfig | None
-) -> BaseNode:
-  """Returns a copy of ``node`` that uses ``retry_config``.
-
-  Args:
-    node: The node to copy. It is left unchanged.
-    retry_config: The retry policy for the copy, replacing the node's own, or
-      ``None`` to clear it.
-
-  Returns:
-    The copy, of the same class as ``node``.
-  """
-  copied: BaseNode
-  # An agent is cloned rather than copied, so that it gets its own sub-agents
-  # and its callbacks are rebound to the copy instead of the original.
-  if isinstance(node, BaseAgent):
-    copied = node.clone(update={'retry_config': retry_config})
-    # BaseAgent.clone() resets parent_agent to None; restore it.
-    copied.parent_agent = node.parent_agent
-  else:
-    copied = node.model_copy(update={'retry_config': retry_config})
-  return copied
 
 
 class _ParallelWorker(BaseNode):

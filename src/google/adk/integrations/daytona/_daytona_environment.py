@@ -26,8 +26,6 @@ from typing_extensions import override
 
 from ...environment._base_environment import BaseEnvironment
 from ...environment._base_environment import ExecutionResult
-from ...features import experimental
-from ...features import FeatureName
 
 if TYPE_CHECKING:
   from daytona import AsyncDaytona
@@ -41,7 +39,6 @@ _DEFAULT_TIMEOUT = 300
 _SANDBOX_HOME = "/workspaces"
 
 
-@experimental(FeatureName.DAYTONA_ENVIRONMENT)
 class DaytonaEnvironment(BaseEnvironment):
   """A persistent remote workspace backed by a Daytona sandbox.
 

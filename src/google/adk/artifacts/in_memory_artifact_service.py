@@ -35,6 +35,16 @@ from .base_artifact_service import ensure_part
 logger = logging.getLogger("google_adk." + __name__)
 
 
+def _encode_segment(value: str) -> str:
+  """Escapes ``%`` and ``/`` so a scope identifier is one storage-key segment.
+
+  Identifiers may contain ``/`` by design, so joining them raw lets distinct
+  scopes share a key. Only ``%`` and ``/`` are escaped, so the key of an
+  identifier without either is unchanged.
+  """
+  return value.replace("%", "%25").replace("/", "%2F")
+
+
 @dataclasses.dataclass
 class _ArtifactEntry:
   """Represents a single version of an artifact stored in memory.
@@ -89,15 +99,16 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     """
     artifact_util.validate_path_segment(app_name, "app_name")
     artifact_util.validate_path_segment(user_id, "user_id")
+    scope = f"{_encode_segment(app_name)}/{_encode_segment(user_id)}"
     if self._file_has_user_namespace(filename):
-      return f"{app_name}/{user_id}/user/{filename}"
+      return f"{scope}/user/{filename}"
 
     if session_id is None:
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
     artifact_util.validate_path_segment(session_id, "session_id")
-    return f"{app_name}/{user_id}/{session_id}/{filename}"
+    return f"{scope}/{_encode_segment(session_id)}/{filename}"
 
   @override
   async def save_artifact(
@@ -241,9 +252,10 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     artifact_util.validate_path_segment(user_id, "user_id")
     if session_id is not None:
       artifact_util.validate_path_segment(session_id, "session_id")
-    usernamespace_prefix = f"{app_name}/{user_id}/user/"
+    scope = f"{_encode_segment(app_name)}/{_encode_segment(user_id)}"
+    usernamespace_prefix = f"{scope}/user/"
     session_prefix = (
-        f"{app_name}/{user_id}/{session_id}/" if session_id else None
+        f"{scope}/{_encode_segment(session_id)}/" if session_id else None
     )
     filenames = []
     for path in self.artifacts:

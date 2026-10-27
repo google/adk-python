@@ -35,9 +35,6 @@ from google.adk.tools.environment_simulation.tool_connection_analyzer import Too
 from google.adk.tools.environment_simulation.tool_connection_map import ToolConnectionMap
 from google.genai import types as genai_types
 
-from ...features import experimental
-from ...features import FeatureName
-
 
 def _create_mock_strategy(
     mock_strategy_type: MockStrategyEnum,
@@ -52,7 +49,6 @@ def _create_mock_strategy(
   raise ValueError(f"Unknown mock strategy type: {mock_strategy_type}")
 
 
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class EnvironmentSimulationEngine:
   """Core engine to handle the simulation logic."""
 

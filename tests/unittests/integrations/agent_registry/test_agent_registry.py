@@ -107,7 +107,9 @@ def _auth_provider(name):
   return f"projects/123/locations/l/authProviders/{name}"
 
 
-def _mcp_binding(auth_provider, update_time, source=None):
+def _mcp_binding(
+    auth_provider, update_time, source=None, continue_uri=None, scopes=None
+):
   binding = {
       "target": {"identifier": _MCP_SERVER_ID},
       "authProviderBinding": {"authProvider": _auth_provider(auth_provider)},
@@ -115,6 +117,10 @@ def _mcp_binding(auth_provider, update_time, source=None):
   }
   if source:
     binding["source"] = {"identifier": source}
+  if continue_uri:
+    binding["authProviderBinding"]["continueUri"] = continue_uri
+  if scopes:
+    binding["authProviderBinding"]["scopes"] = scopes
   return binding
 
 
@@ -1077,6 +1083,44 @@ class TestAgentRegistry:
     assert toolset._auth_scheme.continue_uri == "https://override.com/continue"
 
   @patch.object(AgentRegistry, "_make_request")
+  def test_get_mcp_toolset_uses_binding_continue_uri_and_scopes(
+      self, mock_make_request, registry
+  ):
+    """Without a caller continue URI, the binding's continue URI is used."""
+    mock_make_request.side_effect = _mcp_server_side_effect([
+        _mcp_binding(
+            "ap",
+            "2026-09-01T00:00:00Z",
+            continue_uri="https://binding.com/continue",
+            scopes=["openid", "email"],
+        )
+    ])
+
+    toolset = registry.get_mcp_toolset("test-mcp")
+
+    assert toolset._auth_scheme.continue_uri == "https://binding.com/continue"
+    assert toolset._auth_scheme.scopes == ["openid", "email"]
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_caller_continue_uri_overrides_binding(
+      self, mock_make_request, registry
+  ):
+    """A continue URI the caller passes beats the binding's."""
+    mock_make_request.side_effect = _mcp_server_side_effect([
+        _mcp_binding(
+            "ap",
+            "2026-09-01T00:00:00Z",
+            continue_uri="https://binding.com/continue",
+        )
+    ])
+
+    toolset = registry.get_mcp_toolset(
+        "test-mcp", continue_uri="https://override.com/continue"
+    )
+
+    assert toolset._auth_scheme.continue_uri == "https://override.com/continue"
+
+  @patch.object(AgentRegistry, "_make_request")
   def test_get_mcp_toolset_reads_every_page_of_bindings(
       self, mock_make_request, registry
   ):
@@ -1221,6 +1265,72 @@ class TestAgentRegistry:
     )
     assert (
         _request_paths(mock_make_request).count("bindings:fetchAvailable") == 1
+    )
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_rebind_uses_new_binding_continue_uri(
+      self, mock_make_request, registry, monkeypatch
+  ):
+    """A rebind takes the new binding's continue URI, not the old one's."""
+    mock_make_request.side_effect = _mcp_server_side_effect(
+        list_bindings=[
+            _mcp_binding(
+                "stale",
+                "2026-09-02T00:00:00Z",
+                continue_uri="https://stale.com/continue",
+            )
+        ],
+        available_bindings=[
+            _mcp_binding(
+                "current",
+                "2026-09-01T00:00:00Z",
+                continue_uri="https://current.com/continue",
+            )
+        ],
+    )
+    toolset = registry.get_mcp_toolset("test-mcp")
+    assert (
+        toolset.get_auth_config().auth_scheme.continue_uri
+        == "https://stale.com/continue"
+    )
+
+    _enter_agent_engine(monkeypatch)
+
+    assert (
+        toolset.get_auth_config().auth_scheme.continue_uri
+        == "https://current.com/continue"
+    )
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_toolset_pickled_without_continue_uri_keeps_caller_override(
+      self, mock_make_request, registry, monkeypatch
+  ):
+    """For older pickles, the scheme's continue URI is the caller's override."""
+    mock_make_request.side_effect = _mcp_server_side_effect(
+        list_bindings=[_mcp_binding("stale", "2026-09-02T00:00:00Z")],
+        available_bindings=[
+            _mcp_binding(
+                "current",
+                "2026-09-01T00:00:00Z",
+                continue_uri="https://current.com/continue",
+            )
+        ],
+    )
+    toolset = registry.get_mcp_toolset(
+        "test-mcp", continue_uri="https://override.com/continue"
+    )
+    state = toolset.__getstate__()
+    del state["_continue_uri"]
+    restored = AgentRegistrySingleMcpToolset.__new__(
+        AgentRegistrySingleMcpToolset
+    )
+    restored.__setstate__(state)
+
+    _enter_agent_engine(monkeypatch)
+
+    assert (
+        restored.get_auth_config().auth_scheme.continue_uri
+        == "https://override.com/continue"
     )
 
   @patch.object(AgentRegistry, "_make_request")
@@ -1468,6 +1578,27 @@ class TestAgentRegistry:
     assert isinstance(auth_scheme, GcpAuthProviderScheme)
     assert auth_scheme.name == "projects/123/locations/l/authProviders/ap-789"
     assert auth_scheme.continue_uri == "https://override.com/continue"
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_get_remote_a2a_agent_uses_binding_continue_uri(
+      self, mock_make_request, registry
+  ):
+    """The binding's continue URI is used when the caller passes none."""
+
+    def side_effect(path, *args, **kwargs):
+      data = _agent_with_binding_side_effect(path, *args, **kwargs)
+      if path == "bindings":
+        data["bindings"][0]["authProviderBinding"][
+            "continueUri"
+        ] = "https://binding.com/continue"
+      return data
+
+    mock_make_request.side_effect = side_effect
+
+    agent = registry.get_remote_a2a_agent("test-agent")
+
+    auth_scheme = agent._auth_config.auth_scheme
+    assert auth_scheme.continue_uri == "https://binding.com/continue"
 
   @patch.object(AgentRegistry, "_make_request")
   def test_get_remote_a2a_agent_with_card_and_binding(
