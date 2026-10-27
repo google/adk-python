@@ -17,10 +17,8 @@ import abc
 from typing import Optional
 
 from ..events.event import Event
-from ..utils.feature_decorator import experimental
 
 
-@experimental
 class BaseEventsSummarizer(abc.ABC):
   """Base interface for compacting events."""
 

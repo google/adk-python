@@ -179,7 +179,12 @@ Within a single step (`_execute_step`), when replay is enabled:
 
 3. **Waiting / Partial resume (`recovered.interrupt_ids - recovered.resolved_ids` non-empty)** —
    - If `node.rerun_on_resume` is `True` and `recovered.resolved_ids` is
-     non-empty (**partial resume**): returns `should_run=True` with
+     non-empty (**partial resume**): if `recovered.finished_after_resume` is
+     `True` and the node either recorded a result (`recovered.output`,
+     `recovered.route`, or `recovered.transfer_to_agent`) or has
+     `not node.wait_for_output`, fast-forwards (`should_run=False`) with the
+     rehydrated `output`, `route`, and `transfer_to_agent` (and no
+     `interrupts`); otherwise returns `should_run=True` with
      `resume_inputs=recovered.resolved_responses`.
    - Otherwise: returns `should_run=False` with `interrupts=unresolved`,
      propagating unresolved interrupt IDs to `_state.interrupt_ids` via a
@@ -386,10 +391,14 @@ stages:
        triggers without running `NodeRunner`.
      - **Interrupted with unresolved interrupts**: if `rerun_on_resume=True`
        and `recovered.resolved_ids` is non-empty (**partial resume**),
+       fast-forwards (`should_run=False`) with the rehydrated `output`,
+       `route`, and `transfer_to_agent` when `recovered.finished_after_resume`
+       is `True` (and a result was recorded or `not node.wait_for_output`), or
        re-executes (`should_run=True`) via `NodeRunner` with
-       `resume_inputs=recovered.resolved_responses`; otherwise stays WAITING
-       (`should_run=False` with `interrupts` populated) and records unresolved
-       IDs in `_LoopState.interrupt_ids`.
+       `resume_inputs=recovered.resolved_responses` otherwise; if not a partial
+       resume on a `rerun_on_resume` node, stays WAITING (`should_run=False`
+       with `interrupts` populated) and records unresolved IDs in
+       `_LoopState.interrupt_ids`.
      - **Interrupted with all interrupts resolved (`rerun_on_resume=True`) or prior failure (`error_code`)**:
        re-executes (`should_run=True`) via `NodeRunner` with
        `resume_inputs=recovered.resolved_responses`.

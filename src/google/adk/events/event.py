@@ -31,6 +31,8 @@ from ..utils import _model_copy
 from ._node_path_builder import _NodePathBuilder
 from .event_actions import EventActions
 
+_CONVENIENCE_KWARGS = frozenset({'message', 'state', 'route', 'node_path'})
+
 
 class NodeInfo(BaseModel):
   """Workflow node metadata attached to an Event."""
@@ -179,6 +181,11 @@ class Event(LlmResponse):
     real fields) keep normal field validation behavior.
     """
     if not isinstance(data, dict):
+      return data
+
+    # Fast path: no convenience kwarg present, so there is nothing to route;
+    # skip the field-table build and the dict copy.
+    if _CONVENIENCE_KWARGS.isdisjoint(data):
       return data
 
     data = dict(data)

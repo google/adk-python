@@ -27,6 +27,9 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.run_config import StreamingMode
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.apps.app import App
+from google.adk.apps.app import EventsCompactionConfig
+from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.features import FeatureName
@@ -2723,3 +2726,438 @@ def test_from_config_rejects_non_agent_node():
 
   with pytest.raises(ValueError, match='AgentTool requires an agent'):
     AgentTool.from_config(config, '/tmp/root_agent.yaml')
+
+
+@mark.asyncio
+async def test_agent_tool_compacts_nested_history_at_caller_token_threshold():
+  """An agent tool's own history is compacted at the caller's token threshold.
+
+  Setup: the caller's app compacts at 100 tokens; the wrapped agent reads a
+    large file three times before answering, and every model call reports 200
+    prompt tokens.
+  Act: run the root agent, which calls the agent tool once.
+  Assert: the wrapped agent's last request carries the compaction summary
+    instead of its full tool-call history, and the summarizer runs only on the
+    three in-flow checks before calls 2-4, not post-invocation after call 4.
+  """
+
+  def read_large_file() -> str:
+    """Returns a large file body."""
+    return 'lorem ipsum dolor sit amet ' * 80
+
+  read_call = Part.from_function_call(name='read_large_file', args={})
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[read_call, read_call, read_call, 'nested answer'],
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=200
+      ),
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, tools=[read_large_file]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[function_call_no_schema, 'root answer'],
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=10
+          ),
+      ),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+  summarizer_model = testing_utils.MockModel.create(
+      responses=['NESTED SUMMARY'] * 20
+  )
+  app = App(
+      name='parent_app',
+      root_agent=root_agent,
+      events_compaction_config=EventsCompactionConfig(
+          compaction_interval=10_000,
+          overlap_size=0,
+          token_threshold=100,
+          event_retention_size=0,
+          summarizer=LlmEventSummarizer(llm=summarizer_model),
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async('go')
+
+  last_prompt_text = ' '.join(
+      part.text
+      for content in tool_agent_model.requests[-1].contents
+      for part in content.parts or []
+      if part.text
+  )
+  assert len(tool_agent_model.requests) == 4
+  assert 'NESTED SUMMARY' in last_prompt_text
+  assert len(summarizer_model.requests) == 3
+
+
+@mark.asyncio
+async def test_agent_tool_skips_post_invocation_compaction_on_last_call():
+  """Crossing token_threshold on the last nested call skips post-compaction.
+
+  Setup: the caller's app sets token_threshold=100 with summarizer=None and
+    wraps a SequentialAgent whose LlmAgent sub-agent stays below the threshold
+    on its first call (20 tokens) and crosses it on its final call (200 tokens).
+  Act: run the root agent, which calls the wrapped SequentialAgent tool once.
+  Assert: the nested run finishes without running post-invocation compaction,
+    which would raise ValueError on SequentialAgent with summarizer=None or
+    burn a summarizer call on the discarded session.
+  """
+
+  def read_large_file() -> str:
+    """Returns a large file body."""
+    return 'lorem ipsum dolor sit amet ' * 80
+
+  read_call = Part.from_function_call(name='read_large_file', args={})
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[
+          LlmResponse(
+              content=testing_utils.ModelContent([read_call]),
+              usage_metadata=types.GenerateContentResponseUsageMetadata(
+                  prompt_token_count=20
+              ),
+          ),
+          LlmResponse(
+              content=testing_utils.ModelContent(
+                  [Part.from_text(text='nested answer')]
+              ),
+              usage_metadata=types.GenerateContentResponseUsageMetadata(
+                  prompt_token_count=200
+              ),
+          ),
+      ]
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, tools=[read_large_file]
+  )
+  wrapped_agent = SequentialAgent(
+      name='seq_agent',
+      description='Sequential wrapper',
+      sub_agents=[tool_agent],
+  )
+  seq_call = Part.from_function_call(
+      name='seq_agent', args={'request': 'test1'}
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[seq_call, 'root answer'],
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=10
+          ),
+      ),
+      tools=[AgentTool(agent=wrapped_agent)],
+  )
+  events_compaction_config = EventsCompactionConfig(
+      token_threshold=100,
+      event_retention_size=0,
+  )
+  app = App(
+      name='parent_app',
+      root_agent=root_agent,
+      events_compaction_config=events_compaction_config,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async('go')
+
+  assert len(tool_agent_model.requests) == 2
+  assert events[-1].content.parts[0].text == 'root answer'
+
+
+@mark.asyncio
+async def test_agent_tool_nested_default_summarizer_keeps_caller_config():
+  """A default summarizer built mid nested run stays off the caller's config.
+
+  Setup: the caller's app sets token_threshold=100 with summarizer=None; the
+    wrapped agent reports 200 prompt tokens on its first call, so in-flow
+    compaction fires before its second call and builds a default summarizer
+    from the wrapped agent's model.
+  Act: run the root agent, which calls the agent tool once.
+  Assert: the wrapped agent's last request carries the compaction summary, and
+    the caller's config still has summarizer=None.
+  """
+
+  def read_large_file() -> str:
+    """Returns a large file body."""
+    return 'lorem ipsum dolor sit amet ' * 80
+
+  read_call = Part.from_function_call(name='read_large_file', args={})
+  # The default summarizer reuses the wrapped agent's model, so the second
+  # response answers the summarization request.
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[read_call, 'NESTED SUMMARY', 'nested answer'],
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=200
+      ),
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, tools=[read_large_file]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[function_call_no_schema, 'root answer'],
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=10
+          ),
+      ),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+  events_compaction_config = EventsCompactionConfig(
+      token_threshold=100,
+      event_retention_size=0,
+  )
+  app = App(
+      name='parent_app',
+      root_agent=root_agent,
+      events_compaction_config=events_compaction_config,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async('go')
+
+  last_prompt_text = ' '.join(
+      part.text
+      for content in tool_agent_model.requests[-1].contents
+      for part in content.parts or []
+      if part.text
+  )
+  assert len(tool_agent_model.requests) == 3
+  assert 'NESTED SUMMARY' in last_prompt_text
+  assert events_compaction_config.summarizer is None
+
+
+@mark.asyncio
+@mark.parametrize(
+    'use_sliding_window',
+    [False, True],
+    ids=['no_config', 'sliding_window_only'],
+)
+async def test_agent_tool_keeps_nested_history_without_token_threshold(
+    use_sliding_window: bool,
+):
+  """An agent tool's history is not compacted without a token threshold.
+
+  Setup: the caller's app has no compaction, or only the sliding-window
+    trigger, which runs after an invocation ends; the wrapped agent reads a
+    large file three times before answering.
+  Act: run the root agent, which calls the agent tool once.
+  Assert: the wrapped agent's last request still carries all three tool
+    results and no compaction summary, and the nested run does not call the
+    summarizer.
+  """
+
+  def read_large_file() -> str:
+    """Returns a large file body."""
+    return 'lorem ipsum dolor sit amet ' * 80
+
+  read_call = Part.from_function_call(name='read_large_file', args={})
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[read_call, read_call, read_call, 'nested answer']
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, tools=[read_large_file]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[function_call_no_schema, 'root answer']
+      ),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+  summarizer_model = testing_utils.MockModel.create(
+      responses=['NESTED SUMMARY'] * 20
+  )
+  events_compaction_config = (
+      EventsCompactionConfig(
+          compaction_interval=1,
+          overlap_size=0,
+          summarizer=LlmEventSummarizer(llm=summarizer_model),
+      )
+      if use_sliding_window
+      else None
+  )
+  app = App(
+      name='parent_app',
+      root_agent=root_agent,
+      events_compaction_config=events_compaction_config,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async('go')
+
+  last_request = tool_agent_model.requests[-1]
+  tool_results = [
+      part
+      for content in last_request.contents
+      for part in content.parts or []
+      if part.function_response
+  ]
+  last_prompt_text = ' '.join(
+      part.text
+      for content in last_request.contents
+      for part in content.parts or []
+      if part.text
+  )
+  assert len(tool_agent_model.requests) == 4
+  assert len(tool_results) == 3
+  assert 'NESTED SUMMARY' not in last_prompt_text
+  assert len(summarizer_model.requests) == (1 if use_sliding_window else 0)
+
+
+@mark.asyncio
+async def test_agent_tool_compacts_each_call_and_keeps_caller_config():
+  """Each agent tool call compacts its own history; the caller's config holds.
+
+  Setup: the caller's app sets both compaction triggers with a 100-token
+    threshold; the root agent calls the agent tool twice, and each call reads
+    a large file three times before answering.
+  Act: run the root agent.
+  Assert: the last request of each nested run carries the compaction summary,
+    the second run starts from a fresh history, neither nested run runs
+    post-invocation sliding-window compaction, and the caller's compaction
+    config is unchanged.
+  """
+
+  def read_large_file() -> str:
+    """Returns a large file body."""
+    return 'lorem ipsum dolor sit amet ' * 80
+
+  read_call = Part.from_function_call(name='read_large_file', args={})
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[read_call, read_call, read_call, 'first answer']
+      + [read_call, read_call, read_call, 'second answer']
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, tools=[read_large_file]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              function_call_no_schema,
+              function_call_no_schema,
+              'root answer',
+          ]
+      ),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+  summarizer_model = testing_utils.MockModel.create(
+      responses=['NESTED SUMMARY'] * 40
+  )
+  events_compaction_config = EventsCompactionConfig(
+      compaction_interval=1,
+      overlap_size=0,
+      token_threshold=100,
+      event_retention_size=0,
+      summarizer=LlmEventSummarizer(llm=summarizer_model),
+  )
+  app = App(
+      name='parent_app',
+      root_agent=root_agent,
+      events_compaction_config=events_compaction_config,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async('go')
+
+  def prompt_text(request) -> str:
+    return ' '.join(
+        part.text
+        for content in request.contents
+        for part in content.parts or []
+        if part.text
+    )
+
+  requests = tool_agent_model.requests
+  assert len(requests) == 8
+  assert 'NESTED SUMMARY' in prompt_text(requests[3])
+  assert 'NESTED SUMMARY' not in prompt_text(requests[4])
+  assert len(requests[4].contents) == 1
+  assert 'NESTED SUMMARY' in prompt_text(requests[7])
+  assert len(summarizer_model.requests) == 7
+  assert app.events_compaction_config is events_compaction_config
+  assert events_compaction_config.compaction_interval == 1
+  assert events_compaction_config.overlap_size == 0
+  assert events_compaction_config.token_threshold == 100
+  assert events_compaction_config.event_retention_size == 0
+
+
+@mark.asyncio
+@mark.parametrize(
+    'wrap_in_sequential',
+    [False, True],
+    ids=['llm_agent', 'sequential_agent'],
+)
+@mark.parametrize(
+    'use_custom_summarizer',
+    [False, True],
+    ids=['default_summarizer', 'custom_summarizer'],
+)
+async def test_agent_tool_skips_post_compaction_on_empty_nested_run(
+    use_custom_summarizer: bool,
+    wrap_in_sequential: bool,
+):
+  """A nested run yielding no events skips post-invocation compaction."""
+
+  def stop_before_agent(callback_context):
+    callback_context._invocation_context.end_invocation = True
+    return None
+
+  tool_agent_model = testing_utils.MockModel.create(responses=['unused'])
+  tool_agent = Agent(
+      name='tool_agent',
+      model=tool_agent_model,
+      before_agent_callback=None if wrap_in_sequential else stop_before_agent,
+  )
+  wrapped_agent: BaseAgent = (
+      SequentialAgent(
+          name='seq_agent',
+          description='Sequential wrapper',
+          sub_agents=[tool_agent],
+          before_agent_callback=stop_before_agent,
+      )
+      if wrap_in_sequential
+      else tool_agent
+  )
+  nested_call = Part.from_function_call(
+      name=wrapped_agent.name,
+      args={'request': 'lorem ipsum dolor sit amet ' * 20},
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[nested_call, 'root answer'],
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=10
+          ),
+      ),
+      tools=[AgentTool(agent=wrapped_agent)],
+  )
+  summarizer_model = testing_utils.MockModel.create(
+      responses=['NESTED SUMMARY'] * 5
+  )
+  app = App(
+      name='parent_app',
+      root_agent=root_agent,
+      events_compaction_config=EventsCompactionConfig(
+          token_threshold=100,
+          event_retention_size=0,
+          summarizer=(
+              LlmEventSummarizer(llm=summarizer_model)
+              if use_custom_summarizer
+              else None
+          ),
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async('go')
+
+  assert events[-1].content.parts[0].text == 'root answer'
+  assert len(tool_agent_model.requests) == 0
+  assert len(summarizer_model.requests) == 0

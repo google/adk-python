@@ -21,11 +21,9 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import model_validator
 
-from ..utils.feature_decorator import experimental
 from .base_events_summarizer import BaseEventsSummarizer
 
 
-@experimental
 class ResumabilityConfig(BaseModel):
   """The config of the resumability for an application.
 
@@ -46,7 +44,6 @@ class ResumabilityConfig(BaseModel):
   """
 
 
-@experimental
 class EventsCompactionConfig(BaseModel):
   """The config of event compaction for an application."""
 

@@ -263,10 +263,6 @@ camelCase field names, like the rest of the API.
 *   All function responses in one message must answer calls from the same
     invocation, and each must carry the id of a call that exists in the
     session. Otherwise `run_async` raises `ValueError`.
-*   The `ResumabilityConfig` class is experimental. Constructing it emits a
-    `UserWarning` once per process, and setting the environment variable
-    `ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS=true` turns the warning off. Its
-    shape may change in a later release.
 
 ## Related samples
 

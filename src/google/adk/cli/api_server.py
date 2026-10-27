@@ -107,7 +107,6 @@ from ..utils._telemetry_config import read_telemetry_consent
 from ..utils.agent_info import AgentInfo
 from ..utils.agent_info import get_agents_dict
 from ..utils.context_utils import Aclosing
-from ..utils.feature_decorator import experimental
 from ..version import __version__
 from .cli_eval import _LEGACY_EVAL_SESSION_ID_PREFIX
 from .cli_eval import EVAL_SESSION_ID_PREFIX
@@ -1783,7 +1782,6 @@ class ApiServer:
       return self.agent_loader.list_agents()
 
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
-    @experimental
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
       if app_name.startswith("__") and not self._allow_special_agents:
