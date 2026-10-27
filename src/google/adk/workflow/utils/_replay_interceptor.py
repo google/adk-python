@@ -172,9 +172,14 @@ def check_interception(
         should_run = True
         resume_inputs = recovered.resolved_responses
     else:
-      # Allow fresh execution for crashed/timeout dynamic nodes;
-      # static nodes with no outcome (e.g. return None) should be fast-forwarded.
-      should_run = current_run is not None and not current_run.is_static
+      # Allow fresh execution for crashed/timeout dynamic nodes, but not for
+      # dynamic nodes that recorded finishing without a result; static nodes
+      # with no outcome (e.g. return None) should be fast-forwarded.
+      should_run = (
+          current_run is not None
+          and not current_run.is_static
+          and not recovered.completed
+      )
 
   return InterceptionResult(
       should_run=should_run,

@@ -90,6 +90,14 @@ class _ChildScanState:
   finished_after_resume: bool = False
   """Whether the child emitted a direct completion event since its last answer (or start)."""
 
+  completed: bool = False
+  """Whether the child's run recorded that it finished without a result.
+
+  Set from a completion marker (see ``_is_completion_marker``). Unlike
+  ``finished_after_resume``, which any direct non-interrupt event sets, this
+  is only set once the run has actually ended.
+  """
+
 
 def _wrap_response(value: Any) -> dict[str, Any]:
   """Wraps a value into a dict suitable for FunctionResponse.response.
@@ -449,6 +457,11 @@ def _reconstruct_node_states(
         if schema_json:
           schemas_by_id[interrupt_id] = schema_json
 
+    if interrupt_ids_to_process:
+      child.completed = False
+    elif is_direct and _is_completion_marker(event):
+      child.completed = True
+
     if is_direct:
       child.finished_after_resume = (
           not interrupt_ids_to_process
@@ -459,6 +472,11 @@ def _reconstruct_node_states(
       )
 
   return scan_states
+
+
+def _is_completion_marker(event: Event) -> bool:
+  """Returns whether ``event`` records a run that finished without a result."""
+  return bool(event.node_info and getattr(event.node_info, 'completed', None))
 
 
 def _event_has_result(event: Event) -> bool:
