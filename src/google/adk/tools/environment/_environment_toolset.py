@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
-from ...utils.feature_decorator import experimental
 from ..base_toolset import BaseToolset
 from ._constants import ENVIRONMENT_INSTRUCTION
 from ._edit_file_tool import EditFileTool
@@ -43,7 +42,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@experimental
 class EnvironmentToolset(BaseToolset):
   """Toolset providing tools to interact with an environment.
 
