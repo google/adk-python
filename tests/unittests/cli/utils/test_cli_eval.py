@@ -261,3 +261,57 @@ async def test_get_root_agent_back_compat(monkeypatch):
   )
 
   assert await get_root_agent("some/path") is root_agent
+
+
+@pytest.mark.asyncio
+async def test_collect_eval_results_uses_default_parallelism_when_unset():
+  """Omitting `parallelism` leaves `EvaluateConfig.parallelism` at its default."""
+  from google.adk.cli.cli_eval import _collect_eval_results
+  from google.adk.evaluation.base_eval_service import EvaluateRequest
+
+  captured_requests: list[EvaluateRequest] = []
+
+  async def _fake_evaluate(evaluate_request: EvaluateRequest):
+    captured_requests.append(evaluate_request)
+    return
+    yield  # pragma: no cover
+
+  eval_service = mock.MagicMock()
+  eval_service.evaluate = _fake_evaluate
+
+  results = await _collect_eval_results(
+      inference_results=[],
+      eval_service=eval_service,
+      eval_metrics=[],
+  )
+
+  assert results == []
+  assert len(captured_requests) == 1
+  assert captured_requests[0].evaluate_config.parallelism == 4
+
+
+@pytest.mark.asyncio
+async def test_collect_eval_results_forwards_parallelism_to_evaluate_config():
+  """An explicit `parallelism` sets `EvaluateConfig.parallelism`."""
+  from google.adk.cli.cli_eval import _collect_eval_results
+  from google.adk.evaluation.base_eval_service import EvaluateRequest
+
+  captured_requests: list[EvaluateRequest] = []
+
+  async def _fake_evaluate(evaluate_request: EvaluateRequest):
+    captured_requests.append(evaluate_request)
+    return
+    yield  # pragma: no cover
+
+  eval_service = mock.MagicMock()
+  eval_service.evaluate = _fake_evaluate
+
+  await _collect_eval_results(
+      inference_results=[],
+      eval_service=eval_service,
+      eval_metrics=[],
+      parallelism=8,
+  )
+
+  assert len(captured_requests) == 1
+  assert captured_requests[0].evaluate_config.parallelism == 8

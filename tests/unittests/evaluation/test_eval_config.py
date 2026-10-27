@@ -897,3 +897,22 @@ def test_custom_method_rejects_unknown_keys():
         "uses_scores": True,
         "threshold": 0.5,
     })
+
+
+def test_eval_config_leaves_parallelism_unset_by_default():
+  """Without parallelism in the config, the eval service keeps its default."""
+  assert EvalConfig().parallelism is None
+
+
+def test_eval_config_reads_parallelism():
+  """`parallelism` is parsed from JSON as a positive integer."""
+  eval_config = EvalConfig.model_validate_json(json.dumps({"parallelism": 8}))
+
+  assert eval_config.parallelism == 8
+
+
+@pytest.mark.parametrize("parallelism", [0, -1])
+def test_eval_config_rejects_parallelism_below_one(parallelism):
+  """Running fewer than one eval case in parallel is a config error."""
+  with pytest.raises(ValidationError, match="parallelism"):
+    EvalConfig.model_validate({"parallelism": parallelism})

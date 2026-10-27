@@ -1361,6 +1361,16 @@ def _resolve_eval_config_file_path(
     ),
 )
 @click.option(
+    "--parallelism",
+    type=click.IntRange(min=1),
+    default=None,
+    help=(
+        "Optional. Maximum number of eval cases to run in parallel during"
+        " inference and metric evaluation. Overrides parallelism in the eval"
+        " config; if neither is set, defaults to 4."
+    ),
+)
+@click.option(
     "--print_detailed_results",
     is_flag=True,
     show_default=True,
@@ -1376,6 +1386,7 @@ def cli_eval(
     eval_storage_uri: str | None = None,
     log_level: str = "INFO",
     num_runs: Optional[int] = None,
+    parallelism: Optional[int] = None,
 ) -> None:
   """Evaluates an agent given the eval sets.
 
@@ -1432,6 +1443,10 @@ def cli_eval(
   NUM_RUNS: Number of times to run each eval case. Overrides
   multi_run_config.num_runs in the eval config; if neither is set, each eval
   case runs once.
+
+  PARALLELISM: Maximum number of eval cases to run in parallel during inference
+  and metric evaluation. Overrides parallelism in the eval config; if neither is
+  set, defaults to 4.
 
   PRINT_DETAILED_RESULTS: Prints detailed results on the console.
   """
@@ -1508,16 +1523,39 @@ def cli_eval(
   if num_runs is None:
     num_runs = 1
 
+  # The `--parallelism` flag overrides the eval config. If neither sets
+  # parallelism, the eval service uses its own default.
+  resolved_parallelism = (
+      parallelism if parallelism is not None else eval_config.parallelism
+  )
+
   # Live mode is resolved from the eval config, consistent with how
   # `user_simulator_config` and other eval settings are sourced.
   if eval_config.live_model_config:
-    inference_config = InferenceConfig(
-        use_live=True,
-        live_timeout_seconds=eval_config.live_model_config.timeout_seconds,
-        num_runs=num_runs,
+    inference_config = (
+        InferenceConfig(
+            use_live=True,
+            live_timeout_seconds=eval_config.live_model_config.timeout_seconds,
+            num_runs=num_runs,
+            parallelism=resolved_parallelism,
+        )
+        if resolved_parallelism is not None
+        else InferenceConfig(
+            use_live=True,
+            live_timeout_seconds=eval_config.live_model_config.timeout_seconds,
+            num_runs=num_runs,
+        )
     )
   else:
-    inference_config = InferenceConfig(use_live=False, num_runs=num_runs)
+    inference_config = (
+        InferenceConfig(
+            use_live=False,
+            num_runs=num_runs,
+            parallelism=resolved_parallelism,
+        )
+        if resolved_parallelism is not None
+        else InferenceConfig(use_live=False, num_runs=num_runs)
+    )
 
   # Check if the first entry is a file that exists, if it does then we assume
   # rest of the entries are also files. We enforce this assumption in the if
@@ -1606,6 +1644,7 @@ def cli_eval(
             inference_results=inference_results,
             eval_service=eval_service,
             eval_metrics=eval_metrics,
+            parallelism=resolved_parallelism,
         )
     )
     aggregate_eval_results = aggregate_eval_case_results(
