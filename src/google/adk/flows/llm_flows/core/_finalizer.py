@@ -25,6 +25,7 @@ from typing import Optional
 from opentelemetry import trace
 
 from .. import functions
+from ....agents._callback_metadata import CallbackType
 from ....agents.callback_context import CallbackContext
 from ....agents.invocation_context import InvocationContext
 from ....agents.readonly_context import ReadonlyContext
@@ -185,6 +186,7 @@ async def handle_before_model_callback(
         _stop_on_truthy,
         callback_context=callback_context,
         llm_request=llm_request,
+        callback_type=CallbackType.BEFORE_MODEL,
     )
     if callback_response:
       return callback_response
@@ -310,6 +312,7 @@ async def handle_after_model_callback(
         _stop_on_truthy,
         callback_context=callback_context,
         llm_response=llm_response,
+        callback_type=CallbackType.AFTER_MODEL,
     )
     if callback_response:
       return _inherit_unset_model_fields(
@@ -378,6 +381,7 @@ async def run_and_handle_error(
         callback_context=callback_context,
         llm_request=llm_request,
         error=error,
+        callback_type=CallbackType.ON_MODEL_ERROR,
     )
 
   async def _record_responses() -> AsyncGenerator[LlmResponse, None]:

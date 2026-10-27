@@ -9,7 +9,7 @@ is the enumeration of the flags that exist.
 
 ## Introduction
 
-You construct something, a `GCSToolset` for instance, and get a `UserWarning`
+You construct something, an `EventarcToolset` for instance, and get a `UserWarning`
 reading `[EXPERIMENTAL] feature <name> is enabled.` Or you disable something and
 the next construction raises `RuntimeError: Feature <name> is not enabled.`
 
@@ -107,7 +107,7 @@ There are two enforcement styles, and the symptom differs.
 
 **A gated unit.** Some classes and functions carry one of the `@experimental`,
 `@working_in_progress` or `@stable` decorators, which call `is_feature_enabled`
-before running. `GCSToolset`, `SpannerToolset` and `ComputerUseTool` are all
+before running. `EventarcToolset`, `MongoDbToolset` and `FallbackModel` are all
 gated this way. If the flag is off, constructing the
 class or calling the function raises a `RuntimeError` saying the feature is not
 enabled. The object is not half-built; the failure is immediate and total. Every

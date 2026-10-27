@@ -4167,3 +4167,149 @@ async def test_load_artifact_survives_malformed_metadata_on_binary_payload(
   )
 
   assert loaded is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (
+            ("team/project", "alice", "s1", "notes.txt"),
+            ("team", "project/alice", "s1", "notes.txt"),
+        ),
+        (
+            ("team", "project/alice", "s1", "notes.txt"),
+            ("team/project", "alice", "s1", "notes.txt"),
+        ),
+        (
+            ("team/project", "alice", "s1", "user:notes.txt"),
+            ("team", "project/alice", "s1", "user:notes.txt"),
+        ),
+        (
+            ("app", "alice", "s1/a", "notes.txt"),
+            ("app", "alice", "s1", "a/notes.txt"),
+        ),
+        (
+            ("team%2Fproject", "alice", "s1", "notes.txt"),
+            ("team/project", "alice", "s1", "notes.txt"),
+        ),
+    ],
+)
+async def test_in_memory_slash_in_identifiers_keeps_scopes_separate(
+    first, second
+):
+  """Distinct scopes whose identifiers contain '/' or '%' stay isolated.
+
+  The shared validator allows '/' inside identifiers, so joining raw
+  identifiers into one storage key would let either scope read, version and
+  delete the other's artifacts.
+  """
+  artifact_service = InMemoryArtifactService()
+  saved = types.Part.from_text(text="first scope value")
+  assert (
+      await artifact_service.save_artifact(
+          app_name=first[0],
+          user_id=first[1],
+          session_id=first[2],
+          filename=first[3],
+          artifact=saved,
+      )
+      == 0
+  )
+
+  # The second scope has its own empty history.
+  assert (
+      await artifact_service.load_artifact(
+          app_name=second[0],
+          user_id=second[1],
+          session_id=second[2],
+          filename=second[3],
+      )
+      is None
+  )
+  assert (
+      await artifact_service.list_versions(
+          app_name=second[0],
+          user_id=second[1],
+          session_id=second[2],
+          filename=second[3],
+      )
+      == []
+  )
+  assert (
+      await artifact_service.list_artifact_keys(
+          app_name=second[0], user_id=second[1], session_id=second[2]
+      )
+      == []
+  )
+
+  # Saving through the second scope allocates its own version 0.
+  assert (
+      await artifact_service.save_artifact(
+          app_name=second[0],
+          user_id=second[1],
+          session_id=second[2],
+          filename=second[3],
+          artifact=types.Part.from_text(text="second scope value"),
+      )
+      == 0
+  )
+  loaded_first = await artifact_service.load_artifact(
+      app_name=first[0],
+      user_id=first[1],
+      session_id=first[2],
+      filename=first[3],
+  )
+  assert loaded_first is not None
+  assert loaded_first.text == "first scope value"
+  assert await artifact_service.list_versions(
+      app_name=first[0],
+      user_id=first[1],
+      session_id=first[2],
+      filename=first[3],
+  ) == [0]
+
+  # Deleting through the second scope leaves the first scope intact.
+  await artifact_service.delete_artifact(
+      app_name=second[0],
+      user_id=second[1],
+      session_id=second[2],
+      filename=second[3],
+  )
+  reloaded_first = await artifact_service.load_artifact(
+      app_name=first[0],
+      user_id=first[1],
+      session_id=first[2],
+      filename=first[3],
+  )
+  assert reloaded_first is not None
+  assert reloaded_first.text == "first scope value"
+
+
+@pytest.mark.asyncio
+async def test_in_memory_plain_identifier_keys_are_unchanged():
+  """Keys for identifiers without '/' or '%' keep the raw joined layout.
+
+  Callers parse InMemoryArtifactService.artifacts keys directly, so escaping
+  must not alter keys for plain identifiers.
+  """
+  artifact_service = InMemoryArtifactService()
+  await artifact_service.save_artifact(
+      app_name="app",
+      user_id="u1",
+      session_id="s1",
+      filename="notes.txt",
+      artifact=types.Part.from_text(text="session value"),
+  )
+  await artifact_service.save_artifact(
+      app_name="app",
+      user_id="u1",
+      session_id="s1",
+      filename="user:prefs.json",
+      artifact=types.Part.from_text(text="user value"),
+  )
+
+  assert set(artifact_service.artifacts) == {
+      "app/u1/s1/notes.txt",
+      "app/u1/user/user:prefs.json",
+  }

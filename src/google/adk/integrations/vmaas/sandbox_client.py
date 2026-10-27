@@ -27,8 +27,6 @@ from typing import cast
 from typing import Literal
 from typing import TYPE_CHECKING
 
-from ...features import experimental
-from ...features import FeatureName
 from ...utils import _json_utils
 
 if TYPE_CHECKING:
@@ -101,7 +99,6 @@ _MODIFIER_MAP = {
 }
 
 
-@experimental(FeatureName.COMPUTER_USE)
 class SandboxClient:
   """Client for interacting with Vertex AI Computer Use Sandbox via SDK."""
 

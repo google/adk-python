@@ -33,8 +33,6 @@ from ...dependencies._mcp import Context
 from ...dependencies._mcp import FastMCP
 from ...dependencies._mcp import ServerSession
 from ...dependencies._mcp import types as mcp_types
-from ...features import experimental
-from ...features import FeatureName
 from ...memory.in_memory_memory_service import InMemoryMemoryService
 from ...runners import Runner
 from ...sessions.in_memory_session_service import InMemorySessionService
@@ -272,7 +270,6 @@ async def _run_agent(
   return final_content
 
 
-@experimental(FeatureName.MCP_AGENT_SERVER)
 def to_mcp_server(
     agent: BaseAgent,
     *,

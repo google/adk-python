@@ -28,11 +28,7 @@ from pydantic import model_validator
 from pydantic import ValidationError  # noqa: F401
 from typing_extensions import Self
 
-from ...features import experimental
-from ...features import FeatureName
 
-
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class InjectedError(BaseModel):
   """An error to be injected into a tool call."""
 
@@ -45,7 +41,6 @@ class InjectedError(BaseModel):
   "error_message" in the tool response dict."""
 
 
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class InjectionConfig(BaseModel):
   """Injection configuration for a tool."""
 
@@ -84,7 +79,6 @@ class InjectionConfig(BaseModel):
     return self
 
 
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class MockStrategy(enum.Enum):
   """Mock strategy for a tool."""
 
@@ -97,7 +91,6 @@ class MockStrategy(enum.Enum):
   """Deprecated, please use MOCK_STRATEGY_TOOL_SPEC with tracing input."""
 
 
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class ToolSimulationConfig(BaseModel):
   """Simulation configuration for a single tool."""
 
@@ -126,7 +119,6 @@ class ToolSimulationConfig(BaseModel):
     return self
 
 
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class EnvironmentSimulationConfig(BaseModel):
   """Configuration for EnvironmentSimulation."""
 
