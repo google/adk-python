@@ -535,6 +535,46 @@ def test_token_usage_averages_an_unreported_count_as_zero_for_that_turn():
   assert details.reasoning_tokens == 20.0  # 40 / 2
 
 
+def test_token_usage_average_leaves_out_a_turn_that_reported_no_usage():
+  """A turn with no usage at all is n/a, so it is not averaged in as zero.
+
+  Its token count is unknown rather than zero, so counting it in the
+  denominator would report a per-turn average lower than what was measured.
+  """
+  evaluator = _TokenUsageV1Evaluator(
+      eval_metric=EvalMetric(metric_name=PrebuiltMetrics.TOKEN_USAGE_V1.value)
+  )
+  reported = _invocation_with(_usage(prompt=900, candidates=100, thoughts=40))
+  # The model was called, but its backend reported no usage metadata.
+  unreported = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(author="agent", model_version="test-model")
+          ]
+      ),
+  )
+  # Cached tokens are set independently of input and output, so this turn's
+  # total is still n/a.
+  cached_only = _invocation_with(
+      genai_types.GenerateContentResponseUsageMetadata(
+          cached_content_token_count=50
+      )
+  )
+
+  result = evaluator.evaluate_invocations([reported, unreported, cached_only])
+
+  per_invocation_scores = [r.score for r in result.per_invocation_results]
+  assert per_invocation_scores == [1040.0, None, None]
+  details = result.overall_token_usage_details
+  assert result.overall_score == 1040.0
+  assert details.total_tokens == 1040.0
+  assert details.input_tokens == 900.0
+  assert details.output_tokens == 140.0
+  assert details.reasoning_tokens == 40.0
+  assert details.cached_tokens == 0.0
+
+
 def test_token_usage_counts_tool_use_tokens():
   """Server-side tool result tokens are summed and reported like any other."""
   evaluator = _TokenUsageV1Evaluator(

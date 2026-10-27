@@ -50,6 +50,7 @@ from ..utils._callback_pipeline import _run_callbacks
 from ..utils._callback_pipeline import _stop_on_truthy
 from ..utils.context_utils import Aclosing
 from ..workflow import BaseNode
+from ._callback_metadata import CallbackType
 from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .context import Context
@@ -582,6 +583,7 @@ class BaseAgent(BaseNode, abc.ABC):
       self,
       ctx: InvocationContext,
       *,
+      callback_type: CallbackType,
       plugin_hook: Callable[..., Awaitable[Optional[types.Content]]],
       callbacks: list[_SingleAgentCallback],
       end_invocation_on_content: bool,
@@ -590,6 +592,8 @@ class BaseAgent(BaseNode, abc.ABC):
 
     Args:
       ctx: InvocationContext, the invocation context for this agent.
+      callback_type: The lifecycle callback type associated with these
+        callbacks.
       plugin_hook: The plugin manager hook consulted before the canonical
         callbacks. A non-empty result from it suppresses them.
       callbacks: The canonical callbacks to run when the plugins provide no
@@ -620,6 +624,7 @@ class BaseAgent(BaseNode, abc.ABC):
           adaptable_callbacks,
           _stop_on_truthy,
           callback_context=callback_context,
+          callback_type=callback_type,
       )
 
     # Process the override content if exists, and further process the state
@@ -663,6 +668,7 @@ class BaseAgent(BaseNode, abc.ABC):
     """
     return await self._handle_agent_callbacks(
         ctx,
+        callback_type=CallbackType.BEFORE_AGENT,
         plugin_hook=ctx.plugin_manager.run_before_agent_callback,
         callbacks=self.canonical_before_agent_callbacks,
         end_invocation_on_content=True,
@@ -683,6 +689,7 @@ class BaseAgent(BaseNode, abc.ABC):
     """
     return await self._handle_agent_callbacks(
         invocation_context,
+        callback_type=CallbackType.AFTER_AGENT,
         plugin_hook=invocation_context.plugin_manager.run_after_agent_callback,
         callbacks=self.canonical_after_agent_callbacks,
         end_invocation_on_content=False,
