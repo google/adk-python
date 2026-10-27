@@ -196,8 +196,10 @@ code on your host, in order of how much you have to operate to get there.
 
 ### Run in a container
 
-`ContainerCodeExecutor` starts a Docker container as a non-root user, with the
-network off and Linux capabilities dropped. If you are moving off
+`ContainerCodeExecutor` starts a Docker container with the network off, Linux
+capabilities dropped and privilege escalation blocked. The code runs as the
+image's configured user, which is root for images such as `python:3.11-slim`;
+use an image that sets a non-root `USER` if you need one. If you are moving off
 `UnsafeLocalCodeExecutor`, this is the shortest step that puts a real boundary
 between the model's code and your host:
 
