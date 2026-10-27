@@ -50,6 +50,8 @@ from google.adk.workflow._function_node import FunctionNode
 from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
+from pydantic import ConfigDict
+from pydantic.alias_generators import to_camel
 import pytest
 from pytest import mark
 
@@ -815,6 +817,45 @@ def test_custom_schema(env_variables):
   # The second request is the tool agent request.
   assert mock_model.requests[1].config.response_schema == CustomOutput
   assert mock_model.requests[1].config.response_mime_type == 'application/json'
+
+
+def test_input_schema_with_aliases():
+  """Tests that an aliased input_schema reaches the agent by its aliases."""
+
+  class CustomInput(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel)
+    city_name: str
+
+  tool_agent_model = testing_utils.MockModel.create(responses=['sunny'])
+  tool_agent = Agent(
+      name='tool_agent',
+      model=tool_agent_model,
+      input_schema=CustomInput,
+  )
+  function_call = Part.from_function_call(
+      name='tool_agent', args={'cityName': 'Paris'}
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=[function_call, 'done']),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+
+  assert testing_utils.simplify_events(runner.run('test1')) == [
+      ('root_agent', function_call),
+      (
+          'root_agent',
+          Part.from_function_response(
+              name='tool_agent', response={'result': 'sunny'}
+          ),
+      ),
+      ('root_agent', 'done'),
+  ]
+  assert testing_utils.simplify_contents(
+      tool_agent_model.requests[0].contents
+  ) == [('user', '{"cityName":"Paris"}')]
 
 
 @mark.parametrize(
