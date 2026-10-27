@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import functools
 from typing import Any
 from typing import cast
 from typing import Literal
@@ -31,6 +32,32 @@ from .._function_node import FunctionNode
 from .._graph import NodeLike
 from .._retry_config import RetryConfig
 from .._tool_node import _ToolNode
+
+
+@functools.lru_cache(maxsize=None)
+def _remote_a2a_agent_type() -> type[Any] | None:
+  """Returns `RemoteA2aAgent`, or None when the a2a extra is not installed.
+
+  The import is resolved once per process on purpose. When the extra is absent
+  the import fails, and Python does not cache a failed import, so resolving it
+  inside `build_node` re-parsed the whole module for every node of every turn:
+  a workflow graph is rebuilt per turn, which made an eight-node workflow spend
+  about 0.6s per turn recompiling a module that could not be imported.
+
+  Installing the extra while a process is already running therefore needs
+  `_remote_a2a_agent_type.cache_clear()` to be seen.
+
+  Returns:
+    The `RemoteA2aAgent` class when it can be imported, otherwise None.
+  """
+  try:
+    # Imported here to avoid a circular import: workflow_graph_utils ->
+    # agents.remote_a2a_agent -> ... -> workflow_graph_utils.
+    from ...agents.remote_a2a_agent import RemoteA2aAgent  # pylint: disable=g-import-not-at-top
+
+  except ImportError:
+    return None
+  return RemoteA2aAgent
 
 
 def is_node_like(item: Any) -> bool:
@@ -91,13 +118,7 @@ def build_node(
   from ...agents.llm_agent import LlmAgent
 
   # Optional dependency: RemoteA2aAgent is only available if a2a is installed.
-  _remote_a2a_agent_type: Any = None
-  try:
-    from ...agents.remote_a2a_agent import RemoteA2aAgent  # pylint: disable=g-import-not-at-top
-
-    _remote_a2a_agent_type = RemoteA2aAgent
-  except ImportError:
-    pass
+  remote_a2a_agent_class: Any = _remote_a2a_agent_type()
 
   if isinstance(node_like, BaseNode):
     kwargs: dict[str, Any] = {}
@@ -132,9 +153,9 @@ def build_node(
       )
 
     is_remote_a2a_task = False
-    if _remote_a2a_agent_type is not None:
+    if remote_a2a_agent_class is not None:
       is_remote_a2a_task = (
-          isinstance(node_like, _remote_a2a_agent_type)
+          isinstance(node_like, remote_a2a_agent_class)
           and node_like.mode == AgentMode.TASK
       )
     if is_remote_a2a_task and getattr(node_like, 'parent_agent', None) is None:
