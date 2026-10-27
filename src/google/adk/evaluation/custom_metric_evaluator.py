@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable
 import importlib
 import inspect
@@ -26,6 +27,7 @@ from typing_extensions import override
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
+from .evaluator import _is_coroutine_callable
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 
@@ -84,12 +86,22 @@ class _CustomMetricEvaluator(Evaluator):
   ) -> EvaluationResult:
     eval_metric = self._eval_metric.model_copy(deep=True)
     eval_metric.threshold = None
-    eval_result = self._metric_function(
-        eval_metric,
-        actual_invocations,
-        expected_invocations,
-        conversation_scenario,
-    )
+    eval_result: EvaluationResult | Awaitable[EvaluationResult]
+    if _is_coroutine_callable(self._metric_function):
+      eval_result = await self._metric_function(
+          eval_metric,
+          actual_invocations,
+          expected_invocations,
+          conversation_scenario,
+      )
+    else:
+      eval_result = await asyncio.to_thread(
+          self._metric_function,
+          eval_metric,
+          actual_invocations,
+          expected_invocations,
+          conversation_scenario,
+      )
     if inspect.isawaitable(eval_result):
       return await eval_result
     return eval_result

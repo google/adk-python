@@ -14,10 +14,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import re
 import sys
 import textwrap
+import threading
 from typing import Optional
 
 from google.adk import runners
@@ -56,12 +59,15 @@ from google.adk.evaluation.local_eval_service import _copy_invocation_rubrics_to
 from google.adk.evaluation.local_eval_service import _get_session_id
 from google.adk.evaluation.local_eval_service import LocalEvalService
 from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
+from google.adk.evaluation.metric_evaluator_registry import MetricEvaluatorRegistry
 from google.adk.evaluation.simulation.user_simulator import NextUserMessage
 from google.adk.evaluation.simulation.user_simulator import Status as UserSimulatorStatus
 from google.adk.models.registry import LLMRegistry
 from google.adk.tools.mcp_tool import mcp_toolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.utils._client_labels_utils import EVAL_CLIENT_LABEL
+from google.adk.utils._client_labels_utils import get_client_labels
 from google.genai import types as genai_types
 from mcp import StdioServerParameters
 import pytest
@@ -725,6 +731,392 @@ async def test_evaluate_success(
   assert isinstance(results[1], EvalCaseResult)
   assert mock_eval_sets_manager.get_eval_case.call_count == 2
   assert mock_eval_set_results_manager.save_eval_set_result.call_count == 1
+
+
+async def test_evaluate_blocking_sync_evaluators_run_concurrently_without_blocking_event_loop(
+    dummy_agent, mock_eval_sets_manager
+):
+  """Blocking sync evaluators run in parallel worker threads without stalling asyncio.
+
+  Setup: Two inference results evaluated with parallelism=2 using a synchronous
+    Evaluator that synchronizes across a 2-party threading.Barrier and waits
+    for an asyncio heartbeat task to release it.
+  Act: Consume LocalEvalService.evaluate concurrently with an event-loop
+    heartbeat task.
+  Assert: Both evaluations run on distinct worker threads, the heartbeat ticks
+    while both workers are blocked, and both EvalCaseResults pass.
+  """
+  main_thread_id = threading.get_ident()
+  worker_thread_ids: list[int] = []
+  both_workers_entered = threading.Event()
+  release_workers = threading.Event()
+  barrier = threading.Barrier(2, action=both_workers_entered.set, timeout=2.0)
+
+  class _BlockingSyncEvaluator(Evaluator):
+
+    def __init__(self, eval_metric: EvalMetric):
+      self._eval_metric = eval_metric
+
+    @override
+    def evaluate_invocations(
+        self,
+        actual_invocations: list[Invocation],
+        expected_invocations: Optional[list[Invocation]] = None,
+        conversation_scenario: Optional[ConversationScenario] = None,
+    ) -> EvaluationResult:
+      worker_thread_ids.append(threading.get_ident())
+      barrier.wait()
+      if not release_workers.wait(timeout=2.0):
+        raise TimeoutError(
+            "Event loop heartbeat did not run while workers blocked."
+        )
+      return EvaluationResult(
+          overall_score=1.0,
+          overall_eval_status=EvalStatus.PASSED,
+          per_invocation_results=[
+              PerInvocationResult(
+                  actual_invocation=actual,
+                  expected_invocation=expected,
+                  score=1.0,
+                  eval_status=EvalStatus.PASSED,
+              )
+              for actual, expected in zip(
+                  actual_invocations, expected_invocations or []
+              )
+          ],
+      )
+
+  registry = MetricEvaluatorRegistry()
+  registry.register_evaluator(
+      metric_info=MetricInfo(
+          metric_name="blocking_sync_metric",
+          description="Blocking synchronous test metric.",
+          metric_value_info=MetricValueInfo(
+              interval=Interval(min_value=0.0, max_value=1.0)
+          ),
+      ),
+      evaluator=_BlockingSyncEvaluator,
+  )
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      metric_evaluator_registry=registry,
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="hello")]),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="world")]
+      ),
+  )
+  mock_eval_sets_manager.get_eval_case.side_effect = lambda **kwargs: EvalCase(
+      eval_id=kwargs["eval_case_id"],
+      conversation=[invocation.model_copy(deep=True)],
+  )
+  evaluate_request = EvaluateRequest(
+      inference_results=[
+          InferenceResult(
+              app_name="test_app",
+              eval_set_id="test_eval_set",
+              eval_case_id=f"case_{idx}",
+              inferences=[invocation.model_copy(deep=True)],
+              session_id=f"session_{idx}",
+          )
+          for idx in range(2)
+      ],
+      evaluate_config=EvaluateConfig(
+          eval_metrics=[
+              EvalMetric(metric_name="blocking_sync_metric", threshold=0.5)
+          ],
+          parallelism=2,
+      ),
+  )
+  heartbeat_ticks_while_blocked = 0
+
+  async def _heartbeat() -> None:
+    nonlocal heartbeat_ticks_while_blocked
+    while not both_workers_entered.is_set():
+      await asyncio.sleep(0.001)
+    for _ in range(3):
+      await asyncio.sleep(0)
+      heartbeat_ticks_while_blocked += 1
+    release_workers.set()
+
+  heartbeat_task = asyncio.create_task(_heartbeat())
+  try:
+    results = [result async for result in service.evaluate(evaluate_request)]
+  finally:
+    both_workers_entered.set()
+    release_workers.set()
+    heartbeat_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+      await heartbeat_task
+
+  assert len(results) == 2
+  assert all(
+      result.final_eval_status == EvalStatus.PASSED for result in results
+  )
+  assert heartbeat_ticks_while_blocked == 3
+  assert main_thread_id not in worker_thread_ids
+  assert len(set(worker_thread_ids)) == 2
+
+
+async def test_evaluate_sync_evaluator_preserves_eval_client_label_in_worker_thread(
+    dummy_agent, mock_eval_sets_manager
+):
+  """Synchronous evaluators offloaded via to_thread retain EVAL_CLIENT_LABEL."""
+  main_thread_id = threading.get_ident()
+  observed_threads: list[int] = []
+  observed_labels: list[list[str]] = []
+
+  class _LabelCapturingSyncEvaluator(Evaluator):
+
+    def __init__(self, eval_metric: EvalMetric):
+      self._eval_metric = eval_metric
+
+    @override
+    def evaluate_invocations(
+        self,
+        actual_invocations: list[Invocation],
+        expected_invocations: Optional[list[Invocation]] = None,
+        conversation_scenario: Optional[ConversationScenario] = None,
+    ) -> EvaluationResult:
+      observed_threads.append(threading.get_ident())
+      observed_labels.append(get_client_labels())
+      return EvaluationResult(
+          overall_score=1.0,
+          overall_eval_status=EvalStatus.PASSED,
+          per_invocation_results=[
+              PerInvocationResult(
+                  actual_invocation=actual,
+                  score=1.0,
+                  eval_status=EvalStatus.PASSED,
+              )
+              for actual in actual_invocations
+          ],
+      )
+
+  registry = MetricEvaluatorRegistry()
+  registry.register_evaluator(
+      metric_info=MetricInfo(
+          metric_name="label_sync_metric",
+          description="Captures client labels on worker thread.",
+          metric_value_info=MetricValueInfo(
+              interval=Interval(min_value=0.0, max_value=1.0)
+          ),
+      ),
+      evaluator=_LabelCapturingSyncEvaluator,
+  )
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      metric_evaluator_registry=registry,
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="hello")]),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="world")]
+      ),
+  )
+  mock_eval_sets_manager.get_eval_case.return_value = EvalCase(
+      eval_id="case1",
+      conversation=[invocation.model_copy(deep=True)],
+  )
+  evaluate_request = EvaluateRequest(
+      inference_results=[
+          InferenceResult(
+              app_name="test_app",
+              eval_set_id="test_eval_set",
+              eval_case_id="case1",
+              inferences=[invocation.model_copy(deep=True)],
+              session_id="session1",
+          )
+      ],
+      evaluate_config=EvaluateConfig(
+          eval_metrics=[
+              EvalMetric(metric_name="label_sync_metric", threshold=0.5)
+          ],
+          parallelism=1,
+      ),
+  )
+
+  results = [result async for result in service.evaluate(evaluate_request)]
+
+  assert len(results) == 1
+  assert results[0].final_eval_status == EvalStatus.PASSED
+  assert len(observed_threads) == 1
+  assert observed_threads[0] != main_thread_id
+  assert len(observed_labels) == 1
+  assert EVAL_CLIENT_LABEL in observed_labels[0]
+
+
+async def test_evaluate_async_evaluator_runs_on_event_loop_thread(
+    dummy_agent, mock_eval_sets_manager
+):
+  """Asynchronous evaluators are awaited directly on the event loop thread."""
+  main_thread_id = threading.get_ident()
+  observed_threads: list[int] = []
+  observed_labels: list[list[str]] = []
+
+  class _AsyncEvaluator(Evaluator):
+
+    def __init__(self, eval_metric: EvalMetric):
+      self._eval_metric = eval_metric
+
+    @override
+    async def evaluate_invocations(
+        self,
+        actual_invocations: list[Invocation],
+        expected_invocations: Optional[list[Invocation]] = None,
+        conversation_scenario: Optional[ConversationScenario] = None,
+    ) -> EvaluationResult:
+      await asyncio.sleep(0)
+      observed_threads.append(threading.get_ident())
+      observed_labels.append(get_client_labels())
+      return EvaluationResult(
+          overall_score=1.0,
+          overall_eval_status=EvalStatus.PASSED,
+          per_invocation_results=[
+              PerInvocationResult(
+                  actual_invocation=actual,
+                  score=1.0,
+                  eval_status=EvalStatus.PASSED,
+              )
+              for actual in actual_invocations
+          ],
+      )
+
+  registry = MetricEvaluatorRegistry()
+  registry.register_evaluator(
+      metric_info=MetricInfo(
+          metric_name="async_test_metric",
+          description="Asynchronous test metric.",
+          metric_value_info=MetricValueInfo(
+              interval=Interval(min_value=0.0, max_value=1.0)
+          ),
+      ),
+      evaluator=_AsyncEvaluator,
+  )
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      metric_evaluator_registry=registry,
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="hello")]),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="world")]
+      ),
+  )
+  mock_eval_sets_manager.get_eval_case.return_value = EvalCase(
+      eval_id="case1",
+      conversation=[invocation.model_copy(deep=True)],
+  )
+  evaluate_request = EvaluateRequest(
+      inference_results=[
+          InferenceResult(
+              app_name="test_app",
+              eval_set_id="test_eval_set",
+              eval_case_id="case1",
+              inferences=[invocation.model_copy(deep=True)],
+              session_id="session1",
+          )
+      ],
+      evaluate_config=EvaluateConfig(
+          eval_metrics=[
+              EvalMetric(metric_name="async_test_metric", threshold=0.5)
+          ],
+          parallelism=1,
+      ),
+  )
+
+  results = [result async for result in service.evaluate(evaluate_request)]
+
+  assert len(results) == 1
+  assert results[0].final_eval_status == EvalStatus.PASSED
+  assert observed_threads == [main_thread_id]
+  assert len(observed_labels) == 1
+  assert EVAL_CLIENT_LABEL in observed_labels[0]
+
+
+async def test_evaluate_sync_evaluator_exception_marks_metric_not_evaluated(
+    dummy_agent, mock_eval_sets_manager
+):
+  """Exceptions raised in worker-thread sync evaluators degrade to NOT_EVALUATED."""
+  main_thread_id = threading.get_ident()
+  observed_threads: list[int] = []
+
+  class _RaisingSyncEvaluator(Evaluator):
+
+    def __init__(self, eval_metric: EvalMetric):
+      self._eval_metric = eval_metric
+
+    @override
+    def evaluate_invocations(
+        self,
+        actual_invocations: list[Invocation],
+        expected_invocations: Optional[list[Invocation]] = None,
+        conversation_scenario: Optional[ConversationScenario] = None,
+    ) -> EvaluationResult:
+      del actual_invocations, expected_invocations, conversation_scenario
+      observed_threads.append(threading.get_ident())
+      raise RuntimeError("worker thread evaluation failure")
+
+  registry = MetricEvaluatorRegistry()
+  registry.register_evaluator(
+      metric_info=MetricInfo(
+          metric_name="raising_sync_metric",
+          description="Raises inside worker thread.",
+          metric_value_info=MetricValueInfo(
+              interval=Interval(min_value=0.0, max_value=1.0)
+          ),
+      ),
+      evaluator=_RaisingSyncEvaluator,
+  )
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      metric_evaluator_registry=registry,
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="hello")]),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="world")]
+      ),
+  )
+  mock_eval_sets_manager.get_eval_case.return_value = EvalCase(
+      eval_id="case1",
+      conversation=[invocation.model_copy(deep=True)],
+  )
+  evaluate_request = EvaluateRequest(
+      inference_results=[
+          InferenceResult(
+              app_name="test_app",
+              eval_set_id="test_eval_set",
+              eval_case_id="case1",
+              inferences=[invocation.model_copy(deep=True)],
+              session_id="session1",
+          )
+      ],
+      evaluate_config=EvaluateConfig(
+          eval_metrics=[
+              EvalMetric(metric_name="raising_sync_metric", threshold=0.5)
+          ],
+          parallelism=1,
+      ),
+  )
+
+  results = [result async for result in service.evaluate(evaluate_request)]
+
+  assert len(results) == 1
+  assert results[0].final_eval_status == EvalStatus.NOT_EVALUATED
+  assert len(results[0].overall_eval_metric_results) == 1
+  assert (
+      results[0].overall_eval_metric_results[0].eval_status
+      == EvalStatus.NOT_EVALUATED
+  )
+  assert results[0].overall_eval_metric_results[0].score is None
+  assert len(observed_threads) == 1
+  assert observed_threads[0] != main_thread_id
 
 
 @pytest.mark.asyncio
