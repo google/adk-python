@@ -2121,6 +2121,91 @@ async def test_streaming_text_yields_partial_and_final():
   assert responses[2].finish_reason == "STOP"
 
 
+@pytest.mark.parametrize(
+    (
+        "delta_cache_read",
+        "delta_cache_creation",
+        "expected_prompt",
+        "expected_cached",
+        "expected_creation",
+    ),
+    [
+        pytest.param(30, 10, 160, 30, 10, id="delta_has_cache_counts"),
+        pytest.param(None, None, 150, 25, 5, id="delta_omits_cache_counts"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_streaming_takes_input_and_cache_counts_from_message_delta(
+    delta_cache_read,
+    delta_cache_creation,
+    expected_prompt,
+    expected_cached,
+    expected_creation,
+):
+  """Streamed usage takes each count from message_delta, else message_start."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=anthropic_types.Usage(
+                  input_tokens=3,
+                  output_tokens=1,
+                  cache_read_input_tokens=25,
+                  cache_creation_input_tokens=5,
+              ),
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.TextDelta(text="Hi", type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=anthropic_types.MessageDeltaUsage(
+              output_tokens=7,
+              input_tokens=120,
+              cache_read_input_tokens=delta_cache_read,
+              cache_creation_input_tokens=delta_cache_creation,
+          ),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="You are helpful"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  usage = responses[-1].usage_metadata
+  assert usage.prompt_token_count == expected_prompt
+  assert usage.cached_content_token_count == expected_cached
+  assert usage.candidates_token_count == 7
+  assert usage.total_token_count == expected_prompt + 7
+  assert usage.cache_creation_input_tokens == expected_creation
+
+
 @pytest.mark.asyncio
 async def test_streaming_tool_use_yields_function_call():
   """Streaming tool_use should accumulate args and yield in final."""

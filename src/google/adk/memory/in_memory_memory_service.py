@@ -32,7 +32,6 @@ if TYPE_CHECKING:
   from ..events.event import Event
   from ..sessions.session import Session
 
-_UNKNOWN_SESSION_ID = '__unknown_session_id__'
 _MAX_SEARCH_RESULTS = 10
 
 
@@ -86,9 +85,12 @@ class InMemoryMemoryService(BaseMemoryService):
   def __init__(self) -> None:
     self._lock = threading.Lock()
 
-    self._session_events: dict[tuple[str, str], dict[str, list[Event]]] = {}
+    self._session_events: dict[
+        tuple[str, str], dict[str | None, list[Event]]
+    ] = {}
     """Keys are (app_name, user_id). Values are dicts of session_id to
-    session event lists.
+    session event lists. Events added without a session ID are kept under the
+    None key, which no caller-provided session ID can alias.
     """
     self._deleted_memory_ids: dict[tuple[str, str], set[str]] = {}
     """Keys are (app_name, user_id). Values are sets of deleted memory_ids
@@ -122,7 +124,7 @@ class InMemoryMemoryService(BaseMemoryService):
   ) -> None:
     _ = custom_metadata
     user_key = _user_key(app_name, user_id)
-    scoped_session_id = session_id or _UNKNOWN_SESSION_ID
+    scoped_session_id = session_id or None
     events_to_add = [
         event for event in events if event.content and event.content.parts
     ]
