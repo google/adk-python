@@ -438,6 +438,106 @@ async def test_reading_directory_raises(tmp_path):
     await environment.read_file(tmp_path)
 
 
+async def test_empty_file_is_read(tmp_path):
+  """Reading an empty file returns no bytes."""
+  environment = await _make_environment()
+  path = tmp_path / "empty.txt"
+  path.write_bytes(b"")
+
+  assert await environment.read_file(path) == b""
+
+
+async def test_file_of_one_slice_is_read_in_one_command(tmp_path):
+  """A file of exactly one slice, 1 MiB, is read with a single command."""
+  client = _make_client()
+  environment = await _make_environment(client)
+  path = tmp_path / "one.bin"
+  content = bytes(range(256)) * 4096
+  path.write_bytes(content)
+
+  read_back = await environment.read_file(path)
+
+  assert read_back == content
+  assert len(client.sandboxes.commands) == 1
+
+
+async def test_large_binary_file_is_read_in_slices(tmp_path):
+  """A 3.5 MiB binary file is read back unchanged, one 1 MiB slice at a time.
+
+  One command finds the file too large for a single read, then four commands
+  read its slices.
+  """
+  client = _make_client()
+  environment = await _make_environment(client)
+  path = tmp_path / "big.bin"
+  content = bytes(range(256)) * (14 * 1024)
+  path.write_bytes(content)
+
+  read_back = await environment.read_file(path)
+
+  assert read_back == content
+  assert len(client.sandboxes.commands) == 5
+
+
+async def test_large_file_removed_during_read_raises(tmp_path, monkeypatch):
+  """A large file that disappears between slices raises OSError."""
+  monkeypatch.setattr(_agent_engine_environment, "_READ_CHUNK_BYTES", 4)
+  client = _make_client()
+  environment = await _make_environment(client)
+  path = tmp_path / "data.bin"
+  path.write_bytes(b"x" * 10)
+  execute_bash = client.sandboxes.execute_bash
+
+  def remove_after_first_slice(**kwargs):
+    result = execute_bash(**kwargs)
+    if len(client.sandboxes.commands) == 2:
+      path.unlink()
+    return result
+
+  client.sandboxes.execute_bash = remove_after_first_slice
+
+  with pytest.raises(OSError, match="Failed to read"):
+    await environment.read_file(path)
+
+
+async def test_symlink_to_large_file_is_read_in_slices(tmp_path, monkeypatch):
+  """A symlink to a file larger than one slice is read in slices."""
+  monkeypatch.setattr(_agent_engine_environment, "_READ_CHUNK_BYTES", 4)
+  client = _make_client()
+  environment = await _make_environment(client)
+  target = tmp_path / "target.bin"
+  content = b"0123456789"
+  target.write_bytes(content)
+  link = tmp_path / "link.bin"
+  link.symlink_to(target)
+
+  read_back = await environment.read_file(link)
+
+  assert read_back == content
+  assert len(client.sandboxes.commands) == 4
+
+
+async def test_large_file_truncated_during_read_raises(tmp_path, monkeypatch):
+  """A large file that shrinks between slices raises OSError."""
+  monkeypatch.setattr(_agent_engine_environment, "_READ_CHUNK_BYTES", 4)
+  client = _make_client()
+  environment = await _make_environment(client)
+  path = tmp_path / "data.bin"
+  path.write_bytes(b"0123456789")
+  execute_bash = client.sandboxes.execute_bash
+
+  def truncate_after_first_slice(**kwargs):
+    result = execute_bash(**kwargs)
+    if len(client.sandboxes.commands) == 2:
+      path.write_bytes(b"01234")
+    return result
+
+  client.sandboxes.execute_bash = truncate_after_first_slice
+
+  with pytest.raises(OSError, match="expected 10 bytes, got 5"):
+    await environment.read_file(path)
+
+
 async def test_relative_path_resolves_under_workspace():
   """A relative path is resolved against the sandbox workspace."""
   client = _make_client()

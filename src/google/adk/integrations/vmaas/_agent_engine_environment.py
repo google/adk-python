@@ -49,6 +49,14 @@ _WORKSPACE = "/workspace"
 # Exit code the read command uses to report a missing file.
 _FILE_NOT_FOUND_EXIT_CODE = 66
 
+# Exit code the read command uses to report a file too large to read in one
+# command, with the file size on stdout.
+_FILE_TOO_LARGE_EXIT_CODE = 67
+
+# Files up to this size are read in one command; larger files are read in
+# slices of this size, to keep each response small.
+_READ_CHUNK_BYTES = 1024 * 1024
+
 # A command reaches the sandbox as one `bash -c` argument, which Linux caps at
 # 128 KiB, so a write sends at most this many base64 characters per command and
 # sends larger files in several commands.
@@ -220,23 +228,47 @@ class AgentEngineEnvironment(BaseEnvironment):
 
   @override
   async def read_file(self, path: str | os.PathLike[str]) -> bytes:
-    resolved = shlex.quote(self._resolve_path(path))
+    resolved = self._resolve_path(path)
+    quoted = shlex.quote(resolved)
     # pipefail keeps a base64 failure, such as reading a directory, from being
     # masked by tr's exit code.
     result = await self._execute_bash(
         "set -o pipefail;"
-        f" [ -e {resolved} ] || exit {_FILE_NOT_FOUND_EXIT_CODE};"
-        f" base64 < {resolved} | tr -d '\\n'"
+        f" [ -e {quoted} ] || exit {_FILE_NOT_FOUND_EXIT_CODE};"
+        f" size=$(stat -L -c %s -- {quoted}) || exit 1;"
+        f' if [ "$size" -gt {_READ_CHUNK_BYTES} ]; then'
+        f' echo "$size"; exit {_FILE_TOO_LARGE_EXIT_CODE}; fi;'
+        f" base64 < {quoted} | tr -d '\\n'"
     )
     returncode = result.get("returncode")
     if returncode == _FILE_NOT_FOUND_EXIT_CODE:
-      raise FileNotFoundError(self._resolve_path(path))
+      raise FileNotFoundError(resolved)
+    if returncode == _FILE_TOO_LARGE_EXIT_CODE:
+      size = int(result.get("stdout", ""))
+      return await self._read_file_in_slices(resolved, size)
     if returncode != 0:
-      raise OSError(
-          f"Failed to read {self._resolve_path(path)}:"
-          f" {result.get('stderr', '')}"
-      )
+      raise OSError(f"Failed to read {resolved}: {result.get('stderr', '')}")
     return base64.b64decode(result.get("stdout", ""))
+
+  async def _read_file_in_slices(self, path: str, size: int) -> bytes:
+    """Reads a file one slice per command, for files too large for one."""
+    quoted = shlex.quote(path)
+    slices = []
+    for index in range(math.ceil(size / _READ_CHUNK_BYTES)):
+      result = await self._execute_bash(
+          f"set -o pipefail; dd if={quoted} bs={_READ_CHUNK_BYTES}"
+          f" skip={index} count=1 iflag=fullblock status=none | base64 |"
+          " tr -d '\\n'"
+      )
+      if result.get("returncode") != 0:
+        raise OSError(f"Failed to read {path}: {result.get('stderr', '')}")
+      slices.append(base64.b64decode(result.get("stdout", "")))
+    content = b"".join(slices)
+    if len(content) != size:
+      raise OSError(
+          f"Failed to read {path}: expected {size} bytes, got {len(content)}"
+      )
+    return content
 
   @override
   async def write_file(

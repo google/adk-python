@@ -197,6 +197,11 @@ next to the target, which is then renamed over the target, so a failed write
 leaves an existing file unchanged. Writes are limited to 64 MiB; a larger
 write raises `ValueError` before anything is sent.
 
+The service rejects a command whose response is larger than about 2 MB. A
+command that prints that much output raises an error instead of returning, so
+redirect large output to a file. `read_file()` reads files larger than 1 MiB
+in 1 MiB slices, one command each, to stay under this limit.
+
 The first command on a new or resumed sandbox can take half a minute or
 longer, while the service starts routing to the sandbox. Later commands return
 in well under a second.
