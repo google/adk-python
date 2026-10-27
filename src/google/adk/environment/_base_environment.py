@@ -21,8 +21,6 @@ from abc import abstractmethod
 import dataclasses
 from pathlib import Path
 
-from ..utils.feature_decorator import experimental
-
 
 @dataclasses.dataclass
 class ExecutionResult:
@@ -41,7 +39,6 @@ class ExecutionResult:
   """Whether the execution exceeded the timeout."""
 
 
-@experimental
 class BaseEnvironment(ABC):
   """Abstract base class for code execution environments.
 

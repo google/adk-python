@@ -118,9 +118,9 @@ only after deliberately disabling one.
 selects between an old and a new behavior. Nothing raises. The flag changes
 what happens, and the only way to know is the release note or the source.
 
-**A label with no flag.** Some older classes and functions, such as the
-credential services and several evaluators, carry the legacy `@experimental`
-from `google.adk.utils.feature_decorator` instead. It predates the registry: it
+**A label with no flag.** Some older classes and functions, such as several
+evaluators and optimizers, carry the legacy `@experimental` from
+`google.adk.utils.feature_decorator` instead. It predates the registry: it
 has no `FeatureName`, so `ADK_ENABLE_<NAME>` and `ADK_DISABLE_<NAME>` do not
 apply, and it never blocks anything. It only warns, once per unit, with text of
 the form `[EXPERIMENTAL] <ClassName>: <message>`. Set

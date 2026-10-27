@@ -34,7 +34,6 @@ from ...agents import config_agent_utils
 from ...agents.base_agent import BaseAgent
 from ...apps.app import App
 from ...tools.computer_use.computer_use_toolset import ComputerUseToolset
-from ...utils.feature_decorator import experimental
 from ...workflow import BaseNode
 from .base_agent_loader import _AgentLoadError
 from .base_agent_loader import BaseAgentLoader
@@ -229,7 +228,6 @@ class AgentLoader(BaseAgentLoader):
 
     return None
 
-  @experimental
   def _load_from_yaml_config(
       self, agent_name: str, agents_dir: str
   ) -> Optional[BaseAgent]:
