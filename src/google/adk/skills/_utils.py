@@ -21,6 +21,7 @@ import io
 import logging
 import pathlib
 import re
+import stat
 from typing import Any
 from typing import Callable
 from typing import cast
@@ -597,11 +598,34 @@ def _list_skills_in_dir(
     )
     return skills
 
+  def report(skill_id: str, error: Exception) -> None:
+    if on_error is not None:
+      on_error(skill_id, error)
+      return
+    # log invalid skills during listing and skip them
+    logging.warning(
+        "Skipping invalid skill '%s' in directory '%s': %s",
+        skill_id,
+        skills_base_path,
+        error,
+    )
+
   for skill_dir in sorted(skills_base_path.iterdir()):
-    if not skill_dir.is_dir():
+    skill_id = skill_dir.name
+    # Path.is_dir() returns False for any OSError on Python 3.14+, which would
+    # hide an inaccessible entry from `on_error`. Use stat() so that failures
+    # are surfaced the same way on every supported Python version.
+    try:
+      is_dir = stat.S_ISDIR(skill_dir.stat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+      # Dangling symlink or an entry removed mid-listing: not a skill dir.
+      continue
+    except OSError as e:
+      report(skill_id, e)
+      continue
+    if not is_dir:
       continue
 
-    skill_id = skill_dir.name
     try:
       frontmatter = _read_skill_properties(skill_dir)
       if skill_id != frontmatter.name:
@@ -611,16 +635,7 @@ def _list_skills_in_dir(
         )
       skills[skill_id] = frontmatter
     except (FileNotFoundError, ValueError, ValidationError) as e:
-      if on_error is not None:
-        on_error(skill_id, e)
-        continue
-      # log invalid skills during listing and skip them
-      logging.warning(
-          "Skipping invalid skill '%s' in directory '%s': %s",
-          skill_id,
-          skills_base_path,
-          e,
-      )
+      report(skill_id, e)
   return skills
 
 

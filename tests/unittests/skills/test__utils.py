@@ -716,6 +716,88 @@ def test_list_skills_in_dir_on_error_can_abort(tmp_path):
     list_skills_in_dir(_skills_dir_with_one_invalid(tmp_path), on_error=strict)
 
 
+def _skills_dir_with_blocked_child(tmp_path):
+  """Builds a skills dir with a valid 'good' skill and an empty 'blocked' dir."""
+  skills_dir = tmp_path / "skills"
+  (skills_dir / "good").mkdir(parents=True)
+  (skills_dir / "good" / "SKILL.md").write_text(
+      "---\nname: good\ndescription: desc\n---\nbody"
+  )
+  (skills_dir / "blocked").mkdir()
+  return skills_dir
+
+
+def _stat_denying(blocked_name):
+  """Returns a Path.stat replacement that denies one child by name."""
+  real_stat = pathlib.Path.stat
+
+  def fake_stat(self, *args, **kwargs):
+    if self.name == blocked_name:
+      raise PermissionError(13, "Permission denied", str(self))
+    return real_stat(self, *args, **kwargs)
+
+  return fake_stat
+
+
+def test_list_skills_in_dir_reports_inaccessible_child_to_on_error(tmp_path):
+  """A child whose metadata cannot be read is reported, not silently dropped."""
+  skills_dir = _skills_dir_with_blocked_child(tmp_path)
+  failures = []
+
+  with mock.patch.object(pathlib.Path, "stat", _stat_denying("blocked")):
+    skills = list_skills_in_dir(
+        skills_dir,
+        on_error=lambda skill_id, error: failures.append((skill_id, error)),
+    )
+
+  assert list(skills) == ["good"]
+  assert [skill_id for skill_id, _ in failures] == ["blocked"]
+  assert isinstance(failures[0][1], PermissionError)
+
+
+def test_list_skills_in_dir_on_error_can_abort_on_inaccessible_child(tmp_path):
+  """Raising from on_error aborts the listing for an inaccessible child."""
+  skills_dir = _skills_dir_with_blocked_child(tmp_path)
+
+  def strict(skill_id, error):
+    del skill_id  # Unused: the error already names the skill.
+    raise error
+
+  with mock.patch.object(pathlib.Path, "stat", _stat_denying("blocked")):
+    with pytest.raises(PermissionError):
+      list_skills_in_dir(skills_dir, on_error=strict)
+
+
+def test_list_skills_in_dir_logs_inaccessible_child_without_on_error(
+    tmp_path, caplog
+):
+  """Without on_error an inaccessible child is logged and skipped."""
+  skills_dir = _skills_dir_with_blocked_child(tmp_path)
+
+  with mock.patch.object(pathlib.Path, "stat", _stat_denying("blocked")):
+    skills = list_skills_in_dir(skills_dir)
+
+  assert list(skills) == ["good"]
+  assert "Skipping invalid skill 'blocked'" in caplog.text
+
+
+def test_list_skills_in_dir_ignores_dangling_symlink_and_files(tmp_path):
+  """Non-directory entries are skipped without invoking on_error."""
+  skills_dir = _skills_dir_with_blocked_child(tmp_path)
+  (skills_dir / "blocked").rmdir()
+  (skills_dir / "notes.txt").write_text("not a skill")
+  (skills_dir / "dangling").symlink_to(tmp_path / "missing")
+  failures = []
+
+  skills = list_skills_in_dir(
+      skills_dir,
+      on_error=lambda skill_id, error: failures.append((skill_id, error)),
+  )
+
+  assert list(skills) == ["good"]
+  assert not failures
+
+
 def test__load_skill_from_zip_bytes():
   """Tests loading a skill directly from in-memory zip file bytes."""
 
