@@ -27,7 +27,9 @@ from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import Field
+from pydantic.alias_generators import to_camel
 import pytest
 
 
@@ -270,6 +272,37 @@ async def test_run_async_valid_data():
   assert result['name'] == 'Alice'
   assert result['age'] == 25
   assert result['city'] == 'Seattle'
+
+
+@pytest.mark.asyncio
+async def test_run_async_aliased_schema_accepts_declared_field_names():
+  """Test that an aliased schema accepts the field names it declares."""
+
+  class AliasedSchema(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel)
+    first_name: str
+    age_years: int
+
+  tool = SetModelResponseTool(AliasedSchema)
+  declaration = tool._get_declaration()
+  declared_names = set(
+      declaration.parameters_json_schema['properties']
+      if declaration.parameters_json_schema is not None
+      else declaration.parameters.properties
+  )
+  assert declared_names == {'first_name', 'age_years'}
+
+  agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
+  invocation_context = await _create_invocation_context(agent)
+  tool_context = ToolContext(invocation_context)
+
+  result = await tool.run_async(
+      args={'first_name': 'Ada', 'age_years': 36},
+      tool_context=tool_context,
+  )
+
+  assert result == {'first_name': 'Ada', 'age_years': 36}
+  assert tool_context.actions.set_model_response == result
 
 
 @pytest.mark.asyncio
