@@ -49,7 +49,22 @@ _NON_SESSION_STATE_PREFIXES = (
 async def compute_state_delta_for_rewind(
     session: Session, rewind_event_index: int
 ) -> dict[str, Any]:
-  """Computes the state delta to reverse changes."""
+  """Computes the state delta to reverse changes.
+
+  The state at the rewind point is replayed from the deltas of the events that
+  are kept. `create_session` seeds state without recording an event, so a key
+  that replay does not mention may still predate the rewind point: only a
+  delta of a discarded event proves that a key was added after it.
+
+  Args:
+    session: The session to rewind.
+    rewind_event_index: Index in `session.events` of the first event that the
+      rewind discards.
+
+  Returns:
+    A state delta that, applied to the session, restores the state as it was
+    before `rewind_event_index`.
+  """
   state_at_rewind_point: dict[str, Any] = {}
   for i in range(rewind_event_index):
     if session.events[i].actions.state_delta:
@@ -69,13 +84,24 @@ async def compute_state_delta_for_rewind(
     if key not in current_state or current_state[key] != value_at_rewind:
       rewind_state_delta[key] = value_at_rewind
 
-  # 2. Set keys to None in rewind_state_delta if they are in current_state
-  #    but not in state_at_rewind_point. These keys were added after the
-  #    rewind point and need to be removed.
+  # A key is added after the rewind point only if a discarded event's delta
+  # introduces it: every state write reaches the session through an event
+  # delta, so a key none of the discarded events mentions cannot have been
+  # created by them.
+  introduced_after_rewind: set[str] = set()
+  for event in session.events[rewind_event_index:]:
+    if event.actions and event.actions.state_delta:
+      introduced_after_rewind.update(event.actions.state_delta)
+
+  # 2. Set keys to None in rewind_state_delta if they are in current_state, are
+  #    not in state_at_rewind_point, and were introduced after the rewind point,
+  #    so they need to be removed. A key no discarded event introduces --
+  #    typically one seeded by `create_session` -- predates the rewind point and
+  #    is left untouched.
   for key in current_state:
     if key.startswith(_NON_SESSION_STATE_PREFIXES):
       continue
-    if key not in state_at_rewind_point:
+    if key not in state_at_rewind_point and key in introduced_after_rewind:
       rewind_state_delta[key] = None
 
   return rewind_state_delta
