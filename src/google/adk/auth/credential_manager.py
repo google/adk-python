@@ -26,7 +26,6 @@ from fastapi.openapi.models import OAuth2
 
 from ..agents.callback_context import CallbackContext
 from ..tools.openapi_tool.auth.credential_exchangers.service_account_exchanger import ServiceAccountCredentialExchanger
-from ..utils.feature_decorator import experimental
 from .auth_credential import AuthCredential
 from .auth_credential import AuthCredentialTypes
 from .auth_provider_registry import AuthProviderRegistry
@@ -86,7 +85,6 @@ def _rehydrate_custom_scheme(
   )
 
 
-@experimental
 class CredentialManager:
   """Manages authentication credentials through a structured workflow.
 

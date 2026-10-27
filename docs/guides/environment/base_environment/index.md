@@ -251,9 +251,8 @@ command-line agent and wrong for a server.
 *   **`close()` does not stop running work.** All it does is release the
     directory, so a process the agent left running in the background survives
     it.
-*   **The classes are experimental.** Import them from `google.adk.environment`
-    rather than from any module beneath it, and expect the signatures to be
-    able to change.
+*   **Import from the package root.** Import the classes from
+    `google.adk.environment` rather than from any private module beneath it.
 
 ## Related samples
 

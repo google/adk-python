@@ -293,11 +293,6 @@ because the `google.adk.events` package does not export it.
     replaces events in that part, so the next model call runs without the
     cache, and ADK creates a new cache on a later call. A longer interval
     between summaries makes those misses rarer.
-*   The `EventsCompactionConfig` and `BaseEventsSummarizer` classes are
-    experimental. Constructing the config emits a `UserWarning` once per
-    process, and setting the environment variable
-    `ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS=true` turns the warning off.
-    Their fields and behavior may change in a later release.
 
 ## Related guides and samples
 
