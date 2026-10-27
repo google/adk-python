@@ -39,6 +39,7 @@ from .base_auth_provider import BaseAuthProvider
 from .exchanger.base_credential_exchanger import BaseCredentialExchanger
 from .exchanger.credential_exchanger_registry import CredentialExchangerRegistry
 from .oauth2_discovery import OAuth2DiscoveryManager
+from .refresher.base_credential_refresher import CredentialRevokedError
 from .refresher.credential_refresher_registry import CredentialRefresherRegistry
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -333,7 +334,24 @@ class CredentialManager:
       # Step 7: Refresh credential if expired
       was_refreshed = False
       if not was_exchanged:
-        credential, was_refreshed = await self._refresh_credential(credential)
+        try:
+          credential, was_refreshed = await self._refresh_credential(credential)
+        except CredentialRevokedError:
+          logger.warning(
+              "The refresh token for auth scheme %s was rejected. The user"
+              " will be asked to authorize again.",
+              type(self._auth_config.auth_scheme).__name__,
+          )
+          if was_from_auth_response:
+            return None
+          # A stored dead credential must not shadow a fresh auth response.
+          credential = await self._load_from_auth_response(context)
+          if not credential:
+            return None
+          was_from_auth_response = True
+          credential, was_exchanged = await self._exchange_credential(
+              credential
+          )
 
       if _has_unredeemed_auth_code(credential):
         logger.warning(

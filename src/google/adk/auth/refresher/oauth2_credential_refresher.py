@@ -29,6 +29,7 @@ import requests
 from typing_extensions import override
 
 from .base_credential_refresher import BaseCredentialRefresher
+from .base_credential_refresher import CredentialRevokedError
 
 try:
   from authlib.common.errors import AuthlibBaseError
@@ -82,7 +83,7 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
       auth_scheme: Optional[AuthScheme] = None,
   ) -> AuthCredential:
     """Refresh the OAuth2 credential.
-    If refresh failed, return the original credential.
+    If refresh failed transiently, return the original credential.
 
     Args:
         auth_credential: The OAuth2 credential to refresh.
@@ -91,6 +92,9 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
     Returns:
         The refreshed credential.
 
+    Raises:
+        CredentialRevokedError: If the authorization server rejected the
+            refresh token with `invalid_grant` (revoked or expired).
     """
 
     # Handle regular OAuth2 credentials
@@ -122,6 +126,12 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
           update_credential_with_tokens(auth_credential, tokens)
           logger.debug("Successfully refreshed OAuth2 tokens")
         except (AuthlibBaseError, requests.RequestException) as e:
+          if getattr(e, "error", None) == "invalid_grant":
+            # Permanent: the refresh token is dead, so a stale access token
+            # would only fail later; the caller must ask for re-authorization.
+            raise CredentialRevokedError(
+                f"OAuth2 refresh token was rejected: {e}"
+            ) from e
           # Non-fatal: keep the stale token so its eventual 401
           # re-triggers auth.
           logger.error("Failed to refresh OAuth2 tokens: %s", e)

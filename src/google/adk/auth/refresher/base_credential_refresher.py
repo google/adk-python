@@ -28,6 +28,14 @@ class CredentialRefresherError(Exception):
   """Base exception for credential refresh errors."""
 
 
+class CredentialRevokedError(CredentialRefresherError):
+  """Raised when the refresh token was permanently rejected.
+
+  The credential can never be refreshed again, so only a new user
+  authorization can replace it.
+  """
+
+
 @experimental
 class BaseCredentialRefresher(abc.ABC):
   """Base interface for credential refreshers.
