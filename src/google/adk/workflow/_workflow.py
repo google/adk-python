@@ -559,12 +559,20 @@ class Workflow(BaseNode):
         await self._emit_node_checkpoint(loop_state, ctx)
 
   def _at_concurrency_limit(self, loop_state: _LoopState) -> bool:
-    """Check if max_concurrency has been reached."""
-    return (
-        self.max_concurrency is not None
-        and self.max_concurrency > 0
-        and len(loop_state.pending_tasks) >= self.max_concurrency
+    """Check if max_concurrency has been reached.
+
+    Replayed nodes are history fast-forwards that may block on the replay
+    sequence barrier waiting for another node to be scheduled, so they must
+    not hold a concurrency slot.
+    """
+    if self.max_concurrency is None or self.max_concurrency <= 0:
+      return False
+    active = sum(
+        1
+        for name in loop_state.pending_tasks
+        if name not in loop_state.replayed_nodes
     )
+    return active >= self.max_concurrency
 
   def _pop_trigger(
       self, loop_state: _LoopState, node_name: str
