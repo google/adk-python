@@ -92,6 +92,14 @@ class Evaluator(ABC):
   ) -> EvaluationResult | Awaitable[EvaluationResult]:
     """Returns EvaluationResult after performing evaluations using actual and expected invocations.
 
+    `LocalEvalService` awaits an async implementation on the event loop and
+    runs a synchronous one on a worker thread, several at once when
+    `EvaluateConfig.parallelism` is above 1. A synchronous implementation
+    must not mutate unsynchronized shared state, and has no running event
+    loop: `asyncio.get_running_loop()` and `asyncio.ensure_future` raise
+    `RuntimeError` there, so it cannot return a `Task` or `Future` tied to
+    the loop.
+
     Args:
       actual_invocations: These are the invocations that are obtained from the
         agent under test.
