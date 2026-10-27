@@ -1015,6 +1015,7 @@ class ChatCompletionsResponseHandler:
     self.content_parts = ''
     self.tool_call_parts: dict[int, types.Part] = {}
     self._tool_call_deltas: dict[int, list[str]] = {}
+    self._invalid_tool_call_indices: set[int] = set()
     self._tool_call_trackers: dict[int, streaming_utils._JsonPathTracker] = {}
     self.role = ''
     self.streaming_complete = False
@@ -1061,6 +1062,16 @@ class ChatCompletionsResponseHandler:
         content=types.Content(role=role, parts=parts),
         usage_metadata=usage_metadata,
         finish_reason=self._map_finish_reason(choice.get('finish_reason')),
+        error_code=(
+            self._map_finish_reason(choice.get('finish_reason'))
+            if self._invalid_tool_call_indices
+            else None
+        ),
+        error_message=(
+            'Tool call arguments must be a JSON object.'
+            if self._invalid_tool_call_indices
+            else None
+        ),
         logprobs_result=logprobs_result,
         model_version=response.get('model'),
         custom_metadata=custom_metadata,
@@ -1135,6 +1146,16 @@ class ChatCompletionsResponseHandler:
               parts=self._get_content_parts(),
           ),
           finish_reason=self._map_finish_reason(finish_reason),
+          error_code=(
+              self._map_finish_reason(finish_reason)
+              if self._invalid_tool_call_indices
+              else None
+          ),
+          error_message=(
+              'Tool call arguments must be a JSON object.'
+              if self._invalid_tool_call_indices
+              else None
+          ),
           custom_metadata=self.custom_metadata,
           model_version=self.model,
           usage_metadata=usage_metadata,
@@ -1144,6 +1165,11 @@ class ChatCompletionsResponseHandler:
       return
 
   def _map_finish_reason(self, reason: str | None) -> types.FinishReason:
+    if self._invalid_tool_call_indices and reason not in (
+        'length',
+        'content_filter',
+    ):
+      return types.FinishReason.MALFORMED_FUNCTION_CALL
     if reason == 'stop':
       return types.FinishReason.STOP
     if reason == 'length':
@@ -1277,12 +1303,14 @@ class ChatCompletionsResponseHandler:
       parts.append(types.Part.from_text(text=self.content_parts))
     sorted_indices = sorted(self.tool_call_parts.keys())
     for index in sorted_indices:
+      if index in self._invalid_tool_call_indices:
+        continue
       part = self.tool_call_parts[index]
       if part.function_call and not part.function_call.args:
         accumulated_args = ''.join(self._tool_call_deltas.get(index, []))
         if accumulated_args:
           try:
-            part.function_call.args = _json_utils.safe_json_loads(
+            args = _json_utils.safe_json_loads(
                 accumulated_args,
                 context=f'tool call arguments: {accumulated_args}',
             )
@@ -1300,16 +1328,30 @@ class ChatCompletionsResponseHandler:
                 if isinstance(parsed_delta, dict):
                   merged_args.update(parsed_delta)
                 else:
-                  logger.warning('Parsed delta is not a dict: %s', parsed_delta)
+                  self._validate_tool_call_args(index, parsed_delta)
               except ValueError:
                 logger.warning(
                     'Failed to parse individual delta as JSON: %s', delta
                 )
             if not merged_args:
               raise
-            part.function_call.args = merged_args
+            if index in self._invalid_tool_call_indices:
+              continue
+            args = merged_args
+          # Validate outside the decoder's ValueError fallback: a complete
+          # non-object must not be salvaged into different arguments.
+          if not self._validate_tool_call_args(index, args):
+            continue
+          part.function_call.args = args
       parts.append(part)
     return parts
+
+  def _validate_tool_call_args(self, index: int, args: object) -> bool:
+    """Rejects non-object arguments without changing valid sibling calls."""
+    if not isinstance(args, dict):
+      self._invalid_tool_call_indices.add(index)
+      return False
+    return True
 
   def _upsert_tool_call(
       self, tool_call: dict[str, Any], is_streaming: bool = False
@@ -1365,11 +1407,12 @@ class ChatCompletionsResponseHandler:
         args = _json_utils.safe_json_loads(
             args_delta, context=f'tool call arguments: {args_delta}'
         )
-        chunk_function_call.args = args
-        if not function_call.args:
-          function_call.args = dict(args)
-        else:
-          function_call.args.update(args)
+        if self._validate_tool_call_args(index, args):
+          chunk_function_call.args = args
+          if not function_call.args:
+            function_call.args = args.copy()
+          else:
+            function_call.args.update(args)
 
     func_name = func.get('name')
     if func_name:
