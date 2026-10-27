@@ -17,6 +17,7 @@
 import asyncio
 import logging
 import ssl
+import time
 from typing import Optional
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -3868,3 +3869,34 @@ async def test_run_async_aborted_between_steps_breaks_outer_loop():
 
   assert step_invocations == 1
   assert yielded_events == [fc_event]
+
+
+@pytest.mark.asyncio
+async def test_model_response_event_timestamp_is_taken_when_response_arrives():
+  """The first model-response event is stamped after the model call returns."""
+  call_finished_at = None
+
+  class _SlowLlm(BaseLlm):
+    model: str = 'slow'
+
+    async def generate_content_async(self, llm_request, stream=False):
+      nonlocal call_finished_at
+      await asyncio.sleep(0.2)
+      call_finished_at = time.time()
+      yield LlmResponse(
+          content=types.Content(
+              role='model', parts=[types.Part.from_text(text='hi')]
+          )
+      )
+
+  agent = Agent(name='test_agent', model=_SlowLlm())
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  flow = BaseLlmFlowForTesting()
+
+  events = [e async for e in flow._run_one_step_async(invocation_context)]
+
+  assert len(events) == 1
+  assert call_finished_at is not None
+  assert events[0].timestamp >= call_finished_at

@@ -387,6 +387,11 @@ class BaseLlmFlow(ABC):
           yield cast(Event, llm_response)
           continue
 
+        # The event was created before the model call; restamp it so its
+        # timestamp reflects when the response arrived, keeping timestamp
+        # order consistent with append order.
+        model_response_event.timestamp = platform_time.get_time()
+
         # Postprocess after calling the LLM.
         async with Aclosing(
             self._postprocess_async(
