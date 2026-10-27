@@ -34,6 +34,30 @@ import yaml
 
 from . import models
 
+
+def _validate_path_segment(value: str, field_name: str) -> None:
+  """Rejects values that could alter a storage blob path.
+
+  Args:
+    value: The caller-supplied identifier.
+    field_name: Human-readable field name used in error messages.
+
+  Raises:
+    ValueError: If the value contains backslashes, traversal segments, or null
+      bytes.
+  """
+  if not value:
+    raise ValueError(f"{field_name} must not be empty.")
+  if "\x00" in value:
+    raise ValueError(f"{field_name} must not contain null bytes.")
+  if "\\" in value:
+    raise ValueError(f"{field_name} {value!r} must not contain backslashes.")
+  if value in (".", ".."):
+    raise ValueError(
+        f"{field_name} {value!r} must not contain traversal segments."
+    )
+
+
 # Bounds on a skill archive, which may come from a remote registry and is
 # untrusted until it has been loaded. They are generous relative to any
 # realistic skill; the toolset already warns about payloads over 16 MB.
@@ -695,9 +719,20 @@ def _load_skill_from_gcs_dir(
 
   Raises:
     FileNotFoundError: If the skill directory or SKILL.md is not found.
-    ValueError: If SKILL.md is invalid or the skill name does not match
-      the directory name.
+    ValueError: If SKILL.md is invalid, the skill name does not match the
+      directory name, or if skill_id contains empty, null-byte, backslash, or
+      '.'/'..' segments.
   """
+  # skill_id identifies which of potentially many skill directories under
+  # a shared bucket gets loaded. An application may resolve it from a
+  # caller- or model-selected skill name rather than a fixed,
+  # developer-authored constant, so it is validated the same
+  # way app_name/eval_set_id are validated in the evaluation GCS managers
+  # before being interpolated into a blob prefix.
+  skill_id = skill_id.strip("/")
+  for segment in skill_id.split("/"):
+    _validate_path_segment(segment, "skill_id")
+
   try:
     from google.cloud import storage
   except ImportError as e:
@@ -727,7 +762,7 @@ def _load_skill_from_gcs_dir(
   frontmatter = models.Frontmatter.model_validate(parsed)
 
   # Validate that skill name matches the directory name
-  skill_name_expected = skill_id.strip("/").split("/")[-1]
+  skill_name_expected = skill_id.split("/")[-1]
   if skill_name_expected != frontmatter.name:
     raise ValueError(
         f"Skill name '{frontmatter.name}' does not match directory"
@@ -850,8 +885,9 @@ async def _load_skill_from_gcs_dir_async(
   Raises:
     ImportError: If google-cloud-storage is not installed.
     FileNotFoundError: If the skill directory or SKILL.md is not found.
-    ValueError: If SKILL.md is invalid or the skill name does not match
-      the directory name.
+    ValueError: If SKILL.md is invalid, the skill name does not match the
+      directory name, or if skill_id contains empty, null-byte, backslash, or
+      '.'/'..' segments.
   """
   return await asyncio.to_thread(
       _load_skill_from_gcs_dir,
