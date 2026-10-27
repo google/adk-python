@@ -26,6 +26,7 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
+from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
@@ -1130,3 +1131,223 @@ async def test_static_node_fast_forward_resumes_transfer_target(
       'Transfer target was not resumed after the static node was'
       f' fast-forwarded; got {resumed_texts!r}'
   )
+
+
+def _make_two_confirmation_workflow(
+    request: pytest.FixtureRequest, *, resumable: bool
+) -> tuple[testing_utils.InMemoryRunner, list[Any], list[list[Any]]]:
+  """Builds START -> agent -> report, where agent calls a confirmed tool twice.
+
+  Returns the runner, the inputs `report` ran with, and the tool results each
+  model call saw.
+  """
+  from google.adk.tools.function_tool import FunctionTool
+  from google.adk.workflow import FunctionNode
+
+  report_inputs: list[Any] = []
+  model_views: list[list[Any]] = []
+
+  class _ScriptedModel(testing_utils.MockModel):
+    """Asks for act(1) and act(2) first; afterwards summarises the results."""
+
+    async def generate_content_async(self, llm_request, stream=False):
+      results = [
+          part.function_response.response
+          for content in llm_request.contents
+          for part in content.parts or []
+          if part.function_response
+      ]
+      model_views.append(results)
+      if results:
+        parts = [types.Part.from_text(text=f'done: {results}')]
+      else:
+        parts = [
+            types.Part(
+                function_call=types.FunctionCall(
+                    id=f'call-{n}', name='act', args={'n': n}
+                )
+            )
+            for n in (1, 2)
+        ]
+      yield LlmResponse(content=types.Content(role='model', parts=parts))
+
+  def act(n: int) -> str:
+    return f'acted {n}'
+
+  def report(node_input):
+    report_inputs.append(node_input)
+    return node_input
+
+  agent = LlmAgent(
+      name='agent',
+      model=_ScriptedModel(responses=[]),
+      tools=[FunctionTool(act, require_confirmation=True)],
+  )
+  wf = Workflow(
+      name='root',
+      edges=[(START, agent), (agent, FunctionNode(func=report, name='report'))],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=resumable),
+  )
+  return testing_utils.InMemoryRunner(app=app), report_inputs, model_views
+
+
+def _confirmation_requests(events: list[Event]) -> list[types.FunctionCall]:
+  from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+
+  return [
+      fc
+      for e in events
+      for fc in e.get_function_calls()
+      if fc.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+      and fc.id in (e.long_running_tool_ids or ())
+  ]
+
+
+def _confirm(
+    calls: list[types.FunctionCall], *, confirmed: bool = True
+) -> types.Content:
+  return types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=fc.id, name=fc.name, response={'confirmed': confirmed}
+              )
+          )
+          for fc in calls
+      ],
+  )
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.parametrize('first', [0, 1], ids=['first_call', 'second_call'])
+async def test_llm_agent_node_waits_for_remaining_confirmations(
+    request: pytest.FixtureRequest, resumable: bool, first: int
+):
+  """Answering one of two confirmations keeps the node, and the next node, waiting.
+
+  Setup: START -> agent -> report. The model calls a confirmed tool twice in
+    one turn, so the run pauses with two confirmation requests.
+  Act:
+    - Run 2: confirm only one of them (parametrized over which).
+    - Run 3: confirm the other.
+  Assert:
+    - Run 2: the model is not consulted again and `report` does not run.
+    - Run 3: the model sees both tool results once, and `report` runs exactly
+      once, with that answer.
+  """
+  runner, report_inputs, model_views = _make_two_confirmation_workflow(
+      request, resumable=resumable
+  )
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  requests = _confirmation_requests(events1)
+  assert len(requests) == 2
+  invocation_id = events1[0].invocation_id
+  resume_kwargs = {'invocation_id': invocation_id} if resumable else {}
+
+  await runner.run_async(
+      new_message=_confirm([requests[first]]), **resume_kwargs
+  )
+
+  assert len(model_views) == 1, 'model consulted with an answer still owed'
+  assert report_inputs == [], 'report ran before all confirmations'
+
+  await runner.run_async(
+      new_message=_confirm([requests[1 - first]]), **resume_kwargs
+  )
+
+  assert model_views[1:] == [[{'result': 'acted 1'}, {'result': 'acted 2'}]]
+  assert report_inputs == [
+      "done: [{'result': 'acted 1'}, {'result': 'acted 2'}]"
+  ]
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+async def test_llm_agent_node_runs_tool_in_the_turn_it_is_confirmed(
+    request: pytest.FixtureRequest, resumable: bool
+):
+  """A confirmed tool runs in the turn its confirmation arrives, not later.
+
+  Setup: as above, two confirmation requests pending.
+  Act: confirm the first call only.
+  Assert: that turn yields the first tool's result event.
+  """
+  runner, _, _ = _make_two_confirmation_workflow(request, resumable=resumable)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  requests = _confirmation_requests(events1)
+  resume_kwargs = (
+      {'invocation_id': events1[0].invocation_id} if resumable else {}
+  )
+
+  events2 = await runner.run_async(
+      new_message=_confirm([requests[0]]), **resume_kwargs
+  )
+
+  tool_results = [
+      fr.response for e in events2 for fr in e.get_function_responses()
+  ]
+  assert tool_results == [{'result': 'acted 1'}]
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+async def test_llm_agent_node_rejecting_the_last_confirmation_completes(
+    request: pytest.FixtureRequest, resumable: bool
+):
+  """Rejecting the remaining confirmation lets the node and the next node finish.
+
+  Setup: as above, two confirmation requests pending.
+  Act: confirm the first call, then reject the second.
+  Assert: `report` runs once, on an answer that carries the rejection.
+  """
+  runner, report_inputs, _ = _make_two_confirmation_workflow(
+      request, resumable=resumable
+  )
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  requests = _confirmation_requests(events1)
+  resume_kwargs = (
+      {'invocation_id': events1[0].invocation_id} if resumable else {}
+  )
+
+  await runner.run_async(new_message=_confirm([requests[0]]), **resume_kwargs)
+  await runner.run_async(
+      new_message=_confirm([requests[1]], confirmed=False), **resume_kwargs
+  )
+
+  assert report_inputs == [
+      "done: [{'result': 'acted 1'}, {'error': 'This tool call is rejected.'}]"
+  ]
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+async def test_llm_agent_node_confirming_all_at_once_completes(
+    request: pytest.FixtureRequest, resumable: bool
+):
+  """Answering every pending confirmation in one message completes the node.
+
+  Setup: as above, two confirmation requests pending.
+  Act: confirm both in a single message.
+  Assert: the model sees both results once and `report` runs exactly once.
+  """
+  runner, report_inputs, model_views = _make_two_confirmation_workflow(
+      request, resumable=resumable
+  )
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  requests = _confirmation_requests(events1)
+  resume_kwargs = (
+      {'invocation_id': events1[0].invocation_id} if resumable else {}
+  )
+
+  await runner.run_async(new_message=_confirm(requests), **resume_kwargs)
+
+  assert model_views[1:] == [[{'result': 'acted 1'}, {'result': 'acted 2'}]]
+  assert report_inputs == [
+      "done: [{'result': 'acted 1'}, {'result': 'acted 2'}]"
+  ]

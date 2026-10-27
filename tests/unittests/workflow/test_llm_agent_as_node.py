@@ -426,6 +426,9 @@ class TestBuildNode:
         lambda agent, ctx, node_input: None,
     )
     ctx = MagicMock(spec=Context)
+    # A first run, not a rerun: a MagicMock attribute is truthy and would
+    # otherwise read as pending resume inputs.
+    ctx.resume_inputs = {}
     ic = MagicMock()
     ctx.get_invocation_context.return_value = ic
     ic.model_copy.return_value = ic
@@ -458,6 +461,9 @@ class TestBuildNode:
     wrapper = build_node(agent)
 
     ctx = MagicMock(spec=Context)
+    # A first run, not a rerun: a MagicMock attribute is truthy and would
+    # otherwise read as pending resume inputs.
+    ctx.resume_inputs = {}
     ic = MagicMock()
     ctx.get_invocation_context.return_value = ic
     ic.model_copy.return_value = ic

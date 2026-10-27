@@ -94,20 +94,28 @@ def _branch_carries_call(
   return any(fc.id in run_ids for fc in function_calls if fc.id is not None)
 
 
-def _pause_left_calls_unanswered(
+def unanswered_pause_ids(
     invocation_context: InvocationContext, events: list[Event]
-) -> bool:
-  """Whether a pause earlier in `events` is still waiting on a response.
+) -> set[str]:
+  """The ids a pause earlier in `events` is still waiting on.
 
   Every event before the last is considered, not just the previous one: an LRO
   followed by several text responses leaves the pausing call further back than
   a two-event window can see.
+
+  Args:
+    invocation_context: Supplies `should_pause_invocation`.
+    events: The current branch's events for this invocation, oldest first.
+
+  Returns:
+    The awaited ids that no event in `events` answers. Empty when nothing
+    before the last event paused, or when every awaited id is answered.
   """
   pause_events = [
       ev for ev in events[:-1] if invocation_context.should_pause_invocation(ev)
   ]
   if not pause_events:
-    return False
+    return set()
   awaited = {
       fc.id for ev in pause_events for fc in ev.get_function_calls() if fc.id
   }
@@ -116,11 +124,17 @@ def _pause_left_calls_unanswered(
   answered = {
       fr.id for ev in events for fr in ev.get_function_responses() if fr.id
   }
-  # `issubset`, not `&`: this asks whether *any* awaited id is still open, so a
-  # partially answered pause keeps waiting. `decide_resume` asks the opposite
-  # question of its own ids -- whether *none* are answered -- and drops
-  # `issubset` for that reason. The two are not interchangeable.
-  return bool(awaited) and not awaited.issubset(answered)
+  return awaited - answered
+
+
+def _pause_left_calls_unanswered(
+    invocation_context: InvocationContext, events: list[Event]
+) -> bool:
+  """Whether a pause earlier in `events` is still waiting on a response."""
+  # Any open id keeps the pause waiting, so a partially answered pause still
+  # pauses. `decide_resume` asks the opposite question of its own ids --
+  # whether *none* are answered -- and the two are not interchangeable.
+  return bool(unanswered_pause_ids(invocation_context, events))
 
 
 def _find_target_call_event(
@@ -342,7 +356,10 @@ def decide_resume(
       and invocation_context.should_pause_invocation(events[-1])
   )
   if (
-      invocation_context.is_resumable
+      (
+          invocation_context.is_resumable
+          or invocation_context._pause_on_partial_answer  # pylint: disable=protected-access
+      )
       and not paused_by_last
       and _pause_left_calls_unanswered(invocation_context, events)
   ):

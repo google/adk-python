@@ -29,6 +29,7 @@ from ..agents.context import Context
 from ..agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME as _FINISH_TASK_FC_NAME
 from ..agents.llm.task._finish_task_tool import is_finish_task_terminal_fr
 from ..events.event import Event
+from ..flows.llm_flows.core._resume import unanswered_pause_ids
 from ..utils._agent_mode import AgentMode
 from ..utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..utils._schema_utils import validate_schema
@@ -463,6 +464,15 @@ async def run_llm_agent_as_node(
 
   if mode == AgentMode.SINGLE_TURN:
     # is_live is always False here (single_turn forces non-live).
+    #
+    # The workflow reruns a paused node with the answers it has received so
+    # far, which may be only some of those the node asked for. The flow then
+    # has to stop before its model call, and the node has to stay waiting on
+    # the ids still owed: a run that ends with neither output nor interrupts
+    # reads as completed and starts the next node.
+    resuming = bool(ctx.resume_inputs)
+    if resuming:
+      ic._pause_on_partial_answer = True  # pylint: disable=protected-access
     try:
       async with aclosing(effective_agent.run_async(ic)) as run_iter:
         async for event in run_iter:
@@ -474,6 +484,14 @@ async def run_llm_agent_as_node(
           and injected_input_event in agent_ctx.session.events
       ):
         agent_ctx.session.events.remove(injected_input_event)
+    if resuming:
+      still_owed = unanswered_pause_ids(
+          ic,
+          ic._get_events(  # pylint: disable=protected-access
+              current_invocation=True, current_branch=True
+          ),
+      )
+      ctx._interrupt_ids.update(still_owed)  # pylint: disable=protected-access
     return
 
   # Chat and Task modes share the outer task-delegation dispatch loop.
