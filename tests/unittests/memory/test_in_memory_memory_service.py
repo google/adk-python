@@ -161,6 +161,34 @@ async def test_add_events_to_memory_without_session_id_uses_default_bucket():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'session_id', ['ordinary-session', '__unknown_session_id__']
+)
+async def test_add_session_to_memory_keeps_sessionless_memories(session_id):
+  """A session must not replace events added without a session ID."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=[MOCK_SESSION_1.events[0]],
+  )
+
+  await memory_service.add_session_to_memory(
+      Session(
+          app_name=MOCK_APP_NAME,
+          user_id=MOCK_USER_ID,
+          id=session_id,
+          last_update_time=1000,
+      )
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='toolkit'
+  )
+  assert [memory.id for memory in result.memories] == ['event-1a']
+
+
+@pytest.mark.asyncio
 async def test_add_events_to_memory_alias_is_supported():
   """Tests that add_events_to_memory remains a compatibility alias."""
   memory_service = InMemoryMemoryService()
