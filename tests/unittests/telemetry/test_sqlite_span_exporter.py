@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -634,3 +635,81 @@ def test_invalid_links_do_not_prevent_loading_span(tmp_path, links_json):
   assert len(spans) == 1
   assert spans[0].name == "readable"
   assert not spans[0].links
+
+
+def test_current_database_readable_during_wal_write(tmp_path: Path) -> None:
+  """A saved trace remains readable while another connection is writing."""
+  db_path = str(tmp_path / "spans.db")
+  link = Link(
+      SpanContext(
+          trace_id=0x123,
+          span_id=0x456,
+          is_remote=True,
+          trace_flags=TraceFlags(1),
+      )
+  )
+  exporter = SqliteSpanExporter(db_path=db_path)
+  try:
+    assert (
+        exporter.export([
+            _create_span(
+                name="saved-span",
+                attributes={"gcp.vertex.agent.session_id": "archived-session"},
+                links=[link],
+            )
+        ])
+        == SpanExportResult.SUCCESS
+    )
+  finally:
+    exporter.shutdown()
+
+  with closing(sqlite3.connect(db_path)) as writer:
+    assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    writer.execute("BEGIN IMMEDIATE")
+    writer.execute("UPDATE spans SET name = 'uncommitted'")
+    reader = None
+    try:
+      reader = SqliteSpanExporter(db_path=db_path)
+      spans = reader.get_all_spans_for_session("archived-session")
+    finally:
+      if reader is not None:
+        reader.shutdown()
+      writer.rollback()
+
+  assert len(spans) == 1
+  assert spans[0].name == "saved-span"
+  assert len(spans[0].links) == 1
+  assert spans[0].links[0].context == link.context
+
+
+@pytest.mark.parametrize(
+    "index_name", ["spans_session_id_idx", "spans_trace_id_idx"]
+)
+def test_reopening_database_restores_missing_index(
+    tmp_path: Path, index_name: str
+) -> None:
+  db_path = str(tmp_path / "spans.db")
+  exporter = SqliteSpanExporter(db_path=db_path)
+  try:
+    assert (
+        exporter.export([
+            _create_span(attributes={"gcp.vertex.agent.session_id": "session"})
+        ])
+        == SpanExportResult.SUCCESS
+    )
+  finally:
+    exporter.shutdown()
+  with closing(sqlite3.connect(db_path)) as conn:
+    conn.execute(f"DROP INDEX {index_name}")
+    conn.commit()
+
+  reopened = SqliteSpanExporter(db_path=db_path)
+  try:
+    spans = reopened.get_all_spans_for_session("session")
+    with closing(sqlite3.connect(db_path)) as conn:
+      indexes = {row[1] for row in conn.execute("PRAGMA index_list(spans)")}
+  finally:
+    reopened.shutdown()
+
+  assert len(spans) == 1
+  assert index_name in indexes

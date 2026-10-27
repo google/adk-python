@@ -105,6 +105,16 @@ class SqliteSpanExporter(SpanExporter):
   def _ensure_schema(self) -> None:
     with self._lock:
       conn = self._get_connection()
+      # Readers of a current schema must not wait for unrelated writers.
+      columns = {
+          row["name"] for row in conn.execute("PRAGMA table_info(spans)")
+      }
+      indexes = {
+          row["name"] for row in conn.execute("PRAGMA index_list(spans)")
+      }
+      required_indexes = {"spans_session_id_idx", "spans_trace_id_idx"}
+      if "links_json" in columns and required_indexes <= indexes:
+        return
       with conn:
         # Serialize the schema check with other exporter instances.
         conn.execute("BEGIN IMMEDIATE")
