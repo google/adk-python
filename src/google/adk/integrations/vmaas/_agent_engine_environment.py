@@ -27,6 +27,7 @@ import shlex
 import time
 from typing import Any
 from typing import TYPE_CHECKING
+import uuid
 
 from google.genai.errors import APIError
 from typing_extensions import override
@@ -49,8 +50,13 @@ _WORKSPACE = "/workspace"
 _FILE_NOT_FOUND_EXIT_CODE = 66
 
 # A command reaches the sandbox as one `bash -c` argument, which Linux caps at
-# 128 KiB. Larger writes need chunking, which is not supported yet.
-_MAX_COMMAND_BYTES = 120 * 1024
+# 128 KiB, so a write sends at most this many base64 characters per command and
+# sends larger files in several commands.
+_WRITE_CHUNK_BYTES = 96 * 1024
+
+# Largest file write_file() accepts. A write takes one command per chunk, so
+# this bounds how long a single write can take.
+_MAX_WRITE_BYTES = 64 * 1024 * 1024
 
 _SANDBOX_STATE_RUNNING = "STATE_RUNNING"
 
@@ -239,19 +245,62 @@ class AgentEngineEnvironment(BaseEnvironment):
     if isinstance(content, str):
       content = content.encode("utf-8")
     resolved = PurePosixPath(self._resolve_path(path))
-    encoded = base64.b64encode(content).decode("ascii")
-    command = (
-        f"mkdir -p -- {shlex.quote(str(resolved.parent))} &&"
-        f" printf %s {encoded} | base64 -d > {shlex.quote(str(resolved))}"
-    )
-    if len(command) > _MAX_COMMAND_BYTES:
+    if len(content) > _MAX_WRITE_BYTES:
       raise ValueError(
           f"Cannot write {len(content)} bytes to {resolved}: files larger than"
-          f" about {_MAX_COMMAND_BYTES * 3 // 4} bytes are not supported yet."
+          f" {_MAX_WRITE_BYTES} bytes are not supported."
       )
+    encoded = base64.b64encode(content).decode("ascii")
+    parent = shlex.quote(str(resolved.parent))
+    target = shlex.quote(str(resolved))
+    if len(encoded) <= _WRITE_CHUNK_BYTES:
+      await self._run_write_command(
+          f"mkdir -p -- {parent} && printf %s {encoded} | base64 -d > {target}",
+          resolved,
+      )
+      return
+    # Upload the base64 text to a temporary file next to the target in
+    # several commands, then decode it to a second temporary file and rename
+    # that over the target, so the target is replaced only once all of the
+    # content has arrived. The name is truncated to stay within the file
+    # name length limit.
+    prefix = resolved.name.encode("utf-8")[:100].decode(
+        "utf-8", errors="ignore"
+    )
+    temp_path = resolved.parent / f".{prefix}.adk-{uuid.uuid4().hex}"
+    temp = shlex.quote(str(temp_path))
+    decoded = shlex.quote(f"{temp_path}.new")
+    chunks = [
+        encoded[i : i + _WRITE_CHUNK_BYTES]
+        for i in range(0, len(encoded), _WRITE_CHUNK_BYTES)
+    ]
+    try:
+      await self._run_write_command(
+          f"mkdir -p -- {parent} && printf %s {chunks[0]} > {temp}", resolved
+      )
+      for chunk in chunks[1:]:
+        await self._run_write_command(f"printf %s {chunk} >> {temp}", resolved)
+      await self._run_write_command(
+          f"base64 -d {temp} > {decoded} &&"
+          f" {{ chmod --reference={target} -- {decoded} 2>/dev/null;"
+          f" mv -fT -- {decoded} {target}; }};"
+          f" rc=$?; rm -f -- {temp} {decoded}; exit $rc",
+          resolved,
+      )
+    except Exception:
+      try:
+        await self._execute_bash(f"rm -f -- {temp} {decoded}")
+      except Exception:  # pylint: disable=broad-exception-caught
+        logger.warning(
+            "Failed to remove temporary files %s*", temp_path, exc_info=True
+        )
+      raise
+
+  async def _run_write_command(self, command: str, path: PurePosixPath) -> None:
+    """Runs one command of a file write, raising OSError if it fails."""
     result = await self._execute_bash(command)
     if result.get("returncode") != 0:
-      raise OSError(f"Failed to write {resolved}: {result.get('stderr', '')}")
+      raise OSError(f"Failed to write {path}: {result.get('stderr', '')}")
 
   async def _execute_bash(
       self, command: str, *, timeout: int | None = None

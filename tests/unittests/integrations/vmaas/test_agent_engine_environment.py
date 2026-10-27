@@ -449,13 +449,158 @@ async def test_relative_path_resolves_under_workspace():
   assert "/workspace/sub/notes.txt" in client.sandboxes.commands[-1]["command"]
 
 
-async def test_writing_file_too_large_for_one_command_raises(tmp_path):
-  """A file too large to send in one command is rejected before sending."""
+async def test_empty_file_is_written(tmp_path):
+  """Writing empty content creates an empty file."""
+  environment = await _make_environment()
+  path = tmp_path / "empty.txt"
+
+  await environment.write_file(path, b"")
+
+  assert path.read_bytes() == b""
+
+
+@pytest.mark.parametrize(
+    ("size", "expected_commands"),
+    [(12, 1), (13, 3), (24, 3), (25, 4)],
+    ids=[
+        "exactly_one_chunk",
+        "one_chunk_plus_one",
+        "exactly_two_chunks",
+        "two_chunks_plus_one",
+    ],
+)
+async def test_write_is_split_at_chunk_boundaries(
+    tmp_path, monkeypatch, size, expected_commands
+):
+  """Content up to one chunk takes one command; more is sent in chunks.
+
+  With 16-character chunks, 12 bytes encode to exactly one chunk. A chunked
+  write takes one command per chunk plus one to decode and rename.
+  """
+  monkeypatch.setattr(_agent_engine_environment, "_WRITE_CHUNK_BYTES", 16)
+  client = _make_client()
+  environment = await _make_environment(client)
+  path = tmp_path / "data.bin"
+  content = bytes(range(size))
+
+  await environment.write_file(path, content)
+
+  assert path.read_bytes() == content
+  assert len(client.sandboxes.commands) == expected_commands
+  assert sorted(tmp_path.iterdir()) == [path]
+
+
+async def test_large_binary_file_round_trips(tmp_path):
+  """A 1 MiB binary file is written in chunks and read back unchanged."""
+  client = _make_client()
+  environment = await _make_environment(client)
+  path = tmp_path / "big.bin"
+  content = bytes(range(256)) * 4096
+
+  await environment.write_file(path, content)
+  read_back = await environment.read_file(path)
+
+  assert read_back == content
+  assert len(client.sandboxes.commands) > 2
+  assert max(len(c["command"]) for c in client.sandboxes.commands) < 128 * 1024
+  assert sorted(tmp_path.iterdir()) == [path]
+
+
+async def test_failed_chunked_write_keeps_old_file_and_removes_temp_files(
+    tmp_path, monkeypatch
+):
+  """A chunked write that fails partway raises and leaves no trace.
+
+  The existing file keeps its old content, since the target is replaced only by
+  the final rename, and the temporary files are removed.
+  """
+  monkeypatch.setattr(_agent_engine_environment, "_WRITE_CHUNK_BYTES", 16)
+  client = _make_client()
+  environment = await _make_environment(client)
+  path = tmp_path / "data.txt"
+  path.write_bytes(b"old content")
+  execute_bash = client.sandboxes.execute_bash
+  calls = []
+
+  def fail_third_command(**kwargs):
+    calls.append(kwargs)
+    if len(calls) == 3:
+      return {"stdout": "", "stderr": "disk full", "returncode": 1}
+    return execute_bash(**kwargs)
+
+  client.sandboxes.execute_bash = fail_third_command
+
+  with pytest.raises(OSError, match="disk full"):
+    await environment.write_file(path, b"x" * 100)
+
+  assert path.read_bytes() == b"old content"
+  assert sorted(tmp_path.iterdir()) == [path]
+
+
+async def test_chunked_write_replaces_existing_file(tmp_path, monkeypatch):
+  """A chunked write replaces an existing, longer file in full."""
+  monkeypatch.setattr(_agent_engine_environment, "_WRITE_CHUNK_BYTES", 16)
+  environment = await _make_environment()
+  path = tmp_path / "data.txt"
+  path.write_bytes(b"y" * 1000)
+
+  await environment.write_file(path, b"x" * 100)
+
+  assert path.read_bytes() == b"x" * 100
+  assert sorted(tmp_path.iterdir()) == [path]
+
+
+async def test_chunked_write_keeps_existing_file_mode(tmp_path, monkeypatch):
+  """A chunked write over an executable file keeps it executable."""
+  monkeypatch.setattr(_agent_engine_environment, "_WRITE_CHUNK_BYTES", 16)
+  environment = await _make_environment()
+  path = tmp_path / "run.sh"
+  path.write_bytes(b"#!/bin/sh\n")
+  path.chmod(0o751)
+
+  await environment.write_file(path, b"#!/bin/sh\necho " + b"x" * 100)
+
+  assert path.stat().st_mode & 0o777 == 0o751
+
+
+async def test_chunked_write_to_existing_directory_raises(
+    tmp_path, monkeypatch
+):
+  """A chunked write whose target is an existing directory raises OSError."""
+  monkeypatch.setattr(_agent_engine_environment, "_WRITE_CHUNK_BYTES", 16)
+  environment = await _make_environment()
+  directory = tmp_path / "dir"
+  directory.mkdir()
+
+  with pytest.raises(OSError, match="Failed to write"):
+    await environment.write_file(directory, b"x" * 100)
+
+  assert list(directory.iterdir()) == []
+  assert sorted(tmp_path.iterdir()) == [directory]
+
+
+async def test_chunked_write_with_long_multibyte_filename(
+    tmp_path, monkeypatch
+):
+  """A chunked write to a long multibyte filename stays within NAME_MAX."""
+  monkeypatch.setattr(_agent_engine_environment, "_WRITE_CHUNK_BYTES", 16)
+  environment = await _make_environment()
+  path = tmp_path / ("日" * 80)
+
+  await environment.write_file(path, b"x" * 100)
+
+  assert path.read_bytes() == b"x" * 100
+  assert sorted(tmp_path.iterdir()) == [path]
+
+
+async def test_writing_file_over_size_limit_raises(tmp_path, monkeypatch):
+  """A file over the size limit is rejected before anything is sent."""
+  monkeypatch.setattr(_agent_engine_environment, "_MAX_WRITE_BYTES", 10)
   client = _make_client()
   environment = await _make_environment(client)
 
-  with pytest.raises(ValueError, match="not supported yet"):
-    await environment.write_file(tmp_path / "big.bin", b"x" * 200_000)
+  with pytest.raises(ValueError, match="not supported"):
+    await environment.write_file(tmp_path / "big.bin", b"x" * 11)
 
   assert not client.sandboxes.commands
 
