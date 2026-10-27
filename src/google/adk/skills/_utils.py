@@ -20,6 +20,7 @@ import asyncio
 import io
 import logging
 import pathlib
+import re
 from typing import Any
 from typing import Callable
 from typing import cast
@@ -41,6 +42,12 @@ _MAX_ZIP_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
 # How much of a member is decompressed per step. Reading in steps keeps the
 # transient buffer this size however much the member really expands.
 _ZIP_READ_CHUNK_BYTES = 64 * 1024
+
+# The frontmatter delimiters are whole `---` lines, so a `---` inside a value
+# (for example "A --- B" in a description) does not end the frontmatter.
+_FRONTMATTER_PATTERN = re.compile(
+    r"\A---[ \t]*\r?\n(.*?)^---[ \t]*\r?$(.*)\Z", re.DOTALL | re.MULTILINE
+)
 
 _ALLOWED_FRONTMATTER_KEYS = frozenset({
     "name",
@@ -153,12 +160,12 @@ def _parse_skill_md_content(content: str) -> tuple[dict[str, Any], str]:
   if not content.startswith("---"):
     raise ValueError("SKILL.md must start with YAML frontmatter (---)")
 
-  parts = content.split("---", 2)
-  if len(parts) < 3:
+  match = _FRONTMATTER_PATTERN.match(content)
+  if match is None:
     raise ValueError("SKILL.md frontmatter not properly closed with ---")
 
-  frontmatter_str = parts[1]
-  body = parts[2].strip()
+  frontmatter_str = match.group(1)
+  body = match.group(2).strip()
 
   try:
     parsed = yaml.safe_load(frontmatter_str)
