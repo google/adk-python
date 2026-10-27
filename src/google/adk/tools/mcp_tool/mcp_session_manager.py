@@ -25,7 +25,6 @@ import functools
 import hashlib
 import json
 import logging
-import os
 import sys
 import threading
 import time
@@ -100,6 +99,7 @@ except (ImportError, AttributeError):
 from ...features import FeatureName
 from ...features import is_feature_enabled
 from ...telemetry import tracing
+from ...utils import _mtls_utils
 from ...utils._google_client_headers import merge_tracking_headers
 from .session_context import SessionContext
 
@@ -913,11 +913,8 @@ class MCPSessionManager:
       logger.debug('google.auth.aio not available, mTLS not configured')
       return None
 
-    use_client_cert = (
-        os.environ.get('GOOGLE_API_USE_CLIENT_CERTIFICATE', 'true').lower()
-        == 'true'
-    )
-    if not use_client_cert:
+    # configure_mtls_channel() makes the same check and does nothing without it.
+    if not await asyncio.to_thread(_mtls_utils.use_client_cert_effective):
       return None
 
     current_loop = asyncio.get_running_loop()
