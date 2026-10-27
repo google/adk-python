@@ -6622,6 +6622,88 @@ class TestRemoteA2aAgentTaskModeOutputUnwrapping:
             assert success_event.output == expected_output
 
   @pytest.mark.asyncio
+
+  @pytest.mark.asyncio
+  async def test_finish_task_response_only_uses_final_text(self):
+    """Response-only finish_task (no FC args) keeps the remote's text output.
+
+    Custom A2A servers may send only the finish_task FunctionResponse with
+    result="Task completed." and put the answer in text parts of the same
+    event. Without a matching FunctionCall, args lookup returns None; we
+    must not complete with {}.
+    """
+    agent_card = create_test_agent_card()
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=agent_card,
+        mode="task",
+        output_schema=str,
+    )
+
+    mock_context = Mock(spec=InvocationContext)
+    mock_context.session = Mock(spec=Session)
+    mock_context.session.events = [_make_dummy_task_trigger_event()]
+    mock_context.session.state = {}
+    mock_context.agent_states = {}
+    mock_context.end_of_agents = {}
+    mock_context.isolation_scope = "task-1"
+    mock_context.invocation_id = "invocation-123"
+    mock_context.branch = "main"
+
+    mock_a2a_client = Mock()
+    mock_send_message = AsyncMock()
+    mock_ensure_resolved = AsyncMock(return_value=mock_a2a_client)
+
+    with patch.object(agent, "_ensure_resolved", mock_ensure_resolved):
+      with patch.object(
+          agent, "_construct_message_parts_from_session"
+      ) as mock_construct:
+        mock_construct.return_value = (
+            [_compat.make_text_part("test_message")],
+            "context-123",
+        )
+        mock_a2a_message = A2AMessage(
+            message_id="m1",
+            role=_compat.ROLE_USER,
+            parts=[_compat.make_text_part("ignored")],
+            context_id="context-123",
+        )
+        mock_send_message.__aiter__.return_value = [
+            _make_stream_message(mock_a2a_message)
+        ]
+        mock_a2a_client.send_message.return_value = mock_send_message
+        agent._a2a_client = mock_a2a_client
+
+        mock_event = Mock(spec=Event)
+        mock_event.custom_metadata = {}
+        mock_event.content = genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text="17 * 23 = 391")],
+        )
+        mock_fr = genai_types.FunctionResponse(
+            id="ft-1",
+            name="finish_task",
+            response={"result": "Task completed."},
+        )
+        mock_event.get_function_responses.return_value = [mock_fr]
+        mock_event.get_function_calls.return_value = []
+        mock_event.output = None
+
+        with patch.object(
+            agent, "_handle_a2a_response", new_callable=AsyncMock
+        ) as mock_handle:
+          mock_handle.return_value = mock_event
+          with patch(
+              "google.adk.a2a.agent._remote_a2a_agent._find_finish_task_args_from_history",
+              return_value=None,
+          ):
+            events = []
+            async for ev in agent._run_async_impl(mock_context):
+              events.append(ev)
+
+            assert len(events) >= 1
+            assert events[0].output == "17 * 23 = 391"
+
   async def test_output_unwrapping_integration_with_history(self):
     """Test that output unwrapping works when driving real events through the stream.
 
