@@ -800,7 +800,7 @@ This release focuses on agent resilience and ecosystem integration by introducin
 
 #### Behavior changes
 
-* **Workflow node resumption**: A node that failed now runs again when the workflow resumes, where before it replayed as though it had completed. Make node bodies idempotent: a node that performs an external side effect and then fails will perform that side effect again on every resume. ([91573eb](https://github.com/google/adk-python/commit/91573eb9f40aaef0b43b15c828557cc69249ef9a))
+* **Workflow node resumption**: A node that failed now runs again when the workflow resumes, where before it replayed as though it had completed. Make node bodies idempotent: a node that performs an external side effect and then fails will perform that side effect again on every resume. ([c274ac34](https://github.com/google/adk-python/commit/c274ac347ab91ed523a1da6fee3ec7d9fdb9ff8c))
 * **GCS tool local paths**: The GCS tools now read and write local files only inside the directory named by `local_file_root`, and refuse local file access entirely when that setting is absent. Paths may be absolute or relative, and are judged by where they resolve. ([c569796](https://github.com/google/adk-python/commit/c5697961f883be9eed4b923a41793fa907822178))
 * **In-memory sessions only**: `InMemorySessionService` now raises `SessionNotFoundError` when an event is appended to a session it does not hold, instead of accepting the event and discarding it. The database-backed services already behaved this way, so this affects in-memory sessions alone. ([15b1392](https://github.com/google/adk-python/commit/15b13922d0efeb4882efae06dc0f9fd19cf892f8))
 
@@ -899,7 +899,7 @@ This release focuses on agent resilience and ecosystem integration by introducin
 * report a metric that never ran as not evaluated, not as failed ([9c9b81a](https://github.com/google/adk-python/commit/9c9b81a17295333e396c7826050d186c30ffadcb))
 * report an unknown tool name to the model instead of raising ([f337793](https://github.com/google/adk-python/commit/f33779378c58ff0cf7bacad62c25ef194b5fa24e))
 * report the real finish reason from a LiteLlm stream ([eaed0aa](https://github.com/google/adk-python/commit/eaed0aa8b25220b63890c72746f3b314686f2812))
-* rerun a failed node on resume instead of replaying it as complete ([91573eb](https://github.com/google/adk-python/commit/91573eb9f40aaef0b43b15c828557cc69249ef9a))
+* rerun a failed node on resume instead of replaying it as complete ([c274ac34](https://github.com/google/adk-python/commit/c274ac347ab91ed523a1da6fee3ec7d9fdb9ff8c))
 * rerun a paused workflow node after the user answers it ([2fb877c](https://github.com/google/adk-python/commit/2fb877cd0ea5f866d2b66153b00749ebb61bdce4))
 * resolve every Claude model id rather than enumerated generations ([01919b3](https://github.com/google/adk-python/commit/01919b3794f3cd8d5bbfb2b7c319e626e0edeb8f))
 * resolve scheduler leakage and use node.clone() in DynamicNodeScheduler ([64b5b9c](https://github.com/google/adk-python/commit/64b5b9c04f358c01fb3a0d5efa4beffb18a1b444))
@@ -3678,7 +3678,7 @@ This release introduces v2.0.0 General Availability (GA) of the Google Agent Dev
 
 ### Chores
 
-* Use lazy % formatting in logging functions to fix pylint warnings [b431072](https://github.com/google/adk-python/commit/b4310727d90421a81a8afc47e3c344646ee7aee8)
+* Use lazy % formatting in logging functions to fix pylint warnings [b431072](https://github.com/google/adk-python/commit/b4310727d90421a81a8afc47e3c344646ee7aee2)
 * Update release cadence in README [decc19b](https://github.com/google/adk-python/commit/decc19b188fbf097995824f9ad7b7be1263b6338)
 * Add `custom_metadata` to DatabaseSessionService [fb009d8](https://github.com/google/adk-python/commit/fb009d8ea672bbbef4753e4cd25229dbebd0ff8d)
 * Update create_session endpoint to use Request message as post body [219815d](https://github.com/google/adk-python/commit/219815d2d7f45ac0cff28265f23fbf4f4e77163f)
