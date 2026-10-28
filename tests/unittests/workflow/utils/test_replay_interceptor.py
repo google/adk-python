@@ -478,6 +478,55 @@ def test_cross_turn_tool_node_resolved_interrupts(
   assert result.output is None
 
 
+@pytest.mark.parametrize(
+    (
+        'output',
+        'wait_for_output',
+        'finished_after_resume',
+        'expected_should_run',
+        'expected_output',
+        'expected_resume_inputs',
+    ),
+    [
+        ('done', False, True, False, 'done', None),
+        ('done', True, True, False, 'done', None),
+        (None, False, True, False, None, None),
+        (None, True, True, True, None, {'fc-1': 'ans'}),
+        ('done', False, False, True, None, {'fc-1': 'ans'}),
+    ],
+)
+def test_cross_turn_partial_resume_finished_after_resume(
+    *,
+    output: str | None,
+    wait_for_output: bool,
+    finished_after_resume: bool,
+    expected_should_run: bool,
+    expected_output: str | None,
+    expected_resume_inputs: dict[str, str] | None,
+) -> None:
+  """A partially resumed rerun_on_resume node fast-forwards once finished."""
+  recovered = _ChildScanState(
+      run_id='1',
+      output=output,
+      interrupt_ids={'fc-1', 'fc-2'},
+      resolved_ids={'fc-1'},
+      resolved_responses={'fc-1': 'ans'},
+      finished_after_resume=finished_after_resume,
+  )
+  node = BaseNode(
+      name='dummy',
+      rerun_on_resume=True,
+      wait_for_output=wait_for_output,
+  )
+
+  result = check_interception(node=node, recovered=recovered)
+
+  assert result.should_run is expected_should_run
+  assert result.output == expected_output
+  assert result.resume_inputs == expected_resume_inputs
+  assert result.interrupts == set()
+
+
 def test_cross_turn_function_call_event_still_reruns_node():
   """A rerun_on_resume node that crashed after a function_call event still reruns."""
   from google.adk.events.event import Event

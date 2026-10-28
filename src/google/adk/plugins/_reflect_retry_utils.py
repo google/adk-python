@@ -16,6 +16,12 @@ from __future__ import annotations
 
 import asyncio
 from enum import Enum
+from typing import TYPE_CHECKING
+
+from ..events._interrupts import index_open_interrupts
+
+if TYPE_CHECKING:
+  from ..agents.invocation_context import InvocationContext
 
 REFLECT_AND_RETRY_RESPONSE_TYPE = "ERROR_HANDLED_BY_REFLECT_AND_RETRY_PLUGIN"
 GLOBAL_SCOPE_KEY = "__global_reflect_and_retry_scope__"
@@ -41,6 +47,34 @@ def resolve_scope_key(scope: TrackingScope, invocation_id: str | None) -> str:
   elif scope == TrackingScope.GLOBAL:
     return GLOBAL_SCOPE_KEY
   raise ValueError(f"Unknown scope: {scope}")
+
+
+def is_paused_invocation(invocation_context: InvocationContext) -> bool:
+  """Returns whether a run ended paused on an interrupt nobody has answered.
+
+  The answer to the interrupt continues the invocation under the same
+  invocation id, resumable app or not, so its retry budget must carry over to
+  that run. A failure response from this plugin settles the interrupt, since no
+  answer will follow.
+  """
+  if invocation_context.is_aborted is True:
+    return False
+  invocation_events = [
+      event
+      for event in invocation_context.session.events
+      if event.invocation_id == invocation_context.invocation_id
+  ]
+  failed_ids = set()
+  for event in invocation_events:
+    for fr in event.get_function_responses():
+      if (
+          fr.id
+          and fr.response
+          and fr.response.get("response_type")
+          == REFLECT_AND_RETRY_RESPONSE_TYPE
+      ):
+        failed_ids.add(fr.id)
+  return bool(set(index_open_interrupts(invocation_events)) - failed_ids)
 
 
 class ScopedFailureTracker:
@@ -69,3 +103,8 @@ class ScopedFailureTracker:
       if scope_key in self._scoped_failure_counters:
         counter = self._scoped_failure_counters[scope_key]
         counter.pop(item_name, None)
+
+  async def clear_scope(self, scope_key: str) -> None:
+    """Atomically drops every failure count recorded under a scope."""
+    async with self._lock:
+      self._scoped_failure_counters.pop(scope_key, None)
