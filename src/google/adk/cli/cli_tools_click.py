@@ -108,7 +108,7 @@ def _parse_avatar_config(
   else:
     try:
       config_json = Path(value).read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
       raise click.BadParameter(
           f"could not read avatar configuration file {value!r}: {exc}",
           param=param,
