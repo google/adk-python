@@ -40,7 +40,7 @@ from google.adk.agents.readonly_context import ReadonlyContext
 # The Managed Agent id served by the Managed Agents API. Override with the
 # MANAGED_AGENT_ID environment variable if your project has access to a
 # different agent.
-_DEFAULT_AGENT_ID = 'antigravity-preview-05-2026'
+_DEFAULT_AGENT_ID = 'antigravity-preview-09-2026'
 
 
 def persona_instruction(readonly_context: ReadonlyContext) -> str:
