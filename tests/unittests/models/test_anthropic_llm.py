@@ -898,6 +898,33 @@ async def test_output_schema_without_tools_is_forced_as_a_tool_call():
   assert json.loads(part.text) == {"name": "Ada", "age": 36}
 
 
+@pytest.mark.asyncio
+async def test_truncated_output_schema_call_is_reported():
+  """A structured output cut off by max_tokens is reported, not returned."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[Content(role="user", parts=[Part.from_text(text="Who?")])],
+      config=types.GenerateContentConfig(response_schema=_Person),
+  )
+  message = _tool_use_message({"name": "Ada"})
+  message.stop_reason = "max_tokens"
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=message)
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  assert len(responses) == 1
+  assert responses[0].content is None
+  assert responses[0].error_code == types.FinishReason.MAX_TOKENS
+  assert "structured output" in responses[0].error_message
+
+
 @pytest.mark.parametrize("thinking_budget", [2048, -1])
 @pytest.mark.asyncio
 async def test_output_schema_with_thinking_is_offered_not_forced(
@@ -2952,6 +2979,53 @@ def test_message_to_generate_content_response_maps_finish_reason(
   assert response.finish_reason == expected_finish_reason
 
 
+@pytest.mark.parametrize(
+    "stop_reason", ["max_tokens", "model_context_window_exceeded"]
+)
+def test_message_to_generate_content_response_reports_truncated_tool_use(
+    stop_reason,
+):
+  """A truncated tool_use is reported, not returned as a call."""
+  message = anthropic_types.Message(
+      id="msg_truncated",
+      content=[
+          anthropic_types.TextBlock(
+              text="Writing the file.", type="text", citations=None
+          ),
+          anthropic_types.ToolUseBlock(
+              id="toolu_1",
+              name="write_file",
+              input={"path": "app.py", "content": "def main():\n    retu"},
+              type="tool_use",
+          ),
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="max_tokens",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=5,
+          output_tokens=2,
+          cache_creation_input_tokens=7,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+  # The SDK's StopReason literal lacks "model_context_window_exceeded",
+  # so it is assigned after construction, as an unvalidated API response.
+  message.stop_reason = stop_reason
+
+  response = message_to_generate_content_response(message)
+
+  assert response.content is None
+  assert response.error_code == types.FinishReason.MAX_TOKENS
+  assert response.finish_reason == types.FinishReason.MAX_TOKENS
+  assert "max_output_tokens" in response.error_message
+  assert response.cache_creation_token_count == 7
+
+
 def test_message_to_generate_content_response_reports_cache_creation_tokens():
   """cache_creation_input_tokens maps to usage_metadata.cache_creation_input_tokens."""
   from google.adk.models.anthropic_llm import message_to_generate_content_response
@@ -4474,6 +4548,70 @@ async def test_streaming_sets_finish_reason():
 
   final = responses[-1]
   assert final.finish_reason == types.FinishReason.MAX_TOKENS
+
+
+@pytest.mark.parametrize(
+    "stop_reason", ["max_tokens", "model_context_window_exceeded"]
+)
+@pytest.mark.asyncio
+async def test_streaming_truncated_tool_use_is_reported(stop_reason):
+  """A streamed tool_use cut off mid-input ends in a MAX_TOKENS error."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(
+                  input_tokens=5,
+                  output_tokens=0,
+                  cache_creation_input_tokens=7,
+                  cache_read_input_tokens=0,
+              ),
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.ToolUseBlock(
+              id="toolu_1", name="write_file", input={}, type="tool_use"
+          ),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.InputJSONDelta(
+              partial_json='{"path": "app.py", "content": "def ma',
+              type="input_json_delta",
+          ),
+      ),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason=stop_reason),
+          usage=MagicMock(output_tokens=1),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Write")])],
+      config=types.GenerateContentConfig(system_instruction="Test"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  final = responses[-1]
+  assert final.content is None
+  assert final.error_code == types.FinishReason.MAX_TOKENS
+  assert final.finish_reason == types.FinishReason.MAX_TOKENS
+  assert final.cache_creation_token_count == 7
 
 
 def _make_rate_limit_error() -> RateLimitError:
