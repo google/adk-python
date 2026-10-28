@@ -1292,3 +1292,65 @@ def test_content_conversion_without_function_response_media() -> None:
       'tool_call_id': 'call_1',
       'content': '{"status": "ok"}',
   }]
+
+
+def test_chat_completions_non_object_tool_args_are_coerced_consistently():
+  """Non-object JSON tool arguments must not crash or become non-dict args."""
+  from google.adk.models.apigee_llm import ChatCompletionsResponseHandler
+
+  cases = ['[1, 2]', '"x"', '5', 'null']
+  for args in cases:
+    resp = {
+        'model': 'm',
+        'choices': [{
+            'finish_reason': 'tool_calls',
+            'message': {
+                'role': 'assistant',
+                'content': None,
+                'tool_calls': [{
+                    'id': 'c1',
+                    'type': 'function',
+                    'function': {'name': 'w', 'arguments': args},
+                }],
+            },
+        }],
+    }
+    result = ChatCompletionsResponseHandler().process_response(resp)
+    got = [
+        p.function_call.args
+        for p in result.content.parts
+        if p.function_call
+    ]
+    assert got == [{}], args
+
+    handler = ChatCompletionsResponseHandler()
+    list(
+        handler.process_chunk({
+            'model': 'm',
+            'choices': [{
+                'delta': {
+                    'role': 'assistant',
+                    'tool_calls': [{
+                        'index': 0,
+                        'id': 'c1',
+                        'type': 'function',
+                        'function': {'name': 'w', 'arguments': args},
+                    }],
+                },
+                'finish_reason': None,
+            }],
+        })
+    )
+    finals = list(
+        handler.process_chunk({
+            'model': 'm',
+            'choices': [{'delta': {}, 'finish_reason': 'tool_calls'}],
+        })
+    )
+    assert finals, args
+    stream_args = [
+        p.function_call.args
+        for p in finals[-1].content.parts
+        if p.function_call
+    ]
+    assert stream_args == [{}], args
