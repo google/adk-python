@@ -415,3 +415,19 @@ MCP_HTTP_CASE = FunctionalTestCase(
         ),
     },
 )
+
+# An agent whose final answer is grounded by a built-in search tool. Pins the
+# `adk.experimental.grounding.*` attributes across both model-call spans:
+# `call_llm` (legacy span content off) records the counts only, while
+# `generate_content` (experimental span content on) also records the queries
+# and distinct source URIs; the ungrounded tool-calling turn before it records
+# neither.
+GROUNDING_CASE = FunctionalTestCase(
+    test_id="grounding",
+    scenario="agent",
+    semconv_opt_in=EXPERIMENTAL_OPT_IN,
+    capture_content="span_and_event",
+    schema_version=1,
+    experimental_telemetry=True,
+    grounding=True,
+)

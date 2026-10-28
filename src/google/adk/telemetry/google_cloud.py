@@ -33,13 +33,13 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.semconv._incubating.attributes.cloud_attributes import CLOUD_RESOURCE_ID as CLOUD_RESOURCE_ID
 from typing_extensions import override
 
 from ._agent_engine import _get_agent_engine_metrics_setup
 from ._agent_engine import telemetry_user_agent_headers
 from ._agent_engine_metric_exporter import MIN_EXPORT_INTERVAL_MS
 from ._gcp_resource import _fetch_project
-from ._gcp_resource import CLOUD_RESOURCE_ID as CLOUD_RESOURCE_ID
 from ._gcp_resource import get_gcp_resource as get_gcp_resource
 from .setup import OTelHooks
 
@@ -109,9 +109,9 @@ def get_gcp_exporters(
   """Returns GCP OTel exporters to be used in the app.
 
   Args:
-    enable_tracing: whether to enable tracing to Cloud Trace.
-    enable_metrics: whether to enable reporting metrics to Cloud Monitoring.
-    enable_logging: whether to enable sending logs to Cloud Logging.
+    enable_cloud_tracing: whether to enable tracing to Cloud Trace.
+    enable_cloud_metrics: whether to enable reporting metrics to Cloud Monitoring.
+    enable_cloud_logging: whether to enable sending logs to Cloud Logging.
     google_auth: optional custom credentials and project_id. google.auth.default() used when this is omitted.
   """
 
@@ -137,8 +137,8 @@ def get_gcp_exporters(
 
   span_processors: list[SpanProcessor] = []
   if enable_cloud_tracing:
-    span_processor = _get_gcp_span_exporter(credentials)
-    span_processors.append(span_processor)
+    if (span_processor := _get_gcp_span_exporter(credentials)) is not None:
+      span_processors.append(span_processor)
 
   metric_readers: list[MetricReader] = []
   if enable_cloud_metrics:
@@ -160,11 +160,23 @@ def get_gcp_exporters(
   )
 
 
-def _get_gcp_span_exporter(credentials: Credentials) -> SpanProcessor:
-  """Adds OTEL span exporter to telemetry.googleapis.com"""
+def _get_gcp_span_exporter(credentials: Credentials) -> SpanProcessor | None:
+  """Adds OTEL span exporter to telemetry.googleapis.com.
+
+  Returns None (disabling cloud trace export) if the OTLP-over-HTTP exporter
+  package is unavailable, instead of raising.
+  """
+
+  try:
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+  except (ImportError, AttributeError):
+    logger.warning(
+        "opentelemetry-exporter-otlp-proto-http is not installed; cloud trace"
+        " export is disabled. Install google-adk[otel] to enable it."
+    )
+    return None
 
   from google.auth.transport.requests import AuthorizedSession
-  from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
   session = AuthorizedSession(credentials=credentials)
 
@@ -203,7 +215,7 @@ def _get_gcp_otlp_metric_exporter(
   except (ImportError, AttributeError):
     logger.warning(
         "opentelemetry-exporter-otlp-proto-http is not installed; request-path"
-        " metric export is disabled."
+        " metric export is disabled. Install google-adk[otel] to enable it."
     )
     return None
 
@@ -356,7 +368,7 @@ def _get_gcp_logs_exporter(
   except (ImportError, AttributeError):
     logger.warning(
         "opentelemetry-exporter-otlp-proto-http is not installed; logging to"
-        + " Google Cloud is disabled."
+        " Google Cloud is disabled. Install google-adk[otel] to enable it."
     )
     return None
 

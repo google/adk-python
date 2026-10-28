@@ -17,12 +17,14 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from unittest import mock
 from unittest.mock import AsyncMock
 
 from google.adk.models.apigee_llm import ApigeeLlm
+from google.adk.models.apigee_llm import ChatCompletionsResponseHandler
 from google.adk.models.apigee_llm import CompletionsHTTPClient
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -814,6 +816,85 @@ async def test_streaming_chat_completions_malformed_json_skipped():
   assert responses[1].content.parts[0].text == ' World'
 
 
+def test_streaming_tool_call_without_index_is_one_call() -> None:
+  """Streamed argument fragments without an index belong to the call before."""
+  handler = ChatCompletionsResponseHandler()
+  chunks: list[dict[str, object]] = [
+      {
+          'choices': [{
+              'delta': {
+                  'role': 'assistant',
+                  'tool_calls': [{
+                      'id': 'call_1',
+                      'type': 'function',
+                      'function': {'name': 'get_weather', 'arguments': ''},
+                  }],
+              }
+          }]
+      },
+      {
+          'choices': [{
+              'delta': {
+                  'tool_calls': [{'function': {'arguments': '{"city": '}}]
+              }
+          }]
+      },
+      {
+          'choices': [{
+              'delta': {'tool_calls': [{'function': {'arguments': '"Paris"}'}}]}
+          }]
+      },
+      {'choices': [{'delta': {}, 'finish_reason': 'tool_calls'}]},
+  ]
+
+  responses = [r for chunk in chunks for r in handler.process_chunk(chunk)]
+
+  function_calls = [
+      p.function_call for p in _response_parts(responses[-1]) if p.function_call
+  ]
+  assert len(function_calls) == 1
+  assert function_calls[0].name == 'get_weather'
+  assert function_calls[0].id == 'call_1'
+  assert function_calls[0].args == {'city': 'Paris'}
+
+
+def test_streaming_parallel_tool_calls_without_index_stay_apart() -> None:
+  """Calls that open with their own id get their own slot without an index."""
+  handler = ChatCompletionsResponseHandler()
+
+  def delta(tool_call: dict[str, object]) -> dict[str, object]:
+    return {'choices': [{'delta': {'tool_calls': [tool_call]}}]}
+
+  chunks: list[dict[str, object]] = [
+      delta({
+          'id': 'call_a',
+          'type': 'function',
+          'function': {'name': 'get_weather', 'arguments': '{"city": '},
+      }),
+      delta({'function': {'arguments': '"Paris"}'}}),
+      delta({
+          'id': 'call_b',
+          'type': 'function',
+          'function': {'name': 'get_time', 'arguments': '{"zone": '},
+      }),
+      delta({
+          'id': 'call_b',
+          'function': {'arguments': '"UTC"}'},
+      }),
+      {'choices': [{'delta': {}, 'finish_reason': 'tool_calls'}]},
+  ]
+
+  responses = [r for chunk in chunks for r in handler.process_chunk(chunk)]
+
+  function_calls = [
+      p.function_call for p in _response_parts(responses[-1]) if p.function_call
+  ]
+  assert [(c.id, c.name, c.args) for c in function_calls] == [
+      ('call_a', 'get_weather', {'city': 'Paris'}),
+      ('call_b', 'get_time', {'zone': 'UTC'}),
+  ]
+
+
 @pytest.mark.asyncio
 async def test_streaming_chat_completions_malformed_tool_call_args_raises():
   """Malformed tool call arguments raise ValueError and abort the stream."""
@@ -1292,3 +1373,51 @@ def test_content_conversion_without_function_response_media() -> None:
       'tool_call_id': 'call_1',
       'content': '{"status": "ok"}',
   }]
+
+
+def test_streaming_fragment_without_id_follows_last_resolved_call() -> None:
+  """A fragment without an id continues the call that was resolved last."""
+  handler = ChatCompletionsResponseHandler()
+
+  def send(call: dict[str, Any]) -> types.FunctionCall:
+    responses = list(
+        handler.process_chunk({'choices': [{'delta': {'tool_calls': [call]}}]})
+    )
+    function_call = _response_parts(responses[0])[0].function_call
+    assert function_call is not None
+    return function_call
+
+  send({
+      'id': 'call_a',
+      'function': {'name': 'weather', 'arguments': '{"city": '},
+  })
+  send(
+      {'id': 'call_b', 'function': {'name': 'clock', 'arguments': '{"zone": '}}
+  )
+
+  assert send({'id': 'call_a', 'function': {'arguments': '"Pa'}}).id == 'call_a'
+  assert send({'function': {'arguments': 'ris"}'}}).id == 'call_a'
+
+
+def test_streaming_named_fragments_without_id_stay_apart() -> None:
+  """Complete calls with a name but no index or id each get their own slot."""
+  handler = ChatCompletionsResponseHandler()
+
+  def delta(tool_call: dict[str, object]) -> dict[str, object]:
+    return {'choices': [{'delta': {'tool_calls': [tool_call]}}]}
+
+  chunks: list[dict[str, object]] = [
+      delta({'function': {'name': 'f1', 'arguments': '{"a": 1}'}}),
+      delta({'function': {'name': 'f2', 'arguments': '{"b": 2}'}}),
+      {'choices': [{'delta': {}, 'finish_reason': 'tool_calls'}]},
+  ]
+
+  responses = [r for chunk in chunks for r in handler.process_chunk(chunk)]
+
+  function_calls = [
+      p.function_call for p in _response_parts(responses[-1]) if p.function_call
+  ]
+  assert [(c.name, c.args) for c in function_calls] == [
+      ('f1', {'a': 1}),
+      ('f2', {'b': 2}),
+  ]

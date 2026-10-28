@@ -12,18 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""MongoDB-backed memory service for long-term event recall."""
+
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
+from collections.abc import Sequence
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
+import itertools
 import logging
 import re
 import threading
 from typing import Any
 from typing import TYPE_CHECKING
+import unicodedata
 
+from google.genai import types
+from pydantic import ValidationError
 from typing_extensions import override
 
 from . import _client
@@ -38,12 +46,35 @@ from ...memory.memory_entry import MemoryEntry
 if TYPE_CHECKING:
   from google.genai import Client
   from pymongo import MongoClient
+  from pymongo import ReplaceOne
+  from pymongo.collection import Collection
 
+  from ...events.event import Event
   from ...sessions.session import Session
+else:
+  try:
+    from pymongo import ReplaceOne
+  except ImportError:
+
+    class ReplaceOne:
+      """Fallback when pymongo is not installed."""
+
+      def __init__(
+          self,
+          filter: Mapping[str, Any],  # pylint: disable=redefined-builtin
+          replacement: dict[str, Any],
+          upsert: bool = False,
+      ) -> None:
+        self._filter = filter
+        self._doc = replacement
+        self._upsert = upsert
+
 
 logger = logging.getLogger("google_adk." + __name__)
 
 DEFAULT_MEMORIES_COLLECTION = "memories"
+_DEFAULT_MAX_RESULTS = 50
+_UNKNOWN_SESSION_ID = "__unknown_session_id__"
 
 # Retrieval modes for the `retrieval_mode` constructor argument.
 KEYWORD_RETRIEVAL = "keyword"
@@ -66,9 +97,10 @@ _DEFAULT_NUM_CANDIDATES = 100
 # memories indefinitely.
 _DEFAULT_MEMORY_TTL_DAYS = 7
 
-# Recommended secondary index, created only when `ensure_indexes=True`. It
-# covers the `search_memory` lookup (app/user equality plus a multikey `$in`
-# on keywords); writes are keyed by `_id`, which MongoDB indexes implicitly.
+# Recommended secondary index, created on first use unless
+# `ensure_indexes=False`. It covers the keyword-mode `search_memory` lookup
+# (app/user equality plus a multikey `$in` on keywords); writes are keyed by
+# `_id`, which MongoDB indexes implicitly.
 _MEMORIES_RECALL_INDEX_NAME = "app_user_keywords"
 _MEMORIES_RECALL_INDEX_KEYS = [("app_name", 1), ("user_id", 1), ("keywords", 1)]
 
@@ -79,7 +111,7 @@ _MEMORIES_TTL_INDEX_NAME = "memory_ttl"
 
 # Compact English stop-word list ignored when extracting keywords. Kept
 # intentionally short; callers can pass their own set via `stop_words`.
-DEFAULT_STOP_WORDS = {
+DEFAULT_STOP_WORDS = frozenset({
     "a",
     "an",
     "and",
@@ -124,7 +156,13 @@ DEFAULT_STOP_WORDS = {
     "with",
     "you",
     "your",
-}
+})
+
+
+def _is_latin(c: str) -> bool:
+  if c.isascii():
+    return c.isalnum() or c == "_"
+  return unicodedata.name(c, "").startswith("LATIN")
 
 
 @experimental(FeatureName.MONGODB_MEMORY_SERVICE)
@@ -157,7 +195,10 @@ class MongoDbMemoryService(BaseMemoryService):
           database_name="my_app",
       )
       runner = Runner(
-          agent=agent, app_name="my_app", memory_service=memory_service
+          agent=agent,
+          app_name="my_app",
+          session_service=InMemorySessionService(),
+          memory_service=memory_service,
       )
       ```
   """
@@ -167,11 +208,11 @@ class MongoDbMemoryService(BaseMemoryService):
       *,
       database_name: str,
       connection_string: str | None = None,
-      mongo_client: MongoClient | None = None,
+      mongo_client: MongoClient[dict[str, Any]] | None = None,
       memories_collection: str = DEFAULT_MEMORIES_COLLECTION,
       stop_words: set[str] | None = None,
+      max_results: int = _DEFAULT_MAX_RESULTS,
       ensure_indexes: bool = True,
-      max_results: int = 20,
       retrieval_mode: str = KEYWORD_RETRIEVAL,
       genai_client: Client | None = None,
       embedding_model_name: str = _DEFAULT_EMBEDDING_MODEL_NAME,
@@ -179,7 +220,7 @@ class MongoDbMemoryService(BaseMemoryService):
       auto_embedding_model_name: str = _DEFAULT_AUTO_EMBEDDING_MODEL,
       vector_index_name: str = _DEFAULT_MEMORY_VECTOR_INDEX_NAME,
       memory_ttl_days: int | None = _DEFAULT_MEMORY_TTL_DAYS,
-  ):
+  ) -> None:
     """Initializes the MongoDB memory service.
 
     Args:
@@ -192,16 +233,18 @@ class MongoDbMemoryService(BaseMemoryService):
       memories_collection: Collection name for memory documents.
       stop_words: Words to ignore when extracting keywords (keyword mode).
         Defaults to a standard English stop-word list.
-      ensure_indexes: Create the recommended index for the retrieval mode on
+      max_results: Maximum number of memories returned per query (keyword
+        mode: ranked by overlap and recency; vector modes: nearest
+        neighbors).
+      ensure_indexes: Create the recommended indexes for the retrieval mode on
         first use (default True): the `app_user_keywords` multikey index in
-        keyword mode, or the `memory_vector_index` vector search index in
-        vector/auto modes. Index creation is idempotent. Without the
-        `createIndex`/`createSearchIndexes` privilege a warning is logged
-        once and reads fall back to unindexed behavior; pass False to skip
-        the attempt entirely. Vector search indexes build asynchronously —
-        recall works once the index reports READY.
-      max_results: Maximum number of memories a search returns (keyword mode:
-        ranked by overlap and recency; vector modes: nearest neighbors).
+        keyword mode or the `memory_vector_index` vector search index in
+        vector/auto modes, plus the `memory_ttl` TTL index when
+        `memory_ttl_days` is set. Index creation is idempotent. Without the
+        `createIndex`/`createSearchIndexes` privilege a warning is logged once
+        and reads fall back to unindexed behavior; pass False to skip the
+        attempt entirely. Vector search indexes build asynchronously — recall
+        works once the index reports READY.
       retrieval_mode: "keyword" (default), "vector", or "auto" — see the
         class docstring. The mode must match how the stored memories were
         ingested: memories ingested in one mode are invisible to the others.
@@ -225,11 +268,11 @@ class MongoDbMemoryService(BaseMemoryService):
         linger briefly past their `expire_at`.
 
     Raises:
-      ValueError: If `max_results` is not positive, `retrieval_mode` is
-        unknown, or `memory_ttl_days` is not positive.
+      ValueError: If `max_results` or `memory_ttl_days` is not positive, or
+        `retrieval_mode` is unknown.
     """
-    if max_results < 1:
-      raise ValueError("max_results must be a positive integer.")
+    if max_results <= 0:
+      raise ValueError("max_results must be positive.")
     if memory_ttl_days is not None and memory_ttl_days < 1:
       raise ValueError(
           "memory_ttl_days must be a positive integer or None (no expiry)."
@@ -244,7 +287,7 @@ class MongoDbMemoryService(BaseMemoryService):
           "Only one of `connection_string` and `mongo_client` may be provided."
       )
     if mongo_client is not None:
-      self._client = mongo_client
+      self._client: MongoClient[dict[str, Any]] = mongo_client
       self._owns_client = False
     elif connection_string is not None:
       self._client = _client.get_mongo_client(connection_string)
@@ -254,13 +297,15 @@ class MongoDbMemoryService(BaseMemoryService):
           "Either `connection_string` or `mongo_client` must be provided."
       )
     self._database_name = database_name
-    self.memories_collection = memories_collection
-    self.stop_words = (
-        stop_words if stop_words is not None else DEFAULT_STOP_WORDS
+    self._memories_collection = memories_collection
+    self._stop_words = (
+        {unicodedata.normalize("NFC", word).lower() for word in stop_words}
+        if stop_words is not None
+        else set(DEFAULT_STOP_WORDS)
     )
+    self._max_results = max_results
     self._ensure_indexes = ensure_indexes
     self._indexes_ensured = False
-    self._max_results = max_results
     self._retrieval_mode = retrieval_mode
     self._genai_client = genai_client
     self._embedding_model_name = embedding_model_name
@@ -269,19 +314,31 @@ class MongoDbMemoryService(BaseMemoryService):
     self._vector_index_name = vector_index_name
     self._memory_ttl_days = memory_ttl_days
     # Serializes first-use index creation across the worker threads that
-    # `asyncio.to_thread` runs `_ensure_indexes_once` on.
+    # `asyncio.to_thread` runs `_ensure_indexes_once` on (vector index
+    # creation is not concurrency-safe on a cold collection).
     self._index_lock = threading.Lock()
 
-  def _memories(self):
-    return self._client[self._database_name][self.memories_collection]
+  def _memories(self) -> Collection[dict[str, Any]]:
+    return self._client[self._database_name][self._memories_collection]
+
+  @staticmethod
+  def _memory_key(
+      app_name: str, user_id: str, session_id: str, event_id: str
+  ) -> dict[str, str]:
+    return {
+        "app_name": app_name,
+        "user_id": user_id,
+        "session_id": session_id,
+        "event_id": event_id,
+    }
 
   def _ensure_indexes_once(self) -> None:
     """Creates the recommended secondary indexes on first use, if enabled.
 
     Index creation is idempotent on the server, and the guard flag only
-    skips work in this process. A deployment without the `createIndex`
-    privilege (e.g. a least-privilege runtime user) logs a warning once and
-    falls back to unindexed reads rather than failing every operation.
+    skips work in this process. A missing `createIndex` privilege logs one
+    warning and falls back to unindexed reads; any other failure propagates
+    and is retried on the next operation.
     """
     if not self._ensure_indexes or self._indexes_ensured:
       return
@@ -289,29 +346,43 @@ class MongoDbMemoryService(BaseMemoryService):
       # Re-check under the lock: a concurrent first call may have done it.
       if self._indexes_ensured:
         return
-      try:
-        if self._retrieval_mode == KEYWORD_RETRIEVAL:
-          self._memories().create_index(
-              _MEMORIES_RECALL_INDEX_KEYS, name=_MEMORIES_RECALL_INDEX_NAME
-          )
-        else:
-          self._create_vector_index()
-        self._create_ttl_index()
-      except (
-          Exception
-      ) as exc:  # pymongo stays an optional import; match by shape.
-        if not _client.is_index_privilege_error(exc):
-          # Unexpected failure: leave the flag unset so a later operation
-          # retries after the deployment recovers.
-          raise
-        logger.warning(
-            "MongoDbMemoryService could not create the recommended index"
-            " (createIndex privilege missing); reads will fall back to"
-            " unindexed behavior. Pass ensure_indexes=False to silence this,"
-            " or grant the privilege. Details: %s",
-            exc,
+      if self._retrieval_mode == KEYWORD_RETRIEVAL:
+        self._create_index(
+            lambda: self._memories().create_index(
+                _MEMORIES_RECALL_INDEX_KEYS, name=_MEMORIES_RECALL_INDEX_NAME
+            )
         )
+      else:
+        self._create_index(self._create_vector_index)
+      self._create_index(self._create_ttl_index)
       self._indexes_ensured = True
+
+  def _create_index(self, create) -> None:
+    """Runs one index-creation call, tolerating per-index conflicts.
+
+    Code 85 (IndexOptionsConflict) means an equivalent index already exists
+    under another name/options, so reads are still indexed; a missing
+    `createIndex` privilege warns once and falls back to unindexed reads.
+    Either way the remaining indexes are still attempted. Any other failure
+    propagates so the next operation retries (the guard flag stays unset).
+    """
+    if create is None:
+      return
+    # pymongo is an optional import, so the error is matched by shape.
+    try:
+      create()
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+      if getattr(exc, "code", None) == 85:
+        return
+      if not _client.is_index_privilege_error(exc):
+        raise
+      logger.warning(
+          "MongoDbMemoryService could not create the recommended index"
+          " (createIndex privilege missing); reads will fall back to"
+          " unindexed scans. Pass ensure_indexes=False to silence this, or"
+          " grant the privilege. Details: %s",
+          exc,
+      )
 
   def _create_ttl_index(self) -> None:
     """Creates the TTL index that expires memories after `memory_ttl_days`.
@@ -319,7 +390,7 @@ class MongoDbMemoryService(BaseMemoryService):
     The index targets the `expire_at` date field written at ingest. With
     `expireAfterSeconds=0` MongoDB's TTL monitor deletes a document as soon
     as its `expire_at` passes, so the per-document date carries the retention
-    (re-ingesting a session refreshes it). No-op when no TTL is configured.
+    (re-ingesting events refreshes it). No-op when no TTL is configured.
     """
     if self._memory_ttl_days is None:
       return
@@ -338,9 +409,9 @@ class MongoDbMemoryService(BaseMemoryService):
     # createSearchIndexes rejects a collection that does not exist yet, which
     # is exactly the state of a fresh deployment on its first ingest.
     database = self._client[self._database_name]
-    if self.memories_collection not in database.list_collection_names():
+    if self._memories_collection not in database.list_collection_names():
       try:
-        database.create_collection(self.memories_collection)
+        database.create_collection(self._memories_collection)
       except Exception as exc:
         # CollectionInvalid (code 48): another process created it first.
         if getattr(exc, "code", None) != 48:
@@ -377,9 +448,24 @@ class MongoDbMemoryService(BaseMemoryService):
     )
 
   def _extract_keywords(self, text: str) -> set[str]:
-    """Extracts lowercase keywords from text, ignoring stop words."""
-    words = re.findall(r"[a-z0-9]+", text.lower())
-    return {word for word in words if word not in self.stop_words}
+    """Extracts lowercase keywords from text, ignoring stop words.
+
+    A token mixing Latin and non-Latin scripts also yields each of its
+    single-script runs, so "MongoDB" matches "使用MongoDB存储", the same way
+    the in-memory and SQLite memory services tokenize.
+    """
+    normalized = unicodedata.normalize("NFC", text)
+    words: set[str] = set()
+    for word in re.findall(r"\w+", normalized):
+      words.add(word.lower())
+      if not word.isascii():
+        # Split before lowercasing: "İ".lower() is "i" plus U+0307, which is
+        # not Latin, so splitting afterwards stores a bare combining mark.
+        words.update(
+            "".join(group).lower()
+            for _, group in itertools.groupby(word, _is_latin)
+        )
+    return words - self._stop_words
 
   async def _embed_texts(self, texts: list[str]) -> list[list[float]]:
     """Embeds memory texts in one batch call with the configured model."""
@@ -409,74 +495,102 @@ class MongoDbMemoryService(BaseMemoryService):
 
   @override
   async def add_session_to_memory(self, session: Session) -> None:
-    """Ingests the session's text events into the memory collection.
+    """Ingests the session's text events into the memory collection."""
+    await self.add_events_to_memory(
+        app_name=session.app_name,
+        user_id=session.user_id,
+        events=session.events,
+        session_id=session.id,
+    )
 
-    Ingestion is idempotent: memory documents are keyed by
-    `<app_name>/<user_id>/<session_id>/<event_id>`, so re-adding a session
-    overwrites its memories rather than duplicating them. In vector mode the
-    texts are embedded with one batch call before the write; in auto mode
+  @override
+  async def add_events_to_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      events: Sequence[Event],
+      session_id: str | None = None,
+      custom_metadata: Mapping[str, object] | None = None,
+  ) -> None:
+    """Ingests text events into the memory collection.
+
+    Ingestion is idempotent: memory documents are keyed by a compound `_id`
+    of `(app_name, user_id, session_id, event_id)`, so re-adding events
+    overwrites their memories rather than duplicating them. In vector mode
+    the texts are embedded with one batch call before the write; in auto mode
     plain text is stored and Atlas embeds it when the autoEmbed index
     processes the document.
     """
-    await asyncio.to_thread(self._ensure_indexes_once)
+    del custom_metadata  # Not supported by MongoDB memory service.
+    scoped_session_id = session_id or _UNKNOWN_SESSION_ID
 
-    pairs: list[tuple[Any, str]] = []
-    for event in session.events:
+    pairs: list[tuple[Event, str, list[Any]]] = []
+    for event in events:
       if not event.content or not event.content.parts:
         continue
-      text = " ".join([part.text for part in event.content.parts if part.text])
+      visible_parts = [part for part in event.content.parts if not part.thought]
+      text = " ".join([part.text for part in visible_parts if part.text])
       if not text:
         continue
-      pairs.append((event, text))
+      pairs.append((event, text, visible_parts))
     if not pairs:
       return
 
     embeddings: list[list[float]] | None = None
     if self._retrieval_mode == VECTOR_RETRIEVAL:
-      embeddings = await self._embed_texts([text for _, text in pairs])
+      embeddings = await self._embed_texts([text for _, text, _ in pairs])
 
-    # One expiry for the whole batch, so every memory from this session ages
-    # out together. Re-ingesting a session refreshes expire_at (upsert).
+    # One expiry for the whole batch, so every memory ingested together ages
+    # out together. Re-ingesting events refreshes expire_at (upsert).
     expire_at = None
     if self._memory_ttl_days is not None:
       expire_at = datetime.now(timezone.utc) + timedelta(
           days=self._memory_ttl_days
       )
 
-    def _add() -> None:
-      # pymongo is imported lazily here: it stays an optional dependency
-      # until a MongoDB-backed service is actually constructed.
-      from pymongo import ReplaceOne  # pylint: disable=import-outside-toplevel
+    operations: list[ReplaceOne[dict[str, Any]]] = []
+    for i, (event, text, visible_parts) in enumerate(pairs):
+      document: dict[str, Any] = {
+          "app_name": app_name,
+          "user_id": user_id,
+          "session_id": scoped_session_id,
+          "author": event.author,
+          "text": text,
+          "content": (
+              event.content.model_copy(
+                  update={"parts": visible_parts}
+              ).model_dump(exclude_none=True, mode="json")
+          ),
+          "timestamp": event.timestamp,
+      }
+      if expire_at is not None:
+        document["expire_at"] = expire_at
+      if self._retrieval_mode == KEYWORD_RETRIEVAL:
+        keywords = self._extract_keywords(text)
+        if not keywords:
+          continue
+        document["keywords"] = sorted(keywords)
+      elif embeddings is not None:
+        document["embedding"] = embeddings[i]
+      operations.append(
+          ReplaceOne(
+              {
+                  "_id": self._memory_key(
+                      app_name, user_id, scoped_session_id, event.id
+                  )
+              },
+              document,
+              upsert=True,
+          )
+      )
 
-      # One bulk_write round-trip, not one replace_one per event.
-      operations = []
-      for i, (event, text) in enumerate(pairs):
-        document = {
-            "app_name": session.app_name,
-            "user_id": session.user_id,
-            "session_id": session.id,
-            "author": event.author,
-            "text": text,
-            "content": event.content.model_dump(exclude_none=True, mode="json"),
-            "timestamp": event.timestamp,
-        }
-        if expire_at is not None:
-          document["expire_at"] = expire_at
-        if self._retrieval_mode == KEYWORD_RETRIEVAL:
-          keywords = self._extract_keywords(text)
-          if not keywords:
-            continue
-          document["keywords"] = sorted(keywords)
-        elif embeddings is not None:
-          document["embedding"] = embeddings[i]
-        memory_id = (
-            f"{session.app_name}/{session.user_id}/{session.id}/{event.id}"
-        )
-        operations.append(ReplaceOne({"_id": memory_id}, document, upsert=True))
+    def _write() -> None:
+      self._ensure_indexes_once()
       if operations:
         self._memories().bulk_write(operations, ordered=False)
 
-    await asyncio.to_thread(_add)
+    await asyncio.to_thread(_write)
 
   @override
   async def search_memory(
@@ -488,81 +602,97 @@ class MongoDbMemoryService(BaseMemoryService):
     and runs `$vectorSearch`; auto mode sends the query text to the autoEmbed
     index. All modes cap results at `max_results`.
     """
-    await asyncio.to_thread(self._ensure_indexes_once)
+    query_vector: list[float] | None = None
+    if self._retrieval_mode == VECTOR_RETRIEVAL:
+      # Embed in async context; the genai client's async transport needs a
+      # running loop, which a worker thread would not have.
+      query_vector = await _search_tool._embed_query(
+          query=query,
+          model_name=self._embedding_model_name,
+          output_dimensionality=self._embedding_output_dimensionality,
+          genai_client=self._genai_client,
+      )
 
+    # Keyword mode: a query with no usable keywords matches nothing, so skip
+    # the aggregate — and index creation — entirely.
+    query_keywords: list[str] | None = None
     if self._retrieval_mode == KEYWORD_RETRIEVAL:
       keywords = self._extract_keywords(query)
       if not keywords:
         return SearchMemoryResponse()
-      docs = await asyncio.to_thread(
-          self._keyword_search, app_name, user_id, keywords
-      )
-    else:
-      docs = await self._vector_search(app_name, user_id, query)
+      query_keywords = sorted(keywords)
 
-    seen = set()
-    memories = []
+    def _search() -> list[dict[str, Any]]:
+      self._ensure_indexes_once()
+      if self._retrieval_mode == KEYWORD_RETRIEVAL:
+        return self._keyword_search(app_name, user_id, query_keywords or [])
+      return self._vector_search_docs(app_name, user_id, query, query_vector)
+
+    docs = await asyncio.to_thread(_search)
+
+    seen: set[tuple[str | None, str, str | None]] = set()
+    memories: list[MemoryEntry] = []
     for doc in docs:
       try:
-        from google.genai import types
-
         content = types.Content.model_validate(doc["content"])
-        entry = MemoryEntry(
-            id=doc.get("_id"),
-            content=content,
-            author=doc.get("author"),
-            timestamp=_utils.format_timestamp(doc.get("timestamp", 0.0)),
-        )
-      except Exception as exc:
-        logger.warning(f"Failed to parse memory entry: {exc}")
+      except (KeyError, ValidationError) as exc:
+        logger.warning("Failed to parse memory entry: %s", exc)
         continue
+      raw_id = doc.get("_id")
+      event_id = raw_id.get("event_id") if isinstance(raw_id, dict) else raw_id
+      entry = MemoryEntry(
+          id=event_id if isinstance(event_id, str) else None,
+          content=content,
+          author=doc.get("author"),
+          timestamp=_utils.format_timestamp(doc.get("timestamp", 0.0)),
+      )
       content_text = (
-          " ".join([part.text for part in content.parts if part.text])
+          " ".join([
+              part.text
+              for part in content.parts
+              if part.text and not part.thought
+          ])
           if content.parts
           else ""
       )
       key = (entry.author, content_text, entry.timestamp)
-      if key not in seen:
-        seen.add(key)
-        memories.append(entry)
+      if key in seen:
+        continue
+      seen.add(key)
+      memories.append(entry)
 
     return SearchMemoryResponse(memories=memories)
 
   def _keyword_search(
-      self, app_name: str, user_id: str, keywords: set[str]
+      self, app_name: str, user_id: str, query_keywords: list[str]
   ) -> list[dict[str, Any]]:
     """Keyword recall: overlap-ranked, capped — all server-side."""
-    # Ranking and the limit run server-side: a common keyword can match a
-    # large share of the memories, and without `$limit` every one of them
-    # crosses the wire.
-    pipeline = [
+    pipeline: list[dict[str, Any]] = [
         {
             "$match": {
                 "app_name": app_name,
                 "user_id": user_id,
-                "keywords": {"$in": sorted(keywords)},
+                "keywords": {"$in": query_keywords},
             }
         },
         {
             "$addFields": {
-                "overlap": {
-                    "$size": {
-                        "$filter": {
-                            "input": "$keywords",
-                            "as": "keyword",
-                            "cond": {"$in": ["$$keyword", sorted(keywords)]},
-                        }
-                    }
+                "_score": {
+                    "$size": {"$setIntersection": ["$keywords", query_keywords]}
                 }
             }
         },
-        {"$sort": {"overlap": -1, "timestamp": -1}},
+        {"$sort": {"_score": -1, "timestamp": -1}},
         {"$limit": self._max_results},
     ]
     return list(self._memories().aggregate(pipeline))
 
-  async def _vector_search(
-      self, app_name: str, user_id: str, query: str
+  def _vector_search_docs(
+      self,
+      app_name: str,
+      user_id: str,
+      query: str,
+      query_vector: list[float] | None,
   ) -> list[dict[str, Any]]:
     """Vector recall: `$vectorSearch` with a pre-filter on app and user."""
     stage: dict[str, Any] = {
@@ -577,22 +707,14 @@ class MongoDbMemoryService(BaseMemoryService):
       stage["query"] = {"text": query}
     else:
       stage["path"] = "embedding"
-      stage["queryVector"] = await _search_tool._embed_query(
-          query=query,
-          model_name=self._embedding_model_name,
-          output_dimensionality=self._embedding_output_dimensionality,
-          genai_client=self._genai_client,
-      )
+      stage["queryVector"] = query_vector
 
-    def _run() -> list[dict[str, Any]]:
-      return list(
-          self._memories().aggregate([
-              {"$vectorSearch": stage},
-              {"$project": {"embedding": 0}},
-          ])
-      )
-
-    return await asyncio.to_thread(_run)
+    return list(
+        self._memories().aggregate([
+            {"$vectorSearch": stage},
+            {"$project": {"embedding": 0}},
+        ])
+    )
 
   async def close(self) -> None:
     """Closes the MongoDB client if it was created by this service."""

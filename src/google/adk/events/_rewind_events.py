@@ -38,6 +38,13 @@ def _apply_rewinds(events: list[Event]) -> list[Event]:
   Returns:
     The chronological subset of ``events`` that survives all rewinds.
   """
+  # Fast path: a history with no rewind is already live; skip the backward
+  # walk.
+  if not any(
+      e.actions and e.actions.rewind_before_invocation_id for e in events
+  ):
+    return list(events)
+
   first_idx_by_inv: dict[str, int] | None = None
   kept: list[Event] = []
   i = len(events) - 1

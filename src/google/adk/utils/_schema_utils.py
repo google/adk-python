@@ -20,12 +20,14 @@ Please do not rely on the implementation details.
 
 from __future__ import annotations
 
+from enum import Enum
 import inspect
 import json
 import logging
 import re
 from types import UnionType
 from typing import Any
+from typing import cast
 from typing import get_args
 from typing import get_origin
 from typing import Optional
@@ -113,7 +115,8 @@ def get_list_inner_type(schema: SchemaType) -> Optional[type[BaseModel]]:
   inner_type = args[0]
   if get_origin(inner_type) is Annotated:
     inner_type = get_args(inner_type)[0]
-  return inner_type
+  # is_list_of_basemodel verified inner_type is a BaseModel subclass.
+  return cast(type[BaseModel], inner_type)
 
 
 def schema_to_json_schema(schema: SchemaType) -> dict[str, Any]:
@@ -249,11 +252,15 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
 
   if is_basemodel_schema(schema):
     # For regular BaseModel, use model_validate_json
-    return schema.model_validate_json(json_text).model_dump(exclude_none=True)
+    if get_origin(schema) is Annotated:
+      schema = get_args(schema)[0]
+    # is_basemodel_schema verified schema is now a BaseModel subclass.
+    model = cast(type[BaseModel], schema)
+    return model.model_validate_json(json_text).model_dump(exclude_none=True)
   elif is_list_of_basemodel(schema):
     # For list[BaseModel], use TypeAdapter to validate
-    type_adapter = TypeAdapter(schema)
-    validated: list[Any] = type_adapter.validate_json(json_text)
+    type_adapter: TypeAdapter[list[BaseModel]] = TypeAdapter(schema)
+    validated = type_adapter.validate_json(json_text)
     return [item.model_dump(exclude_none=True) for item in validated]
   else:
     # For other schema types (list[str], dict, Schema, etc.),
@@ -395,7 +402,9 @@ def preprocess_args(
   """Preprocess and convert incoming argument dictionary before invocation.
 
   Converts dictionary values to Pydantic model instances where the function
-  signature expects a BaseModel subclass or Optional[BaseModel].
+  signature expects a BaseModel subclass, an Optional or list of one, raw
+  values to the member where it expects an Enum or Optional[Enum], and
+  integral floats to int where it expects int or list[int].
 
   Args:
     args: The incoming argument dictionary to preprocess.
@@ -404,7 +413,8 @@ def preprocess_args(
     type_hints: Optional cached type hints dictionary for the callable.
 
   Returns:
-    A copy of args with applicable values converted to Pydantic model instances.
+    A copy of args with applicable values converted to Pydantic model
+    instances, Enum members or ints.
   """
   converted_args = args.copy()
   if signature is None:
@@ -455,6 +465,39 @@ def preprocess_args(
                   e,
               )
             continue
+
+        # The declaration lists the enum's values, so the model sends a value
+        # back. Look up the member so the function gets the Enum it declared.
+        if inspect.isclass(target_type) and issubclass(target_type, Enum):
+          value = args[param_name]
+          if value is not None and not isinstance(value, target_type):
+            member = None
+            try:
+              member = target_type(value)
+            except (ValueError, TypeError):
+              # Without json_schema_for_func_decl the declaration renders
+              # non-str values with json.dumps, so the model sends that back.
+              if isinstance(value, str):
+                for candidate in target_type:
+                  if isinstance(candidate.value, str):
+                    continue
+                  try:
+                    if json.dumps(candidate.value) == value:
+                      member = candidate
+                      break
+                  except TypeError:
+                    continue
+            if member is None:
+              logger.warning(
+                  "Argument '%s' is not a value of enum %s: %r; passing it"
+                  " through unchanged.",
+                  param_name,
+                  target_type.__name__,
+                  value,
+              )
+            else:
+              converted_args[param_name] = member
+          continue
 
         # Some session stores persist call args as a proto `Struct`, whose
         # only number type is double, so an int comes back as a float.
@@ -522,7 +565,7 @@ def preprocess_args(
         ):
           item_type = get_list_inner_type(target_type)
           if item_type is not None:
-            converted_list = []
+            converted_list: list[object] = []
             for item in args[param_name]:
               if isinstance(item, dict):
                 try:

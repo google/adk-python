@@ -13,17 +13,29 @@
 # limitations under the License.
 
 import asyncio
+from collections.abc import AsyncGenerator
+from collections.abc import Callable
+import json
+import threading
 import types
 from typing import Any
+from typing import TypeVar
 
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.live_request_queue import LiveRequest
+from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.cli.adk_web_server import AdkWebServer
 from google.adk.events.event import Event
+from google.adk.platform import thread as platform_thread
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types as genai_types
 import pytest
 from starlette.websockets import WebSocketDisconnect
+
+_T = TypeVar("_T")
+
+_EXCHANGE_TIMEOUT_SECONDS = 10.0
 
 
 class _DummyAgent(BaseAgent):
@@ -59,6 +71,72 @@ class _CapturingRunner:
   ):
     self.captured_run_config = run_config
     yield Event(author="runner")
+
+
+class _BlockingRunner:
+
+  def __init__(self) -> None:
+    self.closed = threading.Event()
+
+  async def run_live(self, **unused_kwargs: Any) -> AsyncGenerator[Event, None]:
+    try:
+      await asyncio.Future[None]()
+      yield Event(author="runner")
+    finally:
+      self.closed.set()
+
+
+class _EchoRunner:
+  """Emits one event per live request so delivered input is observable."""
+
+  def __init__(self) -> None:
+    self.received: list[LiveRequest] = []
+
+  async def run_live(
+      self, *, live_request_queue: LiveRequestQueue, **unused_kwargs: Any
+  ) -> AsyncGenerator[Event, None]:
+    while True:
+      live_request = await live_request_queue.get()
+      if live_request.close:
+        return
+      self.received.append(live_request)
+      yield Event(author="runner")
+
+
+class _ValidationErrorRunner:
+  """Fails with the error class a malformed client frame also produces."""
+
+  async def run_live(self, **unused_kwargs: Any) -> AsyncGenerator[Event, None]:
+    LiveRequest.model_validate_json('{"content": "invalid"}')
+    yield Event(author="runner")
+
+
+def _run_bounded(exchange: Callable[[], _T]) -> _T:
+  """Runs a blocking websocket exchange, failing instead of hanging.
+
+  The failure mode under test is a wedged connection, so an unbounded exchange
+  would stall the whole suite rather than report it. A wedged exchange is
+  abandoned on its daemon thread, which the interpreter discards at exit.
+  """
+  result: dict[str, Any] = {}
+
+  def _target() -> None:
+    try:
+      result["value"] = exchange()
+    except BaseException as e:  # pytest.raises failures are BaseExceptions.
+      result["error"] = e
+
+  thread = platform_thread.create_thread(target=_target)
+  thread.daemon = True
+  thread.start()
+  thread.join(_EXCHANGE_TIMEOUT_SECONDS)
+  if thread.is_alive():
+    pytest.fail(
+        f"websocket exchange did not finish within {_EXCHANGE_TIMEOUT_SECONDS}s"
+    )
+  if "error" in result:
+    raise result["error"]
+  return result["value"]
 
 
 def test_run_live_applies_server_and_query_run_config_options():
@@ -367,8 +445,8 @@ _WS_BASE_URL = (
 )
 
 
-def _build_ws_client(bind_host=None):
-  """Build a TestClient wired to a capturing runner.
+def _build_ws_client(runner: Any = None, bind_host=None) -> TestClient:
+  """Build a TestClient wired to the given runner, or a capturing one.
 
   A loopback *bind_host* turns on the DNS-rebinding guard.
   """
@@ -382,7 +460,7 @@ def _build_ws_client(bind_host=None):
       )
   )
 
-  runner = _CapturingRunner()
+  runner = runner or _CapturingRunner()
   adk_web_server = AdkWebServer(
       agent_loader=_DummyAgentLoader(),
       session_service=session_service,
@@ -447,3 +525,88 @@ def test_run_live_allows_no_origin_header():
   client = _build_ws_client()
   with client.websocket_connect(_WS_BASE_URL) as ws:
     _ = ws.receive_text()
+
+
+def test_run_live_rejects_malformed_message_and_closes_runner():
+  runner = _BlockingRunner()
+  client = _build_ws_client(runner)
+
+  def _exchange() -> tuple[int, bool]:
+    with client.websocket_connect(_WS_BASE_URL) as ws:
+      ws.send_text('{"content": "invalid"}')
+      with pytest.raises(WebSocketDisconnect) as exc_info:
+        ws.receive_text()
+      # Read while the client is still connected, so that the runner has to
+      # have been torn down by the handler rather than by the socket going.
+      return exc_info.value.code, runner.closed.is_set()
+
+  assert _run_bounded(_exchange) == (1007, True)
+
+
+def test_run_live_runner_validation_error_is_an_internal_error():
+  client = _build_ws_client(_ValidationErrorRunner())
+
+  def _exchange() -> int:
+    with client.websocket_connect(_WS_BASE_URL) as ws:
+      with pytest.raises(WebSocketDisconnect) as exc_info:
+        ws.receive_text()
+    return exc_info.value.code
+
+  assert _run_bounded(_exchange) == 1011
+
+
+def test_run_live_malformed_message_is_not_logged(caplog):
+  client = _build_ws_client(_BlockingRunner())
+  private_text = "some private user text"
+  # The rejected value and the unknown field name are both client-supplied,
+  # and the newline in the field name would forge a log line if it were echoed.
+  payload = json.dumps({
+      "content": {
+          "role": {"note": private_text},
+          f"{private_text}\nWARNING forged": 1,
+      }
+  })
+
+  def _exchange() -> None:
+    with client.websocket_connect(_WS_BASE_URL) as ws:
+      ws.send_text(payload)
+      with pytest.raises(WebSocketDisconnect):
+        ws.receive_text()
+
+  with caplog.at_level("WARNING"):
+    _run_bounded(_exchange)
+
+  warnings = [
+      r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+  ]
+  assert any("Invalid live request" in message for message in warnings)
+  assert not any(private_text in message for message in warnings)
+
+
+def test_run_live_forwards_valid_message():
+  runner = _EchoRunner()
+  client = _build_ws_client(runner)
+
+  def _exchange() -> str:
+    with client.websocket_connect(_WS_BASE_URL) as ws:
+      ws.send_text('{"content": {"role": "user", "parts": [{"text": "hi"}]}}')
+      return ws.receive_text()
+
+  assert json.loads(_run_bounded(_exchange))["author"] == "runner"
+  assert len(runner.received) == 1
+  assert runner.received[0].content.parts[0].text == "hi"
+
+
+def test_run_live_closes_socket_when_runner_finishes():
+  client = _build_ws_client()
+
+  def _exchange() -> int:
+    with client.websocket_connect(_WS_BASE_URL) as ws:
+      _ = ws.receive_text()
+      # The client sends nothing further: once the runner is done the endpoint
+      # has to close on its own instead of waiting on the receive task.
+      with pytest.raises(WebSocketDisconnect) as exc_info:
+        ws.receive_text()
+    return exc_info.value.code
+
+  assert _run_bounded(_exchange) == 1000

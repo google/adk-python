@@ -1108,6 +1108,15 @@ class TestAgentLoader:
         assert "Invalid agent name" not in str(exc_info.value)
         assert "Agent not found" not in str(exc_info.value)
 
+  @pytest.mark.parametrize("name", ["my_agent\n", "my_agent\r\n"])
+  def test_validate_agent_name_rejects_trailing_newline(self, name: str):
+    """A trailing newline fails name validation, before the path lookup."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      (Path(temp_dir) / "my_agent").mkdir()
+      loader = AgentLoader(temp_dir)
+      with pytest.raises(ValueError, match="Invalid agent name"):
+        loader.load_agent(name)
+
   def test_validate_agent_name_rejects_nonexistent_agent(self):
     """Valid identifiers that don't exist on disk are rejected before import."""
     with tempfile.TemporaryDirectory() as temp_dir:

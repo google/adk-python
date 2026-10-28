@@ -183,7 +183,8 @@ def _close_quietly(resource: str, closeable: Any) -> None:
 
 
 def _close_spanner_resources(
-    spanner_client: spanner.Client, database: Database | None = None
+    spanner_client: spanner.Client | _SpannerClient,
+    database: Database | _SpannerDatabase | None = None,
 ) -> None:
   """Closes the client, transports and sessions a Spanner operation created.
 

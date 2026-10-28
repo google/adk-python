@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import ipaddress
 import json
@@ -64,6 +65,7 @@ from ...flows.llm_flows.context._fencing import _present_other_agent_message
 from ...flows.llm_flows.context._fencing import quote_untrusted
 from ...flows.llm_flows.tools._functions import find_matching_function_call
 from ...sessions.session import Session
+from ...utils import _mtls_utils
 from ...utils._agent_mode import AgentMode
 from ...utils._agent_mode import TaskAgentMode
 from ...utils._function_call_names import CLIENT_FUNCTION_CALL_NAMES
@@ -76,11 +78,15 @@ from ..converters.part_converter import A2APartToGenAIPartConverter
 from ..converters.part_converter import convert_a2a_part_to_genai_part
 from ..converters.part_converter import convert_genai_part_to_a2a_part
 from ..converters.part_converter import GenAIPartToA2APartConverter
+from ..converters.to_adk_event import _artifact_event_id
 from ..converters.to_adk_event import _create_mock_function_call_for_required_user_input
 from ..converters.to_adk_event import _TASK_RESPONSE_BOUNDARY_STATES
 from ..converters.to_adk_event import _warn_if_peer_metadata_has_state_delta
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
+from ..converters.utils import _is_failed_status
+from ..converters.utils import A2A_TASK_FAILED_ERROR_CODE
+from ..converters.utils import A2A_TASK_FAILED_ERROR_MESSAGE
 from ..experimental import a2a_experimental
 from ..logs.log_utils import build_a2a_request_log
 from ..logs.log_utils import build_a2a_response_log
@@ -108,6 +114,7 @@ A2A_METADATA_PREFIX = "a2a:"
 DEFAULT_TIMEOUT = 600.0
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+_MTLS_GOOGLEAPIS_SUFFIX = ".mtls.googleapis.com"
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -170,6 +177,31 @@ _MAX_CARD_DESCRIPTION_CHARS = 1024
 # Marks a capped description as incomplete, so neither the model nor a reader
 # takes the cut-off text for the whole description.
 _CARD_DESCRIPTION_TRUNCATION_SUFFIX = "... [truncated]"
+
+
+def _mark_a2a_task_failed_event(
+    event: Optional[Event],
+    *,
+    author: str,
+    invocation_context: InvocationContext,
+) -> Event:
+  """Marks an event produced from a failed A2A task, creating one if needed."""
+  if event is None:
+    event = Event(
+        author=author,
+        invocation_id=invocation_context.invocation_id,
+        branch=invocation_context.branch,
+    )
+  if not event.error_code:
+    event.error_code = A2A_TASK_FAILED_ERROR_CODE
+  if not event.error_message:
+    text = "".join(
+        part.text or ""
+        for part in ((event.content.parts or []) if event.content else [])
+        if part.text
+    )
+    event.error_message = text or A2A_TASK_FAILED_ERROR_MESSAGE
+  return event
 
 
 def _payload_is_auth_config(payload: Any) -> bool:
@@ -398,6 +430,21 @@ def _url_origin(url: str) -> tuple[str, str, Optional[int]]:
       (parsed.hostname or "").lower(),
       (parsed.port or _DEFAULT_PORTS.get(scheme)),
   )
+
+
+def _card_target_origin(url: str) -> tuple[str, str, Optional[int]]:
+  """Returns the origin of url, with a Google API's mTLS host as its plain host.
+
+  Requests to a ``*.googleapis.com`` host may be routed to its mTLS host, so
+  a card fetched from one may name the other.
+
+  Raises:
+    ValueError: If the URL carries a malformed port.
+  """
+  scheme, host, port = _url_origin(url)
+  if host.endswith(_MTLS_GOOGLEAPIS_SUFFIX):
+    host = host[: -len(_MTLS_GOOGLEAPIS_SUFFIX)] + ".googleapis.com"
+  return scheme, host, port
 
 
 @a2a_experimental
@@ -681,8 +728,10 @@ class RemoteA2aAgent(BaseAgent):
   containing a ``result`` key matching ``"Task completed."`` for success, or
   ``"Task failed."`` for failure). Additionally, the client's ``output_schema``
   must be set to mirror the remote agent's output schema to ensure correct
-  output unwrapping. ``None`` (default) leaves the agent as a plain
-  ``transfer_to_agent`` target.
+  output unwrapping. When the remote task fails, is canceled, or cannot be
+  reached, the parent's delegating call receives ``{"error": message}`` and
+  control returns to the parent. ``None`` (default) leaves the agent as a
+  plain ``transfer_to_agent`` target.
   """
 
   def __init__(
@@ -909,17 +958,43 @@ class RemoteA2aAgent(BaseAgent):
     ctx.end_invocation = True
     return event
 
+  def _client_targets_only_googleapis(self) -> bool:
+    """Returns whether every host the default client will call is a Google API.
+
+    A card fetched from a URL may only name RPC URLs on that origin (see
+    `_validate_card_rpc_targets`), so the source URL stands for them.
+    """
+    source = self._agent_card_source
+    if source and source.startswith(("http://", "https://")):
+      target_urls = [source]
+    elif self._agent_card:
+      target_urls = _compat.agent_card_rpc_urls(self._agent_card)
+    else:
+      target_urls = []
+    return bool(target_urls) and all(
+        _mtls_utils.is_googleapis_url(url) for url in target_urls
+    )
+
   async def _ensure_httpx_client(self) -> httpx.AsyncClient:
     """Ensure HTTP client is available and properly configured."""
     if not self._httpx_client:
-      self._httpx_client = httpx.AsyncClient(
-          timeout=httpx.Timeout(timeout=self._timeout)
-      )
-      self._httpx_client_needs_cleanup = True
-      if self._a2a_client_factory:
-        self._a2a_client_factory = _compat.rebind_client_factory_httpx(
-            self._a2a_client_factory, self._httpx_client
+      client_cert_kwargs = {}
+      if self._client_targets_only_googleapis():
+        # Loading the certificate can run a cert provider, so keep it off the
+        # event loop.
+        client_cert_kwargs = await asyncio.to_thread(
+            _mtls_utils.client_cert_httpx_kwargs
         )
+      # Another caller may have created the client during the await.
+      if not self._httpx_client:
+        self._httpx_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout=self._timeout), **client_cert_kwargs
+        )
+        self._httpx_client_needs_cleanup = True
+        if self._a2a_client_factory:
+          self._a2a_client_factory = _compat.rebind_client_factory_httpx(
+              self._a2a_client_factory, self._httpx_client
+          )
     if not self._a2a_client_factory:
       self._a2a_client_factory = A2AClientFactory(
           config=_compat.make_client_config(httpx_client=self._httpx_client)
@@ -1112,8 +1187,9 @@ class RemoteA2aAgent(BaseAgent):
     Every URL the card offers is checked, not only the one this ADK version
     would select, because the client factory negotiates the endpoint across
     the card's whole interface list. Each must be https and share the origin
-    the card was fetched from; plain http stays allowed on a loopback host,
-    the local-development shape the A2A helpers emit.
+    the card was fetched from, counting a Google API's mTLS host as its plain
+    host; plain http stays allowed on a loopback host, the local-development
+    shape the A2A helpers emit.
 
     A card passed in directly or read from a local file did not come off the
     network here, so its target is left to the caller.
@@ -1123,7 +1199,7 @@ class RemoteA2aAgent(BaseAgent):
       return
 
     try:
-      source_origin = _url_origin(source)
+      source_origin = _card_target_origin(source)
     except ValueError as e:
       raise AgentCardResolutionError(
           f"Invalid agent card source URL: {source}, error: {e}"
@@ -1140,7 +1216,7 @@ class RemoteA2aAgent(BaseAgent):
         )
 
       try:
-        card_origin = _url_origin(card_url)
+        card_origin = _card_target_origin(card_url)
       except ValueError as e:
         raise AgentCardResolutionError(
             f"Invalid RPC URL in agent card: {card_url}, error: {e}"
@@ -1619,7 +1695,16 @@ class RemoteA2aAgent(BaseAgent):
               task, self.name, ctx, self._a2a_part_converter
           )
           if not event:
-            return None
+            if _is_failed_status(getattr(task, "status", None)):
+              event = _mark_a2a_task_failed_event(
+                  None, author=self.name, invocation_context=ctx
+              )
+            else:
+              return None
+          elif _is_failed_status(getattr(task, "status", None)):
+            event = _mark_a2a_task_failed_event(
+                event, author=self.name, invocation_context=ctx
+            )
           # for streaming task, we update the event with the task status.
           # We update the event as Thought updates.
           if (
@@ -1636,44 +1721,68 @@ class RemoteA2aAgent(BaseAgent):
             for part in event.content.parts or []:
               part.thought = True
           _add_mock_function_call(event, task.status.state)
-        elif (
-            isinstance(update, A2ATaskStatusUpdateEvent)
-            and (
-                _status_message := (
-                    _compat.normalize_message(update.status.message)
-                    if update.status
-                    else None
-                )
-            )
-            and getattr(_status_message, "parts", True)
-        ):
-          # This is a streaming task status update with a message.
+        elif isinstance(update, A2ATaskStatusUpdateEvent):
           # ``normalize_message`` collapses the always-present empty proto
-          # ``Message`` (1.x) to ``None`` so this branch only fires when a real
-          # message is attached, matching 0.3.x where the field is ``None``.
-          event = convert_a2a_message_to_event(
-              _status_message, self.name, ctx, self._a2a_part_converter
+          # ``Message`` (1.x) to ``None`` so status updates without a real
+          # message are handled explicitly below, matching 0.3.x.
+          _status_message = (
+              _compat.normalize_message(update.status.message)
+              if update.status
+              else None
           )
-          if not event:
-            return None
-          if event.content is not None and update.status.state in (
-              _compat.TS_SUBMITTED,
-              _compat.TS_WORKING,
+          if _status_message and not getattr(_status_message, "parts", True):
+            _status_message = None
+          failed_state = (
+              _compat.TS_FAILED
+              if _is_failed_status(getattr(update, "status", None))
+              or _is_failed_status(getattr(task, "status", None))
+              else None
+          )
+          if failed_state is not None:
+            failed_event = (
+                convert_a2a_message_to_event(
+                    _status_message,
+                    self.name,
+                    ctx,
+                    self._a2a_part_converter,
+                )
+                if _status_message
+                else None
+            )
+            event = _mark_a2a_task_failed_event(
+                failed_event, author=self.name, invocation_context=ctx
+            )
+            _add_mock_function_call(event, failed_state)
+          elif _status_message:
+            # This is a streaming task status update with a message.
+            event = convert_a2a_message_to_event(
+                _status_message, self.name, ctx, self._a2a_part_converter
+            )
+            if not event:
+              return None
+            if event.content is not None and update.status.state in (
+                _compat.TS_SUBMITTED,
+                _compat.TS_WORKING,
+            ):
+              for part in event.content.parts or []:
+                part.thought = True
+            _add_mock_function_call(event, update.status.state)
+          elif (
+              update.status
+              and update.status.state in _TASK_RESPONSE_BOUNDARY_STATES
           ):
-            for part in event.content.parts or []:
-              part.thought = True
-          _add_mock_function_call(event, update.status.state)
-        elif (
-            isinstance(update, A2ATaskStatusUpdateEvent)
-            and update.status.state in _TASK_RESPONSE_BOUNDARY_STATES
-        ):
-          # A bare pause or terminal status is still the end of an interaction.
-          # Persist it so the next user turn sees the current task state.
-          event = Event(
-              author=self.name,
-              invocation_id=ctx.invocation_id,
-              branch=ctx.branch,
-          )
+            # A bare pause or terminal status is still the end of an
+            # interaction. Persist it so the next user turn sees the current
+            # task state.
+            event = Event(
+                author=self.name,
+                invocation_id=ctx.invocation_id,
+                branch=ctx.branch,
+            )
+          else:
+            # This is a streaming status update without a message (e.g. status
+            # change). We don't emit an event for non-failed updates.
+            return None
         elif isinstance(update, A2ATaskArtifactUpdateEvent):
           # This is a streaming task artifact update.
           # Convert only the parts carried by this update. Converting the
@@ -1694,6 +1803,9 @@ class RemoteA2aAgent(BaseAgent):
           if not event:
             return None
           event.partial = not update.last_chunk
+          event_id = _artifact_event_id(update.artifact.artifact_id, ctx)
+          if event_id:
+            event.id = event_id
         else:
           # This is a streaming update without a message (e.g. status change)
           # or a partial artifact update. We don't emit an event for these
@@ -1773,11 +1885,28 @@ class RemoteA2aAgent(BaseAgent):
           event = self._config.a2a_task_converter(
               task, self.name, ctx, self._config.a2a_part_converter
           )
+          if not event:
+            if _is_failed_status(getattr(task, "status", None)):
+              event = _mark_a2a_task_failed_event(
+                  None, author=self.name, invocation_context=ctx
+              )
+            else:
+              return None
+          elif _is_failed_status(getattr(task, "status", None)):
+            event = _mark_a2a_task_failed_event(
+                event, author=self.name, invocation_context=ctx
+            )
         elif isinstance(update, A2ATaskStatusUpdateEvent):
           # This is a streaming task status update.
           event = self._config.a2a_status_update_converter(
               update, self.name, ctx, self._config.a2a_part_converter
           )
+          if _is_failed_status(getattr(update, "status", None)) or (
+              _is_failed_status(getattr(task, "status", None))
+          ):
+            event = _mark_a2a_task_failed_event(
+                event, author=self.name, invocation_context=ctx
+            )
         elif isinstance(update, A2ATaskArtifactUpdateEvent):
           # This is a streaming task artifact update.
           event = self._config.a2a_artifact_update_converter(
@@ -2164,16 +2293,30 @@ class RemoteA2aAgent(BaseAgent):
     ``ValueError`` on a second assignment), so promotion is gated to
     the first terminal A2A event of the run. Non-final task states and
     later events are passed through untouched.
+
+    In task mode, a task that fails sets the output to
+    ``{"error": message}``, so the parent's delegating call gets a response.
+    It is set on ``ctx`` rather than yielded, because a failure is not a
+    result and must not be validated against ``output_schema``.
     """
     promoted = False
-    async for event in super()._run_impl(ctx=ctx, node_input=node_input):
-      if (
-          self.mode != AgentMode.TASK
-          and not promoted
-          and self._promote_response_to_output(event, ctx.node_path)
-      ):
-        promoted = True
-      yield event
+    async with Aclosing(
+        super()._run_impl(ctx=ctx, node_input=node_input)
+    ) as agen:
+      async for event in agen:
+        if (
+            self.mode != AgentMode.TASK
+            and not promoted
+            and self._promote_response_to_output(event, ctx.node_path)
+        ):
+          promoted = True
+        if (
+            self.mode == "task"
+            and event.error_message
+            and is_finish_task_terminal_fr(event)
+        ):
+          ctx.output = {"error": event.error_message}
+        yield event
 
   def _promote_response_to_output(self, event: Event, node_path: str) -> bool:
     """Sets ``event.output`` from non-thought text parts, if eligible.

@@ -120,20 +120,18 @@ class MongoDbToolset(BaseToolset):
       agent = Agent(model="gemini-3.5-flash", tools=[toolset])
       ```
 
-  When constructed with `connection_string` or `connection_string_env_var`,
-  the toolset is picklable, so the agent can ship to Agent Engine (which
-  packages apps with cloudpickle): the live clients are dropped at pickle
-  time and rebuilt on the runtime — the MongoClient from the connection
-  string, the query-embedding genai client lazily from the ambient
-  environment (`GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION`). A toolset
-  built from a caller-owned `mongo_client` cannot be pickled.
+  When constructed with `connection_string` or `connection_string_env_var`
+  and no `genai_client`, the toolset is picklable, so the agent can ship to
+  Agent Engine (which packages apps with cloudpickle): the live `MongoClient`
+  is dropped at pickle time and rebuilt from the connection string on the
+  runtime. A toolset built with a caller-owned `mongo_client` or
+  `genai_client` cannot be pickled.
 
   Prefer `connection_string_env_var` for Agent Engine deployments: a plain
   `connection_string` is stored on the toolset and would be pickled into the
   deployment package in plaintext, password included. The env-var form keeps
   only the variable's name on the toolset and resolves the value on the
-  runtime, so the package holds no credential — pair it with a Secret
-  Manager-backed env var (`SecretRef`) in the deployment.
+  runtime, so the package holds no credential.
   """
 
   def __init__(
@@ -196,39 +194,40 @@ class MongoDbToolset(BaseToolset):
       self._owns_client = False
       self._connection_string = None
     else:
-      if connection_string_env_var is not None:
-        resolved = _client.connection_string_from_env(connection_string_env_var)
-      else:
+      if connection_string is not None:
         resolved = connection_string
+      else:
+        assert connection_string_env_var is not None
+        resolved = _client.connection_string_from_env(connection_string_env_var)
       self._client = _client.get_mongo_client(
           resolved, timeout_ms=self._settings.timeout_ms
       )
       self._owns_client = True
-      # A literal connection string is kept for pickle restore; the env-var
-      # form is re-resolved on the destination instead, so the credential
-      # never lands in a pickled deployment package.
-      self._connection_string = (
-          connection_string if connection_string_env_var is None else None
-      )
+      # None in env-var mode, so the credential is never pickled.
+      self._connection_string = connection_string
     self._connection_string_env_var = connection_string_env_var
     self._database_name = database_name
     self._genai_client = genai_client
 
   def __getstate__(self) -> dict[str, Any]:
-    """Drops the unpicklable clients so the toolset can ship to Agent Engine.
+    """Drops the unpicklable client so the toolset can ship to Agent Engine.
 
     Agent Engine packages the app with cloudpickle; neither a MongoClient
     (sockets, locks, background threads) nor a genai Client (httpx pools)
     crosses that boundary. The MongoClient is rebuilt on restore from the
-    connection string — or, with `connection_string_env_var`, re-resolved
-    from the named environment variable on the destination — and the genai
-    client is rebuilt lazily from the ambient environment the next time a
-    query is embedded.
+    connection string, or, with `connection_string_env_var`, re-resolved from
+    the named environment variable on the destination. A caller-owned
+    `mongo_client` or `genai_client` raises `TypeError`.
     """
     state = _client.drop_client_for_pickle(
         self.__dict__, owns_client=self._owns_client, owner="MongoDbToolset"
     )
-    state["_genai_client"] = None
+    if self._genai_client is not None:
+      raise TypeError(
+          "MongoDbToolset cannot be pickled when constructed with"
+          " `genai_client`: a caller-owned client cannot be rebuilt on the"
+          " destination."
+      )
     # Caches hold tool instances that reference the dropped client.
     state["_cached_invocation_id"] = None
     state["_cached_prefixed_tools"] = None
@@ -240,6 +239,7 @@ class MongoDbToolset(BaseToolset):
     if connection_string is None:
       # Env-var form: the credential was never pickled; resolve it on the
       # destination (e.g. injected by Secret Manager on Agent Engine).
+      assert self._connection_string_env_var is not None
       connection_string = _client.connection_string_from_env(
           self._connection_string_env_var
       )

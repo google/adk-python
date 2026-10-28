@@ -238,10 +238,18 @@ class InvocationContext(BaseModel):
   """The handle for live session resumption."""
 
   input_realtime_cache: list[RealtimeCacheEntry] | None = None
-  """Caches input audio chunks before flushing to session and artifact services."""
+  """Caches the user's audio chunks before flushing to session and artifact services.
+
+  Holds audio only; the user's image frames are cached separately.
+  """
 
   output_realtime_cache: list[RealtimeCacheEntry] | None = None
-  """Caches output audio chunks before flushing to session and artifact services."""
+  """Caches the model's audio chunks before flushing to session and artifact services."""
+
+  _input_visual_cache: list[RealtimeCacheEntry] = PrivateAttr(
+      default_factory=list
+  )
+  """The user's image frames, such as camera or screen-share frames, cached until the next flush (Live only)."""
 
   run_config: RunConfig | None = None
   """Configurations for live agents under this invocation."""
@@ -250,7 +258,12 @@ class InvocationContext(BaseModel):
   """The resumability config that applies to all agents under this invocation."""
 
   events_compaction_config: EventsCompactionConfig | None = None
-  """The compaction config for this invocation."""
+  """The compaction config for this invocation.
+
+  Starts as the App's config, the same object in every invocation. A plugin's
+  before_run_callback can assign another config, or None to skip compaction,
+  for this invocation; editing the shared object in place affects every session.
+  """
 
   token_compaction_checked: bool = False
   """Whether the compaction request processor compacted before a model call.

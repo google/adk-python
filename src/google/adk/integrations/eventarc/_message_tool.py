@@ -22,14 +22,18 @@ import datetime
 import json
 import logging
 from typing import Any
+from typing import TYPE_CHECKING
 import uuid
 
 import google.auth.credentials
 
-try:
+if TYPE_CHECKING:
   from google.cloud import eventarc_publishing_v1  # type: ignore
-except ImportError:
-  eventarc_publishing_v1 = None
+else:
+  try:
+    from google.cloud import eventarc_publishing_v1
+  except ImportError:
+    eventarc_publishing_v1 = None
 
 opentelemetry: Any = None
 try:

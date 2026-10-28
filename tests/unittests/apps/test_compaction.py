@@ -33,6 +33,7 @@ from google.adk.flows.llm_flows import contents as _contents
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.tool_confirmation import ToolConfirmation
+from google.genai import errors as genai_errors
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
@@ -546,9 +547,10 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         self._create_compacted_event(1.0, 1.0, 'S'),
         self._create_event(2.0, 'inv2', 'b' * 20, prompt_token_count=50),
     ]
+    # The count misses the event that reports it, so its 20 chars are added.
     self.assertEqual(
         compaction_module._latest_prompt_token_count(events_with_post_count),
-        50,
+        50 + 20 // 4,
     )
 
   def test_latest_prompt_token_count_fallback_uses_effective_contents(self):
@@ -596,7 +598,8 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         events, agent_name='worker'
     )
 
-    self.assertEqual(token_count, 5000)
+    # The worker's count, plus an estimate for the events from it onward.
+    self.assertGreaterEqual(token_count, 5000)
 
   def test_latest_prompt_token_count_without_agent_name_uses_latest(self):
     events = [
@@ -606,7 +609,81 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
 
     token_count = compaction_module._latest_prompt_token_count(events)
 
-    self.assertEqual(token_count, 100)
+    # The formatter's count, plus its own 'response' text.
+    self.assertEqual(token_count, 100 + len('response') // 4)
+
+  def test_latest_prompt_token_count_counts_resumed_long_running_response(
+      self,
+  ):
+    long_running_call = types.FunctionCall(id='lr1', name='approve', args={})
+    events = [
+        self._create_event(1.0, 'inv1', 'hi'),
+        Event(
+            timestamp=2.0,
+            invocation_id='inv1',
+            author='agent',
+            content=Content(
+                role='model', parts=[Part(function_call=long_running_call)]
+            ),
+            long_running_tool_ids={'lr1'},
+            usage_metadata=types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=100
+            ),
+        ),
+        Event(
+            timestamp=3.0,
+            invocation_id='inv1',
+            author='agent',
+            content=Content(
+                role='user',
+                parts=[
+                    Part(
+                        function_response=types.FunctionResponse(
+                            id='lr1',
+                            name='approve',
+                            response={'status': 'pending'},
+                        )
+                    )
+                ],
+            ),
+        ),
+        Event(
+            timestamp=4.0,
+            invocation_id='inv1',
+            author='agent',
+            content=Content(
+                role='model', parts=[Part(text='waiting for approval')]
+            ),
+            usage_metadata=types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=150
+            ),
+        ),
+        Event(
+            timestamp=5.0,
+            invocation_id='inv2',
+            author='user',
+            content=Content(
+                role='user',
+                parts=[
+                    Part(
+                        function_response=types.FunctionResponse(
+                            id='lr1',
+                            name='approve',
+                            response={'result': 'a' * 4000},
+                        )
+                    )
+                ],
+            ),
+        ),
+    ]
+
+    with self.assertNoLogs('google_adk', level='WARNING'):
+      token_count = compaction_module._latest_prompt_token_count(
+          events, agent_name='agent'
+      )
+
+    # The resumed result answers a call made before the latest count.
+    self.assertGreaterEqual(token_count, 150 + 4000 // 4)
 
   async def test_summarizer_failure_does_not_end_the_invocation(self):
     app = App(
@@ -2305,6 +2382,86 @@ async def test_run_compaction_for_token_threshold_with_agent_name():
 
 
 @pytest.mark.asyncio
+async def test_token_threshold_counts_tool_responses_after_latest_prompt_count():
+  """Tool output appended after the last model call counts toward the threshold.
+
+  The last model call measured 200 prompt tokens, under the threshold of 300,
+  but the tool response it triggered adds ~500 more, so the next request is
+  over the threshold and must be compacted before it is sent.
+  """
+  # pylint: disable=protected-access
+  session = Session(
+      app_name='app',
+      user_id='user',
+      id='session-id',
+      events=[
+          _create_trace_test_event(
+              timestamp=1.0, invocation_id='inv1', text='question'
+          ),
+          Event(
+              timestamp=2.0,
+              invocation_id='inv1',
+              author='agent',
+              content=Content(
+                  role='model',
+                  parts=[
+                      Part(
+                          function_call=types.FunctionCall(
+                              id='call1', name='read_file', args={}
+                          )
+                      )
+                  ],
+              ),
+              usage_metadata=types.GenerateContentResponseUsageMetadata(
+                  prompt_token_count=200
+              ),
+          ),
+          Event(
+              timestamp=3.0,
+              invocation_id='inv1',
+              author='agent',
+              content=Content(
+                  role='user',
+                  parts=[
+                      Part(
+                          function_response=types.FunctionResponse(
+                              id='call1',
+                              name='read_file',
+                              response={'result': 'a' * 2000},
+                          )
+                      )
+                  ],
+              ),
+          ),
+      ],
+  )
+  session_service = AsyncMock(spec=BaseSessionService)
+  compacted_event = _create_trace_compacted_event(
+      start_ts=1.0, end_ts=3.0, summary_text='summary'
+  )
+  summarizer = _StubSummarizer(compacted_event)
+  config = EventsCompactionConfig(
+      summarizer=summarizer,
+      compaction_interval=999,
+      overlap_size=0,
+      token_threshold=300,
+      event_retention_size=0,
+  )
+
+  compacted = (
+      await compaction_module._run_compaction_for_token_threshold_config(
+          config=config,
+          session=session,
+          session_service=session_service,
+          agent=Mock(spec=BaseAgent),
+          agent_name='agent',
+      )
+  )
+
+  assert compacted
+
+
+@pytest.mark.asyncio
 async def test_run_compaction_for_sliding_window_adds_summary_trace(
     span_exporter: InMemorySpanExporter,
 ):
@@ -2362,15 +2519,23 @@ async def test_run_compaction_for_sliding_window_adds_summary_trace(
       summary_span.attributes['gen_ai.compaction.result_event_id']
       == 'compacted-event-id'
   )
+  assert 'error.type' not in summary_span.attributes
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'error, expected_error_type',
+    [
+        (RuntimeError('summarizer model is unavailable'), 'RuntimeError'),
+        (genai_errors.ClientError(429, {'message': 'quota exceeded'}), '429'),
+    ],
+)
 async def test_summarizer_failure_marks_the_compaction_span_as_error(
     span_exporter: InMemorySpanExporter,
+    error: Exception,
+    expected_error_type: str,
 ):
-  summarizer = _StubSummarizer(
-      None, error=RuntimeError('summarizer model is unavailable')
-  )
+  summarizer = _StubSummarizer(None, error=error)
   app = App(
       name='test',
       root_agent=Mock(spec=BaseAgent),
@@ -2406,7 +2571,8 @@ async def test_summarizer_failure_marks_the_compaction_span_as_error(
       if span.name == 'compact_events sliding_window'
   )
   assert summary_span.status.status_code == StatusCode.ERROR
-  assert summary_span.status.description == 'RuntimeError'
+  assert summary_span.status.description == type(error).__name__
+  assert summary_span.attributes['error.type'] == expected_error_type
 
 
 @pytest.mark.asyncio
@@ -2675,8 +2841,13 @@ async def test_token_threshold_counts_the_summary_its_own_summary_replaces():
       ],
   )
 
-  compacted = await compaction_module._run_compaction_for_token_threshold(
-      app, session, AsyncMock(spec=BaseSessionService)
+  compacted = (
+      await compaction_module._run_compaction_for_token_threshold_config(
+          config=app.events_compaction_config,
+          session=session,
+          session_service=AsyncMock(spec=BaseSessionService),
+          agent=app.root_agent,
+      )
   )
 
   assert compacted

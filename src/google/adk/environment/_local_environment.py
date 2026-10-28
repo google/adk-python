@@ -26,7 +26,6 @@ import tempfile
 
 from typing_extensions import override
 
-from ..utils.feature_decorator import experimental
 from ._base_environment import BaseEnvironment
 from ._base_environment import ExecutionResult
 
@@ -64,7 +63,6 @@ def _kill(proc: asyncio.subprocess.Process) -> None:
     pass
 
 
-@experimental
 class LocalEnvironment(BaseEnvironment):
   """Execute commands via local ``asyncio`` subprocesses.
 

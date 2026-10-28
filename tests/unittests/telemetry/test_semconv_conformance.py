@@ -38,6 +38,7 @@ from .functional._digests import SpanDigest
 from .functional._recording import FunctionalTestCase
 from .functional_node_test_cases import ALL_NODE_CASES
 from .functional_test_cases import ALL_CASES
+from .functional_test_cases import GROUNDING_CASE
 from .functional_test_cases import MCP_CASE
 
 if TYPE_CHECKING:
@@ -45,7 +46,12 @@ if TYPE_CHECKING:
 
 # Every recorded case, so a property is asserted over the whole corpus rather
 # than the one scenario a test file happens to drive.
-_EVERY_CASE: list[FunctionalTestCase] = [*ALL_CASES, *ALL_NODE_CASES, MCP_CASE]
+_EVERY_CASE: list[FunctionalTestCase] = [
+    *ALL_CASES,
+    *ALL_NODE_CASES,
+    GROUNDING_CASE,
+    MCP_CASE,
+]
 
 # The operation each metric measures, named as the ``gen_ai.operation.name`` of
 # the span covering it. A metric point and that span describe one operation, so
@@ -135,24 +141,13 @@ _REDUCED_CARDINALITY: dict[str, list[AttributeValue]] = {
 
 # The facts the metrics record and the spans still do not.
 _FACTS_MISSING_FROM_SPANS: dict[str, str] = {
-    "error.type": "resolved for the metric, then never set on the span",
+    "error.type": (
+        "skill-script metric points pair with the span of the script that"
+        " succeeded"
+    ),
     "gen_ai.provider.name": "spans carry only the deprecated gen_ai.system",
     "gen_ai.response.model": "spans carry the requested model only",
 }
-
-# The cases whose spans are marked ERROR without naming the error.
-_CASES_MISSING_ERROR_TYPE: frozenset[str] = frozenset({
-    "agent-inference-error-resource-exhausted-schema-v1",
-    "agent-inference-error-resource-exhausted-schema-v2",
-    "agent-inference-error-valueerror-schema-v2",
-    "agent-inference-error-valueerror-span-and-event-schema-v2",
-    "agent-tool-error-valueerror-schema-v2",
-    "agent-tool-error-valueerror-span-only-schema-v2",
-})
-
-_MISSING_ERROR_TYPE_REASON: str = (
-    "the metric for the same operation records error.type; the span does not"
-)
 
 
 def _case_id(case: FunctionalTestCase) -> str:
@@ -212,18 +207,7 @@ def _xfail(reason: str | None) -> list[pytest.MarkDecorator]:
 
 @pytest.mark.parametrize(
     "case",
-    [
-        pytest.param(
-            case,
-            id=_case_id(case),
-            marks=_xfail(
-                _MISSING_ERROR_TYPE_REASON
-                if _case_id(case) in _CASES_MISSING_ERROR_TYPE
-                else None
-            ),
-        )
-        for case in _EVERY_CASE
-    ],
+    [pytest.param(case, id=_case_id(case)) for case in _EVERY_CASE],
 )
 def test_error_status_implies_error_type(case: FunctionalTestCase) -> None:
   """A span that ended in an error says which error, as semconv requires."""

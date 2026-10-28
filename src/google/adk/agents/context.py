@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
+from ._callback_metadata import CallbackInfo
 from .readonly_context import ReadonlyContext
 
 if TYPE_CHECKING:
@@ -119,6 +120,7 @@ class Context(ReadonlyContext):
   """
 
   _workflow_scheduler: DynamicNodeScheduler | None = None
+  _callback_info: CallbackInfo | None = None
 
   def __init__(
       self,
@@ -193,6 +195,7 @@ class Context(ReadonlyContext):
     # Tool Execution
     self._function_call_id = function_call_id
     self._tool_confirmation = tool_confirmation
+    self._callback_info: CallbackInfo | None = None
 
     # Workflow Execution
     effective_node_path = node_path
@@ -254,6 +257,11 @@ class Context(ReadonlyContext):
   def function_call_id(self, value: str | None) -> None:
     """Sets the function call id of the current tool call."""
     self._function_call_id = value
+
+  @property
+  def callback_info(self) -> CallbackInfo | None:
+    """Returns metadata for the callback currently being invoked, if any."""
+    return self._callback_info
 
   @property
   def branch(self) -> str | None:
@@ -460,19 +468,22 @@ class Context(ReadonlyContext):
         callable that can be built into a node.
       node_input: The input data to be passed to the dynamically executed node.
         Defaults to None.
-      use_as_output: If True, the dynamic node's output is used as the
-        calling node's output. The calling node's own output event is
-        suppressed to avoid duplication.
-      run_id: An optional custom run ID for the dynamic node execution.
-        If not provided, a default run ID is generated. Useful for
-        correlating events across runs.
+      use_as_output: If True, the dynamic node's output is used as the calling
+        node's output. The calling node's own output event is suppressed to
+        avoid duplication, and non-tool output events from the child are
+        published on the outermost claiming ancestor's branch (so with
+        ``use_sub_branch`` tool calls, tool responses such as ``finish_task``,
+        and intermediate events stay isolated on the sub-branch).
+      run_id: An optional custom run ID for the dynamic node execution. If not
+        provided, a default run ID is generated. Useful for correlating events
+        across runs.
       use_sub_branch: If True, the dynamic node will be executed in a sub-branch
         to isolate its state and events from the main branch.
       override_branch: An optional branch to use instead of parent's branch.
       override_isolation_scope: An optional isolation scope to use instead of
         the parent's scope.
-      raise_on_wait: If True, raises NodeInterruptedError when the child node
-        is WAITING instead of returning None.
+      raise_on_wait: If True, raises NodeInterruptedError when the child node is
+        WAITING instead of returning None.
 
     Returns:
       The output of the dynamically executed node, once it finishes executing.

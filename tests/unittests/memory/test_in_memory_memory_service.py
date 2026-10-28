@@ -17,6 +17,7 @@ import threading
 import unicodedata
 
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.memory.base_memory_service import BaseMemoryService
 from google.adk.memory.base_memory_service import SearchMemoryResponse
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
@@ -158,6 +159,34 @@ async def test_add_events_to_memory_without_session_id_uses_default_bucket():
   unknown_session_events = next(iter(session_memory.values()))
   assert len(unknown_session_events) == 1
   assert unknown_session_events[0].id == 'event-1a'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'session_id', ['ordinary-session', '__unknown_session_id__']
+)
+async def test_add_session_to_memory_keeps_sessionless_memories(session_id):
+  """A session must not replace events added without a session ID."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=[MOCK_SESSION_1.events[0]],
+  )
+
+  await memory_service.add_session_to_memory(
+      Session(
+          app_name=MOCK_APP_NAME,
+          user_id=MOCK_USER_ID,
+          id=session_id,
+          last_update_time=1000,
+      )
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='toolkit'
+  )
+  assert [memory.id for memory in result.memories] == ['event-1a']
 
 
 @pytest.mark.asyncio
@@ -730,6 +759,54 @@ async def test_search_memory_continues_past_event_without_words():
 
 
 @pytest.mark.asyncio
+async def test_search_memory_skips_thought_parts() -> None:
+  """Thought parts are neither matched by nor returned from a search."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=[
+          Event(
+              id='thought-only',
+              author='model',
+              content=types.Content(
+                  role='model',
+                  parts=[
+                      types.Part(text='Secret plan', thought=True),
+                      types.Part.from_function_call(name='lookup', args={}),
+                  ],
+              ),
+          ),
+          Event(
+              id='mixed',
+              author='model',
+              content=types.Content(
+                  role='model',
+                  parts=[
+                      types.Part(text='Secret internal note', thought=True),
+                      types.Part(text='Take the train to Paris.'),
+                  ],
+              ),
+          ),
+      ],
+  )
+
+  secret_search = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='Secret'
+  )
+
+  assert not secret_search.memories
+
+  paris_search = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='Paris'
+  )
+
+  assert [memory.content.parts for memory in paris_search.memories] == [
+      [types.Part(text='Take the train to Paris.')]
+  ]
+
+
+@pytest.mark.asyncio
 async def test_delete_memory():
   """Tests that delete_memory purges a single memory entry by its id."""
   memory_service = InMemoryMemoryService()
@@ -941,3 +1018,111 @@ def test_delete_memory_is_thread_safe_against_concurrent_searches():
   assert (
       not errors
   ), f'search_memory raced with concurrent deletes: {errors[0]!r}'
+
+
+@pytest.mark.parametrize('ingest_session', [True, False])
+async def test_ingested_events_are_detached_from_the_caller(
+    ingest_session: bool,
+) -> None:
+  """Changing an ingested event must not rewrite stored memory."""
+  service = InMemoryMemoryService()
+  session = MOCK_SESSION_1.model_copy(deep=True)
+  event = session.events[0]
+  original_content = event.content.model_copy(deep=True)
+  if ingest_session:
+    await service.add_session_to_memory(session)
+  else:
+    await service.add_events_to_memory(
+        app_name=session.app_name,
+        user_id=session.user_id,
+        session_id=session.id,
+        events=[event],
+    )
+
+  event.id = 'changed-id'
+  event.content.parts[0].text = 'replaced by the caller'
+  result = await service.search_memory(
+      app_name=session.app_name, user_id=session.user_id, query='toolkit'
+  )
+
+  assert len(result.memories) == 1
+  assert result.memories[0].id == 'event-1a'
+  assert result.memories[0].content == original_content
+
+
+@pytest.mark.parametrize('ingest_session', [True, False])
+async def test_search_results_are_detached_from_stored_memory(
+    ingest_session: bool,
+) -> None:
+  """Editing returned content must not affect memory or the source session."""
+  service = InMemoryMemoryService()
+  session = MOCK_SESSION_1.model_copy(deep=True)
+  event = session.events[0]
+  event.content.parts.append(
+      types.Part.from_function_call(
+          name='lookup', args={'options': {'color': 'blue'}}
+      )
+  )
+  original_content = event.content.model_copy(deep=True)
+  if ingest_session:
+    await service.add_session_to_memory(session)
+  else:
+    await service.add_events_to_memory(
+        app_name=session.app_name,
+        user_id=session.user_id,
+        session_id=session.id,
+        events=[event],
+    )
+  result = await service.search_memory(
+      app_name=session.app_name, user_id=session.user_id, query='toolkit'
+  )
+
+  returned_content = result.memories[0].content
+  returned_content.parts[0].text = 'replaced by the caller'
+  returned_content.parts[1].function_call.args['options']['color'] = 'red'
+  returned_content.parts.append(types.Part(text='extra content'))
+  repeated = await service.search_memory(
+      app_name=session.app_name, user_id=session.user_id, query='toolkit'
+  )
+
+  assert len(repeated.memories) == 1
+  assert repeated.memories[0].content == original_content
+  assert event.content == original_content
+
+
+def _rewind_event(rewind_before_invocation_id: str) -> Event:
+  return Event(
+      invocation_id='inv-rewind',
+      author='user',
+      actions=EventActions(
+          rewind_before_invocation_id=rewind_before_invocation_id
+      ),
+  )
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_rewound_events():
+  """Turns a rewind took back are not stored, also when added before it."""
+  memory_service = InMemoryMemoryService()
+  session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='session-rewound',
+      events=[
+          _text_event('kept', 'trip to paris'),
+          _text_event('rewound', 'address is baker street'),
+      ],
+  )
+  await memory_service.add_session_to_memory(session)
+
+  session.events.append(_rewind_event('inv-rewound'))
+  await memory_service.add_session_to_memory(session)
+
+  rewound = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='baker'
+  )
+  kept = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='paris'
+  )
+  assert not rewound.memories
+  assert [m.content.parts[0].text for m in kept.memories] == ['trip to paris']

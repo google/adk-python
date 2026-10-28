@@ -28,11 +28,7 @@ from pydantic import model_validator
 from pydantic import ValidationError  # noqa: F401
 from typing_extensions import Self
 
-from ...features import experimental
-from ...features import FeatureName
 
-
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class InjectedError(BaseModel):
   """An error to be injected into a tool call."""
 
@@ -45,7 +41,6 @@ class InjectedError(BaseModel):
   "error_message" in the tool response dict."""
 
 
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class InjectionConfig(BaseModel):
   """Injection configuration for a tool."""
 
@@ -62,7 +57,10 @@ class InjectionConfig(BaseModel):
   the interceptor is applied as after tool callback."""
 
   random_seed: Optional[int] = None
-  """The random seed to use for this injection."""
+  """Seeds this injection's own generator once when the plugin or callback is
+  created. A call draws the next value only when it matches this injection and
+  no earlier injection answered it, and one plugin's sequence is shared by
+  every session it serves. None draws from a shared unseeded generator."""
 
   injected_error: Optional[InjectedError] = None
   """The injected error."""
@@ -73,7 +71,7 @@ class InjectionConfig(BaseModel):
   @model_validator(mode="after")
   def check_injected_error_or_response(self) -> Self:
     """Checks that either injected_error or injected_response is set."""
-    if bool(self.injected_error) == bool(self.injected_response):
+    if (self.injected_error is None) == (self.injected_response is None):
       raise ValueError(
           "Either injected_error or injected_response must be set, but not"
           " both, and not neither."
@@ -81,7 +79,6 @@ class InjectionConfig(BaseModel):
     return self
 
 
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class MockStrategy(enum.Enum):
   """Mock strategy for a tool."""
 
@@ -94,7 +91,6 @@ class MockStrategy(enum.Enum):
   """Deprecated, please use MOCK_STRATEGY_TOOL_SPEC with tracing input."""
 
 
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class ToolSimulationConfig(BaseModel):
   """Simulation configuration for a single tool."""
 
@@ -123,7 +119,6 @@ class ToolSimulationConfig(BaseModel):
     return self
 
 
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class EnvironmentSimulationConfig(BaseModel):
   """Configuration for EnvironmentSimulation."""
 

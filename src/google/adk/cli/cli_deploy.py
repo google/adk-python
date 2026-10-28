@@ -41,9 +41,11 @@ from packaging.version import parse
 
 from ..version import __version__
 from .deployers import DeployerFactory
+from .deployers._dockerfile_template import _DEFAULT_PYTHON_VERSION
 from .deployers._dockerfile_template import _render_dockerfile
 from .deployers._dockerfile_template import _render_install_agent_deps
 from .deployers._dockerfile_template import _validate_app_name
+from .deployers._dockerfile_template import _validate_python_version
 from .utils import _onboarding
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -252,6 +254,50 @@ def _apply_service_account_to_agent_config(
         'service_account in agent platform config must be a string email.'
     )
   agent_config['service_account'] = _validate_service_account(existing)
+
+
+def _resolve_python_version_from_agent_config(
+    agent_config: dict[str, Any],
+    python_version: Optional[str],
+) -> str:
+  """Resolves the container Python version for an Agent Engine deploy.
+
+  Supports three sources, in increasing precedence:
+
+  1. The default, ``3.11``.
+  2. Top-level ``python_version`` in ``.agent_engine_config.json`` (popped so
+     it is not forwarded to the Agent Engine API, which ignores it when the
+     image is built from a Dockerfile).
+  3. Explicit ``python_version`` argument (CLI flag), which overrides both.
+
+  Args:
+    agent_config: The parsed agent platform config; ``python_version`` is
+      removed from it.
+    python_version: The CLI value, or None when the flag was omitted.
+
+  Returns:
+    The validated Python version to render into the Dockerfile.
+
+  Raises:
+    click.ClickException: If either value is not a valid Python 3.11+ version
+      string.
+  """
+  config_python_version = agent_config.pop('python_version', None)
+  if config_python_version is not None:
+    if not isinstance(config_python_version, str):
+      raise click.ClickException(
+          'python_version in agent platform config must be a string.'
+      )
+    config_python_version = _validate_python_version(config_python_version)
+  if python_version is not None:
+    python_version = _validate_python_version(python_version)
+    if config_python_version and config_python_version != python_version:
+      click.echo(
+          'Overriding python_version in agent platform config with'
+          f' {python_version}'
+      )
+    return python_version
+  return config_python_version or _DEFAULT_PYTHON_VERSION
 
 
 def _on_rm_error(func: Callable[..., Any], path: str, exc_info: Any) -> None:
@@ -1143,6 +1189,7 @@ def run(
     extra_gcloud_args: tuple[str, ...] | None = None,
     with_cloud_run_sandbox: bool = False,
     extra_packages: list[str] | None = None,
+    python_version: str = _DEFAULT_PYTHON_VERSION,
 ) -> None:
   """Deploys an agent to Google Cloud Run.
 
@@ -1184,6 +1231,7 @@ def run(
     extra_packages: Additional local file or directory paths to stage alongside
       the agent and make importable in the image. A relative path is resolved
       against the current working directory.
+    python_version: The Python version for the container base image.
   """
   _validate_trigger_options(
       trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
@@ -1191,6 +1239,7 @@ def run(
   app_name = _validate_app_name(
       app_name or os.path.basename(os.path.normpath(agent_folder))
   )
+  python_version = _validate_python_version(python_version)
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
     session_service_uri = session_service_uri or 'memory://'
     artifact_service_uri = artifact_service_uri or 'memory://'
@@ -1267,6 +1316,7 @@ def run(
             staged_extra_packages, temp_folder
         ),
         extra_env_vars='',
+        python_version=python_version,
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -1326,6 +1376,7 @@ def to_cloud_run(
     extra_gcloud_args: tuple[str, ...] | None = None,
     with_cloud_run_sandbox: bool = False,
     extra_packages: list[str] | None = None,
+    python_version: str = _DEFAULT_PYTHON_VERSION,
 ) -> None:
   """Deploys an agent to Google Cloud Run (deprecated)."""
   warnings.warn(
@@ -1362,6 +1413,7 @@ def to_cloud_run(
       extra_gcloud_args=extra_gcloud_args,
       with_cloud_run_sandbox=with_cloud_run_sandbox,
       extra_packages=extra_packages,
+      python_version=python_version,
   )
 
 
@@ -1422,6 +1474,7 @@ def to_agent_engine(
     extra_packages: Optional[list[str]] = None,
     worker_pool: Optional[str] = None,
     service_account: Optional[str] = None,
+    python_version: Optional[str] = None,
 ) -> None:
   """Deploys an agent to Gemini Enterprise Agent Platform.
 
@@ -1500,12 +1553,19 @@ def to_agent_engine(
       ``GOOGLE_CLOUD_SERVICE_ACCOUNT`` in the ``.env`` file and
       ``service_account`` in ``.agent_engine_config.json`` when both are
       present. When omitted, Agent Engine uses its default service agent.
+    python_version (str): Optional. The Python version for the container base
+      image. Overrides ``python_version`` in ``.agent_engine_config.json``
+      when both are present. When neither is set, ``3.11`` is used.
   """
   _validate_trigger_options(
       trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
   )
   app_name = os.path.basename(os.path.normpath(agent_folder))
   _validate_app_name(app_name)
+  # Fail on a bad flag value before the temp folder is replaced and the agent
+  # source copied; the config-file value is resolved once the file is read.
+  if python_version is not None:
+    python_version = _validate_python_version(python_version)
   display_name = display_name or app_name
   parent_folder = os.path.dirname(os.path.normpath(agent_folder))
   if adk_app_object:
@@ -1602,6 +1662,9 @@ def to_agent_engine(
       agent_config['description'] = description
 
     _apply_worker_pool_to_agent_config(agent_config, worker_pool)
+    python_version = _resolve_python_version_from_agent_config(
+        agent_config, python_version
+    )
 
     config_extra_packages = agent_config.pop('extra_packages', None) or []
     # CLI entries resolve against the invocation dir; config-file entries
@@ -1868,6 +1931,7 @@ def to_agent_engine(
               staged_extra_packages, temp_folder_path
           ),
           extra_env_vars=extra_env_vars,
+          python_version=python_version,
       )
       with open('Dockerfile', 'w', encoding='utf-8') as f:
         f.write(dockerfile_content)
@@ -1946,6 +2010,7 @@ def to_gke(
         'ClusterIP', 'NodePort', 'LoadBalancer'
     ] = 'ClusterIP',
     extra_packages: Optional[list[str]] = None,
+    python_version: str = _DEFAULT_PYTHON_VERSION,
 ) -> None:
   """Deploys an agent to Google Kubernetes Engine(GKE).
 
@@ -1977,6 +2042,7 @@ def to_gke(
     extra_packages: Additional local file or directory paths to stage alongside
       the agent and make importable in the image. A relative path is resolved
       against the current working directory.
+    python_version: The Python version for the container base image.
   """
   _validate_trigger_options(
       trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
@@ -1994,6 +2060,7 @@ def to_gke(
 
   app_name = app_name or os.path.basename(os.path.normpath(agent_folder))
   _validate_app_name(app_name)
+  python_version = _validate_python_version(python_version)
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
     session_service_uri = session_service_uri or 'memory://'
     artifact_service_uri = artifact_service_uri or 'memory://'
@@ -2070,6 +2137,7 @@ def to_gke(
             staged_extra_packages, temp_folder
         ),
         extra_env_vars='',
+        python_version=python_version,
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)

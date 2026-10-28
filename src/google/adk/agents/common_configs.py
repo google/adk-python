@@ -22,11 +22,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import model_validator
 
-from ..features import experimental
-from ..features import FeatureName
 
-
-@experimental(FeatureName.AGENT_CONFIG)
 class CodeConfig(BaseModel):
   """Code reference config for a variable, a function, or a class.
 
@@ -49,7 +45,6 @@ class CodeConfig(BaseModel):
   """
 
 
-@experimental(FeatureName.AGENT_CONFIG)
 class AgentRefConfig(BaseModel):
   """The config for the reference to another agent."""
 

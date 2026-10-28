@@ -56,6 +56,7 @@ from ..utils import _lazy
 from ..utils._agent_mode import AgentMode as _AgentMode
 from ..utils._agent_mode import LlmAgentMode as _LlmAgentMode
 from ..utils._callback_pipeline import _normalize_callbacks
+from ..utils._event_loop_cache import per_loop_value
 from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
@@ -253,6 +254,17 @@ def _http_options_has_base_url(value: Any) -> bool:
   return bool(getattr(value, 'base_url', None))
 
 
+class _ModelCache:
+  """Models built from model names, one per name and running event loop."""
+
+  def get(self, key: str, build: Callable[[], BaseLlm]) -> BaseLlm:
+    return per_loop_value(self, key, build)
+
+  def __eq__(self, other: object) -> bool:
+    # Pydantic compares private attrs; a cache must not make agents unequal.
+    return isinstance(other, _ModelCache)
+
+
 # TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
 # static type checkers.
 class LlmAgent(BaseAgent, abc.ABC):
@@ -294,13 +306,8 @@ class LlmAgent(BaseAgent, abc.ABC):
   LlmAgent.set_default_model. The built-in default is gemini-3.5-flash.
   """
 
-  _resolved_model: Optional[tuple[str, BaseLlm]] = PrivateAttr(default=None)
-  """The model name last resolved by canonical_model, with its BaseLlm."""
-
-  _resolved_live_model: Optional[tuple[str, BaseLlm]] = PrivateAttr(
-      default=None
-  )
-  """The model name last resolved by canonical_live_model, with its BaseLlm."""
+  _model_cache: _ModelCache = PrivateAttr(default_factory=_ModelCache)
+  """Models built from model names, shared with copies of this agent."""
 
   config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
   """The config type for this agent.
@@ -696,18 +703,22 @@ class LlmAgent(BaseAgent, abc.ABC):
     if isinstance(self.model, BaseLlm):
       return self.model
     elif self.model:  # model is non-empty str
-      resolved = self._resolved_model
-      if resolved is None or resolved[0] != self.model:
-        resolved = (self.model, LLMRegistry.new_llm(self.model))
-        self._resolved_model = resolved
-      return resolved[1]
+      name = self.model
+      return self._model_cache.get(
+          f'model:{name}', lambda: LLMRegistry.new_llm(name)
+      )
     else:  # find model from ancestors.
       ancestor_agent = self.parent_agent
       while ancestor_agent is not None:
         if isinstance(ancestor_agent, LlmAgent):
           return ancestor_agent.canonical_model
         ancestor_agent = ancestor_agent.parent_agent
-      return self._resolve_default_model()
+      default_model = self._default_model
+      if isinstance(default_model, BaseLlm):
+        return default_model
+      return self._model_cache.get(
+          f'model:{default_model}', lambda: LLMRegistry.new_llm(default_model)
+      )
 
   @property
   def canonical_live_model(self) -> BaseLlm:
@@ -718,18 +729,23 @@ class LlmAgent(BaseAgent, abc.ABC):
     if isinstance(self.model, BaseLlm):
       return self.model
     elif self.model:  # model is non-empty str
-      resolved = self._resolved_live_model
-      if resolved is None or resolved[0] != self.model:
-        resolved = (self.model, LLMRegistry.new_llm(self.model))
-        self._resolved_live_model = resolved
-      return resolved[1]
+      name = self.model
+      return self._model_cache.get(
+          f'live:{name}', lambda: LLMRegistry.new_llm(name)
+      )
     else:  # find model from ancestors.
       ancestor_agent = self.parent_agent
       while ancestor_agent is not None:
         if isinstance(ancestor_agent, LlmAgent):
           return ancestor_agent.canonical_live_model
         ancestor_agent = ancestor_agent.parent_agent
-      return self._resolve_default_live_model()
+      default_live_model = self._default_live_model
+      if isinstance(default_live_model, BaseLlm):
+        return default_live_model
+      return self._model_cache.get(
+          f'live:{default_live_model}',
+          lambda: LLMRegistry.new_llm(default_live_model),
+      )
 
   async def canonical_model_async(self, ctx: ReadonlyContext) -> BaseLlm:
     """The resolved self.model field as BaseLlm, for one invocation.
@@ -780,7 +796,10 @@ class LlmAgent(BaseAgent, abc.ABC):
 
   @classmethod
   def _resolve_default_model(cls) -> BaseLlm:
-    """Resolves the current default model to a BaseLlm instance."""
+    """Resolves the current default model to a BaseLlm instance.
+
+    Unused by ADK itself; kept because callers outside ADK use it.
+    """
     default_model = cls._default_model
     if isinstance(default_model, BaseLlm):
       return default_model
@@ -797,14 +816,6 @@ class LlmAgent(BaseAgent, abc.ABC):
     if isinstance(model, str) and not model:
       raise ValueError('Default live model must be a non-empty string.')
     cls._default_live_model = model
-
-  @classmethod
-  def _resolve_default_live_model(cls) -> BaseLlm:
-    """Resolves the current default live model to a BaseLlm instance."""
-    default_live_model = cls._default_live_model
-    if isinstance(default_live_model, BaseLlm):
-      return default_live_model
-    return LLMRegistry.new_llm(default_live_model)
 
   async def canonical_instruction(
       self, ctx: ReadonlyContext

@@ -14,12 +14,14 @@
 
 from __future__ import annotations
 
+from contextlib import aclosing
 import json
 import logging
 import math
 from typing import AsyncGenerator
 
 from google.genai import types
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.trace import Status
 from opentelemetry.trace import StatusCode
 
@@ -32,6 +34,7 @@ from ..sessions.session import Session
 from ..telemetry import _instrumentation
 from ..telemetry.tracing import _build_compaction_attributes
 from ..telemetry.tracing import _build_compaction_result_attributes
+from ..telemetry.tracing import resolve_error_type
 from ..telemetry.tracing import tracer
 from ..utils._function_call_names import CLIENT_FUNCTION_CALL_NAMES as _CLIENT_FUNCTION_CALL_NAMES
 from ..workflow import BaseNode
@@ -144,6 +147,7 @@ async def _summarize_events_with_trace(
       # be recorded as a successful compaction.
       span.record_exception(e)
       span.set_status(Status(StatusCode.ERROR, type(e).__name__))
+      span.set_attribute(ERROR_TYPE, resolve_error_type(e))
       logger.warning(
           'Event compaction failed; continuing with the uncompacted history.',
           exc_info=True,
@@ -274,6 +278,44 @@ def _estimate_prompt_token_count(
   return total_chars // 4
 
 
+def _earlier_calls_answered_by(events: list[Event], start: int) -> list[Event]:
+  """Returns the calls before `start` that `events[start:]` responds to.
+
+  Contents assembly drops a function response whose call it cannot see, so
+  estimating `events[start:]` alone would miss a long-running tool's result.
+  Each returned event keeps only the answered calls, so the other calls it
+  made are not mistaken for unanswered ones.
+
+  Args:
+    events: The session events.
+    start: Index of the first event of the tail.
+
+  Returns:
+    Copies of the earlier events that made those calls, in order.
+  """
+  unmatched_ids: set[str] = set()
+  for event in events[start:]:
+    unmatched_ids |= _event_function_response_ids(event)
+  for event in events[start:]:
+    unmatched_ids -= _event_function_call_ids(event)
+  if not unmatched_ids:
+    return []
+
+  calls: list[Event] = []
+  for event in events[:start]:
+    if not event.content or not event.content.parts:
+      continue
+    parts = [
+        part
+        for part in event.content.parts
+        if part.function_call and part.function_call.id in unmatched_ids
+    ]
+    if parts:
+      content = event.content.model_copy(update={'parts': parts})
+      calls.append(event.model_copy(update={'content': content}))
+  return calls
+
+
 def _latest_prompt_token_count(
     events: list[Event],
     *,
@@ -281,7 +323,12 @@ def _latest_prompt_token_count(
     agent_name: str = '',
     isolation_scope: str | None = None,
 ) -> int | None:
-  """Returns the most recently observed prompt token count, if available.
+  """Returns the latest prompt token count, plus an estimate for what it misses.
+
+  A model response reports the size of the prompt that produced it, so the
+  count misses that response and everything appended after it, such as the
+  tool responses it asked for. Those events are estimated and added, so a burst
+  of large tool responses triggers compaction before the next request.
 
   When `agent_name` is given, only counts recorded by that agent are
   considered. A count belongs to whichever agent made the model call, so
@@ -289,8 +336,10 @@ def _latest_prompt_token_count(
   turn ends in a small sub-agent otherwise measures that sub-agent forever and
   never reaches its threshold.
   """
-  scoped_events = [e for e in events if e.isolation_scope == isolation_scope]
-  for event in reversed(scoped_events):
+  for index in range(len(events) - 1, -1, -1):
+    event = events[index]
+    if event.isolation_scope != isolation_scope:
+      continue
     if event.actions and event.actions.compaction:
       # Counts at or before a summarization describe a prompt it replaced.
       break
@@ -299,7 +348,15 @@ def _latest_prompt_token_count(
         and event.usage_metadata.prompt_token_count is not None
         and (not agent_name or event.author == agent_name)
     ):
-      return event.usage_metadata.prompt_token_count
+      unmeasured_token_count = _estimate_prompt_token_count(
+          events=_earlier_calls_answered_by(events, index) + events[index:],
+          current_branch=current_branch,
+          agent_name=agent_name,
+          isolation_scope=isolation_scope,
+      )
+      return event.usage_metadata.prompt_token_count + (
+          unmeasured_token_count or 0
+      )
   return _estimate_prompt_token_count(
       events=events,
       current_branch=current_branch,
@@ -726,30 +783,32 @@ async def _run_compaction_for_token_threshold_config(
   return False
 
 
-async def _run_compaction_for_token_threshold(
-    app: App, session: Session, session_service: BaseSessionService
-):
-  """Runs post-invocation compaction based on a token threshold.
-
-  If triggered, this compacts older raw events and keeps the last
-  `event_retention_size` raw events un-compacted.
-  """
-  if app.root_agent is None:
-    return None
-  return await _run_compaction_for_token_threshold_config(
-      config=app.events_compaction_config,
-      session=session,
-      session_service=session_service,
-      agent=app.root_agent,
-      agent_name='',
-      current_branch=None,
-  )
-
-
 async def _run_compaction_for_sliding_window(
     app: App,
     session: Session,
     session_service: BaseSessionService,
+) -> AsyncGenerator[Event, None]:
+  """Runs sliding-window compaction with the app's compaction config."""
+  if app.root_agent is None:
+    return
+  async with aclosing(
+      _run_compaction_for_sliding_window_config(
+          config=app.events_compaction_config,
+          session=session,
+          session_service=session_service,
+          agent=app.root_agent,
+      )
+  ) as compaction_events:
+    async for compaction_event in compaction_events:
+      yield compaction_event
+
+
+async def _run_compaction_for_sliding_window_config(
+    *,
+    config: EventsCompactionConfig | None,
+    session: Session,
+    session_service: BaseSessionService,
+    agent: BaseNode,
 ) -> AsyncGenerator[Event, None]:
   """Runs sliding-window compaction over the session's events.
 
@@ -771,10 +830,12 @@ async def _run_compaction_for_sliding_window(
   produces a summary, this returns without a sliding-window summary.
 
   Args:
-    app: The application instance.
+    config: The compaction config to apply. None means no compaction.
     session: The session containing events to compact.
     session_service: The session service, used by the token-threshold path,
       which appends its own event directly.
+    agent: The root agent, whose model builds the summarizer when the config
+      has none.
 
   Yields:
     The sliding-window compaction event, if one is produced. The caller (the
@@ -792,14 +853,16 @@ async def _run_compaction_for_sliding_window(
   if not events:
     return
 
-  config = app.events_compaction_config
   if config is None:
     return
 
   # Prefer token-threshold compaction if configured and triggered.
   if _has_token_threshold_config(config):
-    token_compacted = await _run_compaction_for_token_threshold(
-        app, session, session_service
+    token_compacted = await _run_compaction_for_token_threshold_config(
+        config=config,
+        session=session,
+        session_service=session_service,
+        agent=agent,
     )
     if token_compacted:
       return
@@ -818,7 +881,7 @@ async def _run_compaction_for_sliding_window(
       break
 
   # Get unique invocation IDs and their latest timestamps.
-  invocation_latest_timestamps = {}
+  invocation_latest_timestamps: dict[str, float] = {}
   for event in events:
     # Only consider non-compaction events for unique invocation IDs.
     if event.invocation_id and not event.actions.compaction:
@@ -886,9 +949,7 @@ async def _run_compaction_for_sliding_window(
   ):
     return
 
-  if app.root_agent is None:
-    return
-  _ensure_compaction_summarizer(config=config, agent=app.root_agent)
+  _ensure_compaction_summarizer(config=config, agent=agent)
   if config.summarizer is None:
     return
 

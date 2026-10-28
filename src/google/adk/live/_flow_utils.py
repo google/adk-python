@@ -137,7 +137,7 @@ async def stop_background_tool_tasks(
   # current any more, whether or not the task honored the cancellation. A tool
   # drops its own entry when it finishes, so what is left here belongs to a
   # task that ignored the cancellation or was cancelled before it first ran.
-  # Letting go of the streams is what matters most: ``_send_to_model`` copies
+  # Letting go of the streams is what matters most: ``send_to_model`` copies
   # every live request into each registered stream, so one left behind by a
   # tool that no longer reads it grows for as long as the session lasts, an
   # entry per audio chunk the user speaks.
@@ -150,11 +150,11 @@ async def handle_control_event_flush(
     invocation_context: InvocationContext,
     llm_response: LlmResponse,
 ) -> list[Event]:
-  """Handle audio cache flushing based on control events.
+  """Flush the audio and image frame caches based on control events.
 
   Args:
     flow: The LLM flow instance.
-    invocation_context: The invocation context containing audio caches.
+    invocation_context: The invocation context containing the caches.
     llm_response: The LLM response containing control event information.
 
   Returns:
@@ -168,18 +168,22 @@ async def handle_control_event_flush(
     logger.debug('Audio cache stats: %s', stats)
 
   if llm_response.interrupted:
-    # user interrupts so the model will stop. we can flush model audio here
+    # The user interrupts, so the model stops: flush the model's audio. The
+    # user's audio and frames wait for the turn to end.
     return await realtime_cache_manager.flush_caches(
         invocation_context,
         flush_user_audio=False,
         flush_model_audio=True,
+        flush_user_visual=False,
     )
   elif llm_response.turn_complete:
-    # turn completes so we can flush both user and model
+    # The turn completes, so flush the user's audio and frames and the model's
+    # audio.
     return await realtime_cache_manager.flush_caches(
         invocation_context,
         flush_user_audio=True,
         flush_model_audio=True,
+        flush_user_visual=True,
     )
   # LlmResponse does not surface generation_complete, so model audio is not
   # flushed when generation completes. turn_complete, which follows it, already

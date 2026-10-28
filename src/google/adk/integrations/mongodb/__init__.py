@@ -15,8 +15,8 @@
 """MongoDB Integration (Experimental).
 
 MongoDB tools for vector search and hybrid search against collections on
-MongoDB Atlas or MongoDB 8.0+ deployments, plus MongoDB-backed session and
-memory services.
+MongoDB Atlas or MongoDB 8.0+ deployments, plus MongoDB-backed session
+persistence and a MongoDB-backed memory service.
 """
 
 from __future__ import annotations

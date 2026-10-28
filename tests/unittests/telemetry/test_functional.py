@@ -47,10 +47,11 @@ from .functional.scenarios.telemetry_setup import HistogramSpec
 from .functional.scenarios.telemetry_setup import install_telemetry
 from .functional.scenarios.telemetry_setup import OTEL_OPT_IN
 from .functional_test_cases import ALL_CASES
+from .functional_test_cases import GROUNDING_CASE
 from .functional_test_cases import MCP_CASE
 from .functional_test_cases import MCP_HTTP_CASE
 
-CASES = [*ALL_CASES, MCP_CASE, MCP_HTTP_CASE]
+CASES = [*ALL_CASES, GROUNDING_CASE, MCP_CASE, MCP_HTTP_CASE]
 
 
 @pytest.mark.parametrize(

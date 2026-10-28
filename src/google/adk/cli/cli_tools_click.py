@@ -588,6 +588,16 @@ def deploy_options(command: _F) -> _F:
               " version in the dev environment)"
           ),
       ),
+      click.option(
+          "--python_version",
+          type=str,
+          default="3.11",
+          show_default=True,
+          help=(
+              "Optional. The Python version used in the container image"
+              " (default: 3.11)."
+          ),
+      ),
       click.argument(
           "agent",
           type=click.Path(
@@ -1351,6 +1361,16 @@ def _resolve_eval_config_file_path(
 @click.argument("eval_set_file_path_or_id", nargs=-1)
 @click.option("--config_file_path", help="Optional. The path to config file.")
 @click.option(
+    "--num_runs",
+    type=click.IntRange(min=1),
+    default=None,
+    help=(
+        "Optional. Number of times to run each eval case. Overrides"
+        " multi_run_config.num_runs in the eval config; if neither is set,"
+        " each eval case runs once."
+    ),
+)
+@click.option(
     "--print_detailed_results",
     is_flag=True,
     show_default=True,
@@ -1365,6 +1385,7 @@ def cli_eval(
     print_detailed_results: bool,
     eval_storage_uri: str | None = None,
     log_level: str = "INFO",
+    num_runs: Optional[int] = None,
 ) -> None:
   """Evaluates an agent given the eval sets.
 
@@ -1418,6 +1439,10 @@ def cli_eval(
 
   CONFIG_FILE_PATH: The path to config file.
 
+  NUM_RUNS: Number of times to run each eval case. Overrides
+  multi_run_config.num_runs in the eval config; if neither is set, each eval
+  case runs once.
+
   PRINT_DETAILED_RESULTS: Prints detailed results on the console.
   """
   envs.load_dotenv_for_agent(agent_module_file_path, ".")
@@ -1426,6 +1451,9 @@ def cli_eval(
   try:
     import importlib  # noqa: F401
 
+    from ..evaluation._eval_case_result_multi_run_aggregator import aggregate_eval_case_results
+    from ..evaluation._eval_case_result_multi_run_aggregator import has_pass_count_rules
+    from ..evaluation._eval_case_result_multi_run_aggregator import load_aggregation_methods
     from ..evaluation.base_eval_service import InferenceConfig
     from ..evaluation.base_eval_service import InferenceRequest
     from ..evaluation.eval_config import get_eval_metrics_from_config
@@ -1440,6 +1468,7 @@ def cli_eval(
     from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
+    from .cli_eval import _pretty_print_eval_results_across_runs
     from .cli_eval import get_app_or_root_agent
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
@@ -1473,7 +1502,21 @@ def cli_eval(
   )
   eval_config = get_evaluation_criteria_or_default(resolved_config_file_path)
   print(f"Using evaluation criteria: {eval_config}")
+  # Custom methods are only called once every run is scored, so they are
+  # imported now: a wrong path then stops the eval before any inference, not
+  # after every run of every eval case.
+  try:
+    load_aggregation_methods(eval_config.multi_run_config)
+  except (ImportError, TypeError) as e:
+    raise click.ClickException(str(e)) from e
   eval_metrics = get_eval_metrics_from_config(eval_config)
+
+  # The `--num_runs` flag overrides the eval config. If neither sets the
+  # number of runs, each eval case runs once.
+  if num_runs is None and eval_config.multi_run_config:
+    num_runs = eval_config.multi_run_config.num_runs
+  if num_runs is None:
+    num_runs = 1
 
   # Live mode is resolved from the eval config, consistent with how
   # `user_simulator_config` and other eval settings are sourced.
@@ -1481,9 +1524,10 @@ def cli_eval(
     inference_config = InferenceConfig(
         use_live=True,
         live_timeout_seconds=eval_config.live_model_config.timeout_seconds,
+        num_runs=num_runs,
     )
   else:
-    inference_config = InferenceConfig(use_live=False)
+    inference_config = InferenceConfig(use_live=False, num_runs=num_runs)
 
   # Check if the first entry is a file that exists, if it does then we assume
   # rest of the entries are also files. We enforce this assumption in the if
@@ -1559,9 +1603,12 @@ def cli_eval(
         app=app,
     )
 
+    # `num_runs` is carried on the InferenceConfig, so the eval service repeats
+    # each eval case through its own parallelism pool.
     inference_results = asyncio.run(
         _collect_inferences(
-            inference_requests=inference_requests, eval_service=eval_service
+            inference_requests=inference_requests,
+            eval_service=eval_service,
         )
     )
     eval_results = asyncio.run(
@@ -1571,6 +1618,9 @@ def cli_eval(
             eval_metrics=eval_metrics,
         )
     )
+    aggregate_eval_results = aggregate_eval_case_results(
+        eval_results, multi_run_config=eval_config.multi_run_config
+    )
   except ModuleNotFoundError as mnf:
     raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
@@ -1579,15 +1629,20 @@ def cli_eval(
   )
   eval_run_summary = {}
 
-  for eval_result in eval_results:
-    if eval_result.eval_set_id not in eval_run_summary:
-      eval_run_summary[eval_result.eval_set_id] = [0, 0]
+  for aggregate_eval_result in aggregate_eval_results:
+    if aggregate_eval_result.eval_set_id not in eval_run_summary:
+      eval_run_summary[aggregate_eval_result.eval_set_id] = [0, 0]
 
-    if eval_result.final_eval_status == EvalStatus.PASSED:
-      eval_run_summary[eval_result.eval_set_id][0] += 1
+    if aggregate_eval_result.final_eval_status == EvalStatus.PASSED:
+      eval_run_summary[aggregate_eval_result.eval_set_id][0] += 1
     else:
-      eval_run_summary[eval_result.eval_set_id][1] += 1
+      eval_run_summary[aggregate_eval_result.eval_set_id][1] += 1
   click.echo("Eval Run Summary")
+  if num_runs > 1:
+    click.echo(
+        f"Each eval case was run {num_runs} times and judged on all"
+        f" {num_runs} runs."
+    )
   for eval_set_id, pass_fail_count in eval_run_summary.items():
     click.echo(
         f"{eval_set_id}:\n  Tests passed: {pass_fail_count[0]}\n  Tests"
@@ -1595,11 +1650,19 @@ def cli_eval(
     )
 
   if print_detailed_results:
-    for eval_result in eval_results:
-      click.echo(
-          "********************************************************************"
+    # Rules that count passing runs judge a case run once as well, so its
+    # verdict is printed the way a case run several times is.
+    if num_runs > 1 or has_pass_count_rules(eval_config.multi_run_config):
+      _pretty_print_eval_results_across_runs(
+          aggregate_eval_results=aggregate_eval_results,
+          num_runs=num_runs,
       )
-      pretty_print_eval_result(eval_result)
+    else:
+      for eval_result in eval_results:
+        click.echo(
+            "********************************************************************"
+        )
+        pretty_print_eval_result(eval_result)
 
   # The printed "Eval Run Summary" above is otherwise the only place this
   # command's verdict is visible -- without this, the process exit code is
@@ -2650,6 +2713,7 @@ def cli_deploy_cloud_run(
     provider_args: tuple[str, ...] = (),
     env: tuple[str, ...] = (),
     extra_packages: tuple[str, ...] = (),
+    python_version: str = "3.11",
 ) -> None:
   """Deploys an agent to Cloud Run.
 
@@ -2701,6 +2765,7 @@ def cli_deploy_cloud_run(
         extra_gcloud_args=tuple(gcloud_args),
         with_cloud_run_sandbox=with_cloud_run_sandbox,
         extra_packages=list(extra_packages),
+        python_version=python_version,
     )
   except (click.ClickException, click.Abort):
     raise
@@ -2732,6 +2797,7 @@ def cli_deploy_docker(
     a2a: bool = False,
     provider_args: tuple[str, ...] = (),
     env: tuple[str, ...] = (),
+    python_version: str = "3.11",
 ) -> None:
   """Deploys an agent to a local Docker container."""
   _warn_if_with_ui(with_ui)
@@ -2760,6 +2826,7 @@ def cli_deploy_docker(
         trigger_sources=None,
         provider_args=provider_args,
         env=env,
+        python_version=python_version,
     )
   except (click.ClickException, click.Abort):
     raise
@@ -3026,6 +3093,17 @@ def cli_migrate_session(
     ),
 )
 @click.option(
+    "--python_version",
+    type=str,
+    default=None,
+    help=(
+        "Optional. The Python version used in the container image. Overrides"
+        " `python_version` in `.agent_engine_config.json` when both are set."
+        " (default: `python_version` from `.agent_engine_config.json`, or"
+        " 3.11)"
+    ),
+)
+@click.option(
     "--extra_packages",
     multiple=True,
     type=str,
@@ -3102,6 +3180,7 @@ def cli_deploy_agent_engine(
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: str | None = None,
     service_account: str | None = None,
+    python_version: str | None = None,
 ) -> None:
   """Deploys an agent to Agent Engine.
 
@@ -3167,6 +3246,7 @@ def cli_deploy_agent_engine(
         extra_packages=list(extra_packages),
         worker_pool=worker_pool,
         service_account=service_account,
+        python_version=python_version,
     )
   except (click.ClickException, click.Abort):
     raise
@@ -3286,6 +3366,16 @@ def cli_deploy_agent_engine(
         " version in the dev environment)"
     ),
 )
+@click.option(
+    "--python_version",
+    type=str,
+    default="3.11",
+    show_default=True,
+    help=(
+        "Optional. The Python version used in the container image"
+        " (default: 3.11)."
+    ),
+)
 # Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
 @click.option(
     "--trigger_sources",
@@ -3360,6 +3450,7 @@ def cli_deploy_gke(
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: str | None = None,
     extra_packages: tuple[str, ...] = (),
+    python_version: str = "3.11",
 ) -> None:
   """Deploys an agent to GKE.
 
@@ -3399,6 +3490,7 @@ def cli_deploy_gke(
         trigger_oidc_audience=trigger_oidc_audience,
         trigger_oidc_service_accounts=trigger_oidc_service_accounts,
         extra_packages=list(extra_packages),
+        python_version=python_version,
     )
   except (click.ClickException, click.Abort):
     raise

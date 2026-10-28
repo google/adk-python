@@ -158,13 +158,17 @@ Within a single step (`_execute_step`), when replay is enabled:
   concurrent `run.task`, or calls `check_interception(node=curr_node,
   recovered=run.recovered_state, current_run=run)`:
 
-1. **Same-turn dedup / waiting (`current_run` present and `not current_run.is_static`)** —
+1. **Same-turn dedup / failed / waiting (`current_run` present and `not current_run.is_static`)** —
    if `current_run.state.status == COMPLETED`, returns `should_run=False` with
-   `current_run.output` and `current_run.transfer_to_agent`. If `WAITING` with
-   `interrupts`, returns `should_run=False` with those `interrupts`. (Every
-   static dispatch gets a fresh `run_id`, so loop edges never reuse a
-   `node_path`; static runs have `is_static=True` so no-outcome static nodes
-   fast-forward in step 7 via `should_run = (current_run is not None and not current_run.is_static)`.)
+   `current_run.output`, `current_run.route`, and
+   `current_run.transfer_to_agent`. If `FAILED`, returns `should_run=True`
+   with `resume_inputs=recovered.resolved_responses` so a dynamic run that
+   failed in the current turn reruns instead of consulting stale recovered
+   events. If `WAITING` with `interrupts`, returns `should_run=False` with
+   those `interrupts`. (Every static dispatch gets a fresh `run_id`, so loop
+   edges never reuse a `node_path`; static runs have `is_static=True` so
+   no-outcome static nodes fast-forward in step 7 via
+   `should_run = (current_run is not None and not current_run.is_static)`.)
 
 2. **Nested `Workflow` (`isinstance(node, Workflow)`)** — before checking
    completion or interrupts, `check_interception` immediately returns
@@ -175,7 +179,12 @@ Within a single step (`_execute_step`), when replay is enabled:
 
 3. **Waiting / Partial resume (`recovered.interrupt_ids - recovered.resolved_ids` non-empty)** —
    - If `node.rerun_on_resume` is `True` and `recovered.resolved_ids` is
-     non-empty (**partial resume**): returns `should_run=True` with
+     non-empty (**partial resume**): if `recovered.finished_after_resume` is
+     `True` and the node either recorded a result (`recovered.output`,
+     `recovered.route`, or `recovered.transfer_to_agent`) or has
+     `not node.wait_for_output`, fast-forwards (`should_run=False`) with the
+     rehydrated `output`, `route`, and `transfer_to_agent` (and no
+     `interrupts`); otherwise returns `should_run=True` with
      `resume_inputs=recovered.resolved_responses`.
    - Otherwise: returns `should_run=False` with `interrupts=unresolved`,
      propagating unresolved interrupt IDs to `_state.interrupt_ids` via a
@@ -382,10 +391,14 @@ stages:
        triggers without running `NodeRunner`.
      - **Interrupted with unresolved interrupts**: if `rerun_on_resume=True`
        and `recovered.resolved_ids` is non-empty (**partial resume**),
+       fast-forwards (`should_run=False`) with the rehydrated `output`,
+       `route`, and `transfer_to_agent` when `recovered.finished_after_resume`
+       is `True` (and a result was recorded or `not node.wait_for_output`), or
        re-executes (`should_run=True`) via `NodeRunner` with
-       `resume_inputs=recovered.resolved_responses`; otherwise stays WAITING
-       (`should_run=False` with `interrupts` populated) and records unresolved
-       IDs in `_LoopState.interrupt_ids`.
+       `resume_inputs=recovered.resolved_responses` otherwise; if not a partial
+       resume on a `rerun_on_resume` node, stays WAITING (`should_run=False`
+       with `interrupts` populated) and records unresolved IDs in
+       `_LoopState.interrupt_ids`.
      - **Interrupted with all interrupts resolved (`rerun_on_resume=True`) or prior failure (`error_code`)**:
        re-executes (`should_run=True`) via `NodeRunner` with
        `resume_inputs=recovered.resolved_responses`.

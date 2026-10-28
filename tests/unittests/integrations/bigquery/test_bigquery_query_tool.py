@@ -1143,6 +1143,33 @@ def test_execute_sql_write_protected_ignores_session_info_in_state():
   }
 
 
+def test_execute_sql_write_protected_without_bq_session_info():
+  """Test protected write mode reports a dry run that opened no session."""
+  project = "my_project"
+  query = "CREATE TEMP TABLE my_table AS SELECT 123 AS num"
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+  tool_context.session = Session(
+      id="session-without-bq-session", app_name="test_app", user_id="test_user"
+  )
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+    session_creator_job = mock.create_autospec(bigquery.QueryJob)
+    session_creator_job.session_info = None
+    bq_client.query.return_value = session_creator_job
+
+    result = query_tool.execute_sql(
+        project, query, credentials, tool_settings, tool_context
+    )
+
+  assert result == {
+      "status": "ERROR",
+      "error_details": "BigQuery did not create a session for the query.",
+  }
+
+
 def test_execute_sql_write_protected_reuses_bq_session_of_same_session():
   """Test protected write mode reuses the BigQuery session of the session."""
   project = "my_project"
@@ -1732,6 +1759,14 @@ def test_analyze_contribution_with_query_statement(
         ),
         ({"top_k_insights": "invalid"}, "top_k_insights must be an integer"),
         ({"pruning_method": "invalid"}, "Invalid pruning_method"),
+        (
+            {"settings": BigQueryToolConfig(write_mode=WriteMode.BLOCKED)},
+            (
+                "analyze_contribution is not allowed in this session. To enable"
+                " analyze_contribution, set write_mode to WriteMode.PROTECTED"
+                " or WriteMode.ALLOWED in BigQueryToolConfig."
+            ),
+        ),
     ],
 )
 def test_analyze_contribution_invalid_inputs(
@@ -2173,6 +2208,14 @@ def test_detect_anomalies_returns_target_data_subquery_validation_error(
         (
             {"anomaly_prob_threshold": None},
             "anomaly_prob_threshold must be a number",
+        ),
+        (
+            {"settings": BigQueryToolConfig(write_mode=WriteMode.BLOCKED)},
+            (
+                "anomaly detection is not allowed in this session. To enable"
+                " anomaly detection, set write_mode to WriteMode.PROTECTED or"
+                " WriteMode.ALLOWED in BigQueryToolConfig."
+            ),
         ),
     ],
 )

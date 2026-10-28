@@ -17,6 +17,7 @@ from unittest import mock
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.live import _live_llm_flow
 from google.adk.live import LiveRequest
 from google.adk.live import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
@@ -48,7 +49,7 @@ def mock_llm_connection():
 
 @pytest.mark.asyncio
 async def test_send_to_model_with_disabled_vad(test_blob, mock_llm_connection):
-  """Test _send_to_model with automatic_activity_detection.disabled=True."""
+  """Test send_to_model with automatic_activity_detection.disabled=True."""
   # Create LlmRequest with disabled VAD
   realtime_input_config = types.RealtimeInputConfig(
       automatic_activity_detection=types.AutomaticActivityDetection(
@@ -65,7 +66,7 @@ async def test_send_to_model_with_disabled_vad(test_blob, mock_llm_connection):
   )
   invocation_context.live_request_queue = LiveRequestQueue()
 
-  # Create flow and start _send_to_model task
+  # Create flow and start send_to_model task
   flow = TestBaseLlmFlow()
 
   # Send a blob to the queue
@@ -73,9 +74,9 @@ async def test_send_to_model_with_disabled_vad(test_blob, mock_llm_connection):
   invocation_context.live_request_queue.send(live_request)
   invocation_context.live_request_queue.close()
 
-  # Run _send_to_model
-  await flow._send_to_model(
-      mock_llm_connection, invocation_context, LlmRequest()
+  # Run send_to_model
+  await _live_llm_flow.send_to_model(
+      flow, mock_llm_connection, invocation_context, LlmRequest()
   )
 
   mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
@@ -83,7 +84,7 @@ async def test_send_to_model_with_disabled_vad(test_blob, mock_llm_connection):
 
 @pytest.mark.asyncio
 async def test_send_to_model_with_enabled_vad(test_blob, mock_llm_connection):
-  """Test _send_to_model with automatic_activity_detection.disabled=False.
+  """Test send_to_model with automatic_activity_detection.disabled=False.
 
   Custom VAD activity signal is not supported so we should still disable it.
   """
@@ -101,7 +102,7 @@ async def test_send_to_model_with_enabled_vad(test_blob, mock_llm_connection):
   )
   invocation_context.live_request_queue = LiveRequestQueue()
 
-  # Create flow and start _send_to_model task
+  # Create flow and start send_to_model task
   flow = TestBaseLlmFlow()
 
   # Send a blob to the queue
@@ -109,9 +110,9 @@ async def test_send_to_model_with_enabled_vad(test_blob, mock_llm_connection):
   invocation_context.live_request_queue.send(live_request)
   invocation_context.live_request_queue.close()
 
-  # Run _send_to_model
-  await flow._send_to_model(
-      mock_llm_connection, invocation_context, LlmRequest()
+  # Run send_to_model
+  await _live_llm_flow.send_to_model(
+      flow, mock_llm_connection, invocation_context, LlmRequest()
   )
 
   mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
@@ -121,7 +122,7 @@ async def test_send_to_model_with_enabled_vad(test_blob, mock_llm_connection):
 async def test_send_to_model_without_realtime_config(
     test_blob, mock_llm_connection
 ):
-  """Test _send_to_model without realtime_input_config (default behavior)."""
+  """Test send_to_model without realtime_input_config (default behavior)."""
   # Create invocation context with live request queue
   agent = Agent(name='test_agent', model='mock')
   invocation_context = await testing_utils.create_invocation_context(
@@ -129,7 +130,7 @@ async def test_send_to_model_without_realtime_config(
   )
   invocation_context.live_request_queue = LiveRequestQueue()
 
-  # Create flow and start _send_to_model task
+  # Create flow and start send_to_model task
   flow = TestBaseLlmFlow()
 
   # Send a blob to the queue
@@ -137,9 +138,9 @@ async def test_send_to_model_without_realtime_config(
   invocation_context.live_request_queue.send(live_request)
   invocation_context.live_request_queue.close()
 
-  # Run _send_to_model
-  await flow._send_to_model(
-      mock_llm_connection, invocation_context, LlmRequest()
+  # Run send_to_model
+  await _live_llm_flow.send_to_model(
+      flow, mock_llm_connection, invocation_context, LlmRequest()
   )
 
   mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
@@ -149,7 +150,7 @@ async def test_send_to_model_without_realtime_config(
 async def test_send_to_model_with_none_automatic_activity_detection(
     test_blob, mock_llm_connection
 ):
-  """Test _send_to_model with automatic_activity_detection=None."""
+  """Test send_to_model with automatic_activity_detection=None."""
   # Create LlmRequest with None automatic_activity_detection
   realtime_input_config = types.RealtimeInputConfig(
       automatic_activity_detection=None
@@ -164,7 +165,7 @@ async def test_send_to_model_with_none_automatic_activity_detection(
   )
   invocation_context.live_request_queue = LiveRequestQueue()
 
-  # Create flow and start _send_to_model task
+  # Create flow and start send_to_model task
   flow = TestBaseLlmFlow()
 
   # Send a blob to the queue
@@ -172,9 +173,9 @@ async def test_send_to_model_with_none_automatic_activity_detection(
   invocation_context.live_request_queue.send(live_request)
   invocation_context.live_request_queue.close()
 
-  # Run _send_to_model
-  await flow._send_to_model(
-      mock_llm_connection, invocation_context, LlmRequest()
+  # Run send_to_model
+  await _live_llm_flow.send_to_model(
+      flow, mock_llm_connection, invocation_context, LlmRequest()
   )
 
   mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
@@ -182,7 +183,7 @@ async def test_send_to_model_with_none_automatic_activity_detection(
 
 @pytest.mark.asyncio
 async def test_send_to_model_with_text_content(mock_llm_connection):
-  """Test _send_to_model with text content (not blob)."""
+  """Test send_to_model with text content (not blob)."""
   # Create invocation context with live request queue
   agent = Agent(name='test_agent', model='mock')
   invocation_context = await testing_utils.create_invocation_context(
@@ -190,7 +191,7 @@ async def test_send_to_model_with_text_content(mock_llm_connection):
   )
   invocation_context.live_request_queue = LiveRequestQueue()
 
-  # Create flow and start _send_to_model task
+  # Create flow and start send_to_model task
   flow = TestBaseLlmFlow()
 
   # Send text content to the queue
@@ -201,9 +202,9 @@ async def test_send_to_model_with_text_content(mock_llm_connection):
   invocation_context.live_request_queue.send(live_request)
   invocation_context.live_request_queue.close()
 
-  # Run _send_to_model
-  await flow._send_to_model(
-      mock_llm_connection, invocation_context, LlmRequest()
+  # Run send_to_model
+  await _live_llm_flow.send_to_model(
+      flow, mock_llm_connection, invocation_context, LlmRequest()
   )
 
   # Verify send_content was called instead of send_realtime
@@ -234,8 +235,8 @@ async def test_send_to_model_with_intermediate_text_content(
   )
   invocation_context.live_request_queue.close()
 
-  await flow._send_to_model(
-      mock_llm_connection, invocation_context, LlmRequest()
+  await _live_llm_flow.send_to_model(
+      flow, mock_llm_connection, invocation_context, LlmRequest()
   )
 
   mock_llm_connection._send_content.assert_called_once_with(
@@ -246,7 +247,7 @@ async def test_send_to_model_with_intermediate_text_content(
 
 @pytest.mark.asyncio
 async def test_send_to_model_applies_state_delta(mock_llm_connection):
-  """Test _send_to_model applies state_delta as a state-delta event."""
+  """Test send_to_model applies state_delta as a state-delta event."""
   agent = Agent(name='test_agent', model='mock')
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent, user_content=''
@@ -260,8 +261,8 @@ async def test_send_to_model_applies_state_delta(mock_llm_connection):
   )
   invocation_context.live_request_queue.close()
 
-  await flow._send_to_model(
-      mock_llm_connection, invocation_context, LlmRequest()
+  await _live_llm_flow.send_to_model(
+      flow, mock_llm_connection, invocation_context, LlmRequest()
   )
 
   assert invocation_context.session.state['k'] == 'v'
@@ -270,7 +271,7 @@ async def test_send_to_model_applies_state_delta(mock_llm_connection):
 
 @pytest.mark.asyncio
 async def test_send_to_model_state_delta_with_content(mock_llm_connection):
-  """Test _send_to_model applies state_delta and forwards content together."""
+  """Test send_to_model applies state_delta and forwards content together."""
   agent = Agent(name='test_agent', model='mock')
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent, user_content=''
@@ -285,8 +286,8 @@ async def test_send_to_model_state_delta_with_content(mock_llm_connection):
   )
   invocation_context.live_request_queue.close()
 
-  await flow._send_to_model(
-      mock_llm_connection, invocation_context, LlmRequest()
+  await _live_llm_flow.send_to_model(
+      flow, mock_llm_connection, invocation_context, LlmRequest()
   )
 
   assert invocation_context.session.state['k'] == 'v'
@@ -321,8 +322,8 @@ async def test_send_to_model_state_delta_with_partial_content(
   )
   invocation_context.live_request_queue.close()
 
-  await flow._send_to_model(
-      mock_llm_connection, invocation_context, LlmRequest()
+  await _live_llm_flow.send_to_model(
+      flow, mock_llm_connection, invocation_context, LlmRequest()
   )
 
   assert invocation_context.session.state['k'] == 'v'
@@ -359,8 +360,8 @@ async def test_send_to_model_state_delta_with_function_response(
   )
   invocation_context.live_request_queue.close()
 
-  await flow._send_to_model(
-      mock_llm_connection, invocation_context, LlmRequest()
+  await _live_llm_flow.send_to_model(
+      flow, mock_llm_connection, invocation_context, LlmRequest()
   )
 
   assert invocation_context.session.state['k'] == 'v'
@@ -386,8 +387,8 @@ async def test_send_to_model_state_delta_with_close(mock_llm_connection):
       LiveRequest(state_delta={'k': 'v'}, close=True)
   )
 
-  await flow._send_to_model(
-      mock_llm_connection, invocation_context, LlmRequest()
+  await _live_llm_flow.send_to_model(
+      flow, mock_llm_connection, invocation_context, LlmRequest()
   )
 
   assert invocation_context.session.state['k'] == 'v'
@@ -410,8 +411,8 @@ async def test_send_to_model_does_not_cache_input_audio_by_default(
   invocation_context.live_request_queue.send(LiveRequest(blob=test_blob))
   invocation_context.live_request_queue.close()
 
-  await flow._send_to_model(
-      mock_llm_connection, invocation_context, LlmRequest()
+  await _live_llm_flow.send_to_model(
+      flow, mock_llm_connection, invocation_context, LlmRequest()
   )
 
   assert not invocation_context.input_realtime_cache
@@ -434,8 +435,8 @@ async def test_send_to_model_caches_input_audio_when_save_live_blob(
   invocation_context.live_request_queue.send(LiveRequest(blob=test_blob))
   invocation_context.live_request_queue.close()
 
-  await flow._send_to_model(
-      mock_llm_connection, invocation_context, LlmRequest()
+  await _live_llm_flow.send_to_model(
+      flow, mock_llm_connection, invocation_context, LlmRequest()
   )
 
   assert invocation_context.input_realtime_cache

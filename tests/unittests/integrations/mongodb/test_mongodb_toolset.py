@@ -245,7 +245,7 @@ async def test_mongodb_tool_injects_the_genai_client(monkeypatch):
 
 
 def test_toolset_pickles_when_client_comes_from_connection_string(monkeypatch):
-  """A connection-string toolset drops and rebuilds its clients on pickle."""
+  """A connection-string toolset drops and rebuilds its client on pickle."""
   get_mongo_client = mock.MagicMock(
       side_effect=lambda *args, **kwargs: mock.MagicMock()
   )
@@ -256,7 +256,6 @@ def test_toolset_pickles_when_client_comes_from_connection_string(monkeypatch):
   toolset = MongoDbToolset(
       database_name="test_db",
       connection_string="mongodb://localhost:27017",
-      genai_client=mock.MagicMock(),
       settings=MongoDbToolSettings(timeout_ms=7000),
   )
 
@@ -267,9 +266,6 @@ def test_toolset_pickles_when_client_comes_from_connection_string(monkeypatch):
   assert get_mongo_client.call_args.kwargs["timeout_ms"] == 7000
   assert restored._database_name == "test_db"
   assert restored._owns_client is True
-  # The genai client is not carried across: it is rebuilt lazily from the
-  # ambient environment on the destination the next time a query is embedded.
-  assert restored._genai_client is None
 
 
 async def test_toolset_pickle_drops_cached_tools(monkeypatch):
@@ -281,7 +277,8 @@ async def test_toolset_pickle_drops_cached_tools(monkeypatch):
   toolset = MongoDbToolset(
       database_name="test_db", connection_string="mongodb://localhost:27017"
   )
-  await toolset.get_tools_with_prefix()
+  await toolset.get_tools_with_prefix(mock.MagicMock(invocation_id="inv-1"))
+  assert toolset._cached_invocation_id == "inv-1"
   assert toolset._cached_prefixed_tools is not None
 
   restored = pickle.loads(pickle.dumps(toolset))
@@ -296,10 +293,23 @@ def test_toolset_with_caller_owned_client_cannot_be_pickled():
     pickle.dumps(_make_toolset())
 
 
-def test_toolset_requires_exactly_one_connection_source():
-  """Zero or two of connection_string/env_var/mongo_client raise ValueError."""
-  with pytest.raises(ValueError, match="Exactly one of"):
-    MongoDbToolset(database_name="test_db")
+def test_toolset_with_caller_owned_genai_client_cannot_be_pickled(monkeypatch):
+  """A caller-owned genai_client cannot be rebuilt on the destination."""
+  monkeypatch.setattr(
+      "google.adk.integrations.mongodb._client.get_mongo_client",
+      lambda *args, **kwargs: mock.MagicMock(),
+  )
+  toolset = MongoDbToolset(
+      database_name="test_db",
+      connection_string="mongodb://localhost:27017",
+      genai_client=mock.MagicMock(),
+  )
+  with pytest.raises(TypeError, match="genai_client"):
+    pickle.dumps(toolset)
+
+
+def test_toolset_env_var_rejects_a_second_connection_source():
+  """connection_string_env_var cannot be combined with another source."""
   with pytest.raises(ValueError, match="Exactly one of"):
     MongoDbToolset(
         database_name="test_db",
@@ -335,8 +345,9 @@ def test_toolset_env_var_mode_resolves_the_connection_string(monkeypatch):
   assert toolset._connection_string_env_var == "ITEST_MONGODB_URI"
 
 
-def test_toolset_env_var_mode_missing_env_var_raises():
+def test_toolset_env_var_mode_missing_env_var_raises(monkeypatch):
   """A missing environment variable fails with its name in the error."""
+  monkeypatch.delenv("ITEST_MONGODB_URI", raising=False)
   with pytest.raises(ValueError, match="ITEST_MONGODB_URI"):
     MongoDbToolset(
         database_name="test_db",

@@ -210,6 +210,7 @@ variable covers features the list does not mention.
 | `workflow` | Per-workflow inference call and tool call metrics, keyed by root agent and workflow name. |
 | `token_usage` | Token usage metrics, keyed by agent name or root agent and workflow name. |
 | `context_cache` | Context cache hit and fingerprint attributes on the inference span. |
+| `grounding` | Grounding attributes on the `call_llm` and inference spans for built-in tools such as `google_search`: query and chunk counts, plus the queries and source URIs when content capture is on. |
 | `mcp` | MCP HTTP exchange debug logs. |
 
 Certain instrumentations are gated by a combination of features,
@@ -260,6 +261,14 @@ When content is suppressed the attributes are not dropped; they are set to the
 string `"{}"`. The span shape stays the same so that consumers expecting those
 keys keep working.
 
+The `grounding` feature adds two content attributes: the queries a built-in
+grounding tool searched for, and the URIs of the sources it found. They follow
+`should_add_content_to_legacy_spans` on `call_llm` and
+`should_add_content_to_experimental_spans` on the inference span. Both hold
+lists rather than JSON text, so when content is suppressed they are left off
+the span instead of being set to `"{}"`. The query and chunk counts stay on the
+span either way, so a search that ran remains visible.
+
 ### The instrumentation-library caveat
 
 If `opentelemetry-instrumentation-google-genai` is installed, it wraps
@@ -279,17 +288,21 @@ defeating the first.
 ### Lock the policy against application code
 
 A platform team that has decided prompt content must never leave the process
-cannot rely on every agent author passing the right `RunConfig`. Set both
+cannot rely on every agent author passing the right `RunConfig`. Set all three
 variables in the deployment environment:
 
 ```bash
 export ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS=false
+export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=NO_CONTENT
 export ADK_TELEMETRY_IGNORE_RUN_CONFIG=1
 ```
 
-The first sets the policy, the second makes `TelemetryConfig` ignore the
-per-request fields, so an application passing
-`capture_message_content=SPAN_AND_EVENT` gets `NO_CONTENT` anyway.
+The first disables content on legacy ADK spans, the second disables it on
+GenAI log records and experimental spans, and the third makes
+`TelemetryConfig` ignore the per-request fields. An application passing
+`capture_message_content=SPAN_AND_EVENT` therefore still gets `NO_CONTENT`.
+The admin lock alone does not disable capture: without the second setting,
+an inherited OpenTelemetry content-capture variable can still enable it.
 
 ### Turn content on for one run
 
@@ -336,5 +349,5 @@ happened to want.
 
 ## Related guides
 
-*   `RunConfig` is the object a `TelemetryConfig` attaches
+*   [RunConfig](../../agents/run_config/index.md) is the object a `TelemetryConfig` attaches
     to, and covers the rest of what it controls per run.
