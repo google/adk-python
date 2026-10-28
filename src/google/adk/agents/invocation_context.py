@@ -314,6 +314,15 @@ class InvocationContext(BaseModel):
   _abort_state: _AbortState = PrivateAttr(default_factory=_AbortState)
   """Captured abort state (signal, loop, and aborted flag) shared across copies."""
 
+  _pause_on_partial_answer: bool = PrivateAttr(default=False)
+  """Whether a pause that is only partly answered keeps this run paused.
+
+  Resumable invocations always keep waiting. A workflow node that reruns an
+  LlmAgent with the answers received so far sets this so the flow also stops
+  before its model call while other answers are still owed, whatever the
+  app's resumability.
+  """
+
   _active_background_tools: (
       dict[str, _active_background_tool.ActiveBackgroundTool] | None
   ) = PrivateAttr(default=None)
