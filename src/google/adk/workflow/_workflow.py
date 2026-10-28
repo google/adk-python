@@ -528,6 +528,7 @@ class Workflow(BaseNode):
     # loop_state.trigger_buffer is a dict, and Python 3.7+ dicts preserve insertion order.
     # Therefore, nodes are processed strictly in the order their triggers arrived,
     # ensuring deterministic scheduling order for parallel branches.
+    held: list[str] = []
     for node_name in list(loop_state.trigger_buffer.keys()):
       if node_name in loop_state.pending_tasks:
         continue
@@ -544,26 +545,84 @@ class Workflow(BaseNode):
         if node_state.status == NodeStatus.WAITING and node_state.interrupts:
           continue
 
+      if self._is_held_transfer(loop_state, ctx, node_name):
+        held.append(node_name)
+        continue
+
       if self._at_concurrency_limit(loop_state):
         break
 
-      trigger = self._pop_trigger(loop_state, node_name)
-      if trigger is None:
-        continue
+      await self._start_buffered_node(loop_state, ctx, node_name)
 
-      self._prepare_node_state_for_starting(loop_state, node_name, trigger)
-      started = self._start_node_task(loop_state, ctx, node_name, trigger)
-      # Only a genuinely-executing node marks a new step; a replayed node
-      # being fast-forwarded from history should not re-announce itself.
-      if started:
-        await self._emit_node_checkpoint(loop_state, ctx)
+    # With nothing else in flight, nothing can release a held transfer, so
+    # start one and let the replay barrier report the divergence.
+    if held and not loop_state.pending_tasks:
+      await self._start_buffered_node(loop_state, ctx, held[0])
+
+  async def _start_buffered_node(
+      self, loop_state: _LoopState, ctx: Context, node_name: str
+  ) -> None:
+    """Pop the next trigger for a node and start it."""
+    trigger = self._pop_trigger(loop_state, node_name)
+    if trigger is None:
+      return
+
+    self._prepare_node_state_for_starting(loop_state, node_name, trigger)
+    started = self._start_node_task(loop_state, ctx, node_name, trigger)
+    # Only a genuinely-executing node marks a new step; a replayed node
+    # being fast-forwarded from history should not re-announce itself.
+    if started:
+      await self._emit_node_checkpoint(loop_state, ctx)
 
   def _at_concurrency_limit(self, loop_state: _LoopState) -> bool:
-    """Check if max_concurrency has been reached."""
+    """Check if max_concurrency has been reached.
+
+    Replayed nodes are history fast-forwards that may block on the replay
+    sequence barrier waiting for another node to be scheduled, so they must
+    not hold a concurrency slot.
+    """
+    if self.max_concurrency is None or self.max_concurrency <= 0:
+      return False
+    active = sum(
+        1
+        for name in loop_state.pending_tasks
+        if name not in loop_state.replayed_nodes
+    )
+    return active >= self.max_concurrency
+
+  def _is_held_transfer(
+      self, loop_state: _LoopState, ctx: Context, node_name: str
+  ) -> bool:
+    """Check if a node must wait for its replay turn before starting.
+
+    A recorded transfer with resolved interrupts runs its transfer target once
+    the replay sequence barrier releases it. Under max_concurrency it is
+    started only after that release and counted like any other node once it
+    runs. The one exception: with nothing else pending, nothing can release
+    it, so _schedule_ready_nodes starts one anyway and the barrier reports the
+    divergence.
+    """
+    barrier = loop_state.replay_manager.sequence_barrier
+    if (
+        self.max_concurrency is None
+        or self.max_concurrency <= 0
+        or barrier is None
+    ):
+      return False
+    counters = loop_state.run_counters.get(ctx.node_path or "", {})
+    key = f"{node_name}@{counters.get(node_name, 0) + 1}"
+    event = barrier.events.get(key)
+    recovered = loop_state.recovered_executions.get(key)
+    if event is None or event.is_set() or recovered is None:
+      return False
+    result = check_interception(
+        node=self._get_static_node_by_name(node_name), recovered=recovered
+    )
     return (
-        self.max_concurrency is not None
-        and self.max_concurrency > 0
-        and len(loop_state.pending_tasks) >= self.max_concurrency
+        not result.should_run
+        and result.transfer_to_agent is not None
+        and bool(recovered.interrupt_ids)
+        and not recovered.interrupt_ids - recovered.resolved_ids
     )
 
   def _pop_trigger(
