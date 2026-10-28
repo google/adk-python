@@ -196,6 +196,7 @@ class Event(LlmResponse):
         usage_metadata: Optional[
             types.GenerateContentResponseUsageMetadata
         ] = ...,
+        cache_creation_token_count: Optional[int] = ...,
         live_session_resumption_update: Optional[
             types.LiveServerSessionResumptionUpdate
         ] = ...,
