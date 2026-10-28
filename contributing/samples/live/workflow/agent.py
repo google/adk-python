@@ -21,7 +21,7 @@ from google.adk.workflow import Workflow
 from pydantic import BaseModel
 from pydantic import Field
 
-LIVE_MODEL = 'gemini-live-2.5-flash-native-audio'
+LIVE_MODEL = 'gemini-3.8-live'
 
 
 # --- Typed handoffs between stages -----------------------------------------
