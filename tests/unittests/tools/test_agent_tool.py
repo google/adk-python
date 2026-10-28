@@ -820,6 +820,83 @@ def test_custom_schema(env_variables):
   assert mock_model.requests[1].config.response_mime_type == 'application/json'
 
 
+@mark.parametrize('skip_summarization', [False, True])
+def test_invalid_input_schema_args_return_error_to_model(skip_summarization):
+  class TripInput(BaseModel):
+    city: str
+    days: int
+
+  tool_agent_model = testing_utils.MockModel.create(responses=['unused'])
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, input_schema=TripInput
+  )
+  root_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(name='tool_agent', args={'city': 'Paris'}),
+          'retrying',
+      ]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=root_model,
+      tools=[
+          AgentTool(agent=tool_agent, skip_summarization=skip_summarization)
+      ],
+  )
+
+  events = testing_utils.InMemoryRunner(root_agent).run('plan a trip')
+
+  function_responses = []
+  for event in events:
+    function_responses.extend(event.get_function_responses())
+  assert len(function_responses) == 1
+  error = function_responses[0].response['error']
+  assert error.startswith(
+      'Invoking `tool_agent()` failed due to argument validation errors:'
+  )
+  assert 'days' in error
+  assert testing_utils.simplify_events(events)[-1] == (
+      'root_agent',
+      'retrying',
+  )
+  assert not tool_agent_model.requests
+
+
+@mark.asyncio
+async def test_single_turn_tool_invalid_input_schema_args_return_error_to_model():
+  from google.adk.tools.agent_tool import _SingleTurnAgentTool
+
+  class TripInput(BaseModel):
+    city: str
+    days: int
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=testing_utils.MockModel.create(responses=['unused']),
+      input_schema=TripInput,
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  invocation_context = InvocationContext(
+      invocation_id='invocation_id',
+      agent=tool_agent,
+      session=session,
+      session_service=session_service,
+  )
+
+  result = await _SingleTurnAgentTool(tool_agent).run_async(
+      args={'city': 'Paris'},
+      tool_context=ToolContext(invocation_context=invocation_context),
+  )
+
+  assert result['error'].startswith(
+      'Invoking `tool_agent()` failed due to argument validation errors:'
+  )
+  assert 'days' in result['error']
+
+
 @mark.parametrize(
     'env_variables',
     [

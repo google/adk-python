@@ -26,6 +26,7 @@ from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic import model_validator
+from pydantic import ValidationError
 from typing_extensions import override
 
 from . import _automatic_function_calling_util
@@ -39,6 +40,7 @@ from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from ._forwarding_artifact_service import ForwardingArtifactService
+from ._node_tool import _arg_validation_error
 from .base_tool import BaseTool
 from .tool_configs import BaseToolConfig
 from .tool_configs import ToolArgsConfig
@@ -265,12 +267,12 @@ class AgentTool(BaseTool):
     from ..sessions.in_memory_session_service import InMemorySessionService
     from ..sessions.state import State
 
-    if self.skip_summarization:
-      tool_context.actions.skip_summarization = True
-
     input_schema = _get_input_schema(self.agent)
     if input_schema:
-      input_value = input_schema.model_validate(args)
+      try:
+        input_value = input_schema.model_validate(args)
+      except ValidationError as e:
+        return _arg_validation_error(self.name, e)
       # The text must stay a bare JSON document: the node runtime re-validates
       # it against this same schema, so any prose here fails that parse.
       content = types.Content(
@@ -290,6 +292,8 @@ class AgentTool(BaseTool):
           role='user',
           parts=[types.Part.from_text(text=request_text)],
       )
+    if self.skip_summarization:
+      tool_context.actions.skip_summarization = True
     invocation_context = tool_context._invocation_context
     parent_app_name = (
         invocation_context.app_name if invocation_context else None
@@ -570,6 +574,8 @@ class _SingleTurnAgentTool(AgentTool):
     if input_schema:
       try:
         node_input = input_schema.model_validate(args)
+      except ValidationError as e:
+        return _arg_validation_error(self.name, e)
       except Exception as e:
         return f'Error validating input: {e}'
     else:
