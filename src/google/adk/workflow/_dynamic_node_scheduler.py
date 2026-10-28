@@ -263,6 +263,10 @@ class DynamicNodeScheduler:
     curr_parent_ctx = ctx
     curr_node = node
     curr_input = node_input
+    # A single_turn LlmAgent node stops on transfer and the scheduler runs the
+    # target as the next hop. Run those hops as single_turn too, so the reply
+    # of the agent that ends the chain is the node output for downstream edges.
+    is_single_turn_chain = getattr(node, 'mode', None) == AgentMode.SINGLE_TURN
     curr_name = node_name
     curr_run_id = run_id
     curr_resume_inputs = resume_inputs
@@ -345,6 +349,21 @@ class DynamicNodeScheduler:
             f" '{target_name}'.{available_str}"
         )
 
+      from ..agents.llm_agent import LlmAgent
+
+      if (
+          is_single_turn_chain
+          and isinstance(target_agent, LlmAgent)
+          and target_agent.mode != AgentMode.SINGLE_TURN
+      ):
+        # rerun_on_resume matches what build_node gives an LlmAgent node, so a
+        # hop paused on a tool call runs its model again on resume.
+        target_agent = target_agent.model_copy(
+            update={
+                'mode': AgentMode.SINGLE_TURN.value,
+                'rerun_on_resume': True,
+            }
+        )
       curr_parent_ctx = next_parent_ctx
       curr_node = target_agent
       curr_name = target_agent.name
