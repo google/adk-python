@@ -272,12 +272,15 @@ class AgentTool(BaseTool):
     if input_schema:
       input_value = input_schema.model_validate(args)
       # The text must stay a bare JSON document: the node runtime re-validates
-      # it against this same schema, so any prose here fails that parse.
+      # it against this same schema, so any prose here fails that parse. It
+      # is dumped by alias for the same reason.
       content = types.Content(
           role='user',
           parts=[
               types.Part.from_text(
-                  text=input_value.model_dump_json(exclude_none=True)
+                  text=input_value.model_dump_json(
+                      exclude_none=True, by_alias=True
+                  )
               )
           ],
       )
