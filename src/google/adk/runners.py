@@ -113,6 +113,13 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
     A tuple of (isolation_scope, invocation_id) for the active task if found,
     or None if no active task scope is found.
   """
+  # Fast path: this function can only return an event that has an
+  # isolation_scope, and _apply_rewinds never adds events, so a history with
+  # no scoped event has no active task scope and both passes below can be
+  # skipped.
+  if not any(event.isolation_scope for event in session.events):
+    return None
+
   live_events = _apply_rewinds(session.events)
   finished_runs = _find_finished_scope_runs(live_events)
 
