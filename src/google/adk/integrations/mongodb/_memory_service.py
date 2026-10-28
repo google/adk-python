@@ -15,6 +15,9 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 import logging
 import re
 import threading
@@ -56,11 +59,23 @@ _DEFAULT_AUTO_EMBEDDING_MODEL = "voyage-4"
 _DEFAULT_MEMORY_VECTOR_INDEX_NAME = "memory_vector_index"
 _DEFAULT_NUM_CANDIDATES = 100
 
+# Default retention for stored memories, in days. Each memory document carries
+# an `expire_at` date this many days past ingest, and the `memory_ttl` TTL
+# index (created when `ensure_indexes=True`) lets MongoDB's TTL monitor delete
+# documents once `expire_at` passes. Pass `memory_ttl_days=None` to keep
+# memories indefinitely.
+_DEFAULT_MEMORY_TTL_DAYS = 7
+
 # Recommended secondary index, created only when `ensure_indexes=True`. It
 # covers the `search_memory` lookup (app/user equality plus a multikey `$in`
 # on keywords); writes are keyed by `_id`, which MongoDB indexes implicitly.
 _MEMORIES_RECALL_INDEX_NAME = "app_user_keywords"
 _MEMORIES_RECALL_INDEX_KEYS = [("app_name", 1), ("user_id", 1), ("keywords", 1)]
+
+# TTL index on the `expire_at` date field: MongoDB's TTL monitor deletes a
+# memory document once its `expire_at` passes. Created for every retrieval
+# mode when `ensure_indexes=True` and a TTL is configured.
+_MEMORIES_TTL_INDEX_NAME = "memory_ttl"
 
 # Compact English stop-word list ignored when extracting keywords. Kept
 # intentionally short; callers can pass their own set via `stop_words`.
@@ -163,6 +178,7 @@ class MongoDbMemoryService(BaseMemoryService):
       embedding_output_dimensionality: int | None = None,
       auto_embedding_model_name: str = _DEFAULT_AUTO_EMBEDDING_MODEL,
       vector_index_name: str = _DEFAULT_MEMORY_VECTOR_INDEX_NAME,
+      memory_ttl_days: int | None = _DEFAULT_MEMORY_TTL_DAYS,
   ):
     """Initializes the MongoDB memory service.
 
@@ -200,13 +216,24 @@ class MongoDbMemoryService(BaseMemoryService):
         index embeds with.
       vector_index_name: Name of the vector search index used in vector/auto
         modes.
+      memory_ttl_days: Number of days a memory is retained before MongoDB's
+        TTL monitor deletes it, measured from ingest (default 7). Each memory
+        document stores an `expire_at` date this many days in the future, and
+        when `ensure_indexes=True` a `memory_ttl` TTL index is created on that
+        field. Pass None to keep memories indefinitely (no `expire_at`, no TTL
+        index). Deletion runs in the background, so expired memories may
+        linger briefly past their `expire_at`.
 
     Raises:
-      ValueError: If `max_results` is not positive, or `retrieval_mode` is
-        unknown.
+      ValueError: If `max_results` is not positive, `retrieval_mode` is
+        unknown, or `memory_ttl_days` is not positive.
     """
     if max_results < 1:
       raise ValueError("max_results must be a positive integer.")
+    if memory_ttl_days is not None and memory_ttl_days < 1:
+      raise ValueError(
+          "memory_ttl_days must be a positive integer or None (no expiry)."
+      )
     if retrieval_mode not in _RETRIEVAL_MODES:
       raise ValueError(
           f"retrieval_mode must be one of {sorted(_RETRIEVAL_MODES)}, got"
@@ -240,6 +267,7 @@ class MongoDbMemoryService(BaseMemoryService):
     self._embedding_output_dimensionality = embedding_output_dimensionality
     self._auto_embedding_model_name = auto_embedding_model_name
     self._vector_index_name = vector_index_name
+    self._memory_ttl_days = memory_ttl_days
     # Serializes first-use index creation across the worker threads that
     # `asyncio.to_thread` runs `_ensure_indexes_once` on.
     self._index_lock = threading.Lock()
@@ -248,7 +276,7 @@ class MongoDbMemoryService(BaseMemoryService):
     return self._client[self._database_name][self.memories_collection]
 
   def _ensure_indexes_once(self) -> None:
-    """Creates the recommended secondary index on first use, if enabled.
+    """Creates the recommended secondary indexes on first use, if enabled.
 
     Index creation is idempotent on the server, and the guard flag only
     skips work in this process. A deployment without the `createIndex`
@@ -268,6 +296,7 @@ class MongoDbMemoryService(BaseMemoryService):
           )
         else:
           self._create_vector_index()
+        self._create_ttl_index()
       except (
           Exception
       ) as exc:  # pymongo stays an optional import; match by shape.
@@ -283,6 +312,22 @@ class MongoDbMemoryService(BaseMemoryService):
             exc,
         )
       self._indexes_ensured = True
+
+  def _create_ttl_index(self) -> None:
+    """Creates the TTL index that expires memories after `memory_ttl_days`.
+
+    The index targets the `expire_at` date field written at ingest. With
+    `expireAfterSeconds=0` MongoDB's TTL monitor deletes a document as soon
+    as its `expire_at` passes, so the per-document date carries the retention
+    (re-ingesting a session refreshes it). No-op when no TTL is configured.
+    """
+    if self._memory_ttl_days is None:
+      return
+    self._memories().create_index(
+        [("expire_at", 1)],
+        name=_MEMORIES_TTL_INDEX_NAME,
+        expireAfterSeconds=0,
+    )
 
   def _create_vector_index(self) -> None:
     """Creates the vector search index for vector/auto retrieval modes."""
@@ -390,6 +435,14 @@ class MongoDbMemoryService(BaseMemoryService):
     if self._retrieval_mode == VECTOR_RETRIEVAL:
       embeddings = await self._embed_texts([text for _, text in pairs])
 
+    # One expiry for the whole batch, so every memory from this session ages
+    # out together. Re-ingesting a session refreshes expire_at (upsert).
+    expire_at = None
+    if self._memory_ttl_days is not None:
+      expire_at = datetime.now(timezone.utc) + timedelta(
+          days=self._memory_ttl_days
+      )
+
     def _add() -> None:
       # pymongo is imported lazily here: it stays an optional dependency
       # until a MongoDB-backed service is actually constructed.
@@ -407,6 +460,8 @@ class MongoDbMemoryService(BaseMemoryService):
             "content": event.content.model_dump(exclude_none=True, mode="json"),
             "timestamp": event.timestamp,
         }
+        if expire_at is not None:
+          document["expire_at"] = expire_at
         if self._retrieval_mode == KEYWORD_RETRIEVAL:
           keywords = self._extract_keywords(text)
           if not keywords:

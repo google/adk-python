@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from unittest import mock
 
 from google.adk.events.event import Event
@@ -203,6 +204,99 @@ def test_max_results_must_be_positive():
         database_name="test_db",
         max_results=0,
     )
+
+
+def test_memory_ttl_days_must_be_positive_or_none():
+  """memory_ttl_days of zero or negative is a config error; None is valid."""
+  with pytest.raises(ValueError, match="memory_ttl_days"):
+    MongoDbMemoryService(
+        mongo_client=mongomock.MongoClient(),
+        database_name="test_db",
+        memory_ttl_days=0,
+    )
+  # None disables expiry and is accepted.
+  MongoDbMemoryService(
+      mongo_client=mongomock.MongoClient(),
+      database_name="test_db",
+      memory_ttl_days=None,
+  )
+
+
+@pytest.mark.asyncio
+async def test_ttl_index_created_by_default():
+  """A TTL index on expire_at is created by default (7-day retention)."""
+  client = mongomock.MongoClient()
+  service = MongoDbMemoryService(mongo_client=client, database_name="test_db")
+  await service.add_session_to_memory(_session_with_texts("hello world"))
+
+  indexes = client["test_db"]["memories"].index_information()
+  assert "memory_ttl" in indexes
+  assert indexes["memory_ttl"]["key"] == [("expire_at", 1)]
+  assert indexes["memory_ttl"]["expireAfterSeconds"] == 0
+
+
+@pytest.mark.asyncio
+async def test_ingest_writes_expire_at_default_seven_days():
+  """Each memory document stores an expire_at ~7 days in the future."""
+  from datetime import datetime
+  from datetime import timezone
+
+  client = mongomock.MongoClient()
+  service = MongoDbMemoryService(mongo_client=client, database_name="test_db")
+  before = datetime.now(timezone.utc)
+  await service.add_session_to_memory(
+      _session_with_texts("first memory", "second memory")
+  )
+  after = datetime.now(timezone.utc)
+
+  docs = list(client["test_db"]["memories"].find({}))
+  assert len(docs) == 2
+  for doc in docs:
+    expire_at = doc["expire_at"]
+    # mongomock returns naive datetimes; treat as UTC for the comparison.
+    if expire_at.tzinfo is None:
+      expire_at = expire_at.replace(tzinfo=timezone.utc)
+    # mongomock truncates microseconds, so allow a small slack below 7 days.
+    assert expire_at - before >= timedelta(days=7) - timedelta(seconds=1)
+    assert expire_at - after <= timedelta(days=7)
+
+
+@pytest.mark.asyncio
+async def test_ttl_days_configurable():
+  """A custom memory_ttl_days shifts the stored expire_at accordingly."""
+  from datetime import datetime
+  from datetime import timezone
+
+  client = mongomock.MongoClient()
+  service = MongoDbMemoryService(
+      mongo_client=client, database_name="test_db", memory_ttl_days=30
+  )
+  before = datetime.now(timezone.utc)
+  await service.add_session_to_memory(_session_with_texts("hello world"))
+
+  doc = client["test_db"]["memories"].find_one({})
+  expire_at = doc["expire_at"]
+  if expire_at.tzinfo is None:
+    expire_at = expire_at.replace(tzinfo=timezone.utc)
+  # 30-day retention; mongomock truncates microseconds, so allow slack.
+  assert expire_at - before >= timedelta(days=30) - timedelta(seconds=1)
+
+
+@pytest.mark.asyncio
+async def test_ttl_disabled_omits_expire_at_and_index():
+  """memory_ttl_days=None stores no expire_at and creates no TTL index."""
+  client = mongomock.MongoClient()
+  service = MongoDbMemoryService(
+      mongo_client=client, database_name="test_db", memory_ttl_days=None
+  )
+  await service.add_session_to_memory(_session_with_texts("hello world"))
+
+  doc = client["test_db"]["memories"].find_one({})
+  assert "expire_at" not in doc
+  indexes = client["test_db"]["memories"].index_information()
+  assert "memory_ttl" not in indexes
+  # The recall index is still created regardless of the TTL setting.
+  assert "app_user_keywords" in indexes
 
 
 def test_retrieval_mode_must_be_known():
@@ -563,4 +657,5 @@ async def test_index_creation_runs_once_under_concurrency():
         for i in range(10)
     ))
 
-  assert create_calls == ["app_user_keywords"]
+  # Each recommended index (recall + TTL) is created exactly once.
+  assert sorted(create_calls) == ["app_user_keywords", "memory_ttl"]
