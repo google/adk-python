@@ -195,7 +195,7 @@ def test_to_cloud_run_happy_path(
     assert "--with_ui" not in cmd_argv
   assert "--port=8080" in cmd_argv
   assert cmd_argv[-1] == "/app/agents"
-  assert "FROM python:3.11-slim" in dockerfile_content
+  assert "FROM python:3.12-slim" in dockerfile_content
   assert (
       'RUN adduser --disabled-password --gecos "" myuser' in dockerfile_content
   )

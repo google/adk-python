@@ -591,11 +591,11 @@ def deploy_options(command: _F) -> _F:
       click.option(
           "--python_version",
           type=str,
-          default="3.11",
+          default="3.12",
           show_default=True,
           help=(
               "Optional. The Python version used in the container image"
-              " (default: 3.11)."
+              " (default: 3.12)."
           ),
       ),
       click.argument(
@@ -2713,7 +2713,7 @@ def cli_deploy_cloud_run(
     provider_args: tuple[str, ...] = (),
     env: tuple[str, ...] = (),
     extra_packages: tuple[str, ...] = (),
-    python_version: str = "3.11",
+    python_version: str = "3.12",
 ) -> None:
   """Deploys an agent to Cloud Run.
 
@@ -2797,7 +2797,7 @@ def cli_deploy_docker(
     a2a: bool = False,
     provider_args: tuple[str, ...] = (),
     env: tuple[str, ...] = (),
-    python_version: str = "3.11",
+    python_version: str = "3.12",
 ) -> None:
   """Deploys an agent to a local Docker container."""
   _warn_if_with_ui(with_ui)
@@ -3100,7 +3100,7 @@ def cli_migrate_session(
         "Optional. The Python version used in the container image. Overrides"
         " `python_version` in `.agent_engine_config.json` when both are set."
         " (default: `python_version` from `.agent_engine_config.json`, or"
-        " 3.11)"
+        " 3.12)"
     ),
 )
 @click.option(
@@ -3369,11 +3369,11 @@ def cli_deploy_agent_engine(
 @click.option(
     "--python_version",
     type=str,
-    default="3.11",
+    default="3.12",
     show_default=True,
     help=(
         "Optional. The Python version used in the container image"
-        " (default: 3.11)."
+        " (default: 3.12)."
     ),
 )
 # Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
@@ -3450,7 +3450,7 @@ def cli_deploy_gke(
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: str | None = None,
     extra_packages: tuple[str, ...] = (),
-    python_version: str = "3.11",
+    python_version: str = "3.12",
 ) -> None:
   """Deploys an agent to GKE.
 
