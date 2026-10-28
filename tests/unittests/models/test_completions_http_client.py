@@ -14,18 +14,344 @@
 
 import asyncio
 import atexit
+import copy
 import gc
 import json
 from unittest import mock
 from unittest.mock import AsyncMock
 import weakref
 
+from google.adk.agents.llm_agent import Agent
 from google.adk.models.apigee_llm import ChatCompletionsResponseHandler
 from google.adk.models.apigee_llm import CompletionsHTTPClient
 from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 import httpx
 import pytest
+
+from .. import testing_utils
+
+
+def _completed_argument_responses(
+    arguments: list[str], streaming: bool, finish: str, *, legacy: bool = False
+) -> list[LlmResponse]:
+  handler = ChatCompletionsResponseHandler()
+  calls = [
+      {
+          'index': index,
+          'id': f'call_{index}',
+          'type': 'function',
+          'function': {'name': f'tool_{index}', 'arguments': value},
+      }
+      for index, value in enumerate(arguments)
+  ]
+  message = {'role': 'assistant', 'content': 'Looking that up.'}
+  if legacy:
+    message['function_call'] = calls[0]['function']
+  else:
+    message['tool_calls'] = calls
+  payload = {
+      'model': 'test-model',
+      'id': 'response-id',
+      'usage': {'prompt_tokens': 3, 'completion_tokens': 4, 'total_tokens': 7},
+  }
+  original = copy.deepcopy(message)
+  if streaming:
+    responses = list(
+        handler.process_chunk({
+            'model': 'test-model',
+            'id': 'response-id',
+            'choices': [{'delta': message}],
+        })
+    )
+    responses.extend(
+        handler.process_chunk({
+            **payload,
+            'choices': [{'delta': {}, 'finish_reason': finish}],
+        })
+    )
+    assert all(response.partial for response in responses[:-1])
+    for response in responses[:-1]:
+      for part in response.content.parts:
+        if part.function_call:
+          assert part.function_call.args is None
+          assert part.function_call.will_continue
+  else:
+    responses = [
+        handler.process_response({
+            **payload,
+            'choices': [{'message': message, 'finish_reason': finish}],
+        })
+    ]
+  assert message == original
+  return responses
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+@pytest.mark.parametrize('finish', ['tool_calls', 'stop', 'length'])
+@pytest.mark.parametrize(
+    'arguments',
+    [
+        '[1, 2]',
+        '[]',
+        '[["a", 1]]',
+        '"x"',
+        '""',
+        '5',
+        '0',
+        'false',
+        'true',
+        'null',
+    ],
+)
+def test_completed_non_object_arguments_rejected(
+    arguments: str, streaming: bool, finish: str
+) -> None:
+  """Completed non-object calls report errors without losing response metadata."""
+  response = _completed_argument_responses([arguments], streaming, finish)[-1]
+  expected = (
+      types.FinishReason.MAX_TOKENS
+      if finish == 'length'
+      else types.FinishReason.MALFORMED_FUNCTION_CALL
+  )
+  assert response.finish_reason == expected
+  assert response.error_code == expected
+  assert 'JSON object' in response.error_message
+  assert [p.text for p in response.content.parts] == ['Looking that up.']
+  assert response.usage_metadata.total_token_count == 7
+  assert response.model_version == 'test-model'
+  assert response.custom_metadata['id'] == 'response-id'
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+@pytest.mark.parametrize('finish', ['tool_calls', 'stop'])
+@pytest.mark.parametrize(
+    'arguments', ['{}', '{"a": 1}', '{"a": {"b": [1, null]}}']
+)
+def test_completed_object_arguments_preserved(
+    arguments: str, streaming: bool, finish: str
+) -> None:
+  """Nested objects and empty objects remain valid function arguments."""
+  response = _completed_argument_responses([arguments], streaming, finish)[-1]
+  assert response.error_code is None
+  assert response.finish_reason == types.FinishReason.STOP
+  assert response.content.parts[1].function_call.args == json.loads(arguments)
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+@pytest.mark.parametrize('finish', ['tool_calls', 'stop'])
+@pytest.mark.parametrize('invalid_index', [0, 1])
+def test_non_object_arguments_preserve_valid_sibling(
+    streaming: bool, finish: str, invalid_index: int
+) -> None:
+  """Only the invalid call is removed regardless of its position."""
+  arguments = ['{"a": 1}', '{"a": 1}']
+  arguments[invalid_index] = 'null'
+  response = _completed_argument_responses(arguments, streaming, finish)[-1]
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  calls = [p.function_call for p in response.content.parts if p.function_call]
+  assert len(calls) == 1
+  assert calls[0].id == f'call_{1 - invalid_index}'
+  assert calls[0].args == {'a': 1}
+
+
+@pytest.mark.parametrize('arguments', ['null', '[]', '""'])
+def test_non_object_legacy_function_call_rejected(arguments: str) -> None:
+  """Legacy non-streaming calls use the same object validation."""
+  response = _completed_argument_responses(
+      [arguments], False, 'stop', legacy=True
+  )[-1]
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert not any(p.function_call for p in response.content.parts)
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+def test_empty_argument_buffer_preserves_absent_args(streaming: bool) -> None:
+  """An absent argument buffer remains distinct from a JSON empty string."""
+  response = _completed_argument_responses([''], streaming, 'stop')[-1]
+  assert response.error_code is None
+  assert response.content.parts[1].function_call.args is None
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+def test_malformed_argument_json_still_raises(streaming: bool) -> None:
+  """Syntax errors keep the established exception contract."""
+  with pytest.raises(ValueError, match='Invalid JSON'):
+    _completed_argument_responses(['{"a":'], streaming, 'stop')
+
+
+@pytest.mark.parametrize(
+    'fragments',
+    [
+        ['{"a": 1}', '[1, 2]'],
+        ['[1, 2]', '{"a": 1}'],
+    ],
+)
+def test_non_object_fallback_fragment_is_not_silently_dropped(
+    fragments: list[str],
+) -> None:
+  """Fallback merging cannot conceal a non-object argument fragment."""
+  handler = ChatCompletionsResponseHandler()
+  for fragment in fragments:
+    list(
+        handler.process_chunk({
+            'choices': [{
+                'delta': {
+                    'tool_calls': [{
+                        'index': 0,
+                        'id': 'call_0',
+                        'function': {'name': 'tool', 'arguments': fragment},
+                    }]
+                }
+            }]
+        })
+    )
+  response = list(
+      handler.process_chunk(
+          {'choices': [{'delta': {}, 'finish_reason': 'stop'}]}
+      )
+  )[-1]
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert not any(p.function_call for p in response.content.parts)
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+async def test_valid_sibling_executes_with_malformed_response(
+    streaming: bool,
+) -> None:
+  """The default Runner executes the retained call, never the rejected one."""
+  response = _completed_argument_responses(
+      ['null', '{"a": 1}'], streaming, 'stop'
+  )[-1]
+  invoked = []
+
+  def tool_0() -> None:
+    invoked.append('invalid')
+
+  def tool_1(a: int) -> int:
+    invoked.append(a)
+    return a + 1
+
+  model = testing_utils.MockModel.create(
+      responses=[
+          response,
+          LlmResponse(
+              content=types.Content(
+                  role='model', parts=[types.Part(text='done')]
+              )
+          ),
+      ]
+  )
+  agent = Agent(name='agent', model=model, tools=[tool_0, tool_1])
+  runner = testing_utils.TestInMemoryRunner(agent=agent)
+  events = await runner.run_async_with_new_session('test')
+
+  assert invoked == [1]
+  assert any(
+      event.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+      for event in events
+  )
+  results = [
+      p.function_response
+      for event in events
+      if event.content
+      for p in event.content.parts
+      if p.function_response
+  ]
+  assert len(results) == 1
+  assert results[0].name == 'tool_1'
+  assert results[0].response == {'result': 2}
+
+
+@pytest.mark.parametrize('arguments', ['{"a": 1}', '[1, 2]'])
+def test_fragmented_arguments_validate_only_on_completion(
+    arguments: str,
+) -> None:
+  """Incomplete fragments are hints; only completed calls are validated."""
+  handler = ChatCompletionsResponseHandler()
+  for fragment in (arguments[:3], arguments[3:]):
+    responses = list(
+        handler.process_chunk({
+            'choices': [{
+                'delta': {
+                    'tool_calls': [{
+                        'index': 2,
+                        'id': 'call_2',
+                        'function': {'name': 'tool', 'arguments': fragment},
+                    }]
+                }
+            }]
+        })
+    )
+    assert all(r.partial and r.error_code is None for r in responses)
+    assert responses[0].content.parts[0].function_call.args is None
+  final = list(
+      handler.process_chunk(
+          {'choices': [{'delta': {}, 'finish_reason': 'stop'}]}
+      )
+  )[-1]
+  if arguments.startswith('{'):
+    assert final.error_code is None
+    assert final.content.parts[0].function_call.args == {'a': 1}
+  else:
+    assert final.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+    assert final.content.parts == []
+
+
+@pytest.mark.parametrize(
+    'fragments',
+    [
+        ['{"a":', 'null'],
+        ['null', '{"a":'],
+        ['null', 'null'],
+    ],
+)
+def test_unsalvageable_fallback_json_still_raises(fragments: list[str]) -> None:
+  """Non-object fragments do not hide an existing malformed-JSON exception."""
+  handler = ChatCompletionsResponseHandler()
+  for fragment in fragments:
+    list(
+        handler.process_chunk({
+            'choices': [{
+                'delta': {
+                    'tool_calls': [{
+                        'index': 0,
+                        'function': {'name': 'tool', 'arguments': fragment},
+                    }]
+                }
+            }]
+        })
+    )
+  with pytest.raises(ValueError, match='Invalid JSON'):
+    list(
+        handler.process_chunk(
+            {'choices': [{'delta': {}, 'finish_reason': 'stop'}]}
+        )
+    )
+
+
+def test_non_object_arguments_in_finish_bearing_chunk() -> None:
+  """A finish signal on the argument chunk still rejects non-object args."""
+  handler = ChatCompletionsResponseHandler()
+  responses = list(
+      handler.process_chunk({
+          'choices': [{
+              'delta': {
+                  'tool_calls': [{
+                      'index': 0,
+                      'id': 'bad',
+                      'function': {'name': 'tool', 'arguments': 'null'},
+                  }]
+              },
+              'finish_reason': 'tool_calls',
+          }]
+      })
+  )
+  assert responses[0].partial
+  assert responses[0].error_code is None
+  assert responses[-1].error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert responses[-1].content.parts == []
 
 
 @pytest.fixture
