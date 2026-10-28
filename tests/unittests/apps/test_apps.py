@@ -281,13 +281,10 @@ class TestValidateAppName:
     with pytest.raises(ValueError, match="must start with a letter"):
       validate_app_name(name)
 
-  @pytest.mark.xfail(
-      strict=True,
-      reason="`$` also matches before a trailing newline, so it slips through",
-  )
-  def test_rejects_name_with_trailing_newline(self):
+  @pytest.mark.parametrize("name", ["app\n", "app\r\n", "my_app\n"])
+  def test_rejects_name_with_trailing_newline(self, name: str):
     with pytest.raises(ValueError, match="must start with a letter"):
-      validate_app_name("app\n")
+      validate_app_name(name)
 
   def test_rejects_the_reserved_user_name(self):
     with pytest.raises(ValueError, match="reserved for end-user input"):
