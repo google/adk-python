@@ -17,6 +17,7 @@ import dataclasses
 from enum import Enum
 import functools
 import inspect
+import logging
 from typing import Annotated
 from typing import Any
 from typing import Callable
@@ -913,6 +914,154 @@ async def test_run_async_leaves_bool_arg_for_int_param_alone(mock_tool_context):
       tool_context=mock_tool_context,
   )
   assert result == {"type": "bool"}
+
+
+class _Unit(Enum):
+  CELSIUS = "celsius"
+  FAHRENHEIT = "fahrenheit"
+
+
+@pytest.mark.asyncio
+async def test_run_async_converts_enum_value_to_member(mock_tool_context):
+  """The declaration advertises the enum values, so the model sends one back.
+
+  The function must receive the Enum member, not the raw value.
+  """
+
+  def tool_with_enum(unit: _Unit):
+    return {"type": type(unit).__name__, "value": unit.value}
+
+  tool = FunctionTool(tool_with_enum)
+  result = await tool.run_async(
+      args={"unit": "celsius"},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"type": "_Unit", "value": "celsius"}
+
+
+@pytest.mark.asyncio
+async def test_run_async_converts_optional_enum_value_to_member(
+    mock_tool_context,
+):
+  """Optional[Enum] and Enum | None are unwrapped before the conversion."""
+
+  def tool_with_optional_enum(
+      unit: Optional[_Unit] = None, other: _Unit | None = None
+  ):
+    return {"unit": unit, "other": other}
+
+  tool = FunctionTool(tool_with_optional_enum)
+  result = await tool.run_async(
+      args={"unit": "fahrenheit", "other": "celsius"},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"unit": _Unit.FAHRENHEIT, "other": _Unit.CELSIUS}
+
+
+@pytest.mark.asyncio
+async def test_run_async_passes_none_optional_enum_without_warning(
+    mock_tool_context, caplog
+):
+  """None is a valid value for an Optional enum, so it is not warned about."""
+
+  def tool_with_optional_enum(
+      unit: Optional[_Unit] = None, other: _Unit | None = None
+  ):
+    return {"unit": unit, "other": other}
+
+  tool = FunctionTool(tool_with_optional_enum)
+  with caplog.at_level(logging.WARNING, logger="google_adk"):
+    result = await tool.run_async(
+        args={"unit": None},
+        tool_context=mock_tool_context,
+    )
+  assert result == {"unit": None, "other": None}
+  assert "is not a value of enum" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_async_converts_int_enum_value_from_float(mock_tool_context):
+  """A proto Struct round-trip can turn an IntEnum value into a float."""
+
+  class Level(int, Enum):
+    LOW = 1
+    HIGH = 2
+
+  def tool_with_int_enum(level: Level):
+    return {"level": level, "type": type(level).__name__}
+
+  tool = FunctionTool(tool_with_int_enum)
+  result = await tool.run_async(
+      args={"level": 2.0},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"level": Level.HIGH, "type": "Level"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arg_validation", [False, True])
+async def test_run_async_converts_json_rendered_enum_value(
+    mock_tool_context, caplog, arg_validation
+):
+  """The legacy declaration lists non-str values as json strings."""
+
+  class Level(Enum):
+    LOW = 1
+    HIGH = 2
+
+  def tool_with_int_enum(level: Level):
+    return {"level": level}
+
+  tool = FunctionTool(tool_with_int_enum)
+  with (
+      temporary_feature_override(
+          FeatureName.FUNCTION_TOOL_ARG_VALIDATION, arg_validation
+      ),
+      caplog.at_level(logging.WARNING, logger="google_adk"),
+  ):
+    result = await tool.run_async(
+        args={"level": "2"},
+        tool_context=mock_tool_context,
+    )
+  assert result == {"level": Level.HIGH}
+  assert "is not a value of enum" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_async_passes_through_unknown_enum_value(
+    mock_tool_context, caplog
+):
+  """An out-of-range value is passed through unchanged, with a warning.
+
+  Rejecting it is the job of FUNCTION_TOOL_ARG_VALIDATION, which is off here.
+  """
+
+  def tool_with_enum(unit: _Unit):
+    return {"unit": unit}
+
+  tool = FunctionTool(tool_with_enum)
+  with caplog.at_level(logging.WARNING, logger="google_adk"):
+    result = await tool.run_async(
+        args={"unit": "kelvin"},
+        tool_context=mock_tool_context,
+    )
+  assert result == {"unit": "kelvin"}
+  assert "is not a value of enum" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_async_keeps_enum_member_arg(mock_tool_context):
+  """A value that already is the member is left as is."""
+
+  def tool_with_enum(unit: _Unit):
+    return {"unit": unit}
+
+  tool = FunctionTool(tool_with_enum)
+  result = await tool.run_async(
+      args={"unit": _Unit.CELSIUS},
+      tool_context=mock_tool_context,
+  )
+  assert result["unit"] is _Unit.CELSIUS
 
 
 def test_function_tool_init_type_hints():
