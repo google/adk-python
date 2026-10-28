@@ -2877,7 +2877,8 @@ async def test_agent_tool_skips_post_invocation_compaction_on_last_call():
 
   Setup: the caller's app sets token_threshold=100 with summarizer=None and
     wraps a SequentialAgent whose LlmAgent sub-agent stays below the threshold
-    on its first call (20 tokens) and crosses it on its final call (200 tokens).
+    after its first call (20 tokens plus a ~45-token tool call and response)
+    and crosses it on its final call (200 tokens).
   Act: run the root agent, which calls the wrapped SequentialAgent tool once.
   Assert: the nested run finishes without running post-invocation compaction,
     which would raise ValueError on SequentialAgent with summarizer=None or
@@ -2885,8 +2886,8 @@ async def test_agent_tool_skips_post_invocation_compaction_on_last_call():
   """
 
   def read_large_file() -> str:
-    """Returns a large file body."""
-    return 'lorem ipsum dolor sit amet ' * 80
+    """Returns a file body small enough to keep the first call under 100."""
+    return 'lorem ipsum dolor sit amet ' * 5
 
   read_call = Part.from_function_call(name='read_large_file', args={})
   tool_agent_model = testing_utils.MockModel.create(
@@ -3179,7 +3180,18 @@ async def test_agent_tool_skips_post_compaction_on_empty_nested_run(
     use_custom_summarizer: bool,
     wrap_in_sequential: bool,
 ):
-  """A nested run yielding no events skips post-invocation compaction."""
+  """A nested run yielding no events skips post-invocation compaction.
+
+  Setup: the caller's app sets token_threshold=100, and the root agent calls
+    the wrapped agent with a ~135-token request, which is all the nested
+    session holds, so post-invocation compaction would summarize it. The
+    nested run ends before the wrapped agent calls its model.
+  Act: run the root agent, which calls the agent tool once.
+  Assert: only the caller compacts, once, before its second model call: the
+    request it sent counts toward its own threshold too. The nested session is
+    never summarized, by a custom summarizer or by a default one built from
+    the wrapped agent's model.
+  """
 
   def stop_before_agent(callback_context):
     callback_context._invocation_context.end_invocation = True
@@ -3205,18 +3217,25 @@ async def test_agent_tool_skips_post_compaction_on_empty_nested_run(
       name=wrapped_agent.name,
       args={'request': 'lorem ipsum dolor sit amet ' * 20},
   )
+  # Without a custom summarizer, the caller's default one uses its own model.
+  root_responses = (
+      [nested_call, 'root answer']
+      if use_custom_summarizer
+      else [nested_call, 'CALLER SUMMARY', 'root answer']
+  )
+  root_agent_model = testing_utils.MockModel.create(
+      responses=root_responses,
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=10
+      ),
+  )
   root_agent = Agent(
       name='root_agent',
-      model=testing_utils.MockModel.create(
-          responses=[nested_call, 'root answer'],
-          usage_metadata=types.GenerateContentResponseUsageMetadata(
-              prompt_token_count=10
-          ),
-      ),
+      model=root_agent_model,
       tools=[AgentTool(agent=wrapped_agent)],
   )
   summarizer_model = testing_utils.MockModel.create(
-      responses=['NESTED SUMMARY'] * 5
+      responses=['CALLER SUMMARY'] * 5
   )
   app = App(
       name='parent_app',
@@ -3237,4 +3256,9 @@ async def test_agent_tool_skips_post_compaction_on_empty_nested_run(
 
   assert events[-1].content.parts[0].text == 'root answer'
   assert len(tool_agent_model.requests) == 0
-  assert len(summarizer_model.requests) == 0
+  assert len(summarizer_model.requests) == (1 if use_custom_summarizer else 0)
+  assert len(root_agent_model.requests) == len(root_responses)
+  compactions = [
+      event for event in runner.session.events if event.actions.compaction
+  ]
+  assert len(compactions) == 1
