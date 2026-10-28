@@ -468,6 +468,10 @@ async def run_llm_agent_as_node(
         async for event in run_iter:
           process_llm_agent_output(effective_agent, ctx, event)
           yield event
+      # A single_turn agent runs its transfer target inline, so the target's
+      # reply is already this node's output. Clear the transfer so the
+      # scheduler does not run the target again as a separate hop.
+      ctx.actions.transfer_to_agent = None
     finally:
       if (
           injected_input_event is not None
