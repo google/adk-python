@@ -366,7 +366,7 @@ def convert_a2a_message_to_event(
 
   try:
     output_parts = []
-    long_running_tool_ids = set()
+    long_running_tool_ids: set[str] = set()
 
     for a2a_part in a2a_message.parts:
       try:
@@ -389,7 +389,7 @@ def convert_a2a_message_to_event(
             is True
         ):
           for part in parts:
-            if part.function_call:
+            if part.function_call and part.function_call.id:
               long_running_tool_ids.add(part.function_call.id)
 
         output_parts.extend(parts)
