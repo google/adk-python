@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,11 @@ if TYPE_CHECKING:
 
 
 class LlamaIndexRetrieval(BaseRetrievalTool):
+  """Retrieval tool that answers with the top node of a LlamaIndex retriever.
+
+  `retriever.retrieve` is called from a worker thread, and parallel tool calls
+  can run it concurrently, so the retriever must be thread-safe.
+  """
 
   def __init__(self, *, name: str, description: str, retriever: BaseRetriever):
     super().__init__(name=name, description=description)
@@ -38,7 +44,10 @@ class LlamaIndexRetrieval(BaseRetrievalTool):
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    nodes = self.retriever.retrieve(args['query'])
+    # Retrieval blocks on I/O, such as embedding the query, and `aretrieve`
+    # falls back to the blocking path for retrievers without an async one, so
+    # run `retrieve` in a worker thread to keep the event loop free.
+    nodes = await asyncio.to_thread(self.retriever.retrieve, args['query'])
 
     return (
         f'No matching result found for the query: {args["query"]}'
