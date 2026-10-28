@@ -28,6 +28,7 @@ from google.auth.credentials import Credentials
 from google.genai import types
 from typing_extensions import override
 
+from ..events._rewind_events import _apply_rewinds
 from ..utils._event_loop_cache import per_loop_value
 from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_memory_service import BaseMemoryService
@@ -244,7 +245,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
     await self._add_events_to_memory_from_events(
         app_name=session.app_name,
         user_id=session.user_id,
-        events_to_process=session.events,
+        events_to_process=_apply_rewinds(session.events),
     )
 
   @override
