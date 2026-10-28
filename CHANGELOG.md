@@ -801,8 +801,8 @@ This release focuses on agent resilience and ecosystem integration by introducin
 #### Behavior changes
 
 * **Workflow node resumption**: A node that failed now runs again when the workflow resumes, where before it replayed as though it had completed. Make node bodies idempotent: a node that performs an external side effect and then fails will perform that side effect again on every resume. ([c274ac34](https://github.com/google/adk-python/commit/c274ac347ab91ed523a1da6fee3ec7d9fdb9ff8c))
-* **GCS tool local paths**: The GCS tools now read and write local files only inside the directory named by `local_file_root`, and refuse local file access entirely when that setting is absent. Paths may be absolute or relative, and are judged by where they resolve. ([c569796](https://github.com/google/adk-python/commit/c5697961f883be9eed4b923a41793fa907822178))
-* **In-memory sessions only**: `InMemorySessionService` now raises `SessionNotFoundError` when an event is appended to a session it does not hold, instead of accepting the event and discarding it. The database-backed services already behaved this way, so this affects in-memory sessions alone. ([15b1392](https://github.com/google/adk-python/commit/15b13922d0efeb4882efae06dc0f9fd19cf892f8))
+* **GCS tool local paths**: The GCS tools now read and write local files only inside the directory named by `local_file_root`, and refuse local file access entirely when that setting is absent. Paths may be absolute or relative, and are judged by where they resolve. ([6f2ee928](https://github.com/google/adk-python/commit/6f2ee9280abd5a1ebb0d35afbaf382b979d58982))
+* **In-memory sessions only**: `InMemorySessionService` now raises `SessionNotFoundError` when an event is appended to a session it does not hold, instead of accepting the event and discarding it. The database-backed services already behaved this way, so this affects in-memory sessions alone. ([c8bc126f](https://github.com/google/adk-python/commit/c8bc126fd98e7fe062abce3fd62ac2bd3e96aebc))
 
 <details>
 <summary>All changes</summary>
@@ -846,7 +846,7 @@ This release focuses on agent resilience and ecosystem integration by introducin
 * close a task-mode delegation when the remote agent finishes ([4cd8aa4](https://github.com/google/adk-python/commit/4cd8aa4043277b7c40aabad77ebb7c8bd11c6ca0))
 * coerce an integral float back to int for an int-typed tool parameter ([adbee3c](https://github.com/google/adk-python/commit/adbee3cd86256dda90cfd3235a1b89b4720d3e80))
 * coerce callable AgentInfo.instruction for app-info ([ada8652](https://github.com/google/adk-python/commit/ada8652cdf68e855a9754888a304916e66d770a4)), closes [#6909](https://github.com/google/adk-python/issues/6909)
-* confine GCS tool local file paths to a configured root ([c569796](https://github.com/google/adk-python/commit/c5697961f883be9eed4b923a41793fa907822178))
+* confine GCS tool local file paths to a configured root ([6f2ee928](https://github.com/google/adk-python/commit/6f2ee9280abd5a1ebb0d35afbaf382b979d58982))
 * default AgentCardBuilder capabilities to streaming=True ([b018062](https://github.com/google/adk-python/commit/b0180620f4c2f4f4467a89c37a30f75bf849700b)), closes [#6672](https://github.com/google/adk-python/issues/6672)
 * defer local state/event mutation until Vertex append succeeds ([903f37f](https://github.com/google/adk-python/commit/903f37fda5f6624cdaf2c28f6e072c3b6ba8472a)), closes [#6998](https://github.com/google/adk-python/issues/6998)
 * end a live session when the client closes the request queue, instead of reconnecting or busy-waiting ([07b1173](https://github.com/google/adk-python/commit/07b1173e6a694e05d40554daaba74cc21e2e75cd))
@@ -889,7 +889,7 @@ This release focuses on agent resilience and ecosystem integration by introducin
 * preserve Gemini 3 thought signatures in interaction history ([51f21e7](https://github.com/google/adk-python/commit/51f21e724b036cb17f23514fb2e054a0bdbc7d48))
 * raise a sub-agent's own error from ParallelAgent, not a group ([3ecd3d7](https://github.com/google/adk-python/commit/3ecd3d719b8bebeb5a331338365e7a7b9b8bde2e))
 * raise AlreadyExistsError on concurrent create_session races ([cbccae6](https://github.com/google/adk-python/commit/cbccae64b3dc1a1e1de29aad674f2c13fba7f5bd))
-* raise SessionNotFoundError when appending to an unknown session ([15b1392](https://github.com/google/adk-python/commit/15b13922d0efeb4882efae06dc0f9fd19cf892f8))
+* raise SessionNotFoundError when appending to an unknown session ([c8bc126f](https://github.com/google/adk-python/commit/c8bc126fd98e7fe062abce3fd62ac2bd3e96aebc))
 * read an MCP tool's schema under either spelling in telemetry ([40c8333](https://github.com/google/adk-python/commit/40c8333460c6337fdf05f1e33964110bd8567f5a))
 * rebind an agent's own callback methods when cloning ([f449bb7](https://github.com/google/adk-python/commit/f449bb70c3b87854cb84aecf6276d39c00cdc835))
 * **redis:** match app_name and user_id literally when listing sessions ([4b26bba](https://github.com/google/adk-python/commit/4b26bba94dc3698478ce049a8d6a308be731262f))
@@ -903,7 +903,7 @@ This release focuses on agent resilience and ecosystem integration by introducin
 * rerun a paused workflow node after the user answers it ([2fb877c](https://github.com/google/adk-python/commit/2fb877cd0ea5f866d2b66153b00749ebb61bdce4))
 * resolve every Claude model id rather than enumerated generations ([01919b3](https://github.com/google/adk-python/commit/01919b3794f3cd8d5bbfb2b7c319e626e0edeb8f))
 * resolve scheduler leakage and use node.clone() in DynamicNodeScheduler ([64b5b9c](https://github.com/google/adk-python/commit/64b5b9c04f358c01fb3a0d5efa4beffb18a1b444))
-* retry a nested workflow when a node inside it fails ([2dc8b8d](https://github.com/google/adk-python/commit/2dc8b8d3ce997d195461b50bc7ac852b57863718))
+* retry a nested workflow when a node inside it fails ([dcdd9b8a](https://github.com/google/adk-python/commit/dcdd9b8a72f6ef35f695b456c665e261e9df11ce))
 * retry once on 429 in VertexAiSessionService ([cc5985a](https://github.com/google/adk-python/commit/cc5985a1b021e5818d5c0fe0593690792d835ab8))
 * return custom_metadata from VertexAiMemoryBankService.search_memory ([3a37d7a](https://github.com/google/adk-python/commit/3a37d7ac2abc7a9e73e922b87ef7116f654b3957)), closes [#6946](https://github.com/google/adk-python/issues/6946)
 * route interleaved interactions function-call deltas by step index ([f73bb37](https://github.com/google/adk-python/commit/f73bb37c559dcf7cd2f50a19f329be4bc31323de)), closes [#6832](https://github.com/google/adk-python/issues/6832)
@@ -911,7 +911,7 @@ This release focuses on agent resilience and ecosystem integration by introducin
 * **samples:** read the knowledge agent data store from the environment ([d5129f3](https://github.com/google/adk-python/commit/d5129f3aa05be2017078f98d7307b5727a2b6a63))
 * sanitize anyOf schemas for Vertex AI function declarations ([642439c](https://github.com/google/adk-python/commit/642439cd5a8e8027947823a5d5f669daf22032fc)), closes [#6373](https://github.com/google/adk-python/issues/6373)
 * show adk create --type in --help ([d0d5ade](https://github.com/google/adk-python/commit/d0d5adeffd69775ed15af90cec950d645e8caf07)), closes [#6737](https://github.com/google/adk-python/issues/6737)
-* skip duplicate user event append on invocation retry ([d06a7fe](https://github.com/google/adk-python/commit/d06a7fed56dff71cbfa709edb5bb1d72989eca8e)), closes [#4506](https://github.com/google/adk-python/issues/4506)
+* skip duplicate user event append on invocation retry ([d06a7fe](https://github.com/google/adk-python/commit/d06a7fed56dff71cbfa709edb5bb1d72989eca8e))
 * skip rewound invocations when resuming agent in _find_agent_to_run ([ed1306f](https://github.com/google/adk-python/commit/ed1306f58796648a58b5ee2f99f80e81e92cd7de)), closes [#4169](https://github.com/google/adk-python/issues/4169)
 * skip summarization for terminal A2A task states ([aef3a9c](https://github.com/google/adk-python/commit/aef3a9c4d43c1fff961c2dd6dde920851248c69a))
 * **spanner:** release the client, transports and sessions each tool call creates ([edf99a3](https://github.com/google/adk-python/commit/edf99a3ac2e2bfb22e820b73cdfcbecac2491e37))
@@ -1882,7 +1882,7 @@ A correctness release: most of the work went into what an agent sends to the mod
 * Sort PRs by update time in list_untriaged_pull_requests ([8679aa8](https://github.com/google/adk-python/commit/8679aa8e955afec20312493357ca3cd379f358dc))
 * Streamline open_source_workspace/AGENTS.md ([ea2ea73](https://github.com/google/adk-python/commit/ea2ea7390504970a710743295c09ee45525c0317))
 * Update ADK Pull Request Triaging Agent workflow to run periodically ([b3f278a](https://github.com/google/adk-python/commit/b3f278a692b51a0d138d355607bbd6c11ba1fae0))
-* update GoogleSearchTool docstring to refer to Gemini models ([8b011f9](https://github.com/google/adk-python/commit/8b011f9ec93d115580f98e48cca2f0f9b7db6b88)), closes [#12345](https://github.com/google/adk-python/issues/12345)
+* update GoogleSearchTool docstring to refer to Gemini models ([8b011f9](https://github.com/google/adk-python/commit/8b011f9ec93d115580f98e48cca2f0f9b7db6b88))
 * Update sample-creator skill with agent topology graph rule ([7423101](https://github.com/google/adk-python/commit/7423101f64b82f3d838231898751702ec2e18f9c))
 * **workflow:** Add and update workflow developer guides ([e5c7d20](https://github.com/google/adk-python/commit/e5c7d20d5d93fc495d95f162f393c00e0357f8c9))
 
@@ -3101,7 +3101,7 @@ This release introduces v2.0.0 General Availability (GA) of the Google Agent Dev
     instruction="...",
   )
   ```
-  see [samples](https://github.com/google/adk-python/tree/main/contributing/samples/interactions_api) for details
+  see [samples](https://github.com/google/adk-python/tree/main/contributing/samples/models/interactions_api) for details
 
 
 * **[Services]**
@@ -3725,7 +3725,7 @@ This release introduces v2.0.0 General Availability (GA) of the Google Agent Dev
 * [Agent Config] Support deploying config agent to Agent Engine in CLI ([b3b7003](https://github.com/google/adk-python/commit/b3b70035c432670a5f0b5cdd1e9467f43b80495c))
 * [Tools] Add a dedicated Bigtable toolset to provide an easier, integrated way to interact
 with Bigtable for building AI Agent applications(experimental feature) ([a953807](https://github.com/google/adk-python/commit/a953807cce341425ba23e3f0a85eae58d6b0630f))
-* [Tools] Support custom tool_name_prefix in auto-generated GoogleApiToolset ([a2832d5](https://github.com/google/adk-python/commit/a2832d5ac7ba5264ee91f6d5a6a0058cfe4c9e8a)) See [oauth_calendar_agent](https://github.com/google/adk-python/tree/main/contributing/samples/oauth_calendar_agent) as an example.
+* [Tools] Support custom tool_name_prefix in auto-generated GoogleApiToolset ([a2832d5](https://github.com/google/adk-python/commit/a2832d5ac7ba5264ee91f6d5a6a0058cfe4c9e8a)) See [oauth_calendar_agent](https://github.com/google/adk-python/tree/main/contributing/samples/integrations/oauth_calendar_agent) as an example.
 * [CLI] Add `build_image` option for `adk deploy cloud_run` CLI ([c843503](https://github.com/google/adk-python/commit/c84350345af0ea6a232e0818b20c4262b228b103))
 * [Services] Add setdefault method to the ADK State object ([77ed1f5](https://github.com/google/adk-python/commit/77ed1f5f15ed3f009547ed0e20f86d949de12ec2))
 
@@ -3772,7 +3772,7 @@ with Bigtable for building AI Agent applications(experimental feature) ([a953807
 * [Tools] Support adding prefix to tool names returned by toolset ([ebd726f](https://github.com/google/adk-python/commit/ebd726f1f5e0a76f383192cace4a80a83204325b))
 * [Eval] Expose `print_detailed_results` param to `AgentEvaluator.evaluate` ([7e08808](https://github.com/google/adk-python/commit/7e0880869b340e9a5e0d68d6936219e64ab41212))
 * [Tools] Add Spanner toolset (breaking change to BigQueryTool, consolidating into generic GoogleTool) ([1fc8d20](https://github.com/google/adk-python/commit/1fc8d20ae88451b7ed764aa86c17c3cdfaffa1cf))
-* [Core] Support both output_schema and tools at the same time in LlmAgent([sample](https://github.com/google/adk-python/tree/main/contributing/samples/output_schema_with_tools)) ([af63567](https://github.com/google/adk-python/commit/af635674b5d3c128cf21737056e091646283aeb7))
+* [Core] Support both output_schema and tools at the same time in LlmAgent([sample](https://github.com/google/adk-python/tree/main/contributing/samples/tools/output_schema_with_tools)) ([af63567](https://github.com/google/adk-python/commit/af635674b5d3c128cf21737056e091646283aeb7))
 
 ### Bug Fixes
 
