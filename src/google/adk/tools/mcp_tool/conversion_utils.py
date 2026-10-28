@@ -80,12 +80,11 @@ def gemini_to_json_schema(gemini_schema: Schema) -> Dict[str, Any]:
 
   json_schema_dict: Dict[str, Any] = {}
 
-  # Map Type
+  # Omitted/unspecified types impose no JSON Schema type constraint. In
+  # particular, anyOf-only schemas must not also be restricted to null.
   gemini_type = getattr(gemini_schema, "type", None)
   if gemini_type and gemini_type != Type.TYPE_UNSPECIFIED:
     json_schema_dict["type"] = gemini_type.lower()
-  else:
-    json_schema_dict["type"] = "null"
 
   # Map Nullable
   if getattr(gemini_schema, "nullable", None) == True:
