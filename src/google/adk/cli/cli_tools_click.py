@@ -588,6 +588,16 @@ def deploy_options(command: _F) -> _F:
               " version in the dev environment)"
           ),
       ),
+      click.option(
+          "--python_version",
+          type=str,
+          default="3.11",
+          show_default=True,
+          help=(
+              "Optional. The Python version used in the container image"
+              " (default: 3.11)."
+          ),
+      ),
       click.argument(
           "agent",
           type=click.Path(
@@ -2703,6 +2713,7 @@ def cli_deploy_cloud_run(
     provider_args: tuple[str, ...] = (),
     env: tuple[str, ...] = (),
     extra_packages: tuple[str, ...] = (),
+    python_version: str = "3.11",
 ) -> None:
   """Deploys an agent to Cloud Run.
 
@@ -2754,6 +2765,7 @@ def cli_deploy_cloud_run(
         extra_gcloud_args=tuple(gcloud_args),
         with_cloud_run_sandbox=with_cloud_run_sandbox,
         extra_packages=list(extra_packages),
+        python_version=python_version,
     )
   except (click.ClickException, click.Abort):
     raise
@@ -2785,6 +2797,7 @@ def cli_deploy_docker(
     a2a: bool = False,
     provider_args: tuple[str, ...] = (),
     env: tuple[str, ...] = (),
+    python_version: str = "3.11",
 ) -> None:
   """Deploys an agent to a local Docker container."""
   _warn_if_with_ui(with_ui)
@@ -2813,6 +2826,7 @@ def cli_deploy_docker(
         trigger_sources=None,
         provider_args=provider_args,
         env=env,
+        python_version=python_version,
     )
   except (click.ClickException, click.Abort):
     raise
@@ -3079,6 +3093,17 @@ def cli_migrate_session(
     ),
 )
 @click.option(
+    "--python_version",
+    type=str,
+    default=None,
+    help=(
+        "Optional. The Python version used in the container image. Overrides"
+        " `python_version` in `.agent_engine_config.json` when both are set."
+        " (default: `python_version` from `.agent_engine_config.json`, or"
+        " 3.11)"
+    ),
+)
+@click.option(
     "--extra_packages",
     multiple=True,
     type=str,
@@ -3155,6 +3180,7 @@ def cli_deploy_agent_engine(
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: str | None = None,
     service_account: str | None = None,
+    python_version: str | None = None,
 ) -> None:
   """Deploys an agent to Agent Engine.
 
@@ -3220,6 +3246,7 @@ def cli_deploy_agent_engine(
         extra_packages=list(extra_packages),
         worker_pool=worker_pool,
         service_account=service_account,
+        python_version=python_version,
     )
   except (click.ClickException, click.Abort):
     raise
@@ -3339,6 +3366,16 @@ def cli_deploy_agent_engine(
         " version in the dev environment)"
     ),
 )
+@click.option(
+    "--python_version",
+    type=str,
+    default="3.11",
+    show_default=True,
+    help=(
+        "Optional. The Python version used in the container image"
+        " (default: 3.11)."
+    ),
+)
 # Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
 @click.option(
     "--trigger_sources",
@@ -3413,6 +3450,7 @@ def cli_deploy_gke(
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: str | None = None,
     extra_packages: tuple[str, ...] = (),
+    python_version: str = "3.11",
 ) -> None:
   """Deploys an agent to GKE.
 
@@ -3452,6 +3490,7 @@ def cli_deploy_gke(
         trigger_oidc_audience=trigger_oidc_audience,
         trigger_oidc_service_accounts=trigger_oidc_service_accounts,
         extra_packages=list(extra_packages),
+        python_version=python_version,
     )
   except (click.ClickException, click.Abort):
     raise
