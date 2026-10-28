@@ -625,6 +625,54 @@ def test_no_auth_warning_on_non_loopback_bind(
   assert warned is expect_warning
 
 
+def test_get_fast_api_app_creates_file_eval_storage_dir(tmp_path, monkeypatch):
+  """file:// eval_storage_uri creates that directory for local eval managers."""
+  monkeypatch.delenv("ADK_EVAL_STORAGE_URI", raising=False)
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  storage_dir = tmp_path / "adk_evals"
+
+  with (
+      patch.object(
+          fast_api_module, "LocalEvalSetsManager", autospec=True
+      ) as mock_sets_cls,
+      patch.object(
+          fast_api_module, "LocalEvalSetResultsManager", autospec=True
+      ) as mock_results_cls,
+  ):
+    get_fast_api_app(
+        agents_dir=str(agents_dir),
+        web=False,
+        eval_storage_uri=storage_dir.as_uri(),
+    )
+
+  assert storage_dir.is_dir()
+  mock_sets_cls.assert_called_once_with(agents_dir=str(storage_dir))
+  mock_results_cls.assert_called_once_with(agents_dir=str(storage_dir))
+
+
+def test_get_fast_api_app_honors_eval_storage_uri_env(tmp_path, monkeypatch):
+  """ADK_EVAL_STORAGE_URI is used when eval_storage_uri is omitted."""
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  storage_dir = tmp_path / "from_env"
+  monkeypatch.setenv("ADK_EVAL_STORAGE_URI", storage_dir.as_uri())
+
+  with (
+      patch.object(
+          fast_api_module, "LocalEvalSetsManager", autospec=True
+      ) as mock_sets_cls,
+      patch.object(
+          fast_api_module, "LocalEvalSetResultsManager", autospec=True
+      ) as mock_results_cls,
+  ):
+    get_fast_api_app(agents_dir=str(agents_dir), web=False)
+
+  assert storage_dir.is_dir()
+  mock_sets_cls.assert_called_once_with(agents_dir=str(storage_dir))
+  mock_results_cls.assert_called_once_with(agents_dir=str(storage_dir))
+
+
 def test_agent_with_bigquery_analytics_plugin(
     tmp_path,
     mock_session_service,
