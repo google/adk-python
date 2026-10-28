@@ -249,3 +249,63 @@ def test_is_tool_branch_ignores_ordinary_node_branches():
   assert not _BranchPath.is_tool_branch("fc-1", "worker", call_ids)
   assert not _BranchPath.is_tool_branch("worker", "worker", call_ids)
   assert not _BranchPath.is_tool_branch("", "worker", call_ids)
+
+
+@pytest.mark.parametrize(
+    ("path", "ancestor"),
+    [
+        ("root.child", "root.child"),
+        ("root.child", "root"),
+        ("root.child.leaf", "root"),
+        ("root", "root.child"),
+        ("root.child_10", "root.child_1"),
+        ("root_1.child", "root"),
+        ("root..child", "root."),
+        ("root.", "root"),
+    ],
+)
+def test_is_same_or_below_matches_is_descendant_of(path, ancestor):
+  """The string form agrees with comparing parsed paths segment by segment."""
+  parsed = _BranchPath.from_string(path)
+  parsed_ancestor = _BranchPath.from_string(ancestor)
+
+  assert _BranchPath.is_same_or_below(path, ancestor) == (
+      parsed == parsed_ancestor or parsed.is_descendant_of(parsed_ancestor)
+  )
+
+
+@pytest.mark.parametrize(
+    ("path", "base"),
+    [
+        ("worker@1.do@fc-1", "worker@1"),
+        ("worker@1.do@fc-1.node@2", "worker@1"),
+        ("worker@1.node@2.do@fc-1", "worker@1"),
+        ("worker@1.node@2", "worker@1"),
+        ("worker@1.worker@fc-1", "worker@1"),
+        ("worker@1", "worker@1"),
+        ("worker@1.do@fc-1", "other@1"),
+        ("worker@1.do@fc-1", None),
+        ("do@fc-1", ""),
+        ("do@fc-1", None),
+        (None, "worker@1"),
+        ("", "worker@1"),
+    ],
+)
+def test_has_tool_segment_below_matches_is_tool_branch(path, base):
+  """The string form agrees with is_tool_branch on each segment below base."""
+  call_ids = {"fc-1"}
+  parsed = _BranchPath.from_string(path)
+  parsed_base = _BranchPath.from_string(base)
+  expected = (
+      bool(parsed.segments)
+      and parsed.is_descendant_of(parsed_base)
+      and any(
+          _BranchPath.is_tool_branch(segment, "worker", call_ids)
+          for segment in parsed.segments[len(parsed_base.segments) :]
+      )
+  )
+
+  assert (
+      _BranchPath.has_tool_segment_below(path, base, "worker", call_ids)
+      is expected
+  )
