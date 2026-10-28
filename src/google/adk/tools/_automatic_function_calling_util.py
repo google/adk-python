@@ -40,6 +40,7 @@ from ..utils._callable_utils import _is_routine
 from ..utils._callable_utils import get_callable_doc
 from ..utils._callable_utils import unwrap_callable
 from ..utils.variant_utils import GoogleLLMVariant
+from ._gemini_schema_util import _dereference_schema
 from ._gemini_schema_util import _sanitize_schema_formats_for_gemini
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -420,6 +421,8 @@ def from_function_with_options(
             sanitized_schema = _sanitize_schema_formats_for_gemini(
                 json_schema_dict
             )
+          else:
+            sanitized_schema = _dereference_schema(json_schema_dict)
           parameters_json_schema[name] = types.Schema.model_validate(
               sanitized_schema
           )
