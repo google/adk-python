@@ -640,7 +640,7 @@ class TestRemoteA2aAgentResolution:
       )
       if _compat.IS_A2A_V1:
         assert (
-            agent._a2a_client_factory._httpx_client.headers[VERSION_HEADER]
+            agent._httpx_client.headers[VERSION_HEADER]
             == PROTOCOL_VERSION_CURRENT
         )
       assert factory._config.httpx_client is None
