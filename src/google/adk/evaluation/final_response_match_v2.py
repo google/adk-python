@@ -100,9 +100,10 @@ def _parse_critique(response: str) -> Label:
       r'"is_the_agent_response_invalid":\s*\[*[\n\s]*"*([^"^\]^\s]*)"*[\n\s]*\]*\s*[,\n\}]',
       response,
   )
-  # Remove any trailing whitespace, commas, or end-brackets from the label.
+  # Remove any trailing whitespace, commas, or end-brackets from the label, and
+  # lowercase it so the match does not depend on the judge's capitalization.
   if label_match_is_response_valid:
-    label = label_match_is_response_valid.group(1).strip().rstrip(",}")
+    label = label_match_is_response_valid.group(1).strip().rstrip(",}").lower()
     if label in [
         Label.INVALID.value,
         Label.ALMOST.value,
@@ -115,7 +116,9 @@ def _parse_critique(response: str) -> Label:
     else:
       label = Label.NOT_FOUND
   elif label_match_is_response_invalid:
-    label = label_match_is_response_invalid.group(1).strip().rstrip(",}")
+    label = (
+        label_match_is_response_invalid.group(1).strip().rstrip(",}").lower()
+    )
     label = (
         Label.INVALID
         if label in [Label.TRUE.value, Label.INVALID.value]
@@ -123,6 +126,19 @@ def _parse_critique(response: str) -> Label:
     )
   else:
     label = Label.NOT_FOUND
+  if label == Label.NOT_FOUND:
+    # No single-word label was recognized. Accept a label of several words
+    # separated by single spaces, as in "partially valid".
+    label_match_multi_word = re.search(
+        r'"is_the_agent_response_valid":\s*\[*[\n\s]*"*([^"^\]^\s,}]+(?:\x20[^"^\]^\s,}]+)+)"*[\n\s]*\]*\s*[,\n\}]',
+        response,
+    )
+    if (
+        label_match_multi_word
+        and label_match_multi_word.group(1).lower()
+        in Label.PARTIALLY_VALID.value
+    ):
+      label = Label.INVALID
   return label
 
 
