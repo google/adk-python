@@ -573,7 +573,9 @@ class InferenceScope:
     self._llm_responses.append(response)
     # Anything after the span ended (a second complete response for the same
     # call) can no longer be recorded on it, but still counts for the metrics.
-    if self._inference_span_ended:
+    # A `partial` chunk is skipped: its aggregator yields the whole answer
+    # after it, with `partial=False`.
+    if self._inference_span_ended or response.partial:
       return
 
     tracing.trace_inference_result(invocation_context, self.span, response)

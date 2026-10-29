@@ -157,6 +157,8 @@ def _restored_attributes(log_record: LogRecord) -> dict[str, AnyValue]:
   content: dict[str, AnyValue] = {}
   set_operation_details_attributes_from_request(content, scope.llm_request)
   for llm_response in scope.llm_responses:
+    if llm_response.partial:
+      continue
     set_operation_details_attributes_from_response(llm_response, content, {})
     # The event stops at the finish reason, as InferenceScope does.
     if is_reported_finish_reason(llm_response.finish_reason):

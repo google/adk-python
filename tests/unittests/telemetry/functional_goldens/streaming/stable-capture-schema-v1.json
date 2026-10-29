@@ -246,24 +246,7 @@
                       "content": {
                         "parts": [
                           {
-                            "text": "text "
-                          }
-                        ],
-                        "role": "model"
-                      },
-                      "index": 0
-                    },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  },
-                  {
-                    "event_name": "gen_ai.choice",
-                    "body": {
-                      "content": {
-                        "parts": [
-                          {
-                            "text": "response"
+                            "text": "text response"
                           }
                         ],
                         "role": "model"
