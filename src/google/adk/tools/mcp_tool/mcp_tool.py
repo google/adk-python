@@ -202,6 +202,32 @@ def _read_field(model: Any, *names: str) -> Any:
   )
 
 
+def _extract_mcp_tool_title(mcp_tool: McpBaseTool) -> str | None:
+  """Extracts the human-readable display title from an MCP Tool.
+
+  Per the MCP specification, top-level ``tool.title`` takes precedence over
+  ``tool.annotations.title``. Leading and trailing whitespace is stripped, and
+  empty or whitespace-only values return ``None``. Attributes are read with
+  ``getattr`` so older ``mcp`` 1.x releases without ``BaseMetadata.title`` and
+  lightweight test stubs that omit ``title`` or ``annotations`` still work.
+
+  Args:
+    mcp_tool: The raw MCP Tool model.
+
+  Returns:
+    The stripped display title, or ``None`` if unset.
+  """
+  raw_title = getattr(mcp_tool, "title", None)
+  if isinstance(raw_title, str) and raw_title.strip():
+    return raw_title.strip()
+  annotations = getattr(mcp_tool, "annotations", None)
+  if annotations is not None:
+    annotation_title = getattr(annotations, "title", None)
+    if isinstance(annotation_title, str) and annotation_title.strip():
+      return annotation_title.strip()
+  return None
+
+
 class ProgressFnT(Protocol):
   """The call signature a progress callback must have.
 
@@ -365,6 +391,7 @@ class McpTool(BaseAuthenticatedTool):
         if auth_scheme
         else None,
     )
+    self.title = _extract_mcp_tool_title(mcp_tool)
     self._mcp_tool = mcp_tool
     self._mcp_session_manager = mcp_session_manager
     self._require_confirmation = require_confirmation
