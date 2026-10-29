@@ -737,13 +737,19 @@ class _JsonPathTracker:
 
     try:
       current_dict = json.loads(completed)
-    except (json.JSONDecodeError, RecursionError):
+    except (ValueError, RecursionError):
+      # ValueError also covers an integer over the int max str digits limit.
       return []
 
     if not isinstance(current_dict, dict):
       return []
 
-    diffs = self._get_diff(self.previous_dict, current_dict)
+    try:
+      diffs = self._get_diff(self.previous_dict, current_dict)
+    except RecursionError:
+      # The diff walks the value recursively; nesting the decoder accepted
+      # can still be too deep for it. Partial args are optional.
+      return []
     self.previous_dict = current_dict
 
     if self._open_string_path is not None and not any(
@@ -901,6 +907,12 @@ class _JsonPathTracker:
           json_path=path, string_value=val, will_continue=False
       )
     elif isinstance(val, (int, float)) and not isinstance(val, bool):
+      try:
+        float(val)
+      except OverflowError:
+        # number_value is a float; an integer too large for one is left
+        # valueless like other unsupported leaves.
+        return types.PartialArg(json_path=path, will_continue=False)
       return types.PartialArg(
           json_path=path, number_value=val, will_continue=False
       )

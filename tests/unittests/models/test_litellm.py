@@ -33,6 +33,7 @@ from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _apply_provider_finish_reason
 from google.adk.models.lite_llm import _BraceDepthTracker
 from google.adk.models.lite_llm import _build_function_declaration_log
+from google.adk.models.lite_llm import _build_tool_call_from_json_dict
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _convert_reasoning_value_to_parts
 from google.adk.models.lite_llm import _enforce_strict_openai_schema
@@ -3590,6 +3591,81 @@ def test_message_to_generate_content_response_reports_non_object_tool_call(
   assert [part.text for part in response.content.parts] == ["Looking that up."]
 
 
+# Deeper than the json decoder can go. Its limit depends on the Python version
+# and the stack size (3.14 decodes 100,000 levels on some machines), so leave
+# a wide margin.
+_DEEPLY_NESTED = "[" * 1_000_000 + "]" * 1_000_000
+# Balanced braces, so a stream also checks it for completion as it arrives.
+_DEEPLY_NESTED_OBJECT = '{"a":' * 1_000_000 + "1" + "}" * 1_000_000
+
+# Arguments that used to raise out of response parsing instead of being
+# reported, either from the parsers or from building the function call.
+_UNUSABLE_TOOL_CALL_ARGUMENTS = [
+    pytest.param("{[]: 1}", id="unhashable_key"),
+    pytest.param("{1: 2}", id="non_string_key"),
+    pytest.param("{'a': {1, 2}}", id="set_value"),
+    pytest.param("{'a': b'x'}", id="bytes_value"),
+    pytest.param(_DEEPLY_NESTED, id="deeply_nested"),
+    pytest.param(_DEEPLY_NESTED_OBJECT, id="deeply_nested_object"),
+    # Over the int max str digits limit, which raises a plain ValueError.
+    pytest.param('{"a": ' + "1" * 5000 + "}", id="huge_integer"),
+]
+
+
+@pytest.mark.parametrize("arguments", _UNUSABLE_TOOL_CALL_ARGUMENTS)
+def test_message_to_generate_content_response_reports_unusable_tool_call(
+    arguments,
+):
+  """Arguments no repair can turn into a function call are reported."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content="Looking that up.",
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments=arguments,
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert "test_function" in response.error_message
+  assert [part.text for part in response.content.parts] == ["Looking that up."]
+
+
+def test_build_tool_call_from_json_dict_too_deep_to_encode_returns_none():
+  """Arguments that decoded but cannot be re-encoded leave the text as text.
+
+  How deep that is depends on the Python version and the stack size, so the
+  encoder is made to fail instead.
+  """
+  candidate = {"name": "test_function", "arguments": {"a": 1}}
+
+  with patch.object(json, "dumps", side_effect=RecursionError):
+    tool_call = _build_tool_call_from_json_dict(candidate, index=0)
+
+  assert tool_call is None
+
+
+def test_message_to_generate_content_response_keeps_deeply_nested_text():
+  """Text that only looks like the start of a JSON tool call stays text."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=_DEEPLY_NESTED,
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert [part.text for part in response.content.parts] == [_DEEPLY_NESTED]
+
+
 @pytest.mark.parametrize("arguments", [42, 3.14, True, ["test_arg"]])
 def test_message_to_generate_content_response_reports_non_string_arguments(
     arguments,
@@ -4920,6 +4996,22 @@ def test_parse_deepseek_unwrapped_call_before_wrapped_block():
 def test_extract_json_from_deepseek_args_invalid_fence_returns_none():
   """Invalid JSON inside a code fence is rejected rather than returned."""
   assert _extract_json_from_deepseek_args('```json\n{"a": 1,}\n```') is None
+
+
+@pytest.mark.parametrize(
+    "args_text",
+    [
+        pytest.param(_DEEPLY_NESTED_OBJECT, id="bare"),
+        pytest.param(
+            "```json\n" + _DEEPLY_NESTED_OBJECT + "\n```", id="fenced"
+        ),
+    ],
+)
+def test_extract_json_from_deepseek_args_deeply_nested_returns_none(
+    args_text,
+):
+  """Arguments nested past the decoder's limit are rejected, not raised."""
+  assert _extract_json_from_deepseek_args(args_text) is None
 
 
 @pytest.mark.parametrize(
@@ -8860,6 +8952,54 @@ async def test_streaming_tool_call_non_object_json_arguments_reports_malformed(
       "Looking that up."
   ]
   assert not any(part.function_call for part in final_response.content.parts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments", _UNUSABLE_TOOL_CALL_ARGUMENTS)
+async def test_streaming_tool_call_unusable_arguments_reports_malformed(
+    arguments, mock_completion, lite_llm_instance
+):
+  """Streamed arguments no repair can turn into a function call are refused."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      content="Looking that up.",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_789",
+                              function=Function(
+                                  name="test_function",
+                                  arguments=arguments,
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  final_response = responses[-1]
+  assert final_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  # The stream path refuses the call like any other unparseable arguments.
+  assert final_response.content is None
 
 
 @pytest.mark.asyncio
@@ -13944,6 +14084,14 @@ class TestParseToolCallArguments:
           'I will call the tool with {"path": "/x"}',
           'Here is the result: ```json\n{"a": 1}\n```',
           "```json" + "\n" * 10000,
+          *_UNUSABLE_TOOL_CALL_ARGUMENTS,
+          pytest.param("{a: " + _DEEPLY_NESTED + "}", id="unquoted_deep"),
+          # ast.literal_eval raises MemoryError and RecursionError for these.
+          pytest.param("-" * 100_000 + "1", id="literal_eval_memory_error"),
+          pytest.param("1" + "+1" * 100_000, id="literal_eval_recursion_error"),
+          pytest.param(
+              "```json\n" + _DEEPLY_NESTED + "\n```", id="fenced_deep"
+          ),
       ],
   )
   def test_ambiguous_and_malformed_arguments_raise(self, arguments):

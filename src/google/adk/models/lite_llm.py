@@ -112,6 +112,19 @@ _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 _LITELLM_STRUCTURED_TYPES = {"json_object", "json_schema"}
 _JSON_DECODER = json.JSONDecoder()
 _UNQUOTED_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Besides JSONDecodeError (a ValueError), the json decoder raises a plain
+# ValueError for an integer over the int max str digits limit, and
+# RecursionError for deep nesting.
+_JSON_DECODE_ERRORS = (ValueError, RecursionError)
+# What ast.literal_eval documents raising for malformed input, such as
+# TypeError for an unhashable key like `{[]: 1}`.
+_LITERAL_EVAL_ERRORS = (
+    SyntaxError,
+    ValueError,
+    TypeError,
+    MemoryError,
+    RecursionError,
+)
 
 # Mapping of major MIME type prefixes to LiteLLM content types for URL blocks.
 # Audio is handled separately as `input_audio` content blocks because LiteLLM
@@ -243,8 +256,34 @@ def _parse_tool_call_arguments(
     The parsed arguments (typically a dict).
 
   Raises:
-    json.JSONDecodeError: When the arguments cannot be parsed.
+    json.JSONDecodeError: When the arguments cannot be parsed, or parse to
+      something JSON cannot carry: a non-string key, a set or bytes from a
+      Python literal, or nesting too deep to encode. The function call is
+      serialized back to JSON later, so such a value cannot become one.
   """
+  result = _decode_tool_call_arguments(arguments, function_name=function_name)
+  doc = arguments if isinstance(arguments, str) else ""
+  if isinstance(result, dict) and not all(
+      isinstance(key, str) for key in result
+  ):
+    raise json.JSONDecodeError(
+        "Tool call argument keys must be strings", doc, 0
+    )
+  try:
+    json.dumps(result)
+  except (TypeError, ValueError, RecursionError):
+    raise json.JSONDecodeError(
+        "Tool call arguments cannot be encoded as JSON", doc, 0
+    ) from None
+  return result
+
+
+def _decode_tool_call_arguments(
+    arguments: Any,
+    *,
+    function_name: str | None = None,
+) -> Any:
+  """Decodes tool call arguments; see `_parse_tool_call_arguments`."""
   if not arguments:
     return {}
   if not isinstance(arguments, str):
@@ -254,6 +293,12 @@ def _parse_tool_call_arguments(
     return json.loads(arguments)
   except json.JSONDecodeError as exc:
     json_error = exc
+  except _JSON_DECODE_ERRORS:
+    # Too large an integer or too deep a nesting; the repairs below would
+    # only reach the same limit.
+    raise json.JSONDecodeError(
+        "Tool call arguments exceed the decoder's limits", arguments, 0
+    ) from None
 
   # Retry with Python literal eval (handles single-quoted keys, etc.).
   try:
@@ -265,7 +310,7 @@ def _parse_tool_call_arguments(
         level=logging.DEBUG,
     )
     return result
-  except (SyntaxError, ValueError):
+  except _LITERAL_EVAL_ERRORS:
     pass
 
   # Retry after quoting unquoted JSON object keys.
@@ -279,7 +324,7 @@ def _parse_tool_call_arguments(
           function_name=function_name,
       )
       return result
-    except json.JSONDecodeError:
+    except _JSON_DECODE_ERRORS:
       try:
         result = ast.literal_eval(repaired_arguments)
         _log_repaired_arguments(
@@ -289,7 +334,7 @@ def _parse_tool_call_arguments(
             function_name=function_name,
         )
         return result
-      except (SyntaxError, ValueError):
+      except _LITERAL_EVAL_ERRORS:
         pass
 
   # Retry after stripping Markdown code fences (```json ... ```).
@@ -316,7 +361,7 @@ def _parse_tool_call_arguments(
               function_name=function_name,
           )
           return result
-        except json.JSONDecodeError:
+        except _JSON_DECODE_ERRORS:
           pass
         try:
           result = ast.literal_eval(text)
@@ -326,7 +371,7 @@ def _parse_tool_call_arguments(
               function_name=function_name,
           )
           return result
-        except (SyntaxError, ValueError):
+        except _LITERAL_EVAL_ERRORS:
           pass
 
   raise json_error
@@ -2225,6 +2270,10 @@ def _build_tool_call_from_json_dict(
   else:
     try:
       arguments_payload = json.dumps(args, ensure_ascii=False)
+    except RecursionError:
+      # Too deep to encode, and the str() fallback would recurse as well.
+      # Leave the text as text.
+      return None
     except (TypeError, ValueError):
       arguments_payload = _safe_json_serialize(args)
 
@@ -2289,7 +2338,7 @@ def _extract_json_from_deepseek_args(args_text: str) -> Optional[str]:
     try:
       json.loads(candidate)
       return candidate
-    except json.JSONDecodeError:
+    except _JSON_DECODE_ERRORS:
       pass
   # Fall back to the first balanced { … } block.
   open_brace = args_text.find("{")
@@ -2298,7 +2347,7 @@ def _extract_json_from_deepseek_args(args_text: str) -> Optional[str]:
   try:
     candidate, _ = _JSON_DECODER.raw_decode(args_text, open_brace)
     return json.dumps(candidate, ensure_ascii=False)
-  except json.JSONDecodeError:
+  except _JSON_DECODE_ERRORS:
     return None
 
 
@@ -2452,7 +2501,7 @@ def _decode_tool_calls(
   ):
     try:
       candidate, end = _JSON_DECODER.raw_decode(text, pos)
-    except json.JSONDecodeError:
+    except _JSON_DECODE_ERRORS:
       break
     candidates = candidate if isinstance(candidate, list) else [candidate]
     calls = [
@@ -5130,7 +5179,7 @@ class LiteLlm(BaseLlm):
                   json.loads("".join(args_parts))
                   function_calls[index]["args_complete"] = True
                   fallback_index += 1
-                except json.JSONDecodeError:
+                except _JSON_DECODE_ERRORS:
                   pass
 
             function_calls[index]["id"] = (
