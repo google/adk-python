@@ -41,6 +41,7 @@ from google.adk.sessions.session import Session
 from google.adk.tools.agent_tool import _TaskAgentTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.tools.tool_context import ToolContext
 from google.adk.utils._agent_mode import AgentMode
 from google.adk.workflow import _llm_agent_wrapper as agent_wrapper
 from google.adk.workflow import node
@@ -803,6 +804,110 @@ async def test_single_turn_transfer_target_structured_output_reaches_downstream(
   expected = {'title': 'Story', 'content': 'Once.'}
   assert capture.received_inputs == [expected]
   assert runner.session.state['story'] == expected
+
+
+@pytest.mark.asyncio
+async def test_single_turn_transfer_explicit_chat_target_reaches_downstream(
+    request: pytest.FixtureRequest,
+):
+  """An explicitly chat-mode target in a single_turn chain still has output.
+
+  A parent stamps chat on every LlmAgent sub-agent that has no mode, so the
+  scheduler cannot tell an explicit chat target from a defaulted one and runs
+  both as single_turn hops.
+  """
+  lead = LlmAgent(
+      name='lead',
+      model=_testing_utils.MockModel.create([_transfer_to('translate')]),
+      sub_agents=[
+          LlmAgent(
+              name='translate',
+              mode='chat',
+              model=_testing_utils.MockModel.create(['Hello!', 'unused']),
+          )
+      ],
+  )
+  runner, capture = _new_router_runner(request, lead, is_resumable=False)
+
+  await runner.run_async(_testing_utils.get_user_content('Hola'))
+
+  assert capture.received_inputs == ['Hello!']
+
+
+def _transfer_to_writer(tool_context: ToolContext) -> dict[str, str]:
+  tool_context.actions.transfer_to_agent = 'writer'
+  return {'status': 'ok'}
+
+
+@pytest.mark.asyncio
+async def test_single_turn_transfer_keeps_task_mode_target(
+    request: pytest.FixtureRequest,
+):
+  """A task-mode target reached by a tool-driven transfer stays in task mode."""
+  writer_model = _testing_utils.MockModel.create([
+      types.Part.from_function_call(
+          name='finish_task',
+          args={'title': 'Story', 'content': 'Once.'},
+      ),
+      'unused',
+  ])
+  lead = LlmAgent(
+      name='lead',
+      model=_testing_utils.MockModel.create([
+          types.Part.from_function_call(name='_transfer_to_writer', args={}),
+          'unused',
+      ]),
+      tools=[_transfer_to_writer],
+      sub_agents=[
+          LlmAgent(
+              name='writer',
+              mode='task',
+              output_schema=StoryOutput,
+              model=writer_model,
+          )
+      ],
+  )
+  runner, _ = _new_router_runner(request, lead, is_resumable=False)
+
+  await runner.run_async(_testing_utils.get_user_content('Write'))
+
+  assert 'finish_task' in writer_model.requests[0].tools_dict
+
+
+@pytest.mark.asyncio
+async def test_single_turn_transfer_respects_target_rerun_on_resume(
+    request: pytest.FixtureRequest,
+):
+  """A target that sets rerun_on_resume=False keeps it on resume."""
+  translate_model = _testing_utils.MockModel.create([
+      types.Part.from_function_call(name='_long_running_tool', args={}),
+      'unused',
+  ])
+  lead = LlmAgent(
+      name='lead',
+      model=_testing_utils.MockModel.create(
+          [_transfer_to('translate'), 'unused']
+      ),
+      sub_agents=[
+          LlmAgent(
+              name='translate',
+              model=translate_model,
+              rerun_on_resume=False,
+              tools=[LongRunningFunctionTool(func=_long_running_tool)],
+          )
+      ],
+  )
+  runner, _ = _new_router_runner(request, lead, is_resumable=True)
+  events = await runner.run_async(_testing_utils.get_user_content('go'))
+
+  await runner.run_async(
+      new_message=_resume_with(
+          events, '_long_running_tool', {'result': 'done'}
+      ),
+      invocation_id=events[0].invocation_id,
+  )
+
+  assert len(translate_model.requests) == 1
 
 
 def _confirmed_tool() -> dict[str, str]:
