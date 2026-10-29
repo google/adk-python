@@ -708,6 +708,8 @@ def _get_current_turn_contents(
   # back far enough to include the call it answers: the conversation can carry
   # on while a long-running tool is pending, so an ordinary user turn can sit
   # between the two, and anchoring there would leave the result orphaned.
+  # Another agent's reply that would be relayed as nothing is passed over in
+  # favor of an earlier start, and is used only when no earlier one exists.
   scoped_events = _filter_single_turn_node_events(
       current_branch,
       events,
@@ -715,6 +717,7 @@ def _get_current_turn_contents(
       node_path=node_path,
   )
 
+  turn_start: int | None = None
   unmatched_response_ids: set[str] = set()
   tool_call_ids = _collect_function_call_ids(scoped_events)
   for i in range(len(scoped_events) - 1, -1, -1):
@@ -750,19 +753,27 @@ def _get_current_turn_contents(
             current_branch, event, agent_name, tool_call_ids
         )
     ):
-      return _get_contents(
-          current_branch,
-          scoped_events[i:],
-          agent_name,
-          preserve_function_call_ids=preserve_function_call_ids,
-          isolation_scope=isolation_scope,
-          node_path=node_path,
-          is_single_turn=is_single_turn,
-          user_content=user_content,
-          include_thoughts_from_other_agents=include_thoughts_from_other_agents,
-      )
+      if turn_start is None:
+        turn_start = i
+      if not _is_relayed_as_nothing(
+          agent_name, event, include_thoughts=include_thoughts_from_other_agents
+      ):
+        turn_start = i
+        break
 
-  return []
+  if turn_start is None:
+    return []
+  return _get_contents(
+      current_branch,
+      scoped_events[turn_start:],
+      agent_name,
+      preserve_function_call_ids=preserve_function_call_ids,
+      isolation_scope=isolation_scope,
+      node_path=node_path,
+      is_single_turn=is_single_turn,
+      user_content=user_content,
+      include_thoughts_from_other_agents=include_thoughts_from_other_agents,
+  )
 
 
 def _is_event_belongs_to_branch(
@@ -844,6 +855,27 @@ def _is_submitted_tool_result(event: Event) -> bool:
   is then pruned as an orphan, so the request would carry no contents at all.
   """
   return event.author == 'user' and bool(event.get_function_responses())
+
+
+def _is_relayed_as_nothing(
+    agent_name: str, event: Event, *, include_thoughts: bool = False
+) -> bool:
+  """Whether another agent's event would reach this agent with no content.
+
+  Another agent's event is shown to this agent only as the message
+  ``_present_other_agent_message`` builds from it, which relays text, calls,
+  results and media but never a thought signature: the signature is for the
+  model that produced it. The signature routinely arrives on a part with no
+  other content, so a reply whose text is empty, or was cleared by a callback,
+  is relayed as nothing even though it is not empty for its own author.
+  Starting the turn there drops the user's message along with everything
+  else before it, and often leaves the request with no contents at all.
+  """
+  return (
+      _is_other_agent_reply(agent_name, event)
+      and _present_other_agent_message(event, include_thoughts=include_thoughts)
+      is None
+  )
 
 
 def _is_direct_transfer(event: Event) -> bool:
