@@ -29,6 +29,7 @@ from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.bash_tool import ExecuteBashTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_confirmation import ConfirmationRequest
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.adk.workflow import node
@@ -648,6 +649,7 @@ class _ConfirmationWorkflow:
       resumable: bool,
       require_confirmation: Any = True,
       plugins: list[BasePlugin] | None = None,
+      tool_class: type[FunctionTool] = FunctionTool,
   ):
     self.tool_calls: list[str] = []
     self.seen_downstream: list[Any] = []
@@ -664,7 +666,7 @@ class _ConfirmationWorkflow:
       return node_input
 
     tool_node = ToolNode(
-        tool=FunctionTool(
+        tool=tool_class(
             func=delete_db, require_confirmation=require_confirmation
         )
     )
@@ -719,6 +721,39 @@ async def test_tool_node_confirmation_pauses_before_running_tool(
   assert args["payload"] == {"tool_name": "delete_db", "args": {"name": "prod"}}
   assert not wf.tool_calls
   assert not wf.seen_downstream
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_tool_node_confirmation_uses_the_tools_own_request(
+    resumable: bool,
+):
+  """Tests that the hint and payload a tool supplies reach the user."""
+
+  class _DescribingTool(FunctionTool):
+
+    async def get_confirmation_request(self, args, tool_context):
+      return ConfirmationRequest(
+          hint=f"Delete {args['name']}?", payload={"label": "Production DB"}
+      )
+
+  wf = _ConfirmationWorkflow(resumable=resumable, tool_class=_DescribingTool)
+
+  request = await wf.start()
+
+  assert request is not None
+  args = request.content.parts[0].function_call.args
+  assert args["message"] == "Delete prod?"
+  assert args["payload"] == {
+      "tool_name": "delete_db",
+      "args": {"name": "prod"},
+      "confirmation_payload": {"label": "Production DB"},
+  }
+  assert not wf.tool_calls
+
+  await wf.answer(request, {"confirmed": True})
+
+  assert wf.tool_calls == ["prod"]
 
 
 @pytest.mark.parametrize("resumable", [False, True])

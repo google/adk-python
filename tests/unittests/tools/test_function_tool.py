@@ -34,6 +34,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.session import Session
 from google.adk.tools.function_tool import _build_declaration_cached
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_confirmation import ConfirmationRequest
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils._sync_runner import _use_sync_callable_runner
@@ -770,6 +771,39 @@ async def test_run_async_with_streaming_tool_and_input_stream(
 
   items = [item async for item in result]
   assert items == ["stream_data_42"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_require_confirmation_uses_confirmation_request_hook():
+  """A subclass's get_confirmation_request feeds the request run_async raises."""
+
+  class _DescribingTool(FunctionTool):
+
+    async def get_confirmation_request(self, args, tool_context):
+      return ConfirmationRequest(
+          hint=f"Greet {args['arg1']}?", payload={"arg": args["arg1"]}
+      )
+
+  def sample_func(arg1: str):
+    return {"received_arg": arg1}
+
+  tool = _DescribingTool(sample_func, require_confirmation=True)
+  mock_invocation_context = MagicMock(spec=InvocationContext)
+  mock_invocation_context._state_schema = None
+  mock_invocation_context.session = MagicMock(spec=Session)
+  mock_invocation_context.session.state = MagicMock()
+  mock_invocation_context.agent = MagicMock()
+  mock_invocation_context.agent.name = "test_agent"
+  tool_context = ToolContext(invocation_context=mock_invocation_context)
+  tool_context.function_call_id = "test_function_call_id"
+
+  await tool.run_async(args={"arg1": "hello"}, tool_context=tool_context)
+
+  requested = tool_context._event_actions.requested_tool_confirmations[
+      "test_function_call_id"
+  ]
+  assert requested.hint == "Greet hello?"
+  assert requested.payload == {"arg": "hello"}
 
 
 @pytest.mark.asyncio

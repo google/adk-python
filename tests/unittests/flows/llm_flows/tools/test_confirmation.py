@@ -24,6 +24,7 @@ from google.adk.flows.llm_flows.tools._confirmation import request_processor
 from google.adk.models.llm_request import LlmRequest
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_confirmation import ConfirmationRequest
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.genai import types
 import pytest
@@ -1412,6 +1413,112 @@ async def test_confirmed_tool_is_run():
 
   assert tool.runs == 1
   assert event.get_function_responses()[0].response == {"status": "ran"}
+
+
+class _DescribingGatedTool(_GatedTool):
+  """A gated tool that tells the user what they are approving."""
+
+  async def get_confirmation_request(self, args, tool_context):
+    return ConfirmationRequest(
+        hint="Run gated_tool?", payload={"state": dict(tool_context.state)}
+    )
+
+
+class _FailingDescriptionTool(_GatedTool):
+  """A gated tool whose request for confirmation cannot be built."""
+
+  async def get_confirmation_request(self, args, tool_context):
+    raise RuntimeError("cannot describe the call")
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_tool_requests_its_own_hint_and_payload():
+  """The request the flow emits carries what the tool supplies."""
+  tool = _DescribingGatedTool()
+
+  event = await _call_gated_tool(tool)
+
+  assert tool.runs == 0
+  requested = event.actions.requested_tool_confirmations[MOCK_FUNCTION_CALL_ID]
+  assert requested.hint == "Run gated_tool?"
+  assert requested.payload == {"state": {}}
+  assert event.actions.skip_summarization
+
+
+@pytest.mark.asyncio
+async def test_tool_that_cannot_describe_its_call_is_not_run():
+  """A failing hook fails the call; it is neither run nor approved."""
+  tool = _FailingDescriptionTool()
+
+  with pytest.raises(RuntimeError, match="cannot describe the call"):
+    await _call_gated_tool(tool)
+
+  assert tool.runs == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_that_cannot_describe_its_call_reaches_error_callbacks():
+  """A failing hook is handled like any error raised while gating the call."""
+  tool = _FailingDescriptionTool()
+  seen_errors = []
+
+  def on_tool_error(tool, args, tool_context, error):
+    seen_errors.append(error)
+    return {"error": "handled"}
+
+  agent = LlmAgent(
+      name="test_agent",
+      tools=[tool],
+      on_tool_error_callback=on_tool_error,
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  function_call_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id=MOCK_FUNCTION_CALL_ID, name=tool.name, args={}
+                  )
+              )
+          ]
+      ),
+  )
+
+  event = await functions.handle_function_calls_async(
+      invocation_context, function_call_event, {tool.name: tool}
+  )
+
+  assert event is not None
+  assert [str(error) for error in seen_errors] == ["cannot describe the call"]
+  assert event.get_function_responses()[0].response == {"error": "handled"}
+  assert not event.actions.requested_tool_confirmations
+  assert tool.runs == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("confirmed", "expected_response", "expected_runs"),
+    [
+        (True, {"status": "ran"}, 1),
+        (False, {"error": "This tool call is rejected."}, 0),
+    ],
+    ids=["approved", "rejected"],
+)
+async def test_tool_with_its_own_request_is_enforced_once_answered(
+    confirmed, expected_response, expected_runs
+):
+  """Supplying a request does not change how the answer is enforced."""
+  tool = _DescribingGatedTool()
+
+  event = await _call_gated_tool(tool, ToolConfirmation(confirmed=confirmed))
+
+  assert tool.runs == expected_runs
+  assert event.get_function_responses()[0].response == expected_response
+  assert not event.actions.requested_tool_confirmations
 
 
 @pytest.mark.asyncio

@@ -143,8 +143,9 @@ the tool.
 With `require_confirmation`, ADK writes the hint for you. The hint names the
 tool and tells a developer to reply with a function response, so the text is
 meant for developers, not end users. In a user interface, show the tool name and
-arguments from `originalFunctionCall` instead, or use `request_confirmation` to
-write your own hint.
+arguments from `originalFunctionCall` instead, override
+`get_confirmation_request` on a `BaseTool` subclass to supply your own hint and
+payload, or use `request_confirmation` to write your own hint.
 
 ## Configuration options
 
@@ -253,6 +254,40 @@ ADK records what the function returns on the first pass as its result. Unless
 you also set `ctx.actions.skip_summarization = True` before you return,
 as `require_confirmation` does, the model may read that result and reply to the
 user before the manager has answered.
+
+### Tell the person what they are approving
+
+A tool that `require_confirmation` or `check_require_confirmation` gates can
+supply the hint and payload that ADK sends with the request. Override
+`get_confirmation_request` in a `BaseTool` or `FunctionTool` subclass and return
+a `ConfirmationRequest`. ADK calls it with the call's arguments and context each
+time it holds a call for approval:
+
+```python
+from typing import Any
+
+from google.adk import Context
+from google.adk.tools import FunctionTool
+from google.adk.tools.tool_confirmation import ConfirmationRequest
+
+
+class CreateTicketTool(FunctionTool):
+
+  async def get_confirmation_request(
+      self, args: dict[str, Any], tool_context: Context
+  ) -> ConfirmationRequest:
+    return ConfirmationRequest(
+        hint=f'Create the ticket "{args["title"]}"?',
+        payload={"title": args["title"], "priority": args["priority"]},
+    )
+```
+
+The `payload` must be JSON-serializable. It arrives in
+`toolConfirmation.payload` of the `adk_request_confirmation` call. ADK still
+holds the call and enforces the answer, whatever the method returns. If the
+method raises, the call neither runs nor waits for approval, and the error is
+handled like an error from the tool. By default, the method returns the generic
+hint and no payload.
 
 ### Let the decision arrive later
 

@@ -513,12 +513,9 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
         if self._context_param_name in args_to_show:
           args_to_show.pop(self._context_param_name)
 
+        request = await self.get_confirmation_request(args, tool_context)
         tool_context.request_confirmation(
-            hint=(
-                f"Please approve or reject the tool call {self.name}() by"
-                " responding with a FunctionResponse with an expected"
-                " ToolConfirmation payload."
-            ),
+            hint=request.hint, payload=request.payload
         )
         tool_context.actions.skip_summarization = True
         return {

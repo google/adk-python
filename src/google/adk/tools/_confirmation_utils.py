@@ -31,7 +31,8 @@ async def apply_confirmation_gate(
 
   A call that still needs confirmation records the request on
   `tool_context.actions.requested_tool_confirmations`, the same way a tool
-  that calls `tool_context.request_confirmation()` itself does.
+  that calls `tool_context.request_confirmation()` itself does. The hint and
+  payload come from `tool.get_confirmation_request()`.
 
   Args:
     tool: The tool the call names.
@@ -44,6 +45,8 @@ async def apply_confirmation_gate(
   Raises:
     ValueError: If `tool_context.function_call_id` is missing or empty when
       requesting confirmation.
+    Exception: Anything `tool.get_confirmation_request()` raises. The call is
+      then neither run nor recorded as awaiting confirmation.
   """
   requires_confirmation = await tool.check_require_confirmation(
       function_args, tool_context
@@ -55,12 +58,9 @@ async def apply_confirmation_gate(
 
   confirmation = tool_context.tool_confirmation
   if confirmation is None:
+    request = await tool.get_confirmation_request(function_args, tool_context)
     tool_context.request_confirmation(
-        hint=(
-            f'Please approve or reject the tool call {tool.name}() by'
-            ' responding with a FunctionResponse with an expected'
-            ' ToolConfirmation payload.'
-        ),
+        hint=request.hint, payload=request.payload
     )
     return {
         'error': (

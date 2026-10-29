@@ -33,6 +33,7 @@ from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.ui_widget import UiWidget
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_confirmation import ConfirmationRequest
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils.context_utils import Aclosing
 from google.genai.types import Content
@@ -231,6 +232,202 @@ class TestHITLConfirmationFlowWithSingleAgent(BaseHITLTest):
         testing_utils.simplify_events(copy.deepcopy(events))
         == expected_parts_final
     )
+
+
+def _create_ticket(title: str, priority_id: int) -> dict[str, str]:
+  return {"created": title}
+
+
+class _TicketTool(FunctionTool):
+  """A declaratively gated tool that says what the user is approving."""
+
+  async def get_confirmation_request(self, args, tool_context):
+    return ConfirmationRequest(
+        hint=f'Create the ticket "{args["title"]}"?',
+        payload={
+            "title": args["title"],
+            "priority": {1: "low", 2: "high"}[args["priority_id"]],
+        },
+    )
+
+
+_TICKET_ARGS = {"title": "Broken login", "priority_id": 2}
+
+
+def _create_ticket_llm_responses() -> list[GenerateContentResponse]:
+  return [
+      testing_utils.LlmResponse(
+          content=testing_utils.ModelContent(
+              parts=[
+                  Part(
+                      function_call=FunctionCall(
+                          name="_create_ticket", args=_TICKET_ARGS
+                      )
+                  )
+              ]
+          )
+      ),
+      _create_llm_response_from_text("test llm response after tool call"),
+  ]
+
+
+def _ticket_confirmation_request_call() -> Part:
+  return Part(
+      function_call=FunctionCall(
+          name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+          args={
+              "originalFunctionCall": {
+                  "name": "_create_ticket",
+                  "id": mock.ANY,
+                  "args": _TICKET_ARGS,
+              },
+              "toolConfirmation": {
+                  "hint": 'Create the ticket "Broken login"?',
+                  "confirmed": False,
+                  "payload": {"title": "Broken login", "priority": "high"},
+              },
+          },
+      )
+  )
+
+
+class TestHITLConfirmationFlowWithToolSuppliedRequest(BaseHITLTest):
+  """Tests that a tool's own hint and payload reach the client and resume."""
+
+  @pytest.fixture
+  def agent(self) -> LlmAgent:
+    return LlmAgent(
+        name="root_agent",
+        model=testing_utils.MockModel(responses=_create_ticket_llm_responses()),
+        tools=[_TicketTool(func=_create_ticket, require_confirmation=True)],
+    )
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("tool_call_confirmed", [True, False])
+  async def test_confirmation_flow(
+      self,
+      runner: testing_utils.InMemoryRunner,
+      agent: LlmAgent,
+      tool_call_confirmed: bool,
+  ):
+    events = await runner.run_async(testing_utils.UserContent("make a ticket"))
+
+    simplified = testing_utils.simplify_events(copy.deepcopy(events))
+    assert simplified[1] == (agent.name, _ticket_confirmation_request_call())
+    assert simplified[2] == (
+        agent.name,
+        Part(
+            function_response=FunctionResponse(
+                name="_create_ticket", response=TOOL_CALL_ERROR_RESPONSE
+            )
+        ),
+    )
+
+    events = await runner.run_async(
+        testing_utils.UserContent(
+            Part(
+                function_response=FunctionResponse(
+                    id=events[1].content.parts[0].function_call.id,
+                    name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                    response={"confirmed": tool_call_confirmed},
+                )
+            )
+        )
+    )
+
+    assert testing_utils.simplify_events(copy.deepcopy(events)) == [
+        (
+            agent.name,
+            Part(
+                function_response=FunctionResponse(
+                    name="_create_ticket",
+                    response=(
+                        {"created": "Broken login"}
+                        if tool_call_confirmed
+                        else {"error": "This tool call is rejected."}
+                    ),
+                )
+            ),
+        ),
+        (agent.name, "test llm response after tool call"),
+    ]
+
+
+class TestHITLConfirmationFlowWithToolSuppliedRequestInSequentialAgent:
+  """Tests a tool's own request survives a resumable sequential agent."""
+
+  @pytest.fixture
+  def agent(self) -> SequentialAgent:
+    model = testing_utils.MockModel(
+        responses=_create_ticket_llm_responses()
+        + [_create_llm_response_from_text("test llm response from agent2")]
+    )
+    return SequentialAgent(
+        name="root_agent",
+        sub_agents=[
+            LlmAgent(
+                name="agent1",
+                model=model,
+                tools=[
+                    _TicketTool(func=_create_ticket, require_confirmation=True)
+                ],
+            ),
+            LlmAgent(name="agent2", model=model, tools=[]),
+        ],
+    )
+
+  @pytest.fixture
+  def runner(self, agent: SequentialAgent) -> testing_utils.InMemoryRunner:
+    app = App(
+        name="test_app",
+        resumability_config=ResumabilityConfig(is_resumable=True),
+        root_agent=agent,
+    )
+    return testing_utils.InMemoryRunner(app=app)
+
+  @pytest.mark.asyncio
+  async def test_pause_and_resume_on_request_confirmation(
+      self, runner: testing_utils.InMemoryRunner
+  ):
+    events = runner.run("make a ticket")
+
+    simplified = testing_utils.simplify_resumable_app_events(
+        copy.deepcopy(events)
+    )
+    assert ("agent1", _ticket_confirmation_request_call()) in simplified
+    request_event = next(
+        e
+        for e in events
+        if e.content
+        and e.content.parts
+        and e.content.parts[0].function_call
+        and e.content.parts[0].function_call.name
+        == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+    )
+
+    events = await runner.run_async(
+        testing_utils.UserContent(
+            Part(
+                function_response=FunctionResponse(
+                    id=request_event.content.parts[0].function_call.id,
+                    name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                    response={"confirmed": True},
+                )
+            )
+        ),
+        invocation_id=request_event.invocation_id,
+    )
+
+    resumed = testing_utils.simplify_resumable_app_events(copy.deepcopy(events))
+    assert (
+        "agent1",
+        Part(
+            function_response=FunctionResponse(
+                name="_create_ticket", response={"created": "Broken login"}
+            )
+        ),
+    ) in resumed
+    assert ("agent2", "test llm response from agent2") in resumed
 
 
 class TestHITLConfirmationFlowWithCustomPayloadSchema(BaseHITLTest):
