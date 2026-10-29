@@ -28,6 +28,7 @@ from opentelemetry import context
 from opentelemetry import metrics
 from opentelemetry.sdk import trace
 from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.baggage.propagation import W3CBaggagePropagator
 from opentelemetry.trace.propagation import tracecontext
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -57,8 +58,22 @@ _GOOGLE_TRACEPARENT_SUPPORT_ATTRIBUTE_KEY = "supportID"
 
 
 def get_propagated_context(request: fastapi.Request) -> context.Context:
-  """Propagates context from the request headers."""
+  """Propagates context from the request headers.
+
+  Extracts standard W3C ``traceparent`` / ``tracestate`` and ``baggage`` so
+  ADK spans join the caller's distributed trace. The proprietary
+  ``Google-Agent-Engine-Traceparent`` header still wins for the parent span
+  when present (Agent Engine). The plain ``traceparent`` header is also kept
+  in ``google_traceparent`` baggage for the support-ID attribute.
+  """
   ctx = context.get_current()
+
+  # Inbound W3C baggage first. Re-apply internal keys afterwards so a caller
+  # cannot clobber google_traceparent / traceparent via the baggage header.
+  if "baggage" in request.headers:
+    ctx = W3CBaggagePropagator().extract(
+        carrier={"baggage": request.headers["baggage"]}, context=ctx
+    )
 
   if _GOOGLE_TRACEPARENT_HEADER in request.headers:
     original_traceparent = request.headers[_GOOGLE_TRACEPARENT_HEADER]
@@ -68,9 +83,10 @@ def get_propagated_context(request: fastapi.Request) -> context.Context:
         context=ctx,
     )
 
+  propagator = tracecontext.TraceContextTextMapPropagator()
   if _GOOGLE_AE_TRACEPARENT_HEADER in request.headers:
     ae_traceparent = request.headers[_GOOGLE_AE_TRACEPARENT_HEADER]
-    extracted_ctx = tracecontext.TraceContextTextMapPropagator().extract(
+    extracted_ctx = propagator.extract(
         carrier={"traceparent": ae_traceparent}, context=ctx
     )
     # extract() returns the context unchanged when it rejects the header;
@@ -79,6 +95,21 @@ def get_propagated_context(request: fastapi.Request) -> context.Context:
     if extracted_ctx is not ctx:
       ctx = baggage.set_baggage(
           _TRACEPARENT_BAGGAGE_KEY, ae_traceparent, context=extracted_ctx
+      )
+  elif _GOOGLE_TRACEPARENT_HEADER in request.headers:
+    # No Agent Engine header: join the caller's W3C trace when the header is
+    # well-formed. Invalid values leave ctx unchanged (same guard as above).
+    carrier: dict[str, str] = {
+        "traceparent": request.headers[_GOOGLE_TRACEPARENT_HEADER]
+    }
+    if "tracestate" in request.headers:
+      carrier["tracestate"] = request.headers["tracestate"]
+    extracted_ctx = propagator.extract(carrier=carrier, context=ctx)
+    if extracted_ctx is not ctx:
+      ctx = baggage.set_baggage(
+          _TRACEPARENT_BAGGAGE_KEY,
+          request.headers[_GOOGLE_TRACEPARENT_HEADER],
+          context=extracted_ctx,
       )
 
   return ctx
