@@ -19,6 +19,7 @@ from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_p
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.genai import types
 from google.genai import types as genai_types
 
@@ -82,6 +83,16 @@ class TestMarkLongRunningFunctionCall:
 
     lrf._mark_long_running_function_call(
         _long_running_call_part(REQUEST_EUC_FUNCTION_CALL_NAME)
+    )
+
+    assert lrf._task_state == _compat.TS_AUTH_REQUIRED
+
+  def test_confirmation_request_maps_to_auth_required(self):
+    """A tool confirmation pause is auth_required, same as a credential request."""
+    lrf = LongRunningFunctions()
+
+    lrf._mark_long_running_function_call(
+        _long_running_call_part(REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
     )
 
     assert lrf._task_state == _compat.TS_AUTH_REQUIRED

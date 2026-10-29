@@ -701,6 +701,48 @@ class TestEventConverter:
       assert result.context_id == context_id
       assert result.status.state == _compat.TS_INPUT_REQUIRED
 
+  def test_create_status_update_event_confirmation_is_auth_required(self):
+    """A tool confirmation pause is auth_required, not a clarifying question."""
+    a2a_part = _compat.make_data_part(
+        data={"name": "adk_request_confirmation"},
+        metadata={
+            "adk_type": "function_call",
+            "adk_is_long_running": True,
+        },
+    )
+    mock_message = _compat.make_message(
+        message_id="m1", role=_compat.ROLE_AGENT, parts=[a2a_part]
+    )
+
+    with (
+        patch(
+            "google.adk.a2a.converters.event_converter.A2A_DATA_PART_METADATA_TYPE_KEY",
+            "type",
+        ),
+        patch(
+            "google.adk.a2a.converters.event_converter.A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL",
+            "function_call",
+        ),
+        patch(
+            "google.adk.a2a.converters.event_converter.A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY",
+            "is_long_running",
+        ),
+        patch(
+            "google.adk.a2a.converters.event_converter._get_adk_metadata_key"
+        ) as mock_get_key,
+    ):
+      mock_get_key.side_effect = lambda key: f"adk_{key}"
+
+      result = _create_status_update_event(
+          mock_message,
+          self.mock_invocation_context,
+          self.mock_event,
+          "test-task-id",
+          "test-context-id",
+      )
+
+    assert result.status.state == _compat.TS_AUTH_REQUIRED
+
   def test_convert_event_to_a2a_message_with_multiple_parts_returned(self):
     """Test event to message conversion when part_converter returns multiple parts."""
     from google.adk.a2a.converters.event_converter import convert_event_to_a2a_message

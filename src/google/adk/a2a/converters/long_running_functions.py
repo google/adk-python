@@ -24,6 +24,7 @@ from google.genai import types as genai_types
 
 from .. import _compat
 from ...events.event import Event
+from ...utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ...utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
@@ -146,11 +147,14 @@ class LongRunningFunctions:
           _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
       ] = True
       _compat.set_part_metadata(a2a_part, meta)
-      # If the function is a request for EUC, set the task state to
-      # auth_required. Otherwise, set it to input_required. Save the state of
-      # the last function call, as it will be the state of the task.
+      # Credential exchange and human tool confirmation are authorization
+      # pauses, so the task is auth_required. Any other long-running call is
+      # input_required. The last call wins, because it is the task's state.
       data = _compat.data_part_dict(a2a_part)
-      if data.get("name") == REQUEST_EUC_FUNCTION_CALL_NAME:
+      if data.get("name") in (
+          REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+          REQUEST_EUC_FUNCTION_CALL_NAME,
+      ):
         self._task_state = _compat.TS_AUTH_REQUIRED
       else:
         self._task_state = _compat.TS_INPUT_REQUIRED
