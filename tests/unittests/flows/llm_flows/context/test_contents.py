@@ -2347,6 +2347,46 @@ def test_task_input_user_content_preserves_non_ascii():
   assert "\\u" not in text
 
 
+def test_task_input_user_content_nested_scope_does_not_match_root_reconstruction():
+  """Nested workflow scopes (e.g. wf@1/node@2) must not enter root-task reconstruction."""
+  events = [
+      Event(
+          invocation_id="2",
+          author="user",
+          content=types.UserContent("unrelated user message from invocation 2"),
+      ),
+  ]
+  fallback_content = types.UserContent("node input content")
+
+  # Nested scope contains '@' and '/'
+  content = contents._build_task_input_user_content(  # pylint: disable=protected-access
+      events,
+      isolation_scope="wf@1/node@2",
+      user_content=fallback_content,
+  )
+
+  # Must fall back to user_content and not match invocation_id="2"
+  assert content is not None and content.parts
+  assert content.parts[0].text == "node input content"
+
+
+def test_task_input_user_content_root_scope_matches_invocation():
+  """Root task scopes (e.g. task@inv1) extract user content matching invocation_id."""
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("root task prompt"),
+      ),
+  ]
+  content = contents._build_task_input_user_content(  # pylint: disable=protected-access
+      events,
+      isolation_scope="task@inv1",
+  )
+  assert content is not None and content.parts
+  assert content.parts[0].text == "root task prompt"
+
+
 @pytest.mark.asyncio
 async def test_include_contents_none_keeps_turn_across_long_running_resume():
   """A tool result posted back by the caller does not restart the turn.
