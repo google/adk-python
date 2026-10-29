@@ -20,7 +20,6 @@ from typing import Optional
 
 from typing_extensions import override
 
-from ..utils.feature_decorator import experimental
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import RubricsBasedCriterion
@@ -131,7 +130,6 @@ IMPORTANT: Make sure for each of the property listed, follow the example steps a
 """
 
 
-@experimental
 class RubricBasedToolUseV1Evaluator(RubricBasedEvaluator):
   """An Evaluator for rubric based assessment of the agent's usage of Tools.
 

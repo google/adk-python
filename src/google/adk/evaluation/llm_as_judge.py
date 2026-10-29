@@ -33,7 +33,6 @@ from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
-from ..utils.feature_decorator import experimental
 from ._retry_options_utils import add_default_retry_options_if_not_present
 from .common import EvalBaseModel
 from .eval_case import ConversationScenario
@@ -67,7 +66,6 @@ _CriterionT = TypeVar(
 )
 
 
-@experimental
 class LlmAsJudge(Evaluator, Generic[_CriterionT]):
   """Evaluator based on a LLM.
 
