@@ -75,7 +75,7 @@ optional-dependencies.all = [
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # chromadb/pypika fail on 3.12+
   "daytona>=0.191",
   "docker>=7",
-  "e2b>=2,<3",
+  "e2b>=2.29.5,<3",
   "elevenlabs>=2.22.1,<3",
   "gepa>=0.1",
   "google-antigravity>=0.1.7,<0.2",
@@ -208,7 +208,7 @@ optional-dependencies.docs = [
   "sphinx-rtd-theme",
 ]
 optional-dependencies.e2b = [
-  "e2b>=2,<3", # For E2BEnvironment remote sandbox.
+  "e2b>=2.29.5,<3", # For E2BEnvironment remote sandbox.
 ]
 optional-dependencies.elevenlabs = [
   "elevenlabs>=2.22.1,<3", # 2.22.1 added RealtimeEvents.COMMITTED_TRANSCRIPT.
@@ -328,7 +328,7 @@ optional-dependencies.test = [
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool tests; chromadb/pypika fail on 3.12+
   "daytona>=0.191",
   "docker>=7",                                                       # For ContainerCodeExecutor tests
-  "e2b>=2,<3",
+  "e2b>=2.29.5,<3",
   "gepa>=0.1",
   "google-antigravity>=0.1.7,<0.2",
   "google-api-python-client>=2.157,<3",
