@@ -160,7 +160,9 @@ def _serialize_json_value(value: object) -> str:
       return '\n'.join(content_items)
     if isinstance(content, str) and content:
       return content
-    if 'result' in value and value['result'] is not None:
+    # Exactly {'result': value} is ADK's wrapper for a non-dict tool return. A
+    # tool's own dict that merely has a 'result' key is sent whole.
+    if value.keys() == {'result'} and value['result'] is not None:
       result = value['result']
       if isinstance(result, str):
         return result
