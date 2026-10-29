@@ -41,6 +41,7 @@ queue.close()
 `LiveRequestQueue` wraps an internal `asyncio.Queue` of `LiveRequest` objects. When consumed by the live execution flow, requests are prioritized as follows:
 `activity_start` > `activity_end` > `audio_stream_end` > `blob` > `content`.
 If `state_delta` is set on a `LiveRequest`, those state changes are applied to the session regardless of which other fields are present, even when the request carries no content or a partial or function-response turn.
+If `context_update` is set, it is applied before any of the fields above, so content in the same request is generated under the new instruction and tools.
 
 ### Stream Control Methods
 
@@ -51,6 +52,7 @@ If `state_delta` is set on a `LiveRequest`, those state changes are applied to t
 - `send_activity_start()`: Enqueues an `ActivityStart` signal to mark the beginning of user activity.
 - `send_activity_end()`: Enqueues an `ActivityEnd` signal to mark the end of user activity.
 - `send_audio_stream_end()`: Enqueues an audio stream end signal (`LiveRequest(audio_stream_end=True)`).
+- `send_context_update(*, system_instruction=None, tools=None)`: Enqueues a `LiveContextUpdate` that replaces the session's system instruction and/or tools in-stream. See [In-Session Context Updates](#in-session-context-updates).
 - `close()`: Marks `closed` as `True` and enqueues a close signal to terminate queue processing.
 - `closed`: Sticky boolean property indicating whether the client has closed this queue via `close()` or `send(LiveRequest(close=True))`.
 
@@ -63,18 +65,55 @@ Instead, `send_audio_stream_end()` is used to signal that the audio input stream
 > [!NOTE]
 > Do not call `send_audio_stream_end()` after every conversational turn under VAD. Doing so closes the audio stream at the end of each turn, requiring a new audio message to reopen it.
 
+### In-Session Context Updates
+
+`send_context_update()` replaces the session's system instruction and/or tools without reconnecting. It maps to the Live API's `context_update` message (`google-genai >= 2.32.0`).
+
+```python
+from google.adk.tools import FunctionTool
+
+# Phase transition: the conversation moves from onboarding to checkout.
+queue.send_context_update(
+    system_instruction=CHECKOUT_INSTRUCTION,
+    tools=[FunctionTool(lookup_order), FunctionTool(charge_card)],
+)
+
+# Clear all tools; leave the instruction unchanged.
+queue.send_context_update(tools=[])
+```
+
+Semantics:
+
+- Both arguments are **replacements**. `system_instruction` overrides the whole instruction ADK assembled from the agent definition; `tools` replaces every previously declared tool, including ADK's own `transfer_to_agent`. Pass `[]` to clear tools; leave an argument unset (`None`) to keep its current value. At least one must be set.
+- `tools` takes `BaseTool` instances. ADK registers them for the invocation, so the model's calls to them are executed like calls to the agent's own tools.
+- The update is carried across reconnects of the current live invocation. The next `run_live` call builds its request from the agent definition again.
+
+> [!WARNING]
+> The system instruction and the tool declarations are part of the model preamble, so every context update invalidates the Live prefix cache and the server re-prefills the instruction, the tools, and the session history on the next model call. Send one only on a real phase transition, not on every turn. Turn-specific context, such as a retrieved policy snippet, belongs at the tail of the history, which leaves the cached prefix intact: send it with `queue.send_content(content, partial=True)` or return it as part of a tool's function response.
+
 ### Direct Request Enqueuing
 
 If you enqueue requests directly via `queue.send(req)` rather than using the helper methods, ensure you pass a `LiveRequest` instance:
 
 ```python
+from google.adk.live import LiveContextUpdate
 from google.adk.live import LiveRequest
+from google.adk.tools import FunctionTool
+from google.genai import types
 
 # Send an audio stream end signal directly
 queue.send(LiveRequest(audio_stream_end=True))
 
 # Apply a session state update without sending a user turn
 queue.send(LiveRequest(state_delta={"user_muted": True}))
+
+# Replace the tools and send content under the new tool set in one request
+queue.send(
+    LiveRequest(
+        context_update=LiveContextUpdate(tools=[FunctionTool(lookup_order)]),
+        content=types.Content(parts=[types.Part.from_text(text="Where is my order?")]),
+    )
+)
 ```
 
 > [!IMPORTANT]

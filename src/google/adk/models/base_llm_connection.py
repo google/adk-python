@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from typing import AsyncGenerator
+from typing import Optional
 from typing import Union
 
 from google.genai import types
@@ -86,6 +87,28 @@ class BaseLlmConnection:
       blob: The blob to send to the model.
     """
     pass
+
+  async def send_context_update(
+      self,
+      *,
+      system_instruction: Optional[types.Content] = None,
+      tools: Optional[list[types.Tool]] = None,
+  ) -> None:
+    """Updates the system instruction and/or tools of the live session.
+
+    Both are part of the model preamble, so the update invalidates the
+    server's prefix cache for the session. The default implementation raises:
+    connections that support in-session context updates override it.
+
+    Args:
+      system_instruction: The new system instruction, replacing the current
+        one. `None` leaves it unchanged.
+      tools: The new tool list, replacing the current one. An empty list
+        clears all tools; `None` leaves them unchanged.
+    """
+    raise NotImplementedError(
+        f'{type(self).__name__} does not support in-session context updates.'
+    )
 
   @abstractmethod
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:

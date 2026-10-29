@@ -39,6 +39,7 @@ from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..telemetry.tracing import trace_send_data
 from ..telemetry.tracing import tracer
+from ..tools.tool_context import ToolContext
 from ..utils._agent_mode import AgentMode
 from ..utils.context_utils import Aclosing
 from ..utils.variant_utils import GoogleLLMVariant
@@ -51,6 +52,7 @@ from ._flow_utils import handle_control_event_flush as handle_control_event_flus
 from ._flow_utils import require_live_request_queue as require_live_request_queue
 from ._flow_utils import run_config_for_new_live_session
 from ._flow_utils import stop_background_tool_tasks as stop_background_tool_tasks
+from .live_request_queue import LiveContextUpdate
 
 if TYPE_CHECKING:
   from ..agents.llm_agent import LlmAgent
@@ -86,6 +88,62 @@ async def screen_live_user_content(
     blocked_event.turn_complete = True
     return blocked_event
   return None
+
+
+async def apply_context_update(
+    llm_connection: BaseLlmConnection,
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
+    update: LiveContextUpdate,
+) -> None:
+  """Applies an in-session update of the system instruction and/or tools.
+
+  The request is rewritten before the connection is told, for two reasons:
+  the model's calls to the new tools resolve through `llm_request.tools_dict`,
+  and a reconnect opens its connection from `llm_request`, so it replays the
+  latest instruction and tools instead of reverting to the ones the
+  invocation started with.
+
+  Args:
+    llm_connection: The live connection to send the update on.
+    invocation_context: The invocation the update belongs to.
+    llm_request: The request the connection was opened with; mutated.
+    update: The update to apply.
+  """
+  system_instruction: Optional[types.Content] = None
+  if update.system_instruction is not None:
+    llm_request.config.system_instruction = update.system_instruction
+    system_instruction = types.Content(
+        role='system',
+        parts=[types.Part.from_text(text=update.system_instruction)],
+    )
+    llm_request.live_connect_config.system_instruction = system_instruction
+
+  tools: Optional[list[types.Tool]] = None
+  if update.tools is not None:
+    # A replacement, like the API's own semantics: whatever registered a
+    # declaration before, including ADK's `transfer_to_agent`, is gone unless
+    # the caller passes it again.
+    llm_request.config.tools = None
+    llm_request.tools_dict.clear()
+    tool_context = ToolContext(invocation_context)
+    for tool in update.tools:
+      await tool.process_llm_request(
+          tool_context=tool_context, llm_request=llm_request
+      )
+    # `process_llm_request` only ever appends `types.Tool` declarations, so
+    # the union-typed list holds nothing else here.
+    tools = cast(list[types.Tool], list(llm_request.config.tools or []))
+    # Same assignment `Gemini.connect` makes, so a reconnect sees the new set.
+    llm_request.live_connect_config.tools = llm_request.config.tools
+    logger.info(
+        'Live context update replaced the tools with: %s',
+        sorted(llm_request.tools_dict),
+    )
+
+  await llm_connection.send_context_update(
+      system_instruction=system_instruction, tools=tools
+  )
 
 
 async def send_to_model(
@@ -145,6 +203,14 @@ async def send_to_model(
     if live_request.close:
       await llm_connection.close()
       return
+
+    if live_request.context_update:
+      await apply_context_update(
+          llm_connection,
+          invocation_context,
+          llm_request,
+          live_request.context_update,
+      )
 
     if live_request.activity_start:
       await llm_connection.send_realtime(types.ActivityStart())  # type: ignore[arg-type]
