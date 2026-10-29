@@ -66,56 +66,106 @@ meter = metrics.get_meter(
 )
 
 
+# The semconv bounds for gen_ai.invoke_agent.duration.
+_AGENT_DURATION_BUCKET_BOUNDS = [
+    0.1,
+    0.2,
+    0.4,
+    0.8,
+    1.6,
+    3.2,
+    6.4,
+    12.8,
+    25.6,
+    51.2,
+    102.4,
+    204.8,
+    409.6,
+]
+# The semconv bounds for gen_ai.invoke_workflow.duration.
+_WORKFLOW_DURATION_BUCKET_BOUNDS = [
+    1,
+    5,
+    10,
+    30,
+    60,
+    120,
+    300,
+    600,
+    1800,
+    3600,
+    7200,
+]
+
 _agent_invocation_duration = meter.create_histogram(
     "gen_ai.invoke_agent.duration",
     unit="s",
     description="Duration of agent invocations.",
-    explicit_bucket_boundaries_advisory=[
-        0.1,
-        0.2,
-        0.4,
-        0.8,
-        1.6,
-        3.2,
-        6.4,
-        12.8,
-        25.6,
-        51.2,
-        102.4,
-        204.8,
-        409.6,
-    ],
+    explicit_bucket_boundaries_advisory=_AGENT_DURATION_BUCKET_BOUNDS,
 )
 _workflow_invocation_duration = meter.create_histogram(
     "gen_ai.invoke_workflow.duration",
     unit="s",
     description="Duration of workflow invocations.",
+    explicit_bucket_boundaries_advisory=_WORKFLOW_DURATION_BUCKET_BOUNDS,
 )
+# The semconv bounds for gen_ai.client.operation.duration, also used for tool
+# executions.
+_OPERATION_DURATION_BUCKET_BOUNDS = [
+    0.01,
+    0.02,
+    0.04,
+    0.08,
+    0.16,
+    0.32,
+    0.64,
+    1.28,
+    2.56,
+    5.12,
+    10.24,
+    20.48,
+    40.96,
+    81.92,
+]
+# The semconv bounds for gen_ai.client.token.usage.
+_TOKEN_USAGE_BUCKET_BOUNDS = [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024,
+    4096,
+    16384,
+    65536,
+    262144,
+    1048576,
+    4194304,
+    16777216,
+    67108864,
+]
+
 _tool_execution_duration = meter.create_histogram(
     "gen_ai.execute_tool.duration",
     unit="s",
     description="Duration of tool executions.",
-    explicit_bucket_boundaries_advisory=[
-        0.01,
-        0.02,
-        0.04,
-        0.08,
-        0.16,
-        0.32,
-        0.64,
-        1.28,
-        2.56,
-        5.12,
-        10.24,
-        20.48,
-        40.96,
-        81.92,
-    ],
+    explicit_bucket_boundaries_advisory=_OPERATION_DURATION_BUCKET_BOUNDS,
 )
-_client_operation_duration = (
-    gen_ai_metrics.create_gen_ai_client_operation_duration(meter)
+# Not made with the semconv `create_gen_ai_client_*` helpers, which set no
+# bucket bounds.
+# TODO: Use the semconv helpers and bucket bounds once semconv publishes them.
+_client_operation_duration = meter.create_histogram(
+    gen_ai_metrics.GEN_AI_CLIENT_OPERATION_DURATION,
+    unit="s",
+    description="GenAI operation duration.",
+    explicit_bucket_boundaries_advisory=_OPERATION_DURATION_BUCKET_BOUNDS,
 )
-_client_token_usage = gen_ai_metrics.create_gen_ai_client_token_usage(meter)
+_client_token_usage = meter.create_histogram(
+    gen_ai_metrics.GEN_AI_CLIENT_TOKEN_USAGE,
+    unit="{token}",
+    description="Number of input and output tokens used.",
+    explicit_bucket_boundaries_advisory=_TOKEN_USAGE_BUCKET_BOUNDS,
+)
 
 # Bounds are upper inclusive, so the leading 0 buckets exact zeros on their own.
 # The tail is sized for a workflow rather than a single agent: a coding agent

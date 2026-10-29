@@ -169,8 +169,10 @@ def get_fast_api_app(
     memory_service_uri: URI for the memory service. Uses local memory service if
       None.
     use_local_storage: Whether to use local storage for session and artifacts.
-    eval_storage_uri: URI for evaluation storage. If provided, uses GCS
-      managers.
+    eval_storage_uri: URI for evaluation storage. Supports ``gs://<bucket>``
+      for GCS and ``file://<path>`` for a local directory. When omitted,
+      ``ADK_EVAL_STORAGE_URI`` is used if set, and local eval files default to
+      ``agents_dir``.
     allow_origins: List of allowed origins for CORS.
     web: Whether to enable the web UI and serve its assets.
     a2a: Whether to enable Agent-to-Agent (A2A) protocol support.
@@ -247,23 +249,21 @@ def get_fast_api_app(
     agents_dir = str(agents_path.parent)
 
   # Set up eval managers.
-  if eval_storage_uri:
-    from .utils import evals
+  from .utils import _eval_storage
 
-    gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
-        eval_storage_uri
-    )
-    eval_sets_manager = gcs_eval_managers.eval_sets_manager
-    eval_set_results_manager = gcs_eval_managers.eval_set_results_manager
-  else:
-    this_module = sys.modules[__name__]
-    eval_sets_manager = this_module.LocalEvalSetsManager(agents_dir=agents_dir)
-    eval_set_results_manager = this_module.LocalEvalSetResultsManager(
-        agents_dir=agents_dir
-    )
+  this_module = sys.modules[__name__]
+  eval_sets_manager, eval_set_results_manager = (
+      _eval_storage.create_eval_managers(
+          eval_storage_uri,
+          agents_dir,
+          local_eval_sets_manager_cls=this_module.LocalEvalSetsManager,
+          local_eval_set_results_manager_cls=(
+              this_module.LocalEvalSetResultsManager
+          ),
+      )
+  )
 
   # initialize Agent Loader if not passed as argument
-  this_module = sys.modules[__name__]
   if agent_loader is None:
     if web:
       agent_loader = this_module.NestedAgentLoader(original_agents_dir)

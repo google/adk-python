@@ -100,3 +100,22 @@ async def test_tracker_reset_of_unseen_scope_is_a_noop():
   await tracker.reset('never-seen', 'tool')
 
   assert await tracker.increment('never-seen', 'tool') == 1
+
+
+async def test_tracker_clear_scope_drops_only_that_scope() -> None:
+  tracker = _reflect_retry_utils.ScopedFailureTracker()
+  await tracker.increment('scope_a', 'tool')
+  await tracker.increment('scope_b', 'tool')
+
+  await tracker.clear_scope('scope_a')
+
+  assert tracker._scoped_failure_counters == {'scope_b': {'tool': 1}}
+  assert await tracker.increment('scope_a', 'tool') == 1
+
+
+async def test_tracker_clear_of_unseen_scope_is_a_noop() -> None:
+  tracker = _reflect_retry_utils.ScopedFailureTracker()
+
+  await tracker.clear_scope('never-seen')
+
+  assert tracker._scoped_failure_counters == {}

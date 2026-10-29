@@ -100,12 +100,18 @@ class _LoopState(DynamicNodeState):
   """Cached static node branches."""
 
   join_arrivals: dict[str, set[str]] = field(default_factory=dict)
-  """Predecessors that arrived since each wait-for-all node last fired.
+  """Predecessor arrivals that each wait-for-all node has not consumed yet.
 
   Keyed by the wait-for-all node's name. Cleared when that node fires, so in
   a loop it waits for every predecessor's next run instead of counting runs
-  left over from an earlier iteration.
+  left over from an earlier iteration. The exception, for a node on a cycle,
+  is a predecessor the node cannot reach by following edges, such as a setup
+  step before the loop: the loop does not run it again, so its arrival stays
+  recorded.
   """
+
+  descendants: dict[str, frozenset[str]] = field(default_factory=dict)
+  """Nodes reachable from each node, memoized by ``Workflow._descendants``."""
 
   pending_tasks: dict[str, asyncio.Task[Context]] = field(default_factory=dict)
   """Running static node tasks."""
@@ -528,6 +534,7 @@ class Workflow(BaseNode):
     # loop_state.trigger_buffer is a dict, and Python 3.7+ dicts preserve insertion order.
     # Therefore, nodes are processed strictly in the order their triggers arrived,
     # ensuring deterministic scheduling order for parallel branches.
+    held: list[str] = []
     for node_name in list(loop_state.trigger_buffer.keys()):
       if node_name in loop_state.pending_tasks:
         continue
@@ -544,26 +551,84 @@ class Workflow(BaseNode):
         if node_state.status == NodeStatus.WAITING and node_state.interrupts:
           continue
 
+      if self._is_held_transfer(loop_state, ctx, node_name):
+        held.append(node_name)
+        continue
+
       if self._at_concurrency_limit(loop_state):
         break
 
-      trigger = self._pop_trigger(loop_state, node_name)
-      if trigger is None:
-        continue
+      await self._start_buffered_node(loop_state, ctx, node_name)
 
-      self._prepare_node_state_for_starting(loop_state, node_name, trigger)
-      started = self._start_node_task(loop_state, ctx, node_name, trigger)
-      # Only a genuinely-executing node marks a new step; a replayed node
-      # being fast-forwarded from history should not re-announce itself.
-      if started:
-        await self._emit_node_checkpoint(loop_state, ctx)
+    # With nothing else in flight, nothing can release a held transfer, so
+    # start one and let the replay barrier report the divergence.
+    if held and not loop_state.pending_tasks:
+      await self._start_buffered_node(loop_state, ctx, held[0])
+
+  async def _start_buffered_node(
+      self, loop_state: _LoopState, ctx: Context, node_name: str
+  ) -> None:
+    """Pop the next trigger for a node and start it."""
+    trigger = self._pop_trigger(loop_state, node_name)
+    if trigger is None:
+      return
+
+    self._prepare_node_state_for_starting(loop_state, node_name, trigger)
+    started = self._start_node_task(loop_state, ctx, node_name, trigger)
+    # Only a genuinely-executing node marks a new step; a replayed node
+    # being fast-forwarded from history should not re-announce itself.
+    if started:
+      await self._emit_node_checkpoint(loop_state, ctx)
 
   def _at_concurrency_limit(self, loop_state: _LoopState) -> bool:
-    """Check if max_concurrency has been reached."""
+    """Check if max_concurrency has been reached.
+
+    Replayed nodes are history fast-forwards that may block on the replay
+    sequence barrier waiting for another node to be scheduled, so they must
+    not hold a concurrency slot.
+    """
+    if self.max_concurrency is None or self.max_concurrency <= 0:
+      return False
+    active = sum(
+        1
+        for name in loop_state.pending_tasks
+        if name not in loop_state.replayed_nodes
+    )
+    return active >= self.max_concurrency
+
+  def _is_held_transfer(
+      self, loop_state: _LoopState, ctx: Context, node_name: str
+  ) -> bool:
+    """Check if a node must wait for its replay turn before starting.
+
+    A recorded transfer with resolved interrupts runs its transfer target once
+    the replay sequence barrier releases it. Under max_concurrency it is
+    started only after that release and counted like any other node once it
+    runs. The one exception: with nothing else pending, nothing can release
+    it, so _schedule_ready_nodes starts one anyway and the barrier reports the
+    divergence.
+    """
+    barrier = loop_state.replay_manager.sequence_barrier
+    if (
+        self.max_concurrency is None
+        or self.max_concurrency <= 0
+        or barrier is None
+    ):
+      return False
+    counters = loop_state.run_counters.get(ctx.node_path or "", {})
+    key = f"{node_name}@{counters.get(node_name, 0) + 1}"
+    event = barrier.events.get(key)
+    recovered = loop_state.recovered_executions.get(key)
+    if event is None or event.is_set() or recovered is None:
+      return False
+    result = check_interception(
+        node=self._get_static_node_by_name(node_name), recovered=recovered
+    )
     return (
-        self.max_concurrency is not None
-        and self.max_concurrency > 0
-        and len(loop_state.pending_tasks) >= self.max_concurrency
+        not result.should_run
+        and result.transfer_to_agent is not None
+        and bool(recovered.interrupt_ids)
+        and not recovered.interrupt_ids - recovered.resolved_ids
     )
 
   def _pop_trigger(
@@ -834,8 +899,9 @@ class Workflow(BaseNode):
   ) -> None:
     """Buffer a trigger for target_name once all predecessors have completed.
 
-    No-op while any predecessor is still outstanding. Only runs completed
-    since target_name last fired count, so each firing consumes them.
+    No-op while any predecessor is still outstanding. Each firing consumes
+    the runs it used, except that in a loop the run of a predecessor that
+    target_name cannot reach is kept, because the loop does not run it again.
     """
     graph = self._require_graph()
     predecessors = {
@@ -853,7 +919,16 @@ class Workflow(BaseNode):
         for p in predecessors
     ):
       return
-    loop_state.join_arrivals.pop(target_name, None)
+    reachable = self._descendants(loop_state, target_name)
+    if target_name in reachable:
+      # The join is on a cycle. A predecessor it cannot reach, such as a
+      # setup step before the loop, is not run again by the loop, so clearing
+      # its arrival would stop the join after the first iteration.
+      arrivals.difference_update(predecessors & reachable)
+    else:
+      # Off a cycle, no predecessor is reachable, so the rule above would keep
+      # every arrival and fire the join again whenever a predecessor reruns.
+      loop_state.join_arrivals.pop(target_name, None)
 
     outputs = {p: loop_state.node_outputs.get(p) for p in predecessors}
     branches = [loop_state.node_branches.get(p, "") for p in predecessors]
@@ -950,6 +1025,28 @@ class Workflow(BaseNode):
       if node.name == name:
         return node
     raise WorkflowInvariantError(f"Node {name} not found in graph.")
+
+  def _descendants(
+      self, loop_state: _LoopState, node_name: str
+  ) -> frozenset[str]:
+    """Returns the nodes reachable from node_name through one or more edges.
+
+    Every edge counts, including routes the run never takes. The graph does
+    not change during a run, so each result is memoized in ``loop_state``.
+    """
+    if node_name not in loop_state.descendants:
+      successors: dict[str, list[str]] = {}
+      for edge in self._require_graph().edges:
+        successors.setdefault(edge.from_node.name, []).append(edge.to_node.name)
+      reached: set[str] = set()
+      frontier = [node_name]
+      while frontier:
+        for name in successors.get(frontier.pop(), []):
+          if name not in reached:
+            reached.add(name)
+            frontier.append(name)
+      loop_state.descendants[node_name] = frozenset(reached)
+    return loop_state.descendants[node_name]
 
   def _pop_completed_task(
       self, loop_state: _LoopState, task: asyncio.Task[Context]

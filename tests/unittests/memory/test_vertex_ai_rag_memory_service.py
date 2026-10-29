@@ -21,6 +21,7 @@ import tempfile
 from types import SimpleNamespace
 
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.memory.vertex_ai_rag_memory_service import _build_source_display_name
 from google.adk.memory.vertex_ai_rag_memory_service import _MAX_RAG_FILE_PAGES
 from google.adk.memory.vertex_ai_rag_memory_service import _SOURCE_DISPLAY_NAME_PREFIX
@@ -664,3 +665,44 @@ async def test_add_session_to_memory_skips_thought_parts(
 
   assert _memory_texts(response) == ["Take the train to Paris."]
   assert not list(temp_dir.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_rewound_events(mocker, temp_dir):
+  """Turns a rewind took back are not uploaded to the RAG corpus."""
+  uploaded: list[str] = []
+
+  async def upload_file(*, path: str, **_kwargs: object) -> None:
+    with open(path, encoding="utf-8") as f:
+      uploaded.append(f.read())
+
+  fake_client = _async_client(mocker)
+  fake_client.rag.upload_file.side_effect = upload_file
+  mocker.patch(
+      "agentplatform.Client", return_value=mocker.Mock(aio=fake_client)
+  )
+  memory_service = VertexAiRagMemoryService(rag_corpus="corpus")
+  session = _session()
+  session.events[0].invocation_id = "inv-kept"
+  session.events += [
+      Event(
+          id="event-2",
+          invocation_id="inv-rewound",
+          author="user",
+          timestamp=2,
+          content=types.Content(parts=[types.Part(text="rewound memory")]),
+      ),
+      Event(
+          id="event-3",
+          invocation_id="inv-rewind",
+          author="user",
+          timestamp=3,
+          actions=EventActions(rewind_before_invocation_id="inv-rewound"),
+      ),
+  ]
+
+  await memory_service.add_session_to_memory(session)
+
+  assert len(uploaded) == 1
+  assert "sensitive memory" in uploaded[0]
+  assert "rewound memory" not in uploaded[0]

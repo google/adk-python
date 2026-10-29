@@ -18,17 +18,22 @@ import asyncio
 import json
 from typing import Any
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
 from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
 from ._reflect_retry_utils import GLOBAL_SCOPE_KEY as GLOBAL_SCOPE_KEY
+from ._reflect_retry_utils import is_paused_invocation
 from ._reflect_retry_utils import REFLECT_AND_RETRY_RESPONSE_TYPE
 from ._reflect_retry_utils import resolve_scope_key
 from ._reflect_retry_utils import ScopedFailureTracker
 from ._reflect_retry_utils import TrackingScope
 from .base_plugin import BasePlugin
+
+if TYPE_CHECKING:
+  from ..agents.invocation_context import InvocationContext
 
 # A mapping from a tool's name to its consecutive failure count.
 PerToolFailuresCounter = dict[str, int]
@@ -155,6 +160,17 @@ class ReflectAndRetryToolPlugin(BasePlugin):
     ):
       return None
 
+    # A call that requested confirmation or credentials returns a placeholder
+    # before pausing (and confirmation placeholders carry an "error" key); it is
+    # neither a tool failure nor a success.
+    if (
+        tool_context.function_call_id
+        in tool_context.actions.requested_tool_confirmations
+        or tool_context.function_call_id
+        in tool_context.actions.requested_auth_configs
+    ):
+      return None
+
     error = await self.extract_error_from_result(
         tool=tool, tool_args=tool_args, tool_context=tool_context, result=result
     )
@@ -216,6 +232,49 @@ class ReflectAndRetryToolPlugin(BasePlugin):
     if isinstance(error, asyncio.CancelledError):
       return None
     return await self._handle_tool_error(tool, tool_args, tool_context, error)
+
+  async def after_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    """Drops the failure counts of an invocation once it has ended."""
+    await self._clear_invocation_failures(
+        invocation_context, keep_if_paused=True
+    )
+
+  async def on_run_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Drops the failure counts of an invocation whose run failed."""
+    del error  # The counts are dropped whatever ended the run.
+    await self._clear_invocation_failures(
+        invocation_context, keep_if_paused=False
+    )
+
+  async def _clear_invocation_failures(
+      self, invocation_context: InvocationContext, *, keep_if_paused: bool
+  ) -> None:
+    """Drops the counts kept for an invocation under the INVOCATION scope.
+
+    Each invocation gets its own scope, and nothing reads it once the
+    invocation is over, so keeping it would grow the tracker with every
+    invocation that saw a failure.
+    """
+    if self.scope != TrackingScope.INVOCATION:
+      return
+    scope_key = self._get_scope_key(ToolContext(invocation_context))
+    # A key that does not embed the invocation id, such as one from a
+    # per-session or per-user override, is meant to outlive the invocation.
+    if (
+        invocation_context.invocation_id not in scope_key
+        or scope_key not in self._scoped_failure_counters
+    ):
+      return
+    if keep_if_paused and is_paused_invocation(invocation_context):
+      return
+    await self._tracker.clear_scope(scope_key)
 
   async def _handle_tool_error(
       self,

@@ -20,6 +20,7 @@ Please do not rely on the implementation details.
 
 from __future__ import annotations
 
+from enum import Enum
 import inspect
 import json
 import logging
@@ -401,7 +402,9 @@ def preprocess_args(
   """Preprocess and convert incoming argument dictionary before invocation.
 
   Converts dictionary values to Pydantic model instances where the function
-  signature expects a BaseModel subclass or Optional[BaseModel].
+  signature expects a BaseModel subclass, an Optional or list of one, raw
+  values to the member where it expects an Enum or Optional[Enum], and
+  integral floats to int where it expects int or list[int].
 
   Args:
     args: The incoming argument dictionary to preprocess.
@@ -410,7 +413,8 @@ def preprocess_args(
     type_hints: Optional cached type hints dictionary for the callable.
 
   Returns:
-    A copy of args with applicable values converted to Pydantic model instances.
+    A copy of args with applicable values converted to Pydantic model
+    instances, Enum members or ints.
   """
   converted_args = args.copy()
   if signature is None:
@@ -461,6 +465,39 @@ def preprocess_args(
                   e,
               )
             continue
+
+        # The declaration lists the enum's values, so the model sends a value
+        # back. Look up the member so the function gets the Enum it declared.
+        if inspect.isclass(target_type) and issubclass(target_type, Enum):
+          value = args[param_name]
+          if value is not None and not isinstance(value, target_type):
+            member = None
+            try:
+              member = target_type(value)
+            except (ValueError, TypeError):
+              # Without json_schema_for_func_decl the declaration renders
+              # non-str values with json.dumps, so the model sends that back.
+              if isinstance(value, str):
+                for candidate in target_type:
+                  if isinstance(candidate.value, str):
+                    continue
+                  try:
+                    if json.dumps(candidate.value) == value:
+                      member = candidate
+                      break
+                  except TypeError:
+                    continue
+            if member is None:
+              logger.warning(
+                  "Argument '%s' is not a value of enum %s: %r; passing it"
+                  " through unchanged.",
+                  param_name,
+                  target_type.__name__,
+                  value,
+              )
+            else:
+              converted_args[param_name] = member
+          continue
 
         # Some session stores persist call args as a proto `Struct`, whose
         # only number type is double, so an int comes back as a float.

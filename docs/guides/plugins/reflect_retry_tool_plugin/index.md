@@ -56,9 +56,11 @@ If `get_stock_price` raises (for example, on a ticker symbol it does not know), 
 The plugin observes tool execution through two hooks exposed by `BasePlugin`.
 
 1. **Exception handling (`on_tool_error_callback`)**: When a tool raises, this hook forwards the exception to the central, lock-guarded `_handle_tool_error` routine.
-2. **Result inspection (`after_tool_callback`)**: After a tool returns, the plugin first skips its own reflection responses (identified by the `REFLECT_AND_RETRY_RESPONSE_TYPE` marker) to avoid retrying its own output. It then calls `extract_error_from_result` to detect soft errors, and on a clean success resets that tool's counter.
+2. **Result inspection (`after_tool_callback`)**: After a tool returns, the plugin first skips its own reflection responses (identified by the `REFLECT_AND_RETRY_RESPONSE_TYPE` marker) and confirmation or credential pause placeholders. It then calls `extract_error_from_result` to detect soft errors, and on a clean success resets that tool's counter.
 3. **Track and retry**: On a caught failure it increments a per-tool counter via `ScopedFailureTracker`. While `current_retries <= max_retries`, it returns a `ToolFailureResponse` — a structured reflection message naming the tool, the error details, the arguments used, and the current attempt number — telling the model not to repeat the same call.
 4. **Exhaustion**: Once the count exceeds `max_retries`, it either re-raises the original exception or returns a "give up on this tool" `ToolFailureResponse`, depending on `throw_exception_if_retry_exceeded`.
+
+Under `TrackingScope.INVOCATION`, the plugin also drops an invocation's counters when a run ends, is aborted, or fails with an unhandled error, through `after_run_callback` and `on_run_error_callback`. A run that pauses on an unanswered interrupt (such as a long-running, confirmation, or credential call) keeps its counters, so the run that answers it, which reuses the invocation id, continues the same retry budget. Counters under a scope key that does not contain the invocation id, such as one from a per-session or per-user `_get_scope_key` override, are kept. `GLOBAL` counters persist across runs.
 
 For counting, the plugin depends on `_reflect_retry_utils`: `ScopedFailureTracker`, `TrackingScope` (invocation vs. global lifecycle), and `resolve_scope_key`. The scope key is derived from `tool_context.invocation_id` through the `_get_scope_key` method.
 

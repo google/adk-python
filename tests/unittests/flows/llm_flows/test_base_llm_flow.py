@@ -50,6 +50,8 @@ from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.registry import LLMRegistry
+from google.adk.planners.base_planner import BasePlanner
+from google.adk.platform import time as platform_time
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.base_toolset import BaseToolset
@@ -3868,3 +3870,56 @@ async def test_run_async_aborted_between_steps_breaks_outer_loop():
 
   assert step_invocations == 1
   assert yielded_events == [fc_event]
+
+
+@pytest.mark.asyncio
+async def test_model_response_event_timestamp_matches_yield_order():
+  """Model-response event is stamped when built, after earlier step events."""
+  now = 1_000.0
+  platform_time.set_time_provider(lambda: now)
+
+  class _ClockAdvancingLlm(BaseLlm):
+    model: str = 'clock-advancing'
+
+    async def generate_content_async(self, llm_request, stream=False):
+      nonlocal now
+      now = 2_000.0
+      yield LlmResponse(
+          content=types.Content(
+              role='model', parts=[types.Part.from_text(text='hi')]
+          )
+      )
+
+  class _StateUpdatingPlanner(BasePlanner):
+
+    def build_planning_instruction(self, readonly_context, llm_request):
+      return None
+
+    def process_planning_response(self, callback_context, response_parts):
+      nonlocal now
+      now = 3_000.0
+      callback_context.state['plan'] = 'step 1'
+      return None
+
+  try:
+    agent = Agent(
+        name='test_agent',
+        model=_ClockAdvancingLlm(),
+        planner=_StateUpdatingPlanner(),
+    )
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content='test message'
+    )
+    flow = SingleFlow()
+
+    events = []
+    async for event in flow.run_async(invocation_context):
+      events.append(event)
+      now += 1_000.0
+  finally:
+    platform_time.reset_time_provider()
+
+  assert len(events) == 2
+  assert events[0].actions.state_delta == {'plan': 'step 1'}
+  assert events[1].content.parts[0].text == 'hi'
+  assert [e.timestamp for e in events] == [3_000.0, 4_000.0]

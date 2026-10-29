@@ -32,7 +32,7 @@ authentication and obtaining an Agent ID.
 *   **Agent ID**: You need an `agent_id` to connect to. You can either:
     *   Create a new agent by following the
         [Gemini API Agents documentation](https://ai.google.dev/gemini-api/docs/agents).
-    *   Use an out-of-the-box agent ID, such as `antigravity-preview-05-2026`,
+    *   Use an out-of-the-box agent ID, such as `antigravity-preview-09-2026`,
         which is commonly used in our examples.
 
 ### Option 2: Gemini Enterprise Agents Platform (GEAP) Backend
@@ -59,7 +59,7 @@ from google.adk.tools import google_search
 from google.genai import types
 
 # Ensure you have the MANAGED_AGENT_ID and the proper environment config
-_AGENT_ID = os.environ.get('MANAGED_AGENT_ID', 'antigravity-preview-05-2026')
+_AGENT_ID = os.environ.get('MANAGED_AGENT_ID', 'antigravity-preview-09-2026')
 
 managed_search_agent = ManagedAgent(
     name='managed_search_agent',
@@ -172,7 +172,7 @@ from google.adk.agents import ManagedAgent
 
 root_agent = ManagedAgent(
     name='managed_persona_agent',
-    agent_id='antigravity-preview-05-2026',
+    agent_id='antigravity-preview-09-2026',
     environment={'type': 'remote'},
     instruction='You are a terse assistant. Answer in a single sentence.',
 )

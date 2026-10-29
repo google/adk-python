@@ -2149,6 +2149,71 @@ async def test_append_event_same_timestamp_single_writer_not_stale(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'timestamp_increment',
+    [
+        pytest.param(
+            0.0,
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason=(
+                    'a same-timestamp append does not advance the database'
+                    ' stale-writer marker'
+                ),
+            ),
+            id='same_timestamp',
+        ),
+        pytest.param(1.0, id='increasing_timestamp'),
+    ],
+)
+async def test_database_fresh_writer_rejects_stale_session(
+    timestamp_increment: float, tmp_path: Path
+) -> None:
+  """A committed append invalidates another writer's previously read session."""
+  db_url = f'sqlite+aiosqlite:///{tmp_path / "stale_writer.db"}'
+  async with (
+      DatabaseSessionService(db_url) as writer,
+      DatabaseSessionService(db_url) as other_writer,
+  ):
+    session = await writer.create_session(app_name='app', user_id='user')
+    shared_timestamp = 100.0
+    await writer.append_event(
+        session, Event(id='seed', author='user', timestamp=shared_timestamp)
+    )
+    stale_session = await other_writer.get_session(
+        app_name='app', user_id='user', session_id=session.id
+    )
+    assert stale_session is not None
+
+    await writer.append_event(
+        session,
+        Event(
+            id='winner',
+            author='user',
+            timestamp=shared_timestamp + timestamp_increment,
+            actions=EventActions(state_delta={'winner': True}),
+        ),
+    )
+    with pytest.raises(StaleSessionError):
+      await other_writer.append_event(
+          stale_session,
+          Event(
+              id='stale',
+              author='user',
+              timestamp=shared_timestamp + 2.0,
+              actions=EventActions(state_delta={'stale': True}),
+          ),
+      )
+
+    reloaded = await writer.get_session(
+        app_name='app', user_id='user', session_id=session.id
+    )
+    assert reloaded is not None
+    assert {event.id for event in reloaded.events} == {'seed', 'winner'}
+    assert reloaded.state == {'winner': True}
+
+
+@pytest.mark.asyncio
 async def test_sqlite_append_event_uses_typed_stale_session_error(tmp_path):
   """The legacy SQLite backend exposes the shared stale-writer contract."""
   service = get_session_service(SessionServiceType.SQLITE, tmp_path)

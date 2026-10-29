@@ -278,6 +278,44 @@ def _estimate_prompt_token_count(
   return total_chars // 4
 
 
+def _earlier_calls_answered_by(events: list[Event], start: int) -> list[Event]:
+  """Returns the calls before `start` that `events[start:]` responds to.
+
+  Contents assembly drops a function response whose call it cannot see, so
+  estimating `events[start:]` alone would miss a long-running tool's result.
+  Each returned event keeps only the answered calls, so the other calls it
+  made are not mistaken for unanswered ones.
+
+  Args:
+    events: The session events.
+    start: Index of the first event of the tail.
+
+  Returns:
+    Copies of the earlier events that made those calls, in order.
+  """
+  unmatched_ids: set[str] = set()
+  for event in events[start:]:
+    unmatched_ids |= _event_function_response_ids(event)
+  for event in events[start:]:
+    unmatched_ids -= _event_function_call_ids(event)
+  if not unmatched_ids:
+    return []
+
+  calls: list[Event] = []
+  for event in events[:start]:
+    if not event.content or not event.content.parts:
+      continue
+    parts = [
+        part
+        for part in event.content.parts
+        if part.function_call and part.function_call.id in unmatched_ids
+    ]
+    if parts:
+      content = event.content.model_copy(update={'parts': parts})
+      calls.append(event.model_copy(update={'content': content}))
+  return calls
+
+
 def _latest_prompt_token_count(
     events: list[Event],
     *,
@@ -285,7 +323,12 @@ def _latest_prompt_token_count(
     agent_name: str = '',
     isolation_scope: str | None = None,
 ) -> int | None:
-  """Returns the most recently observed prompt token count, if available.
+  """Returns the latest prompt token count, plus an estimate for what it misses.
+
+  A model response reports the size of the prompt that produced it, so the
+  count misses that response and everything appended after it, such as the
+  tool responses it asked for. Those events are estimated and added, so a burst
+  of large tool responses triggers compaction before the next request.
 
   When `agent_name` is given, only counts recorded by that agent are
   considered. A count belongs to whichever agent made the model call, so
@@ -293,8 +336,10 @@ def _latest_prompt_token_count(
   turn ends in a small sub-agent otherwise measures that sub-agent forever and
   never reaches its threshold.
   """
-  scoped_events = [e for e in events if e.isolation_scope == isolation_scope]
-  for event in reversed(scoped_events):
+  for index in range(len(events) - 1, -1, -1):
+    event = events[index]
+    if event.isolation_scope != isolation_scope:
+      continue
     if event.actions and event.actions.compaction:
       # Counts at or before a summarization describe a prompt it replaced.
       break
@@ -303,7 +348,15 @@ def _latest_prompt_token_count(
         and event.usage_metadata.prompt_token_count is not None
         and (not agent_name or event.author == agent_name)
     ):
-      return event.usage_metadata.prompt_token_count
+      unmeasured_token_count = _estimate_prompt_token_count(
+          events=_earlier_calls_answered_by(events, index) + events[index:],
+          current_branch=current_branch,
+          agent_name=agent_name,
+          isolation_scope=isolation_scope,
+      )
+      return event.usage_metadata.prompt_token_count + (
+          unmeasured_token_count or 0
+      )
   return _estimate_prompt_token_count(
       events=events,
       current_branch=current_branch,

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Collection
 from collections.abc import Mapping
 from collections.abc import Sequence
 import hashlib
@@ -26,6 +27,7 @@ from typing import TYPE_CHECKING
 from google.cloud.firestore_v1.base_query import FieldFilter
 from typing_extensions import override
 
+from ...events._rewind_events import _apply_rewinds
 from ...memory import _utils
 from ...memory.base_memory_service import BaseMemoryService
 from ...memory.base_memory_service import SearchMemoryResponse
@@ -97,12 +99,17 @@ class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
 
   @override
   async def add_session_to_memory(self, session: Session) -> None:
-    """Extracts keywords from session events and stores them in the memories collection."""
+    """Stores live events and deletes those a rewind took back."""
+    live_events = _apply_rewinds(session.events)
+    live_ids = {event.id for event in live_events}
     await self._write_memories(
         app_name=session.app_name,
         user_id=session.user_id,
         session_id=session.id,
-        events=session.events,
+        events=live_events,
+        rewound_event_ids={
+            event.id for event in session.events if event.id not in live_ids
+        },
     )
 
   @override
@@ -134,6 +141,7 @@ class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
       user_id: str,
       session_id: str | None,
       events: Sequence[Event],
+      rewound_event_ids: Collection[str] = (),
   ) -> None:
     """Writes one memory document per event that has text keywords."""
     batch = self.client.batch()
@@ -177,6 +185,23 @@ class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
               ),
               "timestamp": event.timestamp,
           },
+      )
+      count += 1
+      if count >= 500:
+        await batch.commit()
+        batch = self.client.batch()
+        count = 0
+
+    for event_id in rewound_event_ids:
+      batch.delete(
+          self.client.collection(self.memories_collection).document(
+              _memory_doc_id(
+                  app_name=app_name,
+                  user_id=user_id,
+                  session_id=session_id,
+                  event_id=event_id,
+              )
+          )
       )
       count += 1
       if count >= 500:
