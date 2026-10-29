@@ -90,6 +90,16 @@ _PATCHED_HISTOGRAMS: tuple[HistogramSpec, ...] = (
     ),
     HistogramSpec(
         module=_metrics,
+        attr="_inference_operation_input_tokens",
+        metric_name="gen_ai.client.inference.operation.input_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_inference_operation_output_tokens",
+        metric_name="gen_ai.client.inference.operation.output_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
         attr="_workflow_invocation_duration",
         metric_name="gen_ai.invoke_workflow.duration",
     ),
@@ -202,6 +212,31 @@ _PATCHED_COUNTERS: tuple[CounterSpec, ...] = (
         module=_metrics,
         attr="_skill_loads",
         metric_name="adk.experimental.skill.loads",
+    ),
+    CounterSpec(
+        module=_metrics,
+        attr="_inference_usage_input_tokens",
+        metric_name="gen_ai.client.inference.usage.input_tokens",
+    ),
+    CounterSpec(
+        module=_metrics,
+        attr="_inference_usage_output_tokens",
+        metric_name="gen_ai.client.inference.usage.output_tokens",
+    ),
+    CounterSpec(
+        module=_metrics,
+        attr="_inference_usage_cache_read_input_tokens",
+        metric_name="gen_ai.client.inference.usage.cache_read.input_tokens",
+    ),
+    CounterSpec(
+        module=_metrics,
+        attr="_inference_usage_cache_write_input_tokens",
+        metric_name="gen_ai.client.inference.usage.cache_write.input_tokens",
+    ),
+    CounterSpec(
+        module=_metrics,
+        attr="_inference_usage_reasoning_output_tokens",
+        metric_name="gen_ai.client.inference.usage.reasoning.output_tokens",
     ),
 )
 

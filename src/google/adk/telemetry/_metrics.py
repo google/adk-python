@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import collections
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -24,6 +25,8 @@ from google.adk.telemetry import _hallucination
 from google.adk.telemetry import _schema_version
 from google.adk.telemetry import tracing
 from google.adk.telemetry._decorators import experimental_telemetry
+from google.adk.telemetry._schema_version import resolve_schema_version
+from google.adk.telemetry._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
 from google.adk.telemetry._token_usage import CACHE_READ_INPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import INPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import OUTPUT_TOKENS_MEANING
@@ -31,6 +34,7 @@ from google.adk.telemetry._token_usage import REASONING_OUTPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import TokenUsage
 from google.adk.telemetry._token_usage import TOOL_INPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import TOTAL_TOKENS_MEANING
+from google.genai import types
 from opentelemetry import metrics
 from opentelemetry.semconv._incubating.attributes import gen_ai_attributes
 from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
@@ -165,6 +169,78 @@ _client_token_usage = meter.create_histogram(
     unit="{token}",
     description="Number of input and output tokens used.",
     explicit_bucket_boundaries_advisory=_TOKEN_USAGE_BUCKET_BOUNDS,
+)
+
+# ---- Inference token metrics, schema v2 only ----
+_inference_usage_input_tokens = meter.create_counter(
+    "gen_ai.client.inference.usage.input_tokens",
+    unit="{token}",
+    description=(
+        "The number of input (prompt) tokens used, including cached tokens."
+    ),
+)
+_inference_usage_output_tokens = meter.create_counter(
+    "gen_ai.client.inference.usage.output_tokens",
+    unit="{token}",
+    description=(
+        "The number of output (completion) tokens used, including reasoning"
+        " tokens."
+    ),
+)
+_inference_usage_cache_read_input_tokens = meter.create_counter(
+    "gen_ai.client.inference.usage.cache_read.input_tokens",
+    unit="{token}",
+    description=(
+        "The number of input tokens served from a provider-managed cache."
+    ),
+)
+_inference_usage_cache_write_input_tokens = meter.create_counter(
+    "gen_ai.client.inference.usage.cache_write.input_tokens",
+    unit="{token}",
+    description=(
+        "The number of input tokens written to a provider-managed cache."
+    ),
+)
+_inference_usage_reasoning_output_tokens = meter.create_counter(
+    "gen_ai.client.inference.usage.reasoning.output_tokens",
+    unit="{token}",
+    description=(
+        "The number of output tokens used for reasoning (e.g. chain-of-thought,"
+        " extended thinking)."
+    ),
+)
+# The boundaries semconv-genai advises for both histograms below.
+_INFERENCE_OPERATION_TOKEN_BUCKET_BOUNDS = [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024,
+    4096,
+    16384,
+    65536,
+    262144,
+    1048576,
+    4194304,
+    16777216,
+    67108864,
+]
+_inference_operation_input_tokens = meter.create_histogram(
+    "gen_ai.client.inference.operation.input_tokens",
+    unit="{token}",
+    description=(
+        "The number of input (prompt) tokens used per inference operation."
+    ),
+    explicit_bucket_boundaries_advisory=_INFERENCE_OPERATION_TOKEN_BUCKET_BOUNDS,
+)
+_inference_operation_output_tokens = meter.create_histogram(
+    "gen_ai.client.inference.operation.output_tokens",
+    unit="{token}",
+    description=(
+        "The number of output (completion) tokens used per inference operation."
+    ),
+    explicit_bucket_boundaries_advisory=_INFERENCE_OPERATION_TOKEN_BUCKET_BOUNDS,
 )
 
 # Bounds are upper inclusive, so the leading 0 buckets exact zeros on their own.
@@ -651,18 +727,9 @@ def record_client_token_usage(
   # `total_token_count` is omitted as SemConv expects input/output breakdown.
   input_token_count = token_usage.input_tokens or 0
   output_token_count = token_usage.output_tokens or 0
-  response_model = responses[-1].model_version or llm_request.model
-  base_attrs = {
-      gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
-      gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",
-      gen_ai_attributes.GEN_AI_PROVIDER_NAME: _get_provider_name(
-          llm_request.model
-      ),
-  }
-  if llm_request.model:
-    base_attrs[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = llm_request.model
-  if response_model:
-    base_attrs[gen_ai_attributes.GEN_AI_RESPONSE_MODEL] = response_model
+  base_attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name} | (
+      _inference_attributes(llm_request, responses[-1])
+  )
 
   if input_token_count > 0:
     input_attrs = base_attrs.copy()
@@ -673,6 +740,125 @@ def record_client_token_usage(
     output_attrs = base_attrs.copy()
     output_attrs[gen_ai_attributes.GEN_AI_TOKEN_TYPE] = "output"
     _client_token_usage.record(output_token_count, attributes=output_attrs)
+
+
+def record_inference_token_usage(
+    llm_request: LlmRequest,
+    responses: list[LlmResponse],
+) -> None:
+  """Records the semconv-genai inference token metrics, from schema v2."""
+  if resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED:
+    return
+  # As above, the last response chunk holds the whole request's usage.
+  if not responses or not responses[-1].usage_metadata:
+    return
+  last_response = responses[-1]
+  usage_metadata = last_response.usage_metadata
+  token_usage = TokenUsage.from_usage_metadata(usage_metadata)
+  inference_attrs = _inference_attributes(llm_request, last_response)
+
+  # A reported zero is recorded; a direction the model did not report is not.
+  if token_usage.input_tokens is not None:
+    _inference_operation_input_tokens.record(
+        token_usage.input_tokens, attributes=inference_attrs
+    )
+  if token_usage.output_tokens is not None:
+    _inference_operation_output_tokens.record(
+        token_usage.output_tokens, attributes=inference_attrs
+    )
+  input_details = (usage_metadata.prompt_tokens_details or []) + (
+      usage_metadata.tool_use_prompt_tokens_details or []
+  )
+  _add_by_modality(
+      counter=_inference_usage_input_tokens,
+      tokens=token_usage.input_tokens,
+      details=input_details,
+      attrs=inference_attrs,
+  )
+  _add_by_modality(
+      counter=_inference_usage_output_tokens,
+      tokens=token_usage.output_tokens,
+      details=usage_metadata.candidates_tokens_details,
+      attrs=inference_attrs,
+  )
+  _add_by_modality(
+      counter=_inference_usage_cache_read_input_tokens,
+      tokens=token_usage.cache_read_input_tokens,
+      details=usage_metadata.cache_tokens_details,
+      attrs=inference_attrs,
+  )
+  # Cache writes and thoughts tokens come with no modality breakdown.
+  _add_by_modality(
+      counter=_inference_usage_cache_write_input_tokens,
+      tokens=token_usage.cache_write_input_tokens,
+      details=None,
+      attrs=inference_attrs,
+  )
+  _add_by_modality(
+      counter=_inference_usage_reasoning_output_tokens,
+      tokens=token_usage.reasoning_output_tokens,
+      details=None,
+      attrs=inference_attrs,
+  )
+
+
+def _add_by_modality(
+    *,
+    counter: metrics.Counter,
+    tokens: int | None,
+    details: list[types.ModalityTokenCount] | None,
+    attrs: dict[str, AttributeValue],
+) -> None:
+  for modality, count in _split_by_modality(tokens or 0, details).items():
+    counter.add(count, attributes=attrs | {"gen_ai.token.modality": modality})
+
+
+def _split_by_modality(
+    total: int, details: list[types.ModalityTokenCount] | None
+) -> dict[str, int]:
+  """Splits `total` tokens across the modalities `details` reports.
+
+  Whatever the details leave unaccounted for, such as thoughts tokens, goes to
+  `unknown`, so the values sum to `total` unless the details exceed it.
+  Modalities are lowercased, e.g. `TEXT` becomes `text`; zeros are dropped.
+
+  Args:
+    total: The token count to split.
+    details: Gemini's per-modality breakdown of `total`, if it gave one.
+
+  Returns:
+    The token count per `gen_ai.token.modality` value.
+  """
+  by_modality: collections.Counter[str] = collections.Counter()
+  for entry in details or []:
+    if entry.modality:
+      modality = entry.modality.name.lower()
+      # The genai SDK treats MODALITY_UNSPECIFIED as TEXT.
+      if modality == "modality_unspecified":
+        modality = "text"
+      by_modality[modality] += entry.token_count or 0
+  unknown = total - sum(by_modality.values())
+  if unknown > 0:
+    by_modality["unknown"] = unknown
+  return {modality: count for modality, count in by_modality.items() if count}
+
+
+def _inference_attributes(
+    llm_request: LlmRequest, last_response: LlmResponse
+) -> dict[str, AttributeValue]:
+  """The semconv attributes every inference token metric carries."""
+  response_model = last_response.model_version or llm_request.model
+  attrs: dict[str, AttributeValue] = {
+      gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",
+      gen_ai_attributes.GEN_AI_PROVIDER_NAME: _get_provider_name(
+          llm_request.model
+      ),
+  }
+  if llm_request.model:
+    attrs[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = llm_request.model
+  if response_model:
+    attrs[gen_ai_attributes.GEN_AI_RESPONSE_MODEL] = response_model
+  return attrs
 
 
 def _get_provider_name(model: str | None) -> str:

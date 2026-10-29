@@ -33,6 +33,7 @@ from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from typing_extensions import assert_never
 
 from . import _adk_attributes
+from . import _genai_instrumentor
 from . import _hallucination
 from . import _metrics
 from . import _token_usage
@@ -1088,6 +1089,18 @@ async def record_inference_telemetry(
             llm_request=llm_request,
             responses=tel_ctx.llm_responses,
         )
+      if agent is not None:
+        # ADK bypasses the instrumentor when it records the inference itself.
+        emit_inference_tokens = isinstance(
+            tel_ctx.span, tracing.GenerateContentSpan
+        ) or _genai_instrumentor.should_emit_inference_token_metrics(
+            tracing._agent_model_name(agent)
+        )
+        if emit_inference_tokens:
+          _metrics.record_inference_token_usage(
+              llm_request=llm_request,
+              responses=tel_ctx.llm_responses,
+          )
     except Exception:  # pylint: disable=broad-exception-caught
       logger.exception(
           "Failed to record inference metrics for agent %s",
