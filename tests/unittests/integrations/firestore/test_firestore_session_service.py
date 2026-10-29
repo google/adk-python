@@ -1329,3 +1329,99 @@ async def test_list_sessions_missing_states(mock_firestore_client):
   assert session.state["session_key"] == "session_val"
   assert "_app_app_key" not in session.state
   assert "_user_user_key" not in session.state
+
+
+@pytest.mark.parametrize(
+    "bad_user_id",
+    [
+        "alice/sessions/s",  # even number of '/': passes verify_path, injects
+        "a/b/c/d",
+        "..",
+        "",
+        "__reserved__",
+    ],
+)
+@pytest.mark.asyncio
+async def test_create_session_rejects_path_breaking_user_id(
+    mock_firestore_client, bad_user_id
+):
+  """A user_id that would alter the Firestore document path is rejected."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    with pytest.raises(ValueError):
+      await service.create_session(app_name="test_app", user_id=bad_user_id)
+
+
+@pytest.mark.parametrize(
+    "bad_session_id",
+    [
+        "x/sessions/y",  # even number of '/': passes verify_path, injects
+        "s/users/other/sessions/s",
+        "..",
+        "__reserved__",
+    ],
+)
+@pytest.mark.asyncio
+async def test_create_session_rejects_path_breaking_session_id(
+    mock_firestore_client, bad_session_id
+):
+  """A caller-supplied session_id that alters the document path is rejected."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    with pytest.raises(ValueError):
+      await service.create_session(
+          app_name="test_app", user_id="alice", session_id=bad_session_id
+      )
+
+
+@pytest.mark.asyncio
+async def test_get_session_rejects_path_breaking_identity(
+    mock_firestore_client,
+):
+  """Read paths validate identity components too."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with pytest.raises(ValueError):
+    await service.get_session(
+        app_name="test_app", user_id="alice/sessions/s", session_id="s"
+    )
+
+
+@pytest.mark.asyncio
+async def test_delete_session_rejects_path_breaking_identity(
+    mock_firestore_client,
+):
+  """Delete paths validate identity components too."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with pytest.raises(ValueError):
+    await service.delete_session(
+        app_name="test_app", user_id="alice", session_id="x/sessions/y"
+    )
+
+
+@pytest.mark.parametrize(
+    "ok_identity",
+    [
+        "alice",
+        "alice@example.com",  # email user_id (contains '.') must still work
+        "user-123_abc",
+        "a.b.c",
+    ],
+)
+@pytest.mark.asyncio
+async def test_create_session_accepts_normal_identity(
+    mock_firestore_client, ok_identity
+):
+  """Legitimate identity components (including emails) are not rejected."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    session = await service.create_session(
+        app_name="test_app", user_id=ok_identity
+    )
+
+  assert session.user_id == ok_identity
+  assert session.id

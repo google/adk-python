@@ -173,6 +173,8 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
   def _get_sessions_ref(
       self, app_name: str, user_id: str
   ) -> firestore.AsyncCollectionReference:
+    self._validate_identity_component("app_name", app_name)
+    self._validate_identity_component("user_id", user_id)
     return cast(
         "firestore.AsyncCollectionReference",
         self.client.collection(self.root_collection)
@@ -181,6 +183,42 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
         .document(user_id)
         .collection(self.sessions_collection),
     )
+
+  def _get_session_doc_ref(
+      self, app_name: str, user_id: str, session_id: str
+  ) -> firestore.AsyncDocumentReference:
+    self._validate_identity_component("session_id", session_id)
+    return cast(
+        "firestore.AsyncDocumentReference",
+        self._get_sessions_ref(app_name, user_id).document(session_id),
+    )
+
+  @staticmethod
+  def _validate_identity_component(name: str, value: str) -> None:
+    """Rejects identity components that would alter the document path.
+
+    ``app_name``, ``user_id`` and ``session_id`` are used as raw Firestore
+    document path segments. The client treats ``/`` as a path separator and
+    only checks segment parity, not content, so a value containing ``/`` (or a
+    reserved segment) silently changes the path structure and can nest one
+    identity's session document under another's. This keeps distinct identity
+    tuples on distinct, non-nesting paths without adopting an allow-list strict
+    enough to reject legitimate ids such as email addresses.
+    """
+    if not isinstance(value, str) or not value:
+      raise ValueError(f"{name} must be a non-empty string, got {value!r}.")
+    if "/" in value:
+      raise ValueError(
+          f"{name} must not contain '/': {value!r} would change the Firestore"
+          " document path."
+      )
+    if value in (".", ".."):
+      raise ValueError(f"{name} must not be '.' or '..', got {value!r}.")
+    if value.startswith("__") and value.endswith("__"):
+      raise ValueError(
+          f"{name} must not match the Firestore-reserved __.*__ pattern, got"
+          f" {value!r}."
+      )
 
   async def create_session(
       self,
@@ -197,7 +235,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
     initial_state = state or {}
     now = firestore.SERVER_TIMESTAMP
 
-    session_ref = self._get_sessions_ref(app_name, user_id).document(session_id)
+    session_ref = self._get_session_doc_ref(app_name, user_id, session_id)
 
     # Extract state deltas. App and user state are written to Firestore
     # natively, which keeps datetime and other rich types, so only the session
@@ -288,7 +326,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
     """Gets a session from Firestore."""
-    session_ref = self._get_sessions_ref(app_name, user_id).document(session_id)
+    session_ref = self._get_session_doc_ref(app_name, user_id, session_id)
     doc = await session_ref.get()
 
     if not doc.exists:
@@ -465,7 +503,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     """Deletes a session and its events from Firestore."""
-    session_ref = self._get_sessions_ref(app_name, user_id).document(session_id)
+    session_ref = self._get_session_doc_ref(app_name, user_id, session_id)
 
     @firestore.async_transactional  # type: ignore[untyped-decorator]
     async def _mark_deleting_txn(
@@ -505,9 +543,9 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
     self._apply_temp_state(session, event)
     event = self._trim_temp_delta_state(event)
 
-    session_ref = self._get_sessions_ref(
-        session.app_name, session.user_id
-    ).document(session.id)
+    session_ref = self._get_session_doc_ref(
+        session.app_name, session.user_id, session.id
+    )
 
     state_delta = (
         event.actions.state_delta
