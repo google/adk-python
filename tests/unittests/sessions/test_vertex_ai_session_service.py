@@ -1031,6 +1031,48 @@ async def test_list_sessions_with_pagination():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+@pytest.mark.parametrize('page_size', [1, 2, 5, 6])
+async def test_list_sessions_pages_through_every_session_once(page_size):
+  session_service = mock_vertex_ai_session_service()
+  everything = await session_service.list_sessions(app_name='123')
+
+  ids = []
+  page_token = None
+  while True:
+    page = await session_service.list_sessions(
+        app_name='123', page_size=page_size, page_token=page_token
+    )
+    assert len(page.sessions) <= page_size
+    ids += [s.id for s in page.sessions]
+    page_token = page.next_page_token
+    if page_token is None:
+      break
+
+  assert ids == [s.id for s in everything.sessions]
+  assert everything.next_page_token is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_list_sessions_rejects_bad_paging_arguments():
+  session_service = mock_vertex_ai_session_service()
+  first = await session_service.list_sessions(
+      app_name='123', user_id='user', page_size=1
+  )
+
+  with pytest.raises(ValueError, match='page_size'):
+    await session_service.list_sessions(app_name='123', page_size=0)
+  with pytest.raises(ValueError, match='page_token'):
+    await session_service.list_sessions(app_name='123', page_token='garbage')
+  # A token is only valid for the user filter it was issued for.
+  with pytest.raises(ValueError, match='page_token'):
+    await session_service.list_sessions(
+        app_name='123', page_size=1, page_token=first.next_page_token
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_list_sessions_all_users():
   session_service = mock_vertex_ai_session_service()
   sessions = await session_service.list_sessions(app_name='123', user_id=None)

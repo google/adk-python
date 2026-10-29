@@ -31,6 +31,7 @@ from ...errors.already_exists_error import AlreadyExistsError
 from ...errors.session_not_found_error import SessionNotFoundError
 from ...events.event import Event
 from ...platform import uuid as platform_uuid
+from ...sessions import _pagination
 from ...sessions import _session_util
 from ...sessions.base_session_service import BaseSessionService
 from ...sessions.base_session_service import GetSessionConfig
@@ -275,9 +276,25 @@ class RedisSessionService(BaseSessionService):
     return session
 
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self,
+      *,
+      app_name: str,
+      user_id: Optional[str] = None,
+      page_size: Optional[int] = None,
+      page_token: Optional[str] = None,
   ) -> ListSessionsResponse:
-    """Lists sessions matching the given app_name and optional user_id."""
+    """Lists sessions matching the given app_name and optional user_id.
+
+    Redis cannot order sessions by update time, so every matching session is
+    loaded and sorted here and ``page_size`` and ``page_token`` only slice that
+    sorted list: paging keeps the order stable but does not reduce the work of
+    each call.
+    """
+    # Fail before touching Redis on bad arguments.
+    _pagination.validate_page_size(page_size)
+    _pagination.decode_page_token(
+        page_token, app_name=app_name, user_id=user_id
+    )
     client = self._get_redis()
     escaped_app_name = _escape_glob(app_name)
     pattern = (
@@ -319,8 +336,15 @@ class RedisSessionService(BaseSessionService):
           logger.warning("Failed to parse session at key %s: %s", key, e)
 
     # Sort oldest first, with stable ordering when update times are equal.
-    sessions.sort(key=lambda s: (s.last_update_time, s.user_id, s.id))
-    return ListSessionsResponse(sessions=sessions)
+    sessions.sort(key=_pagination.session_sort_key)
+    page, next_page_token = _pagination.paginate_sorted_sessions(
+        sessions,
+        app_name=app_name,
+        user_id=user_id,
+        page_size=page_size,
+        page_token=page_token,
+    )
+    return ListSessionsResponse(sessions=page, next_page_token=next_page_token)
 
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str

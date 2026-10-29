@@ -33,6 +33,7 @@ from typing_extensions import override
 if TYPE_CHECKING:
   import agentplatform
 
+from . import _pagination
 from . import _session_util
 from ..events.event import Event
 from ..events.event_actions import EventActions
@@ -327,8 +328,25 @@ class VertexAiSessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self,
+      *,
+      app_name: str,
+      user_id: Optional[str] = None,
+      page_size: Optional[int] = None,
+      page_token: Optional[str] = None,
   ) -> ListSessionsResponse:
+    """Lists sessions, oldest last update first.
+
+    The Agent Engine API cannot order sessions by update time, so every
+    matching session is fetched and sorted here, and ``page_size`` and
+    ``page_token`` only slice that sorted list. Paging keeps the order stable
+    across pages but does not reduce the work of each call.
+    """
+    # Fail before any API call on bad arguments.
+    _pagination.validate_page_size(page_size)
+    _pagination.decode_page_token(
+        page_token, app_name=app_name, user_id=user_id
+    )
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
     api_client = self._get_api_client()
@@ -352,8 +370,15 @@ class VertexAiSessionService(BaseSessionService):
           )
       )
 
-    sessions.sort(key=lambda s: (s.last_update_time, s.user_id, s.id))
-    return ListSessionsResponse(sessions=sessions)
+    sessions.sort(key=_pagination.session_sort_key)
+    page, next_page_token = _pagination.paginate_sorted_sessions(
+        sessions,
+        app_name=app_name,
+        user_id=user_id,
+        page_size=page_size,
+        page_token=page_token,
+    )
+    return ListSessionsResponse(sessions=page, next_page_token=next_page_token)
 
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str

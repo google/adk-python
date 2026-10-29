@@ -34,6 +34,7 @@ from google.adk.platform import uuid as platform_uuid
 from google.adk.utils import _json_utils
 from typing_extensions import override
 
+from . import _pagination
 from . import _session_util
 from ..errors._stale_session_error import StaleSessionError
 from ..errors.already_exists_error import AlreadyExistsError
@@ -48,6 +49,10 @@ from .state import State
 logger = logging.getLogger("google_adk." + __name__)
 
 PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
+
+# The most user IDs a paged list_sessions filters user state by; a page with
+# more falls back to loading the app's user state.
+_MAX_USER_ID_FILTER = 500
 
 # Merges {delta} into {state} with dict.update() semantics: keys in the delta
 # always win with their delta value (including SQL NULL / JSON null), unlike
@@ -381,22 +386,60 @@ class SqliteSessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self,
+      *,
+      app_name: str,
+      user_id: Optional[str] = None,
+      page_size: Optional[int] = None,
+      page_token: Optional[str] = None,
   ) -> ListSessionsResponse:
+    _pagination.validate_page_size(page_size)
+    cursor = _pagination.decode_page_token(
+        page_token, app_name=app_name, user_id=user_id
+    )
     sessions_list = []
+    next_page_token = None
     async with self._get_db_connection() as db:
       # Fetch sessions
+      query = (
+          "SELECT id, user_id, state, update_time FROM sessions WHERE"
+          " app_name=?"
+      )
+      params: list[Any] = [app_name]
       if user_id is not None:
-        session_rows = await db.execute_fetchall(
-            "SELECT id, user_id, state, update_time FROM sessions WHERE"
-            " app_name=? AND user_id=? ORDER BY update_time, user_id, id",
-            (app_name, user_id),
+        query += " AND user_id=?"
+        params.append(user_id)
+      if cursor is not None:
+        # Keyset condition for "sorts after the cursor".
+        query += (
+            " AND (update_time > ? OR (update_time = ? AND (user_id > ? OR"
+            " (user_id = ? AND id > ?))))"
         )
-      else:
-        session_rows = await db.execute_fetchall(
-            "SELECT id, user_id, state, update_time FROM sessions WHERE"
-            " app_name=? ORDER BY update_time, user_id, id",
-            (app_name,),
+        params += [
+            cursor.last_update_time,
+            cursor.last_update_time,
+            cursor.user_id,
+            cursor.user_id,
+            cursor.session_id,
+        ]
+      query += " ORDER BY update_time, user_id, id"
+      if page_size is not None:
+        # One extra row tells whether another page follows.
+        query += " LIMIT ?"
+        params.append(page_size + 1)
+      session_rows = list(await db.execute_fetchall(query, params))
+      if page_size is not None and len(session_rows) > page_size:
+        session_rows = session_rows[:page_size]
+        last_row = session_rows[-1]
+        next_page_token = _pagination.encode_page_token(
+            app_name=app_name,
+            user_id=user_id,
+            last_session=Session(
+                app_name=app_name,
+                user_id=last_row["user_id"],
+                id=last_row["id"],
+                last_update_time=last_row["update_time"],
+            ),
         )
 
       # Fetch app state
@@ -408,12 +451,22 @@ class SqliteSessionService(BaseSessionService):
         user_state = await self._get_user_state(db, app_name, user_id)
         if user_state:
           user_states_map[user_id] = user_state
-      else:
+      elif session_rows:
+        user_state_query = (
+            "SELECT user_id, state FROM user_states WHERE app_name=?"
+        )
+        user_state_params: list[Any] = [app_name]
+        page_user_ids = sorted({row["user_id"] for row in session_rows})
+        if page_size is not None and len(page_user_ids) <= _MAX_USER_ID_FILTER:
+          # Only the users on this page need their state.
+          user_state_query += (
+              f" AND user_id IN ({','.join('?' * len(page_user_ids))})"
+          )
+          user_state_params += page_user_ids
         async with db.execute(
-            "SELECT user_id, state FROM user_states WHERE app_name=?",
-            (app_name,),
-        ) as cursor:
-          async for row in cursor:
+            user_state_query, user_state_params
+        ) as user_state_cursor:
+          async for row in user_state_cursor:
             user_states_map[row["user_id"]] = _decode_state(
                 row["state"], context="user state"
             )
@@ -434,7 +487,9 @@ class SqliteSessionService(BaseSessionService):
                 last_update_time=row["update_time"],
             )
         )
-    return ListSessionsResponse(sessions=sessions_list)
+    return ListSessionsResponse(
+        sessions=sessions_list, next_page_token=next_page_token
+    )
 
   @override
   async def delete_session(

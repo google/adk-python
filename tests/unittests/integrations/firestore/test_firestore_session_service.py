@@ -760,6 +760,67 @@ async def test_list_sessions_with_user_id(mock_firestore_client):
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_pages_through_sessions_in_order(
+    mock_firestore_client,
+):
+  service = FirestoreSessionService(client=mock_firestore_client)
+  app_name = "test_app"
+  user_id = "test_user"
+
+  def session_doc(session_id, update_time):
+    doc = mock.MagicMock()
+    doc.to_dict.return_value = {
+        "id": session_id,
+        "appName": app_name,
+        "userId": user_id,
+        "state": {},
+        "updateTime": update_time,
+    }
+    return doc
+
+  # Stored out of order; ties on update time are ordered by id.
+  docs = [
+      session_doc("c", 30.0),
+      session_doc("b", 10.0),
+      session_doc("a", 10.0),
+      session_doc("d", 20.0),
+  ]
+
+  def collection_side_effect(name):
+    coll = mock.MagicMock()
+    missing_doc = mock.MagicMock()
+    missing_doc.exists = False
+    coll.document.return_value.get = mock.AsyncMock(return_value=missing_doc)
+    coll.document.return_value.collection.return_value.document.return_value.get = mock.AsyncMock(
+        return_value=missing_doc
+    )
+    if name == service.root_collection:
+      sessions_query = mock.MagicMock()
+      sessions_query.get = mock.AsyncMock(return_value=docs)
+      (
+          coll.document.return_value.collection.return_value.document.return_value.collection.return_value.where
+      ).return_value = sessions_query
+    return coll
+
+  mock_firestore_client.collection.side_effect = collection_side_effect
+
+  ids = []
+  page_token = None
+  while True:
+    response = await service.list_sessions(
+        app_name=app_name, user_id=user_id, page_size=3, page_token=page_token
+    )
+    ids.append([s.id for s in response.sessions])
+    page_token = response.next_page_token
+    if page_token is None:
+      break
+
+  assert ids == [["a", "b", "d"], ["c"]]
+  with pytest.raises(ValueError, match="page_size"):
+    await service.list_sessions(app_name=app_name, page_size=0)
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_preserves_datetime_update_time(
     mock_firestore_client,
 ):
