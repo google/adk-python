@@ -17,6 +17,7 @@
 import asyncio
 import builtins
 import io
+import os
 import pathlib
 import struct
 import threading
@@ -1532,3 +1533,68 @@ def test__validate_relative_resource_path_rejects_dot_prefixed_windows_drive():
   for unsafe_path in ("./C:/evil.py", ".\\C:\\evil.py", "./c:evil.py"):
     with pytest.raises(ValueError, match="Unsafe path"):
       _validate_relative_resource_path(unsafe_path)
+
+
+def test__load_skill_from_dir_skips_symlinked_resources(tmp_path):
+  """A symlinked resource is not loaded, even if it points outside the skill.
+
+  Regression test: _load_dir previously opened whatever a symlink inside
+  references/, assets/, or scripts/ resolved to, which let a skill read an
+  arbitrary file elsewhere on disk under an ordinary-looking resource name.
+  """
+  outside = tmp_path / "outside-secret.txt"
+  outside.write_text("top-secret")
+
+  skill_dir = tmp_path / "test-skill"
+  assets_dir = skill_dir / "assets"
+  assets_dir.mkdir(parents=True)
+  (skill_dir / "SKILL.md").write_text(
+      "---\nname: test-skill\ndescription: Test description\n---\nBody"
+  )
+  (assets_dir / "ordinary.txt").write_text("ordinary content")
+  os.symlink(outside, assets_dir / "link")
+
+  skill = _load_skill_from_dir(skill_dir)
+
+  assert skill.resources.get_asset("ordinary.txt") == "ordinary content"
+  assert skill.resources.get_asset("link") is None
+  assert "link" not in skill.resources.assets
+
+
+def test__load_skill_from_dir_skips_symlinked_directory_contents(tmp_path):
+  """A symlinked directory inside assets/ is not recursed into."""
+  outside = tmp_path / "outside"
+  outside.mkdir()
+  (outside / "secret.txt").write_text("top-secret")
+
+  skill_dir = tmp_path / "test-skill"
+  assets_dir = skill_dir / "assets"
+  assets_dir.mkdir(parents=True)
+  (skill_dir / "SKILL.md").write_text(
+      "---\nname: test-skill\ndescription: Test description\n---\nBody"
+  )
+  os.symlink(outside, assets_dir / "link_dir")
+
+  skill = _load_skill_from_dir(skill_dir)
+
+  assert "link_dir/secret.txt" not in skill.resources.assets
+  for content in skill.resources.assets.values():
+    assert content != "top-secret"
+
+
+def test__load_skill_from_dir_skips_symlinked_resource_directory(tmp_path):
+  """assets/ itself being a symlink is treated as absent, not followed."""
+  outside = tmp_path / "outside"
+  outside.mkdir()
+  (outside / "secret.txt").write_text("top-secret")
+
+  skill_dir = tmp_path / "test-skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_text(
+      "---\nname: test-skill\ndescription: Test description\n---\nBody"
+  )
+  os.symlink(outside, skill_dir / "assets")
+
+  skill = _load_skill_from_dir(skill_dir)
+
+  assert skill.resources.assets == {}

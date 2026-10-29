@@ -130,9 +130,29 @@ def _load_dir(directory: pathlib.Path) -> dict[str, Union[str, bytes]]:
     UTF-8 text files, or raw `bytes` for binary files.
   """
   files: dict[str, Union[str, bytes]] = {}
+  if directory.is_symlink():
+    # references/, assets/, and scripts/ are resolved directly against the
+    # skill directory and walked from there, not reached by recursing in
+    # from somewhere else -- so rglob("*") treats a symlinked root exactly
+    # like an ordinary directory and recurses straight through it, unlike a
+    # symlink found deeper inside the walk, which it leaves alone by
+    # default. Treat a symlinked references/, assets/, or scripts/ as
+    # absent, the same as if it didn't exist, rather than following it into
+    # wherever it points.
+    return files
   if directory.exists() and directory.is_dir():
     for file_path in directory.rglob("*"):
       if "__pycache__" in file_path.parts:
+        continue
+      # A skill is free to ship a symlink inside references/, assets/, or
+      # scripts/ -- nothing in the SKILL.md format forbids it. rglob("*")
+      # does not recurse into a symlinked *directory* (that is pathlib's
+      # own default), but a symlink that is itself a *file* entry is still
+      # yielded here, and is_file()/read_text()/read_bytes() all follow it
+      # transparently. Skipping it here, before any of those calls, is what
+      # keeps a skill from reading a file that lives outside its own
+      # directory under an ordinary-looking resource name.
+      if file_path.is_symlink():
         continue
       if file_path.is_file():
         relative_path = file_path.relative_to(directory)
