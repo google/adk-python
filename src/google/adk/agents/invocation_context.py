@@ -57,6 +57,8 @@ from .base_agent import BaseAgentState
 from .context_cache_config import ContextCacheConfig
 from .run_config import RunConfig
 
+# Queue item shapes: (Event, processed_signal), (None, processed_signal) flush
+# barrier from NodeRunner._wait_for_enqueued_events, or (done_sentinel, None).
 _EventQueueItem = tuple[object, asyncio.Event | None]
 
 
@@ -292,7 +294,11 @@ class InvocationContext(BaseModel):
 
   All nodes enqueue events here via ``_enqueue_event()``. The Runner
   main loop is the sole consumer — it appends events to session and
-  yields them to SSE.
+  yields them to SSE. Items are ``(Event, processed_signal)`` pairs,
+  ``(None, processed_signal)`` flush barriers from
+  ``NodeRunner._wait_for_enqueued_events`` (acknowledged by setting
+  ``processed_signal`` without running plugins, appending to session, or
+  yielding), or ``(done_sentinel, None)`` to end the stream.
   """
 
   credential_by_key: dict[str, AuthCredential] = Field(default_factory=dict)
