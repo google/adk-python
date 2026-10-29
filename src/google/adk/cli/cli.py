@@ -19,15 +19,26 @@ from datetime import datetime
 import json
 import logging
 from pathlib import Path
+import queue
 import re
 import sys
+import traceback
 from typing import Any
+from typing import Awaitable
+from typing import Callable
 from typing import Optional
 from typing import Union
 
 import click
 from google.genai import types
 from pydantic import BaseModel
+from watchdog.events import EVENT_TYPE_CREATED
+from watchdog.events import EVENT_TYPE_DELETED
+from watchdog.events import EVENT_TYPE_MODIFIED
+from watchdog.events import EVENT_TYPE_MOVED
+from watchdog.events import FileSystemEvent
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 from ..agents.base_agent import BaseAgent
 from ..agents.llm_agent import LlmAgent
@@ -41,6 +52,7 @@ from ..events._internal_metadata import public_session
 from ..events._interrupts import index_open_interrupts
 from ..events.event import Event
 from ..memory.base_memory_service import BaseMemoryService
+from ..platform.thread import create_thread
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
@@ -56,6 +68,49 @@ from .utils.service_factory import create_memory_service_from_options
 from .utils.service_factory import create_session_service_from_options
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+class _AgentReloadHandler(FileSystemEventHandler):
+  """Watchdog event handler to trigger agent reload upon file changes."""
+
+  WATCHED_EXTENSIONS = ('.py', '.yaml', '.yml')
+  # Opened/closed events fire on reads, including the reload's own read.
+  WATCHED_EVENT_TYPES = (
+      EVENT_TYPE_CREATED,
+      EVENT_TYPE_DELETED,
+      EVENT_TYPE_MODIFIED,
+      EVENT_TYPE_MOVED,
+  )
+
+  def __init__(
+      self, loop: asyncio.AbstractEventLoop, reload_event: asyncio.Event
+  ) -> None:
+    super().__init__()
+    self.loop = loop
+    self.reload_event = reload_event
+
+  def on_any_event(self, event: FileSystemEvent) -> None:
+    if event.is_directory or event.event_type not in self.WATCHED_EVENT_TYPES:
+      return
+    src_path = (
+        event.src_path.decode('utf-8', errors='replace')
+        if isinstance(event.src_path, bytes)
+        else event.src_path
+    )
+    dest_path = getattr(event, 'dest_path', '')
+    dest_path = (
+        dest_path.decode('utf-8', errors='replace')
+        if isinstance(dest_path, bytes)
+        else str(dest_path)
+    )
+    if self._is_agent_file(src_path) or self._is_agent_file(dest_path):
+      self.loop.call_soon_threadsafe(self.reload_event.set)
+
+  def _is_agent_file(self, path: str) -> bool:
+    """Whether `path` is agent code or config, not .adk local storage."""
+    return path.endswith(self.WATCHED_EXTENSIONS) and (
+        '.adk' not in Path(path).parts
+    )
 
 
 class InputFile(BaseModel):
@@ -142,8 +197,11 @@ def _is_positive_response(s: str) -> bool:
   return s.strip().lower() in ('y', 'yes', 'true', 'confirm')
 
 
-def _prompt_for_function_call(
-    fc_id: str, fc_name: str, args: dict[str, Any]
+async def _prompt_for_function_call(
+    fc_id: str,
+    fc_name: str,
+    args: dict[str, Any],
+    read_line: Callable[[str], Awaitable[str]],
 ) -> types.Content:
   """Prompts the user for a HITL function call and returns the response."""
   if fc_name == _REQUEST_INPUT:
@@ -162,7 +220,7 @@ def _prompt_for_function_call(
   else:
     click.echo(f'[HITL] Waiting for input for {fc_name}({args})')
 
-  user_input = input('[user]: ')
+  user_input = await read_line('[user]: ')
 
   # Build the FunctionResponse.
   if fc_name == _REQUEST_CONFIRMATION:
@@ -199,6 +257,10 @@ async def run_interactively(
     memory_service: Optional[BaseMemoryService] = None,
     timeout: Optional[str] = None,
     jsonl: bool = False,
+    reload_agents: bool = False,
+    reload_event: Optional[asyncio.Event] = None,
+    agent_loader: Optional[AgentLoader] = None,
+    agent_folder_name: Optional[str] = None,
 ) -> None:
   app = _to_app(root_agent_or_app, session.app_name)
   runner = Runner(
@@ -209,14 +271,122 @@ async def run_interactively(
       credential_service=credential_service,
   )
 
+  if reload_agents:
+    loop = asyncio.get_running_loop()
+    input_queue: asyncio.Queue[object] = asyncio.Queue()
+    _EOF_SENTINEL = object()
+
+    def _prompt_user(new_line: bool = False) -> None:
+      prompt = '\n[user]: ' if new_line else '[user]: '
+      sys.stdout.write(prompt)
+      sys.stdout.flush()
+
+    async def _handle_reload() -> None:
+      nonlocal runner
+      click.secho('\nChanges detected, reloading agent...', fg='yellow')
+      if not (agent_loader and agent_folder_name):
+        return
+      try:
+        agent_loader.remove_agent_from_cache(agent_folder_name)
+        new_agent_or_app = agent_loader.load_agent(agent_folder_name)
+        reloaded_app = (
+            new_agent_or_app
+            if isinstance(new_agent_or_app, App)
+            else App(name=session.app_name, root_agent=new_agent_or_app)
+        )
+        new_runner = Runner(
+            app=reloaded_app,
+            artifact_service=artifact_service,
+            session_service=session_service,
+            memory_service=memory_service,
+            credential_service=credential_service,
+        )
+        await runner.close()
+        runner = new_runner
+      except Exception as e:
+        click.secho(f'Error reloading agent: {e}', fg='red')
+
+    # Read stdin only on request, so other prompts and the caller can use it.
+    line_requests: queue.SimpleQueue[None] = queue.SimpleQueue()
+    line_requested = False
+
+    async def _next_line() -> object:
+      nonlocal line_requested
+      if not line_requested:
+        line_requests.put(None)
+        line_requested = True
+      line = await input_queue.get()
+      line_requested = False
+      return line
+
+    def _read_input() -> None:
+      try:
+        while True:
+          line_requests.get()
+          line = sys.stdin.readline()
+          if not line:
+            break
+          loop.call_soon_threadsafe(input_queue.put_nowait, line)
+      except Exception:
+        print('[ERROR] Exception in stdin reader thread:', file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+      finally:
+        if not loop.is_closed():
+          loop.call_soon_threadsafe(input_queue.put_nowait, _EOF_SENTINEL)
+
+    t = create_thread(target=_read_input)
+    t.daemon = True
+    t.start()
+    _prompt_user()
+
+  async def _read_line(prompt: str) -> str:
+    if not reload_agents or reload_event is None:
+      return input(prompt)
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    line = await _next_line()
+    if line is _EOF_SENTINEL:
+      raise EOFError
+    assert isinstance(line, str)
+    return line.rstrip('\n')
+
   next_message = None
   resume_invocation_id = None
   while True:
     if next_message is None:
-      query = input('[user]: ')
+      if not reload_agents or reload_event is None:
+        query = input('[user]: ')
+      else:
+        input_task = asyncio.create_task(_next_line())
+        reload_task = asyncio.create_task(reload_event.wait())
+        done, pending_tasks = await asyncio.wait(
+            [input_task, reload_task], return_when=asyncio.FIRST_COMPLETED
+        )
+
+        if input_task in done:
+          reload_task.cancel()
+          raw_input = input_task.result()
+          if raw_input is _EOF_SENTINEL:
+            break
+          assert isinstance(raw_input, str)
+          query = raw_input.rstrip('\n')
+          if reload_event.is_set():
+            reload_event.clear()
+            await _handle_reload()
+        else:
+          input_task.cancel()
+          reload_event.clear()
+
+          await _handle_reload()
+
+          _prompt_user(new_line=True)
+          continue
+
       if not query or not query.strip():
+        if reload_agents:
+          _prompt_user()
         continue
-      if query == 'exit':
+      if query.strip() == 'exit':
         break
       next_message = types.Content(role='user', parts=[types.Part(text=query)])
 
@@ -251,6 +421,8 @@ async def run_interactively(
       )
       next_message = None
       resume_invocation_id = None
+      if reload_agents:
+        _prompt_user(new_line=True)
       continue
 
     next_message = None
@@ -263,11 +435,16 @@ async def run_interactively(
       # collect all responses into a single Content with multiple parts.
       parts: list[types.Part] = []
       for fc_id, fc_name, args in pending:
-        response_content = _prompt_for_function_call(fc_id, fc_name, args)
+        response_content = await _prompt_for_function_call(
+            fc_id, fc_name, args, _read_line
+        )
         if response_content.parts:
           parts.extend(response_content.parts)
       next_message = types.Content(role='user', parts=parts)
       resume_invocation_id = invocation_id
+
+    if reload_agents and next_message is None:
+      _prompt_user(new_line=True)
 
   await runner.close()
 
@@ -427,6 +604,7 @@ async def run_cli(
     timeout: Optional[str] = None,
     in_memory: bool = False,
     jsonl: bool = False,
+    reload_agents: bool = False,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
@@ -471,89 +649,126 @@ async def run_cli(
       default_llm_model=default_llm_model,
   )
 
-  # Helper function for printing events
-  if input_file:
-    session = await run_input_file(
-        app_name=session_app_name,
-        user_id=user_id,
-        agent_or_app=agent_or_app,
-        artifact_service=artifact_service,
-        session_service=session_service,
-        memory_service=memory_service,
-        credential_service=credential_service,
-        input_path=input_file,
-    )
-  elif saved_session_file:
-    # Load the saved session from file
-    with open(saved_session_file, 'r', encoding='utf-8') as f:
-      loaded_session = Session.model_validate_json(f.read())
-
-    # Create a new session in the service, copying state from the file
-    session = await session_service.create_session(
-        app_name=session_app_name,
-        user_id=user_id,
-        state=loaded_session.state if loaded_session else None,
+  observer = None
+  reload_event = None
+  agent_loader = None
+  if reload_agents:
+    agent_loader = AgentLoader(agents_dir=str(Path(agent_parent_dir).resolve()))
+    loop = asyncio.get_running_loop()
+    reload_event = asyncio.Event()
+    event_handler = _AgentReloadHandler(loop, reload_event)
+    observer = Observer()
+    if not agent_root.is_dir():
+      raise RuntimeError(
+          f'Agent root directory not found or is not a directory: {agent_root}'
+      )
+    watch_path = str(agent_root)
+    observer.schedule(event_handler, path=watch_path, recursive=True)
+    observer.start()
+    click.secho(
+        'Auto-reload enabled - watching for file changes in'
+        f' {agent_folder_name}...',
+        fg='green',
     )
 
-    # Append events from the file to the new session and display them
-    if loaded_session:
-      for event in loaded_session.events:
-        await session_service.append_event(session, mark_restored(event))
-        _print_event(event, jsonl=jsonl, session_id=session.id)
+  try:
+    # Helper function for printing events
+    if input_file:
+      session = await run_input_file(
+          app_name=session_app_name,
+          user_id=user_id,
+          agent_or_app=agent_or_app,
+          artifact_service=artifact_service,
+          session_service=session_service,
+          memory_service=memory_service,
+          credential_service=credential_service,
+          input_path=input_file,
+      )
+    elif saved_session_file:
+      # Load the saved session from file
+      with open(saved_session_file, 'r', encoding='utf-8') as f:
+        loaded_session = Session.model_validate_json(f.read())
 
-    await run_interactively(
-        agent_or_app,
-        artifact_service,
-        session,
-        session_service,
-        credential_service,
-        memory_service=memory_service,
-        timeout=timeout,
-        jsonl=jsonl,
-    )
-  else:
-    initial_state = None
-    if state_str:
-      try:
-        initial_state = json.loads(state_str)
-      except json.JSONDecodeError as e:
-        click.secho(f'Error: Invalid JSON for --state: {e}', fg='red', err=True)
-        return
-    session = await session_service.create_session(
-        app_name=session_app_name, user_id=user_id, state=initial_state
-    )
-    click.echo(f'Running agent {agent_or_app.name}, type exit to exit.')
-    await run_interactively(
-        agent_or_app,
-        artifact_service,
-        session,
-        session_service,
-        credential_service,
-        memory_service=memory_service,
-        timeout=timeout,
-        jsonl=jsonl,
-    )
+      # Create a new session in the service, copying state from the file
+      session = await session_service.create_session(
+          app_name=session_app_name,
+          user_id=user_id,
+          state=loaded_session.state if loaded_session else None,
+      )
 
-  if save_session:
-    session_id = session_id or input('Session ID to save: ')
-    session_path = agent_root / f'{session_id}.session.json'
+      # Append events from the file to the new session and display them
+      if loaded_session:
+        for event in loaded_session.events:
+          await session_service.append_event(session, mark_restored(event))
+          _print_event(event, jsonl=jsonl, session_id=session.id)
 
-    # Fetch the session again to get all the details.
-    saved_session = await session_service.get_session(
-        app_name=session.app_name,
-        user_id=session.user_id,
-        session_id=session.id,
-    )
-    if saved_session is None:
-      raise ValueError(f'Session {session.id} not found; cannot save it.')
-    session_path.write_text(
-        public_session(saved_session).model_dump_json(
-            indent=2, exclude_none=True, by_alias=True
-        ),
-        encoding='utf-8',
-    )
+      await run_interactively(
+          agent_or_app,
+          artifact_service,
+          session,
+          session_service,
+          credential_service,
+          memory_service=memory_service,
+          timeout=timeout,
+          jsonl=jsonl,
+          reload_agents=reload_agents,
+          reload_event=reload_event,
+          agent_loader=agent_loader,
+          agent_folder_name=agent_folder_name,
+      )
+    else:
+      initial_state = None
+      if state_str:
+        try:
+          initial_state = json.loads(state_str)
+        except json.JSONDecodeError as e:
+          click.secho(
+              f'Error: Invalid JSON for --state: {e}', fg='red', err=True
+          )
+          return
+      session = await session_service.create_session(
+          app_name=session_app_name, user_id=user_id, state=initial_state
+      )
+      click.echo(f'Running agent {agent_or_app.name}, type exit to exit.')
+      await run_interactively(
+          agent_or_app,
+          artifact_service,
+          session,
+          session_service,
+          credential_service,
+          memory_service=memory_service,
+          timeout=timeout,
+          jsonl=jsonl,
+          reload_agents=reload_agents,
+          reload_event=reload_event,
+          agent_loader=agent_loader,
+          agent_folder_name=agent_folder_name,
+      )
 
-    print('Session saved to', session_path)
+    if save_session:
+      session_id = session_id or input('Session ID to save: ')
+      session_path = agent_root / f'{session_id}.session.json'
+
+      # Fetch the session again to get all the details.
+      saved_session = await session_service.get_session(
+          app_name=session.app_name,
+          user_id=session.user_id,
+          session_id=session.id,
+      )
+      if saved_session is None:
+        raise ValueError(f'Session {session.id} not found; cannot save it.')
+      session_path.write_text(
+          public_session(saved_session).model_dump_json(
+              indent=2, exclude_none=True, by_alias=True
+          ),
+          encoding='utf-8',
+      )
+
+      print('Session saved to', session_path)
+  finally:
+    if observer:
+      observer.stop()
+      observer.join()
 
 
 def _parse_timeout(timeout_str: str) -> float:
