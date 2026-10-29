@@ -15,7 +15,10 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
+from typing import cast
+from typing import Protocol
 
 from google.adk.runners import Runner
 from google.genai import types
@@ -30,6 +33,19 @@ except ImportError as e:
   ) from e
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_SESSION_ID_UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def _sanitize_session_id(value: str) -> str:
+  """Converts Slack identifiers into ADK session-id-safe strings."""
+  return _SESSION_ID_UNSAFE_CHARS.sub("_", value)
+
+
+class _SocketModeHandler(Protocol):
+
+  async def start_async(self) -> None:
+    ...
 
 
 class SlackRunner:
@@ -73,8 +89,12 @@ class SlackRunner:
     if not text or not user_id or not channel_id:
       return
 
-    # In Slack, we can use the channel_id (and optionally thread_ts) as a session ID.
-    session_id = f"{channel_id}-{thread_ts}" if thread_ts else channel_id
+    # In Slack, we can use the channel_id (and optionally thread_ts) as a
+    # session ID. Slack timestamps contain "." but managed session services only
+    # accept letters, numbers, "_" and "-".
+    session_id = _sanitize_session_id(
+        f"{channel_id}-{thread_ts}" if thread_ts else channel_id
+    )
 
     new_message = types.Content(role="user", parts=[types.Part(text=text)])
 
@@ -119,5 +139,8 @@ class SlackRunner:
 
   async def start(self, app_token: str) -> None:
     """Starts the Slack app using Socket Mode."""
-    handler = AsyncSocketModeHandler(self.slack_app, app_token)
+    handler = cast(
+        _SocketModeHandler,
+        AsyncSocketModeHandler(self.slack_app, app_token),
+    )
     await handler.start_async()

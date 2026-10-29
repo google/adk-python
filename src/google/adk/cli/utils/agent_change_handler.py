@@ -17,22 +17,38 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import cast
+from typing import Protocol
+from typing import runtime_checkable
+from typing import TYPE_CHECKING
 import warnings
 
 from watchdog.events import FileSystemEventHandler
 
-from .agent_loader import AgentLoader
 from .agent_loader import is_single_agent_directory
 from .shared_value import SharedValue
 
+if TYPE_CHECKING:
+  from watchdog.events import DirModifiedEvent
+  from watchdog.events import FileModifiedEvent
+
+  from .base_agent_loader import BaseAgentLoader
+
 logger = logging.getLogger("google_adk." + __name__)
+
+
+@runtime_checkable
+class _CachingAgentLoader(Protocol):
+
+  def remove_agent_from_cache(self, agent_name: str) -> None:
+    ...
 
 
 class AgentChangeEventHandler(FileSystemEventHandler):
 
   def __init__(
       self,
-      agent_loader: AgentLoader,
+      agent_loader: BaseAgentLoader,
       runners_to_clean: set[str],
       current_app_name_ref: SharedValue[str] | None = None,
       agents_dir: str | None = None,
@@ -55,19 +71,19 @@ class AgentChangeEventHandler(FileSystemEventHandler):
           stacklevel=2,
       )
 
-  def on_modified(self, event):
-    if not event.src_path.endswith((".py", ".yaml", ".yml")):
+  def on_modified(self, event: DirModifiedEvent | FileModifiedEvent) -> None:
+    # The observer watches a str path, so watchdog reports str paths.
+    src_path = cast(str, event.src_path)
+    if not src_path.endswith((".py", ".yaml", ".yml")):
       return
-    logger.info("Change detected in agents directory: %s", event.src_path)
+    logger.info("Change detected in agents directory: %s", src_path)
     if self.agents_dir is None:
       if self.current_app_name_ref is not None:
-        self.agent_loader.remove_agent_from_cache(
-            self.current_app_name_ref.value
-        )
+        self._remove_agent_from_cache(self.current_app_name_ref.value)
         self.runners_to_clean.add(self.current_app_name_ref.value)
       return
 
-    file_path = Path(event.src_path).resolve()
+    file_path = Path(src_path).resolve()
     try:
       rel_path = file_path.relative_to(self.agents_dir)
     except ValueError:
@@ -90,5 +106,10 @@ class AgentChangeEventHandler(FileSystemEventHandler):
           agent_names.append(top_level_name)
 
     for agent_name in agent_names:
-      self.agent_loader.remove_agent_from_cache(agent_name)
+      self._remove_agent_from_cache(agent_name)
       self.runners_to_clean.add(agent_name)
+
+  def _remove_agent_from_cache(self, agent_name: str) -> None:
+    # Loaders that keep no cache are reloaded through runners_to_clean alone.
+    if isinstance(self.agent_loader, _CachingAgentLoader):
+      self.agent_loader.remove_agent_from_cache(agent_name)

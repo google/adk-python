@@ -20,7 +20,6 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext as BaseInvocationContext
 from google.adk.events.event import Event
-from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.workflow import START
@@ -28,6 +27,7 @@ from google.adk.workflow._workflow import Workflow
 from google.genai import types
 import pytest
 
+from .workflow_testing_utils import create_runner
 from .workflow_testing_utils import InputCapturingNode
 from .workflow_testing_utils import simplify_events_with_node
 
@@ -84,6 +84,31 @@ async def test_base_agent_as_node_run():
   assert ctx.event_author == 'sub_agent'
 
 
+class _PresetPathAgent(BaseAgent):
+
+  async def _run_async_impl(
+      self, ctx: BaseInvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    yield Event(author=self.name, node_path='custom/existing@1')
+
+
+@pytest.mark.asyncio
+async def test_base_agent_as_node_keeps_preset_node_path():
+  """An agent's own event that already has a node path keeps it."""
+  agent = _PresetPathAgent(name='preset_agent')
+  session = Session(app_name='test', user_id='user', id='session')
+  ic = BaseInvocationContext(
+      invocation_id='inv',
+      session=session,
+      session_service=InMemorySessionService(),
+  )
+  ctx = Context(ic, node_path='wf')
+
+  events = [e async for e in agent.run(ctx=ctx, node_input=None)]
+
+  assert events[0].node_info.path == 'custom/existing@1'
+
+
 @pytest.mark.asyncio
 async def test_run_async_with_agent_nodes(request: pytest.FixtureRequest):
   """BaseAgent nodes emit content events through the workflow."""
@@ -97,7 +122,7 @@ async def test_run_async_with_agent_nodes(request: pytest.FixtureRequest):
       ],
   )
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   msg = types.Content(parts=[types.Part(text='start')], role='user')
@@ -128,7 +153,7 @@ async def test_run_async_with_agent_node_piping_data(
       ],
   )
   ss = InMemorySessionService()
-  runner = Runner(app_name='test', node=wf, session_service=ss)
+  runner = create_runner(app_name='test', node=wf, session_service=ss)
   session = await ss.create_session(app_name='test', user_id='u')
 
   msg = types.Content(parts=[types.Part(text='start')], role='user')

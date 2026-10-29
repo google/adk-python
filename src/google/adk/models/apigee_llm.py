@@ -41,6 +41,7 @@ from typing_extensions import override
 from ..utils import _json_utils
 from ..utils import streaming_utils
 from ..utils._event_loop_cache import PerLoopCachedProperty
+from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.env_utils import is_enterprise_mode_enabled
 from .google_llm import Gemini
 from .llm_response import LlmResponse
@@ -241,7 +242,7 @@ class ApigeeLlm(Gemini):
     """Provides the completions HTTP client."""
     return CompletionsHTTPClient(
         base_url=self._require_proxy_url(),
-        headers=self._merge_tracking_headers(self._custom_headers),
+        headers=merge_tracking_headers(self._custom_headers),
         retry_options=self.retry_options,
     )
 
@@ -295,7 +296,7 @@ class ApigeeLlm(Gemini):
     http_options = types.HttpOptions(
         api_version=self._api_version or None,
         base_url=self._require_proxy_url(),
-        headers=self._merge_tracking_headers(self._custom_headers),
+        headers=merge_tracking_headers(self._custom_headers),
         retry_options=self.retry_options,
     )
 
@@ -820,10 +821,16 @@ class CompletionsHTTPClient:
             _function_response_media_content_parts(part.function_response)
         )
     if function_responses:
-      if response_media_parts:
+      # Any other parts in the same content (e.g. text the user sent with the
+      # tool result) cannot go in a tool-role message either, so they follow
+      # the tool results together with the media.
+      follow_up_parts = response_media_parts + content_parts
+      if len(follow_up_parts) == 1 and follow_up_parts[0]['type'] == 'text':
         function_responses.append(
-            {'role': 'user', 'content': response_media_parts}
+            {'role': 'user', 'content': follow_up_parts[0]['text']}
         )
+      elif follow_up_parts:
+        function_responses.append({'role': 'user', 'content': follow_up_parts})
       return function_responses
 
     message: dict[str, Any] = {'role': role}
@@ -1008,6 +1015,7 @@ class ChatCompletionsResponseHandler:
     self.content_parts = ''
     self.tool_call_parts: dict[int, types.Part] = {}
     self._tool_call_deltas: dict[int, list[str]] = {}
+    self._last_tool_call_index: int | None = None
     self._tool_call_trackers: dict[int, streaming_utils._JsonPathTracker] = {}
     self.role = ''
     self.streaming_complete = False
@@ -1304,6 +1312,30 @@ class ChatCompletionsResponseHandler:
       parts.append(part)
     return parts
 
+  def _infer_tool_call_index(
+      self, tool_call: dict[str, Any], is_streaming: bool
+  ) -> int:
+    """Picks the slot of a tool call that arrives without an index.
+
+    A complete call (non-streaming, or a streamed call that opens with a new
+    id or a function name) gets a new slot. A streamed fragment that carries
+    neither continues the call resolved last.
+    """
+    next_index = len(self.tool_call_parts)
+    if not is_streaming:
+      return next_index
+    tool_call_id = tool_call.get('id')
+    if tool_call_id:
+      for index, part in self.tool_call_parts.items():
+        if part.function_call and part.function_call.id == tool_call_id:
+          return index
+      return next_index
+    if tool_call.get('function', {}).get('name'):
+      return next_index
+    if self._last_tool_call_index is not None:
+      return self._last_tool_call_index
+    return max(self.tool_call_parts, default=0)
+
   def _upsert_tool_call(
       self, tool_call: dict[str, Any], is_streaming: bool = False
   ) -> types.Part:
@@ -1322,9 +1354,8 @@ class ChatCompletionsResponseHandler:
     """
     index = tool_call.get('index')
     if index is None:
-      # If index is not provided, we might be in a non-streaming response.
-      # We just append it as a new tool call.
-      index = len(self.tool_call_parts)
+      index = self._infer_tool_call_index(tool_call, is_streaming)
+    self._last_tool_call_index = index
 
     if index not in self.tool_call_parts:
       self.tool_call_parts[index] = types.Part(

@@ -27,10 +27,8 @@ from typing import Optional
 
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.sessions.base_session_service import BaseSessionService
-from google.adk.utils.feature_decorator import experimental
 
 
-@experimental
 class CachePerformanceAnalyzer:
   """Analyzes cache performance through event history."""
 
@@ -148,11 +146,15 @@ class CachePerformanceAnalyzer:
         total_cached_tokens / total_requests if total_requests > 0 else 0.0
     )
 
-    invocations_used = [
-        c.invocations_used
-        for c in cache_history
-        if c.invocations_used is not None
-    ]
+    # Each response carries the cumulative counter for its cache, not an
+    # additional invocation count. Keep one total per cache instance.
+    cache_invocations: dict[str, int] = {}
+    for cache in cache_history:
+      if cache.cache_name is not None and cache.invocations_used is not None:
+        cache_invocations[cache.cache_name] = max(
+            cache_invocations.get(cache.cache_name, 0), cache.invocations_used
+        )
+    invocations_used = list(cache_invocations.values())
     total_invocations = sum(invocations_used)
 
     return {

@@ -21,9 +21,9 @@ from collections.abc import Sequence
 from typing import Any
 from typing import TYPE_CHECKING
 
-from opentelemetry import context as context_api
 from typing_extensions import override
 
+from ._callback_metadata import CallbackInfo
 from .readonly_context import ReadonlyContext
 
 if TYPE_CHECKING:
@@ -77,12 +77,11 @@ def _derive_node_path(
   # Fallback: Reconstruct parent_path from static parent_agent Tree
   # if parent_path is missing during multi-turn session resumption.
   from ..agents.base_agent import BaseAgent
-  from ..events._node_path_builder import _NodePathBuilder
+  from ..events._node_path_builder import join_node_path
 
   derived_run_id = run_id or '1'
 
   if not parent_path and isinstance(node, BaseAgent) and node.parent_agent:
-    path_builder = _NodePathBuilder([])
     curr: BaseAgent | None = node.parent_agent
     parent_agents: list[BaseAgent] = []
     depth = 0
@@ -90,9 +89,9 @@ def _derive_node_path(
       parent_agents.insert(0, curr)
       curr = curr.parent_agent
       depth += 1
+    parent_path = ''
     for agent in parent_agents:
-      path_builder = path_builder.append(agent.name, '1')
-    parent_path = str(path_builder)
+      parent_path = join_node_path(parent_path, agent.name, '1')
 
   # Root contexts have no node name and no parent path. Return an empty path
   # to ensure they are correctly identified as the root of the execution
@@ -100,14 +99,8 @@ def _derive_node_path(
   if not node_name and not parent_path:
     return '', derived_run_id
 
-  base_path_builder = (
-      _NodePathBuilder.from_string(parent_path)
-      if parent_path
-      else _NodePathBuilder([])
-  )
-
-  derived_node_path = str(
-      base_path_builder.append(node_name or '', derived_run_id)
+  derived_node_path = join_node_path(
+      parent_path, node_name or '', derived_run_id
   )
   return derived_node_path, derived_run_id
 
@@ -120,6 +113,7 @@ class Context(ReadonlyContext):
   """
 
   _workflow_scheduler: DynamicNodeScheduler | None = None
+  _callback_info: CallbackInfo | None = None
 
   def __init__(
       self,
@@ -185,6 +179,8 @@ class Context(ReadonlyContext):
 
     self._event_author = parent_ctx.event_author if parent_ctx else ''
 
+    from opentelemetry import context as context_api
+
     self._telemetry_context = TelemetryContext(
         otel_context=context_api.get_current()
     )
@@ -192,6 +188,7 @@ class Context(ReadonlyContext):
     # Tool Execution
     self._function_call_id = function_call_id
     self._tool_confirmation = tool_confirmation
+    self._callback_info: CallbackInfo | None = None
 
     # Workflow Execution
     effective_node_path = node_path
@@ -255,6 +252,11 @@ class Context(ReadonlyContext):
     self._function_call_id = value
 
   @property
+  def callback_info(self) -> CallbackInfo | None:
+    """Returns metadata for the callback currently being invoked, if any."""
+    return self._callback_info
+
+  @property
   def branch(self) -> str | None:
     """The branch path of the current invocation context."""
     return self._invocation_context.branch
@@ -296,6 +298,7 @@ class Context(ReadonlyContext):
   @property
   def actions(self) -> EventActions:
     """The event actions for the current context."""
+    self._state._record_nested_writes()  # pylint: disable=protected-access
     return self._event_actions
 
   @property
@@ -458,19 +461,22 @@ class Context(ReadonlyContext):
         callable that can be built into a node.
       node_input: The input data to be passed to the dynamically executed node.
         Defaults to None.
-      use_as_output: If True, the dynamic node's output is used as the
-        calling node's output. The calling node's own output event is
-        suppressed to avoid duplication.
-      run_id: An optional custom run ID for the dynamic node execution.
-        If not provided, a default run ID is generated. Useful for
-        correlating events across runs.
+      use_as_output: If True, the dynamic node's output is used as the calling
+        node's output. The calling node's own output event is suppressed to
+        avoid duplication, and non-tool output events from the child are
+        published on the outermost claiming ancestor's branch (so with
+        ``use_sub_branch`` tool calls, tool responses such as ``finish_task``,
+        and intermediate events stay isolated on the sub-branch).
+      run_id: An optional custom run ID for the dynamic node execution. If not
+        provided, a default run ID is generated. Useful for correlating events
+        across runs.
       use_sub_branch: If True, the dynamic node will be executed in a sub-branch
         to isolate its state and events from the main branch.
       override_branch: An optional branch to use instead of parent's branch.
       override_isolation_scope: An optional isolation scope to use instead of
         the parent's scope.
-      raise_on_wait: If True, raises NodeInterruptedError when the child node
-        is WAITING instead of returning None.
+      raise_on_wait: If True, raises NodeInterruptedError when the child node is
+        WAITING instead of returning None.
 
     Returns:
       The output of the dynamically executed node, once it finishes executing.
@@ -837,6 +843,27 @@ class Context(ReadonlyContext):
         app_name=self._invocation_context.app_name,
         user_id=self._invocation_context.user_id,
         query=query,
+    )
+
+  async def delete_memory(
+      self,
+      memory_id: str | None = None,
+  ) -> None:
+    """Removes a memory item by its id for the current user.
+
+    Args:
+      memory_id: The ID of the memory entry to delete.
+
+    Raises:
+      ValueError: If memory service is not available.
+    """
+    service = self._require_memory_service(
+        'Cannot delete memory: memory service is not available.'
+    )
+    await service.delete_memory(
+        app_name=self._invocation_context.app_name,
+        user_id=self._invocation_context.user_id,
+        memory_id=memory_id,
     )
 
   # ============================================================================

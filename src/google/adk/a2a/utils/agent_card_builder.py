@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Dict
 from typing import List
+from typing import TypeGuard
 
 from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
@@ -30,6 +31,7 @@ from ...agents.llm_agent import LlmAgent
 from ...agents.loop_agent import LoopAgent
 from ...agents.parallel_agent import ParallelAgent
 from ...agents.sequential_agent import SequentialAgent
+from ...tools.base_tool import BaseTool
 from ...tools.example_tool import ExampleTool
 from ...workflow import BaseNode
 from ...workflow import START
@@ -37,6 +39,12 @@ from ...workflow import Workflow
 from ..experimental import a2a_experimental
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+# Type alias for skill security requirements as defined by the A2A spec.
+# Each dict maps a security scheme name to a list of required scopes.
+# The list represents a logical OR of requirement objects.
+_SkillSecurity = list[dict[str, list[str]]]
+_SKILL_SECURITY_METADATA_KEY = 'security'
 
 
 @a2a_experimental
@@ -46,6 +54,13 @@ class AgentCardBuilder:
   This class provides functionality to convert ADK agents into A2A agent cards,
   including extracting skills, capabilities, and metadata from various agent
   types.
+
+  Skill-level security requirements can be set across all generated skills via
+  ``default_skill_security`` (leaving top-level card security unset so
+  individual tools can override or clear requirements via
+  ``BaseTool.custom_metadata['security']`` using the A2A requirement list shape
+  ``list[dict[str, list[str]]]``). Security schemes and skill security populate
+  card metadata only and are not enforced at runtime.
   """
 
   def __init__(
@@ -58,6 +73,7 @@ class AgentCardBuilder:
       provider: AgentProvider | None = None,
       agent_version: str | None = None,
       security_schemes: Dict[str, SecurityScheme] | None = None,
+      default_skill_security: list[dict[str, list[str]]] | None = None,
   ):
     if not agent:
       raise ValueError('Agent cannot be None or empty.')
@@ -66,6 +82,13 @@ class AgentCardBuilder:
           'AgentCardBuilder requires a BaseAgent or Workflow, got '
           f'{type(agent).__name__}.'
       )
+    if default_skill_security is not None and not _is_skill_security(
+        default_skill_security
+    ):
+      raise ValueError(
+          'default_skill_security must be a list[dict[str, list[str]]], got'
+          f' {default_skill_security!r}'
+      )
 
     self._agent = agent
     self._rpc_url = rpc_url or 'http://localhost:80/a2a'
@@ -73,14 +96,23 @@ class AgentCardBuilder:
     self._doc_url = doc_url
     self._provider = provider
     self._security_schemes = security_schemes
+    self._default_skill_security = default_skill_security
     self._agent_version = agent_version or '0.0.1'
 
   async def build(self) -> AgentCard:
     """Build and return the complete agent card."""
     try:
-      primary_skills = await _build_primary_skills(self._agent)
-      sub_agent_skills = await _build_sub_agent_skills(self._agent)
+      primary_skills = await _build_primary_skills(
+          self._agent, self._default_skill_security
+      )
+      sub_agent_skills = await _build_sub_agent_skills(
+          self._agent, self._default_skill_security
+      )
       all_skills = primary_skills + sub_agent_skills
+
+      _validate_skill_security_references(
+          all_skills, self._security_schemes or {}
+      )
 
       return _compat.build_agent_card(
           name=self._agent.name,
@@ -115,15 +147,21 @@ def _iter_child_nodes(agent: BaseNode) -> List[BaseNode]:
   return []
 
 
-async def _build_primary_skills(agent: BaseNode) -> List[AgentSkill]:
+async def _build_primary_skills(
+    agent: BaseNode,
+    default_skill_security: _SkillSecurity | None = None,
+) -> List[AgentSkill]:
   """Build skills for any node type."""
   if isinstance(agent, LlmAgent):
-    return await _build_llm_agent_skills(agent)
+    return await _build_llm_agent_skills(agent, default_skill_security)
   else:
-    return await _build_non_llm_agent_skills(agent)
+    return await _build_non_llm_agent_skills(agent, default_skill_security)
 
 
-async def _build_llm_agent_skills(agent: LlmAgent) -> List[AgentSkill]:
+async def _build_llm_agent_skills(
+    agent: LlmAgent,
+    default_skill_security: _SkillSecurity | None = None,
+) -> List[AgentSkill]:
   """Build skills for LLM agent."""
   skills = []
 
@@ -134,7 +172,7 @@ async def _build_llm_agent_skills(agent: LlmAgent) -> List[AgentSkill]:
   agent_examples = await _extract_examples_from_agent(agent)
 
   skills.append(
-      AgentSkill(
+      _compat.build_agent_skill(
           id=agent.name,
           name='model',
           description=agent_description,
@@ -142,34 +180,40 @@ async def _build_llm_agent_skills(agent: LlmAgent) -> List[AgentSkill]:
           input_modes=_get_input_modes(agent),
           output_modes=_get_output_modes(agent),
           tags=['llm'],
+          security=default_skill_security,
       )
   )
 
   # 2. Tool skills
   if agent.tools:
-    tool_skills = await _build_tool_skills(agent)
+    tool_skills = await _build_tool_skills(agent, default_skill_security)
     skills.extend(tool_skills)
 
   # 3. Planner skill
   if agent.planner:
-    skills.append(_build_planner_skill(agent))
+    skills.append(_build_planner_skill(agent, default_skill_security))
 
   # 4. Code executor skill
   if agent.code_executor:
-    skills.append(_build_code_executor_skill(agent))
+    skills.append(_build_code_executor_skill(agent, default_skill_security))
 
   return skills
 
 
-async def _build_sub_agent_skills(agent: BaseNode) -> List[AgentSkill]:
+async def _build_sub_agent_skills(
+    agent: BaseNode,
+    default_skill_security: _SkillSecurity | None = None,
+) -> List[AgentSkill]:
   """Build skills for all child nodes (sub-agents or workflow nodes)."""
   sub_agent_skills = []
   for sub_agent in _iter_child_nodes(agent):
     try:
-      sub_skills = await _build_primary_skills(sub_agent)
+      sub_skills = await _build_primary_skills(
+          sub_agent, default_skill_security
+      )
       for skill in sub_skills:
         # Create a new skill instance to avoid modifying original if shared
-        aggregated_skill = AgentSkill(
+        aggregated_skill = _compat.build_agent_skill(
             id=f'{sub_agent.name}_{skill.id}',
             name=f'{sub_agent.name}: {skill.name}',
             description=skill.description,
@@ -177,6 +221,7 @@ async def _build_sub_agent_skills(agent: BaseNode) -> List[AgentSkill]:
             input_modes=skill.input_modes,
             output_modes=skill.output_modes,
             tags=[f'sub_agent:{sub_agent.name}'] + list(skill.tags or []),
+            security=_compat.get_skill_security(skill),
         )
         sub_agent_skills.append(aggregated_skill)
     except Exception as e:
@@ -189,7 +234,10 @@ async def _build_sub_agent_skills(agent: BaseNode) -> List[AgentSkill]:
   return sub_agent_skills
 
 
-async def _build_tool_skills(agent: LlmAgent) -> List[AgentSkill]:
+async def _build_tool_skills(
+    agent: LlmAgent,
+    default_skill_security: _SkillSecurity | None = None,
+) -> List[AgentSkill]:
   """Build skills for agent tools."""
   tool_skills = []
   canonical_tools = await agent.canonical_tools()
@@ -205,8 +253,12 @@ async def _build_tool_skills(agent: LlmAgent) -> List[AgentSkill]:
         else tool.__class__.__name__
     )
 
+    # Use tool-level security from custom_metadata if available,
+    # otherwise fall back to default_skill_security.
+    tool_security = _get_tool_security(tool, default_skill_security)
+
     tool_skills.append(
-        AgentSkill(
+        _compat.build_agent_skill(
             id=f'{agent.name}-{tool_name}',
             name=tool_name,
             description=getattr(tool, 'description', f'Tool: {tool_name}'),
@@ -214,15 +266,19 @@ async def _build_tool_skills(agent: LlmAgent) -> List[AgentSkill]:
             input_modes=None,
             output_modes=None,
             tags=['llm', 'tools'],
+            security=tool_security,
         )
     )
 
   return tool_skills
 
 
-def _build_planner_skill(agent: LlmAgent) -> AgentSkill:
+def _build_planner_skill(
+    agent: LlmAgent,
+    default_skill_security: _SkillSecurity | None = None,
+) -> AgentSkill:
   """Build planner skill for LLM agent."""
-  return AgentSkill(
+  return _compat.build_agent_skill(
       id=f'{agent.name}-planner',
       name='planning',
       description='Can think about the tasks to do and make plans',
@@ -230,12 +286,16 @@ def _build_planner_skill(agent: LlmAgent) -> AgentSkill:
       input_modes=None,
       output_modes=None,
       tags=['llm', 'planning'],
+      security=default_skill_security,
   )
 
 
-def _build_code_executor_skill(agent: LlmAgent) -> AgentSkill:
+def _build_code_executor_skill(
+    agent: LlmAgent,
+    default_skill_security: _SkillSecurity | None = None,
+) -> AgentSkill:
   """Build code executor skill for LLM agent."""
-  return AgentSkill(
+  return _compat.build_agent_skill(
       id=f'{agent.name}-code-executor',
       name='code-execution',
       description='Can execute code',
@@ -243,10 +303,14 @@ def _build_code_executor_skill(agent: LlmAgent) -> AgentSkill:
       input_modes=None,
       output_modes=None,
       tags=['llm', 'code_execution'],
+      security=default_skill_security,
   )
 
 
-async def _build_non_llm_agent_skills(agent: BaseNode) -> List[AgentSkill]:
+async def _build_non_llm_agent_skills(
+    agent: BaseNode,
+    default_skill_security: _SkillSecurity | None = None,
+) -> List[AgentSkill]:
   """Build skills for non-LLM agents and workflow nodes."""
   skills = []
 
@@ -259,7 +323,7 @@ async def _build_non_llm_agent_skills(agent: BaseNode) -> List[AgentSkill]:
   agent_name = _get_agent_skill_name(agent)
 
   skills.append(
-      AgentSkill(
+      _compat.build_agent_skill(
           id=agent.name,
           name=agent_name,
           description=agent_description,
@@ -267,12 +331,15 @@ async def _build_non_llm_agent_skills(agent: BaseNode) -> List[AgentSkill]:
           input_modes=_get_input_modes(agent),
           output_modes=_get_output_modes(agent),
           tags=[agent_type],
+          security=default_skill_security,
       )
   )
 
   # 2. Orchestration skill (for agents/workflows with child nodes)
   if _iter_child_nodes(agent):
-    orchestration_skill = _build_orchestration_skill(agent, agent_type)
+    orchestration_skill = _build_orchestration_skill(
+        agent, agent_type, default_skill_security
+    )
     if orchestration_skill:
       skills.append(orchestration_skill)
 
@@ -280,7 +347,9 @@ async def _build_non_llm_agent_skills(agent: BaseNode) -> List[AgentSkill]:
 
 
 def _build_orchestration_skill(
-    agent: BaseNode, agent_type: str
+    agent: BaseNode,
+    agent_type: str,
+    default_skill_security: _SkillSecurity | None = None,
 ) -> AgentSkill | None:
   """Build orchestration skill for agents/workflows with child nodes."""
   sub_agent_descriptions = []
@@ -291,7 +360,7 @@ def _build_orchestration_skill(
   if not sub_agent_descriptions:
     return None
 
-  return AgentSkill(
+  return _compat.build_agent_skill(
       id=f'{agent.name}-sub-agents',
       name='sub-agents',
       description='Orchestrates: ' + '; '.join(sub_agent_descriptions),
@@ -299,7 +368,90 @@ def _build_orchestration_skill(
       input_modes=None,
       output_modes=None,
       tags=[agent_type, 'orchestration'],
+      security=default_skill_security,
   )
+
+
+def _is_skill_security(value: object) -> TypeGuard[_SkillSecurity]:
+  """Returns whether ``value`` matches ``list[dict[str, list[str]]]``."""
+  return isinstance(value, list) and all(
+      isinstance(req, dict)
+      and all(
+          isinstance(scheme, str)
+          and isinstance(scopes, list)
+          and all(isinstance(scope, str) for scope in scopes)
+          for scheme, scopes in req.items()
+      )
+      for req in value
+  )
+
+
+def _get_tool_security(
+    tool: object,
+    default_skill_security: _SkillSecurity | None = None,
+) -> _SkillSecurity | None:
+  """Get security requirements for a tool.
+
+  Checks the tool's custom_metadata for a 'security' key matching the A2A
+  skill-security shape ``list[dict[str, list[str]]]``. If present and valid,
+  uses that as the tool-specific security requirement. Otherwise falls back to
+  ``default_skill_security``.
+
+  The expected format in custom_metadata is:
+    {"security": [{"oauth2": ["scope1", "scope2"]}]}
+
+  Args:
+    tool: The tool to extract security from.
+    default_skill_security: Fallback security if the tool has none.
+
+  Returns:
+    The security requirements for this tool's skill, or None.
+  """
+  if (
+      isinstance(tool, BaseTool)
+      and tool.custom_metadata
+      and _SKILL_SECURITY_METADATA_KEY in tool.custom_metadata
+  ):
+    security = tool.custom_metadata[_SKILL_SECURITY_METADATA_KEY]
+    if _is_skill_security(security):
+      return security
+    logger.warning(
+        "Tool %r custom_metadata['security'] does not match"
+        ' list[dict[str, list[str]]]; ignoring and falling back to'
+        ' default_skill_security.',
+        getattr(tool, 'name', tool.__class__.__name__),
+    )
+  return default_skill_security
+
+
+def _validate_skill_security_references(
+    skills: list[AgentSkill],
+    security_schemes: dict[str, SecurityScheme],
+) -> None:
+  """Validate that skill security references match declared security schemes.
+
+  Logs a warning for any skill security requirement that references a scheme
+  name not present in the agent card's security_schemes.
+
+  Args:
+    skills: The list of skills to validate.
+    security_schemes: The declared security schemes on the agent card.
+  """
+  scheme_names = set(security_schemes.keys())
+  for skill in skills:
+    skill_security = _compat.get_skill_security(skill)
+    if not skill_security:
+      continue
+    for requirement in skill_security:
+      for ref_name in requirement:
+        if ref_name not in scheme_names:
+          logger.warning(
+              'Skill %r references security scheme %r which is not declared'
+              ' in security_schemes. Declared schemes: %s',
+              skill.id,
+              ref_name,
+              sorted(scheme_names),
+          )
 
 
 def _get_agent_type(agent: BaseNode) -> str:

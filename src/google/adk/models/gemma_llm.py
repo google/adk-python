@@ -252,10 +252,11 @@ class Gemma(GemmaFunctionCallingMixin, Gemini):
     """
     # print(f'{llm_request=}')
     model = llm_request.model
-    assert model is not None and model.startswith('gemma-'), (
-        f'Requesting a non-Gemma model ({model}) with the Gemma LLM'
-        ' is not supported.'
-    )
+    if model is None or not model.startswith('gemma-'):
+      raise ValueError(
+          f'Requesting a non-Gemma model ({model}) with the Gemma LLM'
+          ' is not supported.'
+      )
 
     async for response in super().generate_content_async(llm_request, stream):
       self._extract_function_calls_from_response(response)

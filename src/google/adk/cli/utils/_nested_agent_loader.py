@@ -20,6 +20,7 @@ import logging
 import os
 from pathlib import Path
 import sys
+from typing import cast
 from typing import Literal
 from typing import Optional
 from typing import Union
@@ -95,7 +96,8 @@ class NestedAgentLoader(AgentLoader):
   def list_agents(self) -> list[str]:
     """Lists all agents recursively across subdirectories (sorted alphabetically)."""
     if self._is_single_agent:
-      return [self._single_agent_name]
+      # Single-agent mode always sets the agent name.
+      return [cast(str, self._single_agent_name)]
     base_path = Path(self.agents_dir)
     try:
       if not base_path.exists() or not base_path.is_dir():

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+from ...utils._agent_mode import AgentMode
 from .._base_node import BaseNode
 from .._base_node import START
 from .._errors import GraphValidationError
@@ -196,7 +197,7 @@ def _validate_chat_agent_wiring(edges: list[Edge]) -> None:
     to_node = edge.to_node
     if (
         isinstance(to_node, LlmAgent)
-        and getattr(to_node, "mode", None) == "chat"
+        and getattr(to_node, "mode", None) == AgentMode.CHAT
     ):
       if edge.from_node.name != START.name:
         raise GraphValidationError(
@@ -207,6 +208,17 @@ def _validate_chat_agent_wiring(edges: list[Edge]) -> None:
             " from preceding nodes. Please change the agent's mode to"
             " 'single_turn'"
         )
+
+
+def _validate_node_outgoing_edges(
+    nodes: list[BaseNode], edges: list[Edge]
+) -> None:
+  """Lets each node check its own outgoing edges."""
+  outgoing: dict[int, list[Edge]] = {id(node): [] for node in nodes}
+  for edge in edges:
+    outgoing[id(edge.from_node)].append(edge)
+  for node in nodes:
+    node._validate_outgoing_edges(outgoing[id(node)])
 
 
 def _compute_terminal_nodes(
@@ -230,4 +242,5 @@ def validate_graph(nodes: list[BaseNode], edges: list[Edge]) -> set[str]:
   _detect_unconditional_cycles(edges, node_names)
   _validate_static_schemas(edges)
   _validate_chat_agent_wiring(edges)
+  _validate_node_outgoing_edges(nodes, edges)
   return _compute_terminal_nodes(nodes, edges)

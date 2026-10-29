@@ -30,12 +30,15 @@ from google.genai import types
 import pydantic
 from pydantic import BaseModel
 from pydantic import create_model
-from pydantic import fields as pydantic_fields
+from pydantic_core import PydanticUndefined
 
 from . import _function_parameter_parse_util
 from . import _function_tool_declarations
 from ..features import FeatureName
 from ..features import is_feature_enabled
+from ..utils._callable_utils import _is_routine
+from ..utils._callable_utils import get_callable_doc
+from ..utils._callable_utils import unwrap_callable
 from ..utils.variant_utils import GoogleLLMVariant
 from ._gemini_schema_util import _sanitize_schema_formats_for_gemini
 
@@ -80,9 +83,7 @@ def _get_fields_dict(func: Callable[..., Any]) -> _JsonSchema:
                   param.default
                   if param.default != inspect.Parameter.empty
                   # ! Need to use Undefined instead of None
-                  # pydantic re-exports this sentinel from pydantic_core but
-                  # does not declare it in pydantic.fields' public surface.
-                  else pydantic_fields.PydanticUndefined  # type: ignore[attr-defined]
+                  else PydanticUndefined
               ),
               # 3. Do not support parameter description for now.
               description=None,
@@ -217,11 +218,20 @@ def _get_return_type(func: Callable[..., Any]) -> types.Type:
   )
 
 
+def _get_legacy_callable_doc(func: Callable[..., Any]) -> str | None:
+  """Preserves raw __doc__ for routines, falling back to get_callable_doc."""
+  if _is_routine(func):
+    return func.__doc__
+  return get_callable_doc(func) or None
+
+
 def build_function_declaration(
     func: Union[Callable[..., Any], BaseModel],
     ignore_params: list[str] | None = None,
     variant: GoogleLLMVariant = GoogleLLMVariant.GEMINI_API,
 ) -> types.FunctionDeclaration:
+  # A BaseModel instance gets past inspect.signature only if it is callable.
+  func = cast(Callable[..., Any], func)
   # ========== Pydantic-based function tool declaration (new feature) ==========
   if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
     declaration = (
@@ -262,17 +272,28 @@ def build_function_declaration(
       if name not in ignore_params
   ]
   new_sig = signature.replace(parameters=new_params)
-  original = cast(FunctionType, func)
+  callable_func = func
+  original = cast(
+      FunctionType, unwrap_callable(callable_func, follow_wrapped=True)
+  )
   new_func = FunctionType(
       original.__code__,
       original.__globals__,
-      original.__name__,
+      _function_tool_declarations.get_callable_name(callable_func),
       original.__defaults__,
       original.__closure__,
   )
   setattr(new_func, '__signature__', new_sig)
-  new_func.__doc__ = original.__doc__
-  new_func.__annotations__ = original.__annotations__
+  new_func.__doc__ = _get_legacy_callable_doc(callable_func)
+  # Drop the ignored params' annotations too: get_type_hints resolves every
+  # annotation, so an ignored param (e.g. `tool_context`) typed with a
+  # TYPE_CHECKING-only import would otherwise raise NameError although it
+  # never reaches the schema.
+  new_func.__annotations__ = {
+      name: annotation
+      for name, annotation in original.__annotations__.items()
+      if name not in ignore_params
+  }
   return from_function_with_options(new_func, variant)
 
 
@@ -347,7 +368,9 @@ def from_function_with_options(
   parameters_properties: dict[str, types.Schema] = {}
   parameters_json_schema: dict[str, types.Schema] = {}
   try:
-    annotation_under_future = typing.get_type_hints(func)
+    annotation_under_future = typing.get_type_hints(
+        unwrap_callable(func, follow_wrapped=True)
+    )
   except TypeError:
     # This can happen if func is a mock object. A NameError is deliberately
     # not caught here: emptying the hints only turns its clear "name is not
@@ -412,7 +435,7 @@ def from_function_with_options(
 
   declaration = types.FunctionDeclaration(
       name=func_name,
-      description=func.__doc__,
+      description=_get_legacy_callable_doc(func),
   )
   if parameters_properties:
     declaration.parameters = types.Schema(
@@ -499,7 +522,9 @@ def from_function_with_options(
   )
   if isinstance(return_value.annotation, str):
     return_value = return_value.replace(
-        annotation=typing.get_type_hints(func)['return']
+        annotation=typing.get_type_hints(
+            unwrap_callable(func, follow_wrapped=True)
+        )['return']
     )
 
   response_schema: types.Schema | None = None

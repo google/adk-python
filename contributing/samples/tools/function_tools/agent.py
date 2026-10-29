@@ -14,10 +14,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 import os
 import random
+from typing import Any
 
 from google.adk.agents import Agent
+from google.adk.events import Event
 
 _counter = 0
 
@@ -52,7 +55,27 @@ def is_even(number: int) -> bool:
   return number % 2 == 0
 
 
+def check_prime(number: int) -> Generator[Event | dict[str, Any], None, None]:
+  """Checks whether a number is prime while streaming progress events.
+
+  Args:
+      number: The integer to test for primality.
+
+  Yields:
+      Intermediate progress events followed by the final primality result.
+  """
+  yield Event(message=f"Checking whether {number} is a prime number...")
+  if number < 2:
+    yield {"number": number, "is_prime": False}
+    return
+  for divisor in range(2, int(number**0.5) + 1):
+    if number % divisor == 0:
+      yield {"number": number, "is_prime": False, "divisor": divisor}
+      return
+  yield {"number": number, "is_prime": True}
+
+
 root_agent = Agent(
     name="function_tools",
-    tools=[generate_random_number, is_even],
+    tools=[generate_random_number, is_even, check_prime],
 )

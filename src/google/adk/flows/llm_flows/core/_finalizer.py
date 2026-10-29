@@ -16,12 +16,16 @@
 
 from __future__ import annotations
 
+import contextlib
+from typing import Any
 from typing import AsyncGenerator
+from typing import Iterator
 from typing import Optional
 
 from opentelemetry import trace
 
 from .. import functions
+from ....agents._callback_metadata import CallbackType
 from ....agents.callback_context import CallbackContext
 from ....agents.invocation_context import InvocationContext
 from ....agents.readonly_context import ReadonlyContext
@@ -32,8 +36,28 @@ from ....telemetry import _instrumentation
 from ....utils._callback_pipeline import _run_callbacks
 from ....utils._callback_pipeline import _stop_on_non_none
 from ....utils._callback_pipeline import _stop_on_truthy
+from ....utils._runner_utils import _stream_in_caller_scope
 from ....utils.context_utils import Aclosing
 from ._utils import as_llm_agent as _as_llm_agent
+
+
+@contextlib.contextmanager
+def _model_callback_context(
+    invocation_context: InvocationContext, model_response_event: Event
+) -> Iterator[CallbackContext]:
+  """Yields a callback context writing into the model response event's actions.
+
+  Reading ``actions`` on the way out moves a callback's write into a container
+  it read from the state into the delta, which nothing else does before the
+  event is persisted.
+  """
+  callback_context = CallbackContext(
+      invocation_context, event_actions=model_response_event.actions
+  )
+  try:
+    yield callback_context
+  finally:
+    _ = callback_context.actions
 
 
 def finalize_model_response_event(
@@ -142,51 +166,60 @@ async def handle_before_model_callback(
   """
   agent = _as_llm_agent(invocation_context)
 
-  callback_context = CallbackContext(
-      invocation_context, event_actions=model_response_event.actions
-  )
+  with _model_callback_context(
+      invocation_context, model_response_event
+  ) as callback_context:
+    # First run callbacks from the plugins.
+    callback_response = (
+        await invocation_context.plugin_manager.run_before_model_callback(
+            callback_context=callback_context,
+            llm_request=llm_request,
+        )
+    )
+    if callback_response:
+      return callback_response
 
-  # First run callbacks from the plugins.
-  callback_response = (
-      await invocation_context.plugin_manager.run_before_model_callback(
-          callback_context=callback_context,
-          llm_request=llm_request,
-      )
-  )
-  if callback_response:
-    return callback_response
-
-  # If no overrides are provided from the plugins, further run the canonical
-  # callbacks.
-  callback_response = await _run_callbacks(
-      agent.canonical_before_model_callbacks,  # type: ignore[arg-type]
-      _stop_on_truthy,
-      callback_context=callback_context,
-      llm_request=llm_request,
-  )
-  if callback_response:
-    return callback_response
-  return None
+    # If no overrides are provided from the plugins, further run the canonical
+    # callbacks.
+    callback_response = await _run_callbacks(
+        agent.canonical_before_model_callbacks,  # type: ignore[arg-type]
+        _stop_on_truthy,
+        callback_context=callback_context,
+        llm_request=llm_request,
+        callback_type=CallbackType.BEFORE_MODEL,
+    )
+    if callback_response:
+      return callback_response
+    return None
 
 
-def _inherit_unset_streaming_fields(
+def _inherit_unset_model_fields(
     original: LlmResponse, replacement: Optional[LlmResponse]
 ) -> Optional[LlmResponse]:
-  """Carries streaming-control fields from a replaced response.
+  """Carries model-owned fields from a replaced response.
 
   A callback replacement that leaves ``partial``/``turn_complete`` unset must
   not change the streaming semantics of the response it replaces. Otherwise
   every streamed delta looks final downstream: SSE clients render N final
   responses, ``Runner`` persists each delta as a separate session event, and
-  the live path can close its request queue early. An explicitly set value on
-  the replacement is always respected.
+  the live path can close its request queue early.
+
+  ``usage_metadata`` is carried the same way. It measures the model call
+  (prompt, candidate and cached token counts as billed by the provider), not
+  the content of the response, so replacing the content does not change it.
+  A replacement that leaves it unset would otherwise erase the call from
+  token accounting: the finalized ``Event`` copies only non-None fields, so
+  the persisted session event, the BigQuery analytics plugin and A2A
+  converters all see no usage for that call.
+
+  An explicitly set value on the replacement is always respected.
 
   Args:
     original: The response being replaced.
     replacement: The callback-provided response, if there is one.
 
   Returns:
-    The replacement, with unset streaming-control fields filled in, or None
+    The replacement, with unset model-owned fields filled in, or None
     when there is no replacement. A copy is returned only when a field
     actually needs filling, so explicitly complete replacements keep their
     identity.
@@ -198,11 +231,13 @@ def _inherit_unset_streaming_fields(
       replacement, LlmResponse
   ):
     return replacement
-  updates = {}
+  updates: dict[str, Any] = {}
   if replacement.partial is None and original.partial is not None:
     updates['partial'] = original.partial
   if replacement.turn_complete is None and original.turn_complete is not None:
     updates['turn_complete'] = original.turn_complete
+  if replacement.usage_metadata is None and original.usage_metadata is not None:
+    updates['usage_metadata'] = original.usage_metadata
   if updates:
     return replacement.model_copy(update=updates)
   return replacement
@@ -215,8 +250,9 @@ async def handle_after_model_callback(
 ) -> Optional[LlmResponse]:
   """Runs after-model callbacks (plugins then agent callbacks).
 
-  Also handles grounding metadata injection when google_search_agent is
-  among the agent's tools.
+  Also handles grounding metadata injection when a tool sets
+  ``propagate_grounding_metadata`` and ``temp:_adk_grounding_metadata``
+  is present on the session.
 
   Args:
     invocation_context: The invocation context.
@@ -238,7 +274,9 @@ async def handle_after_model_callback(
       tools = await agent.canonical_tools(readonly_context)
       invocation_context.canonical_tools_cache = tools
 
-    if not any(tool.name == 'google_search_agent' for tool in tools):
+    if not any(
+        getattr(tool, 'propagate_grounding_metadata', False) for tool in tools
+    ):
       return response
     ground_metadata = invocation_context.session.state.get(
         'temp:_adk_grounding_metadata', None
@@ -251,37 +289,37 @@ async def handle_after_model_callback(
     response.grounding_metadata = ground_metadata
     return response
 
-  callback_context = CallbackContext(
-      invocation_context, event_actions=model_response_event.actions
-  )
-
-  # First run callbacks from the plugins.
-  callback_response = (
-      await invocation_context.plugin_manager.run_after_model_callback(
-          callback_context=callback_context,
-          llm_response=llm_response,
+  with _model_callback_context(
+      invocation_context, model_response_event
+  ) as callback_context:
+    # First run callbacks from the plugins.
+    callback_response = (
+        await invocation_context.plugin_manager.run_after_model_callback(
+            callback_context=callback_context,
+            llm_response=llm_response,
+        )
+    )
+    if callback_response:
+      return _inherit_unset_model_fields(
+          llm_response,
+          await _maybe_add_grounding_metadata(callback_response),
       )
-  )
-  if callback_response:
-    return _inherit_unset_streaming_fields(
-        llm_response,
-        await _maybe_add_grounding_metadata(callback_response),
-    )
 
-  # If no overrides are provided from the plugins, further run the canonical
-  # callbacks.
-  callback_response = await _run_callbacks(
-      agent.canonical_after_model_callbacks,  # type: ignore[arg-type]
-      _stop_on_truthy,
-      callback_context=callback_context,
-      llm_response=llm_response,
-  )
-  if callback_response:
-    return _inherit_unset_streaming_fields(
-        llm_response,
-        await _maybe_add_grounding_metadata(callback_response),
+    # If no overrides are provided from the plugins, further run the canonical
+    # callbacks.
+    callback_response = await _run_callbacks(
+        agent.canonical_after_model_callbacks,  # type: ignore[arg-type]
+        _stop_on_truthy,
+        callback_context=callback_context,
+        llm_response=llm_response,
+        callback_type=CallbackType.AFTER_MODEL,
     )
-  return await _maybe_add_grounding_metadata()
+    if callback_response:
+      return _inherit_unset_model_fields(
+          llm_response,
+          await _maybe_add_grounding_metadata(callback_response),
+      )
+    return await _maybe_add_grounding_metadata()
 
 
 async def run_and_handle_error(
@@ -305,7 +343,8 @@ async def run_and_handle_error(
     model_response_event: The model response event.
     call_llm_span: The call_llm span to rebind error callbacks to. When
       provided, on_model_error callbacks run under this span so plugins observe
-      the same span as before/after model callbacks.
+      the same span as before/after model callbacks. With experimental
+      telemetry enabled, a response they return is marked on it as theirs.
 
   Yields:
     LlmResponse objects from the generator.
@@ -342,36 +381,53 @@ async def run_and_handle_error(
         callback_context=callback_context,
         llm_request=llm_request,
         error=error,
+        callback_type=CallbackType.ON_MODEL_ERROR,
     )
 
-  try:
+  async def _record_responses() -> AsyncGenerator[LlmResponse, None]:
     async with _instrumentation.record_inference_telemetry(
         llm_request,
         invocation_context,
         model_response_event,
     ) as tel_ctx:
       async with Aclosing(response_generator) as agen:
-        async for llm_response in agen:
-          tel_ctx.record_llm_response(invocation_context, llm_response)
-          yield llm_response
+        async with Aclosing(_instrumentation.time_model_awaits(agen)) as timed:
+          async for llm_response in timed:
+            tel_ctx.record_llm_response(invocation_context, llm_response)
+            yield llm_response
+
+  try:
+    # The inference scope stays current across yields, but only in the
+    # generator's own context, so it never leaks into the consumer.
+    # `_stream_in_caller_scope` closes `responses` in that context first.
+    async with (
+        Aclosing(_record_responses()) as responses,
+        Aclosing(_stream_in_caller_scope(responses)) as agen,
+    ):
+      async for llm_response in agen:
+        yield llm_response
   except Exception as model_error:
-    callback_context = CallbackContext(
-        invocation_context, event_actions=model_response_event.actions
-    )
-    if call_llm_span is not None:
-      with trace.use_span(call_llm_span, end_on_exit=False):
+    with _model_callback_context(
+        invocation_context, model_response_event
+    ) as callback_context:
+      if call_llm_span is not None:
+        with trace.use_span(call_llm_span, end_on_exit=False):
+          error_response = await _run_on_model_error_callbacks(
+              callback_context=callback_context,
+              llm_request=llm_request,
+              error=model_error,
+          )
+      else:
         error_response = await _run_on_model_error_callbacks(
             callback_context=callback_context,
             llm_request=llm_request,
             error=model_error,
         )
-    else:
-      error_response = await _run_on_model_error_callbacks(
-          callback_context=callback_context,
-          llm_request=llm_request,
-          error=model_error,
-      )
     if error_response is not None:
+      if call_llm_span is not None:
+        _instrumentation.record_response_source(
+            call_llm_span, 'on_model_error_callback', invocation_context
+        )
       yield error_response
     else:
       raise model_error

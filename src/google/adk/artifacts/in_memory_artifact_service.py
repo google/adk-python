@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import copy
 import dataclasses
 import logging
 from typing import Any
@@ -34,6 +35,16 @@ from .base_artifact_service import ensure_part
 logger = logging.getLogger("google_adk." + __name__)
 
 
+def _encode_segment(value: str) -> str:
+  """Escapes ``%`` and ``/`` so a scope identifier is one storage-key segment.
+
+  Identifiers may contain ``/`` by design, so joining them raw lets distinct
+  scopes share a key. Only ``%`` and ``/`` are escaped, so the key of an
+  identifier without either is unchanged.
+  """
+  return value.replace("%", "%25").replace("/", "%2F")
+
+
 @dataclasses.dataclass
 class _ArtifactEntry:
   """Represents a single version of an artifact stored in memory.
@@ -45,23 +56,6 @@ class _ArtifactEntry:
 
   data: types.Part
   artifact_version: ArtifactVersion
-
-
-# Runner._compute_artifact_delta_for_rewind marks an artifact as
-# inaccessible by saving exactly this part. Match it exactly rather than
-# treating every empty payload as absent, so a caller that saves a
-# legitimately empty artifact can read it back.
-#
-# Notes:
-# 1. A caller that saves an empty artifact with mime type exactly
-#    application/octet-stream will still read back None. That collision is
-#    inherent to using content shape as a tombstone; narrowing the match
-#    shrinks the hole from every empty artifact to one specific mime type.
-# 2. This tombstone convention is in-memory only; other artifact services
-#    (such as GcsArtifactService) do not perform this empty-payload check.
-_REWIND_TOMBSTONE = types.Part(
-    inline_data=types.Blob(mime_type="application/octet-stream", data=b"")
-)
 
 
 class InMemoryArtifactService(BaseArtifactService, BaseModel):
@@ -105,15 +99,16 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     """
     artifact_util.validate_path_segment(app_name, "app_name")
     artifact_util.validate_path_segment(user_id, "user_id")
+    scope = f"{_encode_segment(app_name)}/{_encode_segment(user_id)}"
     if self._file_has_user_namespace(filename):
-      return f"{app_name}/{user_id}/user/{filename}"
+      return f"{scope}/user/{filename}"
 
     if session_id is None:
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
     artifact_util.validate_path_segment(session_id, "session_id")
-    return f"{app_name}/{user_id}/{session_id}/{filename}"
+    return f"{scope}/{_encode_segment(session_id)}/{filename}"
 
   @override
   async def save_artifact(
@@ -132,11 +127,9 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
             "Session ID must be provided for session-scoped artifacts."
         )
       artifact_util._validate_session_id_for_flat_storage(session_id)
-    artifact = ensure_part(artifact)
+    artifact = ensure_part(artifact).model_copy(deep=True)
     path = self._artifact_path(app_name, user_id, filename, session_id)
-    if path not in self.artifacts:
-      self.artifacts[path] = []
-    version = len(self.artifacts[path])
+    version = len(self.artifacts.get(path, []))
     if self._file_has_user_namespace(filename):
       canonical_uri = f"memory://apps/{app_name}/users/{user_id}/artifacts/{filename}/versions/{version}"
     else:
@@ -147,7 +140,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
         canonical_uri=canonical_uri,
     )
     if custom_metadata:
-      artifact_version.custom_metadata = custom_metadata
+      artifact_version.custom_metadata = copy.deepcopy(custom_metadata)
 
     if artifact.inline_data is not None:
       artifact_version.mime_type = artifact.inline_data.mime_type
@@ -175,7 +168,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     else:
       raise InputValidationError("Not supported artifact type.")
 
-    self.artifacts[path].append(
+    self.artifacts.setdefault(path, []).append(
         _ArtifactEntry(data=artifact, artifact_version=artifact_version)
     )
     return version
@@ -215,11 +208,10 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     if not versions:
       return None
     if version is None:
-      version = -1
-
-    try:
+      artifact_entry = versions[-1]
+    elif 0 <= version < len(versions):
       artifact_entry = versions[version]
-    except IndexError:
+    else:
       return None
 
     if artifact_entry is None:
@@ -246,9 +238,11 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
           remaining_depth=remaining_depth - 1,
       )
 
-    if artifact_data == types.Part() or artifact_data == _REWIND_TOMBSTONE:
+    if artifact_data == types.Part() or artifact_util._is_rewind_tombstone(
+        artifact_data
+    ):
       return None
-    return artifact_data
+    return artifact_data.model_copy(deep=True)
 
   @override
   async def list_artifact_keys(
@@ -258,9 +252,10 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     artifact_util.validate_path_segment(user_id, "user_id")
     if session_id is not None:
       artifact_util.validate_path_segment(session_id, "session_id")
-    usernamespace_prefix = f"{app_name}/{user_id}/user/"
+    scope = f"{_encode_segment(app_name)}/{_encode_segment(user_id)}"
+    usernamespace_prefix = f"{scope}/user/"
     session_prefix = (
-        f"{app_name}/{user_id}/{session_id}/" if session_id else None
+        f"{scope}/{_encode_segment(session_id)}/" if session_id else None
     )
     filenames = []
     for path in self.artifacts:
@@ -314,7 +309,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     entries = self.artifacts.get(path)
     if not entries:
       return []
-    return [entry.artifact_version for entry in entries]
+    return [entry.artifact_version.model_copy(deep=True) for entry in entries]
 
   @override
   async def get_artifact_version(
@@ -332,8 +327,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       return None
 
     if version is None:
-      version = -1
-    try:
-      return entries[version].artifact_version
-    except IndexError:
-      return None
+      return entries[-1].artifact_version.model_copy(deep=True)
+    if 0 <= version < len(entries):
+      return entries[version].artifact_version.model_copy(deep=True)
+    return None

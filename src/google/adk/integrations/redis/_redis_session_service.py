@@ -25,8 +25,10 @@ import time
 from typing import Any
 from typing import cast
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from ...errors.already_exists_error import AlreadyExistsError
+from ...errors.session_not_found_error import SessionNotFoundError
 from ...events.event import Event
 from ...platform import uuid as platform_uuid
 from ...sessions import _session_util
@@ -37,10 +39,13 @@ from ...sessions.session import Session
 from ...sessions.state import State
 from ._config import RedisSessionServiceConfig
 
-try:
+if TYPE_CHECKING:
   import redis.asyncio as redis_asyncio
-except ImportError:
-  redis_asyncio = None
+else:
+  try:
+    import redis.asyncio as redis_asyncio
+  except ImportError:
+    redis_asyncio = None
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -339,6 +344,12 @@ class RedisSessionService(BaseSessionService):
   async def append_event(self, session: Session, event: Event) -> Event:
     """Appends an event to the session and synchronizes state in Redis."""
     client = self._get_redis()
+    key = self._session_key(session.app_name, session.user_id, session.id)
+    # Check before any write: the app/user state deltas below are stored under
+    # their own keys, and the session write would otherwise create a session
+    # that was never stored instead of failing like the other services.
+    if not await client.exists(key):
+      raise SessionNotFoundError(f"Session {session.id} not found.")
     event = await super().append_event(session, event)
     # Stamp the session with the event's own timestamp, matching
     # InMemorySessionService, SqliteSessionService and DatabaseSessionService.
@@ -348,10 +359,12 @@ class RedisSessionService(BaseSessionService):
     session.last_update_time = event.timestamp
 
     # Sync app and user state deltas to their respective keys
+    session_delta: dict[str, Any] = {}
     if event.actions and event.actions.state_delta:
       deltas = _session_util.extract_state_delta(event.actions.state_delta)
       app_delta = deltas.get("app", {})
       user_delta = deltas.get("user", {})
+      session_delta = deltas.get("session", {})
 
       if app_delta:
         app_key = self._app_state_key(session.app_name)
@@ -386,10 +399,27 @@ class RedisSessionService(BaseSessionService):
         last_update_time=session.last_update_time,
     )
 
-    key = self._session_key(session.app_name, session.user_id, session.id)
-    await client.set(
-        key,
-        storage_session.model_dump_json(),
-        ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
-    )
+    async def append_to_storage(pipe: Any) -> None:
+      raw = await pipe.get(key)
+      if raw:
+        # The caller may hold a filtered view. Reload on every transaction
+        # attempt so concurrent appends are preserved as well.
+        stored_session = Session.model_validate_json(raw)
+        storage_session.events = stored_session.events
+        storage_session.state = stored_session.state
+        if not event.partial:
+          storage_session.events.append(event)
+          if session_delta:
+            storage_session.state.update(session_delta)
+      else:
+        storage_session.events = list(session.events)
+        storage_session.state = dict(session_only_state)
+      pipe.multi()
+      pipe.set(
+          key,
+          storage_session.model_dump_json(),
+          ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
+      )
+
+    await client.transaction(append_to_storage, key)
     return event

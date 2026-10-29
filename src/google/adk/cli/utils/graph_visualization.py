@@ -43,7 +43,7 @@ def plot_workflow_graph(
     tools = root_agent.get("tools", [])
 
     nodes = [{"name": root_name, "type": "agent", "tools": tools}]
-    edges = []
+    edges: list[dict[str, Any]] = []
 
     def _traverse_sub_agents(
         agent_dict: dict[str, Any], parent_name: str

@@ -46,7 +46,7 @@ def guard(
 
 
 agent = LlmAgent(
-    name='guarded', model='gemini-2.5-flash', before_model_callback=guard
+    name='guarded', model='gemini-3.5-flash', before_model_callback=guard
 )
 ```
 
@@ -78,7 +78,7 @@ def repair(
 
 agent = LlmAgent(
     name='audited',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     tools=[my_tool],
     before_tool_callback=audit,
     after_tool_callback=repair,
@@ -98,7 +98,7 @@ def handle_model_error(
 
 agent = LlmAgent(
     name='resilient',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     on_model_error_callback=handle_model_error,
 )
 ```

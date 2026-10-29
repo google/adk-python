@@ -32,6 +32,7 @@ import click
 import pytest
 
 import src.google.adk.cli.cli_deploy as cli_deploy
+import src.google.adk.cli.deployers._dockerfile_template as _dockerfile_template
 
 
 class AgentDirFixture(Protocol):
@@ -39,6 +40,36 @@ class AgentDirFixture(Protocol):
 
   def __call__(self, *, include_requirements: bool, include_env: bool) -> Path:
     ...
+
+
+def test_dockerfile_template_consumes_agent_gateway_root_certificates() -> None:
+  """The shared deploy template must declare and consume the Cloud Build ARG."""
+  content = _dockerfile_template._DOCKERFILE_TEMPLATE
+  assert "ARG AGENT_GATEWAY_ROOT_CERTIFICATES" in content
+  assert "update-ca-certificates" in content
+  assert "ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt" in content
+  assert "ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" in content
+  assert (
+      "ENV GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=/etc/ssl/certs/ca-certificates.crt"
+      in content
+  )
+  assert (
+      content.index("ARG AGENT_GATEWAY_ROOT_CERTIFICATES")
+      < content.index("update-ca-certificates")
+      < content.index(
+          "ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
+      )
+      < content.index("USER myuser")
+  )
+
+
+def test_dockerfile_template_preserves_multiline_ca_certificates_run() -> None:
+  """The shared deploy template must preserve line-continuation backslashes."""
+  content = _dockerfile_template._DOCKERFILE_TEMPLATE
+  assert (
+      'RUN if [ -n "$AGENT_GATEWAY_ROOT_CERTIFICATES" ]; then \\\n' in content
+  )
+  assert "update-ca-certificates; \\\n" in content
 
 
 # Helpers
@@ -169,8 +200,31 @@ def test_to_cloud_run_happy_path(
       'RUN adduser --disabled-password --gecos "" myuser' in dockerfile_content
   )
   assert "USER myuser" in dockerfile_content
+  assert "ARG AGENT_GATEWAY_ROOT_CERTIFICATES" in dockerfile_content
+  assert "update-ca-certificates" in dockerfile_content
   assert (
-      'RUN ["pip", "install", "google-adk[a2a]==1.3.0"]' in dockerfile_content
+      "ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
+      in dockerfile_content
+  )
+  assert (
+      "ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+      in dockerfile_content
+  )
+  assert (
+      "ENV GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=/etc/ssl/certs/ca-certificates.crt"
+      in dockerfile_content
+  )
+  assert (
+      dockerfile_content.index("ARG AGENT_GATEWAY_ROOT_CERTIFICATES")
+      < dockerfile_content.index("update-ca-certificates")
+      < dockerfile_content.index(
+          "ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
+      )
+      < dockerfile_content.index("USER myuser")
+  )
+  assert (
+      'RUN ["pip", "install", "google-adk[a2a,gcp,otel-gcp]==1.3.0"]'
+      in dockerfile_content
   )
   assert "--trace_to_cloud" in cmd_argv
   assert "--otel_to_cloud" in cmd_argv
@@ -212,6 +266,207 @@ def test_to_cloud_run_happy_path(
   assert gcloud_args == expected_gcloud_command
 
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "trace_to_cloud, otel_to_cloud, expected_extras",
+    [
+        (False, False, "a2a"),
+        (True, False, "a2a,gcp,otel-gcp"),
+        (False, True, "a2a,gcp,otel-gcp"),
+        (True, True, "a2a,gcp,otel-gcp"),
+    ],
+)
+def test_to_cloud_run_installs_telemetry_extras(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+    trace_to_cloud: bool,
+    otel_to_cloud: bool,
+    expected_extras: str,
+) -> None:
+  """The container must install the extras the telemetry flags need."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="cloud_run",
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="agent",
+      temp_folder=str(tmp_path),
+      port=8080,
+      trace_to_cloud=trace_to_cloud,
+      otel_to_cloud=otel_to_cloud,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.3.0",
+  )
+
+  dockerfile_content = (tmp_path / "Dockerfile").read_text()
+  assert (
+      f'RUN ["pip", "install", "google-adk[{expected_extras}]==1.3.0"]'
+      in dockerfile_content
+  )
+
+
+def test_to_cloud_run_extra_packages_staged_and_copied_into_image(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """An extra package is staged and copied into the image."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  build_dir = tmp_path / "build"
+  shared_dir = tmp_path / "common"
+  shared_dir.mkdir()
+  (shared_dir / "helper.py").write_text("VALUE = 1\n")
+
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="cloud_run",
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="agent",
+      temp_folder=str(build_dir),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.3.0",
+      extra_packages=[str(shared_dir)],
+  )
+
+  assert (build_dir / "common" / "helper.py").is_file()
+  dockerfile_content = (build_dir / "Dockerfile").read_text()
+  assert (
+      'COPY --chown=myuser:myuser "common/" "/app/common/"'
+      in dockerfile_content
+  )
+  assert 'ENV PYTHONPATH="/app:$PYTHONPATH"' in dockerfile_content
+
+
+def test_to_cloud_run_extra_packages_relative_path_resolves_against_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """A relative extra_packages entry resolves against the current directory."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  build_dir = tmp_path / "build"
+  shared_dir = tmp_path / "common"
+  shared_dir.mkdir()
+  (shared_dir / "helper.py").write_text("VALUE = 1\n")
+
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  monkeypatch.chdir(tmp_path)
+
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="cloud_run",
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="agent",
+      temp_folder=str(build_dir),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.3.0",
+      extra_packages=["common"],
+  )
+
+  assert (build_dir / "common" / "helper.py").is_file()
+
+
+def test_to_cloud_run_extra_packages_dockerfile_name_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """An extra package named Dockerfile would clobber the generated one."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  clashing_file = tmp_path / "outside" / "Dockerfile"
+  clashing_file.parent.mkdir(parents=True)
+  clashing_file.write_text("FROM scratch\n")
+
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.run(
+        agent_folder=str(src_dir),
+        provider="cloud_run",
+        project="proj",
+        region="us-central1",
+        service_name="svc",
+        app_name="agent",
+        temp_folder=str(tmp_path / "build"),
+        port=8080,
+        trace_to_cloud=False,
+        otel_to_cloud=False,
+        with_ui=False,
+        log_level="info",
+        verbosity="info",
+        adk_version="1.3.0",
+        extra_packages=[str(clashing_file)],
+    )
+
+  assert "conflicting name" in str(exc_info.value)
+
+
+def test_to_cloud_run_stages_extra_packages(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  extra_package = tmp_path / "shared_package"
+  extra_package.mkdir()
+  (extra_package / "helpers.py").write_text("VALUE = 1\n")
+  deployment_dir = tmp_path / "deployment"
+
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.to_cloud_run(
+      agent_folder=str(src_dir),
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="agent",
+      temp_folder=str(deployment_dir),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="2.7.1",
+      extra_packages=[str(extra_package)],
+  )
+
+  assert (deployment_dir / "shared_package" / "helpers.py").is_file()
+  dockerfile = (deployment_dir / "Dockerfile").read_text()
+  assert (
+      'COPY --chown=myuser:myuser "shared_package/" "/app/shared_package/"'
+      in dockerfile
+  )
+  assert 'ENV PYTHONPATH="/app:$PYTHONPATH"' in dockerfile
 
 
 def test_to_cloud_run_cleans_temp_dir(
@@ -764,7 +1019,9 @@ def test_dockerfile_run_and_cmd_use_exec_form() -> None:
     if stripped.startswith(("RUN ", "CMD ", "ENTRYPOINT ")):
       payload = stripped.split(" ", 1)[1]
       if stripped.startswith("RUN ") and (
-          "adduser" in stripped or "dev_server" in stripped
+          "adduser" in stripped
+          or "dev_server" in stripped
+          or "AGENT_GATEWAY_ROOT_CERTIFICATES" in stripped
       ):
         # Static instructions with no interpolated values; intentionally left in
         # shell form.

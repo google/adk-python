@@ -16,30 +16,49 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import contextvars
 import dataclasses
+import datetime
+import functools
+import gc
+import importlib.util
+import inspect
+import io
 import json
 import logging
 import os
+import pathlib
 import pickle
+import re
 import sys
 import threading
 import time
+import traceback
+from types import SimpleNamespace
+from typing import Any
 from unittest import mock
+import warnings
 
+from google.adk import tools as tools_lib
 from google.adk.agents import base_agent
+from google.adk.agents import llm_agent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import event as event_lib
 from google.adk.events import event_actions as event_actions_lib
+from google.adk.models import google_llm
 from google.adk.models import llm_request as llm_request_lib
 from google.adk.models import llm_response as llm_response_lib
 from google.adk.platform import thread as platform_thread
+from google.adk.plugins import _callback_helpers
 from google.adk.plugins import bigquery_agent_analytics_plugin
 from google.adk.plugins import plugin_manager as plugin_manager_lib
 from google.adk.sessions import base_session_service as base_session_service_lib
 from google.adk.sessions import session as session_lib
 from google.adk.tools import base_tool as base_tool_lib
+from google.adk.tools import function_tool
 from google.adk.tools import tool_context as tool_context_lib
+from google.adk.tools import transfer_to_agent_tool
 from google.adk.utils import streaming_utils
 from google.adk.utils._telemetry_context import _is_visual_builder
 from google.adk.utils._telemetry_context import _telemetry_surface
@@ -54,6 +73,9 @@ from google.genai import types
 from opentelemetry import trace
 import pyarrow as pa
 from pydantic import BaseModel
+from pydantic import Field
+from pydantic import field_serializer
+from pydantic import ValidationError
 import pytest
 
 PROJECT_ID = "test-gcp-project"
@@ -308,6 +330,19 @@ async def managed_plugin(*args, **kwargs):
 # --- Helper Functions ---
 async def _async_gen(val):
   yield val
+
+
+class _FailingAsyncIterator:
+  """Raises `error` on the first iteration, like a failed gRPC stream."""
+
+  def __init__(self, error: Exception):
+    self._error = error
+
+  def __aiter__(self):
+    return self
+
+  async def __anext__(self):
+    raise self._error
 
 
 async def _get_captured_event_dict_async(mock_write_client, expected_schema):
@@ -1559,6 +1594,266 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert log_entry["content"] == "Test Instruction"
 
   @pytest.mark.asyncio
+  async def test_before_agent_callback_logs_agent_config_attributes(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """AGENT_STARTING records the agent description, model, and sub-agents."""
+    agent = llm_agent.LlmAgent(
+        name="root_agent",
+        model="gemini-2.5-flash",
+        description="Routes requests to specialists.",
+        instruction="Delegate to the right specialist.",
+        sub_agents=[
+            llm_agent.LlmAgent(name="sub_a"),
+            llm_agent.LlmAgent(name="sub_b"),
+        ],
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "AGENT_STARTING")
+    assert log_entry["content"] == "Delegate to the right specialist."
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["agent_description"] == "Routes requests to specialists."
+    assert attributes["model"] == "gemini-2.5-flash"
+    assert attributes["sub_agents"] == ["sub_a", "sub_b"]
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_resolves_model_name_from_base_llm(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """A BaseLlm model is logged by its model name."""
+    agent = llm_agent.LlmAgent(
+        name="root_agent", model=google_llm.Gemini(model="gemini-2.5-pro")
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["model"] == "gemini-2.5-pro"
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_inherits_model_from_parent_agent(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """An LLM sub-agent inherits its ancestor's model; non-LLM agents do not."""
+    sub_agent = llm_agent.LlmAgent(name="sub_a")
+    workflow_sub = base_agent.BaseAgent(name="workflow_sub")
+    _ = llm_agent.LlmAgent(
+        name="root_agent",
+        model="gemini-2.5-flash",
+        sub_agents=[sub_agent, workflow_sub],
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=sub_agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["model"] == "gemini-2.5-flash"
+
+    mock_write_client.append_rows.reset_mock()
+    await bq_plugin_inst.before_agent_callback(
+        agent=workflow_sub, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    workflow_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    workflow_attributes = json.loads(workflow_entry["attributes"])
+    assert "model" not in workflow_attributes
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_captures_static_instruction(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """static_instruction is normalized and logged in attributes only."""
+    agent_static_only = llm_agent.LlmAgent(
+        name="root_agent",
+        static_instruction=types.Content(
+            role="user",
+            parts=[types.Part(text="Cached system prompt.")],
+        ),
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent_static_only, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry["content"] is None
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["static_instruction"] == "Cached system prompt."
+
+    mock_write_client.append_rows.reset_mock()
+    agent_list_static = llm_agent.LlmAgent(
+        name="root_agent",
+        static_instruction=["You are a router.", "Be brief."],
+    )
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent_list_static, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry_list = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry_list["content"] is None
+    attributes_list = json.loads(log_entry_list["attributes"])
+    assert (
+        attributes_list["static_instruction"] == "You are a router.\nBe brief."
+    )
+
+    mock_write_client.append_rows.reset_mock()
+    agent_both = llm_agent.LlmAgent(
+        name="root_agent",
+        static_instruction="Cached base instruction.",
+        instruction="Dynamic user-turn instruction.",
+    )
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent_both, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry_both = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry_both["content"] == "Dynamic user-turn instruction."
+    attributes_both = json.loads(log_entry_both["attributes"])
+    assert attributes_both["static_instruction"] == "Cached base instruction."
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_skips_callable_instruction(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """An InstructionProvider is logged as None with instruction_source."""
+    agent = llm_agent.LlmAgent(
+        name="root_agent", instruction=lambda ctx: "dynamic instruction"
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "AGENT_STARTING")
+    assert log_entry["content"] is None
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["instruction_source"] == "provider"
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_omits_empty_agent_config(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Unset description, model, and sub-agents add no attributes."""
+    agent = llm_agent.LlmAgent(name="root_agent")
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry["content"] is None
+    attributes = json.loads(log_entry["attributes"])
+    assert "agent_description" not in attributes
+    assert "instruction_source" not in attributes
+    assert "static_instruction" not in attributes
+    assert "model" not in attributes
+    assert "sub_agents" not in attributes
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_ignores_non_string_agent_config(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      mock_agent,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Non-string agent fields, such as mocks, never reach attributes."""
+    unnamed_sub_agent = mock.create_autospec(
+        base_agent.BaseAgent, instance=True, spec_set=True
+    )
+    type(mock_agent).description = mock.PropertyMock(
+        return_value=mock.MagicMock()
+    )
+    type(mock_agent).model = mock.PropertyMock(return_value=mock.MagicMock())
+    type(mock_agent).sub_agents = mock.PropertyMock(
+        return_value=[unnamed_sub_agent]
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=mock_agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry["content"] == "Test Instruction"
+    attributes = json.loads(log_entry["attributes"])
+    assert "agent_description" not in attributes
+    assert "model" not in attributes
+    assert "sub_agents" not in attributes
+
+  @pytest.mark.asyncio
   async def test_after_agent_callback_logs_correctly(
       self,
       bq_plugin_inst,
@@ -2119,6 +2414,218 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert content_dict["usage"]["prompt"] == 10
     assert content_dict["usage"]["total"] == 15
     assert log_entry["error_message"] is None
+
+  @pytest.mark.asyncio
+  async def test_after_model_callback_code_execution(  # pylint: disable=redefined-outer-name
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Tests after_model_callback formats code execution parts."""
+    code_part = types.Part(
+        executable_code=types.ExecutableCode(
+            language=types.Language.PYTHON, code="print('hello')"
+        )
+    )
+    result_part = types.Part(
+        code_execution_result=types.CodeExecutionResult(
+            outcome=types.Outcome.OUTCOME_OK, output="hello\n"
+        )
+    )
+    llm_response = llm_response_lib.LlmResponse(
+        content=types.Content(parts=[code_part, result_part]),
+        usage_metadata=types.UsageMetadata(
+            prompt_token_count=10, total_token_count=15
+        ),
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.after_model_callback(
+        callback_context=callback_context,
+        llm_response=llm_response,
+    )
+    await bq_plugin_inst.flush()
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "LLM_RESPONSE")
+    content_dict = json.loads(log_entry["content"])
+    expected_response = (
+        "Executable code (PYTHON): print('hello') | "
+        "Code execution result (OUTCOME_OK): hello\n"
+    )
+    assert content_dict["response"] == expected_response
+    assert "other" not in content_dict["response"]
+    assert content_dict["usage"]["prompt"] == 10
+    assert content_dict["usage"]["total"] == 15
+    assert log_entry["error_message"] is None
+
+  @pytest.mark.asyncio
+  async def test_after_model_callback_code_execution_redacts_credentials(  # pylint: disable=redefined-outer-name
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Tests after_model_callback redacts code execution credentials."""
+    code_part = types.Part(
+        executable_code=types.ExecutableCode(
+            language=types.Language.PYTHON,
+            code="token = 'Authorization: Bearer topsecret123'",
+        )
+    )
+    result_part = types.Part(
+        code_execution_result=types.CodeExecutionResult(
+            outcome=types.Outcome.OUTCOME_OK,
+            output=(
+                "Connecting with Authorization: Bearer"
+                " confidential_auth_token\n"
+            ),
+        )
+    )
+    llm_response = llm_response_lib.LlmResponse(
+        content=types.Content(parts=[code_part, result_part]),
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.after_model_callback(
+        callback_context=callback_context,
+        llm_response=llm_response,
+    )
+    await bq_plugin_inst.flush()
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "LLM_RESPONSE")
+    content_dict = json.loads(log_entry["content"])
+    assert "confidential_auth_token" not in content_dict["response"]
+    assert "topsecret123" not in content_dict["response"]
+    assert "Authorization: [REDACTED]" in content_dict["response"]
+    assert "Executable code (PYTHON):" in content_dict["response"]
+    assert "Code execution result (OUTCOME_OK):" in content_dict["response"]
+
+  @pytest.mark.asyncio
+  @pytest.mark.usefixtures(
+      "mock_auth_default",
+      "mock_bq_client",
+      "mock_to_arrow_schema",
+      "mock_asyncio_to_thread",
+  )
+  async def test_after_model_callback_captures_allowlisted_custom_metadata(  # pylint: disable=redefined-outer-name
+      self,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Tests after_model_callback captures allowlisted custom_metadata."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        custom_metadata_allowlist=["server_ttft_ms", "llm_latency_ms"]
+    )
+    async with managed_plugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    ) as plugin:
+      mock_write_client.append_rows.reset_mock()
+      llm_response = llm_response_lib.LlmResponse(
+          content=types.Content(parts=[types.Part(text="Done")]),
+          custom_metadata={
+              "server_ttft_ms": 1200,
+              "llm_latency_ms": 3400,
+              "unallowed_key": "discarded",
+          },
+      )
+      bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+      await plugin.after_model_callback(
+          callback_context=callback_context,
+          llm_response=llm_response,
+      )
+      await plugin.flush()
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      _assert_common_fields(log_entry, "LLM_RESPONSE")
+      attributes = json.loads(log_entry["attributes"])
+      adk = attributes["adk"]
+      assert "source_event_id" not in adk
+      assert "node" not in adk
+      assert "branch" not in adk
+      assert "scope" not in adk
+      assert attributes["custom_metadata"] == {
+          "server_ttft_ms": 1200,
+          "llm_latency_ms": 3400,
+      }
+      assert "unallowed_key" not in attributes["custom_metadata"]
+
+  @pytest.mark.asyncio
+  async def test_after_model_callback_without_allowlist_omits_custom_metadata(  # pylint: disable=redefined-outer-name
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Tests after_model_callback omits custom_metadata without allowlist."""
+    llm_response = llm_response_lib.LlmResponse(
+        content=types.Content(parts=[types.Part(text="Done")]),
+        custom_metadata={"server_ttft_ms": 1200},
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.after_model_callback(
+        callback_context=callback_context,
+        llm_response=llm_response,
+    )
+    await bq_plugin_inst.flush()
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "LLM_RESPONSE")
+    attributes = json.loads(log_entry["attributes"])
+    assert "custom_metadata" not in attributes
+
+  @pytest.mark.asyncio
+  @pytest.mark.usefixtures(
+      "mock_auth_default",
+      "mock_bq_client",
+      "mock_to_arrow_schema",
+      "mock_asyncio_to_thread",
+  )
+  async def test_after_model_callback_streaming_chunk_omits_custom_metadata(  # pylint: disable=redefined-outer-name
+      self,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Tests streaming chunks (partial=True) omit custom_metadata."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        custom_metadata_allowlist=["server_ttft_ms"]
+    )
+    async with managed_plugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    ) as plugin:
+      mock_write_client.append_rows.reset_mock()
+      llm_response = llm_response_lib.LlmResponse(
+          content=types.Content(parts=[types.Part(text="chunk")]),
+          partial=True,
+          custom_metadata={"server_ttft_ms": 1200},
+      )
+      bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+      await plugin.after_model_callback(
+          callback_context=callback_context,
+          llm_response=llm_response,
+      )
+      await plugin.flush()
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      _assert_common_fields(log_entry, "LLM_RESPONSE")
+      attributes = json.loads(log_entry["attributes"])
+      assert "custom_metadata" not in attributes
 
   @pytest.mark.asyncio
   async def test_before_tool_callback_logs_correctly(
@@ -3858,6 +4365,1420 @@ class TestBigQueryAgentAnalyticsPlugin:
 
     if "labels" in gen_config_kwargs:
       assert attributes.get("labels") == gen_config_kwargs["labels"]
+
+
+# ==============================================================================
+# TEST CLASS: content_formatter failure diagnostics
+# ==============================================================================
+# Formatters that fail in each way the error_message column must describe.
+# Payload-derived class names are built from the logged message text, so a
+# leak shows up as that text in a column or a log line. These stay at module
+# level because they are pytest.mark.parametrize values, which pytest reads
+# when it collects the class; _RedactionServiceError is module-level on
+# purpose, as the case under test. Helpers that a single test uses are
+# defined inside that test.
+
+
+class _RedactionServiceError(Exception):
+  """A module-level exception class, like one a redaction library defines."""
+
+
+class _NeitherInterruptNorCancellation(BaseException):
+  """A BaseException that is not KeyboardInterrupt, SystemExit, or cancel."""
+
+
+def _identifier_from_content(content):
+  """Turns the logged message text into a valid class name."""
+  return content.parts[0].text.replace("-", "_")
+
+
+def _register_payload_named_class(content, bases):
+  """Creates a payload-named class and binds it in this module under its name.
+
+  Class factories do this so that pickling can find their products, which is
+  what a name-in-its-module check would take as a class defined by code.
+  """
+  name = _identifier_from_content(content)
+  cls = type(name, bases, {"__module__": __name__})
+  globals()[name] = cls
+  return cls
+
+
+class _Tripwire:
+  """Makes hostile hooks raise only while armed.
+
+  pytest reads an escaped exception's class name and message when it reports
+  a failure. Hooks that still raised then would abort the whole session, so
+  each test disarms its tripwire before pytest reports anything.
+  """
+
+  def __init__(self, error_type):
+    self.error_type = error_type
+    self.armed = False
+
+  def fire(self, hook):
+    if self.armed:
+      raise self.error_type(f"TRIPWIRE: {hook} ran")
+
+
+def _raise_import_error(content, event_type):
+  raise ImportError(f"cannot import name 'redact' (formatting {content})")
+
+
+def _raise_module_level_exception(content, event_type):
+  raise _RedactionServiceError("redaction backend unavailable")
+
+
+def _raise_local_exception_subclass(content, event_type):
+  class LocalLookupError(KeyError):
+    pass
+
+  raise LocalLookupError("missing field")
+
+
+def _raise_payload_named_exception(content, event_type):
+  raise type(_identifier_from_content(content), (ValueError,), {})()
+
+
+def _raise_payload_named_exception_claiming_static_type(content, event_type):
+  class _ClaimsStaticTypeMeta(type):
+    """Metaclass whose classes report the type flags of a built-in type."""
+
+    @property
+    def __flags__(cls):
+      return int.__flags__
+
+  raise _ClaimsStaticTypeMeta(
+      _identifier_from_content(content), (ValueError,), {}
+  )()
+
+
+def _raise_registered_payload_named_exception(content, event_type):
+  raise _register_payload_named_class(content, (ValueError,))()
+
+
+def _raise_subclass_of_registered_payload_named_exception(content, event_type):
+  registered = _register_payload_named_class(content, (ValueError,))
+  raise type("Unregistered", (registered,), {})()
+
+
+def _raise_google_api_error(content, event_type):
+  raise api_exceptions.NotFound("redaction template not found")
+
+
+def _raise_exact_google_api_error(content, event_type):
+  raise api_exceptions.GoogleAPICallError(f"redaction failed for {content}")
+
+
+def _return_tuple(content, event_type):
+  return ("not", "supported")
+
+
+def _return_generator(content, event_type):
+  yield content
+
+
+def _return_registered_payload_named_object(content, event_type):
+  return _register_payload_named_class(content, ())()
+
+
+def _return_local_llm_request_subclass(content, event_type):
+  class LocalRequest(llm_request_lib.LlmRequest):
+    pass
+
+  return LocalRequest()
+
+
+def _return_local_content_subclass(content, event_type):
+  class LocalContent(types.Content):
+    pass
+
+  return LocalContent()
+
+
+def _return_local_part_subclass(content, event_type):
+  class LocalPart(types.Part):
+    pass
+
+  return LocalPart()
+
+
+def _return_object_claiming_to_be_str(content, event_type):
+  class ClaimsToBeStr:
+
+    @property
+    def __class__(self):
+      return str
+
+  return ClaimsToBeStr()
+
+
+def _return_pydantic_model(content, event_type):
+  class RedactedPayload(BaseModel):
+    text: str = "[REDACTED]"
+
+  return RedactedPayload()
+
+
+def _return_exact_pydantic_model(content, event_type):
+  # pydantic refuses BaseModel() itself, so skip its __init__.
+  return BaseModel.__new__(BaseModel)
+
+
+@pytest.mark.usefixtures(
+    "mock_auth_default",
+    "mock_bq_client",
+    "mock_to_arrow_schema",
+    "mock_asyncio_to_thread",
+)
+class TestContentFormatterFailureDiagnostics:
+  """A failing content_formatter is diagnosable without leaking content.
+
+  The row's error_message names the failure by a trusted class label. The
+  formatter's input, the exception's message, and any class name taken from
+  the class itself never reach the row. Diagnosing the failure never drops
+  the row, and the traceback reaches the local log only when
+  debug_content_formatter_errors is enabled.
+  """
+
+  SECRET = "TOPSECRET-4111-1111-1111-1111"
+  PAYLOAD_IDENTIFIER = "TOPSECRET_4111_1111_1111_1111"
+  DEFAULT_WARNING = (
+      "Content formatter failed for event USER_MESSAGE_RECEIVED; writing"
+      " sentinel instead of original content."
+  )
+  UNSUPPORTED_WARNING = (
+      "Content formatter returned an unsupported result type for event"
+      " USER_MESSAGE_RECEIVED; writing sentinel instead of original content."
+  )
+
+  @pytest.fixture(autouse=True)
+  def _unbind_registered_payload_classes(self):
+    yield
+    globals().pop(self.PAYLOAD_IDENTIFIER, None)
+
+  async def _log_user_message(
+      self, config, mock_write_client, invocation_context, dummy_arrow_schema
+  ):
+    """Logs SECRET as a user message; returns the row and the drop stats."""
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await plugin.on_user_message_callback(
+          invocation_context=invocation_context,
+          user_message=types.Content(parts=[types.Part(text=self.SECRET)]),
+      )
+      await plugin.flush()
+      row = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      return row, plugin.get_drop_stats()
+
+  async def _log_user_message_contained(
+      self,
+      config,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+      *,
+      cleanup=None,
+  ):
+    """Like _log_user_message, but anything escaping becomes a test failure.
+
+    An escaping KeyboardInterrupt would otherwise stop the whole test run.
+    cleanup runs before pytest reports anything, so that hostile hooks can
+    be disarmed first.
+    """
+    escaped = None
+    try:
+      return await self._log_user_message(
+          config, mock_write_client, invocation_context, dummy_arrow_schema
+      )
+    except BaseException as error:  # pylint: disable=broad-exception-caught
+      escaped = error
+    finally:
+      if cleanup is not None:
+        cleanup()
+    if type(escaped) is AssertionError:
+      # Raised by _get_captured_event_dict_async: the callback returned, but
+      # no row reached the write path.
+      pytest.fail(f"no row was written: {escaped}", pytrace=False)
+    pytest.fail(
+        f"{type(escaped).__name__} escaped the plugin callback", pytrace=False
+    )
+
+  async def _log_user_message_catching(
+      self,
+      config,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+      *,
+      cleanup=None,
+  ):
+    """Logs SECRET as a user message; returns the row, stats, and escapee.
+
+    Whatever the callback raises is caught and returned instead of failing
+    the test, so a test can check which exceptions propagate. The row is
+    None when nothing reached the writer. cleanup runs before anything reads
+    the escaped exception.
+    """
+    escaped = None
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      try:
+        await plugin.on_user_message_callback(
+            invocation_context=invocation_context,
+            user_message=types.Content(parts=[types.Part(text=self.SECRET)]),
+        )
+      except BaseException as error:  # pylint: disable=broad-exception-caught
+        escaped = error
+      finally:
+        if cleanup is not None:
+          cleanup()
+      await plugin.flush()
+      row = None
+      if mock_write_client.append_rows.called:
+        row = await _get_captured_event_dict_async(
+            mock_write_client, dummy_arrow_schema
+        )
+      return row, plugin.get_drop_stats(), escaped
+
+  @staticmethod
+  def _formatter_warnings(caplog):
+    return [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("Content formatter ")
+    ]
+
+  @staticmethod
+  @contextlib.contextmanager
+  def _standard_handler_on_plugin_logger(stream):
+    """Attaches a stock logging.StreamHandler, as an application would."""
+    plugin_logger = logging.getLogger(
+        "google_adk." + bigquery_agent_analytics_plugin.__name__
+    )
+    handler = logging.StreamHandler(stream)
+    previous_level = plugin_logger.level
+    plugin_logger.addHandler(handler)
+    plugin_logger.setLevel(logging.WARNING)
+    try:
+      yield
+    finally:
+      plugin_logger.removeHandler(handler)
+      plugin_logger.setLevel(previous_level)
+
+  @pytest.mark.parametrize(
+      ("formatter", "expected_error_message"),
+      [
+          pytest.param(
+              _raise_import_error,
+              "content_formatter raised ImportError",
+              id="builtin_exception",
+          ),
+          pytest.param(
+              _raise_module_level_exception,
+              "content_formatter raised <subclass of Exception>",
+              id="module_level_exception",
+          ),
+          pytest.param(
+              _raise_local_exception_subclass,
+              "content_formatter raised <subclass of KeyError>",
+              id="function_local_exception",
+          ),
+          pytest.param(
+              _raise_payload_named_exception,
+              "content_formatter raised <subclass of ValueError>",
+              id="payload_named_exception",
+          ),
+          pytest.param(
+              _raise_payload_named_exception_claiming_static_type,
+              "content_formatter raised <subclass of ValueError>",
+              id="payload_named_exception_misreporting_type_flags",
+          ),
+          pytest.param(
+              _raise_registered_payload_named_exception,
+              "content_formatter raised <subclass of ValueError>",
+              id="registered_payload_named_exception",
+          ),
+          pytest.param(
+              _raise_subclass_of_registered_payload_named_exception,
+              "content_formatter raised <subclass of ValueError>",
+              id="subclass_of_registered_payload_named_exception",
+          ),
+          pytest.param(
+              _raise_google_api_error,
+              "content_formatter raised <subclass of GoogleAPICallError>",
+              id="google_api_error",
+          ),
+          pytest.param(
+              _raise_exact_google_api_error,
+              "content_formatter raised GoogleAPICallError",
+              id="exact_google_api_error",
+          ),
+          pytest.param(
+              _return_tuple,
+              "content_formatter returned unsupported type tuple",
+              id="unsupported_builtin_result",
+          ),
+          pytest.param(
+              _return_generator,
+              "content_formatter returned unsupported type generator",
+              id="unsupported_unexported_builtin_result",
+          ),
+          pytest.param(
+              _return_registered_payload_named_object,
+              "content_formatter returned unsupported type"
+              " <subclass of object>",
+              id="registered_payload_named_result",
+          ),
+          pytest.param(
+              _return_local_llm_request_subclass,
+              "content_formatter returned unsupported type"
+              " <subclass of LlmRequest>",
+              id="llm_request_subclass_result",
+          ),
+          pytest.param(
+              _return_local_content_subclass,
+              "content_formatter returned unsupported type"
+              " <subclass of Content>",
+              id="content_subclass_result",
+          ),
+          pytest.param(
+              _return_local_part_subclass,
+              "content_formatter returned unsupported type <subclass of Part>",
+              id="part_subclass_result",
+          ),
+          pytest.param(
+              _return_object_claiming_to_be_str,
+              "content_formatter returned unsupported type"
+              " <subclass of object>",
+              id="object_claiming_to_be_str_result",
+          ),
+          pytest.param(
+              _return_pydantic_model,
+              "content_formatter returned unsupported type"
+              " <subclass of BaseModel>",
+              id="pydantic_model_result",
+          ),
+          pytest.param(
+              _return_exact_pydantic_model,
+              "content_formatter returned unsupported type BaseModel",
+              id="exact_pydantic_model_result",
+          ),
+      ],
+  )
+  async def test_failed_row_names_the_formatter_failure_by_class(
+      self,
+      formatter,
+      expected_error_message,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+      caplog,
+  ):
+    """A failed formatter's row fails closed and names a trusted class.
+
+    Only a built-in type or an allowlisted class is named. Any other class,
+    including a module-level one or one named after the content, is
+    described by its nearest such ancestor, and its own name appears in no
+    column and no default log line.
+    """
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=formatter
+    )
+
+    with caplog.at_level(logging.WARNING):
+      row, drop_stats = await self._log_user_message(
+          config, mock_write_client, invocation_context, dummy_arrow_schema
+      )
+
+    assert row["error_message"] == expected_error_message
+    # A formatter failure does not change the event's own status.
+    assert row["status"] == "OK"
+    assert (
+        row["content"]
+        == bigquery_agent_analytics_plugin._FORMATTER_FAILED_SENTINEL
+    )
+    assert drop_stats.get("formatter_failed") == 1
+    written = json.dumps(row, default=str)
+    for payload_text in (self.SECRET, self.PAYLOAD_IDENTIFIER):
+      assert payload_text not in written
+      assert payload_text not in caplog.text
+
+  async def test_trusted_class_label_is_fixed_text_not_its_current_name(
+      self, mock_write_client, invocation_context, dummy_arrow_schema
+  ):
+    """Renaming an allowlisted class at runtime cannot change its label."""
+    trusted = api_exceptions.GoogleAPICallError
+    original_names = (trusted.__name__, trusted.__qualname__)
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=_raise_google_api_error
+    )
+
+    trusted.__name__ = trusted.__qualname__ = self.PAYLOAD_IDENTIFIER
+    try:
+      row, _ = await self._log_user_message(
+          config, mock_write_client, invocation_context, dummy_arrow_schema
+      )
+    finally:
+      trusted.__name__, trusted.__qualname__ = original_names
+
+    assert row["error_message"] == (
+        "content_formatter raised <subclass of GoogleAPICallError>"
+    )
+
+  @pytest.mark.parametrize(
+      "hook_error",
+      [asyncio.CancelledError, SystemExit, RuntimeError],
+      ids=["cancelled_error", "system_exit", "runtime_error"],
+  )
+  @pytest.mark.parametrize(
+      ("raised", "expected_error_message"),
+      [
+          pytest.param(
+              True,
+              "content_formatter raised <subclass of ValueError>",
+              id="raised",
+          ),
+          pytest.param(
+              False,
+              "content_formatter returned unsupported type"
+              " <subclass of object>",
+              id="returned",
+          ),
+      ],
+  )
+  async def test_naming_the_failure_runs_none_of_the_class_hooks(
+      self,
+      raised,
+      expected_error_message,
+      hook_error,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+      caplog,
+  ):
+    """Diagnosing a failure never runs the failed class's metaclass hooks.
+
+    Those hooks can raise anything, including BaseException subclasses that
+    the fail-closed boundary deliberately lets through, so the row, its
+    sentinel, and the drop counter must not depend on them.
+    """
+    tripwire = _Tripwire(hook_error)
+
+    class _HookedMeta(type):
+
+      def __getattribute__(cls, name):
+        tripwire.fire(f"metaclass __getattribute__({name!r})")
+        return super().__getattribute__(name)
+
+      def __eq__(cls, other):
+        tripwire.fire("metaclass __eq__")
+        return super().__eq__(other)
+
+      def __hash__(cls):
+        tripwire.fire("metaclass __hash__")
+        return super().__hash__()
+
+    def formatter(content, event_type):
+      name = _identifier_from_content(content)
+      failure = _HookedMeta(name, (ValueError,) if raised else (), {})()
+      tripwire.armed = True
+      if raised:
+        raise failure
+      return failure
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=formatter
+    )
+
+    try:
+      with caplog.at_level(logging.WARNING):
+        row, drop_stats = await self._log_user_message(
+            config, mock_write_client, invocation_context, dummy_arrow_schema
+        )
+    finally:
+      tripwire.armed = False
+
+    assert row["error_message"] == expected_error_message
+    assert (
+        row["content"]
+        == bigquery_agent_analytics_plugin._FORMATTER_FAILED_SENTINEL
+    )
+    assert drop_stats.get("formatter_failed") == 1
+    assert "TRIPWIRE" not in caplog.text
+
+  async def test_formatter_exception_text_never_reaches_the_row(
+      self, mock_write_client, invocation_context, dummy_arrow_schema
+  ):
+    """Neither the exception's message nor the content it embeds is written."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=_raise_import_error
+    )
+
+    row, _ = await self._log_user_message(
+        config, mock_write_client, invocation_context, dummy_arrow_schema
+    )
+
+    written = json.dumps(row, default=str)
+    assert "cannot import name" not in written
+    assert self.SECRET not in written
+
+  @pytest.mark.parametrize(
+      ("tool_error_text", "expected_error_message"),
+      [
+          pytest.param(
+              "upstream timed out after 30s",
+              "upstream timed out after 30s;"
+              " content_formatter raised ImportError",
+              id="appended_after_existing_message",
+          ),
+          pytest.param(
+              "",
+              "RuntimeError; content_formatter raised ImportError",
+              id="message_less_error_records_its_type_first",
+          ),
+      ],
+  )
+  async def test_formatter_failure_follows_the_events_own_error_message(
+      self,
+      tool_error_text,
+      expected_error_message,
+      mock_write_client,
+      tool_context,
+      dummy_arrow_schema,
+  ):
+    """An error row keeps its own diagnostic first; the formatter's follows."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=_raise_import_error
+    )
+    tool = mock.create_autospec(
+        base_tool_lib.BaseTool, instance=True, spec_set=True
+    )
+    type(tool).name = mock.PropertyMock(return_value="lookup")
+
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(tool_context)
+      await plugin.on_tool_error_callback(
+          tool=tool,
+          tool_args={"account": self.SECRET},
+          tool_context=tool_context,
+          error=RuntimeError(tool_error_text),
+      )
+      await plugin.flush()
+      row = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+
+    assert row["error_message"] == expected_error_message
+    # The event's own status is kept; the formatter failure does not reset it.
+    assert row["status"] == "ERROR"
+
+  async def test_formatter_traceback_is_not_logged_by_default(
+      self, mock_write_client, invocation_context, dummy_arrow_schema, caplog
+  ):
+    """By default the formatter-failure warning is constant, no traceback."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=_raise_import_error
+    )
+
+    with caplog.at_level(logging.WARNING):
+      await self._log_user_message(
+          config, mock_write_client, invocation_context, dummy_arrow_schema
+      )
+
+    warnings = self._formatter_warnings(caplog)
+    assert [record.getMessage() for record in warnings] == [
+        self.DEFAULT_WARNING
+    ]
+    assert not warnings[0].exc_info
+    assert self.SECRET not in caplog.text
+
+  async def test_debug_flag_logs_traceback_locally_but_not_to_the_row(
+      self, mock_write_client, invocation_context, dummy_arrow_schema, caplog
+  ):
+    """debug_content_formatter_errors sends the traceback to the log only.
+
+    The traceback is rendered to text before logging, so no handler ever
+    receives the live exception. It carries the exception message and the
+    content that message embeds, so the row still names only the class.
+    """
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=_raise_import_error,
+        debug_content_formatter_errors=True,
+    )
+
+    with caplog.at_level(logging.WARNING):
+      row, _ = await self._log_user_message(
+          config, mock_write_client, invocation_context, dummy_arrow_schema
+      )
+
+    warnings = self._formatter_warnings(caplog)
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert message.startswith(self.DEFAULT_WARNING)
+    assert "Traceback (most recent call last)" in message
+    assert self.SECRET in message
+    assert not warnings[0].exc_info
+    assert row["error_message"] == "content_formatter raised ImportError"
+    assert self.SECRET not in json.dumps(row, default=str)
+
+  @pytest.mark.parametrize(
+      ("depth", "message"),
+      [
+          pytest.param(0, "x" * 12288, id="long_message"),
+          pytest.param(80, "deep stack failure", id="deep_stack"),
+          pytest.param(80, "x" * 12288, id="deep_stack_long_message"),
+      ],
+  )
+  async def test_debug_flag_truncates_oversized_formatter_traceback(
+      self,
+      depth,
+      message,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+      caplog,
+  ):
+    """An oversized debug traceback is capped per part, then at both ends.
+
+    One failure cannot flood the log. A long message is cut on its own line,
+    so it cannot fill the kept tail, and the innermost frame and the
+    exception line, which Python prints last, survive a deep stack.
+    """
+    plugin_module = bigquery_agent_analytics_plugin
+    part_limit = plugin_module._MAX_FORMATTER_TRACEBACK_PART_CHARS
+    limit = plugin_module._MAX_FORMATTER_TRACEBACK_CHARS
+    cut = plugin_module._FORMATTER_TRACEBACK_CUT
+    half = limit // 2
+    raised = []
+
+    def descend(remaining):
+      if remaining == 0:
+        raise ValueError(message)
+      # Two call sites, alternated, keep consecutive frames distinct, so the
+      # traceback module does not collapse them into one repeated line.
+      if remaining % 2:
+        return descend(remaining - 1)
+      return descend(remaining - 1)
+
+    def formatter(content, event_type):
+      try:
+        descend(depth)
+      except ValueError as error:
+        raised.append(error)
+        raise
+
+    config = plugin_module.BigQueryLoggerConfig(
+        content_formatter=formatter, debug_content_formatter_errors=True
+    )
+
+    with caplog.at_level(logging.WARNING):
+      row, drop_stats = await self._log_user_message(
+          config, mock_write_client, invocation_context, dummy_arrow_schema
+      )
+
+    parts = traceback.format_exception(raised[0])
+    full = "".join(parts).rstrip("\n")
+    capped = "".join(
+        part if len(part) <= part_limit else part[:part_limit] + "...\n"
+        for part in parts
+    ).rstrip("\n")
+    assert len(full) > limit
+    warnings = self._formatter_warnings(caplog)
+    assert len(warnings) == 1
+    log_message = warnings[0].getMessage()
+    prefix = self.DEFAULT_WARNING + " Debug traceback:\n"
+    assert log_message.startswith(prefix)
+    rendered = log_message[len(prefix) :]
+    assert rendered.startswith("Traceback (most recent call last)")
+    exception_line = f"ValueError: {message}"
+    if len(exception_line) >= part_limit:
+      exception_line = exception_line[:part_limit] + "..."
+    assert rendered.endswith("\n" + exception_line)
+    if not depth:
+      # The per-part cap alone brings a single frame under the budget.
+      assert rendered == capped
+      assert len(rendered) <= limit
+    else:
+      assert rendered == capped[:half] + cut + "\n" + capped[-half:]
+      assert len(rendered) == limit + len(cut) + 1
+      # Head-only slicing would have dropped the exception line.
+      assert "ValueError: " not in full[:limit]
+      # The innermost frame survives in the kept tail.
+      assert "raise ValueError(message)" in rendered[-half:]
+      if len(message) > part_limit:
+        # Uncapped, the message alone would fill the kept tail.
+        assert "ValueError: " not in full[-half:]
+        assert "raise ValueError(message)" not in full[-half:]
+    assert row["error_message"] == "content_formatter raised ValueError"
+    assert drop_stats.get("formatter_failed") == 1
+
+  @pytest.mark.parametrize(
+      ("debug", "render_error"),
+      [
+          pytest.param(False, RuntimeError, id="debug_off"),
+          pytest.param(True, RuntimeError, id="debug_on_exception"),
+          pytest.param(True, asyncio.CancelledError, id="debug_on_cancelled"),
+          pytest.param(True, KeyboardInterrupt, id="debug_on_interrupt"),
+          pytest.param(True, SystemExit, id="debug_on_exit"),
+          pytest.param(
+              True,
+              _NeitherInterruptNorCancellation,
+              id="debug_on_other_base_exception",
+          ),
+      ],
+  )
+  async def test_unrenderable_traceback_never_affects_the_row(
+      self,
+      debug,
+      render_error,
+      monkeypatch,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """A traceback that cannot be rendered falls back to a constant line.
+
+    Whatever the exception's own code raises while it is rendered, including
+    KeyboardInterrupt and SystemExit, is contained: the row is written and
+    counted, and the warning is still logged with a placeholder. Uses a stock
+    StreamHandler with logging.raiseExceptions on, Python's default.
+    """
+    monkeypatch.setattr(logging, "raiseExceptions", True)
+    tripwire = _Tripwire(render_error)
+
+    # Rendering reads the traceback and the chained exceptions through
+    # the exception's own __getattribute__ and calls its __str__; both
+    # fire here.
+    class _UnrenderableError(ValueError):
+
+      def __getattribute__(self, name):
+        if name in (
+            "__traceback__",
+            "__cause__",
+            "__context__",
+            "__suppress_context__",
+            "__notes__",
+        ):
+          tripwire.fire(f"exception __getattribute__({name!r})")
+        return super().__getattribute__(name)
+
+      def __str__(self):
+        tripwire.fire("exception __str__")
+        return "unrenderable"
+
+    def formatter(content, event_type):
+      failure = _UnrenderableError()
+      tripwire.armed = True
+      raise failure
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=formatter, debug_content_formatter_errors=debug
+    )
+    stream = io.StringIO()
+
+    def disarm():
+      tripwire.armed = False
+
+    with self._standard_handler_on_plugin_logger(stream):
+      row, drop_stats = await self._log_user_message_contained(
+          config,
+          mock_write_client,
+          invocation_context,
+          dummy_arrow_schema,
+          cleanup=disarm,
+      )
+
+    assert row["error_message"] == (
+        "content_formatter raised <subclass of ValueError>"
+    )
+    assert (
+        row["content"]
+        == bigquery_agent_analytics_plugin._FORMATTER_FAILED_SENTINEL
+    )
+    assert drop_stats.get("formatter_failed") == 1
+    logged = stream.getvalue()
+    assert logged.startswith(self.DEFAULT_WARNING)
+    assert ("[traceback could not be rendered]" in logged) is debug
+    assert "TRIPWIRE" not in logged
+
+  @pytest.mark.parametrize(
+      "interrupt",
+      [KeyboardInterrupt, SystemExit, asyncio.CancelledError],
+      ids=["keyboard_interrupt", "system_exit", "cancelled_error"],
+  )
+  async def test_interrupts_raised_by_the_formatter_call_still_propagate(
+      self, interrupt, mock_write_client, invocation_context, dummy_arrow_schema
+  ):
+    """Containment covers diagnosis only, never the formatter call itself.
+
+    The fail-closed boundary around the call catches Exception, so an
+    interrupt or cancellation raised while the formatter runs reaches the
+    caller exactly as before.
+    """
+
+    def formatter(content, event_type):
+      raise interrupt("raised by the formatter call")
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=formatter, debug_content_formatter_errors=True
+    )
+
+    with pytest.raises(interrupt, match="raised by the formatter call"):
+      await self._log_user_message(
+          config, mock_write_client, invocation_context, dummy_arrow_schema
+      )
+
+  async def test_failing_log_handler_never_prints_the_formatter_exception(
+      self,
+      capsys,
+      monkeypatch,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """A handler that fails while warning cannot print the formatter error.
+
+    logging's handleError prints the failing handler's exception chain to
+    stderr. The warning is emitted after the formatter's exception is no
+    longer being handled, so that chain never includes it or the content its
+    message embeds.
+    """
+    monkeypatch.setattr(logging, "raiseExceptions", True)
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=_raise_import_error
+    )
+    closed_stream = io.StringIO()
+    closed_stream.close()
+
+    with self._standard_handler_on_plugin_logger(closed_stream):
+      row, drop_stats = await self._log_user_message_contained(
+          config, mock_write_client, invocation_context, dummy_arrow_schema
+      )
+
+    assert row["error_message"] == "content_formatter raised ImportError"
+    assert drop_stats.get("formatter_failed") == 1
+    stderr = capsys.readouterr().err
+    assert "--- Logging error ---" in stderr
+    assert self.SECRET not in stderr
+
+  @pytest.mark.parametrize(
+      ("raised", "expected_error_message", "expected_warning"),
+      [
+          pytest.param(
+              True,
+              "content_formatter raised <unknown class>",
+              DEFAULT_WARNING,
+              id="raised",
+          ),
+          pytest.param(
+              False,
+              "content_formatter returned unsupported type <unknown class>",
+              UNSUPPORTED_WARNING,
+              id="returned",
+          ),
+      ],
+  )
+  async def test_class_that_cannot_be_read_still_gets_a_row_and_a_warning(
+      self,
+      raised,
+      expected_error_message,
+      expected_warning,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+      caplog,
+  ):
+    """A failed class that even type's own descriptors reject is not named.
+
+    A meta-metaclass can drop type from the failed class's metaclass MRO
+    after the class exists, so every descriptor read raises TypeError. The
+    row is still written and counted, the constant warning is still logged,
+    and nothing from the formatter's exception reaches either.
+    """
+
+    class _MetaclassMroBreaker:
+      """Builds a metaclass whose own MRO can drop `type` after classes exist.
+
+      Reading a class through type's descriptors first checks that the class's
+      metaclass is a subtype of type, by walking the metaclass's MRO, so every
+      such read raises TypeError once the MRO is broken. pytest reads the same
+      descriptors when it reports a failure, so tests restore the MRO before
+      anything is reported.
+      """
+
+      def __init__(self):
+        self.broken = False
+        breaker = self
+
+        class _MetaMeta(type):
+
+          def mro(cls):
+            return [cls, object] if breaker.broken else super().mro()
+
+        self.metaclass = _MetaMeta("_BreakableMeta", (type,), {})
+
+      def break_mro(self):
+        self.broken = True
+        self.metaclass.__bases__ = (type,)  # Recomputes the metaclass MRO.
+
+      def restore(self):
+        if self.broken:
+          self.broken = False
+          self.metaclass.__bases__ = (type,)
+
+    breaker = _MetaclassMroBreaker()
+
+    def formatter(content, event_type):
+      name = _identifier_from_content(content)
+      if raised:
+        failure = breaker.metaclass(name, (ValueError,), {})(
+            f"cannot redact {content}"
+        )
+      else:
+        failure = breaker.metaclass(name, (), {})()
+      breaker.break_mro()
+      if raised:
+        raise failure
+      return failure
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=formatter
+    )
+
+    with caplog.at_level(logging.WARNING):
+      row, drop_stats = await self._log_user_message_contained(
+          config,
+          mock_write_client,
+          invocation_context,
+          dummy_arrow_schema,
+          cleanup=breaker.restore,
+      )
+
+    assert row["error_message"] == expected_error_message
+    assert (
+        row["content"]
+        == bigquery_agent_analytics_plugin._FORMATTER_FAILED_SENTINEL
+    )
+    assert drop_stats.get("formatter_failed") == 1
+    assert [
+        record.getMessage() for record in self._formatter_warnings(caplog)
+    ] == [expected_warning]
+    for payload_text in (self.SECRET, self.PAYLOAD_IDENTIFIER):
+      assert payload_text not in json.dumps(row, default=str)
+      assert payload_text not in caplog.text
+
+  @pytest.mark.parametrize(
+      "result",
+      [
+          "none",
+          "hostile_str_subclass",
+          "dict_subclass",
+          "list_subclass",
+          "content",
+          "part",
+          "llm_request",
+      ],
+  )
+  async def test_supported_results_pass_through_unchanged(
+      self, result, mock_write_client, invocation_context, dummy_arrow_schema
+  ):
+    """Results the parser logs natively are logged, and nothing is counted.
+
+    A str subclass is copied to the exact built-in first, so the parser never
+    runs the subclass's own hooks.
+    """
+    tripwire = _Tripwire(asyncio.CancelledError)
+
+    class _Dict(dict):
+      pass
+
+    class _List(list):
+      pass
+
+    class _HostileStr(str):
+
+      @property
+      def __class__(self):
+        tripwire.fire("str __class__ property")
+        return type(self)
+
+      def __getattribute__(self, name):
+        tripwire.fire(f"str __getattribute__({name!r})")
+        return super().__getattribute__(name)
+
+      def __str__(self):
+        tripwire.fire("str __str__")
+        return super().__str__()
+
+      def __len__(self):
+        tripwire.fire("str __len__")
+        return super().__len__()
+
+      def __hash__(self):
+        tripwire.fire("str __hash__")
+        return super().__hash__()
+
+      def __format__(self, spec):
+        tripwire.fire("str __format__")
+        return super().__format__(spec)
+
+    def formatter(content, event_type):
+      if result == "hostile_str_subclass":
+        value = _HostileStr("redacted text")
+        tripwire.armed = True
+        return value
+      return {
+          "none": None,
+          "dict_subclass": _Dict(redacted="text"),
+          "list_subclass": _List(["redacted"]),
+          "content": types.Content(parts=[types.Part(text="redacted")]),
+          "part": types.Part(text="redacted"),
+          "llm_request": llm_request_lib.LlmRequest(),
+      }[result]
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=formatter
+    )
+
+    def disarm():
+      tripwire.armed = False
+
+    row, drop_stats = await self._log_user_message_contained(
+        config,
+        mock_write_client,
+        invocation_context,
+        dummy_arrow_schema,
+        cleanup=disarm,
+    )
+
+    assert drop_stats.get("formatter_failed", 0) == 0
+    assert row["error_message"] is None
+    assert (
+        row["content"]
+        != bigquery_agent_analytics_plugin._FORMATTER_FAILED_SENTINEL
+    )
+    if result == "hostile_str_subclass":
+      assert row["content"] == "redacted text"
+
+  @pytest.mark.parametrize(
+      "hook_error",
+      [
+          asyncio.CancelledError,
+          SystemExit,
+          KeyboardInterrupt,
+          RuntimeError,
+          None,
+      ],
+      ids=[
+          "cancelled_error",
+          "system_exit",
+          "keyboard_interrupt",
+          "runtime_error",
+          "claims_to_be_a_dict",
+      ],
+  )
+  @pytest.mark.parametrize("via", ["property", "getattribute"])
+  async def test_result_that_lies_about_its_class_is_rejected_unrun(
+      self,
+      via,
+      hook_error,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """A result is judged by its real type, never by its own __class__.
+
+    isinstance falls back to an object's __class__, which runs the object's
+    code: it can raise anything, or claim to be a dict. Its real type runs
+    none of that code, so such a result is simply an unsupported one, and
+    the formatter is not reported as having raised.
+    """
+    tripwire = _Tripwire(hook_error or RuntimeError)
+    claims = dict if hook_error is None else None
+
+    # isinstance falls back to an object's __class__ when its real type
+    # does not match, which runs this code. `claims` is what the lookup
+    # reports instead of the real class.
+    if via == "property":
+
+      class _Result:
+
+        @property
+        def __class__(self):
+          tripwire.fire("__class__ property")
+          return claims if claims is not None else type(self)
+
+    else:
+
+      class _Result:
+
+        def __getattribute__(self, name):
+          if name == "__class__":
+            tripwire.fire("__getattribute__('__class__')")
+            if claims is not None:
+              return claims
+          return super().__getattribute__(name)
+
+    def formatter(content, event_type):
+      result = _Result()
+      tripwire.armed = hook_error is not None
+      return result
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=formatter
+    )
+
+    def disarm():
+      tripwire.armed = False
+
+    row, drop_stats = await self._log_user_message_contained(
+        config,
+        mock_write_client,
+        invocation_context,
+        dummy_arrow_schema,
+        cleanup=disarm,
+    )
+
+    assert row["error_message"] == (
+        "content_formatter returned unsupported type <subclass of object>"
+    )
+    assert (
+        row["content"]
+        == bigquery_agent_analytics_plugin._FORMATTER_FAILED_SENTINEL
+    )
+    assert drop_stats.get("formatter_failed") == 1
+
+  @pytest.mark.parametrize(
+      "payload_named",
+      [False, True],
+      ids=["async_formatter", "payload_named_coroutine"],
+  )
+  async def test_rejected_coroutine_is_closed_without_a_warning(
+      self,
+      payload_named,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """A coroutine result is closed before it starts, so it never warns.
+
+    Released unawaited, it would emit "coroutine '<name>' was never
+    awaited", and a formatter can set that name from the content.
+    """
+    ran = []
+
+    async def coroutine_body():
+      ran.append("coroutine_body")
+
+    if payload_named:
+
+      def formatter(content, event_type):
+        coroutine = coroutine_body()
+        coroutine.__qualname__ = _identifier_from_content(content)
+        return coroutine
+
+    else:
+
+      async def formatter(content, event_type):
+        ran.append("formatter")
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=formatter
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+      warnings.simplefilter("always")
+      row, drop_stats = await self._log_user_message_contained(
+          config, mock_write_client, invocation_context, dummy_arrow_schema
+      )
+      gc.collect()
+
+    assert row["error_message"] == (
+        "content_formatter returned unsupported type coroutine"
+    )
+    assert drop_stats.get("formatter_failed") == 1
+    assert not ran
+    messages = [str(warning.message) for warning in caught]
+    assert not [message for message in messages if "never awaited" in message]
+    assert not [
+        message for message in messages if self.PAYLOAD_IDENTIFIER in message
+    ]
+
+  @pytest.mark.parametrize(
+      "injected",
+      [
+          RuntimeError,
+          asyncio.CancelledError,
+          KeyboardInterrupt,
+          SystemExit,
+          _NeitherInterruptNorCancellation,
+      ],
+      ids=[
+          "runtime_error",
+          "cancelled_error",
+          "keyboard_interrupt",
+          "system_exit",
+          "other_base_exception",
+      ],
+  )
+  @pytest.mark.parametrize(
+      ("step", "raised"),
+      [
+          pytest.param("label", True, id="label-raised"),
+          pytest.param("label", False, id="label-returned"),
+          pytest.param("render", True, id="render-raised"),
+          pytest.param("log_handler", True, id="log_handler-raised"),
+          pytest.param("log_handler", False, id="log_handler-returned"),
+          pytest.param("log_filter", True, id="log_filter-raised"),
+          pytest.param("log_filter", False, id="log_filter-returned"),
+          pytest.param("admit", False, id="admit-returned"),
+          pytest.param("close", False, id="close-returned"),
+      ],
+  )
+  async def test_a_raise_anywhere_in_diagnosis_leaves_the_row_intact(
+      self,
+      step,
+      raised,
+      injected,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+      caplog,
+  ):
+    """An Exception raised by any step after the formatter call keeps the row.
+
+    Judging the result, closing a rejected generator, naming the failed
+    class, rendering the debug traceback, and emitting the warning through
+    the logger's filters and handlers all run behind one boundary. Each step
+    here raises each kind of exception. An Exception is contained, and the
+    sentinel row, its drop count, and a payload-free error_message still
+    come out.
+
+    Closing runs the rejected generator's own code, so whatever it raises,
+    BaseException included, is contained. Every other step runs only plugin
+    or application code, so a BaseException raised there, such as
+    KeyboardInterrupt, SystemExit, or asyncio.CancelledError, propagates
+    unchanged and no row is written.
+    """
+    plugin_module = bigquery_agent_analytics_plugin
+    plugin_logger = logging.getLogger("google_adk." + plugin_module.__name__)
+
+    def raise_injected(*args, **kwargs):
+      raise injected(f"injected into {step}")
+
+    def raise_for_formatter_warnings(record):
+      if record.getMessage().startswith("Content formatter "):
+        raise_injected()
+      return True
+
+    class _RaisingHandler(logging.Handler):
+
+      def emit(self, record):
+        raise_for_formatter_warnings(record)
+
+    def return_started_generator(content, event_type):
+      def generator():
+        try:
+          yield "started"
+        finally:
+          raise_injected()
+
+      started = generator()
+      next(started)
+      return started
+
+    if raised:
+      formatter = _raise_import_error
+    elif step == "close":
+      formatter = return_started_generator
+    else:
+      formatter = _return_tuple
+    config = plugin_module.BigQueryLoggerConfig(
+        content_formatter=formatter, debug_content_formatter_errors=True
+    )
+    handler = _RaisingHandler()
+    injections = {
+        "label": mock.patch.object(
+            plugin_module, "_formatter_failure_message", raise_injected
+        ),
+        "render": mock.patch.object(
+            plugin_module, "_render_formatter_traceback", raise_injected
+        ),
+        "log_handler": contextlib.nullcontext(),
+        "log_filter": contextlib.nullcontext(),
+        "admit": mock.patch.object(
+            plugin_module, "_natively_parsed", raise_injected
+        ),
+        "close": contextlib.nullcontext(),
+    }
+    unraisable = []
+
+    def record_unraisable(hook_args):
+      unraisable.append(hook_args.exc_value)
+
+    if step == "log_handler":
+      plugin_logger.addHandler(handler)
+    if step == "log_filter":
+      plugin_logger.addFilter(raise_for_formatter_warnings)
+    try:
+      with injections[step], caplog.at_level(logging.WARNING):
+        with mock.patch.object(sys, "unraisablehook", record_unraisable):
+          row, drop_stats, escaped = await self._log_user_message_catching(
+              config, mock_write_client, invocation_context, dummy_arrow_schema
+          )
+          gc.collect()
+    finally:
+      plugin_logger.removeHandler(handler)
+      plugin_logger.removeFilter(raise_for_formatter_warnings)
+
+    # The rejected generator is closed inside the boundary. Released unclosed,
+    # its cleanup would raise at the unraisable hook, which prints the error.
+    assert not [
+        error
+        for error in unraisable
+        if type(error) is injected and error.args == (f"injected into {step}",)
+    ]
+    assert self.SECRET not in caplog.text
+    if step != "close" and not issubclass(injected, Exception):
+      # Only plugin or application code raised it, so it is not contained.
+      assert type(escaped) is injected
+      assert escaped.args == (f"injected into {step}",)
+      assert row is None
+      assert not drop_stats.get("formatter_failed")
+      return
+    assert escaped is None
+    outcome = "raised" if raised else "returned unsupported type"
+    if step in ("label", "admit"):
+      expected_error_message = f"content_formatter {outcome} <unknown class>"
+    elif step == "close":
+      expected_error_message = (
+          "content_formatter returned unsupported type generator"
+      )
+    elif raised:
+      expected_error_message = "content_formatter raised ImportError"
+    else:
+      expected_error_message = (
+          "content_formatter returned unsupported type tuple"
+      )
+    assert row["error_message"] == expected_error_message
+    assert row["content"] == plugin_module._FORMATTER_FAILED_SENTINEL
+    assert drop_stats.get("formatter_failed") == 1
+    assert self.SECRET not in json.dumps(row, default=str)
 
 
 class TestSafeCallbackDecorator:
@@ -5804,12 +7725,31 @@ class TestEventId:
     assert event_ids[0] == event_ids[1]
 
 
+_PICKLED_SCHEMA_ERROR_CALLS: list[Exception] = []
+_PICKLED_SCHEMA_READY_CALLS: list[bool] = []
+
+
+def _module_level_on_schema_error(exc: Exception) -> None:
+  _PICKLED_SCHEMA_ERROR_CALLS.append(exc)
+
+
+def _module_level_on_schema_ready() -> None:
+  _PICKLED_SCHEMA_READY_CALLS.append(True)
+
+
 class TestSchemaAutoUpgrade:
   """Tests for _ensure_schema_exists with auto_schema_upgrade."""
 
-  def _make_plugin(self, auto_schema_upgrade=False):
+  def _make_plugin(
+      self,
+      auto_schema_upgrade=False,
+      on_schema_error=None,
+      on_schema_ready=None,
+  ):
     config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
         auto_schema_upgrade=auto_schema_upgrade,
+        on_schema_error=on_schema_error,
+        on_schema_ready=on_schema_ready,
     )
     with mock.patch("google.cloud.bigquery.Client"):
       plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
@@ -6113,6 +8053,428 @@ class TestSchemaAutoUpgrade:
     with pytest.raises(cloud_exceptions.ServiceUnavailable):
       plugin._ensure_schema_exists()
 
+  def test_on_schema_error_not_called_on_table_creation(self):
+    """on_schema_error is not invoked when table is created normally."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=False, on_schema_error=hook)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+
+    plugin._ensure_schema_exists()
+
+    hook.assert_not_called()
+
+  def test_on_schema_error_not_called_when_table_exists(self):
+    """on_schema_error is not invoked when existing table is ready."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=False, on_schema_error=hook)
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [bigquery.SchemaField("timestamp", "TIMESTAMP")]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    plugin._ensure_schema_exists()
+
+    hook.assert_not_called()
+
+  def test_on_schema_error_not_called_on_view_failure(self):
+    """on_schema_error is not invoked when analytics view creation fails."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=False, on_schema_error=hook)
+    plugin.config.create_views = True
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [bigquery.SchemaField("timestamp", "TIMESTAMP")]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    with mock.patch.object(
+        plugin, "_create_analytics_views", return_value=False
+    ):
+      assert plugin._ensure_schema_exists() is False
+
+    hook.assert_not_called()
+
+  def test_on_schema_error_not_called_when_client_uninitialized(self):
+    """on_schema_error is not invoked when client is None (RuntimeError)."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=False, on_schema_error=hook)
+    plugin.client = None
+
+    with pytest.raises(RuntimeError):
+      plugin._ensure_schema_exists()
+
+    hook.assert_not_called()
+
+  def test_on_schema_error_called_on_incompatible_schema(self):
+    """on_schema_error is invoked with ValueError on incompatible schema."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=True, on_schema_error=hook)
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "STRING", mode="REQUIRED"),
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    with pytest.raises(ValueError) as exc_info:
+      plugin._ensure_schema_exists()
+
+    hook.assert_called_once_with(exc_info.value)
+
+  def test_on_schema_error_called_on_get_table_error(self):
+    """on_schema_error is invoked when get_table fails with Forbidden."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=True, on_schema_error=hook)
+    err = cloud_exceptions.Forbidden("access denied")
+    plugin.client.get_table.side_effect = err
+
+    with pytest.raises(cloud_exceptions.Forbidden):
+      plugin._ensure_schema_exists()
+
+    hook.assert_called_once_with(err)
+
+  def test_on_schema_error_called_on_create_table_error(self):
+    """on_schema_error is invoked when create_table fails after NotFound."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=True, on_schema_error=hook)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound(
+        "table not found"
+    )
+    create_err = cloud_exceptions.NotFound("dataset not found")
+    plugin.client.create_table.side_effect = create_err
+
+    with pytest.raises(cloud_exceptions.NotFound) as exc_info:
+      plugin._ensure_schema_exists()
+
+    assert exc_info.value is create_err
+    hook.assert_called_once_with(create_err)
+
+  def test_on_schema_error_called_on_conflict_refetch_error(self):
+    """on_schema_error is invoked when post-Conflict readiness check fails."""
+    hook = mock.MagicMock()
+    plugin = self._make_plugin(auto_schema_upgrade=True, on_schema_error=hook)
+    refetch_err = cloud_exceptions.ServiceUnavailable("control plane down")
+    plugin.client.get_table.side_effect = [
+        cloud_exceptions.NotFound("not found"),
+        refetch_err,
+    ]
+    plugin.client.create_table.side_effect = cloud_exceptions.Conflict(
+        "already exists"
+    )
+
+    with pytest.raises(cloud_exceptions.ServiceUnavailable):
+      plugin._ensure_schema_exists()
+
+    hook.assert_called_once_with(refetch_err)
+
+  def test_on_schema_error_callback_exception_is_suppressed(self):
+    """Exceptions raised by on_schema_error do not mask the schema error."""
+    hook = mock.MagicMock(side_effect=RuntimeError("callback crashed"))
+    plugin = self._make_plugin(auto_schema_upgrade=True, on_schema_error=hook)
+    err = cloud_exceptions.Forbidden("access denied")
+    plugin.client.get_table.side_effect = err
+
+    with pytest.raises(cloud_exceptions.Forbidden) as exc_info:
+      plugin._ensure_schema_exists()
+
+    assert exc_info.value is err
+    hook.assert_called_once_with(err)
+
+  def test_on_schema_error_called_on_additive_upgrade_update_table_error(self):
+    """on_schema_error is called when update_table fails on additive upgrade."""
+    error_hook = mock.MagicMock()
+    ready_hook = mock.MagicMock()
+    plugin = self._make_plugin(
+        auto_schema_upgrade=True,
+        on_schema_error=error_hook,
+        on_schema_ready=ready_hook,
+    )
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+    update_err = cloud_exceptions.Forbidden("cannot update schema")
+    plugin.client.update_table.side_effect = update_err
+
+    with pytest.raises(cloud_exceptions.Forbidden) as exc_info:
+      plugin._ensure_schema_exists()
+
+    assert exc_info.value is update_err
+    error_hook.assert_called_once_with(update_err)
+    ready_hook.assert_not_called()
+
+  def test_on_schema_error_not_called_on_label_only_update_table_error(self):
+    """Label-only update_table failure calls on_schema_ready, not error."""
+    error_hook = mock.MagicMock()
+    ready_hook = mock.MagicMock()
+    plugin = self._make_plugin(
+        auto_schema_upgrade=True,
+        on_schema_error=error_hook,
+        on_schema_ready=ready_hook,
+    )
+    plugin.config.create_views = False
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = list(plugin._schema)
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+    plugin.client.update_table.side_effect = cloud_exceptions.Forbidden(
+        "labels policy denied"
+    )
+
+    assert plugin._ensure_schema_exists() is True
+    error_hook.assert_not_called()
+    ready_hook.assert_called_once_with()
+
+  @pytest.mark.parametrize("auto_schema_upgrade", [True, False])
+  def test_on_schema_error_not_called_when_schema_not_initialized(
+      self, auto_schema_upgrade
+  ):
+    """on_schema_error is not invoked when _schema is None (RuntimeError)."""
+    error_hook = mock.MagicMock()
+    ready_hook = mock.MagicMock()
+    plugin = self._make_plugin(
+        auto_schema_upgrade=auto_schema_upgrade,
+        on_schema_error=error_hook,
+        on_schema_ready=ready_hook,
+    )
+    plugin._schema = None
+
+    with pytest.raises(
+        RuntimeError, match="BigQuery schema is not initialized"
+    ):
+      plugin._ensure_schema_exists()
+
+    plugin.client.get_table.assert_not_called()
+    error_hook.assert_not_called()
+    ready_hook.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_on_schema_error_called_via_ensure_started_across_retries(
+      self, mock_auth_default, mock_bq_client, mock_write_client
+  ):
+    """_ensure_started calls on_schema_error on retries and ready once."""
+    _ = mock_auth_default, mock_write_client
+    loop_thread_id = threading.get_ident()
+    error_thread_ids: list[int] = []
+    ready_thread_ids: list[int] = []
+    error_hook = mock.MagicMock(
+        side_effect=lambda _exc: error_thread_ids.append(threading.get_ident())
+    )
+    ready_hook = mock.MagicMock(
+        side_effect=lambda: ready_thread_ids.append(threading.get_ident())
+    )
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        create_views=False,
+        on_schema_error=error_hook,
+        on_schema_ready=ready_hook,
+    )
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    )
+    err1 = cloud_exceptions.ServiceUnavailable("attempt 1 failed")
+    err2 = cloud_exceptions.Forbidden("attempt 2 failed")
+    ready_table = mock.MagicMock(spec=bigquery.Table)
+    ready_table.schema = bigquery_agent_analytics_plugin._get_events_schema()
+    ready_table.labels = {
+        bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY: (
+            bigquery_agent_analytics_plugin._SCHEMA_VERSION
+        )
+    }
+    mock_bq_client.get_table.side_effect = [err1, err2, ready_table]
+
+    try:
+      assert await plugin._ensure_started() == "failed"
+      error_hook.assert_called_once_with(err1)
+      ready_hook.assert_not_called()
+
+      plugin._setup_retry_at = 0.0
+      assert await plugin._ensure_started() == "failed"
+      assert error_hook.call_args_list == [mock.call(err1), mock.call(err2)]
+      ready_hook.assert_not_called()
+
+      plugin._setup_retry_at = 0.0
+      assert await plugin._ensure_started() == "ok"
+      assert error_hook.call_count == 2
+      ready_hook.assert_called_once_with()
+      assert len(error_thread_ids) == 2
+      assert all(tid != loop_thread_id for tid in error_thread_ids)
+      assert len(ready_thread_ids) == 1
+      assert ready_thread_ids[0] != loop_thread_id
+    finally:
+      await plugin.shutdown()
+
+  def test_on_schema_callbacks_stdlib_pickle_roundtrip(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Module-level schema callbacks round-trip through stdlib pickle."""
+    _ = mock_auth_default, mock_bq_client
+    _PICKLED_SCHEMA_ERROR_CALLS.clear()
+    _PICKLED_SCHEMA_READY_CALLS.clear()
+    try:
+      config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          auto_schema_upgrade=False,
+          create_views=False,
+          on_schema_error=_module_level_on_schema_error,
+          on_schema_ready=_module_level_on_schema_ready,
+      )
+      plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      )
+      unpickled = pickle.loads(pickle.dumps(plugin))
+      assert unpickled.config.on_schema_error is _module_level_on_schema_error
+      assert unpickled.config.on_schema_ready is _module_level_on_schema_ready
+
+      unpickled.client = mock.MagicMock()
+      unpickled.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+      unpickled._schema = bigquery_agent_analytics_plugin._get_events_schema()
+      existing = mock.MagicMock(spec=bigquery.Table)
+      existing.schema = list(unpickled._schema)
+      existing.labels = {}
+      unpickled.client.get_table.return_value = existing
+
+      assert unpickled._ensure_schema_exists() is True
+      assert _PICKLED_SCHEMA_READY_CALLS == [True]
+      assert not _PICKLED_SCHEMA_ERROR_CALLS
+
+      err = cloud_exceptions.Forbidden("denied")
+      unpickled.client.get_table.side_effect = err
+      with pytest.raises(cloud_exceptions.Forbidden):
+        unpickled._ensure_schema_exists()
+      assert _PICKLED_SCHEMA_ERROR_CALLS == [err]
+    finally:
+      _PICKLED_SCHEMA_ERROR_CALLS.clear()
+      _PICKLED_SCHEMA_READY_CALLS.clear()
+
+  def test_on_schema_ready_called_when_table_exists(self):
+    """on_schema_ready is invoked when existing table is ready."""
+    ready_hook = mock.MagicMock()
+    plugin = self._make_plugin(
+        auto_schema_upgrade=False, on_schema_ready=ready_hook
+    )
+    plugin.config.create_views = False
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [bigquery.SchemaField("timestamp", "TIMESTAMP")]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    assert plugin._ensure_schema_exists() is True
+    ready_hook.assert_called_once_with()
+
+  def test_on_schema_ready_called_on_table_creation(self):
+    """on_schema_ready is invoked when table is created on NotFound."""
+    ready_hook = mock.MagicMock()
+    plugin = self._make_plugin(
+        auto_schema_upgrade=False, on_schema_ready=ready_hook
+    )
+    plugin.config.create_views = False
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+
+    assert plugin._ensure_schema_exists() is True
+    ready_hook.assert_called_once_with()
+
+  def test_on_schema_ready_not_called_on_view_failure(self):
+    """on_schema_ready is not called when _create_analytics_views fails."""
+    ready_hook = mock.MagicMock()
+    plugin = self._make_plugin(
+        auto_schema_upgrade=False, on_schema_ready=ready_hook
+    )
+    plugin.config.create_views = True
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [bigquery.SchemaField("timestamp", "TIMESTAMP")]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    with mock.patch.object(
+        plugin, "_create_analytics_views", return_value=False
+    ):
+      assert plugin._ensure_schema_exists() is False
+
+    ready_hook.assert_not_called()
+
+  def test_on_schema_ready_not_called_on_error(self):
+    """on_schema_ready is not invoked when get_table or create_table raises."""
+    ready_hook = mock.MagicMock()
+    plugin = self._make_plugin(
+        auto_schema_upgrade=False, on_schema_ready=ready_hook
+    )
+    plugin.client.get_table.side_effect = cloud_exceptions.Forbidden("denied")
+
+    with pytest.raises(cloud_exceptions.Forbidden):
+      plugin._ensure_schema_exists()
+
+    ready_hook.assert_not_called()
+
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    plugin.client.create_table.side_effect = cloud_exceptions.Forbidden(
+        "cannot create"
+    )
+    with pytest.raises(cloud_exceptions.Forbidden):
+      plugin._ensure_schema_exists()
+
+    ready_hook.assert_not_called()
+
+  def test_on_schema_ready_callback_exception_is_suppressed(self):
+    """Exceptions raised by on_schema_ready are logged and suppressed."""
+    ready_hook = mock.MagicMock(side_effect=RuntimeError("ready hook crashed"))
+    plugin = self._make_plugin(
+        auto_schema_upgrade=False, on_schema_ready=ready_hook
+    )
+    plugin.config.create_views = False
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [bigquery.SchemaField("timestamp", "TIMESTAMP")]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    assert plugin._ensure_schema_exists() is True
+    ready_hook.assert_called_once_with()
+
+  def test_on_schema_callbacks_returning_coroutine_closed_and_warned(
+      self, caplog
+  ):
+    """Sync wrappers returning a coroutine close it and log a warning."""
+    created_coros: list[tuple[str, Any]] = []
+
+    async def _coro() -> None:
+      await asyncio.sleep(0)
+
+    def _make_coro(tag: str):
+      coro = _coro()
+      assert coro.cr_frame is not None
+      created_coros.append((tag, coro))
+      return coro
+
+    plugin = self._make_plugin(
+        auto_schema_upgrade=False,
+        on_schema_error=lambda _exc: _make_coro("error"),
+        on_schema_ready=lambda: _make_coro("ready"),
+    )
+    plugin.config.create_views = False
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [bigquery.SchemaField("timestamp", "TIMESTAMP")]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    with caplog.at_level(logging.WARNING):
+      assert plugin._ensure_schema_exists() is True
+    assert len(created_coros) == 1
+    assert created_coros[0][0] == "ready"
+    assert created_coros[0][1].cr_frame is None
+    assert "on_schema_ready returned a coroutine" in caplog.text
+
+    caplog.clear()
+    plugin.client.get_table.side_effect = cloud_exceptions.Forbidden("denied")
+    with caplog.at_level(logging.WARNING):
+      with pytest.raises(cloud_exceptions.Forbidden):
+        plugin._ensure_schema_exists()
+    assert len(created_coros) == 2
+    assert created_coros[1][0] == "error"
+    assert created_coros[1][1].cr_frame is None
+    assert "on_schema_error returned a coroutine" in caplog.text
+
 
 class TestToolProvenance:
   """Tests for _get_tool_origin helper."""
@@ -6398,6 +8760,2775 @@ class TestToolProvenance:
     tool.name = "mystery"
     result = bigquery_agent_analytics_plugin._get_tool_origin(tool)
     assert result == "UNKNOWN"
+
+  def test_toolbox_tool_returns_toolbox(self):
+    """A tool loaded by ToolboxToolset is classified TOOLBOX."""
+    toolbox_adk = pytest.importorskip("toolbox_adk")
+    tool = toolbox_adk.ToolboxTool.__new__(toolbox_adk.ToolboxTool)
+
+    result = bigquery_agent_analytics_plugin._get_tool_origin(tool)
+
+    assert result == "TOOLBOX"
+
+  def test_classifying_a_tool_does_not_import_toolbox_adk(self, monkeypatch):
+    """toolbox_adk is optional, so classification never imports it."""
+    tool = mock.MagicMock(spec=base_tool_lib.BaseTool)
+    tool.name = "mystery"
+    monkeypatch.delitem(sys.modules, "toolbox_adk", raising=False)
+
+    result = bigquery_agent_analytics_plugin._get_tool_origin(tool)
+
+    assert result == "UNKNOWN"
+    assert "toolbox_adk" not in sys.modules
+
+  def test_skill_toolset_tools_return_skill(self):
+    """Every tool SkillToolset defines for working with skills is SKILL."""
+    from google.adk.tools import skill_toolset
+
+    toolset = skill_toolset.SkillToolset(
+        [],
+        registry=mock.create_autospec(
+            skill_toolset.SkillRegistry, instance=True
+        ),
+    )
+    skill_tool_types = [
+        value
+        for value in vars(skill_toolset).values()
+        if isinstance(value, type)
+        and issubclass(value, base_tool_lib.BaseTool)
+        and value.__module__ == skill_toolset.__name__
+    ]
+
+    origins = {
+        tool_type.__name__: bigquery_agent_analytics_plugin._get_tool_origin(
+            tool_type(toolset)
+        )
+        for tool_type in skill_tool_types
+    }
+
+    assert origins == {
+        "ListSkillsTool": "SKILL",
+        "LoadSkillResourceTool": "SKILL",
+        "LoadSkillTool": "SKILL",
+        "RunSkillScriptTool": "SKILL",
+        "SearchSkillsTool": "SKILL",
+        "UnloadSkillTool": "SKILL",
+    }
+
+
+def _run_query(query: str) -> dict:
+  """Tool function used by the tool-result classification tests."""
+  return {"query": query}
+
+
+# Marks text a hostile value puts into the exceptions it raises, standing in
+# for tool output that must never reach the log.
+_PAYLOAD_SECRET = "PAYLOAD-SECRET"
+
+
+class _RaisingEq:
+  """A value whose == raises an exception that carries payload text."""
+
+  def __eq__(self, other):
+    raise RuntimeError(_PAYLOAD_SECRET)
+
+  __hash__ = object.__hash__
+
+
+class _RaisingBool:
+  """A value whose truth test raises an exception that carries payload text."""
+
+  def __bool__(self):
+    raise RuntimeError(_PAYLOAD_SECRET)
+
+
+class _RaisingGetDict(dict):
+  """A dict whose get() raises an exception that carries payload text."""
+
+  def get(self, *args, **kwargs):
+    raise RuntimeError(_PAYLOAD_SECRET)
+
+
+class _RaisingMethodsDict(dict):
+  """A dict whose own lookup and iteration methods all raise with payload."""
+
+  def _raise(self, *args, **kwargs):
+    raise RuntimeError(_PAYLOAD_SECRET)
+
+  get = items = keys = values = _raise
+  __iter__ = __getitem__ = __contains__ = _raise
+
+
+class _RaisingGetattr:
+  """An object whose missing attributes raise with payload text."""
+
+  def __getattr__(self, name):
+    raise RuntimeError(_PAYLOAD_SECRET)
+
+
+class _EqualsEverything:
+  """A value that claims to equal anything it is compared with."""
+
+  def __eq__(self, other):
+    return True
+
+  __hash__ = object.__hash__
+
+
+class _RaisingClassValue:
+  """A value whose __class__, which isinstance() consults, raises."""
+
+  @property
+  def __class__(self):
+    raise RuntimeError(_PAYLOAD_SECRET)
+
+
+class _RaisingAttributes:
+  """An object whose every attribute read raises with payload text."""
+
+  def __getattribute__(self, name):
+    raise RuntimeError(_PAYLOAD_SECRET)
+
+
+class _RaisingAttributesDict(dict):
+  """A dict whose every attribute read raises with payload text."""
+
+  def __getattribute__(self, name):
+    raise RuntimeError(_PAYLOAD_SECRET)
+
+
+class _UnprintableValue:
+  """A value whose str() raises with payload text."""
+
+  def __str__(self):
+    raise RuntimeError(_PAYLOAD_SECRET)
+
+
+class _Summary(BaseModel):
+  """An application's result model with one typed field."""
+
+  summary: str
+
+
+class _DelegatingDump(BaseModel):
+  """A result model whose model_dump takes no keywords and calls Pydantic's."""
+
+  number: int = 1
+  excluded: str = "omit this field"
+
+  def model_dump(self):  # pylint: disable=arguments-differ
+    return super().model_dump(exclude={"excluded"})
+
+
+class _KeywordDroppingDump(_DelegatingDump):
+  """A result model whose model_dump takes keywords without passing them on."""
+
+  def model_dump(self, **kwargs):  # pylint: disable=arguments-differ
+    return BaseModel.model_dump(self, exclude={"excluded"})
+
+
+class _OwnDump(_DelegatingDump):
+  """A result model whose model_dump builds its own dict."""
+
+  def model_dump(self):  # pylint: disable=arguments-differ
+    return {"number": self.number}
+
+
+class _ModelLike:
+  """A result that is not a Pydantic model but has a model_dump."""
+
+  def __init__(self):
+    self.received = None
+
+  def model_dump(self, **kwargs):
+    self.received = kwargs
+    return {"rows": 1}
+
+
+class _FailingDump(BaseModel):
+  """A result model whose dump fails, and which leaves a field out of it."""
+
+  summary: str = "ok"
+  secret: str = Field(default="never recorded", exclude=True)
+
+  @field_serializer("summary")
+  def _serialize_summary(self, value):
+    raise RuntimeError("the serializer failed")
+
+
+def _print_warning(message, category, filename, lineno, file=None, line=None):
+  """Prints a warning to stderr, as Python shows one by default."""
+  sys.stderr.write(
+      warnings.formatwarning(message, category, filename, lineno, line)
+  )
+
+
+@contextlib.contextmanager
+def _warnings_shown(display):
+  """Shows every warning the way an application would see it.
+
+  pytest records warnings instead of showing them, so this restores one of the
+  two usual displays: printed to stderr, or logged to ``py.warnings`` once an
+  application calls ``logging.captureWarnings(True)``.
+  """
+  with warnings.catch_warnings():
+    warnings.simplefilter("always")
+    if display == "stderr":
+      warnings.showwarning = _print_warning
+      yield
+    else:
+      logging.captureWarnings(True)
+      try:
+        yield
+      finally:
+        logging.captureWarnings(False)
+
+
+class _CollidingKey:
+  """A dict key that hashes like another key and raises when compared."""
+
+  def __init__(self, twin):
+    self._twin = twin
+
+  def __hash__(self):
+    return hash(self._twin)
+
+  def __eq__(self, other):
+    raise RuntimeError(_PAYLOAD_SECRET)
+
+
+async def _async_generator_classifier(*_, **__):
+  """An async generator classifier, whose result is never a verdict."""
+  yield None
+
+
+class _AsyncGeneratorCallableClassifier:
+  """A classifier object whose __call__ is an async generator."""
+
+  async def __call__(self, *_, **__):
+    yield None
+
+
+class _UnsignableClassifier:
+  """A classifier whose signature inspect cannot read."""
+
+  __signature__ = "not a signature"
+
+  def __call__(self, **_):
+    return None
+
+
+class _RaisingSignatureClassifier:
+  """A classifier whose __signature__ raises when inspect reads it."""
+
+  @property
+  def __signature__(self):
+    raise RuntimeError("the signature cannot be read")
+
+  def __call__(self, **_):
+    return None
+
+
+class _NoWeakrefContext:
+  """Wraps a tool context in an object that cannot take a weak reference."""
+
+  __slots__ = ("_context",)
+
+  def __init__(self, context):
+    object.__setattr__(self, "_context", context)
+
+  def __getattr__(self, name):
+    return getattr(object.__getattribute__(self, "_context"), name)
+
+
+class _BrokenHandler(logging.Handler):
+  """A handler that fails on the plugin's boundary warnings.
+
+  It reports the failure the way the standard handlers do, through
+  handleError, which prints the exception chain being handled to stderr.
+  """
+
+  def emit(self, record):
+    if record.levelno < logging.WARNING:
+      return
+    try:
+      raise RuntimeError("the handler failed")
+    except RuntimeError:
+      self.handleError(record)
+
+
+def _unvalidated_classification(**fields):
+  """Returns an ERROR classification with fields set past its validation."""
+  classification = bigquery_agent_analytics_plugin.ToolResultClassification(
+      status="ERROR"
+  )
+  for name, value in fields.items():
+    object.__setattr__(classification, name, value)
+  return classification
+
+
+class _UnreadableClassification(
+    bigquery_agent_analytics_plugin.ToolResultClassification
+):
+  """A classification whose fields raise with payload text when read."""
+
+  def __getattribute__(self, name):
+    if name in ("status", "error_message"):
+      raise RuntimeError(_PAYLOAD_SECRET)
+    return super().__getattribute__(name)
+
+
+async def _async_classifier(*_, **__):
+  """An asynchronous classifier, whose result the plugin cannot await."""
+  return None
+
+
+class _AsyncCallableClassifier:
+  """A classifier object whose __call__ is asynchronous."""
+
+  async def __call__(self, *_, **__):
+    return None
+
+
+class TestToolResultErrorClassification:
+  """Tests for recording error-bearing tool results as ``TOOL_ERROR``.
+
+  A tool can fail without its exception reaching ``on_tool_error_callback``:
+  an MCP tool returns its ``CallToolResult`` with ``isError`` set, and
+  ``ReflectAndRetryToolPlugin`` registered ahead of the analytics plugin
+  answers a raised error with a response that reaches
+  ``after_tool_callback`` in its place. The row must record the failure
+  while the result the model receives stays unchanged.
+  """
+
+  @pytest.fixture
+  def _mock_bq_infra(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Bundle all BQ mocking fixtures."""
+    yield mock_write_client
+
+  async def _record_tool_call(
+      self,
+      mock_write_client,
+      dummy_arrow_schema,
+      tool_context,
+      result,
+      *,
+      config=None,
+      tool=None,
+      tool_args=None,
+  ):
+    """Runs the tool callbacks for one call and returns the rows written."""
+    from google.adk.tools.function_tool import FunctionTool
+
+    tool = tool or FunctionTool(_run_query)
+    tool_args = tool_args or {"query": "SELECT 1"}
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      await plugin.before_tool_callback(
+          tool=tool, tool_args=tool_args, tool_context=tool_context
+      )
+      await plugin.after_tool_callback(
+          tool=tool,
+          tool_args=tool_args,
+          tool_context=tool_context,
+          result=result,
+      )
+      await plugin.flush()
+      return await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+
+  @pytest.mark.parametrize("error_flag", ["isError", "is_error"])
+  @pytest.mark.asyncio
+  async def test_mcp_result_with_error_flag_is_recorded_as_tool_error(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context, error_flag
+  ):
+    """An MCP result whose isError (is_error in SDK 2.x dumps) is True fails.
+
+    The row takes the shape on_tool_error_callback writes: the call's tool,
+    args and origin as content, status ERROR and a non-null error_message.
+    """
+    result = {
+        "content": [{"type": "text", "text": "Git reset to remote failed."}],
+        error_flag: True,
+    }
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra, dummy_arrow_schema, tool_context, result
+    )
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+    error_row = rows[1]
+    assert error_row["status"] == "ERROR"
+    assert "isError" in error_row["error_message"]
+    assert json.loads(error_row["content"]) == {
+        "tool": "_run_query",
+        "args": {"query": "SELECT 1"},
+        "tool_origin": "LOCAL",
+    }
+
+  @pytest.mark.asyncio
+  async def test_mcp_error_text_is_not_recorded_in_the_tool_error_row(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """The MCP error text is tool output, so the TOOL_ERROR row omits it.
+
+    error_message bypasses content_formatter and payload_column_denylist,
+    and a formatter written for TOOL_COMPLETED results would not scrub a
+    result copied into TOOL_ERROR content.
+    """
+    result = {
+        "content": [{"type": "text", "text": "secret-bearing tool output"}],
+        "isError": True,
+    }
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra, dummy_arrow_schema, tool_context, result
+    )
+
+    error_row = rows[-1]
+    assert error_row["event_type"] == "TOOL_ERROR"
+    assert "secret-bearing tool output" not in json.dumps(
+        error_row, default=str
+    )
+
+  @pytest.mark.parametrize(
+      "result",
+      [
+          {"content": [{"type": "text", "text": "3 rows"}], "isError": False},
+          {"content": [{"type": "text", "text": "3 rows"}], "is_error": False},
+          {"content": [{"type": "text", "text": "3 rows"}], "isError": "no"},
+          {"content": [{"type": "text", "text": "3 rows"}]},
+      ],
+      ids=["is_error_false", "snake_case_false", "non_bool_flag", "no_flag"],
+  )
+  @pytest.mark.asyncio
+  async def test_mcp_result_without_error_flag_is_recorded_as_tool_completed(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context, result
+  ):
+    """Only an error flag that is exactly True marks an MCP result failed."""
+    rows = await self._record_tool_call(
+        _mock_bq_infra, dummy_arrow_schema, tool_context, result
+    )
+
+    assert [r["event_type"] for r in rows] == [
+        "TOOL_STARTING",
+        "TOOL_COMPLETED",
+    ]
+    assert rows[1]["status"] == "OK"
+    assert rows[1]["error_message"] is None
+
+  @pytest.mark.asyncio
+  async def test_reflect_and_retry_response_is_recorded_as_tool_error(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A ReflectAndRetryToolPlugin answer to a raised error is a TOOL_ERROR.
+
+    Its error_message is the text on_tool_error_callback records for the
+    same exception when no plugin answers it first.
+    """
+    from google.adk.plugins.reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
+    from google.adk.tools.function_tool import FunctionTool
+
+    reflect_response = await ReflectAndRetryToolPlugin(
+        max_retries=3
+    ).on_tool_error_callback(
+        tool=FunctionTool(_run_query),
+        tool_args={"query": "SELECT 1"},
+        tool_context=tool_context,
+        error=RuntimeError("MCP request failed with code 403: Access Denied"),
+    )
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra, dummy_arrow_schema, tool_context, reflect_response
+    )
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+    assert rows[1]["status"] == "ERROR"
+    assert (
+        rows[1]["error_message"]
+        == "MCP request failed with code 403: Access Denied"
+    )
+
+  @pytest.mark.asyncio
+  async def test_reflect_and_retry_error_text_is_redacted(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """The retry plugin's error text passes the error_message redaction."""
+    from google.adk.plugins.reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
+    from google.adk.tools.function_tool import FunctionTool
+
+    reflect_response = await ReflectAndRetryToolPlugin().on_tool_error_callback(
+        tool=FunctionTool(_run_query),
+        tool_args={"query": "SELECT 1"},
+        tool_context=tool_context,
+        error=RuntimeError("upstream rejected api_key=sk-live-123"),
+    )
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra, dummy_arrow_schema, tool_context, reflect_response
+    )
+
+    assert rows[1]["event_type"] == "TOOL_ERROR"
+    assert "sk-live-123" not in rows[1]["error_message"]
+
+  @pytest.mark.asyncio
+  async def test_unrelated_error_details_key_is_recorded_as_tool_completed(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A tool's own error_details field does not make its result a failure."""
+    result = {"status": "SUCCESS", "error_details": "2 duplicate rows skipped"}
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra, dummy_arrow_schema, tool_context, result
+    )
+
+    assert [r["event_type"] for r in rows] == [
+        "TOOL_STARTING",
+        "TOOL_COMPLETED",
+    ]
+    assert rows[1]["status"] == "OK"
+    assert rows[1]["error_message"] is None
+
+  @pytest.mark.asyncio
+  async def test_classifier_records_an_application_failure_as_tool_error(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """tool_result_classifier flags a failure shape the built-ins ignore."""
+
+    def classify(*, tool, tool_args, tool_context, result):
+      del tool, tool_args, tool_context  # Unused.
+      if result.get("status") == "ERROR":
+        return bigquery_agent_analytics_plugin.ToolResultClassification(
+            status="ERROR", error_message="query failed"
+        )
+      return None
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=classify
+    )
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        tool_context,
+        {"status": "ERROR", "error_details": "Table not found"},
+        config=config,
+    )
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+    assert rows[1]["status"] == "ERROR"
+    assert rows[1]["error_message"] == "query failed"
+
+  @pytest.mark.asyncio
+  async def test_classifier_ok_overrides_the_builtin_rules(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A classifier that returns OK keeps a flagged result TOOL_COMPLETED."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=lambda **_: (
+            bigquery_agent_analytics_plugin.ToolResultClassification(
+                status="OK"
+            )
+        )
+    )
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        tool_context,
+        {"content": [], "isError": True},
+        config=config,
+    )
+
+    assert [r["event_type"] for r in rows] == [
+        "TOOL_STARTING",
+        "TOOL_COMPLETED",
+    ]
+    assert rows[1]["status"] == "OK"
+
+  @pytest.mark.asyncio
+  async def test_classifier_returning_none_defers_to_the_builtin_rules(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A classifier with no opinion leaves the result to the built-ins."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=lambda **_: None
+    )
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        tool_context,
+        {"content": [], "isError": True},
+        config=config,
+    )
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+
+  @pytest.mark.asyncio
+  async def test_classifier_error_without_message_records_a_message(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """An ERROR classification without a message still sets error_message."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=lambda **_: (
+            bigquery_agent_analytics_plugin.ToolResultClassification(
+                status="ERROR"
+            )
+        )
+    )
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        tool_context,
+        {"rows": 0},
+        config=config,
+    )
+
+    assert rows[1]["event_type"] == "TOOL_ERROR"
+    assert rows[1]["error_message"]
+
+  @pytest.mark.asyncio
+  async def test_classifier_that_raises_falls_back_to_the_builtin_rules(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context, caplog
+  ):
+    """A failing classifier neither drops the row nor logs the result."""
+
+    def classify(*, tool, result, **_):
+      raise ValueError(f"cannot classify {tool.name}: {result}")
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=classify
+    )
+    result = {
+        "content": [{"type": "text", "text": "sensitive tool output"}],
+        "isError": True,
+    }
+
+    with caplog.at_level(logging.DEBUG):
+      rows = await self._record_tool_call(
+          _mock_bq_infra,
+          dummy_arrow_schema,
+          tool_context,
+          result,
+          config=config,
+      )
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+    assert "tool_result_classifier" in caplog.text
+    assert "sensitive tool output" not in caplog.text
+
+  @pytest.mark.asyncio
+  async def test_classifier_returning_an_unsupported_value_is_ignored(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A classifier result other than a classification or None is ignored."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=lambda **_: ("ERROR", "query failed")
+    )
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        tool_context,
+        {"rows": 3},
+        config=config,
+    )
+
+    assert [r["event_type"] for r in rows] == [
+        "TOOL_STARTING",
+        "TOOL_COMPLETED",
+    ]
+
+  def test_non_callable_classifier_is_rejected(self):
+    """A tool_result_classifier that cannot be called fails at construction."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier="ERROR"
+    )
+
+    with pytest.raises(ValueError, match="tool_result_classifier"):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      )
+
+  def test_classification_rejects_an_unknown_status(self):
+    """A classification can only record a call as OK or ERROR."""
+    with pytest.raises(ValueError, match="status"):
+      bigquery_agent_analytics_plugin.ToolResultClassification(status="FAILED")
+
+  def test_classification_rejects_a_message_that_is_not_text(self):
+    """A classification's error_message must be a str or None."""
+    with pytest.raises(ValueError, match="error_message"):
+      bigquery_agent_analytics_plugin.ToolResultClassification(
+          status="ERROR", error_message=_RaisingBool()
+      )
+
+  @pytest.mark.parametrize(
+      ("make_result", "event_type"),
+      [
+          (lambda: {"response_type": _RaisingEq()}, "TOOL_COMPLETED"),
+          (
+              lambda: {
+                  "response_type": (
+                      pytest.importorskip("numpy").array(["a", "b"])
+                  )
+              },
+              "TOOL_COMPLETED",
+          ),
+          (
+              lambda: {
+                  "response_type": (
+                      pytest.importorskip("pandas").Series(["a", "b"])
+                  )
+              },
+              "TOOL_COMPLETED",
+          ),
+          (
+              lambda: {
+                  "isError": True,
+                  "response_type": (
+                      pytest.importorskip("numpy").array(["a", "b"])
+                  ),
+              },
+              "TOOL_ERROR",
+          ),
+          (lambda: _RaisingGetDict({"rows": 1}), "TOOL_COMPLETED"),
+          (lambda: _RaisingGetDict({"isError": True}), "TOOL_ERROR"),
+          (lambda: _RaisingMethodsDict({"rows": 1}), "TOOL_COMPLETED"),
+          (lambda: _RaisingMethodsDict({"isError": True}), "TOOL_ERROR"),
+          (lambda: {"isError": _RaisingBool()}, "TOOL_COMPLETED"),
+          (
+              lambda: {
+                  "response_type": "ERROR_HANDLED_BY_REFLECT_AND_RETRY_PLUGIN",
+                  "error_type": "RuntimeError",
+                  "error_details": _RaisingBool(),
+              },
+              "TOOL_ERROR",
+          ),
+          (_RaisingGetattr, "TOOL_COMPLETED"),
+      ],
+      ids=[
+          "raising_eq_response_type",
+          "numpy_response_type",
+          "pandas_response_type",
+          "numpy_response_type_with_error_flag",
+          "raising_get",
+          "raising_get_with_error_flag",
+          "raising_methods",
+          "raising_methods_with_error_flag",
+          "raising_bool_error_flag",
+          "retry_response_with_raising_details",
+          "raising_getattr",
+      ],
+  )
+  @pytest.mark.asyncio
+  async def test_hostile_result_is_recorded_without_logging_it(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      tool_context,
+      caplog,
+      make_result,
+      event_type,
+  ):
+    """A result whose ==, truth test or get() raises still gets its row.
+
+    Classification reads only exact str and bool values, so none of the
+    result's own code runs, and nothing it could raise reaches the log.
+    Serializing these results fails only inside the serializer's own
+    boundary, so the completion path needs no fallback either.
+    """
+    with caplog.at_level(logging.DEBUG):
+      rows = await self._record_tool_call(
+          _mock_bq_infra, dummy_arrow_schema, tool_context, make_result()
+      )
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", event_type]
+    assert _PAYLOAD_SECRET not in caplog.text
+    assert "Built-in tool result rule" not in caplog.text
+    assert "Could not serialize" not in caplog.text
+
+  @pytest.mark.parametrize(
+      "make_result",
+      [
+          lambda: _RaisingAttributesDict({"rows": 1}),
+          _RaisingAttributes,
+          _RaisingClassValue,
+      ],
+      ids=["raising_attributes_dict", "raising_attributes", "raising_class"],
+  )
+  @pytest.mark.asyncio
+  async def test_result_that_cannot_be_serialized_keeps_its_row(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      tool_context,
+      caplog,
+      make_result,
+  ):
+    """A result that raises when serialized is recorded with a sentinel.
+
+    The span is closed before the result is serialized, so the call keeps
+    its TOOL_COMPLETED row, with the sentinel the serializer writes for a
+    result it rejects itself. The warning leaves out the exception, which
+    can carry the result.
+    """
+    with caplog.at_level(logging.DEBUG):
+      rows = await self._record_tool_call(
+          _mock_bq_infra, dummy_arrow_schema, tool_context, make_result()
+      )
+
+    assert [r["event_type"] for r in rows] == [
+        "TOOL_STARTING",
+        "TOOL_COMPLETED",
+    ]
+    assert rows[1]["status"] == "OK"
+    # The serializer's sentinel is [UNSUPPORTED_OBJECT], which the content
+    # parser then reads as malformed JSON because it starts with a bracket.
+    assert json.loads(rows[1]["content"]) == {
+        "tool": "_run_query",
+        "result": "[UNPARSEABLE_JSON_BLOB]",
+        "tool_origin": "LOCAL",
+    }
+    assert rows[1]["is_truncated"] is True
+    assert "Could not serialize the result of tool _run_query" in caplog.text
+    assert _PAYLOAD_SECRET not in caplog.text
+
+  @pytest.mark.asyncio
+  async def test_args_that_cannot_be_serialized_keep_the_tool_error_row(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      tool_context,
+      caplog,
+      monkeypatch,
+  ):
+    """A failure whose arguments raise when serialized still gets its row.
+
+    The span is closed before the arguments of a result classified as a
+    failure are serialized, so, as with a result that cannot be serialized,
+    the call keeps its TOOL_ERROR row, with the serializer's sentinel in place
+    of the arguments. The warning leaves out the exception, which can carry
+    them. Only the second serialization of the arguments raises, so the first,
+    for TOOL_STARTING, opens the call's span.
+    """
+    tool_args = {"query": "SELECT 1"}
+    serialize = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    args_serializations = []
+
+    def fail_on_second_args_serialization(obj, *args, **kwargs):
+      if obj is tool_args:
+        args_serializations.append(obj)
+        if len(args_serializations) > 1:
+          raise RuntimeError(_PAYLOAD_SECRET)
+      return serialize(obj, *args, **kwargs)
+
+    monkeypatch.setattr(
+        bigquery_agent_analytics_plugin,
+        "_recursive_smart_truncate",
+        fail_on_second_args_serialization,
+    )
+
+    with caplog.at_level(logging.DEBUG):
+      rows = await self._record_tool_call(
+          _mock_bq_infra,
+          dummy_arrow_schema,
+          tool_context,
+          {"isError": True},
+          tool_args=tool_args,
+      )
+
+    assert len(args_serializations) == 2
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+    error_row = rows[1]
+    assert error_row["status"] == "ERROR"
+    assert "isError" in error_row["error_message"]
+    assert error_row["span_id"] == rows[0]["span_id"]
+    # The serializer's sentinel is [UNSUPPORTED_OBJECT], which the content
+    # parser then reads as malformed JSON because it starts with a bracket.
+    assert json.loads(error_row["content"]) == {
+        "tool": "_run_query",
+        "args": "[UNPARSEABLE_JSON_BLOB]",
+        "tool_origin": "LOCAL",
+    }
+    assert error_row["is_truncated"] is True
+    assert "Could not serialize the arguments of tool _run_query" in caplog.text
+    assert _PAYLOAD_SECRET not in caplog.text
+
+  @pytest.mark.parametrize(
+      "is_error", [False, True], ids=["success", "error_classified_as_ok"]
+  )
+  @pytest.mark.asyncio
+  async def test_mcp_model_that_cannot_be_serialized_keeps_its_row(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      tool_context,
+      caplog,
+      is_error,
+  ):
+    """An MCP model recorded as TOOL_COMPLETED keeps its row when hostile.
+
+    The model is a successful result, or an error result the classifier
+    records as OK. Its attribute access raises once it is built, which the
+    classification never triggers but serializing the model does.
+    """
+    mcp_types = pytest.importorskip("mcp.types")
+    armed = [False]
+
+    class _HostileResult(mcp_types.CallToolResult):
+
+      def __getattribute__(self, name):
+        if armed[0]:
+          raise RuntimeError(_PAYLOAD_SECRET)
+        return super().__getattribute__(name)
+
+    config = None
+    if is_error:
+      config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          tool_result_classifier=lambda **_: (
+              bigquery_agent_analytics_plugin.ToolResultClassification(
+                  status="OK"
+              )
+          )
+      )
+    result = _HostileResult(content=[], isError=is_error)
+    armed[0] = True
+    try:
+      with caplog.at_level(logging.DEBUG):
+        rows = await self._record_tool_call(
+            _mock_bq_infra,
+            dummy_arrow_schema,
+            tool_context,
+            result,
+            config=config,
+        )
+    finally:
+      armed[0] = False
+
+    assert [r["event_type"] for r in rows] == [
+        "TOOL_STARTING",
+        "TOOL_COMPLETED",
+    ]
+    assert json.loads(rows[1]["content"])["result"] == "[UNPARSEABLE_JSON_BLOB]"
+    assert _PAYLOAD_SECRET not in caplog.text
+
+  @pytest.mark.parametrize("display", ["stderr", "py.warnings"])
+  @pytest.mark.parametrize("kind", ["mcp_model", "application_model"])
+  @pytest.mark.asyncio
+  async def test_result_field_that_no_longer_fits_is_not_quoted_in_a_warning(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      tool_context,
+      caplog,
+      capsys,
+      kind,
+      display,
+  ):
+    """Dumping a tool result raises no Pydantic warning that quotes it.
+
+    Pydantic still dumps a model whose field no longer matches its type, such
+    as an MCP result whose content list was appended to after validation, but
+    first warns with a UserWarning that quotes the value, before any
+    content_formatter sees it. The row keeps the dumped result.
+    """
+    if kind == "mcp_model":
+      mcp_types = pytest.importorskip("mcp.types")
+      result = mcp_types.CallToolResult(content=[], isError=False)
+      result.content.append({"type": "text", "text": _PAYLOAD_SECRET})
+      dumped_field = ("content", [{"type": "text", "text": _PAYLOAD_SECRET}])
+    else:
+      result = _Summary(summary="ok")
+      result.summary = {"details": _PAYLOAD_SECRET}
+      dumped_field = ("summary", {"details": _PAYLOAD_SECRET})
+
+    with _warnings_shown(display):
+      rows = await self._record_tool_call(
+          _mock_bq_infra, dummy_arrow_schema, tool_context, result
+      )
+
+    assert [r["event_type"] for r in rows] == [
+        "TOOL_STARTING",
+        "TOOL_COMPLETED",
+    ]
+    name, value = dumped_field
+    assert json.loads(rows[1]["content"])["result"][name] == value
+    assert _PAYLOAD_SECRET not in capsys.readouterr().err
+    assert _PAYLOAD_SECRET not in caplog.text
+
+  @pytest.mark.parametrize("display", ["stderr", "py.warnings"])
+  @pytest.mark.asyncio
+  async def test_result_field_that_no_longer_fits_is_not_quoted_in_a_turn(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      caplog,
+      capsys,
+      monkeypatch,
+      display,
+  ):
+    """No row of a real turn quotes such a result in a warning.
+
+    The TOOL_COMPLETED row dumps the result, and the next LLM_REQUEST row
+    dumps the function response that carries it to the model, even when
+    log_multi_modal_content keeps it out of the row.
+    """
+    from google.adk.tools.function_tool import FunctionTool
+
+    # ADK's span content capture dumps the same response with Pydantic's
+    # warnings on once any test has installed a recording tracer.
+    monkeypatch.setenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
+    # Telemetry schema 2 converts every model request's messages, whatever the
+    # content capture setting, and dumps this response with Pydantic's warnings
+    # on.
+    monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "1")
+
+    mcp_types = pytest.importorskip("mcp.types")
+
+    def fetch_rows():
+      result = mcp_types.CallToolResult(content=[], isError=False)
+      result.content.append({"type": "text", "text": _PAYLOAD_SECRET})
+      return result
+
+    with _warnings_shown(display):
+      _, rows = await self._run_turn(
+          _mock_bq_infra,
+          dummy_arrow_schema,
+          FunctionTool(fetch_rows),
+          lambda bq_plugin: [bq_plugin],
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              log_multi_modal_content=False
+          ),
+      )
+
+    event_types = [r["event_type"] for r in rows]
+    assert "TOOL_COMPLETED" in event_types
+    assert event_types.count("LLM_REQUEST") == 2
+    assert _PAYLOAD_SECRET not in capsys.readouterr().err
+    assert _PAYLOAD_SECRET not in caplog.text
+
+  @pytest.mark.parametrize("display", ["stderr", "py.warnings"])
+  @pytest.mark.parametrize("nesting", ["top_level", "nested"])
+  @pytest.mark.parametrize(
+      "model",
+      [_DelegatingDump, _KeywordDroppingDump, _OwnDump],
+      ids=["delegating", "keyword_dropping", "own_dict"],
+  )
+  @pytest.mark.asyncio
+  async def test_result_model_with_its_own_model_dump_is_recorded_as_a_sentinel(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      tool_context,
+      caplog,
+      capsys,
+      model,
+      nesting,
+      display,
+  ):
+    """A result whose model_dump is not Pydantic's own is not called.
+
+    Such a model_dump may not take warnings=False, or may take it and not pass
+    it on to Pydantic's, which then quotes a field that no longer fits in a
+    warning before content_formatter runs. Reading the fields instead would
+    record what it leaves out. So the row records the sentinel in its place,
+    whether the model is the result or is nested in it.
+    """
+    result = model()
+    result.number = _PAYLOAD_SECRET
+    if nesting == "nested":
+      result = {"nested": result}
+
+    with _warnings_shown(display):
+      rows = await self._record_tool_call(
+          _mock_bq_infra, dummy_arrow_schema, tool_context, result
+      )
+
+    recorded = json.loads(rows[1]["content"])["result"]
+    sentinel = "[UNPARSEABLE_JSON_BLOB]"
+    assert recorded == (
+        sentinel if nesting == "top_level" else {"nested": sentinel}
+    )
+    assert _PAYLOAD_SECRET not in rows[1]["content"]
+    assert "omit this field" not in rows[1]["content"]
+    assert _PAYLOAD_SECRET not in capsys.readouterr().err
+    assert _PAYLOAD_SECRET not in caplog.text
+
+  @pytest.mark.parametrize("display", ["stderr", "py.warnings"])
+  @pytest.mark.parametrize("nesting", ["top_level", "nested"])
+  @pytest.mark.asyncio
+  async def test_result_model_with_its_own_model_dump_is_not_quoted_in_a_turn(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      caplog,
+      capsys,
+      monkeypatch,
+      nesting,
+      display,
+  ):
+    """No row of a real turn quotes such a model in a warning.
+
+    That covers the TOOL_COMPLETED row, and the next LLM_REQUEST row, whose
+    function response Pydantic dumps without calling the model's own
+    model_dump.
+    """
+    from google.adk.tools.function_tool import FunctionTool
+
+    # ADK's span content capture dumps the same response with Pydantic's
+    # warnings on once any test has installed a recording tracer.
+    monkeypatch.setenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
+    # Telemetry schema 2 converts every model request's messages, whatever the
+    # content capture setting, by calling model_dump with a keyword that this
+    # model's model_dump does not take, which fails the turn.
+    monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "1")
+
+    def fetch_rows():
+      result = _DelegatingDump()
+      result.number = _PAYLOAD_SECRET
+      return result if nesting == "top_level" else {"nested": result}
+
+    with _warnings_shown(display):
+      _, rows = await self._run_turn(
+          _mock_bq_infra,
+          dummy_arrow_schema,
+          FunctionTool(fetch_rows),
+          lambda bq_plugin: [bq_plugin],
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              log_multi_modal_content=False
+          ),
+      )
+
+    event_types = [r["event_type"] for r in rows]
+    assert "TOOL_COMPLETED" in event_types
+    assert event_types.count("LLM_REQUEST") == 2
+    assert _PAYLOAD_SECRET not in capsys.readouterr().err
+    assert _PAYLOAD_SECRET not in caplog.text
+
+  @pytest.mark.asyncio
+  async def test_result_that_only_looks_like_a_model_is_dumped_quietly(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A result that is not a Pydantic model is dumped by its model_dump.
+
+    Only a Pydantic model's own override is left uncalled. Another object's
+    model_dump still produces the recorded value, and it is asked for
+    warnings=False too.
+    """
+    result = _ModelLike()
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra, dummy_arrow_schema, tool_context, result
+    )
+
+    assert json.loads(rows[1]["content"])["result"] == {"rows": 1}
+    assert result.received == {"warnings": False}
+
+  @pytest.mark.asyncio
+  async def test_result_model_whose_dump_fails_is_recorded_as_a_sentinel(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A result model whose own Pydantic dump fails is recorded as a sentinel.
+
+    Reading its fields instead would record what its serializers and
+    Field(exclude=True) leave out.
+    """
+    rows = await self._record_tool_call(
+        _mock_bq_infra, dummy_arrow_schema, tool_context, _FailingDump()
+    )
+
+    assert [r["event_type"] for r in rows] == [
+        "TOOL_STARTING",
+        "TOOL_COMPLETED",
+    ]
+    assert json.loads(rows[1]["content"])["result"] == "[UNPARSEABLE_JSON_BLOB]"
+    assert "never recorded" not in rows[1]["content"]
+
+  @pytest.mark.asyncio
+  async def test_failure_to_classify_a_result_still_records_the_call(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      tool_context,
+      caplog,
+      monkeypatch,
+  ):
+    """If classifying a result fails anyway, the call is still recorded.
+
+    The tool span is already closed when the result is classified, so the
+    failure must not skip the row. The warning leaves the exception out,
+    because it can carry the result.
+    """
+
+    def fail(result):
+      raise RuntimeError(_PAYLOAD_SECRET)
+
+    monkeypatch.setattr(_callback_helpers, "_result_fields", fail)
+
+    with caplog.at_level(logging.DEBUG):
+      rows = await self._record_tool_call(
+          _mock_bq_infra, dummy_arrow_schema, tool_context, {"isError": True}
+      )
+
+    assert [r["event_type"] for r in rows] == [
+        "TOOL_STARTING",
+        "TOOL_COMPLETED",
+    ]
+    assert "_run_query" in caplog.text
+    assert _PAYLOAD_SECRET not in caplog.text
+
+  @pytest.mark.parametrize(
+      ("make_result", "error_message"),
+      [
+          (
+              lambda: {"isError": True, "response_type": _RaisingClassValue()},
+              "Tool returned an MCP result with isError=true.",
+          ),
+          (
+              lambda: {_CollidingKey("response_type"): 1, "isError": True},
+              "Tool returned an MCP result with isError=true.",
+          ),
+          (
+              lambda: {"isError": True, "response_type": _RaisingEq()},
+              "Tool returned an MCP result with isError=true.",
+          ),
+          (
+              lambda: {"isError": True, "error_details": _RaisingBool()},
+              "Tool returned an MCP result with isError=true.",
+          ),
+          (
+              lambda: {
+                  "response_type": "ERROR_HANDLED_BY_REFLECT_AND_RETRY_PLUGIN",
+                  "error_type": "RuntimeError",
+                  "error_details": _RaisingClassValue(),
+              },
+              "RuntimeError",
+          ),
+          (
+              lambda: {
+                  _CollidingKey("error_details"): 1,
+                  "response_type": "ERROR_HANDLED_BY_REFLECT_AND_RETRY_PLUGIN",
+                  "error_type": "RuntimeError",
+              },
+              "RuntimeError",
+          ),
+      ],
+      ids=[
+          "error_flag_beside_raising_class",
+          "error_flag_beside_colliding_key",
+          "error_flag_beside_raising_eq",
+          "error_flag_beside_raising_bool",
+          "retry_answer_beside_raising_class",
+          "retry_answer_beside_colliding_key",
+      ],
+  )
+  @pytest.mark.asyncio
+  async def test_valid_error_signal_survives_a_hostile_sibling_field(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      tool_context,
+      caplog,
+      make_result,
+      error_message,
+  ):
+    """A malformed or hostile field cannot hide a well-formed error signal.
+
+    Each field is read without running code of the result, its keys or its
+    values, so a sibling that raises when inspected, compared or hashed
+    leaves the error flag or retry answer readable.
+    """
+    with caplog.at_level(logging.DEBUG):
+      rows = await self._record_tool_call(
+          _mock_bq_infra, dummy_arrow_schema, tool_context, make_result()
+      )
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+    assert rows[1]["error_message"] == error_message
+    assert _PAYLOAD_SECRET not in caplog.text
+    assert "Built-in tool result rule" not in caplog.text
+
+  @pytest.mark.parametrize(
+      "hostile_names",
+      [frozenset({"__dict__"}), None],
+      ids=["raising_dict_attribute", "raising_every_attribute"],
+  )
+  @pytest.mark.asyncio
+  async def test_mcp_model_subclass_with_hostile_attributes_is_classified(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      tool_context,
+      caplog,
+      hostile_names,
+  ):
+    """A CallToolResult subclass cannot intercept how its fields are read.
+
+    The model's recognized through its class's own C-level MRO and its fields
+    through the base model's own __dict__ descriptor, so a subclass whose
+    attribute access raises still reports its error flag.
+    """
+    mcp_types = pytest.importorskip("mcp.types")
+    armed = [False]
+
+    class _HostileResult(mcp_types.CallToolResult):
+
+      def __getattribute__(self, name):
+        if armed[0] and (hostile_names is None or name in hostile_names):
+          raise RuntimeError(_PAYLOAD_SECRET)
+        return super().__getattribute__(name)
+
+    result = _HostileResult(content=[], isError=True)
+    armed[0] = True
+    try:
+      with caplog.at_level(logging.DEBUG):
+        rows = await self._record_tool_call(
+            _mock_bq_infra, dummy_arrow_schema, tool_context, result
+        )
+    finally:
+      armed[0] = False
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+    assert _PAYLOAD_SECRET not in caplog.text
+
+  @pytest.mark.asyncio
+  async def test_mcp_model_recognition_runs_no_metaclass_hooks(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      tool_context,
+      caplog,
+      monkeypatch,
+  ):
+    """Recognizing an MCP model runs no hook of its class's metaclass.
+
+    The model class comes from whichever MCP SDK is installed, so the check
+    reads the result's actual type rather than calling isinstance(), which a
+    metaclass can override.
+    """
+    import types as builtin_types
+
+    armed = [False]
+
+    class _HostileMeta(type):
+
+      def __instancecheck__(cls, instance):
+        if armed[0]:
+          raise RuntimeError(_PAYLOAD_SECRET)
+        return super().__instancecheck__(instance)
+
+    class _CallToolResult(metaclass=_HostileMeta):
+
+      def __init__(self, is_error):
+        self.is_error = is_error
+
+    class _ToolResult(_CallToolResult):
+      pass
+
+    stand_in = builtin_types.ModuleType("mcp_types")
+    stand_in.CallToolResult = _CallToolResult
+    monkeypatch.setitem(sys.modules, "mcp_types", stand_in)
+    # isinstance() only consults the metaclass for an instance of a subclass;
+    # for an instance of the class itself it answers from the type alone.
+    result = _ToolResult(True)
+    armed[0] = True
+    try:
+      with caplog.at_level(logging.DEBUG):
+        rows = await self._record_tool_call(
+            _mock_bq_infra, dummy_arrow_schema, tool_context, result
+        )
+    finally:
+      armed[0] = False
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+    assert _PAYLOAD_SECRET not in caplog.text
+
+  @pytest.mark.asyncio
+  async def test_failing_rule_does_not_hide_another_rules_signal(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      tool_context,
+      caplog,
+      monkeypatch,
+  ):
+    """Each built-in rule runs on its own, so one failing leaves the others."""
+
+    def fail(fields):
+      raise RuntimeError(_PAYLOAD_SECRET)
+
+    monkeypatch.setattr(_callback_helpers, "_retry_answer_error_message", fail)
+
+    with caplog.at_level(logging.DEBUG):
+      rows = await self._record_tool_call(
+          _mock_bq_infra, dummy_arrow_schema, tool_context, {"isError": True}
+      )
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+    assert _PAYLOAD_SECRET not in caplog.text
+
+  @pytest.mark.parametrize(
+      "failure",
+      ["classifier", "result_fields", "retry_rule", "result_serialization"],
+  )
+  @pytest.mark.asyncio
+  async def test_boundary_warning_does_not_carry_the_failure(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      tool_context,
+      capsys,
+      monkeypatch,
+      failure,
+  ):
+    """A failing log handler cannot print the exception a boundary caught.
+
+    A handler that fails reports through handleError, which prints the
+    exception chain being handled, so each boundary logs its warning only
+    after leaving the except block that caught the payload-bearing error.
+    """
+
+    def fail(*_, **__):
+      raise RuntimeError(_PAYLOAD_SECRET)
+
+    config = None
+    result = {"isError": True}
+    if failure == "classifier":
+      config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          tool_result_classifier=fail
+      )
+    elif failure == "result_fields":
+      monkeypatch.setattr(_callback_helpers, "_result_fields", fail)
+    elif failure == "retry_rule":
+      monkeypatch.setattr(
+          _callback_helpers, "_retry_answer_error_message", fail
+      )
+    else:
+      result = _RaisingClassValue()
+    plugin_logger = logging.getLogger(
+        "google_adk." + bigquery_agent_analytics_plugin.__name__
+    )
+    handler = _BrokenHandler()
+    plugin_logger.addHandler(handler)
+    try:
+      rows = await self._record_tool_call(
+          _mock_bq_infra,
+          dummy_arrow_schema,
+          tool_context,
+          result,
+          config=config,
+      )
+    finally:
+      plugin_logger.removeHandler(handler)
+    stderr = capsys.readouterr().err
+
+    assert len(rows) == 2
+    assert "the handler failed" in stderr
+    assert _PAYLOAD_SECRET not in stderr
+
+  @pytest.mark.parametrize(
+      "make_classification",
+      [
+          lambda: bigquery_agent_analytics_plugin.ToolResultClassification(
+              status="ERROR", error_message=_RaisingBool()
+          ),
+          lambda: bigquery_agent_analytics_plugin.ToolResultClassification(
+              status="ERROR",
+              error_message=pytest.importorskip("numpy").array([1, 2]),
+          ),
+          lambda: _unvalidated_classification(error_message=_RaisingBool()),
+          lambda: _unvalidated_classification(status=_RaisingEq()),
+          lambda: _unvalidated_classification(status=_EqualsEverything()),
+          lambda: _unvalidated_classification(error_message=42),
+          lambda: object.__new__(_UnreadableClassification),
+      ],
+      ids=[
+          "raising_bool_message",
+          "numpy_message",
+          "unvalidated_raising_bool_message",
+          "unvalidated_raising_eq_status",
+          "unvalidated_status_equal_to_everything",
+          "unvalidated_int_message",
+          "unreadable_fields",
+      ],
+  )
+  @pytest.mark.asyncio
+  async def test_malformed_classification_falls_back_to_the_builtin_rules(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      tool_context,
+      caplog,
+      make_classification,
+  ):
+    """A classification that cannot be read is ignored, not fatal.
+
+    The built-in rules then classify the result, and nothing the
+    classification raised reaches the log.
+    """
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=lambda *_, **__: make_classification()
+    )
+
+    with caplog.at_level(logging.DEBUG):
+      rows = await self._record_tool_call(
+          _mock_bq_infra,
+          dummy_arrow_schema,
+          tool_context,
+          {"content": [], "isError": True},
+          config=config,
+      )
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+    assert "isError" in rows[1]["error_message"]
+    assert "tool_result_classifier" in caplog.text
+    assert _PAYLOAD_SECRET not in caplog.text
+
+  @pytest.mark.asyncio
+  async def test_classifier_message_of_a_str_subclass_is_recorded_as_text(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A message of a str subclass is recorded as its text.
+
+    The subclass's own methods never run, so one that raises cannot break
+    the row.
+    """
+
+    class _Message(str):
+
+      def __bool__(self):
+        raise RuntimeError(_PAYLOAD_SECRET)
+
+      def __len__(self):
+        raise RuntimeError(_PAYLOAD_SECRET)
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=lambda *_, **__: (
+            bigquery_agent_analytics_plugin.ToolResultClassification(
+                status="ERROR", error_message=_Message("query failed")
+            )
+        )
+    )
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        tool_context,
+        {"rows": 0},
+        config=config,
+    )
+
+    assert rows[1]["event_type"] == "TOOL_ERROR"
+    assert rows[1]["error_message"] == "query failed"
+
+  @pytest.mark.asyncio
+  async def test_base_exception_from_the_classifier_is_not_swallowed(
+      self, _mock_bq_infra, tool_context
+  ):
+    """A BaseException from the classifier propagates.
+
+    Cancellation, KeyboardInterrupt and SystemExit derive from
+    BaseException, and absorbing them would stop a task or a process from
+    shutting down.
+    """
+    from google.adk.tools.function_tool import FunctionTool
+
+    class _Stop(BaseException):
+      pass
+
+    def classify(*_, **__):
+      raise _Stop()
+
+    tool = FunctionTool(_run_query)
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=classify
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      await plugin.before_tool_callback(
+          tool=tool, tool_args={"query": "a"}, tool_context=tool_context
+      )
+
+      with pytest.raises(_Stop):
+        await plugin.after_tool_callback(
+            tool=tool,
+            tool_args={"query": "a"},
+            tool_context=tool_context,
+            result={"rows": 1},
+        )
+
+  @pytest.mark.asyncio
+  async def test_classifier_receives_the_call_by_keyword(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """The classifier gets tool, tool_args, tool_context and result."""
+    seen = {}
+
+    def classify(*, tool, tool_args, tool_context, result):
+      seen.update(
+          tool=tool.name,
+          tool_args=tool_args,
+          invocation_id=tool_context.invocation_id,
+          result=result,
+      )
+      return None
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=classify
+    )
+
+    await self._record_tool_call(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        tool_context,
+        {"rows": 1},
+        config=config,
+    )
+
+    assert seen == {
+        "tool": "_run_query",
+        "tool_args": {"query": "SELECT 1"},
+        "invocation_id": "inv-789",
+        "result": {"rows": 1},
+    }
+
+  def test_classifier_without_the_keyword_arguments_is_rejected(self):
+    """A classifier that cannot take the keyword arguments fails early."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=lambda tool, result: None
+    )
+
+    with pytest.raises(ValueError, match="keyword"):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      )
+
+  @pytest.mark.parametrize(
+      "make_classifier",
+      [
+          lambda: _async_classifier,
+          lambda: _AsyncCallableClassifier(),
+          lambda: functools.partial(_async_classifier),
+          lambda: functools.partial(_AsyncCallableClassifier()),
+          lambda: _async_generator_classifier,
+          lambda: _AsyncGeneratorCallableClassifier(),
+          lambda: functools.partial(_async_generator_classifier),
+          lambda: functools.partial(_AsyncGeneratorCallableClassifier()),
+      ],
+      ids=[
+          "coroutine_function",
+          "async_call_method",
+          "partial",
+          "partial_async_call_method",
+          "async_generator_function",
+          "async_generator_call_method",
+          "partial_async_generator",
+          "partial_async_generator_call_method",
+      ],
+  )
+  def test_async_classifier_is_rejected(self, make_classifier):
+    """A classifier must be synchronous; its result is never awaited."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=make_classifier()
+    )
+
+    with pytest.raises(ValueError, match="synchronous"):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      )
+
+  @pytest.mark.asyncio
+  async def test_classifier_returning_an_awaitable_is_ignored_and_closed(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context, caplog
+  ):
+    """A coroutine returned by a classifier is closed, not left pending.
+
+    It is ignored like any other unsupported value, and closing it keeps
+    Python from warning that it was never awaited.
+    """
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=lambda *_, **__: _async_classifier()
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+      warnings.simplefilter("always")
+      with caplog.at_level(logging.DEBUG):
+        rows = await self._record_tool_call(
+            _mock_bq_infra,
+            dummy_arrow_schema,
+            tool_context,
+            {"rows": 1},
+            config=config,
+        )
+      gc.collect()
+
+    assert [r["event_type"] for r in rows] == [
+        "TOOL_STARTING",
+        "TOOL_COMPLETED",
+    ]
+    assert "awaitable" in caplog.text
+    assert not [w for w in caught if "never awaited" in str(w.message)]
+
+  @pytest.mark.asyncio
+  async def test_classifier_returning_a_generator_coroutine_closes_it(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A generator-based coroutine a classifier returns is closed too."""
+    import types as builtin_types
+
+    @builtin_types.coroutine
+    def pending_verdict():
+      yield
+
+    returned = []
+
+    def classify(*_, **__):
+      returned.append(pending_verdict())
+      return returned[-1]
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=classify
+    )
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        tool_context,
+        {"rows": 1},
+        config=config,
+    )
+
+    assert [r["event_type"] for r in rows] == [
+        "TOOL_STARTING",
+        "TOOL_COMPLETED",
+    ]
+    assert returned[0].gi_frame is None
+
+  @pytest.mark.parametrize(
+      "kind",
+      [
+          "failed_future",
+          "failing_task",
+          "task_failing_once_cancelled",
+          "failing_gather",
+          "async_generator",
+          "custom_awaitable",
+      ],
+  )
+  @pytest.mark.asyncio
+  async def test_classifier_return_value_leaks_nothing_once_collected(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context, caplog, kind
+  ):
+    """Nothing a classifier returns makes asyncio log its failure later.
+
+    asyncio logs the exception of a failed future that nobody retrieved, with
+    its traceback, when the future is collected, and that exception can carry
+    the result. The plugin cancels a pending future or task and retrieves the
+    exception of a finished one. An async generator or other awaitable that
+    never ran holds no failure. Each is ignored, so the built-in rule records
+    the call.
+    """
+    private = f"{_PAYLOAD_SECRET}-{kind}"
+    release = asyncio.Event()
+    ran = []
+
+    async def fail_after_a_yield():
+      ran.append(True)
+      await asyncio.sleep(0)
+      raise ValueError(private)
+
+    async def fail_when_woken():
+      try:
+        await release.wait()
+      except asyncio.CancelledError:
+        pass
+      raise ValueError(private)
+
+    async def private_rows():
+      yield private
+      raise ValueError(private)
+
+    class _FailingAwaitable:
+
+      def __await__(self):
+        yield
+        raise ValueError(private)
+
+    started = []
+    if kind == "task_failing_once_cancelled":
+      started.append(asyncio.create_task(fail_when_woken()))
+      await asyncio.sleep(0)
+
+    def classify(*, tool, tool_args, tool_context, result):
+      if kind == "failed_future":
+        future = asyncio.get_running_loop().create_future()
+        future.set_exception(ValueError(private))
+        return future
+      if kind == "failing_task":
+        return asyncio.create_task(fail_after_a_yield())
+      if kind == "failing_gather":
+        return asyncio.gather(fail_after_a_yield())
+      if kind == "async_generator":
+        return private_rows()
+      if kind == "custom_awaitable":
+        return _FailingAwaitable()
+      return started.pop()
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=classify
+    )
+    # Collect what earlier tests left behind, so that only what this call
+    # returned can be collected below.
+    gc.collect()
+    caplog.clear()
+    with warnings.catch_warnings(record=True) as caught:
+      warnings.simplefilter("always")
+      with caplog.at_level(logging.DEBUG):
+        rows = await self._record_tool_call(
+            _mock_bq_infra,
+            dummy_arrow_schema,
+            tool_context,
+            {"isError": True},
+            config=config,
+        )
+        release.set()
+        for _ in range(5):
+          await asyncio.sleep(0)
+        gc.collect()
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+    assert "tool_result_classifier" in caplog.text
+    assert private not in caplog.text
+    assert not [
+        record
+        for record in caplog.records
+        if record.name == "asyncio" and record.levelno >= logging.ERROR
+    ]
+    assert not [
+        warning
+        for warning in caught
+        if private in str(warning.message)
+        or "never awaited" in str(warning.message)
+    ]
+    # A pending task is cancelled before it runs.
+    assert not ran
+
+  @pytest.mark.asyncio
+  async def test_pending_future_from_a_classifier_is_cancelled(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A pending future a classifier returns is cancelled, not left pending."""
+    returned = []
+
+    def classify(*, tool, tool_args, tool_context, result):
+      returned.append(asyncio.get_running_loop().create_future())
+      return returned[-1]
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=classify
+    )
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        tool_context,
+        {"rows": 1},
+        config=config,
+    )
+
+    assert [r["event_type"] for r in rows] == [
+        "TOOL_STARTING",
+        "TOOL_COMPLETED",
+    ]
+    assert returned[0].cancelled()
+
+  @pytest.mark.skipif(
+      sys.version_info < (3, 14),
+      reason="Only Python 3.14 and later evaluate annotations lazily.",
+  )
+  def test_classifier_annotated_with_names_it_imports_for_type_checking(self):
+    """The classifier's annotations are not evaluated to check its signature.
+
+    From Python 3.14 a classifier can annotate its parameters with names it
+    imports only under TYPE_CHECKING, and evaluating those annotations raises
+    NameError. The classifier is compiled apart from this module, whose
+    `from __future__ import annotations` would turn them into strings.
+    """
+    namespace = {}
+    exec(  # pylint: disable=exec-used
+        compile(
+            "def classify(*, tool: BaseTool, tool_args, tool_context,"
+            " result):\n  return None\n",
+            "<classifier>",
+            "exec",
+            dont_inherit=True,
+        ),
+        namespace,
+    )
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=namespace["classify"]
+    )
+
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    )
+
+    assert plugin.config.tool_result_classifier is namespace["classify"]
+
+  @pytest.mark.parametrize(
+      "make_classifier",
+      [
+          lambda: max,
+          lambda: _UnsignableClassifier(),
+          lambda: _RaisingSignatureClassifier(),
+      ],
+      ids=[
+          "builtin_without_signature",
+          "invalid_signature_attribute",
+          "raising_signature_attribute",
+      ],
+  )
+  def test_classifier_without_an_inspectable_signature_is_rejected(
+      self, make_classifier
+  ):
+    """A classifier whose signature cannot be checked fails at construction."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=make_classifier()
+    )
+
+    with pytest.raises(ValueError, match="signature"):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+      )
+
+  @pytest.mark.asyncio
+  async def test_classifier_cannot_hide_a_retry_answer(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A ReflectAndRetryToolPlugin answer is recorded before any classifier.
+
+    The answer stands for a raised error, which on_tool_error_callback
+    records without consulting the classifier when this plugin runs first,
+    so the classifier cannot turn it into TOOL_COMPLETED in the other order.
+    """
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=lambda **_: (
+            bigquery_agent_analytics_plugin.ToolResultClassification(
+                status="OK"
+            )
+        )
+    )
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        tool_context,
+        {
+            "response_type": "ERROR_HANDLED_BY_REFLECT_AND_RETRY_PLUGIN",
+            "error_type": "RuntimeError",
+            "error_details": "boom",
+        },
+        config=config,
+    )
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+    assert rows[1]["error_message"] == "boom"
+
+  @pytest.mark.parametrize(
+      ("is_error", "event_type"),
+      [(True, "TOOL_ERROR"), (False, "TOOL_COMPLETED")],
+  )
+  @pytest.mark.asyncio
+  async def test_mcp_call_tool_result_model_is_classified(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+      tool_context,
+      is_error,
+      event_type,
+  ):
+    """A tool that returns an MCP CallToolResult model is classified too."""
+    mcp_types = pytest.importorskip("mcp.types")
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        tool_context,
+        mcp_types.CallToolResult(content=[], isError=is_error),
+    )
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", event_type]
+
+  @pytest.mark.asyncio
+  async def test_mcp_model_from_the_mcp_types_package_is_classified(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context, monkeypatch
+  ):
+    """MCP SDK 2.x models are recognized without the mcp.types module.
+
+    The 2.x SDK defines them in the mcp_types package, which a program can
+    import without ever loading mcp.types.
+    """
+    mcp_types = pytest.importorskip("mcp_types")
+    monkeypatch.delitem(sys.modules, "mcp.types", raising=False)
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        tool_context,
+        mcp_types.CallToolResult(content=[], isError=True),
+    )
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+
+  @pytest.mark.asyncio
+  async def test_error_without_a_message_records_its_type(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A raised error with no message records its type name instead.
+
+    That matches what a ReflectAndRetryToolPlugin answer to the same error
+    records, so both plugin orders agree.
+    """
+    from google.adk.tools.function_tool import FunctionTool
+
+    tool = FunctionTool(_run_query)
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      await plugin._ensure_started()
+      _mock_bq_infra.append_rows.reset_mock()
+      await plugin.before_tool_callback(
+          tool=tool, tool_args={"query": "a"}, tool_context=tool_context
+      )
+      await plugin.on_tool_error_callback(
+          tool=tool,
+          tool_args={"query": "a"},
+          tool_context=tool_context,
+          error=RuntimeError(),
+      )
+      await plugin.flush()
+      rows = await _get_captured_rows_async(_mock_bq_infra, dummy_arrow_schema)
+
+    assert rows[1]["event_type"] == "TOOL_ERROR"
+    assert rows[1]["error_message"] == "RuntimeError"
+
+  @pytest.mark.parametrize(
+      "answered", [False, True], ids=["unanswered", "answered_later"]
+  )
+  @pytest.mark.asyncio
+  async def test_error_whose_message_cannot_be_read_is_recorded_once(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context, caplog, answered
+  ):
+    """A raised error whose str() raises records its type name.
+
+    The message is read before the call is marked as recorded, so failing
+    to read it neither loses the TOOL_ERROR row nor, when a later handler
+    answers the error, leaves the call marked without one.
+    """
+    from google.adk.tools.function_tool import FunctionTool
+
+    tool = FunctionTool(_run_query)
+    tool_args = {"query": "SELECT 1"}
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      await plugin._ensure_started()
+      _mock_bq_infra.append_rows.reset_mock()
+      await plugin.before_tool_callback(
+          tool=tool, tool_args=tool_args, tool_context=tool_context
+      )
+      with caplog.at_level(logging.DEBUG):
+        await plugin.on_tool_error_callback(
+            tool=tool,
+            tool_args=tool_args,
+            tool_context=tool_context,
+            error=ValueError(_UnprintableValue()),
+        )
+        if answered:
+          await plugin.after_tool_callback(
+              tool=tool,
+              tool_args=tool_args,
+              tool_context=tool_context,
+              result={"handled": True},
+          )
+      await plugin.flush()
+      rows = await _get_captured_rows_async(_mock_bq_infra, dummy_arrow_schema)
+
+    assert [(r["event_type"], r["error_message"]) for r in rows] == [
+        ("TOOL_STARTING", None),
+        ("TOOL_ERROR", "ValueError"),
+    ]
+    assert _PAYLOAD_SECRET not in caplog.text
+
+  @pytest.mark.asyncio
+  async def test_retry_response_without_error_text_records_a_message(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A retry response with no error text still records a message."""
+    rows = await self._record_tool_call(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        tool_context,
+        {
+            "response_type": "ERROR_HANDLED_BY_REFLECT_AND_RETRY_PLUGIN",
+            "error_type": "",
+            "error_details": "",
+        },
+    )
+
+    assert rows[1]["event_type"] == "TOOL_ERROR"
+    assert rows[1]["error_message"]
+
+  @pytest.mark.asyncio
+  async def test_errored_final_response_tool_does_not_log_agent_response(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A final-response tool that failed delivered no final answer."""
+    from google.adk.tools.function_tool import FunctionTool
+
+    def submit_final_response(answer: str) -> dict:
+      return {"answer": answer}
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        final_response_tool_names=frozenset({"submit_final_response"})
+    )
+
+    rows = await self._record_tool_call(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        tool_context,
+        {"content": [], "isError": True},
+        config=config,
+        tool=FunctionTool(submit_final_response),
+        tool_args={"answer": "The table has 241 rows."},
+    )
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+
+  @pytest.mark.asyncio
+  async def test_tool_error_from_a_result_closes_the_tool_span(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """The TOOL_ERROR row pairs with TOOL_STARTING as TOOL_COMPLETED does."""
+    rows = await self._record_tool_call(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        tool_context,
+        {"content": [], "isError": True},
+    )
+
+    starting_row, error_row = rows
+    assert error_row["event_type"] == "TOOL_ERROR"
+    assert error_row["span_id"] == starting_row["span_id"]
+    assert json.loads(error_row["latency_ms"])["total_ms"] >= 0
+    current_span_id = (
+        bigquery_agent_analytics_plugin.TraceManager.get_current_span_id()
+    )
+    assert current_span_id != starting_row["span_id"]
+
+  @pytest.mark.asyncio
+  async def test_answer_to_a_recorded_error_adds_no_row_and_pops_no_span(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A later plugin's answer to a recorded error changes nothing.
+
+    Setup: the analytics plugin runs before ReflectAndRetryToolPlugin, so its
+      on_tool_error_callback records the failure before the retry plugin
+      answers it.
+    Act: the answer reaches after_tool_callback as the call's result.
+    Assert: the call has one TOOL_ERROR row, and the span that was current
+      before the call is current again.
+    """
+    from google.adk.plugins.reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
+    from google.adk.tools.function_tool import FunctionTool
+
+    tool = FunctionTool(_run_query)
+    tool_args = {"query": "SELECT 1"}
+    error = RuntimeError("boom")
+    trace_manager = bigquery_agent_analytics_plugin.TraceManager
+    trace_manager.clear_stack()
+    caller_span_id = trace_manager.push_span(tool_context, "agent")
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      await plugin._ensure_started()
+      _mock_bq_infra.append_rows.reset_mock()
+      await plugin.before_tool_callback(
+          tool=tool, tool_args=tool_args, tool_context=tool_context
+      )
+      await plugin.on_tool_error_callback(
+          tool=tool, tool_args=tool_args, tool_context=tool_context, error=error
+      )
+      answer = await ReflectAndRetryToolPlugin().on_tool_error_callback(
+          tool=tool, tool_args=tool_args, tool_context=tool_context, error=error
+      )
+      await plugin.after_tool_callback(
+          tool=tool,
+          tool_args=tool_args,
+          tool_context=tool_context,
+          result=answer,
+      )
+      span_id_after_call = trace_manager.get_current_span_id()
+      await plugin.flush()
+      rows = await _get_captured_rows_async(_mock_bq_infra, dummy_arrow_schema)
+
+    assert [r["event_type"] for r in rows] == ["TOOL_STARTING", "TOOL_ERROR"]
+    assert span_id_after_call == caller_span_id
+
+  @pytest.mark.asyncio
+  async def test_recorded_error_of_one_call_does_not_skip_the_next_call(
+      self, _mock_bq_infra, dummy_arrow_schema, invocation_context
+  ):
+    """after_tool_callback skips only the call on_tool_error_callback saw."""
+    from google.adk.tools.function_tool import FunctionTool
+
+    tool = FunctionTool(_run_query)
+    failed_call = tool_context_lib.ToolContext(
+        invocation_context=invocation_context
+    )
+    next_call = tool_context_lib.ToolContext(
+        invocation_context=invocation_context
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      await plugin._ensure_started()
+      _mock_bq_infra.append_rows.reset_mock()
+      await plugin.before_tool_callback(
+          tool=tool, tool_args={"query": "a"}, tool_context=failed_call
+      )
+      await plugin.on_tool_error_callback(
+          tool=tool,
+          tool_args={"query": "a"},
+          tool_context=failed_call,
+          error=RuntimeError("boom"),
+      )
+      await plugin.before_tool_callback(
+          tool=tool, tool_args={"query": "b"}, tool_context=next_call
+      )
+      await plugin.after_tool_callback(
+          tool=tool,
+          tool_args={"query": "b"},
+          tool_context=next_call,
+          result={"rows": 1},
+      )
+      await plugin.flush()
+      rows = await _get_captured_rows_async(_mock_bq_infra, dummy_arrow_schema)
+
+    assert [r["event_type"] for r in rows] == [
+        "TOOL_STARTING",
+        "TOOL_ERROR",
+        "TOOL_STARTING",
+        "TOOL_COMPLETED",
+    ]
+
+  @pytest.mark.asyncio
+  async def test_each_analytics_plugin_records_a_raised_error_once(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """Two analytics plugins in one runner each record the error once.
+
+    Setup: both analytics plugins run before ReflectAndRetryToolPlugin.
+    Act: the tool raises, both on_tool_error_callbacks record the error,
+      and the retry plugin's answer reaches both after_tool_callbacks.
+    Assert: one TOOL_ERROR row per plugin and no second outcome row.
+    """
+    from google.adk.plugins.reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
+    from google.adk.tools.function_tool import FunctionTool
+
+    tool = FunctionTool(_run_query)
+    tool_args = {"query": "SELECT 1"}
+    error = RuntimeError("boom")
+    async with (
+        managed_plugin(PROJECT_ID, DATASET_ID, table_id=TABLE_ID) as first,
+        managed_plugin(PROJECT_ID, DATASET_ID, table_id=TABLE_ID) as second,
+    ):
+      await first._ensure_started()
+      await second._ensure_started()
+      _mock_bq_infra.append_rows.reset_mock()
+      for plugin in (first, second):
+        await plugin.before_tool_callback(
+            tool=tool, tool_args=tool_args, tool_context=tool_context
+        )
+      for plugin in (first, second):
+        await plugin.on_tool_error_callback(
+            tool=tool,
+            tool_args=tool_args,
+            tool_context=tool_context,
+            error=error,
+        )
+      answer = await ReflectAndRetryToolPlugin().on_tool_error_callback(
+          tool=tool, tool_args=tool_args, tool_context=tool_context, error=error
+      )
+      for plugin in (first, second):
+        await plugin.after_tool_callback(
+            tool=tool,
+            tool_args=tool_args,
+            tool_context=tool_context,
+            result=answer,
+        )
+      await first.flush()
+      await second.flush()
+      rows = await _get_captured_rows_async(_mock_bq_infra, dummy_arrow_schema)
+
+    assert sorted(r["event_type"] for r in rows) == [
+        "TOOL_ERROR",
+        "TOOL_ERROR",
+        "TOOL_STARTING",
+        "TOOL_STARTING",
+    ]
+
+  @pytest.mark.asyncio
+  async def test_error_row_is_kept_for_a_context_without_weak_references(
+      self, _mock_bq_infra, dummy_arrow_schema, tool_context
+  ):
+    """A tool context that cannot take a weak reference still gets its row.
+
+    No ADK flow passes such a context, so it only goes unmarked: the
+    TOOL_ERROR row is written either way.
+    """
+    from google.adk.tools.function_tool import FunctionTool
+
+    tool = FunctionTool(_run_query)
+    context = _NoWeakrefContext(tool_context)
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      await plugin._ensure_started()
+      _mock_bq_infra.append_rows.reset_mock()
+      await plugin.before_tool_callback(
+          tool=tool, tool_args={"query": "a"}, tool_context=context
+      )
+      await plugin.on_tool_error_callback(
+          tool=tool,
+          tool_args={"query": "a"},
+          tool_context=context,
+          error=RuntimeError("boom"),
+      )
+      await plugin.flush()
+      rows = await _get_captured_rows_async(_mock_bq_infra, dummy_arrow_schema)
+
+    assert [(r["event_type"], r["error_message"]) for r in rows] == [
+        ("TOOL_STARTING", None),
+        ("TOOL_ERROR", "boom"),
+    ]
+
+  async def _run_turn(
+      self,
+      mock_write_client,
+      dummy_arrow_schema,
+      tool,
+      plugins_around,
+      *,
+      calls=1,
+      config=None,
+      agent_kwargs=None,
+  ):
+    """Runs a turn in which the model calls ``tool``, then answers.
+
+    ``plugins_around`` receives the analytics plugin and returns the
+    plugin list in registration order. ``calls`` sets how many calls of the
+    tool the model makes in parallel, ``config`` configures the analytics
+    plugin, and ``agent_kwargs`` are passed on to the agent.
+
+    Returns:
+      The function responses the model received, and the rows written.
+    """
+    from google.adk.agents.llm_agent import LlmAgent
+
+    from .. import testing_utils
+
+    mock_model = testing_utils.MockModel(
+        responses=[
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                name=tool.name, args={}
+                            )
+                        )
+                        for _ in range(calls)
+                    ]
+                )
+            ),
+            testing_utils.LlmResponse(
+                content=testing_utils.ModelContent(
+                    parts=[types.Part(text="done")]
+                )
+            ),
+        ]
+    )
+    bq_plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    )
+    await bq_plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+    agent = LlmAgent(
+        name="agent", model=mock_model, tools=[tool], **(agent_kwargs or {})
+    )
+    runner = testing_utils.InMemoryRunner(
+        root_agent=agent, plugins=plugins_around(bq_plugin)
+    )
+    try:
+      events = await runner.run_async(testing_utils.UserContent("go"))
+      await bq_plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+    finally:
+      await bq_plugin.shutdown()
+
+    function_responses = [
+        part.function_response.response
+        for event in events
+        if event.content
+        for part in event.content.parts
+        if part.function_response
+    ]
+    return function_responses, rows
+
+  @pytest.mark.parametrize(
+      "analytics_first", [False, True], ids=["retry_first", "analytics_first"]
+  )
+  @pytest.mark.asyncio
+  async def test_raised_error_answered_by_retry_plugin_is_recorded_once(
+      self, _mock_bq_infra, dummy_arrow_schema, analytics_first
+  ):
+    """Either plugin order records one TOOL_ERROR row and no TOOL_COMPLETED.
+
+    Setup: a tool that raises, ReflectAndRetryToolPlugin and the analytics
+      plugin, registered in either order.
+    Act: run one turn in which the model calls the tool once.
+    Assert: the tool's rows are TOOL_STARTING then one TOOL_ERROR carrying
+      the exception text, and the model still receives the retry guidance.
+    """
+    from google.adk.plugins.reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
+    from google.adk.tools.function_tool import FunctionTool
+
+    def raising_tool() -> str:
+      raise RuntimeError("MCP request failed with code 403: Access Denied")
+
+    retry_plugin = ReflectAndRetryToolPlugin(max_retries=3)
+
+    function_responses, rows = await self._run_turn(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        FunctionTool(raising_tool),
+        lambda bq_plugin: (
+            [bq_plugin, retry_plugin]
+            if analytics_first
+            else [retry_plugin, bq_plugin]
+        ),
+    )
+
+    assert [
+        (r["event_type"], r["status"], r["error_message"])
+        for r in rows
+        if r["event_type"].startswith("TOOL_")
+    ] == [
+        ("TOOL_STARTING", "OK", None),
+        (
+            "TOOL_ERROR",
+            "ERROR",
+            "MCP request failed with code 403: Access Denied",
+        ),
+    ]
+    assert [r["response_type"] for r in function_responses] == [
+        "ERROR_HANDLED_BY_REFLECT_AND_RETRY_PLUGIN"
+    ]
+
+  @pytest.mark.asyncio
+  async def test_agent_answer_to_an_error_whose_message_cannot_be_read(
+      self, _mock_bq_infra, dummy_arrow_schema
+  ):
+    """An agent's answer to such an error leaves exactly its TOOL_ERROR row.
+
+    Setup: a tool that raises an error whose str() raises, and an agent
+      on_tool_error_callback that answers the error.
+    Act: run one turn in which the model calls the tool once.
+    Assert: the tool's rows are TOOL_STARTING then one TOOL_ERROR recording
+      the error's type, and the model receives the agent's answer.
+    """
+    from google.adk.tools.function_tool import FunctionTool
+
+    def raising_tool() -> str:
+      raise ValueError(_UnprintableValue())
+
+    def answer_error(tool, args, tool_context, error):
+      return {"handled": True}
+
+    function_responses, rows = await self._run_turn(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        FunctionTool(raising_tool),
+        lambda bq_plugin: [bq_plugin],
+        agent_kwargs={"on_tool_error_callback": answer_error},
+    )
+
+    assert [
+        (r["event_type"], r["error_message"])
+        for r in rows
+        if r["event_type"].startswith("TOOL_")
+    ] == [("TOOL_STARTING", None), ("TOOL_ERROR", "ValueError")]
+    assert function_responses == [{"handled": True}]
+
+  @pytest.mark.parametrize(
+      "analytics_first", [False, True], ids=["retry_first", "analytics_first"]
+  )
+  @pytest.mark.asyncio
+  async def test_parallel_raised_errors_are_each_recorded_once(
+      self, _mock_bq_infra, dummy_arrow_schema, analytics_first
+  ):
+    """Each of two parallel calls that raise gets exactly one TOOL_ERROR.
+
+    Each call runs in its own copy of the context, so one call's recorded
+    error never marks, or is consumed by, the other.
+    """
+    from google.adk.plugins.reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
+    from google.adk.tools.function_tool import FunctionTool
+
+    def raising_tool() -> str:
+      raise RuntimeError("boom")
+
+    retry_plugin = ReflectAndRetryToolPlugin(max_retries=3)
+
+    _, rows = await self._run_turn(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        FunctionTool(raising_tool),
+        lambda bq_plugin: (
+            [bq_plugin, retry_plugin]
+            if analytics_first
+            else [retry_plugin, bq_plugin]
+        ),
+        calls=2,
+    )
+
+    assert sorted(
+        r["event_type"] for r in rows if r["event_type"].startswith("TOOL_")
+    ) == ["TOOL_ERROR", "TOOL_ERROR", "TOOL_STARTING", "TOOL_STARTING"]
+
+  @pytest.mark.parametrize(
+      "analytics_first", [False, True], ids=["retry_first", "analytics_first"]
+  )
+  @pytest.mark.asyncio
+  async def test_raised_error_is_recorded_alike_whatever_the_classifier(
+      self, _mock_bq_infra, dummy_arrow_schema, analytics_first
+  ):
+    """A classifier that returns OK cannot hide a raised error in any order."""
+    from google.adk.plugins.reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
+    from google.adk.tools.function_tool import FunctionTool
+
+    def raising_tool() -> str:
+      raise RuntimeError("boom")
+
+    retry_plugin = ReflectAndRetryToolPlugin(max_retries=3)
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        tool_result_classifier=lambda **_: (
+            bigquery_agent_analytics_plugin.ToolResultClassification(
+                status="OK"
+            )
+        )
+    )
+
+    _, rows = await self._run_turn(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        FunctionTool(raising_tool),
+        lambda bq_plugin: (
+            [bq_plugin, retry_plugin]
+            if analytics_first
+            else [retry_plugin, bq_plugin]
+        ),
+        config=config,
+    )
+
+    assert [
+        (r["event_type"], r["error_message"])
+        for r in rows
+        if r["event_type"].startswith("TOOL_")
+    ] == [("TOOL_STARTING", None), ("TOOL_ERROR", "boom")]
+
+  @pytest.mark.parametrize(
+      "analytics_first", [False, True], ids=["retry_first", "analytics_first"]
+  )
+  @pytest.mark.asyncio
+  async def test_tool_node_raised_error_is_recorded_once(
+      self, _mock_bq_infra, dummy_arrow_schema, analytics_first
+  ):
+    """A workflow ToolNode whose tool raises gets exactly one TOOL_ERROR."""
+    from google.adk.events.event import Event
+    from google.adk.plugins.reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
+    from google.adk.tools.function_tool import FunctionTool
+    from google.adk.workflow import START
+    from google.adk.workflow._tool_node import _ToolNode as ToolNode
+    from google.adk.workflow._workflow import Workflow
+
+    from .. import testing_utils
+
+    def raising_tool() -> str:
+      raise RuntimeError("boom")
+
+    def start_node():
+      return Event(output={})
+
+    bq_plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID, dataset_id=DATASET_ID, table_id=TABLE_ID
+    )
+    await bq_plugin._ensure_started()
+    _mock_bq_infra.append_rows.reset_mock()
+    retry_plugin = ReflectAndRetryToolPlugin(max_retries=3)
+    workflow = Workflow(
+        name="tool_node_wf",
+        edges=[
+            (START, start_node),
+            (start_node, ToolNode(tool=FunctionTool(raising_tool))),
+        ],
+    )
+    app = testing_utils.App(
+        name="test_app",
+        root_agent=workflow,
+        plugins=(
+            [bq_plugin, retry_plugin]
+            if analytics_first
+            else [retry_plugin, bq_plugin]
+        ),
+    )
+    runner = testing_utils.InMemoryRunner(app=app)
+    try:
+      await runner.run_async("start")
+      await bq_plugin.flush()
+      rows = await _get_captured_rows_async(_mock_bq_infra, dummy_arrow_schema)
+    finally:
+      await bq_plugin.shutdown()
+
+    assert [
+        (r["event_type"], r["error_message"])
+        for r in rows
+        if r["event_type"].startswith("TOOL_")
+    ] == [("TOOL_STARTING", None), ("TOOL_ERROR", "boom")]
+
+  @pytest.mark.asyncio
+  async def test_mcp_error_result_reaches_the_model_unchanged(
+      self, _mock_bq_infra, dummy_arrow_schema
+  ):
+    """Recording a TOOL_ERROR row leaves the result the model receives as is."""
+    from google.adk.tools.function_tool import FunctionTool
+
+    def mcp_style_failure() -> dict:
+      return {
+          "content": [{"type": "text", "text": "Git reset to remote failed."}],
+          "isError": True,
+      }
+
+    function_responses, rows = await self._run_turn(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        FunctionTool(mcp_style_failure),
+        lambda bq_plugin: [bq_plugin],
+    )
+
+    assert [
+        r["event_type"] for r in rows if r["event_type"].startswith("TOOL_")
+    ] == ["TOOL_STARTING", "TOOL_ERROR"]
+    assert function_responses == [{
+        "content": [{"type": "text", "text": "Git reset to remote failed."}],
+        "isError": True,
+    }]
+
+  @pytest.mark.asyncio
+  async def test_tool_returning_an_mcp_model_is_recorded_as_tool_error(
+      self, _mock_bq_infra, dummy_arrow_schema
+  ):
+    """A tool that returns a CallToolResult model with isError set fails."""
+    from google.adk.tools.function_tool import FunctionTool
+
+    mcp_types = pytest.importorskip("mcp.types")
+
+    def mcp_model_failure():
+      return mcp_types.CallToolResult(content=[], isError=True)
+
+    _, rows = await self._run_turn(
+        _mock_bq_infra,
+        dummy_arrow_schema,
+        FunctionTool(mcp_model_failure),
+        lambda bq_plugin: [bq_plugin],
+    )
+
+    assert [
+        r["event_type"] for r in rows if r["event_type"].startswith("TOOL_")
+    ] == ["TOOL_STARTING", "TOOL_ERROR"]
+
+  @pytest.mark.parametrize(
+      "name", ["ToolResultClassification", "ToolResultClassifier"]
+  )
+  def test_classifier_types_resolve_to_one_class_on_every_import_path(
+      self, name
+  ):
+    """The classifier types are one class wherever an application imports them.
+
+    The shared callback helpers own them; the plugins package and the
+    analytics plugin re-export them, so a classifier written against one path
+    works with every plugin.
+    """
+    from google.adk import plugins
+
+    owner = getattr(_callback_helpers, name)
+
+    assert getattr(plugins, name) is owner
+    assert getattr(bigquery_agent_analytics_plugin, name) is owner
+
+  def test_recorded_error_marker_is_kept_per_plugin_and_read_once(
+      self, tool_context
+  ):
+    """A plugin's recorded-error marker is consumed once, by that plugin only.
+
+    Setup: one plugin marks the call's failure as recorded.
+    Act: another plugin reads the marker, then the marking plugin reads it
+      twice.
+    Assert: only the marking plugin's first read reports the call as
+      recorded.
+    """
+    marking_plugin, other_plugin = object(), object()
+
+    def mark_then_read():
+      _callback_helpers._mark_tool_error_recorded(marking_plugin, tool_context)
+      return [
+          _callback_helpers._pop_tool_error_recorded(
+              other_plugin, tool_context
+          ),
+          _callback_helpers._pop_tool_error_recorded(
+              marking_plugin, tool_context
+          ),
+          _callback_helpers._pop_tool_error_recorded(
+              marking_plugin, tool_context
+          ),
+      ]
+
+    assert contextvars.copy_context().run(mark_then_read) == [
+        False,
+        True,
+        False,
+    ]
 
 
 class TestHITLTracing:
@@ -7242,6 +12373,25 @@ class TestAnalyticsViews:
         "JSON_VALUE(attributes, '$.finish_reason') AS finish_reason" in columns
     )
 
+  def test_agent_starting_view_exposes_agent_config_columns(self):
+    """AGENT_STARTING views read string or object content and agent config."""
+    columns = bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS["AGENT_STARTING"]
+
+    assert columns == [
+        (
+            "COALESCE(JSON_VALUE(content, '$.text_summary'),"
+            " IF(REGEXP_CONTAINS(JSON_VALUE(content, '$'),"
+            " r'^(?:<(?:function|bound method) |<.+ at"
+            " 0x[0-9a-fA-F]+>|functools\\.partial\\()'), NULL,"
+            " JSON_VALUE(content, '$'))) AS agent_instruction"
+        ),
+        "JSON_VALUE(attributes, '$.instruction_source') AS instruction_source",
+        "JSON_VALUE(attributes, '$.static_instruction') AS static_instruction",
+        "JSON_VALUE(attributes, '$.agent_description') AS agent_description",
+        "JSON_VALUE(attributes, '$.model') AS model",
+        "JSON_QUERY(attributes, '$.sub_agents') AS sub_agents",
+    ]
+
   @pytest.mark.parametrize("event_type", ["NODE_OUTPUT", "NODE_ERROR"])
   def test_node_views_expose_workflow_identity(self, event_type):
     """Workflow-node views expose stable node identity columns."""
@@ -7617,6 +12767,2628 @@ class TestSchemaReadinessMemo:
     assert restored._loop_state_futures == {}
     assert hasattr(restored, "_builder_waiters")
     assert restored._builder_waiters == {}
+
+
+# ==============================================================================
+# Agent Evaluation View Tests
+# ==============================================================================
+class _EvalViewSqlEvaluator:
+  """Runs a generated eval view statement over sample rows in Python.
+
+  Lets tests check the views' own SQL instead of restating it. Only the
+  GoogleSQL subset that the eval views use is supported:
+
+  - A ``WITH`` list of CTEs and a final SELECT, each with ``*`` or
+    ``<expr> [AS alias]`` items and FROM, WHERE, GROUP BY and ORDER BY.
+  - FROM a table or CTE, joined by ``, UNNEST(...) AS x [WITH OFFSET AS y]``
+    or by ``LEFT JOIN ... USING (...)`` or ``LEFT JOIN ... ON ...``.
+  - Literals, columns, CASE, IF, AND/OR/NOT, comparisons, ``+`` and ``-``,
+    IS [NOT] NULL, [NOT] IN, ``ARRAY<...>[]``, ``[SAFE_OFFSET(n)]``, CAST,
+    SAFE_CAST, and ``(SELECT ...)``, ``EXISTS(SELECT ...)`` and
+    ``ARRAY(SELECT ...)`` over ``UNNEST``.
+  - The aggregates in ``_aggregate``, also over ``OVER (PARTITION BY ...)``;
+    ROW_NUMBER, LAG and LEAD over ``OVER (PARTITION BY ... ORDER BY ...)``;
+    and the scalar functions in ``_call``.
+
+  SQL NULL is ``None``, and JSON values are Python dicts, lists and scalars.
+  A JSON function reads a field of a ``str`` by parsing it as JSON text, as
+  for the STRING ``part_attributes``. RE2's ``$`` matches only at the end of
+  the text, so it becomes Python's ``\\Z``.
+  """
+
+  _TOKEN_RE = re.compile(
+      r"(?P<space>\s+)"
+      r"|(?P<string>[rR]?(?:'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"))"
+      r"|(?P<number>\d+)"
+      r"|(?P<name>`[^`]*`|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)"
+      r"|(?P<op><>|!=|<=|>=|[-+*/=<>,.()\[\]])"
+  )
+  _COMPARISONS = {
+      "=": lambda a, b: a == b,
+      "!=": lambda a, b: a != b,
+      "<>": lambda a, b: a != b,
+      "<": lambda a, b: a < b,
+      ">": lambda a, b: a > b,
+      "<=": lambda a, b: a <= b,
+      ">=": lambda a, b: a >= b,
+  }
+  _JSON_TYPES = {
+      dict: "object",
+      list: "array",
+      str: "string",
+      bool: "boolean",
+      int: "number",
+      float: "number",
+  }
+  _ESCAPES = {"n": "\n", "t": "\t", "\\": "\\", "'": "'", '"': '"'}
+  _AGGREGATES = frozenset({
+      "ARRAY_AGG",
+      "ARRAY_CONCAT_AGG",
+      "COUNT",
+      "COUNTIF",
+      "LOGICAL_AND",
+      "LOGICAL_OR",
+      "MAX",
+      "MIN",
+      "STRING_AGG",
+      "SUM",
+  })
+
+  def __init__(self, sql: str):
+    self._tokens = []
+    pos = 0
+    while pos < len(sql):
+      match = self._TOKEN_RE.match(sql, pos)
+      assert match, f"Unexpected SQL text: {sql[pos:pos + 40]!r}"
+      if match.lastgroup != "space":
+        self._tokens.append((match.lastgroup, match.group()))
+      pos = match.end()
+    self._pos, self._end = 0, len(self._tokens)
+    while not self._accept("WITH"):  # Skips CREATE OR REPLACE VIEW ... AS.
+      self._next()
+    self._ctes = {}
+    while True:
+      name = self._next()[1]
+      self._expect("AS", "(")
+      self._ctes[name] = self._parse_query()
+      self._expect(")")
+      if not self._accept(","):
+        break
+    self._final = self._parse_query()
+    assert self._pos == self._end, f"Unsupported SQL at token {self._pos}"
+
+  def run(self, table_rows, cte=None):
+    """Returns the rows of CTE ``cte``, or of the view, over ``table_rows``."""
+    results = {}
+
+    def table(name):
+      if name not in self._ctes:
+        return table_rows
+      if name not in results:
+        results[name] = self._run_query(self._ctes[name], table, {})
+      return results[name]
+
+    return table(cte) if cte else self._run_query(self._final, table, {})
+
+  def evaluate(self, alias, row=None, rows=None, *, cte=None):
+    """Evaluates the select item ``alias`` on ``row``, aggregating ``rows``.
+
+    Args:
+      alias: The name of the select item.
+      row: The input row's column values.
+      rows: The rows that an aggregate or window function reads; for a window
+        function, ``row`` must be one of them.
+      cte: The CTE that holds the select item. By default, ``alias`` must
+        name one select item that does more than pass through the column of
+        the same name.
+    """
+    queries = [self._ctes[cte]] if cte else [*self._ctes.values(), self._final]
+    nodes = [
+        node
+        for query in queries
+        for name, node in query["items"]
+        if name == alias
+        and (cte or node[0] != "column" or node[1].rsplit(".")[-1] != alias)
+    ]
+    assert len(nodes) == 1, f"Expected one select item AS {alias}"
+    return self._eval(nodes[0], row or {}, rows)
+
+  @staticmethod
+  def _is_word(token, word):
+    return token[0] == "name" and token[1].upper() == word
+
+  def _next(self):
+    assert self._pos < self._end, "Unexpected end of SQL"
+    self._pos += 1
+    return self._tokens[self._pos - 1]
+
+  def _accept(self, *texts):
+    """Consumes the next tokens if they are ``texts``; words match any case."""
+    upcoming = self._tokens[self._pos : min(self._pos + len(texts), self._end)]
+    if len(upcoming) != len(texts) or any(
+        (token.upper() if kind == "name" else token) != text
+        for (kind, token), text in zip(upcoming, texts)
+    ):
+      return False
+    self._pos += len(texts)
+    return True
+
+  def _expect(self, *texts):
+    assert self._accept(*texts), f"Expected {texts} at token {self._pos}"
+
+  def _parse_query(self):
+    """Parses a SELECT through its FROM, WHERE, GROUP BY and ORDER BY."""
+    self._expect("SELECT")
+    query = {
+        "distinct": self._accept("DISTINCT"),
+        "items": [],
+        "from": [],
+        "where": None,
+        "group_by": [],
+        "order_by": [],
+    }
+    while True:
+      if self._accept("*"):
+        query["items"].append(("*", None))
+      else:
+        node = self._parse_expr()
+        if self._accept("AS"):
+          alias = self._next()[1]
+        else:
+          alias = node[1].rsplit(".")[-1] if node[0] == "column" else None
+        query["items"].append((alias, node))
+      if not self._accept(","):
+        break
+    if self._accept("FROM"):
+      query["from"].append((None, *self._parse_source(), None))
+      while True:
+        if self._accept(","):
+          query["from"].append(("cross", *self._parse_source(), None))
+        elif self._accept("LEFT", "JOIN"):
+          source, alias = self._parse_source()
+          if self._accept("USING", "("):
+            condition = ("using", [node[1] for node in self._parse_list()])
+          else:
+            self._expect("ON")
+            condition = ("on", self._parse_expr())
+          query["from"].append(("left", source, alias, condition))
+        else:
+          break
+    if self._accept("WHERE"):
+      query["where"] = self._parse_expr()
+    if self._accept("GROUP", "BY"):
+      query["group_by"] = self._parse_exprs()
+    if self._accept("ORDER", "BY"):
+      query["order_by"] = self._parse_order_by()
+    return query
+
+  def _parse_source(self):
+    """Parses a table, CTE or ``UNNEST(...)`` source and its alias."""
+    if self._accept("UNNEST", "("):
+      array = self._parse_expr()
+      self._expect(")", "AS")
+      alias = self._next()[1]
+      offset = self._next()[1] if self._accept("WITH", "OFFSET", "AS") else None
+      return ("unnest", array, offset), alias
+    name = self._next()[1].strip("`")
+    return ("table", name), self._next()[1] if self._accept("AS") else None
+
+  def _parse_exprs(self):
+    nodes = [self._parse_expr()]
+    while self._accept(","):
+      nodes.append(self._parse_expr())
+    return nodes
+
+  def _parse_order_by(self):
+    keys = []
+    while True:
+      keys.append((self._parse_expr(), self._accept("DESC")))
+      if not self._accept(","):
+        return keys
+
+  def _parse_expr(self):
+    node = self._parse_and()
+    while self._accept("OR"):
+      node = ("or", node, self._parse_and())
+    return node
+
+  def _parse_and(self):
+    node = self._parse_not()
+    while self._accept("AND"):
+      node = ("and", node, self._parse_not())
+    return node
+
+  def _parse_not(self):
+    if self._accept("NOT"):
+      return ("not", self._parse_not())
+    node = self._parse_sum()
+    if self._accept("IS"):
+      negated = self._accept("NOT")
+      self._expect("NULL")
+      return ("is_null", node, negated)
+    for negated, words in ((False, ("IN", "(")), (True, ("NOT", "IN", "("))):
+      if self._accept(*words):
+        return ("in", node, self._parse_list(), negated)
+    for op in self._COMPARISONS:
+      if self._accept(op):
+        return ("compare", op, node, self._parse_sum())
+    return node
+
+  def _parse_sum(self):
+    node = self._parse_postfix()
+    while True:
+      op = "+" if self._accept("+") else "-" if self._accept("-") else None
+      if op is None:
+        return node
+      node = ("arith", op, node, self._parse_postfix())
+
+  def _parse_postfix(self):
+    node = self._parse_primary()
+    while self._accept("[", "SAFE_OFFSET", "("):
+      node = ("safe_offset", node, self._parse_expr())
+      self._expect(")", "]")
+    return node
+
+  def _parse_list(self, close=")"):
+    """Parses comma-separated expressions through the closing token."""
+    items = []
+    while not self._accept(close):
+      if items:
+        self._expect(",")
+      items.append(self._parse_expr())
+    return items
+
+  def _parse_primary(self):
+    kind, text = self._next()
+    if kind == "string":
+      raw = text[0] in "rR"
+      body = text[2:-1] if raw else text[1:-1]
+      if not raw:
+        body = re.sub(r"\\(.)", lambda m: self._ESCAPES[m.group(1)], body)
+      return ("literal", body)
+    if kind == "number":
+      return ("literal", int(text))
+    if text == "(":
+      if self._is_word(self._tokens[self._pos], "SELECT"):
+        node = ("subquery", "scalar", self._parse_query())
+      else:
+        node = self._parse_expr()
+      self._expect(")")
+      return node
+    assert kind == "name", f"Unsupported SQL token {text!r}"
+    word = text.upper()
+    if word in ("NULL", "TRUE", "FALSE"):
+      return ("literal", {"NULL": None, "TRUE": True, "FALSE": False}[word])
+    if word == "CASE":
+      operand = None
+      if not self._accept("WHEN"):
+        operand = self._parse_expr()
+        self._expect("WHEN")
+      branches = []
+      while True:
+        condition = self._parse_expr()
+        self._expect("THEN")
+        branches.append((condition, self._parse_expr()))
+        if not self._accept("WHEN"):
+          break
+      default = ("literal", None)
+      if self._accept("ELSE"):
+        default = self._parse_expr()
+      self._expect("END")
+      return ("case", operand, branches, default)
+    if word == "ARRAY" and self._accept("<"):
+      depth = 1
+      while depth:  # Skips the element type, such as STRUCT<...>.
+        depth += {"<": 1, ">": -1}.get(self._next()[1], 0)
+      self._expect("[")
+      return ("array", self._parse_list("]"))
+    if not self._accept("("):
+      return ("column", text)
+    if word in ("ARRAY", "EXISTS"):
+      node = ("subquery", word, self._parse_query())
+      self._expect(")")
+      return node
+    if word in ("CAST", "SAFE_CAST"):
+      value = self._parse_expr()
+      self._expect("AS")
+      node = ("cast", value, self._next()[1].upper(), word == "SAFE_CAST")
+      self._expect(")")
+      return node
+    if word in self._AGGREGATES:
+      distinct = self._accept("DISTINCT")
+      # COUNT(*) counts a non-NULL value per row.
+      args = [("literal", 0) if self._accept("*") else self._parse_expr()]
+      while self._accept(","):
+        args.append(self._parse_expr())
+      ignore_nulls = self._accept("IGNORE", "NULLS")
+      order_by = self._parse_order_by() if self._accept("ORDER", "BY") else []
+      limit = int(self._next()[1]) if self._accept("LIMIT") else None
+      self._expect(")")
+      node = ("aggregate", word, args, distinct, ignore_nulls, order_by, limit)
+    else:
+      args = self._parse_list()
+      node = ("if", *args) if word == "IF" else ("call", word, args)
+    if self._accept("OVER", "("):
+      partition_by = []
+      if self._accept("PARTITION", "BY"):
+        partition_by = self._parse_exprs()
+      order_by = self._parse_order_by() if self._accept("ORDER", "BY") else []
+      self._expect(")")
+      return ("window", node, partition_by, order_by)
+    return node
+
+  @classmethod
+  def _has_aggregate(cls, node):
+    """Whether ``node`` aggregates its query's rows.
+
+    Aggregates under OVER or in a subquery do not, so they are not searched.
+    Lists and CASE branches are searched element by element.
+    """
+    if isinstance(node, list) or (
+        isinstance(node, tuple) and node and not isinstance(node[0], str)
+    ):
+      return any(cls._has_aggregate(child) for child in node)
+    if not isinstance(node, tuple) or node[0] in (
+        "literal",
+        "subquery",
+        "window",
+    ):
+      return False
+    return node[0] == "aggregate" or any(
+        cls._has_aggregate(child) for child in node[1:]
+    )
+
+  def _run_query(self, query, table, outer):
+    """Returns the rows that ``query`` selects, given the ``outer`` row."""
+    rows = [outer]
+    for kind, source, alias, condition in query["from"]:
+      if kind is None:
+        rows = self._source_rows(source, alias, table, outer)
+        continue
+      joined = []
+      for left in rows:
+        right_rows = self._source_rows(source, alias, table, left)
+        if kind == "cross":
+          joined += [{**left, **right} for right in right_rows]
+          continue
+        mode, spec = condition
+        matches = [
+            row
+            for row in ({**left, **right} for right in right_rows)
+            if (
+                all(left[k] is not None and left[k] == row[k] for k in spec)
+                if mode == "using"
+                else self._eval(spec, row, None) is True
+            )
+        ]
+        names = [name for name, _ in self._ctes[source[1]]["items"]]
+        prefix = f"{alias}." if alias else ""
+        joined += matches or [{**{prefix + n: None for n in names}, **left}]
+      rows = joined
+    if query["where"] is not None:
+      rows = [r for r in rows if self._eval(query["where"], r, None) is True]
+    contexts = [(row, rows) for row in rows]
+    items = [node for _, node in query["items"]]
+    if query["group_by"] or self._has_aggregate(items):
+      groups = {}
+      if not query["group_by"]:
+        groups[()] = []  # An aggregate with no GROUP BY yields one row.
+      for row in rows:
+        key = tuple(self._eval(node, row, None) for node in query["group_by"])
+        groups.setdefault(key, []).append(row)
+      contexts = [(g[0] if g else outer, g) for g in groups.values()]
+    results = []
+    for row, group in contexts:
+      result = {}
+      for alias, node in query["items"]:
+        if node is None:
+          result.update(row)
+        else:
+          result[alias] = self._eval(node, row, group)
+      if not query["distinct"] or result not in [r for _, r in results]:
+        results.append(({**row, **result}, result))
+    results = self._sorted(results, query["order_by"], lambda pair: pair[0])
+    return [result for _, result in results]
+
+  def _source_rows(self, source, alias, table, outer):
+    """Returns the rows of a FROM source; ``outer`` scopes ``UNNEST``."""
+    if source[0] == "table":
+      prefix = f"{alias}." if alias else ""
+      return [
+          {prefix + k: v for k, v in row.items()} for row in table(source[1])
+      ]
+    _, array, offset = source
+    rows = []
+    for index, value in enumerate(self._eval(array, outer, None) or ()):
+      row = {**outer, alias: value}
+      if offset:
+        row[offset] = index
+      if isinstance(value, dict):
+        row.update({f"{alias}.{key}": item for key, item in value.items()})
+      rows.append(row)
+    return rows
+
+  def _sorted(self, items, order_by, row_of=lambda item: item):
+    """Sorts ``items`` by ``order_by``; NULL sorts first, as in GoogleSQL."""
+
+    def compare(a, b):
+      for node, descending in order_by:
+        x, y = (self._eval(node, row_of(item), None) for item in (a, b))
+        if x != y:
+          order = -1 if x is None else 1 if y is None else -1 if x < y else 1
+          return -order if descending else order
+      return 0
+
+    return sorted(items, key=functools.cmp_to_key(compare))
+
+  def _eval(self, node, row, rows):
+    kind, *args = node
+    if kind == "literal":
+      return args[0]
+    if kind == "column":
+      assert args[0] in row, f"No sample value for column {args[0]}"
+      return row[args[0]]
+    if kind == "and":
+      values = [self._eval(arg, row, rows) for arg in args]
+      return False if False in values else None if None in values else True
+    if kind == "or":
+      values = [self._eval(arg, row, rows) for arg in args]
+      return True if True in values else None if None in values else False
+    if kind == "not":
+      value = self._eval(args[0], row, rows)
+      return None if value is None else not value
+    if kind == "compare":
+      op, left, right = args
+      a, b = self._eval(left, row, rows), self._eval(right, row, rows)
+      return None if a is None or b is None else self._COMPARISONS[op](a, b)
+    if kind == "arith":
+      op, left, right = args
+      a, b = self._eval(left, row, rows), self._eval(right, row, rows)
+      return None if a is None or b is None else a + b if op == "+" else a - b
+    if kind == "is_null":
+      operand, negated = args
+      return (self._eval(operand, row, rows) is None) != negated
+    if kind == "in":
+      operand, items, negated = args
+      value = self._eval(operand, row, rows)
+      if value is None:
+        return None
+      return (value in [self._eval(i, row, rows) for i in items]) != negated
+    if kind == "case":
+      operand, branches, default = args
+      subject = None if operand is None else self._eval(operand, row, rows)
+      for condition, result in branches:
+        value = self._eval(condition, row, rows)
+        if operand is None:
+          matched = value is True
+        else:
+          matched = subject is not None and value == subject
+        if matched:
+          return self._eval(result, row, rows)
+      return self._eval(default, row, rows)
+    if kind == "if":
+      condition, if_true, if_false = args
+      is_true = self._eval(condition, row, rows) is True
+      return self._eval(if_true if is_true else if_false, row, rows)
+    if kind == "array":
+      return [self._eval(item, row, rows) for item in args[0]]
+    if kind == "safe_offset":
+      array, index = (self._eval(arg, row, rows) for arg in args)
+      return array[index] if array and 0 <= index < len(array) else None
+    if kind == "cast":
+      value_node, type_name, safe = args
+      value = self._eval(value_node, row, rows)
+      if value is None or type_name == "JSON":
+        return value
+      assert type_name == "INT64", f"Unsupported CAST to {type_name}"
+      try:
+        return int(value)
+      except ValueError:
+        if safe:
+          return None
+        raise
+    if kind == "subquery":
+      mode, query = args
+      results = self._run_query(query, None, row)
+      values = [value for result in results for value in result.values()]
+      if mode == "EXISTS":
+        return bool(results)
+      if mode == "ARRAY":
+        return values
+      assert len(values) <= 1, "A scalar subquery returned more than one row"
+      return values[0] if values else None
+    if kind == "aggregate":
+      assert rows is not None, f"{args[0]} needs a group of rows"
+      return self._aggregate(rows, *args)
+    if kind == "window":
+      return self._window(row, rows, *args)
+    name, call_args = args
+    return self._call(name, [self._eval(arg, row, rows) for arg in call_args])
+
+  def _aggregate(
+      self, rows, name, args, distinct, ignore_nulls, order_by, limit
+  ):
+    """Evaluates the aggregate ``name`` over ``rows``."""
+    values = [
+        self._eval(args[0], r, None) for r in self._sorted(rows, order_by)
+    ]
+    if name == "COUNTIF":
+      return sum(value is True for value in values)
+    if ignore_nulls or name != "ARRAY_AGG":
+      values = [value for value in values if value is not None]
+    if distinct:
+      values = [v for i, v in enumerate(values) if v not in values[:i]]
+    values = values[:limit]
+    if name == "COUNT":
+      return len(values)
+    if not values:
+      return None  # The other aggregates of no values are NULL.
+    if name == "STRING_AGG":
+      return self._eval(args[1], {}, None).join(values)
+    if name == "ARRAY_CONCAT_AGG":
+      return [item for value in values for item in value]
+    return {
+        "ARRAY_AGG": list,
+        "LOGICAL_AND": all,
+        "LOGICAL_OR": any,
+        "MAX": max,
+        "MIN": min,
+        "SUM": sum,
+    }[name](values)
+
+  def _window(self, row, rows, function, partition_by, order_by):
+    """Evaluates ``function`` over ``row``'s window partition of ``rows``."""
+    assert rows is not None, "A window function needs the input rows"
+    key = [self._eval(node, row, None) for node in partition_by]
+    partition = self._sorted(
+        [
+            other
+            for other in rows
+            if [self._eval(node, other, None) for node in partition_by] == key
+        ],
+        order_by,
+    )
+    if function[0] == "aggregate":
+      assert not order_by, "Only whole-partition aggregate frames are supported"
+      return self._aggregate(partition, *function[1:])
+    name, call_args = function[1:]
+    index = next(i for i, other in enumerate(partition) if other is row)
+    if name == "ROW_NUMBER":
+      return index + 1
+    assert name in ("LAG", "LEAD"), f"Unsupported window function {name}"
+    index += 1 if name == "LEAD" else -1
+    if not 0 <= index < len(partition):
+      return None
+    return self._eval(call_args[0], partition[index], None)
+
+  def _call(self, name, args):
+    if name == "COALESCE":
+      return next((arg for arg in args if arg is not None), None)
+    if name == "NULLIF":
+      return None if args[0] == args[1] else args[0]
+    if name == "ARRAY_LENGTH":
+      return None if args[0] is None else len(args[0])
+    if name == "TRIM":
+      return None if args[0] is None else args[0].strip()
+    if name == "CHR":
+      return chr(args[0])
+    if name in ("REGEXP_CONTAINS", "REGEXP_REPLACE"):
+      value, pattern, *replacement = args
+      if value is None:
+        return None
+      regex = re.compile(re.sub(r"(?<!\\)\$", r"\\Z", pattern))
+      if name == "REGEXP_CONTAINS":
+        return regex.search(value) is not None
+      return regex.sub(lambda _: replacement[0], value)  # No backreferences.
+    if name == "FORMAT_TIMESTAMP":
+      fmt, timestamp = args
+      return timestamp.strftime(fmt.replace("%E6S", "%S.%f"))
+    if name == "TO_JSON":
+      return args[0]
+    if name == "TO_JSON_STRING":
+      return json.dumps(args[0], separators=(",", ":"), ensure_ascii=False)
+    if name == "JSON_ARRAY":
+      return list(args)
+    if name == "JSON_OBJECT":
+      if len(args) == 2 and isinstance(args[0], list):
+        keys, values = args  # The JSON_OBJECT(keys, values) signature.
+      else:
+        keys, values = args[0::2], args[1::2]
+      assert len(keys) == len(values)
+      assert all(isinstance(key, str) for key in keys), keys
+      return dict(zip(keys, values))
+    if name == "JSON_TYPE":
+      return None if args[0] is None else self._JSON_TYPES[type(args[0])]
+    if name in ("JSON_QUERY", "JSON_QUERY_ARRAY", "JSON_VALUE"):
+      value, path = args if len(args) == 2 else (args[0], "$")
+      assert path == "$" or path.startswith("$."), path
+      if isinstance(value, str) and path != "$":
+        try:
+          value = json.loads(value)
+        except ValueError:
+          pass  # A JSON string value, which has no fields.
+      for key in path.split(".")[1:]:
+        value = value.get(key) if isinstance(value, dict) else None
+      if name == "JSON_QUERY_ARRAY":
+        return value if isinstance(value, list) else None
+      if name == "JSON_QUERY" or value is None:
+        return value
+      if isinstance(value, (dict, list)):
+        return None
+      return str(value).lower() if isinstance(value, bool) else str(value)
+    raise NotImplementedError(f"SQL function {name}")
+
+
+class TestEvalViews:
+  """Tests for the opt-in agent evaluation session and turn views."""
+
+  _SESSION_COLUMNS = [
+      "session_id",
+      "user_id",
+      "root_agent",
+      "session_start_timestamp",
+      "session_end_timestamp",
+      "turn_count",
+      "tool_call_count",
+      "tool_error_count",
+      "llm_error_count",
+      "agent_error_count",
+      "has_error",
+      "has_truncated_content",
+      "has_tool_loop",
+      "max_consecutive_identical_tool_calls",
+      "distinct_tools_used",
+      "total_prompt_tokens",
+      "total_completion_tokens",
+      "total_tokens",
+      "total_latency_ms",
+      "eval_ready",
+      "trace",
+  ]
+  _TURN_COLUMNS = [
+      "session_id",
+      "invocation_id",
+      "turn_index",
+      "user_id",
+      "root_agent",
+      "turn_start_timestamp",
+      "turn_end_timestamp",
+      "tool_call_count",
+      "tool_error_count",
+      "llm_error_count",
+      "agent_error_count",
+      "has_error",
+      "has_truncated_content",
+      "has_tool_loop",
+      "max_consecutive_identical_tool_calls",
+      "distinct_tools_used",
+      "total_prompt_tokens",
+      "total_completion_tokens",
+      "total_tokens",
+      "turn_latency_ms",
+      "eval_ready",
+      "trace",
+  ]
+
+  def _make_plugin(self, **config_kwargs):
+    """Builds a plugin whose table is missing, so setup creates it."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        **config_kwargs
+    )
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    )
+    plugin.client = mock.MagicMock()
+    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+    plugin._schema = bigquery_agent_analytics_plugin._get_events_schema()
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    return plugin
+
+  @staticmethod
+  def _queried_sql(client):
+    return [c[0][0] for c in client.query.call_args_list]
+
+  @staticmethod
+  def _view_names(client):
+    """Returns the name of each view the client's DDL created, in order."""
+    return [
+        sql.split("`", 2)[1].rsplit(".", 1)[1]
+        for sql in TestEvalViews._queried_sql(client)
+    ]
+
+  @staticmethod
+  def _final_select(sql):
+    """Returns the top-level SELECT list; CTE bodies are all indented."""
+    return sql.rsplit("\nSELECT\n", 1)[1].split("\nFROM\n", 1)[0]
+
+  @staticmethod
+  def _output_columns(sql):
+    # A long column's alias wraps onto its own line, indented 4 spaces.
+    final_select = TestEvalViews._final_select(sql).replace("\n    AS ", " AS ")
+    return [
+        line.rsplit(" AS ", 1)[1].rstrip(",")
+        for line in final_select.splitlines()
+        if not line.startswith("   ") and " AS " in line
+    ]
+
+  @staticmethod
+  def _normalized_view_sql():
+    """Returns the session and turn view SQL with whitespace collapsed."""
+    return tuple(
+        " ".join(build_view_sql("p.d.t").split())
+        for build_view_sql in (
+            bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+            bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+        )
+    )
+
+  @staticmethod
+  def _eval_views():
+    """Returns evaluators of the session and turn view SQL."""
+    return tuple(
+        _EvalViewSqlEvaluator(build_view_sql("p.d.t"))
+        for build_view_sql in (
+            bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+            bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+        )
+    )
+
+  @staticmethod
+  def _event(invocation_id, second, event_type, content=None, **columns):
+    """Returns an events table row; ``second`` orders it in its session."""
+    return {
+        "timestamp": datetime.datetime(
+            2026, 4, 19, 12, 0, second, tzinfo=datetime.timezone.utc
+        ),
+        "event_id": f"{invocation_id}-{second:02d}",
+        "event_type": event_type,
+        "agent": "root_agent",
+        "session_id": "session-1",
+        "invocation_id": invocation_id,
+        "user_id": "user-1",
+        "content": content,
+        "content_parts": [],
+        "attributes": {"root_agent_name": "root_agent"},
+        "latency_ms": None,
+        "status": "OK",
+        "error_message": None,
+        "is_truncated": False,
+        **columns,
+    }
+
+  def test_config_create_eval_views_default_false(self):
+    """Eval views are opt-in, so default setup only creates analytics views."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    assert config.create_eval_views is False
+    plugin = self._make_plugin()
+
+    assert plugin._ensure_schema_exists() is True
+
+    view_names = self._view_names(plugin.client)
+    assert len(view_names) == len(
+        bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS
+    )
+    assert not [name for name in view_names if "_eval_" in name]
+
+  @pytest.mark.parametrize("create_views", [True, False])
+  def test_eval_views_created_when_enabled(self, create_views):
+    """create_eval_views adds both views, with or without create_views."""
+    plugin = self._make_plugin(
+        create_views=create_views, create_eval_views=True
+    )
+
+    assert plugin._ensure_schema_exists() is True
+
+    view_names = self._view_names(plugin.client)
+    analytics_view_count = (
+        len(bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS)
+        if create_views
+        else 0
+    )
+    assert len(view_names) == analytics_view_count + 2
+    assert view_names[-2:] == ["v_eval_session", "v_eval_turn"]
+
+  def test_eval_views_created_for_existing_table(self):
+    """The existing-table readiness path creates the eval views too."""
+    plugin = self._make_plugin(create_views=False, create_eval_views=True)
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = plugin._schema
+    existing.labels = {
+        bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY: (
+            bigquery_agent_analytics_plugin._SCHEMA_VERSION
+        ),
+    }
+    plugin.client.get_table.side_effect = None
+    plugin.client.get_table.return_value = existing
+
+    assert plugin._ensure_schema_exists() is True
+
+    plugin.client.create_table.assert_not_called()
+    assert self._view_names(plugin.client) == [
+        "v_eval_session",
+        "v_eval_turn",
+    ]
+
+  def test_eval_view_failure_reported_not_raised(self):
+    """A failed eval view fails the readiness pass without raising."""
+    plugin = self._make_plugin(create_eval_views=True)
+
+    def run_query(sql):
+      if "v_eval_session`" in sql:
+        raise RuntimeError("eval view DDL rejected")
+      return mock.MagicMock()
+
+    plugin.client.query.side_effect = run_query
+
+    assert plugin._ensure_schema_exists() is False
+    # The turn view is still attempted after the session view failed.
+    assert self._view_names(plugin.client)[-2:] == [
+        "v_eval_session",
+        "v_eval_turn",
+    ]
+
+  def test_eval_view_conflict_counts_as_created(self):
+    """A concurrent replace by another process is not a failure."""
+    plugin = self._make_plugin(create_views=False, create_eval_views=True)
+    plugin.client.query.side_effect = cloud_exceptions.Conflict("in use")
+
+    assert plugin._create_eval_views() is True
+    assert plugin.client.query.call_count == 2
+
+  @pytest.mark.asyncio
+  async def test_create_eval_views_public_method(
+      self, mock_auth_default, mock_bq_client, mock_write_client
+  ):
+    """create_eval_views() starts the plugin and creates each view once."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    assert plugin._started is False
+
+    try:
+      await plugin.create_eval_views()
+
+      assert plugin._started is True
+      # Setup created only the analytics views (create_eval_views is off);
+      # the explicit call added one of each eval view.
+      view_names = self._view_names(mock_bq_client)
+      assert len(view_names) == (
+          len(bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS) + 2
+      )
+      assert view_names.count("v_eval_session") == 1
+      assert view_names.count("v_eval_turn") == 1
+      assert plugin._schema_ready is True
+
+      mock_bq_client.query.side_effect = RuntimeError("view DDL rejected")
+      await plugin.create_eval_views()
+      assert plugin._schema_ready is False
+
+      # A later analytics-only refresh must not mask the missing eval views.
+      mock_bq_client.query.side_effect = None
+      await plugin.create_analytics_views()
+      assert plugin._schema_ready is False
+    finally:
+      await plugin.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_create_eval_views_raises_on_startup_failure(
+      self, mock_auth_default, mock_write_client
+  ):
+    """create_eval_views() raises with the startup error chained."""
+    with mock.patch.object(
+        bigquery, "Client", side_effect=Exception("client boom")
+    ):
+      plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+      )
+      with pytest.raises(
+          RuntimeError, match="cannot create eval views"
+      ) as exc_info:
+        await plugin.create_eval_views()
+      assert "client boom" in str(exc_info.value.__cause__)
+
+  def test_eval_views_custom_view_prefix(self):
+    """view_prefix namespaces the eval views like the analytics views."""
+    plugin = self._make_plugin(
+        create_views=False, create_eval_views=True, view_prefix="v_prod"
+    )
+
+    assert plugin._ensure_schema_exists() is True
+
+    assert self._view_names(plugin.client) == [
+        "v_prod_eval_session",
+        "v_prod_eval_turn",
+    ]
+    for sql in self._queried_sql(plugin.client):
+      assert f"`{PROJECT_ID}.{DATASET_ID}.v_prod_eval_" in sql
+      assert f"`{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`" in sql
+
+  @pytest.mark.asyncio
+  async def test_eval_views_reject_denied_content_column(self):
+    """Denying content is rejected at init, on refresh, and by the builders."""
+    with pytest.raises(
+        ValueError, match="create_eval_views=True cannot be used"
+    ):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              create_eval_views=True, payload_column_denylist=["content"]
+          ),
+      )
+
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+            payload_column_denylist=["content"]
+        ),
+    )
+    with mock.patch.object(
+        plugin, "_ensure_started", new_callable=mock.AsyncMock
+    ) as ensure_started:
+      with pytest.raises(ValueError, match="Cannot create eval views"):
+        await plugin.create_eval_views()
+    ensure_started.assert_not_called()
+
+    for build_view_sql in (
+        bigquery_agent_analytics_plugin._build_eval_session_view_sql,
+        bigquery_agent_analytics_plugin._build_eval_turn_view_sql,
+    ):
+      with pytest.raises(ValueError, match="Cannot build eval view SQL"):
+        build_view_sql("p.d.t", denied_columns=frozenset({"content"}))
+
+  @pytest.mark.asyncio
+  async def test_eval_views_reject_filtered_required_events(self):
+    """Denying or not allowlisting a required trace event fails fast."""
+    # A HITL pause and its resumption reach the trace and is_paused only as
+    # these rows; the adk_request_* tools' own TOOL_* rows are skipped.
+    pause_events = {
+        "TOOL_PAUSED",
+        "HITL_CREDENTIAL_REQUEST",
+        "HITL_CONFIRMATION_REQUEST",
+        "HITL_INPUT_REQUEST",
+        "HITL_CREDENTIAL_REQUEST_COMPLETED",
+        "HITL_CONFIRMATION_REQUEST_COMPLETED",
+        "HITL_INPUT_REQUEST_COMPLETED",
+    }
+    required_events = {
+        "USER_MESSAGE_RECEIVED",
+        "AGENT_STARTING",
+        "LLM_REQUEST",
+        "TOOL_STARTING",
+        "TOOL_COMPLETED",
+        "AGENT_TRANSFER",
+        "AGENT_RESPONSE",
+        "INVOCATION_COMPLETED",
+        *pause_events,
+    }
+    assert (
+        bigquery_agent_analytics_plugin._EVAL_VIEW_REQUIRED_EVENTS
+        == required_events
+    )
+    for required_event in sorted(required_events):
+      with pytest.raises(
+          ValueError, match="required events are in event_denylist"
+      ):
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True, event_denylist=[required_event]
+            ),
+        )
+
+    with pytest.raises(
+        ValueError, match="event_allowlist includes all required events"
+    ):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              create_eval_views=True,
+              event_allowlist=[
+                  "USER_MESSAGE_RECEIVED",
+                  "AGENT_RESPONSE",
+                  "TOOL_STARTING",
+                  "TOOL_COMPLETED",
+                  "INVOCATION_COMPLETED",
+              ],
+          ),
+      )
+
+    # The trace carries a multi-agent handoff only as the AGENT_TRANSFER
+    # function_call, and a HITL pause and resumption only as the pause rows,
+    # so an allowlist without either is rejected too.
+    for missing_events in ({"AGENT_TRANSFER"}, pause_events):
+      with pytest.raises(
+          ValueError, match=re.escape(f"missing: {sorted(missing_events)}.")
+      ):
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True,
+                event_allowlist=sorted(required_events - missing_events),
+            ),
+        )
+
+    plugin_full_allowlist = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True,
+                event_allowlist=sorted(
+                    bigquery_agent_analytics_plugin._EVAL_VIEW_REQUIRED_EVENTS
+                ),
+            ),
+        )
+    )
+    assert set(plugin_full_allowlist.config.event_allowlist) == (
+        bigquery_agent_analytics_plugin._EVAL_VIEW_REQUIRED_EVENTS
+    )
+
+    # An empty event_allowlist is treated as unset by _log_event, so it must
+    # not be rejected when create_eval_views=True.
+    plugin_empty_allowlist = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True,
+                event_allowlist=[],
+            ),
+        )
+    )
+    assert plugin_empty_allowlist.config.event_allowlist == []
+
+    plugin_denied = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                event_denylist=["TOOL_STARTING"]
+            ),
+        )
+    )
+    with mock.patch.object(
+        plugin_denied, "_ensure_started", new_callable=mock.AsyncMock
+    ) as ensure_started:
+      with pytest.raises(
+          ValueError, match="required events are in event_denylist"
+      ):
+        await plugin_denied.create_eval_views()
+    ensure_started.assert_not_called()
+
+  def test_eval_views_handle_denied_attributes_and_latency_columns(self):
+    """Denied content_parts / attributes / latency_ms read as empty/NULL."""
+    plugin = self._make_plugin(
+        create_views=False,
+        create_eval_views=True,
+        payload_column_denylist=["content_parts", "attributes", "latency_ms"],
+    )
+
+    assert plugin._ensure_schema_exists() is True
+
+    eval_sql = self._queried_sql(plugin.client)
+    assert len(eval_sql) == 2
+    for sql in eval_sql:
+      # raw_events is the only CTE that reads the table.
+      assert sql.count(f"`{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`") == 1
+      raw_events = sql.split("raw_events AS (", 1)[1].split("\n  ),", 1)[0]
+      denied_refs = [
+          line.strip().rstrip(",")
+          for line in raw_events.splitlines()
+          if (
+              "content_parts" in line
+              or "attributes" in line
+              or "latency_ms" in line
+          )
+      ]
+      assert denied_refs == [
+          (
+              "ARRAY<STRUCT<part_index INT64, mime_type STRING, text STRING,"
+              " part_attributes STRING, storage_mode STRING>>[] AS"
+              " content_parts"
+          ),
+          "CAST(NULL AS JSON) AS attributes",
+          "CAST(NULL AS JSON) AS latency_ms",
+      ]
+
+    default_sql = bigquery_agent_analytics_plugin._build_eval_turn_view_sql(
+        "p.d.t"
+    )
+    default_raw_events = default_sql.split("raw_events AS (", 1)[1]
+    assert (
+        "      content_parts,\n      attributes,\n      latency_ms,\n"
+        in default_raw_events
+    )
+
+  def test_eval_session_and_turn_sql_contract(self):
+    """The view SQL matches the AgentData and output column contract."""
+    session_sql = bigquery_agent_analytics_plugin._build_eval_session_view_sql(
+        "p.d.t"
+    )
+    turn_sql = bigquery_agent_analytics_plugin._build_eval_turn_view_sql(
+        "p.d.t"
+    )
+
+    assert session_sql.startswith(
+        "CREATE OR REPLACE VIEW `p.d.v_eval_session` AS\nWITH\n"
+    )
+    assert turn_sql.startswith(
+        "CREATE OR REPLACE VIEW `p.d.v_eval_turn` AS\nWITH\n"
+    )
+    # Downstream evaluation output schemas use status, so no view outputs one.
+    assert self._output_columns(session_sql) == self._SESSION_COLUMNS
+    assert self._output_columns(turn_sql) == self._TURN_COLUMNS
+    for sql in (session_sql, turn_sql):
+      assert sql.count("`p.d.t`") == 1
+      assert sql.count("\nSELECT\n") == 1
+      assert " AS status" not in sql
+      for key in (
+          "'agents'",
+          "'turns'",
+          "'agent_id'",
+          "'instruction'",
+          "'description'",
+          "'sub_agents'",
+          "'tools'",
+          "'function_declarations'",
+          "'parameters_json_schema'",
+          "'turn_index'",
+          "'turn_id'",
+          "'events'",
+          "'author'",
+          "'content'",
+          "'event_time'",
+          "'role'",
+          "'parts'",
+          "'text'",
+          "'function_call'",
+          "'function_response'",
+          "'transfer_to_agent'",
+          "'agent_name'",
+      ):
+        assert key in sql, key
+      # Fields outside the AgentData proto are rejected.
+      assert "model_name" not in sql
+      assert "event_timestamp" not in sql
+      assert "FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', timestamp)" in sql
+      assert (
+          "r'^(?:<(?:function|bound method) |<.+ at"
+          " 0x[0-9a-fA-F]+>|functools\\.partial\\()'"
+          in sql
+      )
+      assert "JSON_VALUE(attributes, '$.static_instruction')" in sql
+      # Trace model text comes solely from AGENT_RESPONSE so LLM_RESPONSE
+      # reasoning thoughts cannot leak into the evaluation trace.
+      assert (
+          "WHEN 'LLM_RESPONSE' THEN JSON_VALUE(content, '$.response')"
+          not in sql
+      )
+      assert (
+          "WHEN event_type = 'AGENT_RESPONSE' AND response_text IS NOT NULL"
+          in sql
+      )
+      trace_keys = [
+          line.strip().split(",", 1)[0]
+          for line in self._final_select(sql).splitlines()
+          if line.startswith("    '")
+      ]
+      assert trace_keys == ["'agents'", "'turns'"]
+    # The turn view's trace holds its one turn re-indexed to 0; the turn's
+    # position in the session is the turn_index column.
+    assert "'turn_index', 0," in turn_sql
+    assert "'turn_index', turn_index," in session_sql
+    assert "'turn_index', 0," not in session_sql
+
+    with pytest.raises(ValueError, match="dataset-qualified"):
+      bigquery_agent_analytics_plugin._build_eval_turn_view_sql("agent_events")
+
+  def test_eval_guardrail_columns(self):
+    """Guardrail columns follow the per-turn rules and roll up per session."""
+    session_sql, turn_sql = self._normalized_view_sql()
+    for sql in (session_sql, turn_sql):
+      for fragment in (
+          # Tool metrics skip transfer_to_agent; AGENT_TRANSFER is the handoff.
+          (
+              "( event_type = 'TOOL_STARTING' AND COALESCE(tool_name, '') !="
+              " 'transfer_to_agent' ) AS is_tool_call"
+          ),
+          "COUNTIF(is_tool_call) AS tool_call_count",
+          "IF(is_tool_call, NULLIF(tool_name, ''), NULL) AS invoked_tool_name",
+          (
+              "ARRAY_AGG( DISTINCT invoked_tool_name IGNORE NULLS ORDER BY"
+              " invoked_tool_name ), ARRAY<STRING>[] ) AS distinct_tools_used"
+          ),
+          # Calls in a row with the same name and args share an island.
+          "TO_JSON_STRING(JSON_QUERY(content, '$.args')) AS tool_args_json",
+          (
+              "ROW_NUMBER() OVER ( PARTITION BY session_id, invocation_id,"
+              " is_tool_call ORDER BY timestamp, event_id ) - ROW_NUMBER()"
+              " OVER ( PARTITION BY session_id, invocation_id, is_tool_call,"
+              " tool_name, tool_args_json ORDER BY timestamp, event_id ) AS"
+              " tool_call_island"
+          ),
+          (
+              "COUNT(*) OVER ( PARTITION BY session_id, invocation_id,"
+              " is_tool_call, tool_name, tool_args_json, tool_call_island )"
+          ),
+          "COALESCE(MAX(tool_call_run_length), 0) >= 3 AS has_tool_loop",
+          (
+              "COALESCE(MAX(tool_call_run_length), 0) AS"
+              " max_consecutive_identical_tool_calls"
+          ),
+          "COUNTIF(event_type = 'LLM_ERROR') AS llm_error_count",
+          "COUNTIF(event_type = 'AGENT_ERROR') AS agent_error_count",
+          "LOGICAL_OR(COALESCE(is_truncated, FALSE)) AS has_truncated_content",
+          # Token totals count terminal LLM_RESPONSE rows when the turn has
+          # any, so streamed usage is not counted twice.
+          "JSON_VALUE(content, '$.usage.prompt') AS INT64) AS usage_prompt",
+          (
+              "JSON_VALUE(content, '$.usage.completion') AS INT64) AS"
+              " usage_completion"
+          ),
+          (
+              "( event_type = 'LLM_RESPONSE' AND (is_final_llm_response OR NOT"
+              " turn_has_final_llm_response) ) AS is_usage_row"
+          ),
+          (
+              "COALESCE(SUM(IF(is_usage_row, usage_prompt, NULL)), 0) AS"
+              " total_prompt_tokens"
+          ),
+          (
+              "COALESCE(SUM(IF(is_usage_row, usage_completion, NULL)), 0) AS"
+              " total_completion_tokens"
+          ),
+          (
+              "COALESCE(SUM(IF(is_usage_row, usage_total, NULL)), 0) AS"
+              " total_tokens"
+          ),
+      ):
+        assert fragment in sql, fragment
+    for fragment in (
+        "SUM(llm_error_count) AS llm_error_count",
+        "SUM(agent_error_count) AS agent_error_count",
+        "LOGICAL_OR(has_truncated_content) AS has_truncated_content",
+        "LOGICAL_OR(has_tool_loop) AS has_tool_loop",
+        (
+            "MAX(max_consecutive_identical_tool_calls) AS"
+            " max_consecutive_identical_tool_calls"
+        ),
+        "SUM(total_prompt_tokens) AS total_prompt_tokens",
+        "SUM(total_completion_tokens) AS total_completion_tokens",
+        # Turns can share tools, so the session de-duplicates them again.
+        "ARRAY_CONCAT_AGG(distinct_tools_used) AS tools_used_by_turn",
+        (
+            "ARRAY( SELECT DISTINCT tool FROM UNNEST(s.tools_used_by_turn) AS"
+            " tool ORDER BY tool ) AS distinct_tools_used"
+        ),
+    ):
+      assert fragment in session_sql, fragment
+
+    # has_error, is_paused and is_complete, evaluated over sample turns.
+    session_view, turn_view = self._eval_views()
+    event = self._event
+    hello = event("inv-1", 0, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"})
+    reply = event("inv-1", 5, "AGENT_RESPONSE", {"response": "text: 'Done.'"})
+    completed = event("inv-1", 9, "INVOCATION_COMPLETED")
+
+    def turn(*events):
+      """Returns the turn_rollup row of a one-turn session."""
+      (row,) = turn_view.run([hello, *events], cte="turn_rollup")
+      return row
+
+    def paused_and_complete(*events):
+      row = turn(*events)
+      return row["is_paused"], row["is_complete"]
+
+    assert paused_and_complete(reply, completed) == (False, True)
+    # A turn still running is neither paused nor complete, nor is one that
+    # ended without a reply or whose reply has no text.
+    assert paused_and_complete(reply) == (False, False)
+    assert paused_and_complete(completed) == (False, False)
+    tool_reply = event(
+        "inv-1", 5, "AGENT_RESPONSE", {"response": "text: 'On it.' | call: f"}
+    )
+    assert paused_and_complete(tool_reply, completed) == (False, False)
+    # It is paused only if it also logged a pause or HITL request event; a
+    # pause followed by a reply, or a turn still running, is not paused.
+    for pause_event_type in (
+        "TOOL_PAUSED",
+        "HITL_CREDENTIAL_REQUEST",
+        "HITL_CONFIRMATION_REQUEST",
+        "HITL_INPUT_REQUEST",
+    ):
+      pause = event("inv-1", 3, pause_event_type, {"tool": "f", "args": {}})
+      assert paused_and_complete(pause, completed) == (True, False)
+      assert paused_and_complete(pause, reply, completed) == (False, True)
+      assert paused_and_complete(pause) == (False, False)
+
+    def has_error(event_type, **columns):
+      """Returns has_error of a finished turn with one more event."""
+      row = turn(event("inv-1", 3, event_type, **columns), reply, completed)
+      return row["has_error"]
+
+    assert has_error("TOOL_COMPLETED") is False
+    assert has_error("TOOL_ERROR", status="ERROR") is True
+    assert (
+        has_error("TOOL_COMPLETED", status="FAILED", error_message="x") is True
+    )
+    assert has_error("AGENT_COMPLETED", status=None, error_message="x") is True
+    # An error_message on an OK row, such as a formatter failure note, is not
+    # an error, except on LLM_RESPONSE, which logs a model error with OK.
+    assert has_error("TOOL_COMPLETED", error_message="note") is False
+    assert has_error("LLM_RESPONSE", error_message="SAFETY") is True
+    # A session has an error when any of its turns has one.
+    rows = [
+        hello,
+        reply,
+        completed,
+        event("inv-2", 10, "USER_MESSAGE_RECEIVED", {"text_summary": "Hi"}),
+        event("inv-2", 11, "TOOL_ERROR", status="ERROR"),
+        event("inv-2", 19, "INVOCATION_COMPLETED"),
+    ]
+    assert {
+        row["invocation_id"]: row["has_error"] for row in turn_view.run(rows)
+    } == {"inv-1": False, "inv-2": True}
+    assert [row["has_error"] for row in session_view.run(rows)] == [True]
+
+  def test_eval_ready_requires_user_text(self):
+    """A turn whose user input has no text is not ready on its own.
+
+    Image-only input and function_response resumptions have no user text.
+    """
+    session_view, turn_view = self._eval_views()
+
+    def part(index, text, mime_type="text/plain", **fields):
+      """Returns a content_parts entry as the plugin's parser writes it."""
+      return {
+          "part_index": index,
+          "mime_type": mime_type,
+          "text": text,
+          "part_attributes": "{}",
+          "storage_mode": "INLINE",
+          **fields,
+      }
+
+    def function_response(tool):
+      """Returns the content and content_parts of a function_response."""
+      summary = f"Function response: {tool}"
+      attributes = {"function_response": {"name": tool, "response": {}}}
+      return {"text_summary": summary}, [
+          part(
+              0,
+              summary,
+              "application/json",
+              part_attributes=json.dumps(attributes),
+          )
+      ]
+
+    def user_message(content, *parts):
+      """Returns message_text and is_function_response of a user message."""
+      row = self._event(
+          "inv-1",
+          0,
+          "USER_MESSAGE_RECEIVED",
+          content,
+          content_parts=list(parts),
+      )
+      (typed,) = turn_view.run([row], cte="typed_events")
+      return typed["message_text"], typed["is_function_response"]
+
+    # Inline text parts are joined in part order. Other parts are skipped,
+    # including code parts, which are text/plain with part_attributes.
+    code_attributes = {"executable_code": {"code": "print(1)"}}
+    assert user_message(
+        {"text_summary": "Hello | world"},
+        part(3, "world"),
+        part(2, "print(1)", part_attributes=json.dumps(code_attributes)),
+        part(1, "[BINARY DATA]", "image/png"),
+        part(0, "Hello"),
+    ) == ("Hello\nworld", False)
+    # Image-only input and text offloaded to GCS leave no user text.
+    assert user_message(
+        {"text_summary": ""}, part(0, "[BINARY DATA]", "image/png")
+    ) == (None, False)
+    assert user_message(
+        {"text_summary": ""},
+        part(0, "Long text... [OFFLOADED]", storage_mode="GCS_REFERENCE"),
+    ) == (None, False)
+    # A function_response is not user text, with or without content_parts.
+    resume_content, resume_parts = function_response("lookup")
+    assert user_message(resume_content, *resume_parts) == (None, True)
+    assert user_message(resume_content) == (None, True)
+    # Without content_parts, the text summary or a JSON string is the text.
+    assert user_message({"text_summary": "Hello"}) == ("Hello", False)
+    assert user_message("Hello") == ("Hello", False)
+    assert user_message({"text_summary": ""}) == (None, False)
+
+    text_input = ({"text_summary": "Hello"}, [part(0, "Hello")])
+    image_input = (
+        {"text_summary": ""},
+        [part(0, "[BINARY DATA]", "image/png")],
+    )
+    reply = ("AGENT_RESPONSE", {"response": "text: 'Done.'"})
+    completed = ("INVOCATION_COMPLETED", None)
+
+    def turn(session_id, invocation_id, second, user_input, *events):
+      """Returns the rows of a user message followed by ``events``."""
+      content, parts = user_input
+      rows = [
+          self._event(
+              invocation_id,
+              second,
+              "USER_MESSAGE_RECEIVED",
+              content,
+              session_id=session_id,
+              content_parts=parts,
+          )
+      ]
+      for offset, (event_type, event_content) in enumerate(events, 1):
+        rows.append(
+            self._event(
+                invocation_id,
+                second + offset,
+                event_type,
+                event_content,
+                session_id=session_id,
+            )
+        )
+      return rows
+
+    confirm = "adk_request_confirmation"
+    ask = "adk_request_input"
+    rows = [
+        # Paused for a HITL confirmation, then for HITL input after resuming,
+        # then resumed to a reply. The middle turn's only trace events are
+        # the HITL completion and the next HITL request.
+        *turn(
+            "paused",
+            "inv-1",
+            0,
+            text_input,
+            ("TOOL_STARTING", {"tool": "delete", "args": {}}),
+            ("TOOL_COMPLETED", {"tool": "delete", "result": {"error": "?"}}),
+            ("HITL_CONFIRMATION_REQUEST", {"tool": confirm, "args": {}}),
+            ("TOOL_PAUSED", {"tool": confirm, "args": {}}),
+            completed,
+        ),
+        *turn(
+            "paused",
+            "inv-2",
+            10,
+            function_response(confirm),
+            (
+                "HITL_CONFIRMATION_REQUEST_COMPLETED",
+                {"tool": confirm, "result": {"confirmed": True}},
+            ),
+            ("HITL_INPUT_REQUEST", {"tool": ask, "args": {}}),
+            ("TOOL_PAUSED", {"tool": ask, "args": {}}),
+            completed,
+        ),
+        *turn(
+            "paused",
+            "inv-3",
+            20,
+            function_response(ask),
+            ("HITL_INPUT_REQUEST_COMPLETED", {"tool": ask, "result": "yes"}),
+            ("TOOL_STARTING", {"tool": "delete", "args": {}}),
+            ("TOOL_COMPLETED", {"tool": "delete", "result": {"ok": True}}),
+            reply,
+            completed,
+        ),
+        # The second turn ended without a reply.
+        *turn("no_reply", "inv-1", 0, text_input, reply, completed),
+        *turn("no_reply", "inv-2", 10, text_input, completed),
+        *turn("image_only", "inv-1", 0, image_input, reply, completed),
+        # A function_response that resumes no paused turn.
+        *turn("not_resumed", "inv-1", 0, text_input, reply, completed),
+        *turn(
+            "not_resumed",
+            "inv-2",
+            10,
+            function_response("lookup"),
+            ("TOOL_COMPLETED", {"tool": "lookup", "result": {}}),
+            reply,
+            completed,
+        ),
+        # A paused turn that the next turn does not resume.
+        *turn(
+            "abandoned",
+            "inv-1",
+            0,
+            text_input,
+            ("TOOL_PAUSED", {"tool": "lookup", "args": {}}),
+            completed,
+        ),
+        *turn("abandoned", "inv-2", 10, text_input, reply, completed),
+    ]
+    rows.reverse()  # The views' ORDER BY clauses must order the rows.
+
+    # (has_user_message, has_function_response, eval_ready,
+    #  session_turn_eval_ready) of each turn.
+    expected_turns = {
+        ("paused", "inv-1"): (True, False, False, True),
+        ("paused", "inv-2"): (False, True, False, True),
+        ("paused", "inv-3"): (False, True, False, True),
+        ("no_reply", "inv-1"): (True, False, True, True),
+        ("no_reply", "inv-2"): (True, False, False, False),
+        ("image_only", "inv-1"): (False, False, False, False),
+        ("not_resumed", "inv-1"): (True, False, True, True),
+        ("not_resumed", "inv-2"): (False, True, False, False),
+        ("abandoned", "inv-1"): (True, False, False, False),
+        ("abandoned", "inv-2"): (True, False, True, True),
+    }
+    assert {
+        (row["session_id"], row["invocation_id"]): (
+            row["has_user_message"],
+            row["has_function_response"],
+            row["eval_ready"],
+            row["session_turn_eval_ready"],
+        )
+        for row in turn_view.run(rows, cte="turns")
+    } == expected_turns
+    assert {
+        (row["session_id"], row["invocation_id"]): row["eval_ready"]
+        for row in turn_view.run(rows)
+    } == {key: flags[2] for key, flags in expected_turns.items()}
+    # A session is ready when every turn is ready, counting a paused turn and
+    # the function_response turn that resumes it as ready.
+    assert {
+        row["session_id"]: row["eval_ready"] for row in session_view.run(rows)
+    } == {
+        "paused": True,
+        "no_reply": False,
+        "image_only": False,
+        "not_resumed": False,
+        "abandoned": False,
+    }
+
+  def test_eval_response_text_patterns_unwrap_format_content(self):
+    """The view unwraps _format_content text and stays in sync with it."""
+    _, turn_view = self._eval_views()
+
+    # Guard against drift in _format_content's prefixes or delimiter without
+    # updating response_events in _EVAL_VIEW_CTES_SQL.
+    format_content_src = inspect.getsource(
+        bigquery_agent_analytics_plugin._format_content
+    )
+    for expected_literal in (
+        'return "None", False',
+        "f\"text: '{sanitized_text}'\"",
+        'f"call: {p.function_call.name}"',
+        'f"resp: {p.function_response.name}"',
+        'f"Executable code ({lang}): {sanitized_code}"',
+        'f"Code execution result ({outcome}): {sanitized_output}"',
+        'parts.append("other")',
+        '" | ".join(parts)',
+    ):
+      assert expected_literal in format_content_src, expected_literal
+
+    def response_text_of(formatted_response):
+      return turn_view.evaluate(
+          "response_text",
+          {
+              "event_type": "AGENT_RESPONSE",
+              "formatted_response": formatted_response,
+          },
+      )
+
+    def response_text(*parts):
+      formatted, _ = bigquery_agent_analytics_plugin._format_content(
+          types.Content(role="model", parts=list(parts))
+      )
+      return response_text_of(formatted)
+
+    assert response_text(types.Part(text="It's done.")) == "It's done."
+    assert (
+        response_text(types.Part(text="Hello"), types.Part(text="a\nb"))
+        == "Hello\na\nb"
+    )
+    # Any other _format_content output has no response text: no parts, or a
+    # non-text part alone or before, between or after text parts.
+    image = types.Part(
+        inline_data=types.Blob(mime_type="image/png", data=b"\x89PNG")
+    )
+    assert response_text() is None
+    for non_text_part in (
+        types.Part(function_call=types.FunctionCall(name="lookup", args={})),
+        types.Part(
+            function_response=types.FunctionResponse(
+                name="lookup", response={"ok": True}
+            )
+        ),
+        types.Part(
+            executable_code=types.ExecutableCode(
+                language=types.Language.PYTHON, code="print(1)"
+            )
+        ),
+        types.Part(
+            code_execution_result=types.CodeExecutionResult(
+                outcome=types.Outcome.OUTCOME_OK, output="1"
+            )
+        ),
+        image,
+    ):
+      assert response_text(non_text_part) is None
+      assert response_text(types.Part(text="Before:"), non_text_part) is None
+      assert response_text(non_text_part, types.Part(text="After")) is None
+    assert (
+        response_text(types.Part(text="a"), image, types.Part(text="b")) is None
+    )
+    # A response in another shape, such as the JSON args that a
+    # final_response_tool_names tool logs, is kept as is.
+    formatted_args = turn_view.evaluate(
+        "formatted_response",
+        {
+            "event_type": "AGENT_RESPONSE",
+            "content": {"response": {"answer": "42"}},
+        },
+    )
+    assert formatted_args == '{"answer":"42"}'
+    assert response_text_of(formatted_args) == formatted_args
+    assert response_text_of("Order 42 has shipped.") == "Order 42 has shipped."
+    assert response_text_of("") is None
+    assert response_text_of(None) is None
+
+  @pytest.mark.asyncio
+  async def test_eval_view_trace_schema_matches_agent_data_proto(
+      self, bq_plugin_inst
+  ):
+    """The views turn the rows that plugin callbacks log into AgentData."""
+    try:
+      from vertexai._genai.types import evals as evals_types  # pylint: disable=g-import-not-at-top
+    except ImportError:
+      evals_path = (
+          pathlib.Path(__file__).resolve().parents[4]
+          / "cloud/aiplatform/vertexai/_genai/types/evals.py"
+      )
+      if not evals_path.is_file():
+        pytest.skip("vertexai._genai.types.evals is not available")
+      spec = importlib.util.spec_from_file_location(
+          "_vertexai_evals_types", evals_path
+      )
+      assert spec is not None and spec.loader is not None
+      evals_types = importlib.util.module_from_spec(spec)
+      sys.modules[spec.name] = evals_types
+      spec.loader.exec_module(evals_types)
+
+    def extract_json_object_key_tuples(sql: str) -> set[tuple[str, ...]]:
+      marker = "JSON_OBJECT("
+      key_tuples: set[tuple[str, ...]] = set()
+      start = 0
+      while True:
+        idx = sql.find(marker, start)
+        if idx == -1:
+          break
+        pos = idx + len(marker)
+        depth = 1
+        quote: str | None = None
+        args: list[str] = []
+        arg_start = pos
+        while pos < len(sql) and depth > 0:
+          ch = sql[pos]
+          if quote is not None:
+            if ch == quote and sql[pos - 1] != "\\":
+              quote = None
+          elif ch in ("'", '"'):
+            quote = ch
+          elif ch == "(":
+            depth += 1
+          elif ch == ")":
+            depth -= 1
+            if depth == 0:
+              args.append(sql[arg_start:pos].strip())
+              break
+          elif ch == "," and depth == 1:
+            args.append(sql[arg_start:pos].strip())
+            arg_start = pos + 1
+          pos += 1
+        start = idx + len(marker)
+        if not args or not args[0] or not args[0].startswith("'"):
+          continue
+        keys = tuple(arg.strip().strip("'") for arg in args[0::2])
+        key_tuples.add(keys)
+      return key_tuples
+
+    expected_schema_models = {
+        ("agents", "turns"): evals_types.AgentData,
+        ("turn_index", "turn_id", "events"): evals_types.ConversationTurn,
+        (
+            "agent_id",
+            "instruction",
+            "description",
+            "sub_agents",
+            "tools",
+        ): evals_types.AgentConfig,
+        ("author", "content", "event_time"): evals_types.AgentEvent,
+        ("function_declarations",): types.Tool,
+        (
+            "name",
+            "description",
+            "parameters_json_schema",
+        ): types.FunctionDeclaration,
+        ("name", "description"): types.FunctionDeclaration,
+        ("role", "parts"): types.Content,
+        ("text",): types.Part,
+        ("function_call",): types.Part,
+        ("function_response",): types.Part,
+        ("name", "args"): types.FunctionCall,
+        ("name", "response"): types.FunctionResponse,
+    }
+    # Free-form payloads inside FunctionCall.args and FunctionResponse.response.
+    freeform_payload_key_tuples = {
+        ("agent_name",),
+        ("result",),
+    }
+
+    for sql in (
+        bigquery_agent_analytics_plugin._build_eval_session_view_sql("p.d.t"),
+        bigquery_agent_analytics_plugin._build_eval_turn_view_sql("p.d.t"),
+    ):
+      found_key_tuples = extract_json_object_key_tuples(sql)
+      assert found_key_tuples == (
+          set(expected_schema_models) | freeform_payload_key_tuples
+      )
+      for key_tuple, model_cls in expected_schema_models.items():
+        assert set(key_tuple) <= set(model_cls.model_fields), (
+            f"{key_tuple} contains fields not in {model_cls.__name__}:"
+            f" {set(model_cls.model_fields)}"
+        )
+
+    # Log a session through the plugin callbacks and capture the rows that
+    # the plugin appends to the write stream.
+    plugin = bq_plugin_inst
+    captured_rows = []
+    loop_state = mock.MagicMock()
+    loop_state.batch_processor.append = mock.AsyncMock(
+        side_effect=captured_rows.append
+    )
+
+    def lookup_order(order_id: str) -> dict[str, str]:
+      """Looks up an order by ID."""
+      return {"order_id": order_id}
+
+    def cancel_order(order_id: str) -> dict[str, str]:
+      """Cancels an order."""
+      return {"order_id": order_id}
+
+    lookup_tool = function_tool.FunctionTool(lookup_order)
+    cancel_tool = function_tool.FunctionTool(cancel_order)
+    # Unlike the framework's own HITL calls, request_input is a tool, so it
+    # also logs TOOL_STARTING and TOOL_COMPLETED (with no result) when called.
+    request_input = tools_lib.request_input
+    transfer_tool = transfer_to_agent_tool.TransferToAgentTool(["helper_agent"])
+    root_tools = (lookup_tool, cancel_tool, request_input, transfer_tool)
+    helper_agent = llm_agent.LlmAgent(
+        name="helper_agent", model="gemini-2.5-flash"
+    )
+    root_agent = llm_agent.LlmAgent(
+        name="root_agent",
+        model="gemini-2.5-flash",
+        instruction="Help the user.",
+        description="Root coordinator",
+        tools=[lookup_tool, cancel_tool, request_input],
+        sub_agents=[helper_agent],
+    )
+    session = session_lib.Session(
+        id="session-1", app_name="test_app", user_id="user-1"
+    )
+
+    def context(agent, invocation_id):
+      return InvocationContext(
+          agent=agent,
+          session=session,
+          invocation_id=invocation_id,
+          session_service=mock.create_autospec(
+              base_session_service_lib.BaseSessionService,
+              instance=True,
+              spec_set=True,
+          ),
+          plugin_manager=mock.create_autospec(
+              plugin_manager_lib.PluginManager, instance=True, spec_set=True
+          ),
+      )
+
+    def function_call(name, args, **fields):
+      return types.Part(
+          function_call=types.FunctionCall(name=name, args=args, **fields)
+      )
+
+    async def start_turn(invocation_id, *parts):
+      """Logs a user message and starts the root agent on it."""
+      ctx = context(root_agent, invocation_id)
+      await plugin.on_user_message_callback(
+          invocation_context=ctx,
+          user_message=types.Content(role="user", parts=list(parts)),
+      )
+      await plugin.before_run_callback(invocation_context=ctx)
+      await plugin.before_agent_callback(
+          agent=root_agent, callback_context=CallbackContext(ctx)
+      )
+      return ctx
+
+    async def end_turn(*contexts):
+      """Ends the agents of ``contexts``, innermost first, and the run."""
+      for ctx in contexts:
+        await plugin.after_agent_callback(
+            agent=ctx.agent, callback_context=CallbackContext(ctx)
+        )
+      await plugin.after_run_callback(invocation_context=contexts[-1])
+
+    async def call_model(ctx, *parts, tools=(), **event_fields):
+      """Logs a model call and the event of its response."""
+      callback_context = CallbackContext(ctx)
+      llm_request = llm_request_lib.LlmRequest(model="gemini-2.5-flash")
+      llm_request.append_tools(list(tools))
+      await plugin.before_model_callback(
+          callback_context=callback_context, llm_request=llm_request
+      )
+      response = types.Content(role="model", parts=list(parts))
+      await plugin.after_model_callback(
+          callback_context=callback_context,
+          llm_response=llm_response_lib.LlmResponse(
+              content=response, finish_reason=types.FinishReason.STOP
+          ),
+      )
+      await on_event(ctx, response, **event_fields)
+
+    async def call_tool(ctx, tool, args, result):
+      tool_context = tool_context_lib.ToolContext(invocation_context=ctx)
+      await plugin.before_tool_callback(
+          tool=tool, tool_args=args, tool_context=tool_context
+      )
+      await plugin.after_tool_callback(
+          tool=tool, tool_args=args, tool_context=tool_context, result=result
+      )
+
+    async def on_event(ctx, content, **fields):
+      await plugin.on_event_callback(
+          invocation_context=ctx,
+          event=event_lib.Event(
+              author=ctx.agent.name,
+              invocation_id=ctx.invocation_id,
+              content=content,
+              **fields,
+          ),
+      )
+
+    with mock.patch.object(
+        plugin, "_get_loop_state", mock.AsyncMock(return_value=loop_state)
+    ):
+      # A tool call, then a transfer to the helper agent, which replies after
+      # a thought that the trace must not show.
+      ctx = await start_turn("inv-1", types.Part(text="Where is order 42?"))
+      await call_model(
+          ctx,
+          function_call("lookup_order", {"order_id": "42"}),
+          tools=root_tools,
+      )
+      await call_tool(ctx, lookup_tool, {"order_id": "42"}, "shipped")
+      await call_model(
+          ctx,
+          function_call("transfer_to_agent", {"agent_name": "helper_agent"}),
+          tools=root_tools,
+      )
+      await call_tool(ctx, transfer_tool, {"agent_name": "helper_agent"}, None)
+      await on_event(
+          ctx,
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name="transfer_to_agent", response={}
+                      )
+                  )
+              ],
+          ),
+          actions=event_actions_lib.EventActions(
+              transfer_to_agent="helper_agent"
+          ),
+      )
+      helper_ctx = context(helper_agent, "inv-1")
+      await plugin.before_agent_callback(
+          agent=helper_agent, callback_context=CallbackContext(helper_ctx)
+      )
+      await call_model(
+          helper_ctx,
+          types.Part(text="Checking the carrier.", thought=True),
+          types.Part(text="Order 42 has shipped."),
+      )
+      await end_turn(helper_ctx, ctx)
+
+      # cancel_order needs a HITL confirmation, so the turn pauses.
+      ctx = await start_turn("inv-2", types.Part(text="Cancel it."))
+      await call_model(
+          ctx,
+          function_call("cancel_order", {"order_id": "42"}),
+          tools=root_tools,
+      )
+      await call_tool(
+          ctx, cancel_tool, {"order_id": "42"}, {"error": "Needs confirmation."}
+      )
+      await on_event(
+          ctx,
+          types.Content(
+              role="model",
+              parts=[
+                  function_call(
+                      "adk_request_confirmation",
+                      {"originalFunctionCall": {"name": "cancel_order"}},
+                      id="confirm-1",
+                  )
+              ],
+          ),
+          long_running_tool_ids={"confirm-1"},
+      )
+      await end_turn(ctx)
+
+      # The user's confirmation resumes the turn, and the agent replies.
+      ctx = await start_turn(
+          "inv-3",
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="confirm-1",
+                  name="adk_request_confirmation",
+                  response={"confirmed": True},
+              )
+          ),
+      )
+      await call_tool(ctx, cancel_tool, {"order_id": "42"}, {"cancelled": True})
+      await call_model(
+          ctx, types.Part(text="Order 42 is cancelled."), tools=root_tools
+      )
+      await end_turn(ctx)
+
+      # request_input pauses the turn for HITL input: its model event logs
+      # HITL_INPUT_REQUEST, then the tool itself runs and returns no result.
+      ask_args = {"message": "Which category?"}
+      ctx = await start_turn("inv-4", types.Part(text="File a ticket."))
+      await call_model(
+          ctx,
+          function_call("adk_request_input", ask_args, id="input-1"),
+          tools=root_tools,
+          long_running_tool_ids={"input-1"},
+      )
+      await call_tool(ctx, request_input, ask_args, None)
+      await end_turn(ctx)
+
+      # The user's input resumes the turn, and the agent replies.
+      ctx = await start_turn(
+          "inv-5",
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="input-1",
+                  name="adk_request_input",
+                  response={"result": "database"},
+              )
+          ),
+      )
+      await call_model(
+          ctx, types.Part(text="Filed a database ticket."), tools=root_tools
+      )
+      await end_turn(ctx)
+
+    # Mirror the table: attributes is a JSON column, and distinct timestamps
+    # in logging order stand in for the wall clock. The rows are reversed,
+    # so the views' ORDER BY clauses must order them.
+    start = datetime.datetime(2026, 4, 19, 12, 0, tzinfo=datetime.timezone.utc)
+    table_rows = [
+        {
+            **row,
+            "timestamp": start + datetime.timedelta(seconds=index),
+            "attributes": json.loads(row["attributes"]),
+        }
+        for index, row in enumerate(captured_rows)
+    ][::-1]
+
+    session_view, turn_view = self._eval_views()
+    (session_row,) = session_view.run(table_rows)
+    turn_rows = {row["invocation_id"]: row for row in turn_view.run(table_rows)}
+    session_trace = session_row["trace"]
+    for view_trace in (
+        session_trace,
+        *(r["trace"] for r in turn_rows.values()),
+    ):
+      evals_types.AgentData.model_validate(view_trace)
+      for agent_config in view_trace["agents"].values():
+        for tool in agent_config["tools"]:
+          types.Tool.model_validate(tool)
+      for turn in view_trace["turns"]:
+        for agent_event in turn["events"]:
+          types.Content.model_validate(agent_event["content"])
+
+    turns = session_trace["turns"]
+    assert [(turn["turn_index"], turn["turn_id"]) for turn in turns] == [
+        (0, "inv-1"),
+        (1, "inv-2"),
+        (2, "inv-3"),
+        (3, "inv-4"),
+        (4, "inv-5"),
+    ]
+    for turn in turns:
+      # The turn view's trace holds its one turn, re-indexed to 0.
+      assert turn_rows[turn["turn_id"]]["trace"]["turns"] == [
+          {**turn, "turn_index": 0}
+      ]
+
+    def describe(agent_event):
+      (part,) = agent_event["content"]["parts"]
+      ((kind, value),) = part.items()
+      return (
+          agent_event["author"],
+          agent_event["content"]["role"],
+          kind,
+          value if kind == "text" else value["name"],
+      )
+
+    assert [describe(agent_event) for agent_event in turns[0]["events"]] == [
+        ("user", "user", "text", "Where is order 42?"),
+        ("root_agent", "model", "function_call", "lookup_order"),
+        ("root_agent", "user", "function_response", "lookup_order"),
+        ("root_agent", "model", "function_call", "transfer_to_agent"),
+        ("helper_agent", "model", "text", "Order 42 has shipped."),
+    ]
+    assert [describe(agent_event) for agent_event in turns[1]["events"]] == [
+        ("user", "user", "text", "Cancel it."),
+        ("root_agent", "model", "function_call", "cancel_order"),
+        ("root_agent", "user", "function_response", "cancel_order"),
+        ("root_agent", "model", "function_call", "adk_request_confirmation"),
+    ]
+    assert [describe(agent_event) for agent_event in turns[2]["events"]] == [
+        ("root_agent", "user", "function_response", "adk_request_confirmation"),
+        ("root_agent", "model", "function_call", "cancel_order"),
+        ("root_agent", "user", "function_response", "cancel_order"),
+        ("root_agent", "model", "text", "Order 42 is cancelled."),
+    ]
+    # request_input's own TOOL_STARTING and TOOL_COMPLETED rows are skipped:
+    # the HITL rows carry its one function_call and the function_response
+    # that resumes it.
+    assert [describe(agent_event) for agent_event in turns[3]["events"]] == [
+        ("user", "user", "text", "File a ticket."),
+        ("root_agent", "model", "function_call", "adk_request_input"),
+    ]
+    assert [describe(agent_event) for agent_event in turns[4]["events"]] == [
+        ("root_agent", "user", "function_response", "adk_request_input"),
+        ("root_agent", "model", "text", "Filed a database ticket."),
+    ]
+
+    def payload(turn_index, event_index):
+      """Returns the function_call or function_response of an event."""
+      (part,) = turns[turn_index]["events"][event_index]["content"]["parts"]
+      ((_, value),) = part.items()
+      return value
+
+    first_turn_events = turns[0]["events"]
+    assert first_turn_events[0]["event_time"] == "2026-04-19T12:00:00.000000Z"
+    assert payload(0, 1)["args"] == {"order_id": "42"}
+    assert payload(0, 2)["response"] == {"result": "shipped"}
+    assert payload(0, 3)["args"] == {"agent_name": "helper_agent"}
+    assert payload(1, 3)["args"] == {
+        "originalFunctionCall": {"name": "cancel_order"}
+    }
+    assert payload(2, 0)["response"] == {"confirmed": True}
+    assert payload(3, 1)["args"] == {"message": "Which category?"}
+    assert payload(4, 0)["response"] == {"result": "database"}
+
+    agents = session_trace["agents"]
+    assert sorted(agents) == ["helper_agent", "root_agent"]
+    assert agents["helper_agent"] == {
+        "agent_id": "helper_agent",
+        "instruction": "",
+        "description": "",
+        "sub_agents": [],
+        "tools": [],
+    }
+    root_config = agents["root_agent"]
+    assert root_config["instruction"] == "Help the user."
+    assert root_config["description"] == "Root coordinator"
+    assert root_config["sub_agents"] == ["helper_agent"]
+    (root_tool,) = root_config["tools"]
+    declarations = root_tool["function_declarations"]
+    assert [declaration["name"] for declaration in declarations] == [
+        "lookup_order",
+        "cancel_order",
+        "adk_request_input",
+        "transfer_to_agent",
+    ]
+    assert declarations[0]["description"] == "Looks up an order by ID."
+    assert "order_id" in json.dumps(declarations[0]["parameters_json_schema"])
+    # The turn view's agents are those of its own turn.
+    assert sorted(turn_rows["inv-1"]["trace"]["agents"]) == sorted(agents)
+    assert sorted(turn_rows["inv-3"]["trace"]["agents"]) == ["root_agent"]
+
+    # Each paused turn and the turn that resumes it make the session ready,
+    # though neither is ready on its own.
+    assert session_row["eval_ready"] is True
+    assert {
+        invocation_id: row["eval_ready"]
+        for invocation_id, row in turn_rows.items()
+    } == {
+        "inv-1": True,
+        "inv-2": False,
+        "inv-3": False,
+        "inv-4": False,
+        "inv-5": False,
+    }
+    # request_input is a tool the model called, so tool metrics count it.
+    assert session_row["tool_call_count"] == 4
+    assert session_row["distinct_tools_used"] == [
+        "adk_request_input",
+        "cancel_order",
+        "lookup_order",
+    ]
+
+    with pytest.raises(ValidationError):
+      evals_types.AgentConfig.model_validate({
+          **root_config,
+          "model_name": "gemini-2.5-pro",
+      })
+    with pytest.raises(ValidationError):
+      evals_types.AgentEvent.model_validate({
+          **first_turn_events[0],
+          "event_timestamp": "2026-04-19T12:00:00Z",
+      })
+
+  @pytest.mark.asyncio
+  async def test_eval_views_conversation_only_mode(self):
+    """eval_view_mode='conversation_only' requires only the 3 core events."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    assert config.eval_view_mode == "full"
+
+    core_events = {
+        "USER_MESSAGE_RECEIVED",
+        "AGENT_RESPONSE",
+        "INVOCATION_COMPLETED",
+    }
+    assert bigquery_agent_analytics_plugin._EVAL_VIEW_CORE_EVENTS == core_events
+    redacted_allowlist = [
+        "USER_MESSAGE_RECEIVED",
+        "AGENT_RESPONSE",
+        "INVOCATION_STARTING",
+        "INVOCATION_COMPLETED",
+        "LLM_REQUEST",
+        "LLM_RESPONSE",
+        "LLM_ERROR",
+        "TOOL_ERROR",
+        "AGENT_ERROR",
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="Set eval_view_mode='conversation_only'",
+    ):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              create_eval_views=True,
+              event_allowlist=redacted_allowlist,
+          ),
+      )
+
+    plugin_redacted = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True,
+                eval_view_mode="conversation_only",
+                event_allowlist=redacted_allowlist,
+                event_denylist=["TOOL_STARTING", "AGENT_STARTING"],
+            ),
+        )
+    )
+    assert plugin_redacted.config.eval_view_mode == "conversation_only"
+
+    for core_event in sorted(core_events):
+      with pytest.raises(
+          ValueError, match="required events are in event_denylist"
+      ):
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True,
+                eval_view_mode="conversation_only",
+                event_denylist=[core_event],
+            ),
+        )
+      with pytest.raises(
+          ValueError, match=re.escape(f"missing: ['{core_event}'].")
+      ):
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                create_eval_views=True,
+                eval_view_mode="conversation_only",
+                event_allowlist=sorted(core_events - {core_event}),
+            ),
+        )
+
+    plugin_unknown_mode = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+        )
+    )
+    for bad_mode in ("invalid_mode", []):
+      plugin_unknown_mode.config.eval_view_mode = (
+          bad_mode  # type: ignore[assignment]
+      )
+      with pytest.raises(
+          ValueError,
+          match=re.escape(f"unknown eval_view_mode={bad_mode!r}"),
+      ):
+        await plugin_unknown_mode.create_eval_views()
+
+  def test_eval_formatted_response_prefers_text_summary_before_response(self):
+    """formatted_response prefers non-blank string $.text_summary.
+
+    When $.text_summary is missing, blank, or not a JSON string, it falls back
+    to $.response.
+    """
+    _, turn_view = self._eval_views()
+
+    def evaluate_response(content):
+      formatted = turn_view.evaluate(
+          "formatted_response",
+          {"event_type": "AGENT_RESPONSE", "content": content},
+      )
+      response_text = turn_view.evaluate(
+          "response_text",
+          {"event_type": "AGENT_RESPONSE", "formatted_response": formatted},
+      )
+      return formatted, response_text
+
+    # 1. A non-blank string $.text_summary (e.g. from a custom
+    # content_formatter) takes precedence over $.response.
+    assert evaluate_response({
+        "text_summary": "Summary wins.",
+        "response": {"parts": [{"markdown": "Ignored part."}]},
+    }) == ("Summary wins.", "Summary wins.")
+    assert evaluate_response({
+        "text_summary": "  Padded summary.  ",
+        "response": "text: 'Ignored'",
+    }) == ("  Padded summary.  ", "  Padded summary.  ")
+    assert evaluate_response({
+        "text_summary": "text: 'Wrapped summary'",
+        "response": "text: 'Ignored'",
+    }) == ("text: 'Wrapped summary'", "Wrapped summary")
+
+    # 2. Missing, empty, whitespace-only, or non-string $.text_summary falls
+    # through to $.response.
+    assert evaluate_response({
+        "text_summary": "   \n\t ",
+        "response": "text: 'Hi'",
+    }) == ("text: 'Hi'", "Hi")
+    assert evaluate_response({
+        "text_summary": "",
+        "response": "Plain string response.",
+    }) == ("Plain string response.", "Plain string response.")
+    assert evaluate_response({
+        "text_summary": {"nested": "not a string scalar"},
+        "response": "text: 'Fallback to response'",
+    }) == ("text: 'Fallback to response'", "Fallback to response")
+    assert evaluate_response({
+        "text_summary": False,
+        "response": "text: 'Fallback from bool'",
+    }) == ("text: 'Fallback from bool'", "Fallback from bool")
+    assert evaluate_response({
+        "text_summary": 123,
+        "response": "text: 'Fallback from int'",
+    }) == ("text: 'Fallback from int'", "Fallback from int")
+
+    # 3. Object or array $.response is serialized with TO_JSON_STRING when no
+    # non-blank string $.text_summary is present.
+    multi_answer = {
+        "answer": "Paris",
+        "sources": ["wiki/Paris"],
+        "confidence": 0.9,
+    }
+    formatted_multi, text_multi = evaluate_response({"response": multi_answer})
+    assert formatted_multi == text_multi
+    assert json.loads(text_multi) == multi_answer
+    array_response = [{"step": 1}, {"step": 2}]
+    formatted_arr, text_arr = evaluate_response({"response": array_response})
+    assert formatted_arr == text_arr
+    assert json.loads(text_arr) == array_response
+    wrapped_output_schema = (
+        'text: \'{"summary": "Met with team", "action_items": ["ship'
+        ' CL", "write doc"]}\''
+    )
+    assert evaluate_response({"response": wrapped_output_schema}) == (
+        wrapped_output_schema,
+        (
+            '{"summary": "Met with team", "action_items": ["ship CL", "write'
+            ' doc"]}'
+        ),
+    )
+    assert evaluate_response({"text_summary": "  ", "response": ""}) == (
+        None,
+        None,
+    )
+
+  def test_eval_agent_instruction_fallback_from_session_agent_prompts(self):
+    """agent_configs falls back to earliest session LLM_REQUEST.system_prompt.
+
+    Covers legacy callable reprs, empty text_summary, and current
+    before_agent_callback rows with content=None and
+    instruction_source='provider'.
+    """
+    session_view, turn_view = self._eval_views()
+    event = self._event
+
+    rows = [
+        # Session 1, Turn 1: AGENT_STARTING instruction takes precedence over
+        # LLM_REQUEST.system_prompt.
+        event(
+            "inv-static",
+            0,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Run query."},
+            session_id="s-static",
+        ),
+        event(
+            "inv-static",
+            1,
+            "AGENT_STARTING",
+            {"text_summary": "Static agent instruction."},
+            session_id="s-static",
+        ),
+        event(
+            "inv-static",
+            2,
+            "LLM_REQUEST",
+            {"system_prompt": "Dynamic system prompt v1."},
+            session_id="s-static",
+        ),
+        event(
+            "inv-static",
+            3,
+            "TOOL_STARTING",
+            {"tool": "execute_sql", "args": {"sql": "SELECT 1"}},
+            session_id="s-static",
+        ),
+        event(
+            "inv-static",
+            4,
+            "TOOL_COMPLETED",
+            {"tool": "execute_sql", "result": {"rows": 1}},
+            session_id="s-static",
+        ),
+        event(
+            "inv-static",
+            5,
+            "AGENT_RESPONSE",
+            {"text_summary": "1 row returned."},
+            session_id="s-static",
+        ),
+        event("inv-static", 6, "INVOCATION_COMPLETED", session_id="s-static"),
+        # Session 2, Turn 1: callable InstructionProvider on AGENT_STARTING
+        # (both current content=None with instruction_source='provider' and
+        # legacy function repr); earliest non-blank LLM_REQUEST.system_prompt
+        # in the session wins.
+        event(
+            "inv-callable-1",
+            10,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Clarify metric."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            11,
+            "AGENT_STARTING",
+            None,
+            attributes={"instruction_source": "provider"},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            12,
+            "LLM_REQUEST",
+            {"system_prompt": "   "},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            13,
+            "LLM_REQUEST",
+            {"system_prompt": "Earliest session system prompt."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            14,
+            "LLM_REQUEST",
+            {"system_prompt": "Turn 1 retry system prompt."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            15,
+            "AGENT_STARTING",
+            "<function sub_instruction at 0x7f0001>",
+            agent="sub_agent",
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            16,
+            "LLM_REQUEST",
+            {"system_prompt": "Sub-agent session prompt."},
+            agent="sub_agent",
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            17,
+            "AGENT_RESPONSE",
+            {"text_summary": "Do you mean gross or net revenue?"},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-1",
+            18,
+            "INVOCATION_COMPLETED",
+            session_id="s-callable",
+        ),
+        # Session 2, Turn 2: root_agent logs a later LLM_REQUEST system_prompt,
+        # and sub_agent logs AGENT_STARTING with {"text_summary": ""} (to
+        # exercise NULLIF(instruction, '') in agent_configs) without a new
+        # LLM_REQUEST; both still resolve to their earliest session
+        # system_prompt in turn_view and session_view.
+        event(
+            "inv-callable-2",
+            20,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Net revenue."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-2",
+            21,
+            "AGENT_STARTING",
+            None,
+            attributes={"instruction_source": "provider"},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-2",
+            22,
+            "LLM_REQUEST",
+            {"system_prompt": "Later turn 2 system prompt."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-2",
+            23,
+            "AGENT_STARTING",
+            {"text_summary": ""},
+            agent="sub_agent",
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-2",
+            24,
+            "AGENT_RESPONSE",
+            {"text_summary": "Net revenue is $10M."},
+            session_id="s-callable",
+        ),
+        event(
+            "inv-callable-2",
+            25,
+            "INVOCATION_COMPLETED",
+            session_id="s-callable",
+        ),
+        # Session 3, Turn 1: conversation-only turn (only USER_MESSAGE_RECEIVED,
+        # AGENT_RESPONSE, INVOCATION_COMPLETED).
+        event(
+            "inv-conv-only",
+            30,
+            "USER_MESSAGE_RECEIVED",
+            {"text_summary": "Pinned query."},
+            session_id="s-conv-only",
+        ),
+        event(
+            "inv-conv-only",
+            31,
+            "AGENT_RESPONSE",
+            {"text_summary": "Fast-path answer."},
+            session_id="s-conv-only",
+        ),
+        event(
+            "inv-conv-only",
+            32,
+            "INVOCATION_COMPLETED",
+            session_id="s-conv-only",
+        ),
+    ]
+
+    session_rows = {row["session_id"]: row for row in session_view.run(rows)}
+    turn_rows = {row["invocation_id"]: row for row in turn_view.run(rows)}
+
+    assert (
+        session_rows["s-static"]["trace"]["agents"]["root_agent"]["instruction"]
+        == "Static agent instruction."
+    )
+    assert (
+        turn_rows["inv-static"]["trace"]["agents"]["root_agent"]["instruction"]
+        == "Static agent instruction."
+    )
+
+    assert (
+        session_rows["s-callable"]["trace"]["agents"]["root_agent"][
+            "instruction"
+        ]
+        == "Earliest session system prompt."
+    )
+    assert (
+        turn_rows["inv-callable-1"]["trace"]["agents"]["root_agent"][
+            "instruction"
+        ]
+        == "Earliest session system prompt."
+    )
+    assert (
+        turn_rows["inv-callable-2"]["trace"]["agents"]["root_agent"][
+            "instruction"
+        ]
+        == "Earliest session system prompt."
+    )
+    assert (
+        session_rows["s-callable"]["trace"]["agents"]["sub_agent"][
+            "instruction"
+        ]
+        == "Sub-agent session prompt."
+    )
+    assert (
+        turn_rows["inv-callable-1"]["trace"]["agents"]["sub_agent"][
+            "instruction"
+        ]
+        == "Sub-agent session prompt."
+    )
+    assert (
+        turn_rows["inv-callable-2"]["trace"]["agents"]["sub_agent"][
+            "instruction"
+        ]
+        == "Sub-agent session prompt."
+    )
+
+    assert (
+        session_rows["s-conv-only"]["trace"]["agents"]["root_agent"][
+            "instruction"
+        ]
+        == ""
+    )
+    assert session_rows["s-conv-only"]["trace"]["turns"][0]["events"][1][
+        "content"
+    ]["parts"] == [{"text": "Fast-path answer."}]
 
 
 # ==============================================================================
@@ -9954,6 +17726,21 @@ class TestAgentResponseLogging:
     assert mock_write_client.append_rows.call_count == 0
 
 
+# AppendRows auth errors that reject a batch without writing any row and leave
+# a committed stream usable. Forbidden/PermissionDenied is classified separately
+# under permission_denied.
+_AUTH_NON_RETRYABLE_ERRORS = (api_exceptions.Unauthenticated,)
+# AppendRows errors that can also mean the stream itself is unusable
+# (finalized, expired or in use by another client).
+_STREAM_STATE_NON_RETRYABLE_ERRORS = (
+    api_exceptions.InvalidArgument,
+    api_exceptions.FailedPrecondition,
+)
+_STREAM_LEVEL_NON_RETRYABLE_ERRORS = (
+    _AUTH_NON_RETRYABLE_ERRORS + _STREAM_STATE_NON_RETRYABLE_ERRORS
+)
+
+
 class TestDropStats:
   """Tests that dropped events are counted and exposed via get_drop_stats."""
 
@@ -10003,6 +17790,56 @@ class TestDropStats:
     await bp.append({"event": 2})
     assert bp.get_drop_stats()["queue_full"] == 2
     assert bp.dropped_event_count == 2
+
+  @pytest.mark.asyncio
+  async def test_terminal_rows_use_reserved_queue_slots(
+      self, dummy_arrow_schema
+  ):
+    """Other rows stop short of the reserved slots; terminal rows use them."""
+    bp = self._make_processor(dummy_arrow_schema, queue_max_size=5)
+    for index in range(4):
+      await bp.append({"event_type": "NODE_OUTPUT", "event": index})
+    # The fourth row found only the two reserved slots free.
+    assert bp._queue.qsize() == 3
+    assert bp.get_drop_stats()["queue_full"] == 1
+
+    await bp.append({"event_type": "INVOCATION_COMPLETED"})
+    await bp.append({"event_type": "INVOCATION_ERROR"})
+    assert bp._queue.qsize() == 5
+    assert bp.get_drop_stats()["queue_full"] == 1
+
+    # With the reserved slots taken, terminal rows overflow too.
+    await bp.append({"event_type": "INVOCATION_COMPLETED"})
+    assert bp.get_drop_stats()["queue_full"] == 2
+    queued = [bp._queue.get_nowait()["event_type"] for _ in range(5)]
+    assert queued == [
+        "NODE_OUTPUT",
+        "NODE_OUTPUT",
+        "NODE_OUTPUT",
+        "INVOCATION_COMPLETED",
+        "INVOCATION_ERROR",
+    ]
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("queue_max_size", "reserved_slots"),
+      [(1, 0), (2, 1), (3, 2), (10, 2), (500, 5), (10000, 100)],
+  )
+  async def test_reservation_never_takes_every_queue_slot(
+      self, dummy_arrow_schema, queue_max_size, reserved_slots
+  ):
+    """Reserves max(2, queue_max_size // 100) slots, and never the last free one."""
+    bp = self._make_processor(dummy_arrow_schema, queue_max_size=queue_max_size)
+    assert bp._reserved_terminal_slots == reserved_slots
+    for index in range(queue_max_size):
+      await bp.append({"event_type": "NODE_OUTPUT", "event": index})
+    assert bp._queue.qsize() == queue_max_size - reserved_slots
+    assert bp.get_drop_stats()["queue_full"] == reserved_slots
+
+    for _ in range(reserved_slots):
+      await bp.append({"event_type": "INVOCATION_COMPLETED"})
+    assert bp._queue.qsize() == queue_max_size
+    assert bp.get_drop_stats()["queue_full"] == reserved_slots
 
   @pytest.mark.asyncio
   async def test_retry_exhaustion_drops_are_counted(self, dummy_arrow_schema):
@@ -10058,6 +17895,149 @@ class TestDropStats:
     assert bp.dropped_event_count == 1
     assert secret not in caplog.text
     assert "1 row(s) dropped" in caplog.text
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("raise_while_iterating", [False, True])
+  @pytest.mark.parametrize("error_cls", _STREAM_LEVEL_NON_RETRYABLE_ERRORS)
+  async def test_stream_level_non_retryable_drops_are_counted(
+      self, dummy_arrow_schema, caplog, error_cls, raise_while_iterating
+  ):
+    """A rejected AppendRows stream is non_retryable, not unexpected."""
+    retry_config = bigquery_agent_analytics_plugin.RetryConfig(
+        max_retries=1, initial_delay=0.0, multiplier=1.0, max_delay=0.0
+    )
+    bp = self._make_processor(dummy_arrow_schema, retry_config=retry_config)
+    self._stub_arrow_prep(bp)
+
+    async def fake_append_rows(requests, **kwargs):
+      del kwargs
+      await anext(requests)
+      error = error_cls("rejected")
+      if raise_while_iterating:
+        return _FailingAsyncIterator(error)
+      raise error
+
+    bp.write_client.append_rows.side_effect = fake_append_rows
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger="google_adk.google.adk.plugins.bigquery_agent_analytics_plugin",
+    ):
+      await bp._write_rows_with_retry([{"a": 1}, {"a": 2}])
+
+    assert bp.write_client.append_rows.call_count == 1
+    assert bp.get_drop_stats()["non_retryable"] == 2
+    assert bp.get_drop_stats()["unexpected_error"] == 0
+    assert "Non-retryable BigQuery error" in caplog.text
+    assert "2 row(s) dropped" in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("raise_while_iterating", [False, True])
+  async def test_stream_level_schema_mismatch_logs_schema_hint(
+      self, dummy_arrow_schema, caplog, raise_while_iterating
+  ):
+    """A stream-level schema mismatch logs the schema hint, not a traceback."""
+    retry_config = bigquery_agent_analytics_plugin.RetryConfig(
+        max_retries=1, initial_delay=0.0, multiplier=1.0, max_delay=0.0
+    )
+    bp = self._make_processor(dummy_arrow_schema, retry_config=retry_config)
+    self._stub_arrow_prep(bp)
+
+    async def fake_append_rows(requests, **kwargs):
+      del kwargs
+      await anext(requests)
+      error = api_exceptions.InvalidArgument("Schema mismatch: field x")
+      if raise_while_iterating:
+        return _FailingAsyncIterator(error)
+      raise error
+
+    bp.write_client.append_rows.side_effect = fake_append_rows
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger="google_adk.google.adk.plugins.bigquery_agent_analytics_plugin",
+    ):
+      await bp._write_rows_with_retry([{"a": 1}, {"a": 2}])
+
+    assert bp.write_client.append_rows.call_count == 1
+    assert bp.get_drop_stats()["non_retryable"] == 2
+    assert bp.get_drop_stats()["unexpected_error"] == 0
+    assert "BigQuery Schema Mismatch: 400 Schema mismatch: field x" in (
+        caplog.text
+    )
+    assert "Non-retryable BigQuery error" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("error_mode", ["in_band", "raised"])
+  async def test_permission_denied_drops_are_counted(
+      self, dummy_arrow_schema, error_mode
+  ):
+    """403 / PERMISSION_DENIED drops are classified, never retried."""
+    bp = self._make_processor(dummy_arrow_schema)
+    self._stub_arrow_prep(bp)
+
+    if error_mode == "in_band":
+
+      async def fake_append_rows(requests, **kwargs):
+        del requests, kwargs
+        resp = mock.MagicMock()
+        resp.row_errors = []
+        resp.error = mock.MagicMock()
+        resp.error.code = (
+            bigquery_agent_analytics_plugin._GRPC_PERMISSION_DENIED
+        )
+        resp.error.message = "permission denied"
+        return _async_gen(resp)
+
+      bp.write_client.append_rows.side_effect = fake_append_rows
+    else:
+
+      async def raise_forbidden(requests, **kwargs):
+        del requests, kwargs
+        raise api_exceptions.PermissionDenied("forbidden")
+
+      bp.write_client.append_rows.side_effect = raise_forbidden
+
+    await bp._write_rows_with_retry([{"a": 1}])
+
+    assert bp.get_drop_stats()["permission_denied"] == 1
+    assert bp.dropped_event_count == 1
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("error_mode", ["in_band", "raised"])
+  async def test_not_found_drops_are_counted_in_default_mode(
+      self, dummy_arrow_schema, error_mode
+  ):
+    """404 / NOT_FOUND drops are classified in default stream mode."""
+    bp = self._make_processor(dummy_arrow_schema)
+    self._stub_arrow_prep(bp)
+
+    if error_mode == "in_band":
+
+      async def fake_append_rows(requests, **kwargs):
+        del requests, kwargs
+        resp = mock.MagicMock()
+        resp.row_errors = []
+        resp.error = mock.MagicMock()
+        resp.error.code = bigquery_agent_analytics_plugin._GRPC_NOT_FOUND
+        resp.error.message = "not found"
+        return _async_gen(resp)
+
+      bp.write_client.append_rows.side_effect = fake_append_rows
+    else:
+
+      async def raise_not_found(requests, **kwargs):
+        del requests, kwargs
+        raise api_exceptions.NotFound("table not found")
+
+      bp.write_client.append_rows.side_effect = raise_not_found
+
+    await bp._write_rows_with_retry([{"a": 1}])
+
+    assert bp.get_drop_stats()["not_found"] == 1
+    assert bp.dropped_event_count == 1
 
   def test_plugin_get_drop_stats_aggregates_across_loops(
       self, dummy_arrow_schema
@@ -10328,8 +18308,15 @@ class TestExactlyOnceDelivery:
     assert processor.get_drop_stats()["retry_exhausted"] == 2
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("code", "message", "expected_reason"),
+      [
+          (3, "invalid argument", "non_retryable"),
+          (7, "permission denied", "permission_denied"),
+      ],
+  )
   async def test_non_retryable_rejection_after_ambiguity_rotates_stream(
-      self, dummy_arrow_schema
+      self, dummy_arrow_schema, code, message, expected_reason
   ):
     """A terminal rejection cannot make an earlier sent attempt safe."""
     client = mock.MagicMock()
@@ -10347,7 +18334,7 @@ class TestExactlyOnceDelivery:
       if calls == 1:
         raise asyncio.TimeoutError()
       if calls == 2:
-        return _async_gen(self._response(7, "permission denied"))
+        return _async_gen(self._response(code, message))
       if request.write_stream == self._STREAM:
         if calls == 3:
           raise asyncio.TimeoutError()
@@ -10368,8 +18355,322 @@ class TestExactlyOnceDelivery:
 
     assert streams == [self._STREAM, self._STREAM, replacement]
     assert processor._next_offset == 1
-    assert processor.get_drop_stats()["non_retryable"] == 1
+    assert processor.get_drop_stats()[expected_reason] == 1
     create_stream.assert_awaited_once_with()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("raise_while_iterating", [False, True])
+  async def test_unauthenticated_after_ambiguity_rotates_stream(
+      self, dummy_arrow_schema, raise_while_iterating
+  ):
+    """Unauthenticated after an ambiguous attempt still rotates the stream."""
+    client = mock.MagicMock()
+    streams = []
+    calls = 0
+    replacement = self._STREAM.replace("committed-1", "committed-2")
+    create_stream = mock.AsyncMock(return_value=replacement)
+
+    async def append_rows(requests, **kwargs):
+      nonlocal calls
+      del kwargs
+      request = await anext(requests)
+      streams.append(request.write_stream)
+      calls += 1
+      if calls == 1:
+        # Ambiguous send: request left before a definitive rejection.
+        raise asyncio.TimeoutError()
+      if calls == 2:
+        error = api_exceptions.Unauthenticated("unauthenticated")
+        if raise_while_iterating:
+          return _FailingAsyncIterator(error)
+        raise error
+      return _async_gen(self._response())
+
+    client.append_rows.side_effect = append_rows
+    client.finalize_write_stream = mock.AsyncMock()
+    processor = self._make_processor(
+        dummy_arrow_schema,
+        write_client=client,
+        create_stream=create_stream,
+        max_retries=1,
+    )
+
+    await processor._write_rows_with_retry([{"batch": "a"}])
+
+    assert processor._offset_desynced
+    assert {
+        reason: count
+        for reason, count in processor.get_drop_stats().items()
+        if count
+    } == {"non_retryable": 1}
+
+    await processor._write_rows_with_retry([{"batch": "b"}])
+
+    assert not processor._offset_desynced
+    assert streams == [self._STREAM, self._STREAM, replacement]
+    assert processor._next_offset == 1
+    create_stream.assert_awaited_once_with()
+
+  @pytest.mark.asyncio
+  async def test_forbidden_after_ambiguity_desyncs_stream_in_eod_mode(
+      self, dummy_arrow_schema
+  ):
+    """A raised Forbidden after an ambiguous attempt desyncs the stream."""
+    client = mock.MagicMock()
+    streams = []
+    calls = 0
+    replacement = self._STREAM.replace("committed-1", "committed-2")
+    create_stream = mock.AsyncMock(return_value=replacement)
+
+    async def append_rows(requests, **kwargs):
+      nonlocal calls
+      del kwargs
+      request = await anext(requests)
+      streams.append(request.write_stream)
+      calls += 1
+      if calls == 1:
+        # Ambiguous send: request left before a definitive rejection.
+        raise asyncio.TimeoutError()
+      if calls == 2:
+        # Terminal rejection via raised Forbidden (PermissionDenied
+        # subclass) after the ambiguous attempt.
+        raise api_exceptions.PermissionDenied("permission denied")
+      if request.write_stream == self._STREAM:
+        if calls == 3:
+          raise asyncio.TimeoutError()
+        return _async_gen(self._response(6, "offset already exists"))
+      return _async_gen(self._response())
+
+    client.append_rows.side_effect = append_rows
+    client.finalize_write_stream = mock.AsyncMock()
+    processor = self._make_processor(
+        dummy_arrow_schema,
+        write_client=client,
+        create_stream=create_stream,
+        max_retries=1,
+    )
+
+    await processor._write_rows_with_retry([{"batch": "a"}])
+    await processor._write_rows_with_retry([{"batch": "b"}])
+
+    assert streams == [self._STREAM, self._STREAM, replacement]
+    assert processor._next_offset == 1
+    assert processor.get_drop_stats()["permission_denied"] == 1
+    create_stream.assert_awaited_once_with()
+
+  @pytest.mark.asyncio
+  async def test_first_attempt_forbidden_does_not_desync_stream_in_eod_mode(
+      self, dummy_arrow_schema
+  ):
+    """A first-attempt Forbidden keeps the committed stream."""
+    client = mock.MagicMock()
+    streams = []
+    replacement = self._STREAM.replace("committed-1", "committed-2")
+    create_stream = mock.AsyncMock(return_value=replacement)
+
+    async def append_rows(requests, **kwargs):
+      del kwargs
+      request = await anext(requests)
+      streams.append(request.write_stream)
+      raise api_exceptions.PermissionDenied("permission denied")
+
+    client.append_rows.side_effect = append_rows
+    client.finalize_write_stream = mock.AsyncMock()
+    processor = self._make_processor(
+        dummy_arrow_schema,
+        write_client=client,
+        create_stream=create_stream,
+        max_retries=1,
+    )
+
+    await processor._write_rows_with_retry([{"batch": "a"}])
+    await processor._write_rows_with_retry([{"batch": "b"}])
+
+    assert not processor._offset_desynced
+    assert streams == [self._STREAM, self._STREAM]
+    assert processor._next_offset == 0
+    assert processor.get_drop_stats()["permission_denied"] == 2
+    create_stream.assert_not_awaited()
+
+  def _first_attempt_rejection_client(
+      self, error, raise_while_iterating, offsets, streams
+  ):
+    """A write client whose first AppendRows call fails with `error`."""
+    client = mock.MagicMock()
+    calls = 0
+
+    async def append_rows(requests, **kwargs):
+      nonlocal calls
+      del kwargs
+      request = await anext(requests)
+      offsets.append(request.offset)
+      streams.append(request.write_stream)
+      calls += 1
+      if calls > 1:
+        return _async_gen(self._response())
+      if raise_while_iterating:
+        return _FailingAsyncIterator(error)
+      raise error
+
+    client.append_rows.side_effect = append_rows
+    return client
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("raise_while_iterating", [False, True])
+  @pytest.mark.parametrize("error_cls", _AUTH_NON_RETRYABLE_ERRORS)
+  async def test_first_attempt_auth_rejection_keeps_offset(
+      self, dummy_arrow_schema, error_cls, raise_while_iterating
+  ):
+    """A definitive first-attempt auth rejection leaves its offset reusable."""
+    offsets = []
+    streams = []
+    replacement = self._STREAM.replace("committed-1", "committed-2")
+    create_stream = mock.AsyncMock(return_value=replacement)
+    processor = self._make_processor(
+        dummy_arrow_schema,
+        write_client=self._first_attempt_rejection_client(
+            error_cls("rejected"), raise_while_iterating, offsets, streams
+        ),
+        create_stream=create_stream,
+        max_retries=1,
+    )
+
+    await processor._write_rows_with_retry([{"a": 1}])
+
+    assert not processor._offset_desynced
+    assert processor.get_drop_stats()["non_retryable"] == 1
+    assert processor.get_drop_stats()["unexpected_error"] == 0
+
+    await processor._write_rows_with_retry([{"a": 2}])
+
+    assert offsets == [0, 0]
+    assert streams == [self._STREAM, self._STREAM]
+    assert processor._next_offset == 1
+    create_stream.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("raise_while_iterating", [False, True])
+  @pytest.mark.parametrize("error_cls", _STREAM_STATE_NON_RETRYABLE_ERRORS)
+  async def test_first_attempt_stream_state_rejection_rotates_stream(
+      self, dummy_arrow_schema, error_cls, raise_while_iterating
+  ):
+    """A finalized, expired or in-use committed stream is replaced."""
+    offsets = []
+    streams = []
+    replacement = self._STREAM.replace("committed-1", "committed-2")
+    create_stream = mock.AsyncMock(return_value=replacement)
+    processor = self._make_processor(
+        dummy_arrow_schema,
+        write_client=self._first_attempt_rejection_client(
+            error_cls("rejected"), raise_while_iterating, offsets, streams
+        ),
+        create_stream=create_stream,
+        max_retries=1,
+    )
+
+    await processor._write_rows_with_retry([{"a": 1}])
+
+    assert processor._offset_desynced
+    assert processor.get_drop_stats()["non_retryable"] == 1
+    assert processor.get_drop_stats()["unexpected_error"] == 0
+
+    await processor._write_rows_with_retry([{"a": 2}])
+
+    assert not processor._offset_desynced
+    assert offsets == [0, 0]
+    assert streams == [self._STREAM, replacement]
+    assert processor._next_offset == 1
+    create_stream.assert_awaited_once_with()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("raise_while_iterating", [False, True])
+  async def test_first_attempt_schema_mismatch_keeps_offset(
+      self, dummy_arrow_schema, raise_while_iterating
+  ):
+    """A first-attempt RPC-level schema mismatch keeps the committed stream."""
+    offsets = []
+    streams = []
+    replacement = self._STREAM.replace("committed-1", "committed-2")
+    create_stream = mock.AsyncMock(return_value=replacement)
+    processor = self._make_processor(
+        dummy_arrow_schema,
+        write_client=self._first_attempt_rejection_client(
+            api_exceptions.InvalidArgument("Schema mismatch: field x"),
+            raise_while_iterating,
+            offsets,
+            streams,
+        ),
+        create_stream=create_stream,
+        max_retries=1,
+    )
+
+    await processor._write_rows_with_retry([{"a": 1}])
+
+    assert not processor._offset_desynced
+    assert {
+        reason: count
+        for reason, count in processor.get_drop_stats().items()
+        if count
+    } == {"non_retryable": 1}
+
+    await processor._write_rows_with_retry([{"a": 2}])
+
+    assert offsets == [0, 0]
+    assert streams == [self._STREAM, self._STREAM]
+    assert processor._next_offset == 1
+    create_stream.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("code", "message"),
+      [
+          (3, "invalid argument"),
+          (3, "Schema mismatch: field x"),
+          (9, "failed precondition"),
+      ],
+  )
+  async def test_first_attempt_in_band_rejection_keeps_offset(
+      self, dummy_arrow_schema, code, message
+  ):
+    """An in-band first-attempt rejection keeps the committed stream."""
+    client = mock.MagicMock()
+    offsets = []
+    streams = []
+    replacement = self._STREAM.replace("committed-1", "committed-2")
+    create_stream = mock.AsyncMock(return_value=replacement)
+
+    async def append_rows(requests, **kwargs):
+      del kwargs
+      request = await anext(requests)
+      offsets.append(request.offset)
+      streams.append(request.write_stream)
+      if len(streams) == 1:
+        return _async_gen(self._response(code, message))
+      return _async_gen(self._response())
+
+    client.append_rows.side_effect = append_rows
+    processor = self._make_processor(
+        dummy_arrow_schema,
+        write_client=client,
+        create_stream=create_stream,
+        max_retries=1,
+    )
+
+    await processor._write_rows_with_retry([{"a": 1}])
+
+    assert not processor._offset_desynced
+    assert {
+        reason: count
+        for reason, count in processor.get_drop_stats().items()
+        if count
+    } == {"non_retryable": 1}
+
+    await processor._write_rows_with_retry([{"a": 2}])
+
+    assert offsets == [0, 0]
+    assert streams == [self._STREAM, self._STREAM]
+    assert processor._next_offset == 1
+    create_stream.assert_not_awaited()
 
   @pytest.mark.asyncio
   @pytest.mark.parametrize("already_exists_in_band", [False, True])
@@ -11151,6 +19452,16 @@ class TestC8ActionAttributes:
 class TestWorkflowNodeEvents:
   """Workflow node outputs and failures are observable through the plugin."""
 
+  @staticmethod
+  async def _start_observation_segment(plugin, invocation_context):
+    with mock.patch.object(plugin, "_log_event", new_callable=mock.AsyncMock):
+      await plugin.before_run_callback(invocation_context=invocation_context)
+
+  @staticmethod
+  async def _finish_observation_segment(plugin, invocation_context):
+    with mock.patch.object(plugin, "_log_event", new_callable=mock.AsyncMock):
+      await plugin.after_run_callback(invocation_context=invocation_context)
+
   @pytest.mark.asyncio
   @pytest.mark.parametrize("output", [{"id": 7}, ["a", "b"], "done"])
   async def test_node_output_preserves_payload_and_identity(
@@ -11217,8 +19528,12 @@ class TestWorkflowNodeEvents:
     assert json.loads(row["content"]) == {"answer": 42}
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "with_segment", [False, True], ids=("no-segment", "segment")
+  )
   async def test_output_and_state_delta_emit_separate_rows(
       self,
+      with_segment,
       bq_plugin_inst,
       mock_write_client,
       invocation_context,
@@ -11232,16 +19547,22 @@ class TestWorkflowNodeEvents:
         node_info=event_lib.NodeInfo(path="wf@1/step@2"),
     )
 
+    if with_segment:
+      await self._start_observation_segment(bq_plugin_inst, invocation_context)
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
     await bq_plugin_inst.flush()
 
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    first_observed = ["WORKFLOW_NODE_FIRST_OBSERVED"] if with_segment else []
     assert [row["event_type"] for row in rows] == [
+        *first_observed,
         "STATE_DELTA",
         "NODE_OUTPUT",
     ]
+    if with_segment:
+      await self._finish_observation_segment(bq_plugin_inst, invocation_context)
 
   @pytest.mark.asyncio
   async def test_node_error_uses_sanitized_error_column(
@@ -11273,11 +19594,16 @@ class TestWorkflowNodeEvents:
     assert json.loads(row["content"])["error_code"] == "ValueError"
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "with_segment", [False, True], ids=("no-segment", "segment")
+  )
   async def test_partial_node_error_does_not_duplicate_failure_row(
       self,
+      with_segment,
       bq_plugin_inst,
       mock_write_client,
       invocation_context,
+      dummy_arrow_schema,
   ):
     """Partial events cannot produce durable NODE_ERROR rows."""
     event = event_lib.Event(
@@ -11288,14 +19614,27 @@ class TestWorkflowNodeEvents:
         node_info=event_lib.NodeInfo(path="wf@1/step@2"),
     )
 
+    if with_segment:
+      await self._start_observation_segment(bq_plugin_inst, invocation_context)
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
     await bq_plugin_inst.flush()
 
-    mock_write_client.append_rows.assert_not_called()
+    if not with_segment:
+      mock_write_client.append_rows.assert_not_called()
+      return
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    assert [row["event_type"] for row in rows] == [
+        "WORKFLOW_NODE_FIRST_OBSERVED"
+    ]
+    assert all(row["event_type"] != "NODE_ERROR" for row in rows)
+    await self._finish_observation_segment(bq_plugin_inst, invocation_context)
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "with_segment", [False, True], ids=("no-segment", "segment")
+  )
   @pytest.mark.parametrize(
       ("error_code", "finish_reason"),
       [
@@ -11311,9 +19650,11 @@ class TestWorkflowNodeEvents:
       self,
       error_code,
       finish_reason,
+      with_segment,
       bq_plugin_inst,
       mock_write_client,
       invocation_context,
+      dummy_arrow_schema,
   ):
     """Model termination diagnostics remain LLM_RESPONSE-only telemetry."""
     event = event_lib.Event(
@@ -11324,12 +19665,22 @@ class TestWorkflowNodeEvents:
         node_info=event_lib.NodeInfo(path="wf@1/agent@2"),
     )
 
+    if with_segment:
+      await self._start_observation_segment(bq_plugin_inst, invocation_context)
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
     await bq_plugin_inst.flush()
 
-    mock_write_client.append_rows.assert_not_called()
+    if not with_segment:
+      mock_write_client.append_rows.assert_not_called()
+      return
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    assert [row["event_type"] for row in rows] == [
+        "WORKFLOW_NODE_FIRST_OBSERVED"
+    ]
+    assert all(row["event_type"] != "NODE_ERROR" for row in rows)
+    await self._finish_observation_segment(bq_plugin_inst, invocation_context)
 
   def test_model_termination_codes_match_enum_instances(self):
     """Enum-valued termination codes match the string-valued lookup set.
@@ -11376,8 +19727,12 @@ class TestWorkflowNodeEvents:
     assert json.loads(node_outputs[0]["content"]) == {"result": 1}
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "with_segment", [False, True], ids=("no-segment", "segment")
+  )
   async def test_error_and_output_event_preserves_both_node_rows(
       self,
+      with_segment,
       bq_plugin_inst,
       mock_write_client,
       invocation_context,
@@ -11392,16 +19747,22 @@ class TestWorkflowNodeEvents:
         node_info=event_lib.NodeInfo(path="wf@1/step@2"),
     )
 
+    if with_segment:
+      await self._start_observation_segment(bq_plugin_inst, invocation_context)
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
     await bq_plugin_inst.flush()
 
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    first_observed = ["WORKFLOW_NODE_FIRST_OBSERVED"] if with_segment else []
     assert [row["event_type"] for row in rows] == [
+        *first_observed,
         "NODE_ERROR",
         "NODE_OUTPUT",
     ]
+    if with_segment:
+      await self._finish_observation_segment(bq_plugin_inst, invocation_context)
 
   @pytest.mark.asyncio
   @pytest.mark.parametrize(
@@ -11441,8 +19802,1607 @@ class TestWorkflowNodeEvents:
     assert all(row["event_type"] != "NODE_OUTPUT" for row in rows)
 
 
+class TestWorkflowNodeObservations:
+  """Workflow observations describe source events, not node lifecycle."""
+
+  @staticmethod
+  def _captured_event_calls(log_event, event_type):
+    return [
+        call for call in log_event.await_args_list if call.args[0] == event_type
+    ]
+
+  @staticmethod
+  def _step_event(index):
+    return event_lib.Event(
+        id=f"event-{index}",
+        author=f"step{index}",
+        node_info=event_lib.NodeInfo(path=f"wf@1/step{index}@{index + 2}"),
+    )
+
+  @pytest.mark.asyncio
+  async def test_disabled_plugin_does_not_install_or_mutate_segment(
+      self,
+      invocation_context,
+  ):
+    """Disabled callbacks neither open nor change a workflow segment."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID,
+        DATASET_ID,
+        config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+            enabled=False
+        ),
+    )
+    event = event_lib.Event(
+        id="event-1",
+        author="step",
+        node_info=event_lib.NodeInfo(path="wf@1/step@2"),
+    )
+    try:
+      await plugin.before_run_callback(invocation_context=invocation_context)
+      assert plugin._workflow_segments == {}
+
+      await plugin.on_event_callback(
+          invocation_context=invocation_context, event=event
+      )
+      assert plugin._workflow_segments == {}
+    finally:
+      await plugin.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_shutting_down_plugin_does_not_mutate_segment(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """Shutdown-raced path events do not change the active segment."""
+    await bq_plugin_inst.before_run_callback(
+        invocation_context=invocation_context
+    )
+    segment = bq_plugin_inst._workflow_segments[
+        invocation_context.invocation_id
+    ]
+
+    bq_plugin_inst._is_shutting_down = True
+    try:
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context,
+          event=event_lib.Event(
+              id="event-1",
+              author="step",
+              node_info=event_lib.NodeInfo(path="wf@1/step@2"),
+          ),
+      )
+      assert segment.nodes == {}
+    finally:
+      bq_plugin_inst._is_shutting_down = False
+
+  @pytest.mark.asyncio
+  async def test_first_observed_failure_does_not_suppress_node_output(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+      caplog,
+  ):
+    """A synthetic-row failure leaves the source event's telemetry intact."""
+    emitted = []
+
+    async def fail_first_observed(event_type, *args, **kwargs):
+      del args
+      emitted.append((event_type, kwargs))
+      if event_type == "WORKFLOW_NODE_FIRST_OBSERVED":
+        raise RuntimeError("private writer failure")
+
+    event = event_lib.Event(
+        id="event-1",
+        author="step",
+        output={"result": 1},
+        node_info=event_lib.NodeInfo(path="wf@1/step@2"),
+    )
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", side_effect=fail_first_observed
+    ):
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      with caplog.at_level("WARNING"):
+        await bq_plugin_inst.on_event_callback(
+            invocation_context=invocation_context, event=event
+        )
+
+    assert [event_type for event_type, _ in emitted] == [
+        "INVOCATION_STARTING",
+        "WORKFLOW_NODE_FIRST_OBSERVED",
+        "NODE_OUTPUT",
+    ]
+    node_output = emitted[-1][1]
+    assert node_output["raw_content"] == {"result": 1}
+    assert node_output["event_data"].source_event is event
+    assert any(
+        record.getMessage()
+        == "Could not record workflow-node observation; continuing."
+        for record in caplog.records
+    )
+    assert "private writer failure" not in caplog.text
+
+  @pytest.mark.asyncio
+  async def test_path_event_without_active_segment_is_not_observed(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """Only before_run_callback may establish an observation segment."""
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+    ) as log_event:
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context,
+          event=event_lib.Event(
+              id="event-1",
+              author="step",
+              node_info=event_lib.NodeInfo(path="wf@1/step@2"),
+          ),
+      )
+
+    assert bq_plugin_inst._workflow_segments == {}
+    assert not self._captured_event_calls(
+        log_event, "WORKFLOW_NODE_FIRST_OBSERVED"
+    )
+
+  @pytest.mark.asyncio
+  async def test_workflow_node_observation_first_path_event_emits_once(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """Only the first path-bearing event emits FIRST_OBSERVED."""
+    first = event_lib.Event(
+        id="event-1",
+        timestamp=100.25,
+        author="step",
+        node_info=event_lib.NodeInfo(path="wf@1/step@2"),
+    )
+    second = first.model_copy(update={"id": "event-2", "timestamp": 101.5})
+
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+    ) as log_event:
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=first
+      )
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=second
+      )
+
+    first_rows = self._captured_event_calls(
+        log_event, "WORKFLOW_NODE_FIRST_OBSERVED"
+    )
+    assert len(first_rows) == 1
+    event_data = first_rows[0].kwargs["event_data"]
+    assert event_data.source_event is first
+    assert event_data.adk_extras["boundary_basis"] == "event_observation"
+    assert event_data.adk_extras["source_event_timestamp"] == 100.25
+    assert event_data.adk_extras["workflow_segment_id"]
+
+  @pytest.mark.asyncio
+  async def test_workflow_node_observation_ignores_empty_path(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """Events outside workflow nodes produce no observation rows."""
+    event = event_lib.Event(id="event-1", author="agent")
+
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+    ) as log_event:
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=event
+      )
+
+    event_types = [call.args[0] for call in log_event.await_args_list]
+    assert "WORKFLOW_NODE_FIRST_OBSERVED" not in event_types
+
+  @pytest.mark.asyncio
+  async def test_workflow_node_observation_includes_partial_event(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """A partial path-bearing event starts an observation window."""
+    event = event_lib.Event(
+        id="partial-1",
+        timestamp=22.5,
+        author="streaming_step",
+        partial=True,
+        node_info=event_lib.NodeInfo(path="wf@1/streaming_step@2"),
+    )
+
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+    ) as log_event:
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=event
+      )
+
+    first_rows = self._captured_event_calls(
+        log_event, "WORKFLOW_NODE_FIRST_OBSERVED"
+    )
+    assert len(first_rows) == 1
+    assert first_rows[0].kwargs["event_data"].source_event is event
+
+  @pytest.mark.asyncio
+  async def test_workflow_node_observation_new_run_gets_new_segment(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """Runner calls sharing an invocation still use distinct segments."""
+    first = event_lib.Event(
+        id="event-1",
+        author="step",
+        node_info=event_lib.NodeInfo(path="wf@1/step@2"),
+    )
+    resumed = first.model_copy(update={"id": "event-2"})
+
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+    ) as log_event:
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=first
+      )
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=resumed
+      )
+
+    first_rows = self._captured_event_calls(
+        log_event, "WORKFLOW_NODE_FIRST_OBSERVED"
+    )
+    segment_ids = [
+        call.kwargs["event_data"].adk_extras["workflow_segment_id"]
+        for call in first_rows
+    ]
+    assert len(segment_ids) == 2
+    assert segment_ids[0] != segment_ids[1]
+
+  @pytest.mark.asyncio
+  async def test_concurrent_runner_calls_use_their_own_segments(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """Concurrent runner calls keep segment IDs and paths paired."""
+
+    async def observe(invocation_id, path, event_id):
+      run_context = invocation_context.model_copy(
+          update={"invocation_id": invocation_id}
+      )
+      await bq_plugin_inst.before_run_callback(invocation_context=run_context)
+      await asyncio.sleep(0)
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=run_context,
+          event=event_lib.Event(
+              id=event_id,
+              author="step",
+              node_info=event_lib.NodeInfo(path=path),
+          ),
+      )
+      await asyncio.sleep(0)
+      await bq_plugin_inst.after_run_callback(invocation_context=run_context)
+
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+    ) as log_event:
+      await asyncio.gather(
+          observe("inv-a", "wf-a@1/step@2", "event-a"),
+          observe("inv-b", "wf-b@3/step@4", "event-b"),
+      )
+
+    first_segments = {
+        call.kwargs["event_data"].source_event.node_info.path: (
+            call.kwargs["event_data"].adk_extras["workflow_segment_id"]
+        )
+        for call in self._captured_event_calls(
+            log_event, "WORKFLOW_NODE_FIRST_OBSERVED"
+        )
+    }
+    summary_segments = {
+        call.kwargs["event_data"].adk_extras["node"]["path"]: (
+            call.kwargs["event_data"].adk_extras["workflow_segment_id"]
+        )
+        for call in self._captured_event_calls(
+            log_event, "WORKFLOW_NODE_OBSERVATION_SUMMARY"
+        )
+    }
+    assert first_segments == summary_segments
+    assert set(first_segments) == {"wf-a@1/step@2", "wf-b@3/step@4"}
+    assert len(set(first_segments.values())) == 2
+    assert bq_plugin_inst._workflow_segments == {}
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "child_error", [None, "child failed"], ids=("child-ends", "child-fails")
+  )
+  async def test_agent_tool_sub_runner_does_not_drop_parent_workflow_observations(
+      self,
+      child_error,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      dummy_arrow_schema,
+  ):
+    """A nested runner that shares the plugin closes only its own segment.
+
+    The parent calls an AgentTool inline, in the task that runs the parent's
+    own run callbacks, so the child runner's run callbacks run in that task
+    too.
+    """
+    from google.adk.tools.agent_tool import AgentTool
+
+    from .. import testing_utils
+
+    def path_event(ctx, author, path):
+      return event_lib.Event(
+          invocation_id=ctx.invocation_id,
+          author=author,
+          node_info=event_lib.NodeInfo(path=path),
+      )
+
+    class _ChildAgent(base_agent.BaseAgent):
+
+      async def _run_async_impl(self, ctx):
+        yield path_event(ctx, self.name, "child@1/step@2")
+        if child_error is not None:
+          raise RuntimeError(child_error)
+
+    segments_after_tool_call = []
+
+    class _ParentAgent(base_agent.BaseAgent):
+
+      async def _run_async_impl(self, ctx):
+        yield path_event(ctx, self.name, "parent@1/before_tool@2")
+        tool_call = AgentTool(agent=_ChildAgent(name="child")).run_async(
+            args={"request": "go"},
+            tool_context=tool_context_lib.ToolContext(invocation_context=ctx),
+        )
+        if child_error is None:
+          await tool_call
+        else:
+          with pytest.raises(RuntimeError, match=child_error):
+            await tool_call
+        segments_after_tool_call.append(set(plugin._workflow_segments))
+        yield path_event(ctx, self.name, "parent@1/after_tool@3")
+
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    await plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+    runner = testing_utils.InMemoryRunner(
+        root_agent=_ParentAgent(name="parent"), plugins=[plugin]
+    )
+    try:
+      events = await runner.run_async(testing_utils.UserContent("go"))
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+    finally:
+      await plugin.shutdown()
+
+    parent_invocation_id = events[0].invocation_id
+    child_invocation_ids = {
+        row["invocation_id"]
+        for row in rows
+        if row["event_type"] == "INVOCATION_STARTING"
+    } - {parent_invocation_id}
+    assert len(child_invocation_ids) == 1
+    (child_invocation_id,) = child_invocation_ids
+    # The child closed its own segment and left the parent's open.
+    assert segments_after_tool_call == [{parent_invocation_id}]
+    assert plugin._workflow_segments == {}
+
+    def observations(event_type, invocation_id):
+      return [
+          json.loads(row["attributes"])["adk"]
+          for row in rows
+          if row["event_type"] == event_type
+          and row["invocation_id"] == invocation_id
+      ]
+
+    parent_first = observations(
+        "WORKFLOW_NODE_FIRST_OBSERVED", parent_invocation_id
+    )
+    parent_summaries = observations(
+        "WORKFLOW_NODE_OBSERVATION_SUMMARY", parent_invocation_id
+    )
+    child_first = observations(
+        "WORKFLOW_NODE_FIRST_OBSERVED", child_invocation_id
+    )
+    child_summaries = observations(
+        "WORKFLOW_NODE_OBSERVATION_SUMMARY", child_invocation_id
+    )
+    assert [summary["node"]["path"] for summary in parent_summaries] == [
+        "parent@1/before_tool@2",
+        "parent@1/after_tool@3",
+    ]
+    assert {summary["drain_callback"] for summary in parent_summaries} == {
+        "after_run"
+    }
+    assert [summary["node"]["path"] for summary in child_summaries] == [
+        "child@1/step@2"
+    ]
+    assert child_summaries[0]["drain_callback"] == (
+        "after_run" if child_error is None else "on_run_error"
+    )
+    assert len(parent_first) == 2
+    assert len(child_first) == 1
+    parent_segment_ids = {
+        row["workflow_segment_id"] for row in parent_first + parent_summaries
+    }
+    child_segment_ids = {
+        row["workflow_segment_id"] for row in child_first + child_summaries
+    }
+    assert len(parent_segment_ids) == 1
+    assert len(child_segment_ids) == 1
+    assert parent_segment_ids != child_segment_ids
+
+  def test_pickled_plugin_does_not_carry_workflow_segments(self):
+    """Segments belong to runner calls in flight, not to a pickled copy."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    segment = bigquery_agent_analytics_plugin._WorkflowObservationSegment(
+        segment_id="segment-1"
+    )
+    plugin._workflow_segments["inv-789"] = segment
+
+    restored = pickle.loads(pickle.dumps(plugin))
+
+    assert restored._workflow_segments == {}
+    assert plugin._workflow_segments == {"inv-789": segment}
+
+  def test_unpickle_legacy_state_missing_workflow_segments(self):
+    """Pickles from before per-invocation segments get an empty mapping."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    state = plugin.__getstate__()
+    del state["_workflow_segments"]
+
+    restored = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
+            bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin
+        )
+    )
+    restored.__setstate__(state)
+
+    assert restored._workflow_segments == {}
+
+  @pytest.mark.asyncio
+  async def test_fork_reset_clears_workflow_segments(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """Fork reset clears inherited parent workflow segments and re-initializes the guard."""
+    parent_guard = bq_plugin_inst._workflow_segments_guard
+    bq_plugin_inst._workflow_segments["parent-inv"] = (
+        bigquery_agent_analytics_plugin._WorkflowObservationSegment(
+            segment_id="parent-seg"
+        )
+    )
+
+    bq_plugin_inst._reset_runtime_state()
+    assert bq_plugin_inst._workflow_segments == {}
+    assert bq_plugin_inst._workflow_segments_guard is not parent_guard
+
+    # Also verify a simulated PID change in a child process clears inherited
+    # segments during before_run_callback while keeping the child's own segment.
+    bq_plugin_inst._workflow_segments["inherited-parent-inv"] = (
+        bigquery_agent_analytics_plugin._WorkflowObservationSegment(
+            segment_id="inherited-seg"
+        )
+    )
+    bq_plugin_inst._init_pid = os.getpid() - 1
+    await bq_plugin_inst.before_run_callback(
+        invocation_context=invocation_context
+    )
+    assert "inherited-parent-inv" not in bq_plugin_inst._workflow_segments
+    assert invocation_context.invocation_id in bq_plugin_inst._workflow_segments
+
+  @pytest.mark.asyncio
+  async def test_cancelled_runs_evict_oldest_workflow_segment_at_capacity(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """Segments that are never closed are dropped oldest first at the cap."""
+
+    def run_context(invocation_id):
+      return invocation_context.model_copy(
+          update={"invocation_id": invocation_id}
+      )
+
+    segments = bq_plugin_inst._workflow_segments
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin, "_MAX_IN_FLIGHT_WORKFLOW_SEGMENTS", 3
+    ):
+      with mock.patch.object(
+          bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+      ):
+        # Runner calls cancelled from outside never close their segments.
+        for invocation_id in ("inv-0", "inv-1", "inv-2"):
+          await bq_plugin_inst.before_run_callback(
+              invocation_context=run_context(invocation_id)
+          )
+        opened = dict(segments)
+
+        await bq_plugin_inst.before_run_callback(
+            invocation_context=run_context("inv-3")
+        )
+        assert list(segments) == ["inv-1", "inv-2", "inv-3"]
+        assert segments["inv-1"] is opened["inv-1"]
+        assert segments["inv-2"] is opened["inv-2"]
+        newest = segments["inv-3"]
+
+        # A resumed invocation reopens its segment as the newest entry
+        # without dropping another call's segment.
+        await bq_plugin_inst.before_run_callback(
+            invocation_context=run_context("inv-2")
+        )
+        assert list(segments) == ["inv-1", "inv-3", "inv-2"]
+        assert segments["inv-1"] is opened["inv-1"]
+        assert segments["inv-3"] is newest
+        assert segments["inv-2"] is not opened["inv-2"]
+
+  @pytest.mark.asyncio
+  async def test_shutdown_clears_active_workflow_segments(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """Shutdown ends every observation window, closed or not."""
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+    ):
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+    assert set(bq_plugin_inst._workflow_segments) == {
+        invocation_context.invocation_id
+    }
+
+    await bq_plugin_inst.shutdown()
+
+    assert bq_plugin_inst._workflow_segments == {}
+
+  @pytest.mark.asyncio
+  async def test_workflow_node_observation_summary_preserves_signed_span(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """A summary preserves first/last provenance and a negative span."""
+    first = event_lib.Event(
+        id="event-1",
+        timestamp=101.5,
+        author="step",
+        node_info=event_lib.NodeInfo(path="wf@1/step@2"),
+    )
+    second = first.model_copy(update={"id": "event-2", "timestamp": 100.0})
+
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+    ) as log_event:
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=first
+      )
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=second
+      )
+      await bq_plugin_inst.after_run_callback(
+          invocation_context=invocation_context
+      )
+
+    event_types = [call.args[0] for call in log_event.await_args_list]
+    assert event_types == [
+        "INVOCATION_STARTING",
+        "WORKFLOW_NODE_FIRST_OBSERVED",
+        "WORKFLOW_NODE_OBSERVATION_SUMMARY",
+        "INVOCATION_COMPLETED",
+    ]
+    summary = self._captured_event_calls(
+        log_event, "WORKFLOW_NODE_OBSERVATION_SUMMARY"
+    )[0].kwargs["event_data"]
+    segment_id = (
+        self._captured_event_calls(log_event, "WORKFLOW_NODE_FIRST_OBSERVED")[0]
+        .kwargs["event_data"]
+        .adk_extras["workflow_segment_id"]
+    )
+    assert summary.source_event is None
+    assert summary.adk_extras == {
+        "workflow_segment_id": segment_id,
+        "node": {
+            "path": "wf@1/step@2",
+            "run_id": "2",
+            "parent_run_id": "1",
+        },
+        "first_source_event_id": "event-1",
+        "last_source_event_id": "event-2",
+        "first_source_event_timestamp": 101.5,
+        "last_source_event_timestamp": 100.0,
+        "source_event_span_ms": -1500.0,
+        "observed_event_count": 2,
+        "node_interrupt_observed": False,
+        "descendant_interrupt_observed": False,
+        "node_error_observed_count": 0,
+        "drain_callback": "after_run",
+        "boundary_basis": "event_observation",
+    }
+    assert "workflow_node_status" not in summary.adk_extras
+
+  @pytest.mark.asyncio
+  async def test_workflow_node_observation_summary_tracks_interrupt_scope(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """Interrupt evidence is sticky for a leaf and its strict ancestor."""
+    leaf = event_lib.Event(
+        id="leaf-1",
+        author="leaf",
+        long_running_tool_ids={"call-1"},
+        node_info=event_lib.NodeInfo(path="wf@1/branch@2/leaf@4"),
+    )
+    leaf_later = leaf.model_copy(
+        update={"id": "leaf-2", "long_running_tool_ids": None}
+    )
+    ancestor = event_lib.Event(
+        id="branch-1",
+        author="branch",
+        node_info=event_lib.NodeInfo(path="wf@1/branch@2"),
+    )
+    sibling = event_lib.Event(
+        id="sibling-1",
+        author="sibling",
+        node_info=event_lib.NodeInfo(path="wf@1/sibling@3"),
+    )
+
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+    ) as log_event:
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      for event in (leaf, leaf_later, ancestor, sibling):
+        await bq_plugin_inst.on_event_callback(
+            invocation_context=invocation_context, event=event
+        )
+      await bq_plugin_inst.after_run_callback(
+          invocation_context=invocation_context
+      )
+
+    summary_calls = self._captured_event_calls(
+        log_event, "WORKFLOW_NODE_OBSERVATION_SUMMARY"
+    )
+    summary_paths = [
+        call.kwargs["event_data"].adk_extras["node"]["path"]
+        for call in summary_calls
+    ]
+    assert summary_paths == [
+        "wf@1/branch@2/leaf@4",
+        "wf@1/branch@2",
+        "wf@1/sibling@3",
+    ]
+    summaries = {
+        call.kwargs["event_data"].adk_extras["node"]["path"]: (
+            call.kwargs["event_data"].adk_extras
+        )
+        for call in summary_calls
+    }
+    assert summaries["wf@1/branch@2/leaf@4"]["node_interrupt_observed"]
+    assert not summaries["wf@1/branch@2/leaf@4"][
+        "descendant_interrupt_observed"
+    ]
+    assert not summaries["wf@1/branch@2"]["node_interrupt_observed"]
+    assert summaries["wf@1/branch@2"]["descendant_interrupt_observed"]
+    assert not summaries["wf@1/sibling@3"]["node_interrupt_observed"]
+    assert not summaries["wf@1/sibling@3"]["descendant_interrupt_observed"]
+
+  @pytest.mark.asyncio
+  async def test_observed_ancestor_tracks_later_descendant_interrupt(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """An ancestor observed first records a later descendant interrupt."""
+    ancestor = event_lib.Event(
+        id="branch-1",
+        author="branch",
+        node_info=event_lib.NodeInfo(path="wf@1/branch@2"),
+    )
+    interrupted_leaf = event_lib.Event(
+        id="leaf-1",
+        author="leaf",
+        long_running_tool_ids={"call-1"},
+        node_info=event_lib.NodeInfo(path="wf@1/branch@2/leaf@4"),
+    )
+
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+    ) as log_event:
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      for event in (ancestor, interrupted_leaf):
+        await bq_plugin_inst.on_event_callback(
+            invocation_context=invocation_context, event=event
+        )
+      await bq_plugin_inst.after_run_callback(
+          invocation_context=invocation_context
+      )
+
+    summaries = {
+        call.kwargs["event_data"].adk_extras["node"]["path"]: (
+            call.kwargs["event_data"].adk_extras
+        )
+        for call in self._captured_event_calls(
+            log_event, "WORKFLOW_NODE_OBSERVATION_SUMMARY"
+        )
+    }
+    assert summaries["wf@1/branch@2"]["descendant_interrupt_observed"] is True
+
+  @pytest.mark.asyncio
+  async def test_workflow_node_observation_summary_counts_node_errors(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """Only durable NODE_ERROR evidence increments the factual count."""
+    node_error = event_lib.Event(
+        id="error-1",
+        author="step",
+        error_code="ValueError",
+        error_message="retryable",
+        node_info=event_lib.NodeInfo(path="wf@1/step@2"),
+    )
+    model_stop = node_error.model_copy(
+        update={
+            "id": "model-stop-1",
+            "error_code": "MAX_TOKENS",
+            "error_message": "model stopped",
+        }
+    )
+
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+    ) as log_event:
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=node_error
+      )
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=model_stop
+      )
+      await bq_plugin_inst.after_run_callback(
+          invocation_context=invocation_context
+      )
+
+    extras = (
+        self._captured_event_calls(
+            log_event, "WORKFLOW_NODE_OBSERVATION_SUMMARY"
+        )[0]
+        .kwargs["event_data"]
+        .adk_extras
+    )
+    assert extras["node_error_observed_count"] == 1
+    assert extras["observed_event_count"] == 2
+    assert "workflow_node_status" not in extras
+
+  @pytest.mark.asyncio
+  async def test_workflow_node_observation_summary_drains_on_run_error(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """The error terminal path drains facts before INVOCATION_ERROR."""
+    event = event_lib.Event(
+        id="event-1",
+        author="step",
+        node_info=event_lib.NodeInfo(path="wf@1/step@2"),
+    )
+
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+    ) as log_event:
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=event
+      )
+      await bq_plugin_inst.on_run_error_callback(
+          invocation_context=invocation_context, error=RuntimeError("boom")
+      )
+
+    event_types = [call.args[0] for call in log_event.await_args_list]
+    assert event_types == [
+        "INVOCATION_STARTING",
+        "WORKFLOW_NODE_FIRST_OBSERVED",
+        "WORKFLOW_NODE_OBSERVATION_SUMMARY",
+        "INVOCATION_ERROR",
+    ]
+    extras = (
+        self._captured_event_calls(
+            log_event, "WORKFLOW_NODE_OBSERVATION_SUMMARY"
+        )[0]
+        .kwargs["event_data"]
+        .adk_extras
+    )
+    assert extras["drain_callback"] == "on_run_error"
+    assert "workflow_node_status" not in extras
+
+  @pytest.mark.asyncio
+  async def test_workflow_node_observation_summary_failure_isolated(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """A failed summary neither suppresses invocation end nor leaks state."""
+    event = event_lib.Event(
+        id="event-1",
+        author="step",
+        node_info=event_lib.NodeInfo(path="wf@1/step@2"),
+    )
+    emitted = []
+
+    async def fail_summary(event_type, *args, **kwargs):
+      del args, kwargs
+      emitted.append(event_type)
+      if event_type == "WORKFLOW_NODE_OBSERVATION_SUMMARY":
+        raise RuntimeError("summary write failed")
+
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", side_effect=fail_summary
+    ):
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=event
+      )
+      await bq_plugin_inst.after_run_callback(
+          invocation_context=invocation_context
+      )
+
+    assert emitted[-2:] == [
+        "WORKFLOW_NODE_OBSERVATION_SUMMARY",
+        "INVOCATION_COMPLETED",
+    ]
+
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+    ) as log_event:
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context,
+          event=event.model_copy(update={"id": "event-2"}),
+      )
+
+    assert bq_plugin_inst._workflow_segments == {}
+    assert not self._captured_event_calls(
+        log_event, "WORKFLOW_NODE_FIRST_OBSERVED"
+    )
+
+  @pytest.mark.asyncio
+  async def test_workflow_node_observation_summary_survives_row_filtering(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """Filtering FIRST_OBSERVED does not remove its source observation."""
+    bq_plugin_inst.config.event_denylist = ["WORKFLOW_NODE_FIRST_OBSERVED"]
+    event = event_lib.Event(
+        id="event-1",
+        author="step",
+        node_info=event_lib.NodeInfo(path="wf@1/step@2"),
+    )
+
+    await bq_plugin_inst.before_run_callback(
+        invocation_context=invocation_context
+    )
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await bq_plugin_inst.after_run_callback(
+        invocation_context=invocation_context
+    )
+
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    event_types = [row["event_type"] for row in rows]
+    assert "WORKFLOW_NODE_FIRST_OBSERVED" not in event_types
+    summary = next(
+        row
+        for row in rows
+        if row["event_type"] == "WORKFLOW_NODE_OBSERVATION_SUMMARY"
+    )
+    extras = json.loads(summary["attributes"])["adk"]
+    assert extras["first_source_event_id"] == "event-1"
+    assert extras["observed_event_count"] == 1
+    assert extras["source_event_span_ms"] == 0.0
+
+  @pytest.mark.asyncio
+  async def test_summary_cap_truncates_in_first_observed_order(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+      caplog,
+  ):
+    """Paths past the cap are counted and flagged instead of written."""
+    bq_plugin_inst.config.max_observation_summaries_per_segment = 2
+
+    await bq_plugin_inst.before_run_callback(
+        invocation_context=invocation_context
+    )
+    for index in range(5):
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=self._step_event(index)
+      )
+    with caplog.at_level("WARNING"):
+      await bq_plugin_inst.after_run_callback(
+          invocation_context=invocation_context
+      )
+
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    summaries = [
+        json.loads(row["attributes"])["adk"]
+        for row in rows
+        if row["event_type"] == "WORKFLOW_NODE_OBSERVATION_SUMMARY"
+    ]
+    assert [summary["node"]["path"] for summary in summaries] == [
+        "wf@1/step0@2",
+        "wf@1/step1@3",
+    ]
+    assert "truncated_node_count" not in summaries[0]
+    assert summaries[1]["truncated_node_count"] == 3
+    assert rows[-1]["event_type"] == "INVOCATION_COMPLETED"
+    assert bq_plugin_inst.get_drop_stats()["workflow_observation_capacity"] == 3
+    assert (
+        "Workflow observation summaries were not written for 3 of 5 node"
+        " paths: max_observation_summaries_per_segment is 2."
+        in caplog.text
+    )
+
+  @pytest.mark.asyncio
+  async def test_summary_cap_reached_exactly_writes_every_summary(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """Observing exactly the cap writes every summary without a marker."""
+    bq_plugin_inst.config.max_observation_summaries_per_segment = 2
+
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+    ) as log_event:
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      for index in range(2):
+        await bq_plugin_inst.on_event_callback(
+            invocation_context=invocation_context,
+            event=self._step_event(index),
+        )
+      await bq_plugin_inst.after_run_callback(
+          invocation_context=invocation_context
+      )
+
+    summaries = [
+        call.kwargs["event_data"].adk_extras
+        for call in self._captured_event_calls(
+            log_event, "WORKFLOW_NODE_OBSERVATION_SUMMARY"
+        )
+    ]
+    assert [summary["node"]["path"] for summary in summaries] == [
+        "wf@1/step0@2",
+        "wf@1/step1@3",
+    ]
+    assert all("truncated_node_count" not in summary for summary in summaries)
+    assert "workflow_observation_capacity" not in (
+        bq_plugin_inst.get_drop_stats()
+    )
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "filter_config",
+      [
+          {"event_denylist": ["WORKFLOW_NODE_OBSERVATION_SUMMARY"]},
+          {
+              "event_allowlist": [
+                  "INVOCATION_STARTING",
+                  "WORKFLOW_NODE_FIRST_OBSERVED",
+                  "INVOCATION_COMPLETED",
+              ]
+          },
+      ],
+      ids=("denylist", "allowlist"),
+  )
+  async def test_filtered_summaries_are_not_capacity_drops(
+      self,
+      filter_config,
+      bq_plugin_inst,
+      invocation_context,
+  ):
+    """Summaries filtered out by config are not reported as lost."""
+    bq_plugin_inst.config.max_observation_summaries_per_segment = 1
+    for name, value in filter_config.items():
+      setattr(bq_plugin_inst.config, name, value)
+
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", new_callable=mock.AsyncMock
+    ) as log_event:
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      for index in range(3):
+        await bq_plugin_inst.on_event_callback(
+            invocation_context=invocation_context,
+            event=self._step_event(index),
+        )
+      await bq_plugin_inst.after_run_callback(
+          invocation_context=invocation_context
+      )
+
+    assert (
+        len(
+            self._captured_event_calls(
+                log_event, "WORKFLOW_NODE_FIRST_OBSERVED"
+            )
+        )
+        == 3
+    )
+    assert not self._captured_event_calls(
+        log_event, "WORKFLOW_NODE_OBSERVATION_SUMMARY"
+    )
+    assert "workflow_observation_capacity" not in (
+        bq_plugin_inst.get_drop_stats()
+    )
+
+  @pytest.mark.asyncio
+  async def test_terminal_row_survives_queue_filled_by_summary_drain(
+      self,
+      bq_plugin_inst,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """Summaries that fill the queue cannot crowd out INVOCATION_COMPLETED."""
+    state = await bq_plugin_inst._get_loop_state()
+    original_processor = state.batch_processor
+    stalled = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=dummy_arrow_schema,
+        write_stream=DEFAULT_STREAM_NAME,
+        queue_max_size=102,
+    )
+    # A pending worker keeps the loop state live while nothing drains the
+    # queue, so every row stays where the test can count it.
+    stalled_worker = asyncio.get_running_loop().create_future()
+    stalled._batch_processor_task = stalled_worker
+    state.batch_processor = stalled
+    try:
+      # flush() would wait forever on the stalled queue.
+      with mock.patch.object(
+          bq_plugin_inst, "flush", new_callable=mock.AsyncMock
+      ):
+        await bq_plugin_inst.before_run_callback(
+            invocation_context=invocation_context
+        )
+        for index in range(60):
+          await bq_plugin_inst.on_event_callback(
+              invocation_context=invocation_context,
+              event=self._step_event(index),
+          )
+        await bq_plugin_inst.after_run_callback(
+            invocation_context=invocation_context
+        )
+    finally:
+      state.batch_processor = original_processor
+      stalled_worker.cancel()
+
+    rows = []
+    while not stalled._queue.empty():
+      rows.append(stalled._queue.get_nowait())
+    event_types = [row["event_type"] for row in rows]
+    # INVOCATION_STARTING, 60 FIRST_OBSERVED rows and 39 summaries take the
+    # 100 unreserved slots; the other 21 summaries are dropped and the
+    # terminal row takes a reserved slot.
+    assert len(rows) == 101
+    assert event_types.count("WORKFLOW_NODE_FIRST_OBSERVED") == 60
+    assert event_types.count("WORKFLOW_NODE_OBSERVATION_SUMMARY") == 39
+    assert event_types[-1] == "INVOCATION_COMPLETED"
+    assert stalled.get_drop_stats()["queue_full"] == 21
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("concurrent_runs", [1, 2, 3, 5])
+  async def test_concurrent_runs_all_retain_terminal_rows_under_summary_drain(
+      self,
+      concurrent_runs,
+      bq_plugin_inst,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """Concurrent runs retain INVOCATION_COMPLETED via proportional reserve."""
+    state = await bq_plugin_inst._get_loop_state()
+    original_processor = state.batch_processor
+    stalled = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=dummy_arrow_schema,
+        write_stream=DEFAULT_STREAM_NAME,
+        queue_max_size=500,
+    )
+    assert stalled._reserved_terminal_slots == 5
+    for prefill_index in range(440):
+      stalled._queue.put_nowait(
+          {"event_type": "WORKFLOW_NODE_FIRST_OBSERVED", "i": prefill_index}
+      )
+    stalled_worker = asyncio.get_running_loop().create_future()
+    stalled._batch_processor_task = stalled_worker
+    state.batch_processor = stalled
+    all_events_emitted = asyncio.Event()
+    arrived = 0
+    try:
+
+      async def one_run(run_index: int) -> None:
+        nonlocal arrived
+        run_context = invocation_context.model_copy(
+            update={"invocation_id": f"inv-{run_index}"}
+        )
+        await bq_plugin_inst.before_run_callback(invocation_context=run_context)
+        for step_index in range(30):
+          await bq_plugin_inst.on_event_callback(
+              invocation_context=run_context,
+              event=event_lib.Event(
+                  id=f"event-{run_index}-{step_index}",
+                  author="step",
+                  node_info=event_lib.NodeInfo(
+                      path=f"wf{run_index}@1/step{step_index}@{step_index + 2}"
+                  ),
+              ),
+          )
+        arrived += 1
+        if arrived == concurrent_runs:
+          all_events_emitted.set()
+        await all_events_emitted.wait()
+        await bq_plugin_inst.after_run_callback(invocation_context=run_context)
+
+      with mock.patch.object(
+          bq_plugin_inst, "flush", new_callable=mock.AsyncMock
+      ):
+        await asyncio.gather(
+            *(one_run(index) for index in range(concurrent_runs))
+        )
+    finally:
+      state.batch_processor = original_processor
+      stalled_worker.cancel()
+
+    rows = []
+    while not stalled._queue.empty():
+      rows.append(stalled._queue.get_nowait())
+    event_types = [row["event_type"] for row in rows]
+    assert event_types.count("INVOCATION_COMPLETED") == concurrent_runs
+    assert stalled.get_drop_stats()["queue_full"] > 0
+
+  @pytest.mark.asyncio
+  async def test_concurrent_runs_dedicated_background_loop_retain_terminal_rows(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """Dedicated background loop retains terminal rows across concurrent runs."""
+    concurrent_runs = 5
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        flush_on_run_end=False,
+        use_dedicated_background_loop=True,
+        queue_max_size=500,
+    )
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    )
+    try:
+      await plugin._ensure_started()
+      state = await plugin._get_loop_state()
+      original_processor = state.batch_processor
+      bg_loop = original_processor._loop
+      assert bg_loop is not None
+
+      async def _create_stalled_on_bg_loop():
+        proc = bigquery_agent_analytics_plugin.BatchProcessor(
+            write_client=mock.MagicMock(),
+            arrow_schema=dummy_arrow_schema,
+            write_stream=DEFAULT_STREAM_NAME,
+            queue_max_size=500,
+            loop=bg_loop,
+        )
+        for prefill_index in range(440):
+          proc._queue.put_nowait(
+              {"event_type": "WORKFLOW_NODE_FIRST_OBSERVED", "i": prefill_index}
+          )
+        worker = bg_loop.create_future()
+        proc._batch_processor_task = worker
+        return proc, worker
+
+      stalled, stalled_worker = await asyncio.wrap_future(
+          asyncio.run_coroutine_threadsafe(
+              _create_stalled_on_bg_loop(), bg_loop
+          )
+      )
+      assert stalled._reserved_terminal_slots == 5
+      state.batch_processor = stalled
+      all_events_emitted = asyncio.Event()
+      arrived = 0
+      try:
+
+        async def one_run(run_index: int) -> None:
+          nonlocal arrived
+          run_context = invocation_context.model_copy(
+              update={"invocation_id": f"inv-{run_index}"}
+          )
+          await plugin.before_run_callback(invocation_context=run_context)
+          for step_index in range(30):
+            await plugin.on_event_callback(
+                invocation_context=run_context,
+                event=event_lib.Event(
+                    id=f"event-{run_index}-{step_index}",
+                    author="step",
+                    node_info=event_lib.NodeInfo(
+                        path=(
+                            f"wf{run_index}@1/step{step_index}@{step_index + 2}"
+                        )
+                    ),
+                ),
+            )
+          arrived += 1
+          if arrived == concurrent_runs:
+            all_events_emitted.set()
+          await all_events_emitted.wait()
+          await plugin.after_run_callback(invocation_context=run_context)
+
+        await asyncio.gather(
+            *(one_run(index) for index in range(concurrent_runs))
+        )
+        # Barrier on bg_loop so all call_soon_threadsafe(_append_nowait)
+        # callbacks scheduled by the runs have executed.
+        await asyncio.wrap_future(
+            asyncio.run_coroutine_threadsafe(asyncio.sleep(0), bg_loop)
+        )
+      finally:
+        state.batch_processor = original_processor
+        bg_loop.call_soon_threadsafe(stalled_worker.cancel)
+
+      rows = []
+      while not stalled._queue.empty():
+        rows.append(stalled._queue.get_nowait())
+      event_types = [row["event_type"] for row in rows]
+      assert event_types.count("INVOCATION_COMPLETED") == concurrent_runs
+      assert stalled.get_drop_stats()["queue_full"] > 0
+    finally:
+      try:
+        await plugin.close()
+      finally:
+        bigquery_agent_analytics_plugin._reset_bg_loop_for_testing()
+
+  @pytest.mark.asyncio
+  async def test_observed_node_paths_per_segment_cap_bounds_memory_and_counts_overflow(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+      monkeypatch,
+  ):
+    """Per-segment node path cap bounds memory and counts distinct/overflow paths."""
+    monkeypatch.setattr(
+        bigquery_agent_analytics_plugin,
+        "_MAX_OBSERVED_NODE_PATHS_PER_SEGMENT",
+        3,
+    )
+    bq_plugin_inst.config.max_observation_summaries_per_segment = 2
+
+    await bq_plugin_inst.before_run_callback(
+        invocation_context=invocation_context
+    )
+    for index in range(10):
+      step_event = (
+          event_lib.Event(
+              id=f"event-{index}",
+              author="step2",
+              node_info=event_lib.NodeInfo(path="wf@1/step0@2/step2@4"),
+              long_running_tool_ids={"call-1"},
+          )
+          if index == 2
+          else self._step_event(index)
+      )
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=step_event
+      )
+      if index in (0, 2, 3):
+        await bq_plugin_inst.on_event_callback(
+            invocation_context=invocation_context,
+            event=step_event.model_copy(update={"id": f"dup-{index}"}),
+        )
+
+    segment = bq_plugin_inst._workflow_segments[
+        invocation_context.invocation_id
+    ]
+    assert len(segment.nodes) == 2
+    assert len(segment.overflow_node_paths) == 1
+    assert segment.untracked_path_events == 8
+    assert segment.nodes["wf@1/step0@2"].descendant_interrupt_observed is True
+
+    await bq_plugin_inst.after_run_callback(
+        invocation_context=invocation_context
+    )
+
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    first_observed = [
+        row
+        for row in rows
+        if row["event_type"] == "WORKFLOW_NODE_FIRST_OBSERVED"
+    ]
+    summaries = [
+        json.loads(row["attributes"])["adk"]
+        for row in rows
+        if row["event_type"] == "WORKFLOW_NODE_OBSERVATION_SUMMARY"
+    ]
+    assert len(first_observed) == 3
+    assert len(summaries) == 2
+    assert summaries[0]["descendant_interrupt_observed"] is True
+    assert summaries[-1]["truncated_node_count"] == 1
+    assert summaries[-1]["untracked_overflow_event_count"] == 8
+    assert bq_plugin_inst.get_drop_stats()["workflow_observation_capacity"] == 1
+
+  @pytest.mark.asyncio
+  async def test_before_run_waits_for_shutdown_before_opening_segment(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """before_run_callback opens a segment after _ensure_started finishes teardown."""
+    original_ensure_started = bq_plugin_inst._ensure_started
+    bq_plugin_inst._is_shutting_down = True
+
+    async def finish_shutdown_then_start():
+      bq_plugin_inst._is_shutting_down = False
+      return await original_ensure_started()
+
+    with mock.patch.object(
+        bq_plugin_inst,
+        "_ensure_started",
+        side_effect=finish_shutdown_then_start,
+    ):
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+
+    assert invocation_context.invocation_id in bq_plugin_inst._workflow_segments
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=self._step_event(0)
+    )
+    await bq_plugin_inst.after_run_callback(
+        invocation_context=invocation_context
+    )
+
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    event_types = [row["event_type"] for row in rows]
+    assert "WORKFLOW_NODE_FIRST_OBSERVED" in event_types
+    assert "WORKFLOW_NODE_OBSERVATION_SUMMARY" in event_types
+
+  @pytest.mark.asyncio
+  async def test_on_event_callback_minimal_mock_event_does_not_drop_state_delta(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """Minimal mock event missing id/timestamp/long_running_tool_ids still logs STATE_DELTA."""
+    await bq_plugin_inst.before_run_callback(
+        invocation_context=invocation_context
+    )
+    minimal_event = SimpleNamespace(
+        node_info=SimpleNamespace(path="wf@1/step@2"),
+        actions=event_lib.EventActions(state_delta={"k": "v"}),
+        partial=False,
+        output=None,
+        content=None,
+    )
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=minimal_event
+    )
+    await bq_plugin_inst.after_run_callback(
+        invocation_context=invocation_context
+    )
+
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    event_types = [row["event_type"] for row in rows]
+    assert "STATE_DELTA" in event_types
+    summary = next(
+        json.loads(row["attributes"])["adk"]
+        for row in rows
+        if row["event_type"] == "WORKFLOW_NODE_OBSERVATION_SUMMARY"
+    )
+    assert summary["first_source_event_timestamp"] is None
+    assert summary["last_source_event_timestamp"] is None
+    assert summary["source_event_span_ms"] is None
+
+  @pytest.mark.asyncio
+  async def test_non_finite_bool_and_overflow_timestamps_do_not_corrupt_summary_span(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """Non-finite, bool, and overflowing timestamps stay None without corrupting spans."""
+    await bq_plugin_inst.before_run_callback(
+        invocation_context=invocation_context
+    )
+    for idx, bad_ts in enumerate((float("nan"), float("inf"), True, 10**400)):
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context,
+          event=SimpleNamespace(
+              id=f"bad-{idx}",
+              timestamp=bad_ts,
+              node_info=SimpleNamespace(path="wf@1/invalid_ts@2"),
+              actions=event_lib.EventActions(),
+              partial=False,
+              output=None,
+              content=None,
+          ),
+      )
+
+    for idx, mixed_ts in enumerate((float("nan"), 1700000000.0, float("nan"))):
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context,
+          event=SimpleNamespace(
+              id=f"mixed-{idx}",
+              timestamp=mixed_ts,
+              node_info=SimpleNamespace(path="wf@1/mixed_ts@3"),
+              actions=event_lib.EventActions(),
+              partial=False,
+              output=None,
+              content=None,
+          ),
+      )
+
+    await bq_plugin_inst.after_run_callback(
+        invocation_context=invocation_context
+    )
+
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    summaries = {
+        adk["node"]["path"]: adk
+        for row in rows
+        if row["event_type"] == "WORKFLOW_NODE_OBSERVATION_SUMMARY"
+        and (adk := json.loads(row["attributes"])["adk"])
+    }
+    assert (
+        summaries["wf@1/invalid_ts@2"]["first_source_event_timestamp"] is None
+    )
+    assert summaries["wf@1/invalid_ts@2"]["last_source_event_timestamp"] is None
+    assert summaries["wf@1/invalid_ts@2"]["source_event_span_ms"] is None
+    assert (
+        summaries["wf@1/mixed_ts@3"]["first_source_event_timestamp"]
+        == 1700000000.0
+    )
+    assert (
+        summaries["wf@1/mixed_ts@3"]["last_source_event_timestamp"]
+        == 1700000000.0
+    )
+    assert summaries["wf@1/mixed_ts@3"]["source_event_span_ms"] == 0.0
+
+
 class TestViewDefsRegistration:
   """The plugin's own per-event-type view defs cover the new types."""
+
+  def test_workflow_observation_view_first_observed_columns(self):
+    """FIRST_OBSERVED exposes pair keys and fractional source time."""
+    columns = "\n".join(
+        bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS[
+            "WORKFLOW_NODE_FIRST_OBSERVED"
+        ]
+    )
+
+    for alias in (
+        "app_name",
+        "workflow_segment_id",
+        "node_path",
+        "node_run_id",
+        "node_parent_run_id",
+        "source_event_id",
+        "source_event_timestamp",
+        "boundary_basis",
+    ):
+      assert f" AS {alias}" in columns
+    assert "TIMESTAMP_MICROS" in columns
+    assert "AS FLOAT64" in columns
+    assert "TIMESTAMP_SECONDS" not in columns
+
+  def test_workflow_observation_view_summary_columns(self):
+    """The summary view types provenance, counts, spans, and evidence."""
+    columns = "\n".join(
+        bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS[
+            "WORKFLOW_NODE_OBSERVATION_SUMMARY"
+        ]
+    )
+
+    for alias in (
+        "app_name",
+        "workflow_segment_id",
+        "node_path",
+        "node_run_id",
+        "node_parent_run_id",
+        "first_source_event_id",
+        "last_source_event_id",
+        "first_source_event_timestamp",
+        "last_source_event_timestamp",
+        "source_event_span_ms",
+        "observed_event_count",
+        "node_interrupt_observed",
+        "descendant_interrupt_observed",
+        "node_error_observed_count",
+        "drain_callback",
+        "boundary_basis",
+    ):
+      assert f" AS {alias}" in columns
+    assert columns.count("TIMESTAMP_MICROS") == 2
+    assert "AS FLOAT64) AS source_event_span_ms" in columns
+    assert "AS INT64) AS observed_event_count" in columns
+    assert "AS BOOL) AS node_interrupt_observed" in columns
+    assert "AS BOOL) AS descendant_interrupt_observed" in columns
+    assert "AS INT64) AS node_error_observed_count" in columns
+    assert "AS INT64) AS truncated_node_count" in columns
 
   def test_new_event_types_registered_in_view_defs(self):
     defs = bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS
@@ -11451,6 +21411,8 @@ class TestViewDefsRegistration:
         "EVENT_COMPACTION",
         "AGENT_STATE_CHECKPOINT",
         "TOOL_PAUSED",
+        "WORKFLOW_NODE_FIRST_OBSERVED",
+        "WORKFLOW_NODE_OBSERVATION_SUMMARY",
     ):
       assert event_type in defs, f"{event_type} missing from _EVENT_VIEW_DEFS"
       assert isinstance(defs[event_type], list)
@@ -11800,6 +21762,38 @@ def test_project_view_columns_noop_without_denylist():
   )
   exprs = ["JSON_VALUE(attributes, '$.model') AS model"]
   assert plugin._project_view_columns(exprs) == exprs
+
+
+@pytest.mark.parametrize(
+    ("denied_column", "expected_aliases"),
+    [
+        ("attributes", ["agent_instruction"]),
+        (
+            "content",
+            [
+                "instruction_source",
+                "static_instruction",
+                "agent_description",
+                "model",
+                "sub_agents",
+            ],
+        ),
+    ],
+)
+def test_project_view_columns_agent_starting_respects_denylist(
+    denied_column, expected_aliases
+):
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          payload_column_denylist=[denied_column]
+      )
+  )
+
+  kept = plugin._project_view_columns(
+      bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS["AGENT_STARTING"]
+  )
+
+  assert [expr.rsplit(" AS ", 1)[1] for expr in kept] == expected_aliases
 
 
 # --- otel correlation ---
@@ -13305,7 +23299,7 @@ class TestSafetyLifecycleHardening:
   def test_invalid_runtime_config_rejected_at_construction(
       self, mock_auth_default, mock_bq_client
   ):
-    """Invalid batch/queue/duration/retry settings fail at construction."""
+    """Invalid runtime config settings fail at construction."""
     _ = mock_auth_default, mock_bq_client
     retry = bigquery_agent_analytics_plugin.RetryConfig
     bad_configs = [
@@ -13314,10 +23308,13 @@ class TestSafetyLifecycleHardening:
         dict(shutdown_timeout=0.0),
         dict(queue_max_size=0),
         dict(max_content_length=0),
+        dict(max_observation_summaries_per_segment=0),
         dict(retry_config=retry(max_retries=-1)),
         dict(retry_config=retry(initial_delay=-1.0)),
         dict(retry_config=retry(multiplier=0.5)),
         dict(retry_config=retry(initial_delay=5.0, max_delay=1.0)),
+        dict(on_schema_error="not-callable"),
+        dict(on_schema_ready="not-callable"),
     ]
     for kwargs in bad_configs:
       config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(**kwargs)
@@ -13325,6 +23322,87 @@ class TestSafetyLifecycleHardening:
         bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
             PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
         )
+
+  _INVALID_SCHEMA_CALLBACK_IDS = (
+      "not_callable",
+      "async_fn",
+      "async_callable",
+      "async_mock",
+  )
+
+  @staticmethod
+  def _invalid_schema_callbacks():
+    async def _async_fn(*_args):
+      pass
+
+    class _AsyncCallable:
+
+      async def __call__(self, *_args):
+        pass
+
+    return [
+        "not-callable",
+        _async_fn,
+        _AsyncCallable(),
+        mock.AsyncMock(),
+    ]
+
+  @pytest.mark.parametrize("field_name", ["on_schema_error", "on_schema_ready"])
+  @pytest.mark.parametrize(
+      "bad_hook",
+      _invalid_schema_callbacks(),
+      ids=_INVALID_SCHEMA_CALLBACK_IDS,
+  )
+  def test_invalid_schema_callback_rejected_at_construction(
+      self, mock_auth_default, mock_bq_client, field_name, bad_hook
+  ):
+    """Non-callable or async schema callbacks fail at construction."""
+    _ = mock_auth_default, mock_bq_client
+    pattern = rf"^{field_name} must be a synchronous callable or None"
+    with pytest.raises(ValueError, match=pattern):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          PROJECT_ID,
+          DATASET_ID,
+          table_id=TABLE_ID,
+          **{field_name: bad_hook},
+      )
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        **{field_name: bad_hook}
+    )
+    with pytest.raises(ValueError, match=pattern):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          PROJECT_ID,
+          DATASET_ID,
+          table_id=TABLE_ID,
+          config=config,
+      )
+
+  @pytest.mark.parametrize("field_name", ["on_schema_error", "on_schema_ready"])
+  @pytest.mark.parametrize(
+      "bad_hook",
+      _invalid_schema_callbacks(),
+      ids=_INVALID_SCHEMA_CALLBACK_IDS,
+  )
+  def test_invalid_schema_callback_rejected_at_unpickling(
+      self, mock_auth_default, mock_bq_client, field_name, bad_hook
+  ):
+    """Non-callable or async schema callbacks fail during __setstate__."""
+    _ = mock_auth_default, mock_bq_client
+    pattern = rf"^{field_name} must be a synchronous callable or None"
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    state = plugin.__getstate__()
+    state["config"] = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        **{field_name: bad_hook}
+    )
+    restored = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
+            bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin
+        )
+    )
+    with pytest.raises(ValueError, match=pattern):
+      restored.__setstate__(state)
 
   @pytest.mark.asyncio
   async def test_final_attributes_pass_redacts_direct_producers(
@@ -13666,6 +23744,31 @@ class TestSafetyLifecycleHardening:
     assert restored._setup_failures == 0
     assert restored._setup_retry_at == 0.0
 
+  def test_setstate_restores_config_pickled_before_summary_cap(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """The summary cap and segment guard are restored for older pickles."""
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    legacy_state = plugin.__getstate__()
+    legacy_state.pop("_workflow_segments", None)
+    legacy_state.pop("_workflow_segments_guard", None)
+    # Copy config before deleting so the live plugin's config is not mutated.
+    legacy_state["config"] = dataclasses.replace(plugin.config)
+    del legacy_state["config"].max_observation_summaries_per_segment
+    restored = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
+            bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin
+        )
+    )
+    restored.__setstate__(legacy_state)
+    assert restored.config.max_observation_summaries_per_segment == 200
+    assert "max_observation_summaries_per_segment" in restored.config.__dict__
+    assert restored._workflow_segments == {}
+    assert hasattr(restored._workflow_segments_guard, "acquire")
+
   def test_invalid_config_rejects_nan_and_wrong_types(
       self, mock_auth_default, mock_bq_client
   ):
@@ -13681,6 +23784,9 @@ class TestSafetyLifecycleHardening:
         dict(shutdown_timeout=float("inf")),
         dict(queue_max_size="10"),
         dict(max_content_length=1.5),
+        dict(max_observation_summaries_per_segment=True),
+        dict(max_observation_summaries_per_segment=1.5),
+        dict(max_observation_summaries_per_segment="10"),
         dict(retry_config=retry(max_retries=nan)),
         dict(retry_config=retry(initial_delay=nan)),
         dict(retry_config=retry(multiplier=nan)),
@@ -17638,3 +27744,229 @@ class TestLatestReviewLifecycleRegressions:
     assert len(serialized) == 6
     assert any(key.startswith("[KEY_COLLISION_") for key in serialized)
     assert content_lost is True
+
+
+# pylint: disable=protected-access
+class TestFormatContent:
+  """Unit tests for _format_content truncation and credential redaction."""
+
+  def test_format_content_none_or_empty(self):
+    """Tests formatting None or empty parts returns 'None'."""
+    assert bigquery_agent_analytics_plugin._format_content(None) == (
+        "None",
+        False,
+    )
+    content = types.Content(parts=[])
+    assert bigquery_agent_analytics_plugin._format_content(content) == (
+        "None",
+        False,
+    )
+
+  def test_format_content_text(self):
+    """Tests formatting text parts."""
+    content = types.Content(parts=[types.Part(text="Hello world")])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content
+    )
+    assert formatted == "text: 'Hello world'"
+    assert not truncated
+
+  def test_format_content_truncates_text_with_marker(self):
+    """Long text is cut to max_len and marked with ...[TRUNCATED]."""
+    content = types.Content(parts=[types.Part(text="a" * 20)])
+
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content, max_len=5
+    )
+
+    assert formatted == "text: 'aaaaa...[TRUNCATED]'"
+    assert truncated
+
+  def test_format_content_function_call_and_response(self):
+    """Tests formatting function call and function response parts."""
+    call_part = types.Part(
+        function_call=types.FunctionCall(name="foo", args={})
+    )
+    resp_part = types.Part(
+        function_response=types.FunctionResponse(name="foo", response={})
+    )
+    content = types.Content(parts=[call_part, resp_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content
+    )
+    assert formatted == "call: foo | resp: foo"
+    assert not truncated
+
+  def test_format_content_executable_code_and_result(self):
+    """Tests formatting executable code and code execution result parts."""
+    code_part = types.Part(
+        executable_code=types.ExecutableCode(
+            language=types.Language.PYTHON, code="print('hi')"
+        )
+    )
+    result_part = types.Part(
+        code_execution_result=types.CodeExecutionResult(
+            outcome=types.Outcome.OUTCOME_OK, output="hi\n"
+        )
+    )
+    content = types.Content(parts=[code_part, result_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content
+    )
+    assert (
+        formatted
+        == "Executable code (PYTHON): print('hi') | Code execution result"
+        " (OUTCOME_OK): hi\n"
+    )
+    assert "other" not in formatted
+    assert not truncated
+
+  def test_format_content_code_execution_unspecified_or_unknown(self):
+    """Tests code execution with unspecified language and outcome."""
+    code_part = types.Part(executable_code=types.ExecutableCode(code="x = 1"))
+    result_part = types.Part(
+        code_execution_result=types.CodeExecutionResult(output="done")
+    )
+    content = types.Content(parts=[code_part, result_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content
+    )
+    assert (
+        formatted
+        == "Executable code (unknown): x = 1 | Code execution result (unknown):"
+        " done"
+    )
+    assert not truncated
+
+  def test_format_content_code_execution_string_enums(self):
+    """Tests formatting code execution with raw string enums."""
+    code_part = types.Part.model_construct(
+        executable_code=types.ExecutableCode.model_construct(
+            language="PYTHON", code="x = 1"
+        )
+    )
+    result_part = types.Part.model_construct(
+        code_execution_result=types.CodeExecutionResult.model_construct(
+            outcome="OUTCOME_OK", output="done"
+        )
+    )
+    content = types.Content(parts=[code_part, result_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content
+    )
+    assert (
+        formatted
+        == "Executable code (PYTHON): x = 1 | Code execution result"
+        " (OUTCOME_OK):"
+        " done"
+    )
+    assert not truncated
+
+  def test_format_content_redacts_credentials(self):
+    """Tests sensitive credentials in code and text parts are redacted."""
+    code_part = types.Part(
+        executable_code=types.ExecutableCode(
+            language=types.Language.PYTHON,
+            code="headers = {'Authorization': 'Bearer super-secret-token'}",
+        )
+    )
+    result_part = types.Part(
+        code_execution_result=types.CodeExecutionResult(
+            outcome=types.Outcome.OUTCOME_OK,
+            output="Connecting with Authorization: Bearer response-token-xyz\n",
+        )
+    )
+    text_part = types.Part(text="api_key: secret-api-key-12345")
+    content = types.Content(parts=[text_part, code_part, result_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content
+    )
+    assert "super-secret-token" not in formatted
+    assert "response-token-xyz" not in formatted
+    assert "secret-api-key-12345" not in formatted
+    assert "Authorization: [REDACTED]" in formatted
+    assert truncated
+
+  def test_format_content_truncation_on_code_and_output(self):
+    """Tests truncation bounds apply to code and execution output."""
+    long_code = "a" * 100
+    long_output = "b" * 100
+    code_part = types.Part(
+        executable_code=types.ExecutableCode(
+            language=types.Language.PYTHON, code=long_code
+        )
+    )
+    result_part = types.Part(
+        code_execution_result=types.CodeExecutionResult(
+            outcome=types.Outcome.OUTCOME_OK, output=long_output
+        )
+    )
+    content = types.Content(parts=[code_part, result_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content, max_len=10
+    )
+    expected_code = f"Executable code (PYTHON): {'a' * 10}...[TRUNCATED]"
+    expected_output = (
+        f"Code execution result (OUTCOME_OK): {'b' * 10}...[TRUNCATED]"
+    )
+    assert formatted == f"{expected_code} | {expected_output}"
+    assert truncated
+
+  def test_format_content_truncation_disabled(self):
+    """Tests truncation can be disabled via max_len=-1."""
+    long_code = "a" * 100
+    long_output = "b" * 100
+    code_part = types.Part(
+        executable_code=types.ExecutableCode(
+            language=types.Language.PYTHON, code=long_code
+        )
+    )
+    result_part = types.Part(
+        code_execution_result=types.CodeExecutionResult(
+            outcome=types.Outcome.OUTCOME_OK, output=long_output
+        )
+    )
+    content = types.Content(parts=[code_part, result_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content, max_len=-1
+    )
+    assert (
+        formatted
+        == f"Executable code (PYTHON): {long_code} | Code execution result"
+        f" (OUTCOME_OK): {long_output}"
+    )
+    assert not truncated
+
+  def test_format_content_unknown_part_renders_other(self):
+    """Tests unrecognized parts fall back to 'other'."""
+    file_part = types.Part(
+        file_data=types.FileData(
+            file_uri="gs://bucket/file", mime_type="text/plain"
+        )
+    )
+    content = types.Content(parts=[file_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content
+    )
+    assert formatted == "other"
+    assert not truncated
+
+  @pytest.mark.asyncio
+  async def test_format_content_safely_reports_content_loss(  # pylint: disable=redefined-outer-name
+      self, bq_plugin_inst
+  ):
+    """A formatting failure replaces content and reports it as truncated."""
+    bad_part = types.Part.model_construct(
+        executable_code=types.ExecutableCode.model_construct(
+            language=types.Language.PYTHON, code=123
+        )
+    )
+    content = types.Content(parts=[types.Part(text="kept"), bad_part])
+
+    assert bq_plugin_inst._format_content_safely(content) == (
+        "[FORMATTING FAILED]",
+        True,
+    )
+
+
+# pylint: enable=protected-access

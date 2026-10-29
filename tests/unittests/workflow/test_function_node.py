@@ -14,7 +14,11 @@
 
 """Testings for the FunctionNode."""
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import copy
+import threading
+import time
 from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
@@ -25,20 +29,24 @@ from unittest import mock
 from google.adk.agents.context import Context
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events._node_path_builder import _NodePathBuilder
 from google.adk.events.event import Event
 from google.adk.events.event import Event as AdkEvent
 from google.adk.events.request_input import RequestInput
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
+from google.adk.utils._sync_runner import _use_sync_callable_runner
 from google.adk.workflow import FunctionNode
 from google.adk.workflow import START
+from google.adk.workflow._function_node import _sync_to_async_gen
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import ConfigDict
+from pydantic import field_validator
 import pytest
 
 from .. import testing_utils
@@ -470,7 +478,7 @@ async def test_function_node_hitl(request: pytest.FixtureRequest):
   # Then: It should yield a RequestInput event with a valid ID
   req_events = get_request_input_events(events1)
   assert len(req_events) == 1
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
   invocation_id = events1[0].invocation_id
 
   # Verify that the FunctionCall object actually has the id set
@@ -911,6 +919,45 @@ async def test_function_node_ctx_state_delta_sync(
       ),
       (
           'test_ctx_state_delta_sync@1/read_state@1',
+          {
+              'output': 'request=build a tracker app',
+          },
+      ),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_function_node_injects_ctx_by_name_with_non_context_annotation(
+    request: pytest.FixtureRequest,
+):
+  """Tests that a param named `ctx` gets the Context even if typed `Any`."""
+
+  def set_state_via_ctx(ctx: Any = None) -> str:
+    ctx.state['user_request'] = 'build a tracker app'
+    return 'done'
+
+  def read_state(user_request: str) -> str:
+    return f'request={user_request}'
+
+  agent = Workflow(
+      name='test_ctx_any_annotation',
+      edges=[
+          (START, set_state_via_ctx),
+          (set_state_via_ctx, read_state),
+      ],
+  )
+  events, _, _ = await run_workflow(agent)
+  simplified = simplify_events_with_node(events, include_state_delta=True)
+  assert simplified == [
+      (
+          'test_ctx_any_annotation@1/set_state_via_ctx@1',
+          {
+              'output': 'done',
+              'state_delta': {'user_request': 'build a tracker app'},
+          },
+      ),
+      (
+          'test_ctx_any_annotation@1/read_state@1',
           {
               'output': 'request=build a tracker app',
           },
@@ -1373,6 +1420,59 @@ async def test_input_schema_validates_dict(request: pytest.FixtureRequest):
   assert received == [_OutputModel(name='test', value=42)]
 
 
+@pytest.mark.parametrize(
+    'kind', ['str', 'str_or_content', 'str_or_model', 'model']
+)
+async def test_typed_function_receives_answer_without_thoughts(kind):
+  """A workflow passes the answer, not thoughts, into typed functions."""
+  received = []
+
+  def process_text(node_input: str) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  def process_union(node_input: str | types.Content) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  def process_str_or_model(node_input: str | _OutputModel) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  def process_model(node_input: _OutputModel) -> str:
+    received.append(node_input)
+    return 'ok'
+
+  is_model = kind in ('model', 'str_or_model')
+  answer = '{"name": "test", "value": 42}' if is_model else 'hello'
+
+  def produce() -> Event:
+    return Event(
+        output=types.Content(
+            role='model',
+            parts=[
+                types.Part(text='Let me think first.', thought=True),
+                types.Part(text=answer),
+            ],
+        )
+    )
+
+  process = {
+      'str': process_text,
+      'str_or_content': process_union,
+      'str_or_model': process_str_or_model,
+      'model': process_model,
+  }[kind]
+  agent = Workflow(
+      name='typed_answer', edges=[(START, produce), (produce, process)]
+  )
+  await run_workflow(agent)
+
+  assert received == (
+      [_OutputModel(name='test', value=42)] if is_model else ['hello']
+  )
+
+
 @pytest.mark.asyncio
 async def test_input_schema_rejects_invalid_dict(
     request: pytest.FixtureRequest,
@@ -1524,6 +1624,100 @@ class TestAuthConfig:
         rerun_on_resume=True,
     )
     assert node.rerun_on_resume is True
+
+  @pytest.mark.parametrize('resumable', [False, True])
+  @pytest.mark.asyncio
+  async def test_auth_function_node_returning_none_not_rerun_on_downstream_resume(
+      self,
+      request: pytest.FixtureRequest,
+      resumable: bool,
+  ):
+    """A FunctionNode with auth_config that returns None does not rerun when a downstream node resumes."""
+    from fastapi.openapi.models import APIKey
+    from fastapi.openapi.models import APIKeyIn
+    from google.adk.auth.auth_credential import AuthCredential
+    from google.adk.auth.auth_credential import AuthCredentialTypes
+    from google.adk.auth.auth_tool import AuthConfig
+    from google.adk.utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
+
+    from .workflow_testing_utils import find_function_call_event
+    from .workflow_testing_utils import get_auth_request_events
+
+    auth_config = AuthConfig(
+        auth_scheme=APIKey(**{'in': APIKeyIn.header, 'name': 'X-Api-Key'}),
+        raw_auth_credential=AuthCredential(
+            auth_type=AuthCredentialTypes.API_KEY,
+            api_key='placeholder',
+        ),
+        credential_key='fn_auth_key',
+    )
+    call_count = 0
+
+    def side_effect_fn(ctx: Context) -> None:
+      del ctx
+      nonlocal call_count
+      call_count += 1
+      return None
+
+    def review_node(node_input: Any):
+      del node_input
+      return RequestInput(interrupt_id='review', message='Please review')
+
+    auth_fn_node = FunctionNode(
+        func=side_effect_fn,
+        name='side_effect_fn',
+        auth_config=auth_config,
+        rerun_on_resume=True,
+    )
+    wf = Workflow(
+        name='auth_fn_no_output_wf',
+        edges=[
+            (START, auth_fn_node),
+            (auth_fn_node, review_node),
+        ],
+    )
+    app = App(
+        name=f'{request.function.__name__}_{resumable}',
+        root_agent=wf,
+        resumability_config=(
+            ResumabilityConfig(is_resumable=True) if resumable else None
+        ),
+    )
+    runner = testing_utils.InMemoryRunner(app=app)
+
+    # Turn 1: pauses for auth on auth_fn_node.
+    events1 = await runner.run_async(testing_utils.get_user_content('start'))
+    auth_events = get_auth_request_events(events1)
+    assert len(auth_events) == 1
+    fc = auth_events[0].content.parts[0].function_call
+    assert call_count == 0
+
+    # Turn 2: supply credential -> auth_fn_node runs once and returns None,
+    # then review_node pauses.
+    resume_auth_part = types.Part(
+        function_response=types.FunctionResponse(
+            id=fc.id,
+            name=REQUEST_EUC_FUNCTION_CALL_NAME,
+            response={'result': 'my-secret-api-key'},
+        )
+    )
+    events2 = await runner.run_async(
+        new_message=testing_utils.UserContent(resume_auth_part),
+        invocation_id=auth_events[0].invocation_id,
+    )
+    assert call_count == 1
+    review_req = find_function_call_event(events2, 'adk_request_input')
+    assert review_req is not None
+
+    # Turn 3: answer review_node -> auth_fn_node must NOT run a second time.
+    [review_id] = extract_event_interrupt_ids(review_req)
+    await runner.run_async(
+        new_message=testing_utils.UserContent(
+            create_request_input_response(review_id, {'approved': True})
+        ),
+        invocation_id=review_req.invocation_id,
+    )
+    assert call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1815,3 +2009,613 @@ async def test_function_node_directly_after_start_coerces_json_content(
       and e.output is not None
   ]
   assert outputs == [[10, 20]]
+
+
+@pytest.mark.asyncio
+async def test_function_node_var_keyword_binds_from_node_input(
+    request: pytest.FixtureRequest,
+) -> None:
+  """FunctionNode in node_input mode validates and binds extra dict keys into **kwargs."""
+
+  def produce_input() -> dict[str, Any]:
+    return {'required_key': 'base', 'alpha': 1, 'beta': 'two'}
+
+  def collect_extras(
+      required_key: str, *args: Any, **kwargs: Any
+  ) -> dict[str, Any]:
+    return {'required': required_key, 'args': list(args), 'extra': kwargs}
+
+  fn_node = FunctionNode(
+      func=collect_extras,
+      name='collect_extras',
+      parameter_binding='node_input',
+  )
+  validated = fn_node._validate_input_data(
+      {'required_key': 'base', 'alpha': 1, 'beta': 'two'}
+  )
+  assert validated == {'required_key': 'base', 'alpha': 1, 'beta': 'two'}
+
+  wf = Workflow(
+      name='var_kw_wf',
+      edges=[(START, produce_input), (produce_input, fn_node)],
+  )
+  events, _, _ = await run_workflow(wf)
+  outputs = [
+      e.output
+      for e in events
+      if e.node_info
+      and e.node_info.path == 'var_kw_wf@1/collect_extras@1'
+      and e.output is not None
+  ]
+  assert outputs == [
+      {'required': 'base', 'args': [], 'extra': {'alpha': 1, 'beta': 'two'}}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_function_node_wraps_decorator_dispatches_on_wrapper(
+    request: pytest.FixtureRequest,
+) -> None:
+  """A non-generator wrapper decorated with @functools.wraps(generator) dispatches as a regular function."""
+  import functools
+
+  def produce_input() -> dict[str, int]:
+    return {'x': 10}
+
+  def inner_gen(x: int) -> Generator[int, None, None]:
+    yield x
+    yield x + 1
+
+  @functools.wraps(inner_gen)
+  def collect_as_list(x: int) -> list[int]:
+    return list(inner_gen(x))
+
+  fn_node = FunctionNode(
+      func=collect_as_list,
+      name='collect_as_list',
+      parameter_binding='node_input',
+  )
+  wf = Workflow(
+      name='wraps_wf',
+      edges=[(START, produce_input), (produce_input, fn_node)],
+  )
+  events, _, _ = await run_workflow(wf)
+  outputs = [
+      e.output
+      for e in events
+      if e.node_info
+      and e.node_info.path == 'wraps_wf@1/collect_as_list@1'
+      and e.output is not None
+  ]
+  assert outputs == [[10, 11]]
+
+
+@pytest.mark.asyncio
+async def test_sync_generator_cancelled_mid_next_raises_cancelled_error() -> (
+    None
+):
+  """Cancelling while a worker thread is inside next() surfaces CancelledError and runs the generator's finally block once next() returns."""
+  started = threading.Event()
+  release = threading.Event()
+  closed = threading.Event()
+
+  def slow_gen() -> Generator[int, None, None]:
+    try:
+      started.set()
+      release.wait(timeout=5)
+      yield 1
+      yield 2
+    finally:
+      closed.set()
+
+  executor = ThreadPoolExecutor(max_workers=2)
+
+  async def run_on_executor(target, call_args):
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, lambda: target(**call_args)
+    )
+
+  try:
+    with _use_sync_callable_runner(run_on_executor):
+      agen = _sync_to_async_gen(slow_gen())
+      next_task = asyncio.create_task(agen.__anext__())
+      await asyncio.to_thread(started.wait, 5)
+
+      next_task.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await next_task
+      await agen.aclose()
+  finally:
+    release.set()
+    executor.shutdown(wait=True)
+
+  assert await asyncio.to_thread(closed.wait, 5)
+
+
+@pytest.mark.asyncio
+async def test_sync_generator_preserves_thread_local_state_across_yields() -> (
+    None
+):
+  """A thread-pooled sync generator runs all next() steps and its finally block on the same worker thread."""
+  tls = threading.local()
+  seen_values: list[tuple[str, int | None]] = []
+  seen_threads: list[int | None] = []
+
+  def stateful_gen() -> Generator[int, None, None]:
+    tls.token = 42
+    seen_threads.append(threading.get_ident())
+    try:
+      for step in range(3):
+        seen_threads.append(threading.get_ident())
+        seen_values.append((f'step_{step}', getattr(tls, 'token', None)))
+        yield step
+    finally:
+      seen_threads.append(threading.get_ident())
+      seen_values.append(('finally', getattr(tls, 'token', None)))
+
+  executor = ThreadPoolExecutor(max_workers=4)
+
+  async def run_on_executor(target, call_args):
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, lambda: target(**call_args)
+    )
+
+  try:
+    with _use_sync_callable_runner(run_on_executor):
+      items = [item async for item in _sync_to_async_gen(stateful_gen())]
+  finally:
+    executor.shutdown(wait=True)
+
+  assert items == [0, 1, 2]
+  assert seen_values == [
+      ('step_0', 42),
+      ('step_1', 42),
+      ('step_2', 42),
+      ('finally', 42),
+  ]
+  assert len(set(seen_threads)) == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_generator_driving_nested_generator_does_not_deadlock() -> (
+    None
+):
+  """A thread-pooled sync generator that drains another sync generator runs it inline instead of waiting for the pool worker its own step holds."""
+
+  def inner_gen() -> Generator[int, None, None]:
+    yield 1
+    yield 2
+
+  async def drain_inner() -> list[int]:
+    return [item async for item in _sync_to_async_gen(inner_gen())]
+
+  def outer_gen() -> Generator[list[int], None, None]:
+    yield asyncio.run(drain_inner())
+
+  executor = ThreadPoolExecutor(max_workers=1)
+
+  async def run_on_executor(target, call_args):
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, lambda: target(**call_args)
+    )
+
+  async def drain_outer() -> list[list[int]]:
+    return [item async for item in _sync_to_async_gen(outer_gen())]
+
+  try:
+    with _use_sync_callable_runner(run_on_executor):
+      items = await asyncio.wait_for(drain_outer(), timeout=5)
+  finally:
+    executor.shutdown(wait=True, cancel_futures=True)
+
+  assert items == [[1, 2]]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_sync_generators_do_not_hold_pool_workers_between_yields() -> (
+    None
+):
+  """More than max_workers sync generators can be suspended between yields without starving the pool."""
+
+  def two_step_gen(idx: int) -> Generator[tuple[int, int], None, None]:
+    yield (idx, 1)
+    yield (idx, 2)
+
+  executor = ThreadPoolExecutor(max_workers=1)
+
+  async def run_on_executor(target, call_args):
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, lambda: target(**call_args)
+    )
+
+  try:
+    with _use_sync_callable_runner(run_on_executor):
+      gens = [_sync_to_async_gen(two_step_gen(i)) for i in range(3)]
+      try:
+        first_items = [
+            await asyncio.wait_for(g.__anext__(), timeout=2) for g in gens
+        ]
+        second_items = [
+            await asyncio.wait_for(g.__anext__(), timeout=2) for g in gens
+        ]
+      finally:
+        for g in gens:
+          await g.aclose()
+  finally:
+    executor.shutdown(wait=True)
+
+  assert first_items == [(0, 1), (1, 1), (2, 1)]
+  assert second_items == [(0, 2), (1, 2), (2, 2)]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_sync_generator_steps_are_bounded_by_max_workers() -> (
+    None
+):
+  """Concurrent sync generators never execute more steps at once than max_workers."""
+  lock = threading.Lock()
+  active = 0
+  peak = 0
+
+  def slow_gen(idx: int) -> Generator[int, None, None]:
+    nonlocal active, peak
+    for step in range(2):
+      with lock:
+        active += 1
+        peak = max(peak, active)
+      time.sleep(0.05)
+      with lock:
+        active -= 1
+      yield idx * 10 + step
+
+  executor = ThreadPoolExecutor(max_workers=1)
+
+  async def run_on_executor(target, call_args):
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, lambda: target(**call_args)
+    )
+
+  async def consume(idx: int) -> list[int]:
+    return [item async for item in _sync_to_async_gen(slow_gen(idx))]
+
+  try:
+    with _use_sync_callable_runner(run_on_executor):
+      results = await asyncio.wait_for(
+          asyncio.gather(*(consume(i) for i in range(3))), timeout=10
+      )
+  finally:
+    executor.shutdown(wait=True)
+
+  assert results == [[0, 1], [10, 11], [20, 21]]
+  assert peak == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_generator_finally_raising_does_not_hang_pool_worker() -> (
+    None
+):
+  """A sync generator whose finally block raises still signals step_done and frees the pool worker."""
+
+  def raising_finally_gen() -> Generator[int, None, None]:
+    try:
+      yield 1
+    finally:
+      raise RuntimeError('cleanup failure')
+
+  executor = ThreadPoolExecutor(max_workers=1)
+
+  async def run_on_executor(target, call_args):
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, lambda: target(**call_args)
+    )
+
+  try:
+    with _use_sync_callable_runner(run_on_executor):
+      # Exhaustion path: finally raises inside next().
+      agen = _sync_to_async_gen(raising_finally_gen())
+      assert await asyncio.wait_for(agen.__anext__(), timeout=2) == 1
+      with pytest.raises(RuntimeError, match='cleanup failure'):
+        await asyncio.wait_for(agen.__anext__(), timeout=2)
+
+      # Early-close path: finally raises inside sync_gen.close() on the
+      # dedicated generator thread, and the single pool worker remains free.
+      agen2 = _sync_to_async_gen(raising_finally_gen())
+      assert await asyncio.wait_for(agen2.__anext__(), timeout=2) == 1
+      with pytest.raises(RuntimeError, match='cleanup failure'):
+        await asyncio.wait_for(agen2.aclose(), timeout=2)
+
+      # Verify the single worker in the pool was not left blocked.
+      healthy_items = [
+          item async for item in _sync_to_async_gen((x for x in [10, 20]))
+      ]
+  finally:
+    executor.shutdown(wait=True)
+
+  assert healthy_items == [10, 20]
+
+
+@pytest.mark.asyncio
+async def test_sync_generator_closed_as_step_enters_pool_does_not_hang() -> (
+    None
+):
+  """Closing a sync generator while a step is queued or starting in the pool does not hang step_done.wait()."""
+  gate = threading.Event()
+
+  def simple_gen() -> Generator[int, None, None]:
+    yield 1
+    yield 2
+
+  executor = ThreadPoolExecutor(max_workers=1)
+
+  async def gated_runner(target, call_args):
+    def delayed_call():
+      gate.wait(timeout=5)
+      return target(**call_args)
+
+    return await asyncio.get_running_loop().run_in_executor(
+        executor, delayed_call
+    )
+
+  try:
+    with _use_sync_callable_runner(gated_runner):
+      agen = _sync_to_async_gen(simple_gen())
+      gate.set()
+      assert await asyncio.wait_for(agen.__anext__(), timeout=2) == 1
+
+      # Block the next pool step right before _step_in_pool acquires the lock,
+      # cancel the consumer so closed and want_next are set first, then release
+      # the pool worker and ensure it returns promptly instead of hanging.
+      gate.clear()
+      next_task = asyncio.create_task(agen.__anext__())
+      await asyncio.sleep(0.02)
+      next_task.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await next_task
+      await agen.aclose()
+      gate.set()
+
+      # A subsequent task on the 1-worker executor must complete promptly.
+      follow_up = await asyncio.wait_for(
+          asyncio.get_running_loop().run_in_executor(executor, lambda: 'ok'),
+          timeout=2,
+      )
+  finally:
+    gate.set()
+    executor.shutdown(wait=True)
+
+  assert follow_up == 'ok'
+
+
+@pytest.mark.asyncio
+async def test_sync_generator_closes_on_no_runner_path() -> None:
+  """Closing a partially consumed sync generator with no runner bound runs its finally block."""
+  closed = False
+
+  def gen() -> Generator[int, None, None]:
+    nonlocal closed
+    try:
+      yield 1
+      yield 2
+    finally:
+      closed = True
+
+  agen = _sync_to_async_gen(gen())
+  assert await agen.__anext__() == 1
+  assert not closed
+  await agen.aclose()
+  assert closed
+
+
+@pytest.mark.asyncio
+async def test_fallback_node_input_coerced_once() -> None:
+  """Fallback node_input parameter is coerced once during binding."""
+  validations = 0
+
+  class _CountingModel(BaseModel):
+    model_config = ConfigDict(revalidate_instances='always')
+    x: int
+
+    @field_validator('x')
+    @classmethod
+    def _count(cls, v: int) -> int:
+      nonlocal validations
+      validations += 1
+      return v
+
+  def process(node_input: _CountingModel) -> int:
+    return node_input.x
+
+  node = FunctionNode(func=process, parameter_binding='node_input')
+  node.input_schema = _CountingModel
+  ctx = mock.MagicMock(spec=Context)
+
+  events = [event async for event in node.run(ctx=ctx, node_input={'x': 25})]
+
+  assert [e.output for e in events] == [25]
+  # Validated once by BaseNode._validate_input_data and once by
+  # _resolve_parameters (not a second time in the has_param branch).
+  assert validations == 2
+
+
+@pytest.mark.asyncio
+async def test_node_input_binding_coerces_parameters_once() -> None:
+  """Running a node_input FunctionNode coerces parameters only once."""
+  validations = 0
+
+  class _CountingModel(BaseModel):
+    model_config = ConfigDict(revalidate_instances='always')
+    x: int
+
+    @field_validator('x')
+    @classmethod
+    def _count(cls, v: int) -> int:
+      nonlocal validations
+      validations += 1
+      return v
+
+  def compute(item: _CountingModel, count: int = 10) -> str:
+    return f'{item.x}:{count}'
+
+  item = _CountingModel(x=7)
+  validations = 0
+  node = FunctionNode(func=compute, parameter_binding='node_input')
+
+  def produce() -> dict[str, Any]:
+    return {'item': item, 'count': 5}
+
+  agent = Workflow(
+      name='test_node_input_binding_coerces_once',
+      edges=[(START, produce), (produce, node)],
+  )
+
+  events, _, _ = await run_workflow(agent)
+
+  assert [e.output for e in get_output_events(events)] == [
+      {'item': item, 'count': 5},
+      '7:5',
+  ]
+  assert validations == 1
+
+
+@pytest.mark.asyncio
+async def test_function_node_with_type_checking_context_and_unresolved_hint() -> (
+    None
+):
+  """FunctionNode resolves Context and sibling hints when a parameter is TYPE_CHECKING-only."""
+  import types as py_types
+
+  isolated_globals = {
+      '__builtins__': __builtins__,
+      '_OutputModel': _OutputModel,
+  }
+  fn = py_types.FunctionType(
+      (
+          lambda ctx, item, helper='fallback': (
+              f'{item.name}:{item.value}:{helper}'
+          )
+      ).__code__,
+      isolated_globals,
+      name='step_with_unresolved',
+      argdefs=('fallback',),
+  )
+  fn.__annotations__ = {
+      'ctx': 'Context',
+      'item': '_OutputModel',
+      'helper': 'UnresolvedHelper | str',
+      'return': 'str',
+  }
+
+  node = FunctionNode(func=fn, parameter_binding='node_input')
+
+  def produce() -> dict[str, Any]:
+    return {'item': {'name': 'ok', 'value': 9}, 'helper': 'custom'}
+
+  agent = Workflow(
+      name='wf_unresolved_hint',
+      edges=[(START, produce), (produce, node)],
+  )
+  events, _, _ = await run_workflow(agent)
+  assert [e.output for e in get_output_events(events)] == [
+      {'item': {'name': 'ok', 'value': 9}, 'helper': 'custom'},
+      'ok:9:custom',
+  ]
+
+
+@pytest.mark.asyncio
+async def test_function_node_coerce_param_skips_arbitrary_non_pydantic_type(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """FunctionNode logs warnings and passes through arbitrary types TypeAdapter cannot build."""
+  import logging
+
+  class _ArbitraryCustomObj:
+
+    def __init__(self, val: int):
+      self.val = val
+
+  custom = _ArbitraryCustomObj(42)
+
+  def produce() -> dict[str, Any]:
+    return {'obj': custom}
+
+  def consume(obj: _ArbitraryCustomObj) -> int:
+    return obj.val
+
+  with caplog.at_level(
+      logging.WARNING, logger='google_adk.google.adk.workflow._function_node'
+  ):
+    node = FunctionNode(func=consume, parameter_binding='node_input')
+    agent = Workflow(
+        name='wf_arbitrary_type',
+        edges=[(START, produce), (produce, node)],
+    )
+    events_first, _, _ = await run_workflow(agent)
+    events_second, _, _ = await run_workflow(agent)
+
+  assert [e.output for e in get_output_events(events_first)] == [
+      {'obj': custom},
+      42,
+  ]
+  assert [e.output for e in get_output_events(events_second)] == [
+      {'obj': custom},
+      42,
+  ]
+  coercion_warnings = [
+      record
+      for record in caplog.records
+      if "Skipping coercion for parameter 'obj' of FunctionNode 'consume'"
+      in record.getMessage()
+  ]
+  assert len(coercion_warnings) == 1
+  assert any(
+      "Skipping input schema inference for FunctionNode 'consume'"
+      in record.getMessage()
+      for record in caplog.records
+  )
+
+
+@pytest.mark.asyncio
+async def test_function_node_coerce_param_skips_incomplete_pydantic_model(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """FunctionNode logs a warning once and skips coercion when a BaseModel has an unresolved forward ref."""
+  import logging
+
+  class _IncompleteModel(BaseModel):
+    x: int
+    missing: '_UnresolvedForwardRefType | None' = None  # noqa: F821
+
+  raw_payload = {'x': 7}
+
+  def produce() -> dict[str, Any]:
+    return {'payload': raw_payload}
+
+  def consume(payload: _IncompleteModel) -> int:
+    return payload['x']  # type: ignore[index]
+
+  with caplog.at_level(
+      logging.WARNING, logger='google_adk.google.adk.workflow._function_node'
+  ):
+    node = FunctionNode(func=consume, parameter_binding='node_input')
+    agent = Workflow(
+        name='wf_incomplete_model',
+        edges=[(START, produce), (produce, node)],
+    )
+    events_first, _, _ = await run_workflow(agent)
+    events_second, _, _ = await run_workflow(agent)
+
+  assert [e.output for e in get_output_events(events_first)] == [
+      {'payload': raw_payload},
+      7,
+  ]
+  assert [e.output for e in get_output_events(events_second)] == [
+      {'payload': raw_payload},
+      7,
+  ]
+  coercion_warnings = [
+      record
+      for record in caplog.records
+      if "Skipping coercion for parameter 'payload' of FunctionNode 'consume'"
+      in record.getMessage()
+  ]
+  assert len(coercion_warnings) == 1

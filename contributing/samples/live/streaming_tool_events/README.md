@@ -67,6 +67,6 @@ replayed on the next connect.
 - [Event and NodeInfo](../../../../docs/guides/events/event/index.md) - How
   `Event` carries content, actions and metadata, including the `message` field
   used here.
-- [live_bidi_streaming_tools_agent](../live_bidi_streaming_tools_agent/readme.md) -
+- [tools_agent](../tools_agent/readme.md) -
   The streaming tool basics this sample builds on, including `input_stream` and
   `stop_streaming`.

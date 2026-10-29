@@ -117,6 +117,121 @@ def test_get_gcp_exporters(
   assert len(otel_hooks.log_record_processors) == (
       1 if enable_cloud_logging else 0
   )
+  # A service-account key file has requires_scopes=True and no scopes; the
+  # scope must be requested explicitly or its token refresh fails with
+  # invalid_scope.
+  auth_mock.assert_called_once_with(scopes=[google_cloud._CLOUD_PLATFORM_SCOPE])
+
+
+def test_get_gcp_span_exporter_none_when_otlp_unavailable():
+  """A missing OTLP exporter package disables cloud tracing instead of
+  raising."""
+  credentials = mock.create_autospec(
+      google.auth.credentials.Credentials, instance=True
+  )
+  # Setting the module to None in sys.modules makes the `from ... import ...`
+  # statement raise ImportError, simulating the package not being installed.
+  with mock.patch.dict(
+      "sys.modules",
+      {"opentelemetry.exporter.otlp.proto.http.trace_exporter": None},
+  ):
+    assert _get_gcp_span_exporter(credentials) is None
+
+
+def test_get_gcp_logs_exporter_none_when_otlp_unavailable():
+  """A missing OTLP exporter package disables cloud logging instead of
+  raising."""
+  credentials = mock.create_autospec(
+      google.auth.credentials.Credentials, instance=True
+  )
+  # Setting the module to None in sys.modules makes the `from ... import ...`
+  # statement raise ImportError, simulating the package not being installed.
+  with mock.patch.dict(
+      "sys.modules",
+      {"opentelemetry.exporter.otlp.proto.http._log_exporter": None},
+  ):
+    assert _get_gcp_logs_exporter(credentials, "project-id") is None
+
+
+@pytest.mark.parametrize("project_id_in_arg", ["project_id_in_arg", None])
+@pytest.mark.parametrize("project_id_on_env", ["project_id_on_env", None])
+def test_get_gcp_resource(
+    project_id_in_arg: Optional[str],
+    project_id_on_env: Optional[str],
+    monkeypatch: pytest.MonkeyPatch,
+):
+  # Arrange.
+  if project_id_on_env is not None:
+    monkeypatch.setenv(
+        "OTEL_RESOURCE_ATTRIBUTES", f"gcp.project_id={project_id_on_env}"
+    )
+
+  # Act.
+  otel_resource = get_gcp_resource(project_id_in_arg)
+
+  # Assert.
+  expected_project_id = (
+      project_id_on_env
+      if project_id_on_env is not None
+      else project_id_in_arg
+      if project_id_in_arg is not None
+      else None
+  )
+  assert otel_resource is not None
+  assert (
+      otel_resource.attributes.get("gcp.project_id", None)
+      == expected_project_id
+  )
+
+
+def test_get_gcp_resource_is_not_agent_engine_off_agent_engine(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Local, GCE, GKE and Cloud Run runs are not Agent Engine deployments."""
+  monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
+
+  otel_resource = get_gcp_resource("my-project")
+
+  # Whatever the platform is, the GCP detector decides it -- not us.
+  assert otel_resource.attributes.get("cloud.platform") != "gcp.agent_engine"
+  assert "cloud.resource_id" not in otel_resource.attributes
+  assert otel_resource.attributes["gcp.project_id"] == "my-project"
+
+
+def test_get_gcp_resource_describes_the_agent_engine_deployment(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "1234567890")
+  monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+
+  otel_resource = get_gcp_resource("my-project")
+
+  assert otel_resource.attributes["cloud.platform"] == "gcp.agent_engine"
+  assert otel_resource.attributes["service.name"] == "1234567890"
+  assert otel_resource.attributes["cloud.region"] == "us-central1"
+  assert otel_resource.attributes["cloud.account.id"] == "my-project"
+  # Contributed by `Resource.create`, as they were before OTLP export.
+  assert otel_resource.attributes["telemetry.sdk.language"] == "python"
+  assert otel_resource.attributes["telemetry.sdk.name"] == "opentelemetry"
+
+
+def test_get_gcp_resource_sets_standard_cloud_resource_id(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  # Arrange.
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "1234567890")
+  monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+
+  # Act.
+  otel_resource = get_gcp_resource("my-project")
+
+  # Assert.
+  # The Agent Engine dashboard filters on the OTel-standard key.
+  assert otel_resource.attributes.get("cloud.resource_id") == (
+      "//aiplatform.googleapis.com/projects/my-project"
+      "/locations/us-central1/reasoningEngines/1234567890"
+  )
+  assert "cloud.resource.id" not in otel_resource.attributes
 
 
 @mock.patch.object(mtls, "should_use_client_cert", autospec=True)
@@ -374,9 +489,8 @@ def test_get_gcp_otlp_metric_exporter_uses_default_credentials(
   credentials = mock.create_autospec(
       google.auth.credentials.Credentials, instance=True
   )
-  monkeypatch.setattr(
-      "google.auth.default", lambda: (credentials, "project-id")
-  )
+  auth_default = mock.MagicMock(return_value=(credentials, "project-id"))
+  monkeypatch.setattr("google.auth.default", auth_default)
   session = mock.MagicMock(name="session")
   monkeypatch.setattr(
       "google.auth.transport.requests.AuthorizedSession",
@@ -393,6 +507,12 @@ def test_get_gcp_otlp_metric_exporter_uses_default_credentials(
   )
 
   assert _get_gcp_otlp_metric_exporter() is exporter
+  # A service-account key file has requires_scopes=True and no scopes; the
+  # scope must be requested explicitly or its token refresh fails with
+  # invalid_scope.
+  auth_default.assert_called_once_with(
+      scopes=[google_cloud._CLOUD_PLATFORM_SCOPE]
+  )
 
 
 def test_get_gcp_metrics_exporter_wraps_otlp_in_periodic_reader(
@@ -447,7 +567,9 @@ def test_agent_engine_uses_only_request_driven_reader(
   """On Agent Engine there must be exactly one metric reader: two exporters
   would double-report every point."""
   monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
-  monkeypatch.setattr("google.auth.default", lambda: ("", "project-id"))
+  monkeypatch.setattr(
+      "google.auth.default", lambda **kwargs: ("", "project-id")
+  )
   fake_state = mock.MagicMock(name="metrics_state")
   monkeypatch.setattr(
       "google.adk.telemetry.google_cloud._get_agent_engine_metrics_setup",

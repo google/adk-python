@@ -4,7 +4,8 @@
     "attributes": {
       "gen_ai.operation.name": "invoke_workflow",
       "gen_ai.conversation.id": "PRESENT",
-      "gen_ai.workflow.name": "some_root_agent"
+      "gen_ai.workflow.name": "some_root_agent",
+      "error.type": "429"
     },
     "status": "ERROR",
     "children": [
@@ -14,51 +15,52 @@
           "gen_ai.operation.name": "invoke_agent",
           "gen_ai.agent.description": "A sample root agent.",
           "gen_ai.agent.name": "some_root_agent",
-          "gen_ai.conversation.id": "PRESENT"
+          "gen_ai.conversation.id": "PRESENT",
+          "error.type": "429"
         },
         "status": "ERROR",
         "children": [
           {
-            "name": "call_llm",
-            "attributes": {},
+            "name": "generate_content gemini-2.5-flash",
+            "attributes": {
+              "gen_ai.operation.name": "generate_content",
+              "gen_ai.request.model": "gemini-2.5-flash",
+              "gen_ai.agent.name": "some_root_agent",
+              "gen_ai.conversation.id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gen_ai.provider.name": "gcp.gemini",
+              "gen_ai.tool.definitions": [
+                {
+                  "name": "some_tool",
+                  "description": "A sample tool.",
+                  "type": "function"
+                }
+              ],
+              "error.type": "429"
+            },
             "status": "ERROR",
-            "children": [
+            "children": [],
+            "logs": [
               {
-                "name": "generate_content gemini-2.5-flash",
+                "event_name": "gen_ai.client.inference.operation.details",
+                "body": null,
                 "attributes": {
-                  "gen_ai.system": "gemini",
-                  "gen_ai.operation.name": "generate_content",
-                  "gen_ai.request.model": "gemini-2.5-flash",
                   "gen_ai.agent.name": "some_root_agent",
                   "gen_ai.conversation.id": "PRESENT",
                   "gcp.vertex.agent.event_id": "PRESENT",
-                  "gcp.vertex.agent.invocation_id": "PRESENT"
-                },
-                "status": "ERROR",
-                "children": [],
-                "logs": [
-                  {
-                    "event_name": "gen_ai.system.message",
-                    "body": {
-                      "content": "<elided>"
-                    },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
+                  "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "gen_ai.provider.name": "gcp.gemini",
+                  "gen_ai.tool.definitions": [
+                    {
+                      "name": "some_tool",
+                      "description": "A sample tool.",
+                      "type": "function"
                     }
-                  },
-                  {
-                    "event_name": "gen_ai.user.message",
-                    "body": {
-                      "content": "<elided>"
-                    },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  }
-                ]
+                  ]
+                }
               }
-            ],
-            "logs": []
+            ]
           }
         ],
         "logs": []
@@ -72,7 +74,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent",
           "gen_ai.operation.name": "generate_content",
-          "gen_ai.provider.name": "gemini",
+          "gen_ai.provider.name": "gcp.gemini",
           "gen_ai.request.model": "gemini-2.5-flash",
           "error.type": "429"
         },

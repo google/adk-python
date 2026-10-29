@@ -19,9 +19,12 @@ from __future__ import annotations
 import datetime
 import logging
 
+from google.adk.auth.auth_schemes import CustomAuthScheme
+from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event_actions import _make_json_serializable
 from google.adk.events.event_actions import EventActions
 from pydantic import BaseModel
+import pytest
 
 
 class _Sample(BaseModel):
@@ -148,3 +151,31 @@ class TestAgentStateSerialization:
         'Failed to serialize `agent_state`' in record.message
         for record in caplog.records
     )
+
+
+def _auth_config() -> AuthConfig:
+  return AuthConfig(auth_scheme=CustomAuthScheme(type='custom'))
+
+
+class TestRequestedAuthConfigsParsing:
+  """Tests for `requested_auth_configs` field validation on EventActions."""
+
+  @pytest.mark.parametrize('raw', [None, {}])
+  def test_defaults_to_empty_dict(self, raw):
+    actions = (
+        EventActions()
+        if raw is None
+        else EventActions.model_validate({'requested_auth_configs': raw})
+    )
+    assert actions.requested_auth_configs == {}
+
+  @pytest.mark.parametrize('as_dict', [True, False])
+  def test_model_validate_parses_auth_config(self, as_dict):
+    config = _auth_config()
+    value = config.model_dump(mode='json', by_alias=True) if as_dict else config
+    actions = EventActions.model_validate(
+        {'requested_auth_configs': {'call': value}}
+    )
+    parsed = actions.requested_auth_configs['call']
+    assert isinstance(parsed, AuthConfig)
+    assert as_dict or parsed is config

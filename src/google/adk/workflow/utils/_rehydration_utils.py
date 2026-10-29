@@ -28,11 +28,13 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError
 
 from ...events._branch_path import _BranchPath
+from ...events._interrupts import extract_event_interrupt_ids
+from ...events._interrupts import is_interrupt_event
 from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
+from ...flows.llm_flows.tools._functions import _collect_function_call_ids
+from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from .._errors import WorkflowDataError
-from ._workflow_hitl_utils import get_request_input_interrupt_ids
-from ._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
   from .._base_node import BaseNode
@@ -68,7 +70,7 @@ class _ChildScanState:
   """The route the child picked, or None if it picked none."""
 
   branch: str | None = None
-  """The branch carried by the output event, filled in alongside ``output``."""
+  """The branch seen on the child's own non-claimed events, if any."""
 
   isolation_scope: str | None = None
   """The isolation scope seen on the child's events, if any."""
@@ -84,6 +86,9 @@ class _ChildScanState:
 
   resolved_responses: dict[str, Any] = field(default_factory=dict)
   """Responses keyed by interrupt id, for the ids in ``resolved_ids``."""
+
+  finished_after_resume: bool = False
+  """Whether the child emitted a direct completion event since its last answer (or start)."""
 
 
 def _wrap_response(value: Any) -> dict[str, Any]:
@@ -288,6 +293,7 @@ def _reconstruct_node_states(
         return base_path
       return None
 
+  tool_call_ids = _collect_function_call_ids(events)
   for event in events:
     if invocation_id and event.invocation_id != invocation_id:
       continue
@@ -319,8 +325,9 @@ def _reconstruct_node_states(
             # not rerun never gets to pick an edge again.
             scan_states[owner].output = None
             scan_states[owner].resolved_responses[fr.id] = response_data
+            scan_states[owner].finished_after_resume = False
 
-          if event.branch:
+          elif event.branch:
             # Match the branch's run ids exactly. A substring test on the raw
             # branch string resolves an interrupt whose id merely happens to be
             # contained in another id.
@@ -338,6 +345,7 @@ def _reconstruct_node_states(
                   # Same reason as the direct branch: the node paused mid-run
                   # to ask this, so what it emitted earlier is not its result.
                   o_state.output = None
+                  o_state.finished_after_resume = False
       continue
 
     # 2. Match events under base_path
@@ -349,8 +357,8 @@ def _reconstruct_node_states(
       continue
 
     # 3. Initialize state for the owner if needed
+    owner_path_builder = _NodePathBuilder.from_string(owner_key)
     if owner_key not in scan_states:
-      owner_path_builder = _NodePathBuilder.from_string(owner_key)
       scan_states[owner_key] = _ChildScanState(run_id=owner_path_builder.run_id)
 
     # 4. Determine if event is direct child or delegated output
@@ -363,6 +371,24 @@ def _reconstruct_node_states(
     child = scan_states[owner_key]
     if is_direct and event.isolation_scope:
       child.isolation_scope = event.isolation_scope
+    has_claimed_branch = (
+        event.output is not None
+        and len(event.node_info.output_for or ()) > 1
+        and not event.get_function_responses()
+    )
+    is_tool_branch = bool(
+        event.branch
+        and _BranchPath.is_tool_branch(
+            event.branch, owner_path_builder.node_name, tool_call_ids
+        )
+    )
+    if (
+        is_direct
+        and event.branch
+        and not has_claimed_branch
+        and not is_tool_branch
+    ):
+      child.branch = event.branch
 
     has_output = event.output is not None
     use_message_as_output = False
@@ -387,7 +413,8 @@ def _reconstruct_node_states(
     if is_direct or is_delegated:
       if event.output is not None:
         child.output = event.output
-        child.branch = event.branch
+        if is_direct and not has_claimed_branch and not is_tool_branch:
+          child.branch = event.branch
       elif use_message_as_output:
         child.output = event.content
       if event.actions and event.actions.route is not None:
@@ -396,40 +423,61 @@ def _reconstruct_node_states(
         child.transfer_to_agent = event.actions.transfer_to_agent
 
       # The node's outcome is whatever its latest attempt recorded, so a
-      # result clears the error left by an earlier failed attempt. A result
-      # wins on the same event too: an LlmAgent node's output rides on the
-      # response event, which carries an error code for any finish reason
-      # other than STOP, and that node did produce a result.
-      has_result = has_output or (
-          event.actions is not None
-          and (
-              event.actions.route is not None
-              or event.actions.transfer_to_agent is not None
-          )
-      )
-      if has_result:
+      # later non-error event or result clears the error left by an earlier
+      # failed attempt. A result wins on the same event too: an LlmAgent
+      # node's output rides on the response event, which carries an error
+      # code for any finish reason other than STOP, and that node did
+      # produce a result.
+      if _event_has_result(event) or (
+          event.error_code is None and not event.partial
+      ):
         child.error_code = None
       elif event.error_code is not None:
         child.error_code = event.error_code
 
     # 6. Extract interrupts and their schemas
-    # Modern events explicitly set long_running_tool_ids.
-    interrupt_ids_to_process = set(event.long_running_tool_ids or [])
-
-    # Fallback for older session JSONs where RequestInput/Auth events were exported
-    # without populating long_running_tool_ids. We extract the IDs directly from the function calls.
-    interrupt_ids_to_process.update(get_request_input_interrupt_ids(event))
+    interrupt_ids_to_process = extract_event_interrupt_ids(event)
 
     if interrupt_ids_to_process:
       for interrupt_id in interrupt_ids_to_process:
         child.interrupt_ids.add(interrupt_id)
+        child.resolved_ids.discard(interrupt_id)
+        child.resolved_responses.pop(interrupt_id, None)
         interrupt_owner[interrupt_id] = owner_key
 
         schema_json = _extract_schema_from_event(event, interrupt_id)
         if schema_json:
           schemas_by_id[interrupt_id] = schema_json
 
+    if is_direct:
+      child.finished_after_resume = (
+          not interrupt_ids_to_process
+          and child.error_code is None
+          and not event.partial
+          and not event.get_function_calls()
+          and not event.get_function_responses()
+      )
+
   return scan_states
+
+
+def _event_has_result(event: Event) -> bool:
+  """Returns whether ``event`` carries a node output, route, or transfer."""
+  return (
+      event.output is not None
+      or bool(
+          event.node_info
+          and event.node_info.message_as_output
+          and event.content is not None
+      )
+      or bool(
+          event.actions
+          and (
+              event.actions.route is not None
+              or event.actions.transfer_to_agent is not None
+          )
+      )
+  )
 
 
 def is_terminal_event(event: Event) -> bool:
@@ -444,17 +492,9 @@ def is_terminal_event(event: Event) -> bool:
     return True
   if event.actions and event.actions.route is not None:
     return True
-  if event.long_running_tool_ids:
-    return True
   if event.error_code is not None:
     return True
-
-  from ._workflow_hitl_utils import has_auth_request_function_call
-  from ._workflow_hitl_utils import has_request_input_function_call
-
-  if has_request_input_function_call(event) or has_auth_request_function_call(
-      event
-  ):
+  if is_interrupt_event(event):
     return True
 
   return False

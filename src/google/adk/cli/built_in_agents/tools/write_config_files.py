@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 import re
 from typing import Any
@@ -28,9 +29,11 @@ from typing import Tuple
 
 from google.adk.tools.tool_context import ToolContext
 import jsonschema
+from pydantic import BaseModel
 import yaml
 
 from ..utils import load_agent_config_schema
+from ..utils._adk_symbols import adk_symbol_exists as _adk_symbol_exists
 from ..utils.path_normalizer import sanitize_generated_file_path
 from ..utils.resolve_root_directory import resolve_file_path
 from .write_files import write_files
@@ -425,6 +428,30 @@ def _validate_single_config(
           ),
       }
 
+    # Step 2b: every google.adk.* name the config references must exist in the
+    # ADK installed here. A model recalling an older or imagined API writes a
+    # plausible name that only fails when the agent is loaded -- one run
+    # produced `google.adk.tools.tool_args.ToolArgs`, which has never existed.
+    # The schema cannot see this: the name is a well-formed string.
+    symbol_errors = _validate_adk_symbols(config_dict)
+    if symbol_errors:
+      return {
+          "success": False,
+          "error_type": "UNKNOWN_ADK_SYMBOL",
+          "error": (
+              "Configuration references names that do not exist in the"
+              f" installed ADK ({_adk_version()})"
+          ),
+          "validation_errors": symbol_errors,
+          "file_path": str(path),
+          "validation_step": "symbol_resolution",
+          "retry_suggestion": (
+              "Look each name up with search_adk_source before using it. If a"
+              " name is not in the installed package it does not exist in this"
+              " version, whatever it was called in an earlier release."
+          ),
+      }
+
     # Step 3: Additional structural validation
     # TODO: Remove once the frontend performs these validations before calling
     # this tool.
@@ -469,37 +496,97 @@ def _validate_single_config(
     }
 
 
+_ADK_AGENT_CLASSES = frozenset(
+    {"LlmAgent", "LoopAgent", "ParallelAgent", "SequentialAgent"}
+)
+
+
+def _schema_branch(
+    schema: Dict[str, Any], config_dict: Dict[str, Any]
+) -> Dict[str, Any]:
+  """Select the one schema branch that applies to this config.
+
+  AgentConfig's top level is a union over the agent classes, and BaseAgentConfig
+  accepts additional properties, so a valid LlmAgent matches two branches at
+  once. Validating against the union therefore fails on correct input.
+
+  This used to be handled by string-matching jsonschema's "is valid under each
+  of" message and returning valid. That silently disabled validation for the
+  most common agent shape: jsonschema surfaces one error, the union ambiguity
+  won every time, and genuinely broken nested fields -- a callback written with
+  `code:` instead of `name:`, for instance -- were written to disk and only
+  discovered when the agent failed to load.
+
+  Instead, dispatch on `agent_class` the way AgentConfig's own pydantic
+  Discriminator does, and validate against that single branch.
+  """
+  branches = schema.get("oneOf") or schema.get("anyOf")
+  if not branches:
+    return schema
+  defs = schema.get("$defs", {})
+  agent_class = (config_dict.get("agent_class") or "LlmAgent").rsplit(".", 1)[
+      -1
+  ]
+  wanted = (
+      f"{agent_class}Config"
+      if agent_class in _ADK_AGENT_CLASSES
+      else "BaseAgentConfig"
+  )
+  for branch in branches:
+    if branch.get("$ref", "").rsplit("/", 1)[-1] == wanted and wanted in defs:
+      return {"$defs": defs, **defs[wanted]}
+  return schema
+
+
+def _runtime_accepts(config_dict: Dict[str, Any]) -> bool:
+  """Whether the pydantic models accept this config.
+
+  The shipped schema is emitted with camelCase aliases and
+  additionalProperties false, while the models also accept the snake_case field
+  names. A live-audio config using `response_modalities` is rejected by the
+  schema and loads perfectly. When the two disagree the runtime wins: it is
+  what actually runs, and rejecting a working config is worse than the gap this
+  validation closes.
+  """
+  try:
+    from ....agents.config_agent_utils import _resolve_agent_class  # pylint: disable=g-import-not-at-top
+
+    cls = _resolve_agent_class(config_dict.get("agent_class", "LlmAgent"))
+    config_type = getattr(cls, "config_type", None)
+    if not (
+        isinstance(config_type, type) and issubclass(config_type, BaseModel)
+    ):
+      return False
+    config_type.model_validate(config_dict)
+    return True
+  except Exception:  # pylint: disable=broad-except
+    return False
+
+
 def _validate_against_schema(
     config_dict: Dict[str, Any],
 ) -> Dict[str, Any]:
   """Validate configuration against AgentConfig.json schema."""
   try:
+    # raw_format=False returns the parsed schema, but the loader is annotated
+    # as returning either that or the raw text, so narrow it before use.
     schema = load_agent_config_schema(raw_format=False)
-    jsonschema.validate(config_dict, schema)
+    if not isinstance(schema, dict):
+      return {
+          "valid": False,
+          "errors": [{
+              "path": "root",
+              "message": "AgentConfig schema did not load as an object",
+              "invalid_value": None,
+              "constraint": "unknown",
+          }],
+      }
+    jsonschema.validate(config_dict, _schema_branch(schema, config_dict))
 
     return {"valid": True, "errors": []}
 
   except jsonschema.ValidationError as e:
-    # JSONSCHEMA QUIRK WORKAROUND: Handle false positive validation errors
-    #
-    # Problem: When AgentConfig schema uses anyOf with inheritance hierarchies,
-    # jsonschema throws ValidationError even for valid configs that match multiple schemas.
-    #
-    # Example scenario:
-    # - AgentConfig schema: {"anyOf": [{"$ref": "#/$defs/LlmAgentConfig"},
-    #                                  {"$ref": "#/$defs/SequentialAgentConfig"},
-    #                                  {"$ref": "#/$defs/BaseAgentConfig"}]}
-    # - Input config: {"agent_class": "SequentialAgent", "name": "test", ...}
-    # - Result: Config is valid against both SequentialAgentConfig AND BaseAgentConfig
-    #   (due to inheritance), but jsonschema considers this an error.
-    #
-    # Error message format:
-    # "{'agent_class': 'SequentialAgent', ...} is valid under each of
-    #  {'$ref': '#/$defs/SequentialAgentConfig'}, {'$ref': '#/$defs/BaseAgentConfig'}"
-    #
-    # Solution: Detect this specific error pattern and treat as valid since the
-    # config actually IS valid - it just matches multiple compatible schemas.
-    if "is valid under each of" in str(e.message):
+    if _runtime_accepts(config_dict):
       return {"valid": True, "errors": []}
 
     error_path = " -> ".join(str(p) for p in e.absolute_path)
@@ -536,6 +623,44 @@ def _validate_against_schema(
             "constraint": "validation_process",
         }],
     }
+
+
+_ADK_NAME = re.compile(r"google\.adk(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
+
+
+def _adk_version() -> str:
+  try:
+    return getattr(importlib.import_module("google.adk"), "__version__", "?")
+  except ImportError:  # pragma: no cover - google.adk is importable by then
+    return "?"
+
+
+def _validate_adk_symbols(config: Any) -> List[Dict[str, str]]:
+  """Collect every unresolvable google.adk.* name in a config."""
+  errors: List[Dict[str, str]] = []
+  seen: set[str] = set()
+
+  def walk(node: Any, path: str) -> None:
+    if isinstance(node, dict):
+      for key, value in node.items():
+        walk(value, f"{path}.{key}" if path else str(key))
+    elif isinstance(node, list):
+      for index, value in enumerate(node):
+        walk(value, f"{path}[{index}]")
+    elif isinstance(node, str):
+      for name in _ADK_NAME.findall(node):
+        if name in seen:
+          continue
+        seen.add(name)
+        if not _adk_symbol_exists(name):
+          errors.append({
+              "path": path or "root",
+              "message": f"{name!r} does not exist in the installed ADK",
+              "invalid_value": name,
+          })
+
+  walk(config, "")
+  return errors
 
 
 def _validate_structure(

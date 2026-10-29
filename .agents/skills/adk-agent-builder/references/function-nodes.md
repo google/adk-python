@@ -152,7 +152,8 @@ worker = node(some_func, parallel_worker=True)
 ```
 
 Accepted keywords: `name`, `rerun_on_resume`, `retry_config`, `timeout`,
-`parallel_worker`, `max_parallel_workers`, `auth_config`, `parameter_binding`.
+`parallel_worker`, `max_parallel_workers`, `auth_config`,
+`require_confirmation`, `parameter_binding`.
 
 ## Routing and state from a node
 
@@ -164,6 +165,25 @@ def classify(node_input: str):
 
 def update_counter(node_input: str):
   return Event(output=node_input, state={'last_input': node_input})
+```
+
+## Requiring confirmation before a node runs
+
+`require_confirmation` pauses the workflow with an `adk_request_input`
+interrupt (`wf_tool_confirmation:{node_path}`) before the function runs. It
+accepts a `bool` or a sync/async predicate callable receiving the function's
+bound arguments (plus `ctx` or `node_input` if declared). `@node` automatically
+defaults `rerun_on_resume=True` when `require_confirmation` is set.
+
+```python
+@node(require_confirmation=True)
+def delete_file(path: str) -> str:
+  return f'Deleted {path}'
+
+
+@node(require_confirmation=lambda amount: amount > 1000)
+def transfer_funds(amount: int) -> str:
+  return f'Transferred {amount}'
 ```
 
 ## Requiring authentication before a node runs

@@ -466,3 +466,97 @@ async def test_filter_bypass_when_under_remove_threshold():
   # With num_invocations_to_keep=2 and remove_amount=2, threshold is 4.
   # We have 3 invocations, so no filtering should occur.
   assert llm_request.contents == original_contents
+
+
+@pytest.mark.parametrize("num_to_keep", [0, -1])
+@pytest.mark.asyncio
+async def test_filter_with_non_positive_invocations_to_keep_does_not_truncate(
+    num_to_keep: int,
+):
+  """num_invocations_to_keep of 0 or less keeps every invocation."""
+  plugin = ContextFilterPlugin(num_invocations_to_keep=num_to_keep)
+  original_contents = [
+      _create_content("model", "initial_greeting"),
+      _create_content("user", "user_prompt_1"),
+      _create_content("model", "model_response_1"),
+      _create_content("user", "user_prompt_2"),
+      _create_content("model", "model_response_2"),
+  ]
+  llm_request = LlmRequest(contents=list(original_contents))
+
+  await plugin.before_model_callback(
+      callback_context=mock.create_autospec(CallbackContext, instance=True),
+      llm_request=llm_request,
+  )
+
+  assert llm_request.contents == original_contents
+
+
+async def _filter_keeping_one_invocation(
+    contents: list[types.Content],
+) -> list[types.Content]:
+  plugin = ContextFilterPlugin(num_invocations_to_keep=1)
+  llm_request = LlmRequest(contents=list(contents))
+  await plugin.before_model_callback(
+      callback_context=mock.create_autospec(CallbackContext, instance=True),
+      llm_request=llm_request,
+  )
+  return llm_request.contents
+
+
+@pytest.mark.asyncio
+async def test_filter_tolerates_content_with_none_parts():
+  """A content whose parts are None is dropped like any older content."""
+  contents = [
+      types.Content(role="user", parts=None),
+      _create_content("user", "old_prompt"),
+      _create_content("model", "old_answer"),
+      _create_content("user", "latest_prompt"),
+      _create_content("model", "final_answer"),
+  ]
+
+  assert await _filter_keeping_one_invocation(contents) == contents[3:]
+
+
+@pytest.mark.asyncio
+async def test_filter_ignores_function_call_and_response_without_ids():
+  """A call and response without ids do not move the split point."""
+  contents = [
+      _create_content("user", "old_prompt"),
+      _create_content("model", "old_answer"),
+      _create_content("user", "latest_prompt"),
+      types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(id=None, name="no_id_tool")
+              )
+          ],
+      ),
+      types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id=None, name="no_id_tool", response={"ok": True}
+                  )
+              )
+          ],
+      ),
+      _create_content("model", "final_answer"),
+  ]
+
+  assert await _filter_keeping_one_invocation(contents) == contents[2:]
+
+
+@pytest.mark.asyncio
+async def test_filter_keeps_everything_when_response_has_no_matching_call():
+  """A function response whose call is never found keeps all contents."""
+  contents = [
+      _create_content("user", "old_prompt"),
+      _create_content("model", "old_answer"),
+      _create_content("user", "latest_prompt"),
+      _create_function_response_content("orphan_tool", "unmatched_call_id"),
+  ]
+
+  assert await _filter_keeping_one_invocation(contents) == contents

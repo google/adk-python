@@ -18,7 +18,9 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from collections.abc import Callable
+from collections.abc import Iterator
 from collections.abc import Mapping
+import contextlib
 from typing import Any
 from typing import Literal
 from typing import overload
@@ -56,6 +58,7 @@ def node(
     parallel_worker: bool = False,
     max_parallel_workers: int | None = None,
     auth_config: AuthConfig | None = None,
+    require_confirmation: bool | Callable[..., bool] | None = None,
     parameter_binding: Literal['state', 'node_input'] = 'state',
 ) -> Callable[
     [T], function_node.FunctionNode | parallel_worker_lib._ParallelWorker
@@ -74,6 +77,7 @@ def node(
     parallel_worker: bool = False,
     max_parallel_workers: int | None = None,
     auth_config: AuthConfig | None = None,
+    require_confirmation: bool | Callable[..., bool] | None = None,
     parameter_binding: Literal['state', 'node_input'] = 'state',
 ) -> base_node.BaseNode:
   ...
@@ -89,6 +93,7 @@ def node(
     parallel_worker: bool = False,
     max_parallel_workers: int | None = None,
     auth_config: AuthConfig | None = None,
+    require_confirmation: bool | Callable[..., bool] | None = None,
     parameter_binding: Literal['state', 'node_input'] = 'state',
 ) -> Any:
   """Decorator or function to wrap a NodeLike in a node or override its properties.
@@ -102,6 +107,9 @@ def node(
 
   @node(name='my_node', rerun_on_resume=True)
   async def my_func3(): ...
+
+  @node(require_confirmation=True)
+  def remove_file(): ...
 
   Or as a function on a NodeLike:
   my_node = node(my_func, name='other_name')
@@ -118,6 +126,9 @@ def node(
     parallel_worker: If True, wraps the node in a _ParallelWorker.
     auth_config: If provided, the framework requests user authentication before
       running the node. Requires rerun_on_resume=True.
+    require_confirmation: If provided, requests user confirmation before running
+      the node. Can be a boolean or a callable predicate returning a boolean.
+      Automatically enables rerun_on_resume=True when not explicitly set.
     parameter_binding: How function parameters are bound. ``'state'`` (default)
       binds parameters from ``ctx.state``. ``'node_input'`` binds parameters
       from ``node_input`` dict and infers ``input_schema`` / ``output_schema``
@@ -143,44 +154,36 @@ def node(
           'max_parallel_workers must be greater than or equal to 1.'
       )
 
-  def wrapper(
-      func: T,
-  ) -> function_node.FunctionNode | parallel_worker_lib._ParallelWorker:
-    built_node = function_node.FunctionNode(
-        func=func,
-        name=name,
-        rerun_on_resume=rerun_on_resume
-        if rerun_on_resume is not None
-        else False,
-        retry_config=retry_config,
-        timeout=timeout,
-        auth_config=auth_config,
-        parameter_binding=parameter_binding,
-    )
-    if parallel_worker:
-      return parallel_worker_lib._ParallelWorker(
-          node=built_node, max_parallel_workers=max_parallel_workers
-      )
-    return built_node
-
   if node_like is None:
     # If no node_like is provided, return a decorator factory.
-    return wrapper  # type: ignore
-  else:
-    built_node = workflow_graph_utils.build_node(
-        node_like,
+    return lambda func: node(
+        func,
         name=name,
         rerun_on_resume=rerun_on_resume,
         retry_config=retry_config,
         timeout=timeout,
+        parallel_worker=parallel_worker,
+        max_parallel_workers=max_parallel_workers,
         auth_config=auth_config,
+        require_confirmation=require_confirmation,
         parameter_binding=parameter_binding,
     )
-    if parallel_worker:
-      return parallel_worker_lib._ParallelWorker(
-          node=built_node, max_parallel_workers=max_parallel_workers
-      )
-    return built_node
+
+  built_node = workflow_graph_utils.build_node(
+      node_like,
+      name=name,
+      rerun_on_resume=rerun_on_resume,
+      retry_config=retry_config,
+      timeout=timeout,
+      auth_config=auth_config,
+      require_confirmation=require_confirmation,
+      parameter_binding=parameter_binding,
+  )
+  if parallel_worker:
+    return parallel_worker_lib._ParallelWorker(
+        node=built_node, max_parallel_workers=max_parallel_workers
+    )
+  return built_node
 
 
 class Node(base_node.BaseNode):
@@ -249,6 +252,12 @@ class Node(base_node.BaseNode):
 
     return copied
 
+  @override
+  def _iter_static_children(self) -> Iterator[base_node.BaseNode]:
+    """Yields the inner node if configured as a parallel worker."""
+    if self._inner_node is not None:
+      yield self._inner_node
+
   async def run_node_impl(
       self, *, ctx: Context, node_input: Any
   ) -> AsyncGenerator[Any, None]:
@@ -270,8 +279,9 @@ class Node(base_node.BaseNode):
         raise WorkflowInvariantError(
             'inner_node is not initialized for parallel worker.'
         )
-      async for output in self._inner_node.run(ctx=ctx, node_input=node_input):
-        yield output
+      agen = self._inner_node.run(ctx=ctx, node_input=node_input)
     else:
-      async for output in self.run_node_impl(ctx=ctx, node_input=node_input):
+      agen = self.run_node_impl(ctx=ctx, node_input=node_input)
+    async with contextlib.aclosing(agen) as agen:
+      async for output in agen:
         yield output

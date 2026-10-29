@@ -18,25 +18,19 @@ import logging
 from typing import AsyncGenerator
 from typing import cast
 from typing import Final
-from typing import Union
 
 from google.genai import types
 
 from ..utils import model_name_utils
-from ..utils.content_utils import filter_audio_parts
+from ..utils.content_utils import _filter_media_parts
 from ..utils.context_utils import Aclosing
 from ..utils.variant_utils import GoogleLLMVariant
 from .base_llm_connection import BaseLlmConnection
+from .base_llm_connection import RealtimeInput
 from .llm_response import LlmResponse
 
 logger = logging.getLogger('google_adk.' + __name__)
 
-RealtimeInput = Union[
-    types.Blob,
-    types.ActivityStart,
-    types.ActivityEnd,
-    types.LiveClientRealtimeInput,
-]
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -82,10 +76,12 @@ class GeminiLlmConnection(BaseLlmConnection):
     # TODO: Remove this filter and translate unary contents to streaming
     # contents properly.
 
-    # Filter out audio parts from history because:
+    # Filter out audio and internal `_adk_live` artifact parts because:
     # 1. audio has already been transcribed.
     # 2. sending audio via connection.send or connection.send_live_content is
     # not supported by LIVE API (session will be corrupted).
+    # 3. `_adk_live` artifacts persisted by `save_live_blob` are internal
+    # `artifact://` references that the model cannot resolve.
     # This method is called when:
     # 1. Agent transfer to a new agent
     # 2. Establishing a new live connection with previous ADK session history
@@ -93,7 +89,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     contents = [
         filtered
         for content in history
-        if (filtered := filter_audio_parts(content)) is not None
+        if (filtered := _filter_media_parts(content)) is not None
     ]
 
     if contents:
@@ -145,7 +141,9 @@ class GeminiLlmConnection(BaseLlmConnection):
     """
     assert content.parts
     if all(p.function_response for p in content.parts):
-      function_responses = [p.function_response for p in content.parts]
+      function_responses = [
+          p.function_response for p in content.parts if p.function_response
+      ]
       logger.debug('Sending LLM function response: %s', function_responses)
       await self._gemini_session.send_tool_response(
           function_responses=function_responses
@@ -391,8 +389,8 @@ class GeminiLlmConnection(BaseLlmConnection):
                 or message.server_content.interrupted
                 or message.tool_call is not None
             )
-            flushed_part_ids = set()
-            accumulated_parts = []
+            flushed_part_ids: set[int] = set()
+            accumulated_parts: list[types.Part] = []
             for part in content.parts:
               if part.text:
                 current_is_thought = getattr(part, 'thought', False)
@@ -420,14 +418,16 @@ class GeminiLlmConnection(BaseLlmConnection):
             if will_flush:
               flushed_part_ids.update(id(p) for p in accumulated_parts)
               accumulated_parts = []
+            response_content = content
             if flushed_part_ids:
-              llm_response.content = types.Content(
+              response_content = types.Content(
                   role=content.role,
                   parts=[
                       p for p in content.parts if id(p) not in flushed_part_ids
                   ],
               )
-            if llm_response.content.parts:
+              llm_response.content = response_content
+            if response_content.parts:
               yield llm_response
           # Note: in some cases, tool_call may arrive before
           # generation_complete, causing transcription to appear after

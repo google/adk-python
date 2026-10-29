@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
+from collections.abc import MutableMapping
 from typing import Any
 
 from google.adk.platform import uuid as platform_uuid
@@ -22,6 +24,8 @@ from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
+from pydantic import ModelWrapValidatorHandler
 from pydantic import PrivateAttr
 from typing_extensions import override
 
@@ -31,9 +35,13 @@ from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.auth_credential import AuthCredential
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..events._branch_path import _BranchPath
+from ..events._internal_metadata import without_internal_metadata
+from ..events._interrupts import extract_event_interrupt_ids
+from ..events._node_path_builder import _NodePathBuilder
 from ..events.event import Event
+from ..live import _active_background_tool
 from ..live._active_streaming_tool import ActiveStreamingTool
-from ..live._audio_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
+from ..live._realtime_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
 from ..live._transcription_entry import TranscriptionEntry
 from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
@@ -41,7 +49,9 @@ from ..plugins.plugin_manager import PluginManager
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..tools.base_tool import BaseTool
+from ..utils._agent_mode import AgentMode
 from ..workflow._base_node import BaseNode
+from .base_agent import _agent_state_key
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .context_cache_config import ContextCacheConfig
@@ -92,7 +102,10 @@ class _AbortState:
   instance reference. Updates to loop, signal, or aborted propagate across all
   model_copy() clones in the tree. Cross-Runner sub-runs (such as AgentTool or
   nested Workflow node runners) propagate cancellation by passing
-  ``_abort_signal`` to the child Runner's ``run_async``.
+  ``_abort_signal`` to the child Runner's ``run_async``. ``signal`` is an
+  ``asyncio.Event`` and can only be awaited on ``loop``, so AgentTool does not
+  pass it when the tool runs on another event loop (e.g. RunConfig's tool
+  thread pool); such a sub-run is not cancelled by a caller abort.
   """
 
   def __init__(
@@ -103,6 +116,7 @@ class _AbortState:
     self.signal = signal if signal is not None else asyncio.Event()
     self.loop = loop
     self.aborted = False
+    self.event_synthesized = False
 
   def __deepcopy__(self, memo: dict[int, Any] | None) -> _AbortState:
     # Preserve single-instance sharing across deepcopies and avoid traversing
@@ -217,12 +231,6 @@ class InvocationContext(BaseModel):
   live_request_queue: LiveRequestQueue | None = None
   """The queue to receive live requests."""
 
-  active_streaming_tools: dict[str, ActiveStreamingTool] | None = None
-  """The running streaming tools of this invocation."""
-
-  active_non_blocking_tool_tasks: dict[str, asyncio.Task[Any]] | None = None
-  """The running non-blocking tool tasks of this invocation (Live only)."""
-
   transcription_cache: list[TranscriptionEntry] | None = None
   """Caches necessary data, audio or contents, that are needed by transcription."""
 
@@ -230,10 +238,18 @@ class InvocationContext(BaseModel):
   """The handle for live session resumption."""
 
   input_realtime_cache: list[RealtimeCacheEntry] | None = None
-  """Caches input audio chunks before flushing to session and artifact services."""
+  """Caches the user's audio chunks before flushing to session and artifact services.
+
+  Holds audio only; the user's image frames are cached separately.
+  """
 
   output_realtime_cache: list[RealtimeCacheEntry] | None = None
-  """Caches output audio chunks before flushing to session and artifact services."""
+  """Caches the model's audio chunks before flushing to session and artifact services."""
+
+  _input_visual_cache: list[RealtimeCacheEntry] = PrivateAttr(
+      default_factory=list
+  )
+  """The user's image frames, such as camera or screen-share frames, cached until the next flush (Live only)."""
 
   run_config: RunConfig | None = None
   """Configurations for live agents under this invocation."""
@@ -242,10 +258,18 @@ class InvocationContext(BaseModel):
   """The resumability config that applies to all agents under this invocation."""
 
   events_compaction_config: EventsCompactionConfig | None = None
-  """The compaction config for this invocation."""
+  """The compaction config for this invocation.
+
+  Starts as the App's config, the same object in every invocation. A plugin's
+  before_run_callback can assign another config, or None to skip compaction,
+  for this invocation; editing the shared object in place affects every session.
+  """
 
   token_compaction_checked: bool = False
-  """Whether token-threshold compaction ran during this invocation."""
+  """Whether the compaction request processor compacted before a model call.
+
+  Set on the context that call used, so parent contexts do not see it.
+  """
 
   plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""
@@ -277,6 +301,9 @@ class InvocationContext(BaseModel):
   _custom_metadata: dict[str, Any] = PrivateAttr(default_factory=dict)
   """Custom metadata for attaching low-level execution telemetry."""
 
+  _private_metadata: dict[str, Any] = PrivateAttr(default_factory=dict)
+  """Private metadata for internal caching, not exposed to user code."""
+
   _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
       default_factory=_InvocationCostManager
   )
@@ -287,11 +314,97 @@ class InvocationContext(BaseModel):
   _abort_state: _AbortState = PrivateAttr(default_factory=_AbortState)
   """Captured abort state (signal, loop, and aborted flag) shared across copies."""
 
+  _active_background_tools: (
+      dict[str, _active_background_tool.ActiveBackgroundTool] | None
+  ) = PrivateAttr(default=None)
+  """The tool calls running in the background of this live run.
+
+  Holds both streaming tools and non-blocking tools, keyed by function call
+  id. Created on first registration, so contexts copied before then don't
+  share it. Readers treat ``None`` as empty.
+  """
+
+  def _add_background_tool(
+      self, entry: _active_background_tool.ActiveBackgroundTool
+  ) -> None:
+    """Registers a tool call running in the background of this live run."""
+    self._registry_for_write()[entry.function_call_id] = entry
+
+  @model_validator(mode="wrap")
+  @classmethod
+  def _apply_deprecated_background_tool_fields(
+      cls, data: Any, handler: ModelWrapValidatorHandler[InvocationContext]
+  ) -> InvocationContext:
+    """Accepts the deprecated background tool fields in the constructor."""
+    data, deprecated = _active_background_tool.pop_deprecated_fields(data)
+    ctx = handler(data)
+    if deprecated:
+      _active_background_tool.apply_deprecated_fields(
+          ctx._registry_for_write(), deprecated
+      )
+    return ctx
+
+  @property
+  def active_streaming_tools(
+      self,
+  ) -> MutableMapping[str, ActiveStreamingTool] | None:
+    """Deprecated: the running streaming tools, keyed by tool name.
+
+    A live view of the background tool registry, which is what the framework
+    reads; ``None`` until the first background tool call. Reading a tool
+    returns its most recent call, and setting ``task`` or ``stream`` on it
+    updates that call. Assigning a tool replaces all of its calls, and deleting
+    one stops tracking them without cancelling their tasks.
+    """
+    return _active_background_tool.get_active_streaming_tools(
+        self._active_background_tools
+    )
+
+  @active_streaming_tools.setter
+  def active_streaming_tools(
+      self, value: Mapping[str, ActiveStreamingTool] | None
+  ) -> None:
+    _active_background_tool.set_active_streaming_tools(
+        self._registry_for_write(), value
+    )
+
+  @property
+  def active_non_blocking_tool_tasks(
+      self,
+  ) -> MutableMapping[str, asyncio.Task[Any]] | None:
+    """Deprecated: the running non-blocking tool tasks.
+
+    Keyed by ``f'{tool_name}_{function_call_id}'``. A live view of the
+    background tool registry, which is what the framework reads; ``None``
+    until the first background tool call. Deleting a key stops tracking the
+    task without cancelling it.
+    """
+    return _active_background_tool.get_active_non_blocking_tool_tasks(
+        self._active_background_tools
+    )
+
+  @active_non_blocking_tool_tasks.setter
+  def active_non_blocking_tool_tasks(
+      self, value: Mapping[str, asyncio.Task[Any]] | None
+  ) -> None:
+    _active_background_tool.set_active_non_blocking_tool_tasks(
+        self._registry_for_write(), value
+    )
+
+  def _registry_for_write(
+      self,
+  ) -> dict[str, _active_background_tool.ActiveBackgroundTool]:
+    if self._active_background_tools is None:
+      self._active_background_tools = {}
+    return self._active_background_tools
+
   @override
   def model_post_init(self, __context: Any) -> None:
     super().model_post_init(__context)
     if self.run_config and self.run_config.custom_metadata:
-      self._custom_metadata.update(self.run_config.custom_metadata)
+      self._custom_metadata.update(
+          without_internal_metadata(self.run_config.custom_metadata) or {}
+      )
     try:
       self._abort_state.loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -427,15 +540,16 @@ class InvocationContext(BaseModel):
         True.
       end_of_agent: Whether the agent has finished running.
     """
+    key = _agent_state_key(self, agent_name)
     if end_of_agent:
-      self.end_of_agents[agent_name] = True
-      self.agent_states.pop(agent_name, None)
+      self.end_of_agents[key] = True
+      self.agent_states.pop(key, None)
     elif agent_state is not None:
-      self.agent_states[agent_name] = agent_state.model_dump(mode="json")
-      self.end_of_agents[agent_name] = False
+      self.agent_states[key] = agent_state.model_dump(mode="json")
+      self.end_of_agents[key] = False
     else:
-      self.end_of_agents.pop(agent_name, None)
-      self.agent_states.pop(agent_name, None)
+      self.end_of_agents.pop(key, None)
+      self.agent_states.pop(key, None)
 
   def reset_sub_agent_states(
       self,
@@ -564,6 +678,13 @@ class InvocationContext(BaseModel):
           }
         return branch_fc_ids
 
+      self_node_path: _NodePathBuilder | None = None
+      if (
+          getattr(self.agent, "mode", None) == AgentMode.SINGLE_TURN
+          and self.node_path
+      ):
+        self_node_path = _NodePathBuilder.from_string(self.node_path)
+
       def _is_branch_match(event: Event) -> bool:
         """Determines whether an event is part of this invocation's subtree.
 
@@ -595,6 +716,12 @@ class InvocationContext(BaseModel):
         question -- "what history may this agent see?" -- and so matches
         *ancestor* branches instead. Both are intended.
         """
+        if (
+            self_node_path is not None
+            and not self_node_path.includes_node_path(event.node_info.path)
+        ):
+          return False
+
         if getattr(event, "author", None) == "user":
           frs = event.get_function_responses()
           if frs and self.branch and self.session:
@@ -643,7 +770,9 @@ class InvocationContext(BaseModel):
     running.
 
     Should meet all following conditions to pause an invocation:
-      1. The current event has a long running function call.
+      1. The current event has an interrupt function call (either in
+         `long_running_tool_ids` or a legacy HITL `adk_request_input` /
+         `adk_request_credential` call).
 
     Args:
       event: The current event.
@@ -651,12 +780,16 @@ class InvocationContext(BaseModel):
     Returns:
       Whether to pause the invocation right after this event.
     """
-    if not event.long_running_tool_ids or not event.get_function_calls():
+    # Interrupt ids come from the shared extractor so the flow pauses on the
+    # same events the router and workflow rehydration treat as interrupts,
+    # including legacy sessions whose HITL calls lack `long_running_tool_ids`.
+    interrupt_ids = extract_event_interrupt_ids(event)
+    if not interrupt_ids or not event.get_function_calls():
       return False
 
     events = self.session.events if self.session else []
     for fc in event.get_function_calls():
-      if fc.id in event.long_running_tool_ids:
+      if fc.id in interrupt_ids:
         # Check if there is a newer user event in the session that belongs to a sub-branch of this tool call.
         # This indicates the tool call is resuming to process that nested input.
         is_resolving_sub_branch = False

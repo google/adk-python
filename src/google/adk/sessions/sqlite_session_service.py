@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
@@ -51,21 +52,49 @@ PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
 # Merges {delta} into {state} with dict.update() semantics: keys in the delta
 # always win with their delta value (including SQL NULL / JSON null), unlike
 # json_patch() which deep-merges dict values and treats null as "delete key".
+#
+# json_group_object writes a REAL with 15 significant digits, which rounds
+# floats such as 0.1 + 0.2 for every key in the row. A REAL is written with 17
+# digits when 15 do not read back as the same value, so floats round-trip.
+#
+# SQLite parses an integer outside the signed 64-bit range as a REAL, so its
+# json_each value has already lost digits. The `->` operator (SQLite 3.38+)
+# returns the element's JSON text as stored, which keeps such an integer exact.
+# Each `->` lookup searches the whole object, so it runs only for those values;
+# running it for every key would make the merge quadratic in the key count.
+# Older SQLite has no `->`, and there such an integer still reads back rounded.
+_JSON_TEXT_SQL = (
+    "CASE WHEN type = 'integer' AND typeof(value) = 'real'"
+    " THEN {source} -> fullkey END"
+    if sqlite3.sqlite_version_info >= (3, 38)
+    else "NULL"
+)
 _MERGE_STATE_SQL = """
         SELECT json_group_object(
                  key,
                  CASE
                    WHEN type IN ('object','array') THEN json(value)
                    WHEN type IN ('true','false') THEN json(type)
+                   WHEN type = 'real' THEN json(
+                     CASE
+                       WHEN CAST(printf('%!.15g', value) AS REAL) = value
+                         THEN printf('%!.15g', value)
+                       ELSE printf('%!.17g', value)
+                     END)
+                   WHEN type = 'integer' AND typeof(value) = 'real'
+                     AND raw_json IS NOT NULL THEN json(raw_json)
                    ELSE value
                  END)
         FROM (
-          SELECT key, value, type FROM json_each({delta})
+          SELECT key, value, type, {delta_json} AS raw_json
+            FROM json_each({delta})
           UNION ALL
-          SELECT key, value, type FROM json_each({state})
+          SELECT key, value, type, {state_json} FROM json_each({state})
            WHERE key NOT IN (SELECT key FROM json_each({delta}))
         )
-      """
+      """.replace(
+    "{delta_json}", _JSON_TEXT_SQL.format(source="{delta}")
+).replace("{state_json}", _JSON_TEXT_SQL.format(source="{state}"))
 
 APP_STATES_TABLE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_states (
@@ -183,6 +212,8 @@ class SqliteSessionService(BaseSessionService):
         db_path
     )
     self._schema_ready = False
+    self._schema_lock = asyncio.Lock()
+    self._memory_conn: aiosqlite.Connection | None = None
 
     if self._is_migration_needed():
       raise RuntimeError(
@@ -204,13 +235,15 @@ class SqliteSessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
-    if session_id:
-      session_id = session_id.strip()
-    if not session_id:
-      session_id = platform_uuid.new_uuid()
     now = platform_time.get_time()
 
     async with self._get_db_connection() as db:
+      if session_id:
+        session_id = await self._resolve_session_id(
+            db, app_name, user_id, session_id
+        )
+      if not session_id:
+        session_id = platform_uuid.new_uuid()
       # Check if session_id already exists
       async with db.execute(
           "SELECT 1 FROM sessions WHERE app_name=? AND user_id=? AND id=?",
@@ -284,6 +317,9 @@ class SqliteSessionService(BaseSessionService):
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
     async with self._get_db_connection() as db:
+      session_id = await self._resolve_session_id(
+          db, app_name, user_id, session_id
+      )
       async with db.execute(
           "SELECT state, update_time FROM sessions WHERE app_name=? AND"
           " user_id=? AND id=?",
@@ -308,10 +344,8 @@ class SqliteSessionService(BaseSessionService):
         query_parts.append("AND timestamp >= ?")
         params.append(config.after_timestamp)
 
-      # Break timestamp ties on id so tied events come back in the same order
-      # on every read; otherwise a replayed conversation shuffles and
-      # `num_recent_events` truncates at an arbitrary point in the tie.
-      query_parts.append("ORDER BY timestamp DESC, id DESC")
+      # Break timestamp ties on rowid so tied events reload in append order.
+      query_parts.append("ORDER BY timestamp DESC, rowid DESC")
 
       if config and config.num_recent_events is not None:
         query_parts.append("LIMIT ?")
@@ -352,7 +386,7 @@ class SqliteSessionService(BaseSessionService):
     sessions_list = []
     async with self._get_db_connection() as db:
       # Fetch sessions
-      if user_id:
+      if user_id is not None:
         session_rows = await db.execute_fetchall(
             "SELECT id, user_id, state, update_time FROM sessions WHERE"
             " app_name=? AND user_id=? ORDER BY update_time, user_id, id",
@@ -370,7 +404,7 @@ class SqliteSessionService(BaseSessionService):
 
       # Fetch user states
       user_states_map: dict[str, dict[str, Any]] = {}
-      if user_id:
+      if user_id is not None:
         user_state = await self._get_user_state(db, app_name, user_id)
         if user_state:
           user_states_map[user_id] = user_state
@@ -407,6 +441,9 @@ class SqliteSessionService(BaseSessionService):
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     async with self._get_db_connection() as db:
+      session_id = await self._resolve_session_id(
+          db, app_name, user_id, session_id
+      )
       await db.execute(
           "DELETE FROM sessions WHERE app_name=? AND user_id=? AND id=?",
           (app_name, user_id, session_id),
@@ -518,18 +555,51 @@ class SqliteSessionService(BaseSessionService):
     # Also update the in-memory session
     return self._commit_event_to_session(session, event)
 
+  async def close(self) -> None:
+    """Closes any persistent resources."""
+    async with self._schema_lock:
+      if self._memory_conn is not None:
+        await self._memory_conn.close()
+        self._memory_conn = None
+        self._schema_ready = False
+
   @asynccontextmanager
   async def _get_db_connection(self) -> AsyncIterator[aiosqlite.Connection]:
     """Connects to the db and performs initial setup."""
-    async with aiosqlite.connect(
-        self._db_connect_path, uri=self._db_connect_uri
-    ) as db:
-      db.row_factory = aiosqlite.Row
-      await db.execute(PRAGMA_FOREIGN_KEYS)
-      if not self._schema_ready:
-        await db.executescript(CREATE_SCHEMA_SQL)
-        self._schema_ready = True
-      yield db
+    if self._db_path in ("", ":memory:"):
+      async with self._schema_lock:
+        if self._memory_conn is None:
+          conn = aiosqlite.connect(
+              self._db_connect_path, uri=self._db_connect_uri
+          )
+          setattr(getattr(conn, "_thread", conn), "daemon", True)
+          await conn
+          try:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute(PRAGMA_FOREIGN_KEYS)
+            await conn.executescript(CREATE_SCHEMA_SQL)
+          except BaseException:
+            await conn.close()
+            raise
+          self._memory_conn = conn
+          self._schema_ready = True
+        try:
+          yield self._memory_conn
+        except BaseException:
+          await self._memory_conn.rollback()
+          raise
+    else:
+      async with aiosqlite.connect(
+          self._db_connect_path, uri=self._db_connect_uri
+      ) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute(PRAGMA_FOREIGN_KEYS)
+        if not self._schema_ready:
+          async with self._schema_lock:
+            if not self._schema_ready:
+              await db.executescript(CREATE_SCHEMA_SQL)
+              self._schema_ready = True
+        yield db
 
   async def _get_state(
       self,
@@ -557,6 +627,25 @@ class SqliteSessionService(BaseSessionService):
         "SELECT state FROM user_states WHERE app_name=? AND user_id=?",
         (app_name, user_id),
     )
+
+  async def _resolve_session_id(
+      self,
+      db: aiosqlite.Connection,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+  ) -> str:
+    """Returns session_id if a row is stored under it, else its stripped form."""
+    if not session_id or session_id == session_id.strip():
+      return session_id
+    # Databases migrated from DatabaseSessionService keep padded ids verbatim.
+    async with db.execute(
+        "SELECT 1 FROM sessions WHERE app_name=? AND user_id=? AND id=?",
+        (app_name, user_id, session_id),
+    ) as cursor:
+      if await cursor.fetchone():
+        return session_id
+    return session_id.strip()
 
   async def _upsert_app_state(
       self,
@@ -601,14 +690,14 @@ class SqliteSessionService(BaseSessionService):
       now: float,
   ) -> None:
     """Atomically updates session state with dict.update() semantics."""
-    delta_json = json.dumps(delta)
+    # ?1 binds the delta everywhere the merge reads it; the plain ? that
+    # follow it are numbered 2 onwards.
     await db.execute(
         "UPDATE sessions SET"
-        f" state=({_MERGE_STATE_SQL.format(delta='?', state='state')}),"
+        f" state=({_MERGE_STATE_SQL.format(delta='?1', state='state')}),"
         " update_time=? WHERE app_name=? AND user_id=? AND id=?",
         (
-            delta_json,
-            delta_json,
+            json.dumps(delta),
             now,
             app_name,
             user_id,

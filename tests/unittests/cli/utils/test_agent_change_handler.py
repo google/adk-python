@@ -17,6 +17,7 @@ import warnings
 
 from google.adk.cli.utils import agent_loader
 from google.adk.cli.utils.agent_change_handler import AgentChangeEventHandler
+from google.adk.cli.utils.base_agent_loader import BaseAgentLoader
 from google.adk.cli.utils.shared_value import SharedValue
 import pytest
 from watchdog.events import FileModifiedEvent
@@ -366,3 +367,25 @@ class TestAgentChangeEventHandler:
       )
     assert handler.agents_dir == agents_dir.resolve()
     assert handler.current_app_name_ref is None
+
+  def test_on_modified_with_cacheless_loader_cleans_runner(self, agents_dir):
+    """A loader without remove_agent_from_cache still gets its runner reset."""
+
+    class _CachelessLoader(BaseAgentLoader):
+
+      def load_agent(self, agent_name):
+        raise NotImplementedError
+
+      def list_agents(self):
+        return []
+
+    handler = AgentChangeEventHandler(
+        agent_loader=_CachelessLoader(),
+        runners_to_clean=set(),
+        agents_dir=str(agents_dir),
+    )
+    event = FileModifiedEvent(src_path=str(agents_dir / "test_agent/agent.py"))
+
+    handler.on_modified(event)
+
+    assert handler.runners_to_clean == {"test_agent"}

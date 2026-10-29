@@ -134,6 +134,22 @@ holding `memories`, a list of `MemoryEntry`. Each entry carries `content` (a
 `custom_metadata`. Memory is scoped by the `(app_name, user_id)` pair, so one
 user never sees another's memories.
 
+### Lifecycle & Removal
+
+Memory persists independently of sessions. Deleting a session in a `BaseSessionService`
+does not remove what was previously ingested into memory. To remove individual memories,
+`BaseMemoryService` provides an entry-level lifecycle method:
+
+*   `delete_memory(*, app_name, user_id, memory_id=None)` removes a memory entry by its ID,
+    matching `MemoryEntry.id` returned from `search_memory`.
+
+Inside an agent callback, `Context` provides the matching helper
+`await ctx.delete_memory(memory_id)`. Among the built-in implementations, only
+`InMemoryMemoryService` implements `delete_memory`, and it records deleted IDs so
+subsequent `add_session_to_memory` or `add_events_to_memory` calls do not re-ingest
+them. `SqliteMemoryService`, `VertexAiMemoryBankService`, and `VertexAiRagMemoryService`
+do not support deletion and raise `NotImplementedError`.
+
 ### From inside an agent
 
 `Context` — what tools and callbacks receive — exposes the same operations
@@ -150,7 +166,8 @@ async def save_to_memory(callback_context: Context) -> None:
 
 Attach that as an `after_agent_callback` and each turn is ingested as it
 finishes, rather than at some later point you have to remember to trigger.
-`Context` also offers `add_events_to_memory`, `add_memory`, and `search_memory`.
+`Context` also offers `add_events_to_memory`, `add_memory`,
+`search_memory`, and `delete_memory`.
 
 ## The memory tools
 
@@ -179,6 +196,16 @@ meaning**: an entry comes back only when it shares a word with the query. Ask
 "what color is my car?" after storing "I drive a blue hatchback" and you get
 nothing, because no word overlaps. Do not read that miss as a bug in your agent.
 
+`SqliteMemoryService(db_path, *, fts="auto", max_event_bytes=262144, max_results=50)`
+stores ingested events in a local SQLite database file or `:memory:`. By default
+(`fts="auto"`), it uses SQLite FTS5 full-text indexing when available and falls
+back to token matching when FTS5 is unavailable (`fts="off"` forces token
+matching, while `fts="on"` requires FTS5 and raises `RuntimeError` if missing).
+It implements `add_session_to_memory`, `add_events_to_memory`, `search_memory`,
+and `close()`. Re-ingesting events with the same ID within the same session
+updates the existing row in place rather than duplicating it (the unique key
+includes `session_id`, so the same event ID in another session duplicates).
+
 `VertexAiMemoryBankService(project=..., location=..., agent_engine_id=...)` is
 the managed option and does semantic retrieval. It consolidates conversations
 into durable memories rather than storing raw turns, and it is the only built-in
@@ -194,7 +221,8 @@ Both managed services need the `gcp` extra; without it, construction raises an
 
 From the CLI, `--memory_service_uri` selects the service:
 `agentengine://<agent_engine>` for Memory Bank, `rag://<rag_corpus_id>` for the
-RAG corpus, and `memory://` to force the in-memory one.
+RAG corpus, `sqlite:///<relative_path>` or `sqlite:////<absolute_path>` for the
+SQLite service, and `memory://` to force the in-memory one.
 
 To write your own, subclass `BaseMemoryService` and implement
 `add_session_to_memory` and `search_memory`. Keep the `(app_name, user_id)`

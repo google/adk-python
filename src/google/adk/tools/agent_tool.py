@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
+import logging
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -24,6 +26,7 @@ from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic import model_validator
+from pydantic import ValidationError
 from typing_extensions import override
 
 from . import _automatic_function_calling_util
@@ -37,6 +40,7 @@ from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from ._forwarding_artifact_service import ForwardingArtifactService
+from ._node_tool import _arg_validation_error
 from .base_tool import BaseTool
 from .tool_configs import BaseToolConfig
 from .tool_configs import ToolArgsConfig
@@ -44,6 +48,41 @@ from .tool_context import ToolContext
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
+  from ..agents.invocation_context import InvocationContext
+  from ..apps._configs import EventsCompactionConfig
+  from ..sessions.session import Session
+
+
+def _nested_compaction_config(
+    invocation_context: Optional[InvocationContext],
+) -> Optional[EventsCompactionConfig]:
+  """Returns the caller's token-threshold compaction settings for a nested run.
+
+  Only the in-flow token-threshold trigger applies: it compacts the nested
+  history before a model call would exceed the context window, whereas
+  post-invocation compaction would summarize a session the tool is about to
+  discard. Returning a copy keeps a default summarizer initialized for the
+  wrapped agent from mutating the caller's config.
+  """
+  config = (
+      invocation_context.events_compaction_config
+      if invocation_context
+      else None
+  )
+  if (
+      config is None
+      or config.token_threshold is None
+      or config.event_retention_size is None
+  ):
+    return None
+  return config.model_copy(
+      update={'compaction_interval': None, 'overlap_size': None}
+  )
+
+
+logger = logging.getLogger('google_adk.' + __name__)
+
+_MAX_CHILD_AGENT_CACHE_TTL_S = 300
 
 
 def _part_to_text(part: types.Part) -> str:
@@ -226,13 +265,14 @@ class AgentTool(BaseTool):
   ) -> Any:
     from ..runners import Runner
     from ..sessions.in_memory_session_service import InMemorySessionService
-
-    if self.skip_summarization:
-      tool_context.actions.skip_summarization = True
+    from ..sessions.state import State
 
     input_schema = _get_input_schema(self.agent)
     if input_schema:
-      input_value = input_schema.model_validate(args)
+      try:
+        input_value = input_schema.model_validate(args)
+      except ValidationError as e:
+        return _arg_validation_error(self.name, e)
       # The text must stay a bare JSON document: the node runtime re-validates
       # it against this same schema, so any prose here fails that parse.
       content = types.Content(
@@ -252,6 +292,8 @@ class AgentTool(BaseTool):
           role='user',
           parts=[types.Part.from_text(text=request_text)],
       )
+    if self.skip_summarization:
+      tool_context.actions.skip_summarization = True
     invocation_context = tool_context._invocation_context
     parent_app_name = (
         invocation_context.app_name if invocation_context else None
@@ -262,7 +304,34 @@ class AgentTool(BaseTool):
         if self.include_plugins
         else None
     )
-    runner = Runner(
+    nested_compaction_config = _nested_compaction_config(invocation_context)
+
+    class _NestedRunner(Runner):
+      """Runs only the in-flow compaction trigger on the nested session.
+
+      Post-invocation compaction is skipped because it would summarize a
+      session the tool is about to discard.
+      """
+
+      @override
+      def _new_invocation_context(
+          self,
+          session: Session,
+          **kwargs: Any,  # Forwarded unchanged to the base signature.
+      ) -> InvocationContext:
+        ctx = super()._new_invocation_context(session, **kwargs)
+        ctx.events_compaction_config = nested_compaction_config
+        return ctx
+
+      @override
+      async def _run_post_invocation_compaction(
+          self,
+          *,
+          invocation_context: InvocationContext,
+      ) -> None:
+        return
+
+    runner = _NestedRunner(
         app_name=child_app_name,
         agent=self.agent,
         artifact_service=ForwardingArtifactService(tool_context),
@@ -277,12 +346,46 @@ class AgentTool(BaseTool):
     # the parent is still using them.
     if self.include_plugins:
       runner.plugin_manager.set_skip_closing_plugins(True)
+    # Each call runs the child in an empty session: Gemini creates an explicit
+    # cache only from call 2 within one run and never reuses it across calls
+    # (so the 300s cap bounds how long per-run caches linger), whereas
+    # prefix-marking models (Anthropic, LiteLLM) mark breakpoints from call 1
+    # (using the 5m tier even under a ttl_seconds >= 3600 parent, as composite
+    # child trees may mix model families). Assigning this attribute after
+    # Runner.__init__ leaves context_cache_config as None during init, so
+    # _warn_uncached_agent_transfer logs once per app if the wrapped agent can
+    # transfer between sub-agents.
+    parent_cache_config = (
+        invocation_context.context_cache_config
+        if invocation_context is not None
+        else None
+    )
+    if parent_cache_config is not None:
+      runner.context_cache_config = parent_cache_config.model_copy(
+          update={
+              'ttl_seconds': min(
+                  parent_cache_config.ttl_seconds,
+                  _MAX_CHILD_AGENT_CACHE_TTL_S,
+              )
+          }
+      )
 
     state_dict = {
         k: v
         for k, v in tool_context.state.to_dict().items()
-        if not k.startswith('_adk')  # Filter out adk internal states
+        # Filter out adk internal states, temp-scoped ones included.
+        if not k.startswith(('_adk', f'{State.TEMP_PREFIX}_adk'))
     }
+    # create_session drops temp: keys, since they are never stored. Hand them
+    # to the nested run as a state delta instead, the way run_async applies
+    # temp: state for one invocation. Containers are shallow-copied so in-place
+    # edits in the nested run do not leak back into the caller's state, while
+    # other values such as client handles keep their identity.
+    temp_state: dict[str, Any] = {}
+    for k in list(state_dict):
+      if k.startswith(State.TEMP_PREFIX):
+        v = state_dict.pop(k)
+        temp_state[k] = copy.copy(v) if isinstance(v, (dict, list, set)) else v
     session = await runner.session_service.create_session(
         app_name=child_app_name,
         user_id=tool_context._invocation_context.user_id,
@@ -299,7 +402,7 @@ class AgentTool(BaseTool):
     if nested_run_config is not None and nested_run_config.support_cfc:
       # CFC describes how the caller's own model executes. Handing it to
       # another agent replaces that agent's code executor and refuses to run it
-      # at all unless its model happens to be a Gemini 2 one.
+      # at all unless its model is a Gemini model with live-API support.
       nested_run_config = nested_run_config.model_copy(
           update={'support_cfc': False}
       )
@@ -318,18 +421,44 @@ class AgentTool(BaseTool):
     # Aborting the caller also aborts the wrapped agent. The isinstance check
     # is intentional: tests may hand in a mocked caller context whose signal is
     # a Mock, and the nested runner would read that as already aborted.
-    abort_signal = invocation_context._abort_signal
+    # Read the caller's loop first: reading _abort_signal records the current
+    # loop when none is set yet. getattr keeps a mocked caller context (which
+    # has no _abort_state) on the abort_signal = None path below.
+    caller_loop = getattr(
+        getattr(invocation_context, '_abort_state', None), 'loop', None
+    )
+    abort_signal: Optional[asyncio.Event] = (
+        invocation_context._abort_signal  # pylint: disable=protected-access
+    )
     if not isinstance(abort_signal, asyncio.Event):
+      abort_signal = None
+    elif (
+        isinstance(caller_loop, asyncio.AbstractEventLoop)
+        and caller_loop is not asyncio.get_running_loop()
+    ):
+      # The tool runs in another event loop (e.g. RunConfig's tool thread
+      # pool). An asyncio.Event can only be awaited from one loop, so the
+      # nested runner's wait would fail and be taken as an abort. Run the
+      # wrapped agent without the caller's signal instead.
       abort_signal = None
 
     last_content = None
     last_error_message = None
     last_grounding_metadata = None
+    # Long-running tool calls (adk_request_confirmation, adk_request_input, a
+    # remote agent's input_required, or an ordinary LongRunningFunctionTool)
+    # all set long_running_tool_ids on the event carrying the call. An ordinary
+    # LongRunningFunctionTool that returns a truthy value resolves in the very
+    # same run via an auto-built function response, whereas HITL or remote
+    # input_required pauses do not, so only a call id that is *never* answered
+    # by a function response before the run ends is actually still pending.
+    pending_tool_ids: set[str] = set()
     async with Aclosing(
         runner.run_async(
             user_id=session.user_id,
             session_id=session.id,
             new_message=content,
+            state_delta=temp_state or None,
             run_config=nested_run_config,
             abort_signal=abort_signal,
         )
@@ -340,13 +469,36 @@ class AgentTool(BaseTool):
           tool_context.state.update(event.actions.state_delta)
         if event.error_message:
           last_error_message = event.error_message
+        if event.long_running_tool_ids:
+          pending_tool_ids |= event.long_running_tool_ids
         if event.content:
           last_content = event.content
           last_grounding_metadata = event.grounding_metadata
+          pending_tool_ids -= {
+              fr.id for fr in event.get_function_responses() if fr.id
+          }
 
     # Clean up runner resources (especially MCP sessions)
     # to avoid "Attempted to exit cancel scope in a different task" errors
     await runner.close()
+
+    if pending_tool_ids:
+      tool_context.actions.skip_summarization = False
+      sorted_ids = sorted(pending_tool_ids)
+      logger.warning(
+          'Agent %r paused with unresolved long-running tool call(s) %s, which'
+          ' AgentTool cannot resume because its nested session is discarded.'
+          ' Configure the agent under sub_agents (e.g. with'
+          " mode='single_turn' for LlmAgent) if it needs to pause and"
+          ' resume.',
+          self.agent.name,
+          sorted_ids,
+      )
+      return (
+          f'Error: agent {self.agent.name!r} stopped waiting on unresolved'
+          f' long-running tool call(s) (pending call ids: {sorted_ids}),'
+          ' which AgentTool cannot resume.'
+      )
 
     if last_content is None or last_content.parts is None:
       return last_error_message or ''
@@ -373,12 +525,17 @@ class AgentTool(BaseTool):
       cls, config: ToolArgsConfig, config_abs_path: str
   ) -> AgentTool:
     from ..agents import config_agent_utils
+    from ..agents.base_agent import BaseAgent
 
     agent_tool_config = AgentToolConfig.model_validate(config.model_dump())
 
     agent = config_agent_utils.resolve_agent_reference(
         agent_tool_config.agent, config_abs_path
     )
+    if not isinstance(agent, BaseAgent):
+      raise ValueError(
+          f'AgentTool requires an agent, got {type(agent).__name__}.'
+      )
     return cls(
         agent=agent,
         skip_summarization=agent_tool_config.skip_summarization,
@@ -417,6 +574,8 @@ class _SingleTurnAgentTool(AgentTool):
     if input_schema:
       try:
         node_input = input_schema.model_validate(args)
+      except ValidationError as e:
+        return _arg_validation_error(self.name, e)
       except Exception as e:
         return f'Error validating input: {e}'
     else:

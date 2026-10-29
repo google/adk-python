@@ -31,6 +31,7 @@ def create_client(
     app,
     streaming: bool = False,
     mode: Optional[Literal["task"]] = None,
+    use_legacy: bool = False,
 ) -> RemoteA2aAgent:
   """Creates a RemoteA2aAgent connected to the provided FastAPI app.
 
@@ -40,6 +41,8 @@ def create_client(
     mode: The agent's delegation mode. ``"task"`` makes the agent a task-mode
       delegate of a coordinator, which scopes its view of the session to the
       delegation that triggered it.
+    use_legacy: Whether to leave out the new integration extension, as
+      ``RemoteA2aAgent`` does by default.
 
   Returns:
     A RemoteA2aAgent instance.
@@ -56,12 +59,12 @@ def create_client(
   )
   factory = A2AClientFactory(config=client_config)
 
-  # use_legacy=False forces the new implementation
+  # use_legacy=False (the default here) forces the new implementation
   agent = RemoteA2aAgent(
       name="remote_agent",
       agent_card=agent_card,
       a2a_client_factory=factory,
-      use_legacy=False,
+      use_legacy=use_legacy,
       mode=mode,
   )
 

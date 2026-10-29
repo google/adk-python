@@ -12,34 +12,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared component-owner map for the adk_team triaging agents.
+"""Component-owner map for adk_pr_triaging_agent.
 
-Single source of truth, imported verbatim as LABEL_TO_OWNER by BOTH
-adk_triaging_agent (issues) and adk_pr_triaging_agent (PRs), so the two can
-never drift. The owner becomes the issue/PR assignee (its shepherd).
+Imported as LABEL_TO_OWNER. One of a component's owners becomes the PR assignee
+(its shepherd), taking turns by PR number when a component has several.
 
-github login != corp ldap, so these are the login form. Keep this in sync with
-the OWNERS file, which is the authority.
+github login != corp ldap, so these are the login form. Keep each component's
+first owner in sync with the OWNERS file, which is the authority.
 """
 
-# Component label -> GitHub login of the owner who shepherds that component.
+# Component label -> GitHub logins of the owners who shepherd that component.
 LABEL_TO_OWNER = {
-    "a2a": "mykytanetipa",
-    "agent engine": "yeesian",
-    "auth": "xuanyang15",
-    "bq": "shobsi",
-    "cli": "wyf7107",
-    "core": "DeanChensj",
-    "documentation": "joefernandez",
-    "eval": "i-yliu",
-    "integrations": "wukath",
-    "live": "wuliang229",
-    "mcp": "wukath",
-    "models": "xuanyang15",
-    "services": "DeanChensj",
-    "skills": "wukath",
-    "tools": "xuanyang15",
-    "tracing": "jawoszek",
-    "web": "wyf7107",
-    "workflow": "DeanChensj",
+    "a2a": ["mykytanetipa"],
+    "agent engine": ["yeesian"],
+    "auth": ["xuanyang15"],
+    "bq": ["shobsi"],
+    "cli": ["wyf7107"],
+    "core": ["DeanChensj"],
+    "documentation": ["joefernandez"],
+    "eval": ["i-yliu"],
+    "integrations": ["wukath"],
+    "live": ["wuliang229"],
+    "mcp": ["wukath"],
+    "models": ["xuanyang15"],
+    "services": ["DeanChensj", "asugumar-google"],
+    "skills": ["wukath"],
+    "tools": ["xuanyang15", "asugumar-google"],
+    "tracing": ["jawoszek"],
+    "web": ["wyf7107"],
+    "workflow": ["DeanChensj"],
 }

@@ -19,13 +19,14 @@ from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
 
-import google.api_core.client_info
 from google.api_core.gapic_v1 import client_info as gapic_client_info
 from google.auth.credentials import Credentials
 from google.cloud import bigquery
 
 from ... import version
-from ...utils._telemetry_context import _is_visual_builder
+from ...utils._telemetry_context import _surface_user_agent
+from .._google_sdk import create_client_info as _create_client_info
+from .._google_sdk import create_gapic_client_info as _create_gapic_client_info
 
 if TYPE_CHECKING:
   from google.cloud import dataplex_v1
@@ -34,9 +35,6 @@ USER_AGENT_BASE = f"google-adk/{version.__version__}"
 BQ_USER_AGENT = f"adk-bigquery-tool {USER_AGENT_BASE}"
 DP_USER_AGENT = f"adk-dataplex-tool {USER_AGENT_BASE}"
 USER_AGENT = BQ_USER_AGENT
-
-# Internal identifier for Visual Builder usage tracking.
-_VISUAL_BUILDER_UA = "google-adk-visual-builder"
 
 # google-cloud-dataplex is optional, so the modules that need it import it
 # where it is used and raise this instead of failing at import time.
@@ -67,8 +65,8 @@ def get_bigquery_client(
 
   user_agents = [BQ_USER_AGENT]
 
-  if _is_visual_builder.get():
-    user_agents.append(_VISUAL_BUILDER_UA)
+  if surface_ua := _surface_user_agent():
+    user_agents.append(surface_ua)
 
   if user_agent:
     if isinstance(user_agent, str):
@@ -76,9 +74,7 @@ def get_bigquery_client(
     else:
       user_agents.extend([ua for ua in user_agent if ua])
 
-  client_info = google.api_core.client_info.ClientInfo(
-      user_agent=" ".join(user_agents)
-  )
+  client_info = _create_client_info(user_agent=" ".join(user_agents))
 
   bigquery_client = bigquery.Client(
       project=project,
@@ -115,8 +111,8 @@ def get_dataplex_catalog_client(
 
   user_agents = [DP_USER_AGENT]
 
-  if _is_visual_builder.get():
-    user_agents.append(_VISUAL_BUILDER_UA)
+  if surface_ua := _surface_user_agent():
+    user_agents.append(surface_ua)
 
   if user_agent:
     if isinstance(user_agent, str):
@@ -124,7 +120,9 @@ def get_dataplex_catalog_client(
     else:
       user_agents.extend([ua for ua in user_agent if ua])
 
-  client_info = gapic_client_info.ClientInfo(user_agent=" ".join(user_agents))
+  client_info: gapic_client_info.ClientInfo = _create_gapic_client_info(
+      user_agent=" ".join(user_agents)
+  )
 
   return dataplex_v1.CatalogServiceClient(
       credentials=credentials,

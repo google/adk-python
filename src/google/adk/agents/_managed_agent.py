@@ -19,7 +19,6 @@ import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
-from typing import Literal
 from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
@@ -46,6 +45,7 @@ from ..telemetry import tracer
 from ..tools._remote_mcp_server import RemoteMcpServer
 from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
+from ..utils._agent_mode import SingleTurnAgentMode
 from ..utils._google_client_headers import get_tracking_http_options
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.content_utils import to_user_content
@@ -53,11 +53,11 @@ from ..utils.context_utils import Aclosing
 from ..utils.env_utils import is_enterprise_mode_enabled
 from ..utils.instructions_utils import inject_session_state
 from ..utils.instructions_utils import InstructionProvider
+from ._streaming_mode import StreamingMode
 from .base_agent import BaseAgent
 from .context import Context
 from .invocation_context import InvocationContext
 from .readonly_context import ReadonlyContext
-from .run_config import StreamingMode
 
 if TYPE_CHECKING:
   from google.genai import Client
@@ -137,7 +137,7 @@ class ManagedAgent(BaseAgent):
   model_config = ConfigDict(arbitrary_types_allowed=True, extra='forbid')
 
   agent_id: str
-  """The Managed Agent id (e.g. 'antigravity-preview-05-2026' or 'agents/ID')."""
+  """The Managed Agent id (e.g. 'antigravity-preview-09-2026' or 'agents/ID')."""
 
   environment: Optional[CreateAgentInteractionEnvironmentParam] = None
   """A sandbox environment spec (e.g. ``{'type': 'remote'}``) or an existing
@@ -162,7 +162,7 @@ class ManagedAgent(BaseAgent):
   """Server-side tools: ADK built-in tools, raw types.Tool configs, or
   RemoteMcpServer specs for server-side remote MCP."""
 
-  mode: Literal['single_turn'] | None = None
+  mode: SingleTurnAgentMode | None = None
   """Composition mode.
 
   Only ``single_turn`` is supported: the agent runs as an inline single-turn
@@ -366,12 +366,13 @@ class ManagedAgent(BaseAgent):
       parent_context = parent_context.model_copy(
           update={'user_content': to_user_content(node_input)}
       )
-    async for event in self.run_async(parent_context=parent_context):
-      if event.author:
-        ctx.event_author = event.author
-      if not event.node_info.path and event.author == self.name:
-        event.node_info.path = ctx.node_path
-      yield event
+    async with Aclosing(self.run_async(parent_context=parent_context)) as agen:
+      async for event in agen:
+        if event.author:
+          ctx.event_author = event.author
+        if not event.node_info.path and event.author == self.name:
+          event.node_info.path = ctx.node_path
+        yield event
 
   async def _run_async_impl(
       self, ctx: InvocationContext

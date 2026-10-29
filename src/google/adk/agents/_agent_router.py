@@ -21,13 +21,18 @@ from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from ..events._abort_events import _is_abort_event
 from ..events._branch_path import _BranchPath
+from ..events._interrupts import index_open_interrupts
 from ..events._node_path_builder import _NodePathBuilder
 from ..events._rewind_events import _apply_rewinds
 from ..events.event import Event
+from ..flows.llm_flows.core._resume import decide_resume_action
+from ..flows.llm_flows.core._resume import ResumeRoute
 from ..flows.llm_flows.extensions._agent_transfer import _get_transfer_targets
 from ..flows.llm_flows.tools._functions import _collect_function_call_ids
 from ..flows.llm_flows.tools._functions import find_matching_function_call
+from ..utils._agent_mode import DELEGATED_TASK_MODES
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
@@ -37,6 +42,54 @@ if TYPE_CHECKING:
   from ..workflow._base_node import BaseNode
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _resolve_resumed_agent(
+    root_agent: BaseAgent,
+    call_event: Event,
+    events: list[Event],
+) -> Optional[BaseAgent]:
+  """Resolves the agent in `root_agent`'s hierarchy that owns `call_event`.
+
+  Consults `index_open_interrupts(events[:-1])` first when the trailing
+  `FunctionResponse` answers an open interrupt (including one emitted inside a
+  tool sub-branch whose `ancestor_authors` identify the calling agent), falling
+  back to `call_event.author` and sub-branch run IDs for regular tool calls.
+  """
+  open_interrupts = index_open_interrupts(events[:-1])
+  function_responses = events[-1].get_function_responses()
+  if (
+      function_responses
+      and function_responses[0].id
+      and (interrupt := open_interrupts.get(function_responses[0].id))
+      is not None
+  ):
+    for candidate_author in interrupt.candidate_authors:
+      if (resumed_agent := root_agent.find_agent(candidate_author)) is not None:
+        return resumed_agent
+
+  if (
+      call_event.author
+      and (resumed_agent := root_agent.find_agent(call_event.author))
+      is not None
+  ):
+    return resumed_agent
+  if not call_event.branch:
+    return None
+  run_ids = {
+      rid
+      for rid in _BranchPath.from_string(call_event.branch).run_ids
+      if not rid.isdigit()
+  }
+  if not run_ids:
+    return None
+  for ev in reversed(events):
+    if not ev.author:
+      continue
+    if any(fc.id in run_ids for fc in ev.get_function_calls() if fc.id):
+      if (resumed_agent := root_agent.find_agent(ev.author)) is not None:
+        return resumed_agent
+  return None
 
 
 def can_transfer_between_agents(root: Any) -> bool:
@@ -78,6 +131,19 @@ def is_transferable_across_agent_tree(agent_to_run: BaseAgent) -> bool:
   return True
 
 
+def _resolve_task_delegator(
+    agent: BaseAgent, root_agent: BaseAgent
+) -> BaseAgent:
+  """Maps an agent inside a task delegation to the agent that delegated it."""
+  delegator = agent
+  current = agent
+  while current is not root_agent and current.parent_agent is not None:
+    if getattr(current, "mode", None) in DELEGATED_TASK_MODES:
+      delegator = current.parent_agent
+    current = current.parent_agent
+  return delegator
+
+
 def find_agent_to_run(
     session: Session,
     root_agent: BaseAgent,
@@ -92,12 +158,14 @@ def find_agent_to_run(
   - The root agent.
   - An LlmAgent who replied last and is capable to transfer to any other agent
     in the agent hierarchy.
+  - The target of the latest valid transfer_to_agent, when the target has not
+    replied since (e.g. it failed before yielding any event).
 
-  TODO: use wait_for_output to decide the agent to run
+  An agent inside a task delegation is replaced by the agent that delegated it.
 
   Args:
       session: The session to find the agent for.
-      root_agent: The root agent of the runner.
+      root_agent: The agent of the runner.
       resumability_config: Optional resumability configuration.
 
   Returns:
@@ -116,32 +184,70 @@ def find_agent_to_run(
   # type of the agent. e.g. a remote a2a agent may surface a credential
   # request as a special long-running function tool call.
   filtered_events = _apply_rewinds(session.events)
-  event = find_matching_function_call(filtered_events)
-  is_resumable = resumability_config and resumability_config.is_resumable
-  # Only route based on a past function response if resumability is enabled.
-  # In non-resumable scenarios, a turn ending with function call response
-  # shouldn't trap the next turn on that same agent if it's not transferable.
-  # Falling through allows it to return to root.
-  if event and event.author and is_resumable:
-    # `find_agent` returns None when the author does not correspond to any
-    # agent in the current hierarchy (e.g. the author is "user" or a stale or
-    # foreign agent name carried over from a previous turn/session). Returning
-    # None here would propagate to `build_node`, raising a confusing
-    # "Invalid node type: <class 'NoneType'>" error. Fall through to the
-    # event-scan logic below (which ultimately falls back to the root agent)
-    # whenever the author cannot be resolved.
-    if (resumed_agent := root_agent.find_agent(event.author)) is not None:
-      return resumed_agent
+  last_non_user_event = next(
+      (ev for ev in reversed(filtered_events) if ev.author != "user"),
+      None,
+  )
+  event = (
+      find_matching_function_call(filtered_events)
+      if (
+          filtered_events
+          and not _is_abort_event(filtered_events[-1])
+          and not (
+              last_non_user_event is not None
+              and _is_abort_event(last_non_user_event)
+          )
+      )
+      else None
+  )
+  is_resumable = bool(resumability_config and resumability_config.is_resumable)
+  if event and event.author:
+    answer_event = filtered_events[-1]
+    route = decide_resume_action(
+        event,
+        answer_event,
+        is_resumable=is_resumable,
+    )
+    if route in (ResumeRoute.ROUTE_TO_AUTHOR, ResumeRoute.REPLAY_CALLS):
+      # `_resolve_resumed_agent` returns None when the author does not
+      # correspond to any agent in the current hierarchy (e.g. the author is
+      # "user" or a stale or foreign agent name carried over from a previous
+      # turn/session). Fall through to the event-scan logic below (which
+      # ultimately falls back to the root agent) whenever the author cannot be
+      # resolved.
+      if (
+          resumed_agent := _resolve_resumed_agent(
+              root_agent, event, filtered_events
+          )
+      ) is not None:
+        return _resolve_task_delegator(resumed_agent, root_agent)
 
   def _event_filter(event: Event) -> bool:
-    """Filters out user-authored events and agent state change events."""
-    if event.author == "user":
+    """Filters out user, abort-sealing and agent state change events."""
+    if event.author == "user" or _is_abort_event(event):
       return False
     if event.actions.agent_state is not None or event.actions.end_of_agent:
+      return False
+    # A node failure is recorded as an error event without content. It is not
+    # a reply, and its author may be inherited from the parent context, so it
+    # must not decide which agent owns the conversation.
+    if event.error_code and not (event.content and event.content.parts):
       return False
     return True
 
   for event in filter(_event_filter, reversed(filtered_events)):
+    # The target of an unanswered transfer owns the turn. Resolving it among
+    # the author's transfer targets leaves transfers the scheduler rejected
+    # out of routing.
+    if (target_name := event.actions.transfer_to_agent) and (
+        source := root_agent.find_agent(event.author)
+    ):
+      target = next(
+          (a for a in _get_transfer_targets(source) if a.name == target_name),
+          None,
+      )
+      if target is not None and is_transferable_across_agent_tree(target):
+        return target
     if event.author == root_agent.name:
       # Found root agent.
       return root_agent
@@ -155,7 +261,7 @@ def find_agent_to_run(
       continue
     transferable = is_transferable_across_agent_tree(agent)
     if transferable:
-      return agent
+      return _resolve_task_delegator(agent, root_agent)
   # Falls back to root agent if no suitable agents are found in the session.
   return root_agent
 

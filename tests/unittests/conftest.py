@@ -13,10 +13,15 @@
 # limitations under the License.
 
 import os
+import sys
 
 import pytest
 
 pytest.register_assert_rewrite('google.adk.cli.agent_test_runner')
+
+# autospec of a lazily imported name specs its proxy instead of the class.
+if sys.version_info[:2] == (3, 15):
+  sys.set_lazy_imports_filter(lambda *_: False)
 
 from google.adk.utils import _gcp_metadata
 from pytest import fixture

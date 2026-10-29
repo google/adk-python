@@ -68,6 +68,14 @@ def test_eval_client_label():
   )
 
 
+def test_model_consult_client_label():
+  """Test MODEL_CONSULT_CLIENT_LABEL has correct format."""
+  assert (
+      f"google-adk-model-consult/{version.__version__}"
+      == _client_labels_utils.MODEL_CONSULT_CLIENT_LABEL
+  )
+
+
 def test_get_client_labels_with_framework_label():
   """An explicit framework_label appends a +suffix to the google-adk token."""
   labels = _client_labels_utils.get_client_labels(

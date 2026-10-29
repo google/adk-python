@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 from typing import Optional
@@ -26,10 +27,14 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.run_config import StreamingMode
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.apps.app import App
+from google.adk.apps.app import EventsCompactionConfig
+from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.flows.llm_flows.tools._thread_pool import _call_tool_in_thread_pool
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -39,9 +44,12 @@ from google.adk.runners import Runner
 import google.adk.runners as _runners_module
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_configs import ToolArgsConfig
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils.variant_utils import GoogleLLMVariant
+from google.adk.workflow._function_node import FunctionNode
 from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
@@ -552,6 +560,152 @@ def test_update_state():
   assert runner.session.state['state_1'] == 'changed_value'
 
 
+@mark.parametrize(
+    'reader',
+    [
+        'instruction',
+        'optional_instruction',
+        'callback',
+        'tool',
+        'sequential_agent',
+        'input_schema',
+    ],
+)
+def test_agent_tool_reads_caller_temp_state(reader):
+  """The wrapped agent reads the caller's temp: state, but not adk's own."""
+
+  class _NotJsonSerializable:
+    """A value only temp: state can hold, since it is never persisted."""
+
+  class TicketInput(BaseModel):
+    custom_input: str
+
+  client = _NotJsonSerializable()
+  seen = {}
+  keys = ('temp:ticket', 'temp:client', 'plain', 'temp:_adk_internal')
+
+  def set_caller_state(callback_context: CallbackContext):
+    callback_context.state['temp:ticket'] = 'T-42'
+    callback_context.state['temp:client'] = client
+    callback_context.state['plain'] = 'P'
+    callback_context.state['temp:_adk_internal'] = 'X'
+
+  def read_in_callback(callback_context: CallbackContext):
+    for key in keys:
+      seen[key] = callback_context.state.get(key)
+
+  def read_in_tool(tool_context: ToolContext) -> str:
+    for key in keys:
+      seen[key] = tool_context.state.get(key)
+    return 'read'
+
+  template = 'ticket: {temp:ticket} plain: {plain}'
+  tool_call = (
+      function_call_custom
+      if reader == 'input_schema'
+      else function_call_no_schema
+  )
+  responses = ['response1', 'response2']
+  if reader == 'tool':
+    responses.insert(0, Part.from_function_call(name='read_in_tool', args={}))
+  mock_model = testing_utils.MockModel.create(responses=[tool_call, *responses])
+  if reader == 'sequential_agent':
+    tool_agent = SequentialAgent(
+        name='tool_agent',
+        sub_agents=[
+            Agent(name='inner_agent', model=mock_model, instruction=template)
+        ],
+    )
+  elif reader == 'input_schema':
+    tool_agent = Agent(
+        name='tool_agent',
+        model=mock_model,
+        input_schema=TicketInput,
+        instruction=template,
+    )
+  else:
+    tool_agent = Agent(
+        name='tool_agent',
+        model=mock_model,
+        instruction={
+            'instruction': template,
+            'optional_instruction': 'ticket: {temp:ticket?} plain: {plain?}',
+        }.get(reader, 'no template'),
+        before_agent_callback=(
+            read_in_callback if reader == 'callback' else None
+        ),
+        tools=[read_in_tool] if reader == 'tool' else [],
+    )
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      before_agent_callback=set_caller_state,
+      tools=[AgentTool(agent=tool_agent)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  runner.run('test1')
+
+  if reader in ('callback', 'tool'):
+    assert seen['temp:ticket'] == 'T-42'
+    assert seen['temp:client'] is client
+    assert seen['plain'] == 'P'
+    assert seen['temp:_adk_internal'] is None
+  else:
+    assert mock_model.requests[1].config.system_instruction.startswith(
+        'ticket: T-42 plain: P'
+    )
+
+
+def test_agent_tool_temp_state_is_not_copied_back_to_caller():
+  """temp: state the wrapped agent edits or writes stays in the nested run."""
+  child_parts = []
+
+  def set_caller_state(callback_context: CallbackContext):
+    callback_context.state['temp:ticket'] = 'T-42'
+    callback_context.state['temp:parts'] = []
+
+  def edit_temp_state(tool_context: ToolContext) -> str:
+    tool_context.state['temp:parts'] += ['child_part']
+    tool_context.state['temp:ticket'] = 'changed'
+    child_parts.append(list(tool_context.state['temp:parts']))
+    return 'edited'
+
+  caller_deltas = []
+  caller_parts = []
+
+  def record_caller_state(tool, args, tool_context, tool_response):
+    caller_deltas.append(dict(tool_context.actions.state_delta))
+    caller_parts.append(tool_context.state.get('temp:parts'))
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          function_call_no_schema,
+          Part.from_function_call(name='edit_temp_state', args={}),
+          'response1',
+          'response2',
+      ]
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=mock_model, tools=[edit_temp_state]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      before_agent_callback=set_caller_state,
+      after_tool_callback=record_caller_state,
+      tools=[AgentTool(agent=tool_agent)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  runner.run('test1')
+
+  assert child_parts == [['child_part']]
+  assert len(caller_deltas) == 1
+  assert not any(key.startswith('temp:') for key in caller_deltas[0])
+  assert caller_parts == [[]]
+
+
 @mark.asyncio
 async def test_update_artifacts():
   """The agent tool can read and write artifacts."""
@@ -664,6 +818,83 @@ def test_custom_schema(env_variables):
   # The second request is the tool agent request.
   assert mock_model.requests[1].config.response_schema == CustomOutput
   assert mock_model.requests[1].config.response_mime_type == 'application/json'
+
+
+@mark.parametrize('skip_summarization', [False, True])
+def test_invalid_input_schema_args_return_error_to_model(skip_summarization):
+  class TripInput(BaseModel):
+    city: str
+    days: int
+
+  tool_agent_model = testing_utils.MockModel.create(responses=['unused'])
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, input_schema=TripInput
+  )
+  root_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(name='tool_agent', args={'city': 'Paris'}),
+          'retrying',
+      ]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=root_model,
+      tools=[
+          AgentTool(agent=tool_agent, skip_summarization=skip_summarization)
+      ],
+  )
+
+  events = testing_utils.InMemoryRunner(root_agent).run('plan a trip')
+
+  function_responses = []
+  for event in events:
+    function_responses.extend(event.get_function_responses())
+  assert len(function_responses) == 1
+  error = function_responses[0].response['error']
+  assert error.startswith(
+      'Invoking `tool_agent()` failed due to argument validation errors:'
+  )
+  assert 'days' in error
+  assert testing_utils.simplify_events(events)[-1] == (
+      'root_agent',
+      'retrying',
+  )
+  assert not tool_agent_model.requests
+
+
+@mark.asyncio
+async def test_single_turn_tool_invalid_input_schema_args_return_error_to_model():
+  from google.adk.tools.agent_tool import _SingleTurnAgentTool
+
+  class TripInput(BaseModel):
+    city: str
+    days: int
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=testing_utils.MockModel.create(responses=['unused']),
+      input_schema=TripInput,
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  invocation_context = InvocationContext(
+      invocation_id='invocation_id',
+      agent=tool_agent,
+      session=session,
+      session_service=session_service,
+  )
+
+  result = await _SingleTurnAgentTool(tool_agent).run_async(
+      args={'city': 'Paris'},
+      tool_context=ToolContext(invocation_context=invocation_context),
+  )
+
+  assert result['error'].startswith(
+      'Invoking `tool_agent()` failed due to argument validation errors:'
+  )
+  assert 'days' in result['error']
 
 
 @mark.parametrize(
@@ -1442,6 +1673,215 @@ async def test_run_async_preserves_error_when_only_thought_parts():
   assert result == 'A2A request failed: 503'
 
 
+@mark.asyncio
+async def test_run_async_returns_empty_string_when_only_thought_parts():
+  """All-thought final content with no error_message returns ''."""
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='thinking', thought=True)],
+          ),
+      ),
+  ])
+  assert result == ''
+
+
+@mark.asyncio
+@mark.parametrize(
+    'empty_part',
+    [
+        types.Part(executable_code=types.ExecutableCode(code='')),
+        types.Part(code_execution_result=types.CodeExecutionResult(output='')),
+        types.Part(),
+    ],
+)
+async def test_run_async_skips_parts_without_text(empty_part: types.Part):
+  """A part with no text, code or output adds nothing to the result."""
+  result = await _run_agent_tool_with_parts(
+      [empty_part, types.Part(text='after')]
+  )
+  assert result == 'after'
+
+
+@mark.asyncio
+async def test_run_async_reports_error_when_wrapped_agent_pauses() -> None:
+  """A HITL pause (adk_request_confirmation) must not look like a success.
+
+  The nested run's session is thrown away once AgentTool.run_async returns,
+  so a pending long_running_tool_ids call can never be resumed. The caller
+  must see an explicit error instead of {"result": ""}, which would make its
+  model believe the pending action already completed.
+  """
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id='adk-123',
+                          name='adk_request_confirmation',
+                          args={},
+                      )
+                  )
+              ],
+          ),
+          long_running_tool_ids={'adk-123'},
+      ),
+  ])
+  assert result == (
+      "Error: agent 'inner_agent' stopped waiting on unresolved"
+      " long-running tool call(s) (pending call ids: ['adk-123']),"
+      ' which AgentTool cannot resume.'
+  )
+
+
+@mark.asyncio
+async def test_run_async_reports_error_when_llm_agent_requires_confirmation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """End-to-end confirmation pause in a wrapped LlmAgent surfaces an error."""
+  called = False
+
+  def delete_item(item_id: str) -> str:
+    nonlocal called
+    called = True
+    return f'deleted {item_id}'
+
+  inner_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(name='delete_item', args={'item_id': '42'}),
+      ]
+  )
+  inner_agent = LlmAgent(
+      name='inner_agent',
+      description='Deletes items',
+      model=inner_model,
+      tools=[FunctionTool(delete_item, require_confirmation=True)],
+  )
+  root_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(
+              name='inner_agent', args={'request': 'delete 42'}
+          ),
+          Part.from_text(
+              text='Could not delete item because confirmation is required.'
+          ),
+      ]
+  )
+  root_agent = LlmAgent(
+      name='root_agent',
+      model=root_model,
+      tools=[AgentTool(agent=inner_agent, skip_summarization=True)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  with caplog.at_level('WARNING', logger='google_adk'):
+    events = await runner.run_async('please delete 42')
+
+  assert not called
+  function_responses = [
+      fr
+      for event in events
+      for fr in event.get_function_responses()
+      if fr.name == 'inner_agent'
+  ]
+  assert len(function_responses) == 1
+  assert function_responses[0].response is not None
+  error_text = function_responses[0].response['result']
+  assert error_text.startswith(
+      "Error: agent 'inner_agent' stopped waiting on unresolved"
+      ' long-running tool call(s) (pending call ids: ['
+  )
+  assert events[-1].content and events[-1].content.parts
+  assert events[-1].content.parts[0].text == (
+      'Could not delete item because confirmation is required.'
+  )
+  assert any(
+      "Agent 'inner_agent' paused with unresolved long-running tool call(s)"
+      in record.getMessage()
+      for record in caplog.records
+  )
+
+
+@mark.asyncio
+async def test_run_async_returns_answer_after_long_running_tool_resolves() -> (
+    None
+):
+  """A long-running call answered in the same or a later event is not a pause.
+
+  An ordinary LongRunningFunctionTool that returns a truthy progress value
+  (e.g. {'status': 'pending'}) gets an auto-built function response in the
+  very same turn (see _caller.py), and A2A converters may aggregate both the
+  long-running call and its response onto a single Event. In both cases the
+  call is resolved before the run ends, so AgentTool must return the genuine
+  final answer instead of the error.
+  """
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name='slow_tool', args={}, id='adk-123'
+                      )
+                  )
+              ],
+          ),
+          long_running_tool_ids={'adk-123'},
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='slow_tool',
+                          response={'status': 'pending'},
+                          id='adk-123',
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name='slow_tool', args={}, id='adk-456'
+                      )
+                  ),
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='slow_tool',
+                          response={'status': 'done'},
+                          id='adk-456',
+                      )
+                  ),
+              ],
+          ),
+          long_running_tool_ids={'adk-456'},
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='final answer after pending tool')],
+          ),
+      ),
+  ])
+  assert result == 'final answer after pending tool'
+
+
 class TestAgentToolWithCompositeAgents:
   """Tests for AgentTool wrapping composite agents (SequentialAgent, etc.)."""
 
@@ -2150,3 +2590,675 @@ async def test_run_async_input_schema_content_survives_node_validation(
   assert validate_node_data(
       _RoundTripInput, content, preserve_content=False
   ) == {'query': 'hello', 'limit': 5}
+
+
+class _SlowMockModel(testing_utils.MockModel):
+  """Answers after a delay, so the runner waits on the abort signal meanwhile."""
+
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ):
+    await asyncio.sleep(0.2)
+    async for response in super().generate_content_async(llm_request, stream):
+      yield response
+
+
+def _nested_llm_agent() -> LlmAgent:
+  # An LlmAgent, so the nested Runner takes the node path that awaits the
+  # abort signal.
+  return LlmAgent(
+      name='tool_agent',
+      model=_SlowMockModel.create(responses=['nested reply']),
+  )
+
+
+async def _caller_context_bound_to_this_loop(
+    tool_agent: BaseAgent,
+) -> InvocationContext:
+  """Returns a caller context whose abort signal is bound to the running loop."""
+  root_agent = Agent(
+      name='root_agent', model='test-model', tools=[AgentTool(agent=tool_agent)]
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=root_agent
+  )
+  # Await the signal once so it binds to this loop, as the caller's runner does.
+  with contextlib.suppress(asyncio.TimeoutError):
+    await asyncio.wait_for(
+        invocation_context._abort_signal.wait(),  # pylint: disable=protected-access
+        timeout=0.01,
+    )
+  return invocation_context
+
+
+@mark.asyncio
+async def test_agent_tool_in_tool_thread_pool_returns_nested_reply():
+  """In the tool thread pool, the nested run is not aborted by the caller's signal.
+
+  The pool runs the tool in a fresh event loop on a worker thread, where the
+  caller's abort signal cannot be awaited.
+  """
+  tool_agent = _nested_llm_agent()
+  invocation_context = await _caller_context_bound_to_this_loop(tool_agent)
+
+  result = await _call_tool_in_thread_pool(
+      AgentTool(agent=tool_agent),
+      {'request': 'hello'},
+      ToolContext(invocation_context),
+  )
+
+  assert result == 'nested reply'
+
+
+@mark.asyncio
+@mark.parametrize(
+    ('parent_ttl_seconds', 'expected_child_ttl_seconds'),
+    [
+        (1800, 300),
+        (120, 120),
+        (None, None),
+    ],
+    ids=[
+        'ttl_above_cap_clamped_to_300s',
+        'ttl_below_cap_preserved',
+        'no_parent_cache_config_remains_none',
+    ],
+)
+async def test_agent_tool_propagates_cache_config(
+    parent_ttl_seconds: int | None,
+    expected_child_ttl_seconds: int | None,
+):
+  """The child sees the parent's cache config with its TTL capped at 300s."""
+  from google.adk.agents.context_cache_config import ContextCacheConfig
+  from google.adk.apps.app import App
+
+  child_model = testing_utils.MockModel.create(responses=['child result'])
+  child = LlmAgent(name='tool_agent', model=child_model)
+  parent_model = testing_utils.MockModel.create(
+      responses=[function_call_no_schema, 'done']
+  )
+  parent = LlmAgent(
+      name='root_agent', model=parent_model, tools=[AgentTool(agent=child)]
+  )
+  cache_config = (
+      ContextCacheConfig(
+          min_tokens=1024, ttl_seconds=parent_ttl_seconds, cache_intervals=5
+      )
+      if parent_ttl_seconds is not None
+      else None
+  )
+  app = App(
+      name='cached_parent_app',
+      root_agent=parent,
+      context_cache_config=cache_config,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async('go')
+
+  (child_request,) = child_model.requests
+  if expected_child_ttl_seconds is None:
+    assert [r.cache_config for r in parent_model.requests] == [None, None]
+    assert child_request.cache_config is None
+  else:
+    assert [r.cache_config.ttl_seconds for r in parent_model.requests] == [
+        parent_ttl_seconds,
+        parent_ttl_seconds,
+    ]
+    assert child_request.cache_config is not None
+    assert child_request.cache_config.ttl_seconds == expected_child_ttl_seconds
+    assert child_request.cache_config.min_tokens == 1024
+    assert child_request.cache_config.cache_intervals == 5
+
+
+@mark.asyncio
+async def test_agent_tool_child_cache_state_starts_empty_on_every_call():
+  """Each call runs the child in a new session, so no cache state carries over.
+
+  Gemini creates an explicit cache only when an earlier response in the same
+  session left cache metadata behind. That handoff happens within one AgentTool
+  call and never across calls.
+  """
+  from google.adk.agents.context_cache_config import ContextCacheConfig
+  from google.adk.apps.app import App
+  from google.adk.models.cache_metadata import CacheMetadata
+
+  fingerprint_only = CacheMetadata(fingerprint='child-fp', contents_count=0)
+  usage = types.GenerateContentResponseUsageMetadata(prompt_token_count=4096)
+
+  def lookup(query: str) -> str:
+    """Looks up a query."""
+    return f'result for {query}'
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          LlmResponse(
+              content=types.Content(
+                  role='model',
+                  parts=[
+                      Part.from_function_call(
+                          name='lookup', args={'query': 'a'}
+                      )
+                  ],
+              ),
+              cache_metadata=fingerprint_only,
+              usage_metadata=usage,
+          ),
+          LlmResponse(
+              content=types.Content(role='model', parts=[Part(text='first')]),
+              usage_metadata=usage,
+          ),
+          LlmResponse(
+              content=types.Content(role='model', parts=[Part(text='second')]),
+              cache_metadata=fingerprint_only,
+              usage_metadata=usage,
+          ),
+      ]
+  )
+  inner = LlmAgent(name='tool_agent', model=mock_model, tools=[lookup])
+  parent_model = testing_utils.MockModel.create(
+      responses=[
+          function_call_no_schema,
+          'first done',
+          function_call_no_schema,
+          'second done',
+      ]
+  )
+  parent = LlmAgent(
+      name='root_agent', model=parent_model, tools=[AgentTool(agent=inner)]
+  )
+  app = App(
+      name='cached_parent_app',
+      root_agent=parent,
+      context_cache_config=ContextCacheConfig(
+          min_tokens=1024, ttl_seconds=1800, cache_intervals=5
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async('one')
+  await runner.run_async('two')
+
+  first_call_start, first_call_after_tool, second_call_start = (
+      mock_model.requests
+  )
+  assert [r.cache_config.ttl_seconds for r in mock_model.requests] == [
+      300,
+      300,
+      300,
+  ]
+  assert first_call_start.cache_metadata is None
+  assert first_call_start.cacheable_contents_token_count is None
+  assert first_call_after_tool.cache_metadata == fingerprint_only
+  assert first_call_after_tool.cacheable_contents_token_count == 4096
+  assert second_call_start.cache_metadata is None
+  assert second_call_start.cacheable_contents_token_count is None
+
+
+_non_agent_node = FunctionNode(func=lambda: None, name='non_agent_node')
+
+
+def test_from_config_rejects_non_agent_node():
+  config = ToolArgsConfig(agent={'code': f'{__name__}._non_agent_node'})
+
+  with pytest.raises(ValueError, match='AgentTool requires an agent'):
+    AgentTool.from_config(config, '/tmp/root_agent.yaml')
+
+
+@mark.asyncio
+async def test_agent_tool_compacts_nested_history_at_caller_token_threshold():
+  """An agent tool's own history is compacted at the caller's token threshold.
+
+  Setup: the caller's app compacts at 100 tokens; the wrapped agent reads a
+    large file three times before answering, and every model call reports 200
+    prompt tokens.
+  Act: run the root agent, which calls the agent tool once.
+  Assert: the wrapped agent's last request carries the compaction summary
+    instead of its full tool-call history, and the summarizer runs only on the
+    three in-flow checks before calls 2-4, not post-invocation after call 4.
+  """
+
+  def read_large_file() -> str:
+    """Returns a large file body."""
+    return 'lorem ipsum dolor sit amet ' * 80
+
+  read_call = Part.from_function_call(name='read_large_file', args={})
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[read_call, read_call, read_call, 'nested answer'],
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=200
+      ),
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, tools=[read_large_file]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[function_call_no_schema, 'root answer'],
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=10
+          ),
+      ),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+  summarizer_model = testing_utils.MockModel.create(
+      responses=['NESTED SUMMARY'] * 20
+  )
+  app = App(
+      name='parent_app',
+      root_agent=root_agent,
+      events_compaction_config=EventsCompactionConfig(
+          compaction_interval=10_000,
+          overlap_size=0,
+          token_threshold=100,
+          event_retention_size=0,
+          summarizer=LlmEventSummarizer(llm=summarizer_model),
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async('go')
+
+  last_prompt_text = ' '.join(
+      part.text
+      for content in tool_agent_model.requests[-1].contents
+      for part in content.parts or []
+      if part.text
+  )
+  assert len(tool_agent_model.requests) == 4
+  assert 'NESTED SUMMARY' in last_prompt_text
+  assert len(summarizer_model.requests) == 3
+
+
+@mark.asyncio
+async def test_agent_tool_skips_post_invocation_compaction_on_last_call():
+  """Crossing token_threshold on the last nested call skips post-compaction.
+
+  Setup: the caller's app sets token_threshold=100 with summarizer=None and
+    wraps a SequentialAgent whose LlmAgent sub-agent stays below the threshold
+    after its first call (20 tokens plus a ~45-token tool call and response)
+    and crosses it on its final call (200 tokens).
+  Act: run the root agent, which calls the wrapped SequentialAgent tool once.
+  Assert: the nested run finishes without running post-invocation compaction,
+    which would raise ValueError on SequentialAgent with summarizer=None or
+    burn a summarizer call on the discarded session.
+  """
+
+  def read_large_file() -> str:
+    """Returns a file body small enough to keep the first call under 100."""
+    return 'lorem ipsum dolor sit amet ' * 5
+
+  read_call = Part.from_function_call(name='read_large_file', args={})
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[
+          LlmResponse(
+              content=testing_utils.ModelContent([read_call]),
+              usage_metadata=types.GenerateContentResponseUsageMetadata(
+                  prompt_token_count=20
+              ),
+          ),
+          LlmResponse(
+              content=testing_utils.ModelContent(
+                  [Part.from_text(text='nested answer')]
+              ),
+              usage_metadata=types.GenerateContentResponseUsageMetadata(
+                  prompt_token_count=200
+              ),
+          ),
+      ]
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, tools=[read_large_file]
+  )
+  wrapped_agent = SequentialAgent(
+      name='seq_agent',
+      description='Sequential wrapper',
+      sub_agents=[tool_agent],
+  )
+  seq_call = Part.from_function_call(
+      name='seq_agent', args={'request': 'test1'}
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[seq_call, 'root answer'],
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=10
+          ),
+      ),
+      tools=[AgentTool(agent=wrapped_agent)],
+  )
+  events_compaction_config = EventsCompactionConfig(
+      token_threshold=100,
+      event_retention_size=0,
+  )
+  app = App(
+      name='parent_app',
+      root_agent=root_agent,
+      events_compaction_config=events_compaction_config,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async('go')
+
+  assert len(tool_agent_model.requests) == 2
+  assert events[-1].content.parts[0].text == 'root answer'
+
+
+@mark.asyncio
+async def test_agent_tool_nested_default_summarizer_keeps_caller_config():
+  """A default summarizer built mid nested run stays off the caller's config.
+
+  Setup: the caller's app sets token_threshold=100 with summarizer=None; the
+    wrapped agent reports 200 prompt tokens on its first call, so in-flow
+    compaction fires before its second call and builds a default summarizer
+    from the wrapped agent's model.
+  Act: run the root agent, which calls the agent tool once.
+  Assert: the wrapped agent's last request carries the compaction summary, and
+    the caller's config still has summarizer=None.
+  """
+
+  def read_large_file() -> str:
+    """Returns a large file body."""
+    return 'lorem ipsum dolor sit amet ' * 80
+
+  read_call = Part.from_function_call(name='read_large_file', args={})
+  # The default summarizer reuses the wrapped agent's model, so the second
+  # response answers the summarization request.
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[read_call, 'NESTED SUMMARY', 'nested answer'],
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=200
+      ),
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, tools=[read_large_file]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[function_call_no_schema, 'root answer'],
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=10
+          ),
+      ),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+  events_compaction_config = EventsCompactionConfig(
+      token_threshold=100,
+      event_retention_size=0,
+  )
+  app = App(
+      name='parent_app',
+      root_agent=root_agent,
+      events_compaction_config=events_compaction_config,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async('go')
+
+  last_prompt_text = ' '.join(
+      part.text
+      for content in tool_agent_model.requests[-1].contents
+      for part in content.parts or []
+      if part.text
+  )
+  assert len(tool_agent_model.requests) == 3
+  assert 'NESTED SUMMARY' in last_prompt_text
+  assert events_compaction_config.summarizer is None
+
+
+@mark.asyncio
+@mark.parametrize(
+    'use_sliding_window',
+    [False, True],
+    ids=['no_config', 'sliding_window_only'],
+)
+async def test_agent_tool_keeps_nested_history_without_token_threshold(
+    use_sliding_window: bool,
+):
+  """An agent tool's history is not compacted without a token threshold.
+
+  Setup: the caller's app has no compaction, or only the sliding-window
+    trigger, which runs after an invocation ends; the wrapped agent reads a
+    large file three times before answering.
+  Act: run the root agent, which calls the agent tool once.
+  Assert: the wrapped agent's last request still carries all three tool
+    results and no compaction summary, and the nested run does not call the
+    summarizer.
+  """
+
+  def read_large_file() -> str:
+    """Returns a large file body."""
+    return 'lorem ipsum dolor sit amet ' * 80
+
+  read_call = Part.from_function_call(name='read_large_file', args={})
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[read_call, read_call, read_call, 'nested answer']
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, tools=[read_large_file]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[function_call_no_schema, 'root answer']
+      ),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+  summarizer_model = testing_utils.MockModel.create(
+      responses=['NESTED SUMMARY'] * 20
+  )
+  events_compaction_config = (
+      EventsCompactionConfig(
+          compaction_interval=1,
+          overlap_size=0,
+          summarizer=LlmEventSummarizer(llm=summarizer_model),
+      )
+      if use_sliding_window
+      else None
+  )
+  app = App(
+      name='parent_app',
+      root_agent=root_agent,
+      events_compaction_config=events_compaction_config,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async('go')
+
+  last_request = tool_agent_model.requests[-1]
+  tool_results = [
+      part
+      for content in last_request.contents
+      for part in content.parts or []
+      if part.function_response
+  ]
+  last_prompt_text = ' '.join(
+      part.text
+      for content in last_request.contents
+      for part in content.parts or []
+      if part.text
+  )
+  assert len(tool_agent_model.requests) == 4
+  assert len(tool_results) == 3
+  assert 'NESTED SUMMARY' not in last_prompt_text
+  assert len(summarizer_model.requests) == (1 if use_sliding_window else 0)
+
+
+@mark.asyncio
+async def test_agent_tool_compacts_each_call_and_keeps_caller_config():
+  """Each agent tool call compacts its own history; the caller's config holds.
+
+  Setup: the caller's app sets both compaction triggers with a 100-token
+    threshold; the root agent calls the agent tool twice, and each call reads
+    a large file three times before answering.
+  Act: run the root agent.
+  Assert: the last request of each nested run carries the compaction summary,
+    the second run starts from a fresh history, neither nested run runs
+    post-invocation sliding-window compaction, and the caller's compaction
+    config is unchanged.
+  """
+
+  def read_large_file() -> str:
+    """Returns a large file body."""
+    return 'lorem ipsum dolor sit amet ' * 80
+
+  read_call = Part.from_function_call(name='read_large_file', args={})
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[read_call, read_call, read_call, 'first answer']
+      + [read_call, read_call, read_call, 'second answer']
+  )
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, tools=[read_large_file]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              function_call_no_schema,
+              function_call_no_schema,
+              'root answer',
+          ]
+      ),
+      tools=[AgentTool(agent=tool_agent)],
+  )
+  summarizer_model = testing_utils.MockModel.create(
+      responses=['NESTED SUMMARY'] * 40
+  )
+  events_compaction_config = EventsCompactionConfig(
+      compaction_interval=1,
+      overlap_size=0,
+      token_threshold=100,
+      event_retention_size=0,
+      summarizer=LlmEventSummarizer(llm=summarizer_model),
+  )
+  app = App(
+      name='parent_app',
+      root_agent=root_agent,
+      events_compaction_config=events_compaction_config,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async('go')
+
+  def prompt_text(request) -> str:
+    return ' '.join(
+        part.text
+        for content in request.contents
+        for part in content.parts or []
+        if part.text
+    )
+
+  requests = tool_agent_model.requests
+  assert len(requests) == 8
+  assert 'NESTED SUMMARY' in prompt_text(requests[3])
+  assert 'NESTED SUMMARY' not in prompt_text(requests[4])
+  assert len(requests[4].contents) == 1
+  assert 'NESTED SUMMARY' in prompt_text(requests[7])
+  assert len(summarizer_model.requests) == 7
+  assert app.events_compaction_config is events_compaction_config
+  assert events_compaction_config.compaction_interval == 1
+  assert events_compaction_config.overlap_size == 0
+  assert events_compaction_config.token_threshold == 100
+  assert events_compaction_config.event_retention_size == 0
+
+
+@mark.asyncio
+@mark.parametrize(
+    'wrap_in_sequential',
+    [False, True],
+    ids=['llm_agent', 'sequential_agent'],
+)
+@mark.parametrize(
+    'use_custom_summarizer',
+    [False, True],
+    ids=['default_summarizer', 'custom_summarizer'],
+)
+async def test_agent_tool_skips_post_compaction_on_empty_nested_run(
+    use_custom_summarizer: bool,
+    wrap_in_sequential: bool,
+):
+  """A nested run yielding no events skips post-invocation compaction.
+
+  Setup: the caller's app sets token_threshold=100, and the root agent calls
+    the wrapped agent with a ~135-token request, which is all the nested
+    session holds, so post-invocation compaction would summarize it. The
+    nested run ends before the wrapped agent calls its model.
+  Act: run the root agent, which calls the agent tool once.
+  Assert: only the caller compacts, once, before its second model call: the
+    request it sent counts toward its own threshold too. The nested session is
+    never summarized, by a custom summarizer or by a default one built from
+    the wrapped agent's model.
+  """
+
+  def stop_before_agent(callback_context):
+    callback_context._invocation_context.end_invocation = True
+    return None
+
+  tool_agent_model = testing_utils.MockModel.create(responses=['unused'])
+  tool_agent = Agent(
+      name='tool_agent',
+      model=tool_agent_model,
+      before_agent_callback=None if wrap_in_sequential else stop_before_agent,
+  )
+  wrapped_agent: BaseAgent = (
+      SequentialAgent(
+          name='seq_agent',
+          description='Sequential wrapper',
+          sub_agents=[tool_agent],
+          before_agent_callback=stop_before_agent,
+      )
+      if wrap_in_sequential
+      else tool_agent
+  )
+  nested_call = Part.from_function_call(
+      name=wrapped_agent.name,
+      args={'request': 'lorem ipsum dolor sit amet ' * 20},
+  )
+  # Without a custom summarizer, the caller's default one uses its own model.
+  root_responses = (
+      [nested_call, 'root answer']
+      if use_custom_summarizer
+      else [nested_call, 'CALLER SUMMARY', 'root answer']
+  )
+  root_agent_model = testing_utils.MockModel.create(
+      responses=root_responses,
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=10
+      ),
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=root_agent_model,
+      tools=[AgentTool(agent=wrapped_agent)],
+  )
+  summarizer_model = testing_utils.MockModel.create(
+      responses=['CALLER SUMMARY'] * 5
+  )
+  app = App(
+      name='parent_app',
+      root_agent=root_agent,
+      events_compaction_config=EventsCompactionConfig(
+          token_threshold=100,
+          event_retention_size=0,
+          summarizer=(
+              LlmEventSummarizer(llm=summarizer_model)
+              if use_custom_summarizer
+              else None
+          ),
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async('go')
+
+  assert events[-1].content.parts[0].text == 'root answer'
+  assert len(tool_agent_model.requests) == 0
+  assert len(summarizer_model.requests) == (1 if use_custom_summarizer else 0)
+  assert len(root_agent_model.requests) == len(root_responses)
+  compactions = [
+      event for event in runner.session.events if event.actions.compaction
+  ]
+  assert len(compactions) == 1

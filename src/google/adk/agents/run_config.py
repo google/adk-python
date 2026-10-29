@@ -55,6 +55,17 @@ def _default_max_llm_calls() -> int:
 class ToolThreadPoolConfig(BaseModel):
   """Configuration for the tool thread pool executor.
 
+  Set through `RunConfig.tool_thread_pool_config`. Outside live mode,
+  synchronous `FunctionTool` and `FunctionNode` callables (including callable
+  `require_confirmation` predicates) run on the pool in both `LlmAgent` tool
+  calls and direct `Workflow` execution.
+
+  Timeout and retry caveat: Python threads cannot be forcibly preempted, so if
+  a node or caller times out (`NodeTimeoutError`) or cancels while a synchronous
+  callable is in flight, awaiting resumes immediately on schedule while the
+  worker thread continues running until the call returns (holding a
+  `max_workers` slot and potentially overlapping with retry attempts).
+
   Attributes:
     max_workers: Maximum number of worker threads in the pool. Defaults to 4.
   """
@@ -186,21 +197,31 @@ class RunConfig(BaseModel):
   """Saves live video and audio data to session and artifact service."""
 
   tool_thread_pool_config: Optional[ToolThreadPoolConfig] = None
-  """Configuration for running tools in a thread pool for live mode.
+  """Configuration for running tools in a thread pool.
 
   When set, tool executions will run in a separate thread pool executor
-  instead of the main event loop. When None (default), tools run in the
-  main event loop. One pool serves every invocation running on the same event
-  loop and is shut down once that loop is gone, so its worker threads do not
-  outlive it.
+  instead of the main event loop, for the tools described below. When None
+  (default), tools run in the main event loop. One pool serves every
+  invocation running on the same event loop and is shut down once that loop
+  is gone, so its worker threads do not outlive it.
 
-  This helps keep the event loop responsive for:
+  In live mode, this helps keep the event loop responsive for:
   - User interruptions to be processed immediately
   - Model responses to continue being received
 
-  Both sync and async tools are supported. Async tools are run in a new event
-  loop within the background thread, which helps catch blocking I/O mistakenly
-  used inside async functions.
+  In live mode, both sync and async tools are supported. Async tools are run
+  in a new event loop within the background thread, which helps catch blocking
+  I/O mistakenly used inside async functions.
+
+  Outside live mode, synchronous `FunctionTool` and `FunctionNode` callables
+  use the pool — whether called by an `LlmAgent` or run directly as `Workflow`
+  nodes — and only their own synchronous callables run there: the tool or node
+  function, synchronous generator steps, and a synchronous callable
+  `require_confirmation`. Argument handling and callbacks stay on the event
+  loop, and async tools and async nodes run on the event loop as they do
+  without this config. Parallel synchronous calls then overlap, so their
+  functions must be safe to run at the same time and on a thread other than the
+  event loop's.
 
   IMPORTANT - GIL (Global Interpreter Lock) Considerations:
 
@@ -291,6 +312,9 @@ class RunConfig(BaseModel):
   (e.g. via ``num_recent_events`` or ``after_timestamp``).  This is especially
   useful in combination with ``EventsCompactionConfig`` to avoid loading the
   full event history on every invocation.
+
+  Ignored by ``Runner.rewind_async``, which always loads the full session
+  history.
 
   Example::
 

@@ -37,7 +37,7 @@ What actually happened? Include error messages or crash stack traces here.
 **Model Information:**
 
  - Are you using LiteLLM: Yes/No
- - Which model is being used: (e.g., gemini-2.5-pro)
+ - Which model is being used: (e.g., gemini-3.1-pro-preview)
 
 ---
 

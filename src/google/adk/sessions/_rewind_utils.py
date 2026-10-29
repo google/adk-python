@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from google.genai import types
 
 from ..errors._invocation_not_found_error import InvocationNotFoundError
+from ..errors.input_validation_error import InputValidationError
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..platform import uuid as platform_uuid
@@ -91,6 +92,9 @@ async def compute_artifact_delta_for_rewind(
   if not artifact_service:
     return {}
 
+  # Imported here so that importing sessions does not load artifacts.
+  from ..artifacts import artifact_util
+
   versions_at_rewind_point: dict[str, int] = {}
   for i in range(rewind_event_index):
     event = session.events[i]
@@ -103,6 +107,7 @@ async def compute_artifact_delta_for_rewind(
       current_versions.update(event.actions.artifact_delta)
 
   rewind_artifact_delta = {}
+  effective_app_name = app_name or session.app_name
   for filename, vn in current_versions.items():
     if filename.startswith("user:"):
       # User artifacts are not restored on rewind.
@@ -110,19 +115,18 @@ async def compute_artifact_delta_for_rewind(
     vt = versions_at_rewind_point.get(filename)
     if vt == vn:
       continue
+    if not effective_app_name:
+      raise InputValidationError("app_name must not be empty.")
 
-    rewind_artifact_delta[filename] = vn + 1
     artifact: types.Part
     if vt is None:
       # Artifact did not exist at rewind point. Mark it as inaccessible.
-      artifact = types.Part(
-          inline_data=types.Blob(mime_type="application/octet-stream", data=b"")
-      )
+      artifact = artifact_util._new_rewind_tombstone()
     else:
       # Artifact version changed after rewind point. Restore to version at
       # rewind point by loading the actual data via the artifact service.
       loaded_artifact = await artifact_service.load_artifact(
-          app_name=app_name,
+          app_name=effective_app_name,
           user_id=session.user_id,
           session_id=session.id,
           filename=filename,
@@ -136,15 +140,11 @@ async def compute_artifact_delta_for_rewind(
             vt,
             session.id,
         )
-        artifact = types.Part(
-            inline_data=types.Blob(
-                mime_type="application/octet-stream", data=b""
-            )
-        )
+        artifact = artifact_util._new_rewind_tombstone()
       else:
         artifact = loaded_artifact
-    await artifact_service.save_artifact(
-        app_name=app_name,
+    rewind_artifact_delta[filename] = await artifact_service.save_artifact(
+        app_name=effective_app_name,
         user_id=session.user_id,
         session_id=session.id,
         filename=filename,

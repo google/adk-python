@@ -18,11 +18,14 @@ import logging
 
 from google.adk.workflow import Edge
 from google.adk.workflow import START
+from google.adk.workflow import Workflow
 from google.adk.workflow._errors import GraphValidationError
 from google.adk.workflow._graph import DEFAULT_ROUTE
 from google.adk.workflow._graph import Graph
 from google.adk.workflow.utils._graph_validation import validate_graph
 from pydantic import BaseModel
+from pydantic import Field
+from pydantic import ValidationError
 import pytest
 
 from ..workflow_testing_utils import TestingNode
@@ -453,3 +456,48 @@ def test_validation_failures_are_graph_validation_errors() -> None:
     validate_graph(graph.nodes, graph.edges)
   with pytest.raises(ValueError):
     validate_graph(graph.nodes, graph.edges)
+
+
+class _EdgeRecordingNode(TestingNode):
+  """Records the edges passed to its outgoing-edge hook."""
+
+  seen_edges: list[Edge] = Field(default_factory=list)
+  reject: bool = False
+
+  def _validate_outgoing_edges(self, edges: list[Edge]) -> None:
+    self.seen_edges.extend(edges)
+    if self.reject:
+      raise GraphValidationError(f'{self.name} rejects its edges.')
+
+
+def test_outgoing_edge_hook_gets_only_own_edges() -> None:
+  """Each node's hook receives exactly the edges leaving that node."""
+  node_a = _EdgeRecordingNode(name='NodeA')
+  node_b = _EdgeRecordingNode(name='NodeB')
+  node_c = _EdgeRecordingNode(name='NodeC')
+  graph = Graph(
+      edges=[
+          Edge(from_node=START, to_node=node_a),
+          Edge(from_node=node_a, to_node=node_b, route='x'),
+          Edge(from_node=node_a, to_node=node_c, route='y'),
+          Edge(from_node=node_b, to_node=node_c),
+      ],
+  )
+
+  validate_graph(graph.nodes, graph.edges)
+
+  assert [(e.to_node.name, e.route) for e in node_a.seen_edges] == [
+      ('NodeB', 'x'),
+      ('NodeC', 'y'),
+  ]
+  assert [e.to_node.name for e in node_b.seen_edges] == ['NodeC']
+  assert node_c.seen_edges == []
+
+
+def test_outgoing_edge_hook_error_fails_workflow_construction() -> None:
+  """A GraphValidationError from the hook fails Workflow construction."""
+  node_a = _EdgeRecordingNode(name='NodeA', reject=True)
+  node_b = TestingNode(name='NodeB')
+
+  with pytest.raises(ValidationError, match='NodeA rejects its edges'):
+    Workflow(name='wf', edges=[(START, node_a), (node_a, node_b)])

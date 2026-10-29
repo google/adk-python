@@ -26,14 +26,12 @@ from typing import TYPE_CHECKING
 import warnings
 
 from google.genai import types
-from opentelemetry import context
 
 from ..agents.invocation_context import InvocationContext
 from ..agents.run_config import RunConfig
 from ..events.event import Event
 from ..sessions.session import Session
 from ..utils._runner_utils import _notify_run_error
-from ..utils._runner_utils import _with_caller_context
 from .live_request_queue import LiveRequestQueue
 
 if TYPE_CHECKING:
@@ -50,19 +48,20 @@ def new_invocation_context_for_live(
     run_config: Optional[RunConfig] = None,
 ) -> InvocationContext:
   """Creates a new invocation context for live multi-agent."""
-  run_config = run_config or RunConfig()
+  run_config = run_config.model_copy() if run_config else RunConfig()
 
   # For live multi-agents system, we need model's text transcription as
   # context for the transferred agent.
   if hasattr(runner.agent, "sub_agents") and runner.agent.sub_agents:
     if (
-        run_config.response_modalities
-        and types.Modality.AUDIO in run_config.response_modalities
+        run_config.input_audio_transcription is None
+        or run_config.output_audio_transcription is None
     ):
-      if not run_config.output_audio_transcription:
-        run_config.output_audio_transcription = types.AudioTranscriptionConfig()
-    if not run_config.input_audio_transcription:
-      run_config.input_audio_transcription = types.AudioTranscriptionConfig()
+      logger.warning(
+          "Audio transcription is disabled while sub_agents are configured;"
+          " agent transfer may not work properly without transcription"
+          " context."
+      )
   return runner._new_invocation_context(  # pylint: disable=protected-access
       session,
       live_request_queue=live_request_queue,
@@ -85,7 +84,8 @@ async def run_node_live(
   from ..workflow._workflow import _LoopState
   from ..workflow._workflow import Workflow
 
-  ic = runner._new_invocation_context_for_live(  # pylint: disable=protected-access
+  ic = new_invocation_context_for_live(
+      runner,
       session,
       live_request_queue=live_request_queue,
       run_config=run_config or RunConfig(),
@@ -121,9 +121,29 @@ async def run_node_live(
       assert ic._event_queue is not None  # pylint: disable=protected-access
       await ic._event_queue.put((done_sentinel, None))  # pylint: disable=protected-access
 
-  task = asyncio.create_task(_drive_root_node())
+  completed_cleanly = False
+  closing_early = False
 
   try:
+    early_exit_result = await ic.plugin_manager.run_before_run_callback(
+        invocation_context=ic
+    )
+    if isinstance(early_exit_result, types.Content):
+      early_exit_event = Event(
+          invocation_id=ic.invocation_id,
+          author="model",
+          content=early_exit_result,
+      )
+      yield await runner._process_and_append_event(  # pylint: disable=protected-access
+          event=early_exit_event,
+          invocation_context=ic,
+          is_live_call=True,
+      )
+      completed_cleanly = True
+      return
+
+    task = asyncio.create_task(_drive_root_node())
+
     try:
       async with aclosing(
           runner._consume_event_queue(  # pylint: disable=protected-access
@@ -135,11 +155,29 @@ async def run_node_live(
     finally:
       # _cleanup_root_task re-raises a root-node Exception (if any).
       await runner._cleanup_root_task(task, runner.agent.name)  # pylint: disable=protected-access
+    completed_cleanly = True
+  except GeneratorExit:
+    closing_early = True
+    raise
   except Exception as e:
     # An unhandled exception escaped live runner execution. Notify plugins
     # (notification-only) and re-raise.
     await _notify_run_error(ic.plugin_manager, ic, e)
     raise
+  finally:
+    if completed_cleanly or closing_early:
+      try:
+        await ic.plugin_manager.run_after_run_callback(invocation_context=ic)
+      except Exception as e:
+        await _notify_run_error(ic.plugin_manager, ic, e)
+        if closing_early:
+          logger.error(
+              "after_run callback failed while closing invocation %s early.",
+              ic.invocation_id,
+              exc_info=True,
+          )
+        else:
+          raise
 
 
 async def run_live(
@@ -166,11 +204,6 @@ async def run_live(
     run_config = run_config.model_copy()
     run_config.response_modalities = [types.Modality.AUDIO]
 
-  caller_ctx = context.get_current()
-  if session is None and (user_id is None or session_id is None):
-    raise ValueError(
-        "Either session or user_id and session_id must be provided."
-    )
   if live_request_queue is None:
     raise ValueError("live_request_queue is required for run_live.")
   if session is not None:
@@ -180,10 +213,10 @@ async def run_live(
         DeprecationWarning,
         stacklevel=3,
     )
-  if session is None:
+  else:
     if user_id is None or session_id is None:
       raise ValueError(
-          "user_id and session_id are required when session is not provided."
+          "Either session or user_id and session_id must be provided."
       )
     session = await runner._get_or_create_session(  # pylint: disable=protected-access
         user_id=user_id,
@@ -208,7 +241,8 @@ async def run_live(
         yield event
     return
   root_agent = runner._require_root_agent()  # pylint: disable=protected-access
-  invocation_context = runner._new_invocation_context_for_live(  # pylint: disable=protected-access
+  invocation_context = new_invocation_context_for_live(
+      runner,
       session,
       live_request_queue=live_request_queue,
       run_config=run_config,
@@ -237,14 +271,11 @@ async def run_live(
       _merge_live_event_streams(
           runner,
           invocation_context,
-          _with_caller_context(
-              runner._exec_with_plugin(  # pylint: disable=protected-access
-                  invocation_context=invocation_context,
-                  session=invocation_context.session,
-                  execute_fn=execute,
-                  is_live_call=True,
-              ),
-              caller_ctx,
+          runner._exec_with_plugin(  # pylint: disable=protected-access
+              invocation_context=invocation_context,
+              session=invocation_context.session,
+              execute_fn=execute,
+              is_live_call=True,
           ),
       )
   ) as agen:
@@ -298,7 +329,14 @@ async def _merge_live_event_streams(
       ) as agen:
         async for event in agen:
           await merged.put(event)
-    finally:
+    except asyncio.CancelledError:
+      # Only the merge's own teardown cancels this pump, and by then nothing
+      # reads `merged`: a blocking put of the sentinel would never return.
+      raise
+    except BaseException:
+      await merged.put(done_sentinel)
+      raise
+    else:
       await merged.put(done_sentinel)
 
   agent_task = asyncio.create_task(_pump_agent_events())

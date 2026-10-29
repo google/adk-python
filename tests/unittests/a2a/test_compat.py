@@ -29,6 +29,7 @@ from __future__ import annotations
 import base64
 import json
 
+from a2a.client.client import ClientConfig
 from a2a.client.client_factory import ClientFactory
 from a2a.types import AgentCapabilities
 from a2a.types import AgentProvider
@@ -40,6 +41,7 @@ from google.protobuf import descriptor_pb2
 from google.protobuf import proto_builder
 from google.protobuf.json_format import ParseDict
 from google.protobuf.struct_pb2 import Struct
+import httpx
 import pytest
 
 v03_only = pytest.mark.skipif(
@@ -80,6 +82,28 @@ def _task():
       context_id='ctx-1',
       status=_compat.make_task_status(_compat.TS_WORKING),
   )
+
+
+# -----------------------------------------------------------------------------
+# make_task
+# -----------------------------------------------------------------------------
+def test_make_task_defaults_context_id():
+  task = _compat.make_task(
+      id='task-default',
+      status=_compat.make_task_status(_compat.TS_WORKING),
+  )
+  assert task.id == 'task-default'
+  assert task.context_id == ''
+
+
+def test_make_task_with_explicit_context_id():
+  task = _compat.make_task(
+      id='task-explicit',
+      context_id='ctx-custom',
+      status=_compat.make_task_status(_compat.TS_WORKING),
+  )
+  assert task.id == 'task-explicit'
+  assert task.context_id == 'ctx-custom'
 
 
 # -----------------------------------------------------------------------------
@@ -164,6 +188,72 @@ def test_build_agent_card_converts_model_arguments_to_card_fields():
 
 
 # -----------------------------------------------------------------------------
+# build_agent_skill / get_skill_security
+# -----------------------------------------------------------------------------
+class _FakeStringList:
+
+  def __init__(self, values: list[str]):
+    self.list = values
+
+
+class _FakeSecurityRequirement:
+
+  def __init__(self, schemes: dict[str, list[str]]):
+    self.schemes = {k: _FakeStringList(v) for k, v in schemes.items()}
+
+
+class _FakeV1Skill:
+
+  def __init__(self, requirements: list[dict[str, list[str]]]):
+    self.security_requirements = [
+        _FakeSecurityRequirement(req) for req in requirements
+    ]
+
+
+def test_build_agent_skill_without_security_returns_none_from_get_skill_security():
+  skill = _compat.build_agent_skill(
+      id='skill-1',
+      name='Skill One',
+      description='Skill description',
+      tags=['tag-1'],
+      examples=['example input'],
+      input_modes=['text/plain'],
+      output_modes=['application/json'],
+  )
+  assert skill.id == 'skill-1'
+  assert skill.name == 'Skill One'
+  assert skill.description == 'Skill description'
+  assert list(skill.tags) == ['tag-1']
+  assert list(skill.examples) == ['example input']
+  assert list(skill.input_modes) == ['text/plain']
+  assert list(skill.output_modes) == ['application/json']
+  assert _compat.get_skill_security(skill) is None
+
+
+def test_build_agent_skill_with_security_round_trips_through_get_skill_security():
+  security = [{'oauth2': ['read', 'write']}, {'api_key': []}]
+  skill = _compat.build_agent_skill(
+      id='skill-1',
+      name='Skill One',
+      description='Skill description',
+      tags=['tag-1'],
+      security=security,
+  )
+  assert _compat.get_skill_security(skill) == security
+
+
+def test_get_skill_security_v1_returns_none_when_empty(monkeypatch):
+  monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
+  assert _compat.get_skill_security(_FakeV1Skill([])) is None
+
+
+def test_get_skill_security_v1_extracts_scheme_scopes(monkeypatch):
+  monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
+  security = [{'oauth2': ['read', 'write']}, {'api_key': []}]
+  assert _compat.get_skill_security(_FakeV1Skill(security)) == security
+
+
+# -----------------------------------------------------------------------------
 # rebind_client_factory_httpx
 # -----------------------------------------------------------------------------
 def _factory_with_custom_transport(httpx_client, consumers):
@@ -204,6 +294,99 @@ def test_rebind_client_factory_httpx_preserves_config_consumers_transports():
   assert rebound._config.streaming is True
   assert rebound._consumers == [consumer]
   assert rebound._registry['custom-transport'] is _custom_transport_producer
+
+
+@pytest.mark.asyncio
+async def test_rebind_client_factory_httpx_preserves_subclass():
+  class CustomFactory(ClientFactory):
+    pass
+
+  old_client, new_client = httpx.AsyncClient(), httpx.AsyncClient()
+  factory = CustomFactory(_compat.make_client_config(httpx_client=old_client))
+  rebound = _compat.rebind_client_factory_httpx(factory, new_client)
+
+  try:
+    assert isinstance(rebound, CustomFactory)
+    assert rebound is not factory
+    assert rebound._config.httpx_client is new_client
+    assert factory._config.httpx_client is old_client
+  finally:
+    await old_client.aclose()
+    await new_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rebind_client_factory_httpx_preserves_subclass_init_args():
+  class CustomFactoryWithArgs(ClientFactory):
+
+    def __init__(self, custom_arg: str, *, config: Any = None):
+      super().__init__(config=config)
+      self.custom_arg = custom_arg
+
+  old_client, new_client = httpx.AsyncClient(), httpx.AsyncClient()
+  factory = CustomFactoryWithArgs(
+      'custom_value',
+      config=_compat.make_client_config(httpx_client=old_client),
+  )
+  rebound = _compat.rebind_client_factory_httpx(factory, new_client)
+
+  try:
+    assert isinstance(rebound, CustomFactoryWithArgs)
+    assert rebound is not factory
+    assert rebound.custom_arg == 'custom_value'
+    assert rebound._config.httpx_client is new_client
+    assert factory._config.httpx_client is old_client
+  finally:
+    await old_client.aclose()
+    await new_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rebind_client_factory_httpx_defaults_protocol_bindings():
+  if not _compat.IS_A2A_V1:
+    pytest.skip('supported_protocol_bindings defaulting is 1.x only')
+  old_client, new_client = httpx.AsyncClient(), httpx.AsyncClient()
+  factory = ClientFactory(ClientConfig(httpx_client=old_client))
+  rebound = _compat.rebind_client_factory_httpx(factory, new_client)
+
+  try:
+    assert _compat.TP_JSONRPC in rebound._config.supported_protocol_bindings
+    assert _compat.TP_HTTP_JSON in rebound._config.supported_protocol_bindings
+    assert _compat.TP_JSONRPC in rebound._registry
+    assert _compat.TP_HTTP_JSON in rebound._registry
+  finally:
+    await old_client.aclose()
+    await new_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rebind_client_factory_httpx_preserves_protocol_bindings():
+  old_client, new_client = httpx.AsyncClient(), httpx.AsyncClient()
+  if _compat.IS_A2A_V1:
+    config = ClientConfig(
+        httpx_client=old_client,
+        supported_protocol_bindings=[_compat.TP_HTTP_JSON],
+    )
+  else:
+    config = ClientConfig(
+        httpx_client=old_client,
+        supported_transports=[_compat.TP_HTTP_JSON],
+    )
+  factory = ClientFactory(config)
+  rebound = _compat.rebind_client_factory_httpx(factory, new_client)
+
+  try:
+    if _compat.IS_A2A_V1:
+      assert rebound._config.supported_protocol_bindings == [
+          _compat.TP_HTTP_JSON
+      ]
+      assert _compat.TP_HTTP_JSON in rebound._registry
+      assert _compat.TP_JSONRPC not in rebound._registry
+    else:
+      assert rebound._config.supported_transports == [_compat.TP_HTTP_JSON]
+  finally:
+    await old_client.aclose()
+    await new_client.aclose()
 
 
 # -----------------------------------------------------------------------------
@@ -272,6 +455,35 @@ def test_stream_item_kind_v1_without_payload_raises(monkeypatch):
   monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
   with pytest.raises(ValueError, match='no known payload field'):
     _compat.stream_item_kind(_FakeStreamResponse())
+
+
+# -----------------------------------------------------------------------------
+# send_message
+# -----------------------------------------------------------------------------
+class _ClientWithoutRequestMetadata:
+  """A 0.3.x client whose ``send_message`` predates ``request_metadata``."""
+
+  async def send_message(self, request, *, context=None):
+    yield (request, context)
+
+
+@v03_only
+@pytest.mark.parametrize('request_metadata', [None, {}])
+async def test_send_message_without_metadata_skips_the_kwarg(request_metadata):
+  message = _compat.make_message(message_id='m-1', role='user')
+  context = object()
+
+  items = [
+      item
+      async for item in _compat.send_message(
+          _ClientWithoutRequestMetadata(),
+          request=message,
+          request_metadata=request_metadata,
+          context=context,
+      )
+  ]
+
+  assert items == [(message, context)]
 
 
 # -----------------------------------------------------------------------------
@@ -519,3 +731,94 @@ def test_a2a_to_dict_v1_keeps_the_flat_raw_field_by_default(monkeypatch):
   monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
 
   assert _compat.a2a_to_dict(_v1_file_part())['raw'] == _ENCODED_PAYLOAD
+
+
+# --------------------------------------------------------------------------
+# make_stream_normalizer
+# --------------------------------------------------------------------------
+v1_only = pytest.mark.skipif(
+    not _compat.IS_A2A_V1, reason='1.x StreamResponse shapes'
+)
+
+
+def _v1_artifact_chunk(artifact_id: str, text: str, *, append: bool):
+  from a2a.types import Artifact
+  from a2a.types import StreamResponse
+  from a2a.types import TaskArtifactUpdateEvent
+
+  return StreamResponse(
+      artifact_update=TaskArtifactUpdateEvent(
+          task_id='task-1',
+          context_id='ctx-1',
+          append=append,
+          last_chunk=False,
+          artifact=Artifact(
+              artifact_id=artifact_id, parts=[_compat.make_text_part(text)]
+          ),
+      )
+  )
+
+
+def _v1_task_snapshot():
+  from a2a.types import StreamResponse
+  from a2a.types import Task
+  from a2a.types import TaskState
+  from a2a.types import TaskStatus
+
+  # What a server or proxy emits as the running task's state: status only.
+  return StreamResponse(
+      task=Task(
+          id='task-1',
+          context_id='ctx-1',
+          status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+      )
+  )
+
+
+@v1_only
+def test_stream_normalizer_task_snapshot_keeps_streamed_artifacts():
+  """A running-Task snapshot arriving between chunks must not discard artifacts from aggregate state."""
+  normalize = _compat.make_stream_normalizer()
+
+  normalize(_v1_artifact_chunk('art-1', 'The', append=False))
+  task, _ = normalize(_v1_task_snapshot())
+  assert not task.artifacts
+
+  task, _ = normalize(_v1_artifact_chunk('art-1', ' sky', append=True))
+
+  assert len(task.artifacts) == 1
+  assert [p.text for p in task.artifacts[0].parts] == ['The', ' sky']
+
+
+@v1_only
+def test_stream_normalizer_task_snapshot_with_artifacts_is_authoritative():
+  """A snapshot that carries an artifact wins for that id in the aggregate."""
+  from a2a.types import Artifact
+  from a2a.types import StreamResponse
+  from a2a.types import Task
+  from a2a.types import TaskState
+  from a2a.types import TaskStatus
+
+  normalize = _compat.make_stream_normalizer()
+  normalize(_v1_artifact_chunk('art-1', 'stale', append=False))
+  normalize(_v1_artifact_chunk('art-2', 'other', append=False))
+
+  snapshot = StreamResponse(
+      task=Task(
+          id='task-1',
+          context_id='ctx-1',
+          status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+          artifacts=[
+              Artifact(
+                  artifact_id='art-1', parts=[_compat.make_text_part('fresh')]
+              )
+          ],
+      )
+  )
+  task, _ = normalize(snapshot)
+  assert [a.artifact_id for a in task.artifacts] == ['art-1']
+  assert [p.text for p in task.artifacts[0].parts] == ['fresh']
+
+  task, _ = normalize(_v1_artifact_chunk('art-2', ' appended', append=True))
+  by_id = {a.artifact_id: [p.text for p in a.parts] for a in task.artifacts}
+  assert by_id == {'art-1': ['fresh'], 'art-2': ['other', ' appended']}

@@ -48,6 +48,29 @@ def test_print_event_prints_text_with_author_prefix(capsys):
   assert _lines(capsys) == ['agent > hello']
 
 
+def test_print_event_hides_thought_text_when_not_verbose(capsys):
+  """Thoughts are not concatenated into the final answer."""
+  print_event(
+      _event(
+          types.Part(text='thinking', thought=True),
+          types.Part(text='answer'),
+      )
+  )
+  assert _lines(capsys) == ['agent > answer']
+
+
+def test_print_event_with_only_thoughts_prints_nothing(capsys):
+  """An event containing only thoughts has no final answer to display."""
+  print_event(_event(types.Part(text='thinking', thought=True)))
+  assert _lines(capsys) == []
+
+
+def test_print_event_keeps_thought_text_when_verbose(capsys):
+  """Verbose output retains thought text for debugging."""
+  print_event(_event(types.Part(text='thinking', thought=True)), verbose=True)
+  assert _lines(capsys) == ['agent > thinking']
+
+
 def test_print_event_coalesces_consecutive_text_parts_into_one_line(capsys):
   # A streamed answer arrives as several text parts; repeating the author
   # prefix per part would fragment one sentence across many lines.

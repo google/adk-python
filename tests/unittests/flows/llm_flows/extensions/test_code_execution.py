@@ -25,12 +25,14 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.run_config import RunConfig
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.built_in_code_executor import BuiltInCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.code_executors.code_execution_utils import File
 from google.adk.code_executors.code_executor_context import CodeExecutorContext
+from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
 from google.adk.flows.llm_flows.extensions._code_execution import _DATA_FILE_HELPER_LIB
 from google.adk.flows.llm_flows.extensions._code_execution import _extract_and_replace_inline_files
 from google.adk.flows.llm_flows.extensions._code_execution import _get_data_file_preprocessing_code
@@ -703,6 +705,45 @@ async def test_support_cfc_resolves_builtin_code_executor_without_mutating_agent
   assert not any(
       tool.code_execution is not None for tool in sub_request.config.tools or []
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'executor_type',
+    [None, UnsafeLocalCodeExecutor, BuiltInCodeExecutor],
+    ids=['no-executor', 'custom-executor', 'explicit-builtin'],
+)
+async def test_cfc_code_execution_is_scoped_to_invocation(executor_type):
+  """Reusing an agent preserves each invocation's code-execution capability."""
+  code_executor = executor_type() if executor_type else None
+  agent = Agent(
+      name='test_agent',
+      model='gemini-2.0-flash',
+      code_executor=code_executor,
+  )
+
+  requests = []
+  executors_after_run = []
+  for support_cfc in [True, False]:
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent,
+        run_config=RunConfig(support_cfc=support_cfc),
+    )
+
+    llm_request = LlmRequest(model=agent.model)
+    async for _ in request_processor.run_async(invocation_context, llm_request):
+      pass
+    requests.append(llm_request)
+    executors_after_run.append(agent.code_executor)
+
+  assert len(requests) == 2
+  assert [
+      any(
+          tool.code_execution is not None for tool in request.config.tools or []
+      )
+      for request in requests
+  ] == [True, isinstance(code_executor, BuiltInCodeExecutor)]
+  assert all(executor is code_executor for executor in executors_after_run)
 
 
 @pytest.mark.asyncio

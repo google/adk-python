@@ -14,15 +14,27 @@
 
 from __future__ import annotations
 
+import functools
+import logging
 from typing import Any
+from typing import Callable
 from typing import Dict
 from typing import Optional
+from typing import TYPE_CHECKING
 
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools import _automatic_function_calling_util
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 import pydantic
+import pytest
+
+if TYPE_CHECKING:
+  # Imported for annotations only, so the names are undefined at runtime.
+  from google.adk.sessions.session import Session
+  from google.adk.tools.tool_context import ToolContext
 
 
 def test_string_annotation_none_return_vertex():
@@ -207,6 +219,92 @@ class ItemModel(pydantic.BaseModel):
   quantity: int
 
 
+@pytest.mark.parametrize(
+    'wrapper', ['function', 'partial', 'callable', 'wrapped_callable']
+)
+def test_wrapped_tool_resolves_model_annotations(wrapper: str) -> None:
+  """Wrapped tools advertise the same resolved input and output model types."""
+
+  def lookup(prefix: str, item: ItemModel) -> ItemModel:
+    del prefix
+    return item
+
+  class Lookup:
+    # Intentionally shadows `__call__`'s `item: ItemModel` parameter annotation.
+    item: str = 'catalog'
+
+    def __call__(self, item: ItemModel) -> ItemModel:
+      return item
+
+  class Wrapper:
+
+    def __init__(self, fn: Callable[..., Any]) -> None:
+      self._fn = fn
+      functools.update_wrapper(self, fn)
+
+    def __call__(self, item: str = 'catalog', *args: Any, **kwargs: Any) -> Any:
+      return self._fn(item, *args, **kwargs)
+
+  functions: dict[str, Callable[..., Any]] = {
+      'function': lookup,
+      'partial': functools.partial(lookup, 'catalog'),
+      'callable': Lookup(),
+      'wrapped_callable': Wrapper(lookup),
+  }
+  declaration = _automatic_function_calling_util.build_function_declaration(
+      functions[wrapper], variant=GoogleLLMVariant.VERTEX_AI
+  )
+
+  schema = declaration.parameters_json_schema
+  assert schema is not None
+  assert schema['properties']['item']['$ref'] == '#/$defs/ItemModel'
+  assert schema['$defs']['ItemModel'] == ItemModel.model_json_schema()
+  assert declaration.response_json_schema == ItemModel.model_json_schema()
+
+
+@pytest.mark.parametrize(
+    ('wrapper', 'expected_name'),
+    [('partial', 'lookup'), ('callable', 'Lookup')],
+)
+def test_wrapped_tool_unserializable_return_falls_back_to_none(
+    wrapper: str,
+    expected_name: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """Wrapped tools with unserializable return types fall back without error."""
+
+  def lookup(prefix: str, item: ItemModel) -> Callable[[int], int]:
+    del prefix, item
+    return lambda x: x
+
+  class Lookup:
+
+    def __call__(self, item: ItemModel) -> Callable[[int], int]:
+      del item
+      return lambda x: x
+
+  functions: dict[str, Callable[..., Any]] = {
+      'partial': functools.partial(lookup, 'catalog'),
+      'callable': Lookup(),
+  }
+  with caplog.at_level(
+      logging.WARNING,
+      logger='google_adk.google.adk.tools._function_tool_declarations',
+  ):
+    declaration = _automatic_function_calling_util.build_function_declaration(
+        functions[wrapper], variant=GoogleLLMVariant.VERTEX_AI
+    )
+
+  assert declaration.parameters_json_schema is not None
+  assert declaration.response_json_schema is None
+  assert any(
+      record.name == 'google_adk.google.adk.tools._function_tool_declarations'
+      and f'Failed to build response JSON schema for {expected_name}'
+      in record.getMessage()
+      for record in caplog.records
+  )
+
+
 def test_preprocess_args_with_list_of_pydantic_models_and_annotations():
   """Test _preprocess_args converts dict to Pydantic model with string annotations."""
 
@@ -284,3 +382,91 @@ def test_preprocess_args_with_optional_list_of_pydantic_models_and_annotations()
   assert all(isinstance(item, ItemModel) for item in processed_args['items'])
   assert processed_args['items'][0].quantity == 10
   assert processed_args['items'][1].quantity == 5
+
+
+@pytest.mark.parametrize('json_schema_for_func_decl', [True, False])
+def test_type_checking_only_context_param_is_left_out_of_declaration(
+    json_schema_for_func_decl,
+):
+  """A context param typed with a TYPE_CHECKING-only import builds.
+
+  The name is undefined at runtime, but the param is never part of the
+  schema, so it must not need resolving on either declaration path.
+  """
+
+  def lookup_city(city: str, tool_context: ToolContext) -> str:
+    """Looks up a city."""
+    return city
+
+  with temporary_feature_override(
+      FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, json_schema_for_func_decl
+  ):
+    declaration = FunctionTool(lookup_city)._get_declaration()
+
+  assert declaration.name == 'lookup_city'
+  if json_schema_for_func_decl:
+    assert list(declaration.parameters_json_schema['properties']) == ['city']
+  else:
+    assert list(declaration.parameters.properties) == ['city']
+
+
+def test_type_checking_only_annotation_on_declared_param_still_raises():
+  """Only ignored params are skipped; a declared param must still resolve."""
+
+  def summarize(session: Session, tool_context: ToolContext) -> str:
+    """Summarizes a session."""
+    return session.id
+
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False):
+    with pytest.raises(NameError, match='Session'):
+      _automatic_function_calling_util.build_function_declaration(
+          summarize, ignore_params=['tool_context']
+      )
+
+
+async def test_run_async_coerces_pydantic_model_with_type_checking_return_or_sibling():
+  """FunctionTool coerces Pydantic model args when return or sibling annotations are TYPE_CHECKING-only."""
+  from unittest.mock import MagicMock
+
+  from google.adk.agents.invocation_context import InvocationContext
+  from google.adk.tools.tool_context import ToolContext as _RuntimeToolContext
+
+  def process_order_untyped_return(
+      item: ItemModel,
+      tool_context: ToolContext,
+  ) -> Session:
+    del tool_context
+    return f'{item.name}:{item.quantity}'  # type: ignore[return-value]
+
+  def process_order_with_sibling(
+      item: ItemModel,
+      tool_context: ToolContext,
+      session: Session | None = None,
+  ) -> str:
+    del tool_context, session
+    return f'{item.name}:{item.quantity}'
+
+  mock_ic = MagicMock(spec=InvocationContext)
+  mock_ic._state_schema = None
+  mock_ic.session = MagicMock()
+  mock_ic.session.state = {}
+  runtime_ctx = _RuntimeToolContext(invocation_context=mock_ic)
+
+  return_tool = FunctionTool(process_order_untyped_return)
+  declaration = return_tool._get_declaration()
+  assert declaration is not None
+  assert list(declaration.parameters_json_schema['properties']) == ['item']
+  assert (
+      await return_tool.run_async(
+          args={'item': {'name': 'Burger', 'quantity': 3}},
+          tool_context=runtime_ctx,
+      )
+      == 'Burger:3'
+  )
+
+  result = await FunctionTool(process_order_with_sibling).run_async(
+      args={'item': {'name': 'Burger', 'quantity': 3}},
+      tool_context=runtime_ctx,
+  )
+
+  assert result == 'Burger:3'

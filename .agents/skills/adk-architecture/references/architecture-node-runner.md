@@ -78,16 +78,40 @@ Orchestrator
   configured delay, increments `attempt_count` and rebuilds the child Context
   from scratch. Retry count is **not** persisted, so it does not survive a
   resume.
+- A child started with `ctx.run_node()` that fails reaches the node as
+  `DynamicNodeFailError`. The child's runner already emitted the error event,
+  so NodeRunner only matches the retry policy against the child's error. A
+  node with a `retry_config` copies the run-id counters under it at the start
+  of every attempt (`_snapshot_dynamic_children`), and a retry for such a
+  failure restores that copy (`_reset_dynamic_children_for_retry`). The retry
+  then hands out the same run ids and replays the children the failed attempt
+  completed, at any depth. A retry for the node's own exception keeps the
+  counters, so its children run again.
+- A parallel worker (`_ParallelWorker`, or a `Node` with
+  `parallel_worker=True`) is not retried for an item's `DynamicNodeFailError`
+  (`_delegates_item_retry`): the item node already applied the retry policy
+  to that item.
+- A `Workflow` reports a failing child by setting `ctx.error` rather than
+  raising, and NodeRunner applies the retry policy to that error as well.
 - When retries are exhausted, the error is recorded on `ctx.error` and
   `ctx.error_node_path` and the Context is returned normally — NodeRunner does
   not re-raise to the orchestrator.
 - `NodeInterruptedError` from a dynamic child is swallowed here: the child's
   interrupt IDs are already on `ctx`, so the caller just reads
   `ctx.interrupt_ids`.
+- When `abort_signal` is triggered (`ic.is_aborted` is `True`), active node
+  tasks are cancelled without retrying. In `_node_runner_utils`, the outer
+  workflow runner loop catches the cancellation, calls
+  `runner._synthesize_abort_events_if_needed(ic)` to emit `INVOCATION_ABORTED`
+  events (and seal any dangling `FunctionCall`s), and finishes the generator
+  cleanly so `after_run` callbacks still run.
 
 ## Output delegation (`use_as_output`)
 
 When a child is scheduled with `use_as_output=True`, its output Event also
 counts as the parent's output. NodeRunner sets `ctx._output_delegated`, drops
 the output field from the parent's own event (keeping the event if it still
-carries deltas), and stamps `node_info.output_for` with the ancestor paths.
+carries deltas), stamps `node_info.output_for` with the ancestor paths, and
+publishes non-tool output events on the outermost explicit claiming ancestor's
+branch (leaving tool responses such as `finish_task` paired on the child's
+branch).

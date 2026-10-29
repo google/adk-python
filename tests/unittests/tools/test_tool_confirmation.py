@@ -26,10 +26,6 @@ from google.adk.tools.tool_confirmation import ToolConfirmation
 from pydantic import ValidationError
 import pytest
 
-# ToolConfirmation is gated behind an experimental feature flag, which emits a
-# UserWarning on use; that is expected and not under test here.
-pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")
-
 
 class TestToolConfirmation:
   """Tests for the ToolConfirmation model."""

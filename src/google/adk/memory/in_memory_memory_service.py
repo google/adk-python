@@ -24,6 +24,7 @@ import unicodedata
 from typing_extensions import override
 
 from . import _utils
+from ..events._rewind_events import _apply_rewinds
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
@@ -32,7 +33,6 @@ if TYPE_CHECKING:
   from ..events.event import Event
   from ..sessions.session import Session
 
-_UNKNOWN_SESSION_ID = '__unknown_session_id__'
 _MAX_SEARCH_RESULTS = 10
 
 
@@ -86,9 +86,16 @@ class InMemoryMemoryService(BaseMemoryService):
   def __init__(self) -> None:
     self._lock = threading.Lock()
 
-    self._session_events: dict[tuple[str, str], dict[str, list[Event]]] = {}
+    self._session_events: dict[
+        tuple[str, str], dict[str | None, list[Event]]
+    ] = {}
     """Keys are (app_name, user_id). Values are dicts of session_id to
-    session event lists.
+    session event lists. Events added without a session ID are kept under the
+    None key, which no caller-provided session ID can alias.
+    """
+    self._deleted_memory_ids: dict[tuple[str, str], set[str]] = {}
+    """Keys are (app_name, user_id). Values are sets of deleted memory_ids
+    (event IDs) to prevent re-ingestion from subsequent session additions.
     """
 
   @override
@@ -96,11 +103,14 @@ class InMemoryMemoryService(BaseMemoryService):
     user_key = _user_key(session.app_name, session.user_id)
 
     with self._lock:
+      deleted_ids = self._deleted_memory_ids.get(user_key, set())
       self._session_events[user_key] = self._session_events.get(user_key, {})
       self._session_events[user_key][session.id] = [
-          event
-          for event in session.events
-          if event.content and event.content.parts
+          event.model_copy(deep=True)
+          for event in _apply_rewinds(session.events)
+          if event.content
+          and event.content.parts
+          and event.id not in deleted_ids
       ]
 
   @override
@@ -115,20 +125,21 @@ class InMemoryMemoryService(BaseMemoryService):
   ) -> None:
     _ = custom_metadata
     user_key = _user_key(app_name, user_id)
-    scoped_session_id = session_id or _UNKNOWN_SESSION_ID
+    scoped_session_id = session_id or None
     events_to_add = [
         event for event in events if event.content and event.content.parts
     ]
 
     with self._lock:
+      deleted_ids = self._deleted_memory_ids.get(user_key, set())
       self._session_events[user_key] = self._session_events.get(user_key, {})
       existing_events = self._session_events[user_key].get(
           scoped_session_id, []
       )
       existing_ids = {event.id for event in existing_events}
       for event in events_to_add:
-        if event.id not in existing_ids:
-          existing_events.append(event)
+        if event.id not in existing_ids and event.id not in deleted_ids:
+          existing_events.append(event.model_copy(deep=True))
           existing_ids.add(event.id)
       self._session_events[user_key][scoped_session_id] = existing_events
 
@@ -155,8 +166,11 @@ class InMemoryMemoryService(BaseMemoryService):
       for event in session_events:
         if not event.content or not event.content.parts:
           continue
+        visible_parts = [
+            part for part in event.content.parts if not part.thought
+        ]
         event_text = ' '.join(
-            [part.text for part in event.content.parts if part.text]
+            [part.text for part in visible_parts if part.text]
         )
         words_in_event = _extract_searchable_words(event_text)
         if not words_in_event:
@@ -173,7 +187,16 @@ class InMemoryMemoryService(BaseMemoryService):
           scored_memories.append((
               matched_words,
               MemoryEntry(
-                  content=event.content,
+                  id=event.id,
+                  content=event.content.model_copy(
+                      deep=True,
+                      update={
+                          'parts': [
+                              part.model_copy(deep=True)
+                              for part in visible_parts
+                          ]
+                      },
+                  ),
                   author=event.author,
                   timestamp=_utils.format_timestamp(event.timestamp),
               ),
@@ -188,3 +211,21 @@ class InMemoryMemoryService(BaseMemoryService):
     return SearchMemoryResponse(
         memories=[memory for _, memory in scored_memories[:_MAX_SEARCH_RESULTS]]
     )
+
+  @override
+  async def delete_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      memory_id: str | None = None,
+  ) -> None:
+    if not memory_id:
+      return
+    user_key = _user_key(app_name, user_id)
+    with self._lock:
+      for session_id, events in self._session_events.get(user_key, {}).items():
+        kept = [event for event in events if event.id != memory_id]
+        if len(kept) != len(events):
+          self._session_events[user_key][session_id] = kept
+          self._deleted_memory_ids.setdefault(user_key, set()).add(memory_id)

@@ -86,10 +86,6 @@ _TEMPLATE = """### Highlights
 
 * **<Feature>**: <what it unlocks for the user, in one line>. (<commit>)
 * **<Feature>**: <user benefit>. (<commit>)
-
-#### Breaking changes
-
-* **<what changed>**: <how to migrate, in one line>. (<commit>)
 """
 
 _PROMPT = """\
@@ -107,8 +103,11 @@ Write a short Highlights section so a reader can grasp the release at a glance:
 - Reuse the exact commit links from the entries you summarize.
 - Pick only the few changes that matter most to users. Ignore pure refactors,
   chores, and trivial docs.
-- If there are breaking changes, add a "#### Breaking changes" subsection after
-  the bullets, each with a one-line migration note.
+- ONLY if the input changelog contains an explicit "### ⚠ BREAKING CHANGES"
+  section, add a "#### Breaking changes" subsection after the bullets with a
+  one-line migration note for each item in that section. Do NOT infer or invent
+  "Breaking changes" or "Behavior changes" subsections from regular Features or
+  Bug Fixes entries.
 
 Output ONLY the markdown body. Do NOT include the "### Highlights" header and do
 NOT wrap the output in code fences. Put each paragraph and each bullet on a

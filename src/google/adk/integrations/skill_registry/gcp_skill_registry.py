@@ -165,11 +165,26 @@ class GCPSkillRegistry(SkillRegistry):
       client: httpx.AsyncClient,
       url: str,
       params: dict[str, Any] | None = None,
+      *,
+      method: str = "GET",
+      json: dict[str, Any] | None = None,
   ) -> httpx.Response:
-    """Helper function to make GET requests to the Agent Registry API."""
+    """Helper function to make HTTP requests to the Agent Registry API."""
+    method_upper = method.upper()
+    if method_upper == "GET" and json is not None:
+      raise ValueError("GET requests do not support a JSON body.")
     headers = await self._get_headers()
     try:
-      response = await client.get(url, headers=headers, params=params)
+      if method_upper == "POST":
+        response = await client.post(
+            url, headers=headers, params=params, json=json
+        )
+      elif method_upper == "GET":
+        response = await client.get(url, headers=headers, params=params)
+      else:
+        response = await client.request(
+            method_upper, url, headers=headers, params=params, json=json
+        )
       response.raise_for_status()
       return response
     except httpx.HTTPStatusError as e:
@@ -184,9 +199,31 @@ class GCPSkillRegistry(SkillRegistry):
 
   def _create_httpx_client(self) -> httpx.AsyncClient:
     """Creates a new httpx.AsyncClient with appropriate SSL/mTLS configuration."""
+    base_host = httpx.URL(self.base_url).host
+
+    async def _drop_cross_origin_goog_headers(request: httpx.Request) -> None:
+      if request.url.host != base_host:
+        for header in list(request.headers):
+          if header.lower().startswith("x-goog-"):
+            del request.headers[header]
+
+    # The Agent Registry media download (alt=media) replies with a 302 to a
+    # short-lived GCS signed URL, so the client must follow redirects; httpx
+    # drops the Authorization header on cross-origin redirects, but retains
+    # custom headers like x-goog-user-project and x-goog-api-client. GCS
+    # requires all x-goog-* headers on a signed request to match its signature,
+    # so we drop them when redirected off the base API host.
+    event_hooks = {"request": [_drop_cross_origin_goog_headers]}
     if self._ssl_context is not None:
-      return httpx.AsyncClient(verify=self._ssl_context)
-    return httpx.AsyncClient()
+      return httpx.AsyncClient(
+          verify=self._ssl_context,
+          follow_redirects=True,
+          event_hooks=event_hooks,
+      )
+    return httpx.AsyncClient(
+        follow_redirects=True,
+        event_hooks=event_hooks,
+    )
 
   async def get_skill(self, *, name: str) -> models.Skill:
     """Fetches a skill from the registry.
@@ -260,10 +297,28 @@ class GCPSkillRegistry(SkillRegistry):
           f"{self.base_url}/projects/{self.project_id}/"
           f"locations/{self.location}/skills:search"
       )
-      params = {
+      payload = {
           "search_string": query,
       }
-      response = await self._make_request(client, url, params=params)
+      try:
+        response = await self._make_request(
+            client, url, method="POST", json=payload
+        )
+      except RuntimeError as e:
+        # TODO(b/569994748): Remove GET fallback once Agent Registry POST rollout is complete in prod.
+        if isinstance(
+            e.__cause__, httpx.HTTPStatusError
+        ) and e.__cause__.response.status_code in (404, 405):
+          logger.info(
+              "POST %s returned %d; falling back to GET for SearchSkills.",
+              url,
+              e.__cause__.response.status_code,
+          )
+          response = await self._make_request(
+              client, url, method="GET", params={"search_string": query}
+          )
+        else:
+          raise
       response_data = response.json()
 
       results: list[models.Frontmatter] = []

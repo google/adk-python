@@ -20,7 +20,10 @@ import asyncio
 import io
 import logging
 import pathlib
+import re
+from typing import Any
 from typing import Callable
+from typing import cast
 from typing import Dict
 from typing import Union
 import zipfile
@@ -31,6 +34,30 @@ import yaml
 
 from . import models
 
+
+def _validate_path_segment(value: str, field_name: str) -> None:
+  """Rejects values that could alter a storage blob path.
+
+  Args:
+    value: The caller-supplied identifier.
+    field_name: Human-readable field name used in error messages.
+
+  Raises:
+    ValueError: If the value contains backslashes, traversal segments, or null
+      bytes.
+  """
+  if not value:
+    raise ValueError(f"{field_name} must not be empty.")
+  if "\x00" in value:
+    raise ValueError(f"{field_name} must not contain null bytes.")
+  if "\\" in value:
+    raise ValueError(f"{field_name} {value!r} must not contain backslashes.")
+  if value in (".", ".."):
+    raise ValueError(
+        f"{field_name} {value!r} must not contain traversal segments."
+    )
+
+
 # Bounds on a skill archive, which may come from a remote registry and is
 # untrusted until it has been loaded. They are generous relative to any
 # realistic skill; the toolset already warns about payloads over 16 MB.
@@ -39,6 +66,12 @@ _MAX_ZIP_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
 # How much of a member is decompressed per step. Reading in steps keeps the
 # transient buffer this size however much the member really expands.
 _ZIP_READ_CHUNK_BYTES = 64 * 1024
+
+# The frontmatter delimiters are whole `---` lines, so a `---` inside a value
+# (for example "A --- B" in a description) does not end the frontmatter.
+_FRONTMATTER_PATTERN = re.compile(
+    r"\A---[ \t]*\r?\n(.*?)^---[ \t]*\r?$(.*)\Z", re.DOTALL | re.MULTILINE
+)
 
 _ALLOWED_FRONTMATTER_KEYS = frozenset({
     "name",
@@ -51,15 +84,50 @@ _ALLOWED_FRONTMATTER_KEYS = frozenset({
 })
 
 
+def _validate_relative_resource_path(path: str) -> str:
+  """Validate and normalize a relative resource path within a skill.
+
+  Args:
+    path: Relative path string to validate.
+
+  Returns:
+    Normalized POSIX path string.
+
+  Raises:
+    ValueError: If path is absolute, contains directory traversal, or is
+      invalid.
+  """
+  posix_path_str = path.replace("\\", "/")
+  p = pathlib.PurePosixPath(posix_path_str)
+  normalized = p.as_posix()
+
+  if (
+      not normalized
+      or normalized == "."
+      or p.is_absolute()
+      or ".." in p.parts
+      or pathlib.PureWindowsPath(path).is_absolute()
+      or bool(pathlib.PureWindowsPath(path).drive)
+      or pathlib.PureWindowsPath(normalized).is_absolute()
+      or bool(pathlib.PureWindowsPath(normalized).drive)
+  ):
+    raise ValueError(f"Unsafe path in skill resource: {path!r}")
+
+  return normalized
+
+
 def _load_dir(directory: pathlib.Path) -> dict[str, Union[str, bytes]]:
   """Recursively load files from a directory into a dictionary.
+
+  Keys are forward-slash POSIX relative paths regardless of the host OS, so
+  resource lookup keys remain portable across Windows and POSIX hosts.
 
   Args:
     directory: Path to the directory to load.
 
   Returns:
-    Dictionary mapping relative file paths to their content: `str` for UTF-8
-    text, `bytes` for everything else.
+    Dictionary mapping relative file paths to their content: a `str` for
+    UTF-8 text files, or raw `bytes` for binary files.
   """
   files: dict[str, Union[str, bytes]] = {}
   if directory.exists() and directory.is_dir():
@@ -101,7 +169,7 @@ def _build_scripts(
   return scripts
 
 
-def _parse_skill_md_content(content: str) -> tuple[dict, str]:
+def _parse_skill_md_content(content: str) -> tuple[dict[str, Any], str]:
   """Parse SKILL.md from raw content string.
 
   Args:
@@ -116,12 +184,12 @@ def _parse_skill_md_content(content: str) -> tuple[dict, str]:
   if not content.startswith("---"):
     raise ValueError("SKILL.md must start with YAML frontmatter (---)")
 
-  parts = content.split("---", 2)
-  if len(parts) < 3:
+  match = _FRONTMATTER_PATTERN.match(content)
+  if match is None:
     raise ValueError("SKILL.md frontmatter not properly closed with ---")
 
-  frontmatter_str = parts[1]
-  body = parts[2].strip()
+  frontmatter_str = match.group(1)
+  body = match.group(2).strip()
 
   try:
     parsed = yaml.safe_load(frontmatter_str)
@@ -131,12 +199,14 @@ def _parse_skill_md_content(content: str) -> tuple[dict, str]:
   if not isinstance(parsed, dict):
     raise ValueError("SKILL.md frontmatter must be a YAML mapping")
 
-  return parsed, body
+  # YAML permits non-string mapping keys, and those have always been passed
+  # through to the caller.
+  return cast("dict[str, Any]", parsed), body
 
 
 def _parse_skill_md(
     skill_dir: pathlib.Path,
-) -> tuple[dict, str, pathlib.Path]:
+) -> tuple[dict[str, Any], str, pathlib.Path]:
   """Parse SKILL.md from a skill directory.
 
   Args:
@@ -317,7 +387,8 @@ def _load_skill_from_zip_bytes(zip_bytes: bytes) -> models.Skill:
     raise ValueError(f"Skill archive is malformed: {e}") from e
 
   with archive as z:
-    # zipfile truncates each member's read to the size its central-directory
+    # Caps on entries and declared uncompressed size bound the CPU and memory
+    # cost of a malicious archive upfront. A member cannot expand past what its
     # entry declares, so capping the declared total is what bounds the bytes
     # decompressed out of the archive.
     entry_count = len(z.infolist())
@@ -338,11 +409,15 @@ def _load_skill_from_zip_bytes(zip_bytes: bytes) -> models.Skill:
     for member in z.infolist():
       filename = member.filename
       if (
-          filename.startswith("/")
-          or filename.startswith("../")
-          or "/../" in filename
+          member.is_dir()
+          and pathlib.PurePosixPath(filename.replace("\\", "/")).as_posix()
+          == "."
       ):
-        raise ValueError(f"Dangerous zip entry ignored: {filename}")
+        continue
+      try:
+        _validate_relative_resource_path(filename)
+      except ValueError as e:
+        raise ValueError(f"Dangerous zip entry ignored: {filename}") from e
 
     # Find SKILL.md or skill.md
     skill_md_content = None
@@ -385,11 +460,16 @@ def _load_skill_from_zip_bytes(zip_bytes: bytes) -> models.Skill:
           relative_path = info.filename[len(prefix) :]
           if not relative_path:
             continue
+          normalized = _validate_relative_resource_path(relative_path)
+          if normalized in result:
+            raise ValueError(
+                f"Duplicate normalized path detected: {normalized!r}"
+            )
           data, budget = _read_zip_member(z, info, budget)
           try:
-            result[relative_path] = data.decode("utf-8")
+            result[normalized] = data.decode("utf-8")
           except UnicodeDecodeError:
-            result[relative_path] = data
+            result[normalized] = data
       return result
 
     references = _load_zip_dir("references")
@@ -509,7 +589,7 @@ def _list_skills_in_dir(
     Exception: Whatever `on_error` raises, if it raises.
   """
   skills_base_path = pathlib.Path(skills_base_path).resolve()
-  skills = {}
+  skills: dict[str, models.Frontmatter] = {}
 
   if not skills_base_path.is_dir():
     logging.warning(
@@ -593,7 +673,7 @@ def _list_skills_in_gcs_dir(
     pass
   logging.info("Found %s skills in GCS.", iterator.prefixes)
 
-  skills = {}
+  skills: dict[str, models.Frontmatter] = {}
   for skill_prefix in sorted(iterator.prefixes):
     manifest_blob = bucket.blob(f"{skill_prefix}SKILL.md")
 
@@ -639,9 +719,20 @@ def _load_skill_from_gcs_dir(
 
   Raises:
     FileNotFoundError: If the skill directory or SKILL.md is not found.
-    ValueError: If SKILL.md is invalid or the skill name does not match
-      the directory name.
+    ValueError: If SKILL.md is invalid, the skill name does not match the
+      directory name, or if skill_id contains empty, null-byte, backslash, or
+      '.'/'..' segments.
   """
+  # skill_id identifies which of potentially many skill directories under
+  # a shared bucket gets loaded. An application may resolve it from a
+  # caller- or model-selected skill name rather than a fixed,
+  # developer-authored constant, so it is validated the same
+  # way app_name/eval_set_id are validated in the evaluation GCS managers
+  # before being interpolated into a blob prefix.
+  skill_id = skill_id.strip("/")
+  for segment in skill_id.split("/"):
+    _validate_path_segment(segment, "skill_id")
+
   try:
     from google.cloud import storage
   except ImportError as e:
@@ -671,27 +762,37 @@ def _load_skill_from_gcs_dir(
   frontmatter = models.Frontmatter.model_validate(parsed)
 
   # Validate that skill name matches the directory name
-  skill_name_expected = skill_id.strip("/").split("/")[-1]
+  skill_name_expected = skill_id.split("/")[-1]
   if skill_name_expected != frontmatter.name:
     raise ValueError(
         f"Skill name '{frontmatter.name}' does not match directory"
         f" name '{skill_name_expected}'."
     )
 
-  def _load_files_in_dir(subdir: str) -> Dict[str, Union[str, bytes]]:
+  def _load_files_in_dir(subdir: str) -> dict[str, Union[str, bytes]]:
     prefix = f"{skill_dir_prefix}{subdir}/"
     blobs = bucket.list_blobs(prefix=prefix)
-    result = {}
+    result: dict[str, str | bytes] = {}
 
     for blob in blobs:
+      if blob.name.endswith("/"):
+        continue
       relative_path = blob.name[len(prefix) :]
       if not relative_path:
         continue
 
+      normalized = _validate_relative_resource_path(relative_path)
+
+      # Prevent silent file overwrites via path aliasing
+      if normalized in result:
+        raise ValueError(f"Duplicate normalized path detected: {normalized!r}")
+
+      # NOTE: Final path safety enforced during materialization
+      # via realpath + commonpath checks in skill_toolset.py
       try:
-        result[relative_path] = blob.download_as_text()
+        result[normalized] = blob.download_as_text()
       except UnicodeDecodeError:
-        result[relative_path] = blob.download_as_bytes()
+        result[normalized] = blob.download_as_bytes()
     return result
 
   references = _load_files_in_dir("references")
@@ -784,8 +885,9 @@ async def _load_skill_from_gcs_dir_async(
   Raises:
     ImportError: If google-cloud-storage is not installed.
     FileNotFoundError: If the skill directory or SKILL.md is not found.
-    ValueError: If SKILL.md is invalid or the skill name does not match
-      the directory name.
+    ValueError: If SKILL.md is invalid, the skill name does not match the
+      directory name, or if skill_id contains empty, null-byte, backslash, or
+      '.'/'..' segments.
   """
   return await asyncio.to_thread(
       _load_skill_from_gcs_dir,

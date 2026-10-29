@@ -136,6 +136,13 @@ them rather than in a guide of their own, which covers any filename ending
 `_utils.py`, `_helper.py`, `_helpers.py`, `_types.py`, `_errors.py`,
 `_exceptions.py`, or `_constants.py`.
 
+A module is also exempt when no package `__init__.py` imports from it or names
+it, because then it has no public interface for a guide to describe. The check
+reads every `__init__.py` under `src/google/adk/`, and lazy re-exports count:
+an import under `if TYPE_CHECKING:` or inside `__getattr__`, and a string that
+names the module in a lazy-import table. Its `_` prefix decides nothing, so
+export a name from a new module and that module needs a guide.
+
 Everything else needs a guide or a waiver. A waiver is a `NO_UNIT_GUIDE=` or
 `SKIP_UNIT_GUIDE=` tag carrying the reason, and the two names behave
 identically. It waives the unit guide requirement alone; the `_` prefix rule
@@ -147,7 +154,7 @@ Write a reason a reviewer can check against the code, because the tag becomes
 the only record of why the guide is absent:
 
 ```
-NO_UNIT_GUIDE=_model_call is internal to the LLM flow; no __init__.py re-exports it.
+NO_UNIT_GUIDE=InvocationNotFoundError is covered by docs/guides/errors/index.md.
 ```
 
 ### Where to put the waiver
@@ -165,7 +172,7 @@ not found, and nothing reports the miss.
 The environment carries the tag for a commit that does not exist yet:
 
 ```
-NO_UNIT_GUIDE='internal to the LLM flow' git commit ...
+NO_UNIT_GUIDE='covered by docs/guides/errors/index.md' git commit ...
 ```
 
 Reach for that form when the pre-commit hook stops you. A pre-commit hook runs

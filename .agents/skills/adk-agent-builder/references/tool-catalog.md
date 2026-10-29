@@ -78,6 +78,32 @@ def approve_expense(amount: float) -> dict:
 root_agent = Agent(tools=[LongRunningFunctionTool(approve_expense)], ...)
 ```
 
+## Workflows and `@node` functions as tools
+
+Pass a `Workflow` (with `input_schema` set to a Pydantic `BaseModel`) or a
+`@node`-decorated function straight into `tools=`. The agent runs it in an
+isolated sub-branch (`{tool_name}@{function_call_id}`) and receives the
+terminal output.
+
+Set `ctx.actions.skip_summarization = True` inside the node when its output
+should be emitted directly as the final user-visible text response without a
+follow-up LLM summarization turn:
+
+```python
+from google.adk import Agent, Context
+from google.adk.workflow import node
+
+
+@node
+def generate_report(project: str, ctx: Context) -> str:
+  """Generate a status report for a project."""
+  ctx.actions.skip_summarization = True
+  return f'Report for {project}: Ready'
+
+
+root_agent = Agent(tools=[generate_report], ...)
+```
+
 ## MCP servers
 
 ```python

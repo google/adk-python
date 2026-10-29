@@ -34,27 +34,25 @@ from typing import TYPE_CHECKING
 import warnings
 
 from google.genai import types
-from opentelemetry import context
 from typing_extensions import Self
 
 from .agents.base_agent import BaseAgent
 from .agents.context_cache_config import ContextCacheConfig
 from .agents.invocation_context import InvocationContext
 from .agents.invocation_context import new_invocation_context_id
-from .agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
-from .agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
-from .agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from .agents.run_config import RunConfig
 from .artifacts.base_artifact_service import BaseArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .errors._stale_session_error import StaleSessionError
 from .errors.session_not_found_error import SessionNotFoundError
+from .events._abort_events import _build_abort_events
+from .events._abort_events import _is_abort_event
+from .events._internal_metadata import internal_metadata
+from .events._internal_metadata import without_internal_metadata
+from .events._isolation_scope import _find_finished_scope_runs
 from .events._rewind_events import _apply_rewinds
 from .events.event import Event
 from .events.event_actions import EventActions
-from .flows.llm_flows.context import _contents as contents
-from .flows.llm_flows.tools._functions import find_matching_function_call as _find_matching_function_call
-from .live import _runner_utils as _live_runner_utils
 from .live.live_request_queue import LiveRequestQueue
 from .memory.base_memory_service import BaseMemoryService
 from .platform.thread import create_thread
@@ -63,25 +61,25 @@ from .plugins.plugin_manager import PluginManager
 from .sessions.base_session_service import BaseSessionService
 from .sessions.base_session_service import GetSessionConfig
 from .sessions.session import Session
-from .telemetry import _instrumentation
-from .telemetry.tracing import tracer
 from .tools.base_toolset import BaseToolset
+from .utils import _lazy
+from .utils._agent_mode import AgentMode as _AgentMode
 from .utils._debug_output import print_event
 from .utils._runner_utils import _notify_run_error
-from .utils._runner_utils import _with_caller_context
+from .utils.model_name_utils import is_gemini_model
+from .utils.model_name_utils import is_gemini_model_id_check_disabled
+from .workflow._base_node import _walk_static_nodes
 from .workflow._base_node import BaseNode
 
 if TYPE_CHECKING:
   from .apps.app import App
   from .apps.app import ResumabilityConfig
+  from .telemetry.tracing import tracer as tracer
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 _EventQueueItem = tuple[object, asyncio.Event | None]
 
-# Silence unused warning.
-# tracer is imported for backwards compatibility, to avoid breaking change in the API.
-_ = tracer
 
 # App names already told that agent transfer runs without a context cache.
 _UNCACHED_TRANSFER_APPS: set[str] = set()
@@ -101,14 +99,12 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
       scope = ``<node_name>@<run_id>``, stamped on every event the
       task agent emits.
 
-  Both close on a terminal ``finish_task`` FunctionResponse containing a
-  'result' key matching ``FINISH_TASK_SUCCESS_RESULT`` or
-  ``FINISH_TASK_ERROR_RESULT``. A FunctionResponse containing an 'error' key
-  (indicating a tool validation failure) does NOT close the scope: the task
-  agent is still active, will see the validation error, and retry. Walking
-  backward, the first non-empty scope we encounter that hasn't been closed by a
-  later successful or failed terminal ``finish_task`` is the paused task
-  awaiting the user's next reply.
+  A scoped run ``(scope, invocation_id)`` closes on a terminal ``finish_task``
+  FunctionResponse (``SUCCESS`` or ``ERROR``) or when its invocation was
+  aborted. A FunctionResponse containing an ``'error'`` key (tool validation
+  failure) keeps the run active so the task agent can retry. Keying finished
+  runs by ``(scope, invocation_id)`` lets a workflow task node open a fresh
+  scoped run on a later invocation in the same session.
 
   Used by ``Runner._append_user_event`` to scope the new user message
   to that task agent's view.
@@ -117,34 +113,23 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
     A tuple of (isolation_scope, invocation_id) for the active task if found,
     or None if no active task scope is found.
   """
-  # Pass 1: Scan forward to find all scopes that have successfully finished.
-  # We must do this in a separate pass because walking backward directly would
-  # hit post-finish events (like status updates or duplicate FRs) before hitting
-  # the older success FR, falsely indicating the scope is still active.
-  live_events = _apply_rewinds(session.events)
-  finished_scopes: set[str] = set()
-  for event in live_events:
-    scope = event.isolation_scope
-    if not scope:
-      continue
-    if event.content and event.content.parts:
-      for part in event.content.parts:
-        fr = part.function_response
-        if fr and fr.name == FINISH_TASK_TOOL_NAME:
-          response = fr.response or {}
-          if response.get('result') in (
-              FINISH_TASK_SUCCESS_RESULT,
-              FINISH_TASK_ERROR_RESULT,
-          ):
-            finished_scopes.add(scope)
-          break
+  # Fast path: this function can only return an event that has an
+  # isolation_scope, and _apply_rewinds never adds events, so a history with
+  # no scoped event has no active task scope and both passes below can be
+  # skipped.
+  if not any(event.isolation_scope for event in session.events):
+    return None
 
-  # Pass 2: Walk backward to find the latest active scope that is not finished.
+  live_events = _apply_rewinds(session.events)
+  finished_runs = _find_finished_scope_runs(live_events)
+
   for event in reversed(live_events):
+    if event.actions and event.actions.compaction:
+      continue
     scope = event.isolation_scope
     if not scope:
       continue
-    if scope not in finished_scopes:
+    if (scope, event.invocation_id) not in finished_runs:
       return scope, event.invocation_id
   return None
 
@@ -159,15 +144,42 @@ def _get_function_responses_from_content(
   ]
 
 
+def _session_for_routing(
+    session: Session, new_message: types.Content | None
+) -> Session:
+  """Includes a user FunctionResponse for routing before `new_message` is saved.
+
+  `_find_agent_to_run` runs before `new_message` is appended to
+  `session.events`, so a user FunctionResponse must be attached here to route
+  back to the agent that issued the FunctionCall.
+  """
+  if not _get_function_responses_from_content(new_message):
+    return session
+  filtered_events = _apply_rewinds(session.events)
+  if filtered_events and _is_abort_event(filtered_events[-1]):
+    return session
+  return session.model_copy(
+      update={
+          'events': [
+              *session.events,
+              Event(author='user', content=new_message),
+          ]
+      }
+  )
+
+
 def _apply_run_config_custom_metadata(
     event: Event, run_config: RunConfig | None
 ) -> None:
-  """Merges run-level custom metadata into the event, if present."""
+  """Merges run-level custom metadata, minus ADK-internal keys, into the event."""
   if not run_config or not run_config.custom_metadata:
+    return
+  run_metadata = without_internal_metadata(run_config.custom_metadata)
+  if not run_metadata:
     return
 
   event.custom_metadata = {
-      **run_config.custom_metadata,
+      **run_metadata,
       **(event.custom_metadata or {}),
   }
 
@@ -181,7 +193,9 @@ def _can_transfer_between_agents(root: Any) -> bool:
 
 def _stamp_event_branch_context(ic: InvocationContext, event: Event) -> None:
   """Stamps the event with the branch and isolation scope of its matching function call."""
-  if function_call := _find_matching_function_call(
+  from .flows.llm_flows.tools._functions import find_matching_function_call
+
+  if function_call := find_matching_function_call(
       ic._get_events(current_invocation=True), event
   ):
     event.branch = function_call.branch
@@ -301,14 +315,10 @@ class Runner:
         plugins=app.plugins, close_timeout=plugin_close_timeout
     )
     self.auto_create_session = auto_create_session
-    if self.agent is not None:
-      (
-          self._agent_origin_app_name,
-          self._agent_origin_dir,
-      ) = self._infer_agent_origin(cast(BaseAgent, self.agent))
-    else:
-      self._agent_origin_app_name = None
-      self._agent_origin_dir = None
+    (
+        self._agent_origin_app_name,
+        self._agent_origin_dir,
+    ) = self._infer_agent_origin(cast(BaseAgent, self.agent))
     self._app_name_alignment_hint: Optional[str] = None
     self._enforce_app_name_alignment()
     self._warn_uncached_agent_transfer()
@@ -584,6 +594,8 @@ class Runner:
       run_config: Optional[RunConfig] = None,
   ) -> AsyncGenerator[Event, None]:
     """Run a non-agent BaseNode in live mode."""
+    from .live import _runner_utils as _live_runner_utils
+
     async with aclosing(
         _live_runner_utils.run_node_live(
             self,
@@ -626,10 +638,14 @@ class Runner:
       self,
       session: Session,
       new_message: types.Content,
+      *,
+      strict: bool = True,
   ) -> Optional[str]:
     """Infer invocation_id by matching function responses to FC events.
 
-    Raises ValueError if responses resolve to different invocations.
+    When ``strict`` is True, raises ValueError if responses resolve to
+    different invocations or any response id has no matching function call.
+    When ``strict`` is False, returns None in those cases instead.
     """
     fr_ids = {
         p.function_response.id
@@ -650,18 +666,22 @@ class Runner:
         break
 
     if fr_ids:
+      if not strict:
+        return None
       raise ValueError(
           f'Function call not found for function response ids: {fr_ids}.'
           ' Ensure each function response ID matches an existing function'
           ' call in the session history.'
       )
     if len(invocation_ids) > 1:
+      if not strict:
+        return None
       raise ValueError(
           'Function responses resolve to multiple'
           f' invocations: {invocation_ids}. All function responses in a'
           ' single message must belong to the same invocation.'
       )
-    return invocation_ids.pop()
+    return invocation_ids.pop() if invocation_ids else None
 
   async def _build_and_append_user_event(
       self,
@@ -795,31 +815,18 @@ class Runner:
               'Unexpected node event queue item:'
               f' {type(event_or_done).__name__}'
           )
-        event = event_or_done
-
-        async def _process_and_clear(invocation_context, ev_arg):
-          nonlocal event
-          ev = await self._process_event_with_plugin_callbacks(
-              invocation_context=invocation_context,
-              event=ev_arg,
-          )
-          if not ev.partial:
-            if (
-                ev.node_info
-                and ev.node_info.message_as_output
-                and ev.content is not None
-            ):
-              ev = ev.model_copy()
-              ev.output = None
-          event = ev
-          return ev
-
-        output_event = await _process_and_clear(
+        output_event = await self._process_event_with_plugin_callbacks(
             invocation_context=ic,
-            ev_arg=event,
+            event=event_or_done,
         )
-
-        if not event.partial:
+        if not output_event.partial:
+          if (
+              output_event.node_info
+              and output_event.node_info.message_as_output
+              and output_event.content is not None
+          ):
+            output_event = output_event.model_copy()
+            output_event.output = None
           await self.session_service.append_event(
               session=ic.session, event=output_event
           )
@@ -874,32 +881,57 @@ class Runner:
       logger.error('Root node %s failed.', node_name, exc_info=True)
       raise
 
+  async def _synthesize_abort_events_if_needed(
+      self, ic: InvocationContext
+  ) -> list[Event]:
+    """Seals an aborted invocation in session history, at most once.
+
+    Returns the synthetic events after plugin processing and persistence.
+    """
+    if ic._abort_state.event_synthesized or ic.session is None:  # pylint: disable=protected-access
+      return []
+    ic._abort_state.event_synthesized = True  # pylint: disable=protected-access
+    abort_events = _build_abort_events(
+        ic.session.events,
+        invocation_id=ic.invocation_id,
+        root_agent_name=self.agent.name,
+        branch=ic.branch,
+    )
+    return [
+        await self._process_and_append_event(event=e, invocation_context=ic)
+        for e in abort_events
+    ]
+
   async def _run_post_invocation_compaction(
       self,
       *,
-      session: Session,
-      skip_token_compaction: bool,
+      invocation_context: InvocationContext,
   ) -> None:
     """Run best-effort derived compaction after a completed invocation.
+
+    The config comes from the invocation, so a before_run_callback that
+    replaced or cleared it for this session is honored here too.
 
     A later turn is allowed to update the same session while summarization is
     running. If that happens, the old summary is discarded rather than making
     an already answered invocation fail. Raw events remain persisted and a
     later turn can re-evaluate compaction against its newer snapshot.
     """
-    if not self.app or not self.app.events_compaction_config:
+    config = invocation_context.events_compaction_config
+    if not config:
       return
 
-    from google.adk.apps.compaction import _run_compaction_for_sliding_window
+    from .apps.compaction import _run_compaction_for_sliding_window_config
 
+    session = invocation_context.session
     logger.debug('Running event compactor.')
     try:
       async with aclosing(
-          _run_compaction_for_sliding_window(
-              self.app,
-              session,
-              self.session_service,
-              skip_token_compaction=skip_token_compaction,
+          _run_compaction_for_sliding_window_config(
+              config=config,
+              session=session,
+              session_service=self.session_service,
+              agent=self.agent,
           )
       ) as compaction_events:
         async for compaction_event in compaction_events:
@@ -970,10 +1002,10 @@ class Runner:
       This sync interface is only for local testing and convenience purpose.
       Consider using `run_async` for production usage.
 
-    If event compaction is enabled in the App configuration, it will be
-    performed after all agent events for the current invocation have been
-    yielded. The generator will only finish iterating after event
-    compaction is complete.
+    If event compaction is enabled for the invocation, by the App or by a
+    plugin's before_run_callback, it will be performed after all agent events
+    for the current invocation have been yielded. The generator will only
+    finish iterating after event compaction is complete.
 
     Args:
       user_id: The user ID of the session.
@@ -1090,11 +1122,12 @@ class Runner:
   ) -> AsyncGenerator[Event, None]:
     """Main entry method to run the agent in this runner.
 
-    If event compaction is enabled in the App configuration, it will be
-    performed after all agent events for the current invocation have been
-    yielded. The async generator will only finish iterating after event
-    compaction is complete. However, this does not block new `run_async`
-    calls for subsequent user queries, which can be started concurrently.
+    If event compaction is enabled for the invocation, by the App or by a
+    plugin's before_run_callback, it will be performed after all agent events
+    for the current invocation have been yielded. The async generator will only
+    finish iterating after event compaction is complete. However, this does not
+    block new `run_async` calls for subsequent user queries, which can be
+    started concurrently.
 
     Args:
       user_id: The user ID of the session.
@@ -1124,56 +1157,37 @@ class Runner:
     """
     run_config = run_config or RunConfig()
 
-    if new_message and not new_message.role:
-      new_message.role = 'user'
+    # An inbound message is always a user turn, whatever role the caller set,
+    # matching the A2A request converter. Build a new Content instead of
+    # assigning the role, so the caller's object is left unchanged and a
+    # types.UserContent (whose role field is frozen) is accepted.
+    if new_message and new_message.role != 'user':
+      new_message = types.Content(role='user', parts=new_message.parts)
 
     from .agents.llm_agent import LlmAgent
     from .workflow._base_node import BaseNode
 
-    # Optional dependency: RemoteA2aAgent is only available if a2a is installed.
-    remote_a2a_agent_type: Any = None
-    try:
-      from .agents.remote_a2a_agent import RemoteA2aAgent  # pylint: disable=g-import-not-at-top
-
-      remote_a2a_agent_type = RemoteA2aAgent
-    except ImportError:
-      pass
-
     if isinstance(self.agent, LlmAgent):
-      if self.agent.mode is None:
-        # LlmAgent as root agent defaults to chat mode.
-        self.agent.mode = 'chat'
+      # LlmAgent as root agent defaults to chat mode without mutating the
+      # shared agent instance in place.
+      effective_mode = self.agent.mode or _AgentMode.CHAT
 
       # A root LlmAgent runs in chat mode (the default) or task mode. Task mode
       # is fully supported for any caller: the agent runs to completion via the
       # finish_task tool and its result is promoted onto the terminal event's
       # output field (an A2A server turns that into an artifact; a direct caller
       # reads it off the event stream).
-      if self.agent.mode in ('chat', 'task'):
+      if effective_mode in (_AgentMode.CHAT, _AgentMode.TASK):
         session = await self._get_or_create_session(
             user_id=user_id,
             session_id=session_id,
             get_session_config=run_config.get_session_config,
         )
-        if self.agent.mode == 'chat':
-          # when the chat coordinator has task-mode sub-agents,
-          # the wrapper handles delegation via ctx.run_node. Don't let
-          # the legacy sub-agent picker bypass the coordinator on resume.
-          remote_a2a_agent_class = (
-              (remote_a2a_agent_type,)
-              if remote_a2a_agent_type is not None
-              else ()
+        agent_to_run: BaseAgent
+        if self._uses_legacy_sub_agent_picker():
+          agent_to_run = self._find_agent_to_run(
+              _session_for_routing(session, new_message), self.agent
           )
-          has_task_subagent = any(
-              isinstance(sa, (LlmAgent,) + remote_a2a_agent_class)
-              and getattr(sa, 'mode', None) == 'task'
-              for sa in self.agent.sub_agents or []
-          )
-          agent_to_run: BaseAgent
-          if has_task_subagent:
-            agent_to_run = self.agent
-          else:
-            agent_to_run = self._find_agent_to_run(session, self.agent)
         else:
           agent_to_run = self.agent
 
@@ -1182,7 +1196,7 @@ class Runner:
       else:
         raise ValueError(
             "LlmAgent as root agent must have mode='chat' or 'task', but got"
-            f" mode='{self.agent.mode}'."
+            f" mode='{effective_mode}'."
         )
       async with aclosing(
           self._run_node_async(
@@ -1229,132 +1243,141 @@ class Runner:
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
-      caller_ctx_trace = context.get_current()
-      with _instrumentation.record_invocation(
-          entrypoint_node=root_agent,
-          conversation_id=session_id,
-          run_config=run_config,
-      ):
-        session = await self._get_or_create_session(
-            user_id=user_id,
-            session_id=session_id,
-            get_session_config=run_config.get_session_config,
+      session = await self._get_or_create_session(
+          user_id=user_id,
+          session_id=session_id,
+          get_session_config=run_config.get_session_config,
+      )
+
+      if not invocation_id and new_message is None:
+        raise ValueError(
+            'Running an agent requires either a new_message or an '
+            'invocation_id to resume a previous invocation. '
+            f'Session: {session_id}, User: {user_id}'
         )
 
-        if not invocation_id and new_message is None:
-          raise ValueError(
-              'Running an agent requires either a new_message or an '
-              'invocation_id to resume a previous invocation. '
-              f'Session: {session_id}, User: {user_id}'
-          )
-
-        is_resumable = (
-            self.resumability_config and self.resumability_config.is_resumable
-        )
-        if not is_resumable and new_message is None:
+      is_resumable = (
+          self.resumability_config and self.resumability_config.is_resumable
+      )
+      if not is_resumable:
+        if new_message is None:
           raise ValueError(
               'Running an agent requires a new_message or a resumable app. '
               f'Session: {session_id}, User: {user_id}'
           )
-
-        if not is_resumable:
+        resolved_invocation_id = self._resolve_invocation_id_from_fr(
+            session, new_message, strict=False
+        )
+        if resolved_invocation_id is not None:
+          if invocation_id and invocation_id != resolved_invocation_id:
+            logger.warning(
+                'Provided invocation_id %s is ignored because new_message'
+                ' has a function response with invocation_id %s.',
+                invocation_id,
+                resolved_invocation_id,
+            )
+          invocation_id = resolved_invocation_id
+        invocation_context = await self._setup_context_for_new_invocation(
+            session=session,
+            new_message=new_message,
+            run_config=run_config,
+            state_delta=state_delta,
+            invocation_id=invocation_id,
+            abort_signal=abort_signal,
+        )
+      else:
+        invocation_id = self._resolve_invocation_id(
+            session, new_message, invocation_id
+        )
+        if not invocation_id:
           if new_message is None:
-            raise ValueError('A new message is required for a new invocation.')
+            raise ValueError(
+                'A new message is required when no invocation can be resumed.'
+            )
           invocation_context = await self._setup_context_for_new_invocation(
               session=session,
               new_message=new_message,
               run_config=run_config,
               state_delta=state_delta,
-              invocation_id=invocation_id,
               abort_signal=abort_signal,
           )
         else:
-          invocation_id = self._resolve_invocation_id(
-              session, new_message, invocation_id
+          invocation_context = await self._setup_context_for_resumed_invocation(
+              session=session,
+              new_message=new_message,
+              invocation_id=invocation_id,
+              run_config=run_config,
+              state_delta=state_delta,
+              abort_signal=abort_signal,
           )
-          if not invocation_id:
-            if new_message is None:
-              raise ValueError(
-                  'A new message is required when no invocation can be resumed.'
-              )
-            invocation_context = await self._setup_context_for_new_invocation(
-                session=session,
-                new_message=new_message,
-                run_config=run_config,
-                state_delta=state_delta,
-                abort_signal=abort_signal,
-            )
-          else:
-            invocation_context = (
-                await self._setup_context_for_resumed_invocation(
-                    session=session,
-                    new_message=new_message,
-                    invocation_id=invocation_id,
-                    run_config=run_config,
-                    state_delta=state_delta,
-                    abort_signal=abort_signal,
-                )
-            )
-            active_agent = invocation_context.agent
-            if not isinstance(active_agent, BaseAgent):
-              raise RuntimeError(
-                  'Resumed agent execution has no active BaseAgent.'
-              )
-            if invocation_context.end_of_agents.get(active_agent.name):
-              # Directly return if the current agent in invocation context is
-              # already final.
-              return
-
-        invocation_context._abort_state.loop = asyncio.get_running_loop()  # pylint: disable=protected-access
-
-        async def execute(
-            ctx: InvocationContext,
-        ) -> AsyncGenerator[Event, None]:
-          if ctx.is_aborted:
-            return
-          active_agent = ctx.agent
+          active_agent = invocation_context.agent
           if not isinstance(active_agent, BaseAgent):
-            raise RuntimeError('Agent execution has no active BaseAgent.')
-          async with aclosing(active_agent.run_async(ctx)) as agen:
-            async for event in agen:
-              yield event
-              if ctx.is_aborted:
-                break
-
-        async with aclosing(
-            _with_caller_context(
-                self._exec_with_plugin(
-                    invocation_context=invocation_context,
-                    session=invocation_context.session,
-                    execute_fn=execute,
-                    is_live_call=False,
-                ),
-                caller_ctx_trace,
+            raise RuntimeError(
+                'Resumed agent execution has no active BaseAgent.'
             )
-        ) as agen:
+          if invocation_context.end_of_agents.get(active_agent.name):
+            # Directly return if the current agent in invocation context is
+            # already final.
+            return
+
+      invocation_context._abort_state.loop = asyncio.get_running_loop()  # pylint: disable=protected-access
+
+      async def execute(
+          ctx: InvocationContext,
+      ) -> AsyncGenerator[Event, None]:
+        if ctx.is_aborted:
+          return
+        active_agent = ctx.agent
+        if not isinstance(active_agent, BaseAgent):
+          raise RuntimeError('Agent execution has no active BaseAgent.')
+        async with aclosing(active_agent.run_async(ctx)) as agen:
           async for event in agen:
             yield event
-            if invocation_context.is_aborted:
+            if ctx.is_aborted:
               break
+
+      async with aclosing(
+          self._exec_with_plugin(
+              invocation_context=invocation_context,
+              session=invocation_context.session,
+              execute_fn=execute,
+              is_live_call=False,
+          )
+      ) as agen:
+        async for event in agen:
+          yield event
+      if not invocation_context.is_aborted:
         # Run compaction after all events are yielded from the agent.
         # (We don't compact in the middle of an invocation, we only compact at
         # the end of an invocation.)
-        if not invocation_context.is_aborted:
-          await self._run_post_invocation_compaction(
-              session=invocation_context.session,
-              skip_token_compaction=(
-                  invocation_context.token_compaction_checked
-              ),
-          )
+        await self._run_post_invocation_compaction(
+            invocation_context=invocation_context,
+        )
+
+    from .telemetry import _instrumentation
 
     # For BaseAgent root agents running via _run_with_trace, events flow
     # through _run_with_trace which breaks cleanly upon abort.
     # Note that BaseNode/Workflow root targets are routed earlier via
     # _run_node_async, where Workflow and NodeRunner manage task cancellation
     # and queue-draining internally.
-    async with aclosing(_run_with_trace(new_message, invocation_id)) as agen:
-      async for event in agen:
-        yield event
+    # The invocation scope is opened out here rather than inside the generator,
+    # so that its span is not opened and closed by whoever happens to drive the
+    # generator, and `stream_in_scope` attaches it only while the generator is
+    # actually running -- never across a yield (b/485899016).
+    with _instrumentation.record_invocation(
+        entrypoint_node=root_agent,
+        conversation_id=session_id,
+        run_config=run_config,
+    ) as (invocation_otel_context, _):
+      async with aclosing(
+          _instrumentation.stream_in_scope(
+              invocation_otel_context,
+              _run_with_trace(new_message, invocation_id),
+          )
+      ) as agen:
+        async for event in agen:
+          yield event
 
   async def rewind_async(
       self,
@@ -1366,15 +1389,23 @@ class Runner:
   ) -> None:
     """Rewinds the session to before the specified invocation.
 
+    Args:
+      user_id: The user ID of the session.
+      session_id: The session ID of the session.
+      rewind_before_invocation_id: The invocation ID to rewind to before.
+      run_config: Retained for backward compatibility. ``get_session_config``
+        is ignored because rewinds must replay state and artifact deltas from
+        the start of the session history.
+
     Raises:
       InvocationNotFoundError: If rewind_before_invocation_id does not match
         any event in the session.
     """
-    run_config = run_config or RunConfig()
+    if run_config and run_config.get_session_config:
+      logger.warning('rewind_async ignores run_config.get_session_config')
     session = await self._get_or_create_session(
         user_id=user_id,
         session_id=session_id,
-        get_session_config=run_config.get_session_config,
     )
     from .sessions import _rewind_utils
 
@@ -1420,13 +1451,14 @@ class Runner:
     # transcription events should not be appended.
     # Function call and function response events should be appended.
     # Other control events should be appended.
-    if is_live_call and contents._is_live_model_media_event_with_inline_data(
-        event
-    ):
-      # We don't append live model media events with inline data to avoid
-      # storing large blobs in the session. However, events with file_data
-      # (references to artifacts) should be appended.
-      return False
+    if is_live_call:
+      from .flows.llm_flows.context import _contents as contents
+
+      if contents._is_live_model_media_event_with_inline_data(event):
+        # We don't append live model media events with inline data to avoid
+        # storing large blobs in the session. However, events with file_data
+        # (references to artifacts) should be appended.
+        return False
     return True
 
   def _get_output_event(
@@ -1452,6 +1484,13 @@ class Runner:
       if field_name in {'id', 'invocation_id', 'timestamp'}:
         continue
       update[field_name] = modified_event.__dict__[field_name]
+    internal = internal_metadata(original_event.custom_metadata)
+    if 'custom_metadata' in update and internal:
+      # ADK-internal keys belong to ADK, so a replacement cannot drop them.
+      update['custom_metadata'] = {
+          **(update['custom_metadata'] or {}),
+          **internal,
+      }
     output_event = original_event.model_copy(update=update)
     if not output_event.author:
       output_event.author = original_event.author
@@ -1476,6 +1515,38 @@ class Runner:
         modified_event=modified_event,
         run_config=invocation_context.run_config,
     )
+
+  async def _process_and_append_event(
+      self,
+      event: Event,
+      invocation_context: InvocationContext,
+      *,
+      is_live_call: bool = False,
+  ) -> Event:
+    """Applies custom metadata, runs on_event callbacks, and appends to session."""
+    output_event = await self._process_event_with_plugin_callbacks(
+        invocation_context=invocation_context,
+        event=event,
+    )
+
+    if is_live_call:
+      if output_event.partial is not True and self._should_append_event(
+          output_event, is_live_call
+      ):
+        logger.debug(
+            'Appending live event: %s, author: %s',
+            output_event.id,
+            output_event.author,
+        )
+        await self.session_service.append_event(
+            session=invocation_context.session, event=output_event
+        )
+    else:
+      if output_event.partial is not True:
+        await self.session_service.append_event(
+            session=invocation_context.session, event=output_event
+        )
+    return output_event
 
   async def _exec_with_plugin(
       self,
@@ -1511,45 +1582,27 @@ class Runner:
             author='model',
             content=early_exit_result,
         )
-        # Ensure the early-exit event also passes through on_event callbacks and metadata enrichment.
-        output_event = await self._process_event_with_plugin_callbacks(
-            invocation_context=invocation_context,
+        yield await self._process_and_append_event(
             event=early_exit_event,
+            invocation_context=invocation_context,
+            is_live_call=is_live_call,
         )
-        if self._should_append_event(output_event, is_live_call):
-          await self.session_service.append_event(
-              session=invocation_context.session,
-              event=output_event,
-          )
-        yield output_event
       else:
         # Step 2: Otherwise continue with normal execution
         async with aclosing(execute_fn(invocation_context)) as agen:
           async for event in agen:
-            # Step 3: Run the on_event callbacks before persisting so callback
-            # changes are stored in the session and match the streamed event.
-            output_event = await self._process_event_with_plugin_callbacks(
-                invocation_context=invocation_context,
+            output_event = await self._process_and_append_event(
                 event=event,
+                invocation_context=invocation_context,
+                is_live_call=is_live_call,
             )
-
-            if is_live_call:
-              # Skip partial transcriptions for Live
-              if (
-                  output_event.partial is not True
-                  and self._should_append_event(output_event, is_live_call)
-              ):
-                logger.debug('Appending live event: %s', output_event)
-                await self.session_service.append_event(
-                    session=invocation_context.session, event=output_event
-                )
-            else:
-              if output_event.partial is not True:
-                await self.session_service.append_event(
-                    session=invocation_context.session, event=output_event
-                )
-
             yield output_event
+        if not is_live_call and invocation_context.is_aborted:
+          abort_events = await self._synthesize_abort_events_if_needed(
+              invocation_context
+          )
+          for abort_event in abort_events:
+            yield abort_event
     except GeneratorExit:
       # Early generator close is treated as a clean completion.
       closing_early = True
@@ -1562,7 +1615,9 @@ class Runner:
       await _notify_run_error(plugin_manager, invocation_context, e)
       raise
     except asyncio.CancelledError as e:
-      if e.args and e.args[0] == _CALLER_CLOSED_EARLY_MSG:
+      if (
+          e.args and e.args[0] == _CALLER_CLOSED_EARLY_MSG
+      ) or invocation_context.is_aborted:
         closing_early = True
       else:
         run_error = e
@@ -1572,6 +1627,17 @@ class Runner:
       run_error = e
       raise
     finally:
+      if not is_live_call and invocation_context.is_aborted:
+        # Best-effort: only reached on early close or error, where raising
+        # would mask the in-flight exception and skip after_run.
+        try:
+          await self._synthesize_abort_events_if_needed(invocation_context)
+        except Exception:  # pylint: disable=broad-exception-caught
+          logger.error(
+              'Failed to seal aborted invocation %s.',
+              invocation_context.invocation_id,
+              exc_info=True,
+          )
       # Step 4: Run after_run callbacks on successful completion or early exit.
       if run_error is None:
         try:
@@ -1714,6 +1780,8 @@ class Runner:
         Either `session` or both `user_id` and `session_id` must be provided.
     """
 
+    from .live import _runner_utils as _live_runner_utils
+
     async with aclosing(
         _live_runner_utils.run_live(
             self,
@@ -1726,6 +1794,15 @@ class Runner:
     ) as agen:
       async for event in agen:
         yield event
+
+  def _uses_legacy_sub_agent_picker(self) -> bool:
+    """Returns whether chat-mode root LlmAgent uses the legacy sub-agent picker."""
+    from .agents.llm_agent import LlmAgent  # pylint: disable=g-import-not-at-top
+
+    return (
+        isinstance(self.agent, LlmAgent)
+        and (self.agent.mode or _AgentMode.CHAT) == _AgentMode.CHAT
+    )
 
   def _find_agent_to_run(
       self, session: Session, root_agent: BaseAgent
@@ -1740,7 +1817,8 @@ class Runner:
     - An LlmAgent who replied last and is capable to transfer to any other agent
       in the agent hierarchy.
 
-    TODO: use wait_for_output to decide the agent to run
+    An agent inside a task delegation is replaced by the agent that delegated
+    it.
 
     Args:
         session: The session to find the agent for.
@@ -1934,8 +2012,16 @@ class Runner:
         invocation_context.session, root_agent
     )
     if invocation_context.agent and invocation_context.agent is not root_agent:
+      fr_invocation_id = self._resolve_invocation_id_from_fr(
+          invocation_context.session,
+          invocation_context.user_content or new_message,
+          strict=False,
+      )
       self._restore_branch_from_history(
-          invocation_context, invocation_context.agent, root=root_agent
+          invocation_context,
+          invocation_context.agent,
+          root=root_agent,
+          invocation_id=fr_invocation_id,
       )
     return invocation_context
 
@@ -2061,13 +2147,20 @@ class Runner:
 
     if run_config.support_cfc and hasattr(self.agent, 'canonical_model'):
       from .agents.llm_agent import LlmAgent
+      from .models.base_llm import BaseLlm
 
       cfc_agent = cast(LlmAgent, self.agent)
-      model_name = cfc_agent.canonical_model.model
-      if not model_name.startswith('gemini-2'):
+      canonical_model = cfc_agent.canonical_model
+      model_name = canonical_model.model
+      # CFC is served over the live API, so the model must implement connect.
+      supports_cfc = type(canonical_model).connect is not BaseLlm.connect and (
+          is_gemini_model(model_name) or is_gemini_model_id_check_disabled()
+      )
+      if not supports_cfc:
         raise ValueError(
             f'CFC is not supported for model: {model_name} in agent:'
-            f' {cfc_agent.name}'
+            f' {cfc_agent.name}. CFC requires a Gemini model served over the'
+            ' live API, so the model class must implement connect.'
         )
 
     return self._create_invocation_context(
@@ -2087,25 +2180,6 @@ class Runner:
         live_request_queue=live_request_queue,
         run_config=run_config,
         resumability_config=self.resumability_config,
-    )
-
-  def _new_invocation_context_for_live(
-      self,
-      session: Session,
-      *,
-      live_request_queue: LiveRequestQueue,
-      run_config: Optional[RunConfig] = None,
-  ) -> InvocationContext:
-    """Creates a new invocation context for live multi-agent.
-
-    TODO: Deprecate or remove in follow-up CLs as live runner logic is
-    extracted.
-    """
-    return _live_runner_utils.new_invocation_context_for_live(
-        self,
-        session,
-        live_request_queue=live_request_queue,
-        run_config=run_config,
     )
 
   async def _handle_new_message(
@@ -2160,36 +2234,15 @@ class Runner:
   def _collect_toolset(
       self, root: BaseNode, visited: set[int] | None = None
   ) -> set[BaseToolset]:
+    del visited  # Retained for subclass override compatibility.
     if not isinstance(root, BaseNode):
       return set()
-    if visited is None:
-      visited = set()
-    root_id = id(root)
-    if root_id in visited:
-      return set()
-    visited.add(root_id)
-
     toolsets: set[BaseToolset] = set()
-    if hasattr(root, 'tools'):
-      for tool_union in getattr(root, 'tools', ()) or ():
-        if isinstance(tool_union, BaseToolset):
-          toolsets.add(tool_union)
-    if hasattr(root, 'sub_agents'):
-      for sub_agent in getattr(root, 'sub_agents', ()) or ():
-        toolsets.update(self._collect_toolset(sub_agent, visited))
-    if hasattr(root, 'graph') and getattr(root, 'graph', None):
-      graph = getattr(root, 'graph')
-      nodes = getattr(graph, 'nodes', None)
-      if nodes:
-        node_iter = nodes.values() if isinstance(nodes, dict) else nodes
-        for node in node_iter:
-          toolsets.update(self._collect_toolset(node, visited))
-    if hasattr(root, '_node') and getattr(root, '_node', None):
-      toolsets.update(self._collect_toolset(getattr(root, '_node'), visited))
-    if hasattr(root, '_inner_node') and getattr(root, '_inner_node', None):
-      toolsets.update(
-          self._collect_toolset(getattr(root, '_inner_node'), visited)
-      )
+    for node in _walk_static_nodes(root):
+      if hasattr(node, 'tools'):
+        for tool_union in getattr(node, 'tools', ()) or ():
+          if isinstance(tool_union, BaseToolset):
+            toolsets.add(tool_union)
     return toolsets
 
   async def _cleanup_toolsets(
@@ -2199,6 +2252,7 @@ class Runner:
     if not toolsets_to_close:
       return
 
+    cancelled_error = None
     # This maintains the same task context throughout cleanup
     for toolset in toolsets_to_close:
       cleanup_task = asyncio.create_task(
@@ -2249,24 +2303,46 @@ class Runner:
               type(toolset).__name__,
               close_error,
           )
-        raise
+        cancelled_error = e
       except Exception as e:
         logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
 
+    if cancelled_error is not None:
+      raise cancelled_error
+
   async def close(self) -> None:
-    """Closes the runner."""
+    """Closes the runner.
+
+    Raises:
+      asyncio.CancelledError: If closing was cancelled. The rest of the cleanup
+        still runs before it is re-raised, even if that cleanup fails.
+      RuntimeError: If one or more plugins failed to close.
+    """
     logger.info('Closing runner...')
-    # Close Toolsets
-    if self.agent is not None:
-      await self._cleanup_toolsets(self._collect_toolset(self.agent))
+    cancelled_error = None
+    try:
+      # Close Toolsets
+      if self.agent is not None:
+        await self._cleanup_toolsets(self._collect_toolset(self.agent))
+    except asyncio.CancelledError as e:
+      cancelled_error = e
 
-    # Close Plugins
-    if self.plugin_manager:
-      await self.plugin_manager.close()
-
-    # Close Session Service
-    if self.session_service:
-      await self.session_service.flush()
+    try:
+      # Close Plugins
+      if self.plugin_manager:
+        await self.plugin_manager.close()
+    except asyncio.CancelledError as e:
+      cancelled_error = e
+    finally:
+      try:
+        # Close Session Service
+        if self.session_service:
+          await self.session_service.flush()
+      except asyncio.CancelledError as e:
+        cancelled_error = e
+      finally:
+        if cancelled_error is not None:
+          raise cancelled_error
 
     logger.info('Runner closed.')
 
@@ -2336,3 +2412,9 @@ class InMemoryRunner(Runner):
         memory_service=InMemoryMemoryService(),
         plugin_close_timeout=plugin_close_timeout,
     )
+
+
+if not TYPE_CHECKING:
+  __getattr__, __dir__ = _lazy.accessors(
+      globals(), {'tracer': 'google.adk.telemetry.tracing'}
+  )

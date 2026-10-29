@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import base64
 import binascii
+import bisect
 import copy
 import importlib.util
 import json
@@ -34,6 +35,7 @@ from typing import Iterable
 from typing import List
 from typing import Literal
 from typing import Optional
+from typing import Sequence
 from typing import Tuple
 from typing import TYPE_CHECKING
 from typing import TypeAlias
@@ -193,7 +195,38 @@ def _quote_unquoted_json_object_keys(value: str) -> str:
   return "".join(result)
 
 
-def _parse_tool_call_arguments(arguments: Any) -> Any:
+def _log_repaired_arguments(
+    description: str,
+    arguments: Any,
+    *,
+    function_name: str | None = None,
+    level: int = logging.WARNING,
+) -> None:
+  """Logs an argument repair, keeping the raw payload at debug level."""
+  if not logger.isEnabledFor(level):
+    return
+  if logger.isEnabledFor(logging.DEBUG):
+    if function_name:
+      logger.log(
+          level,
+          "%s for function '%s': %s",
+          description,
+          function_name,
+          arguments,
+      )
+    else:
+      logger.log(level, "%s: %s", description, arguments)
+  elif function_name:
+    logger.log(level, "%s for function '%s'", description, function_name)
+  else:
+    logger.log(level, "%s", description)
+
+
+def _parse_tool_call_arguments(
+    arguments: Any,
+    *,
+    function_name: str | None = None,
+) -> Any:
   """Parses LiteLLM tool call arguments.
 
   LiteLLM normally returns OpenAI-compatible tool call arguments as JSON
@@ -201,6 +234,16 @@ def _parse_tool_call_arguments(arguments: Any) -> Any:
   argument payload is a Python dict literal or has unquoted object keys. Keep
   strict JSON as the primary path, then repair only those complete
   object-literal shapes so ADK can still surface the intended function call.
+
+  Args:
+    arguments: The tool call arguments to parse.
+    function_name: Optional name of the function being called, for logging.
+
+  Returns:
+    The parsed arguments (typically a dict).
+
+  Raises:
+    json.JSONDecodeError: When the arguments cannot be parsed.
   """
   if not arguments:
     return {}
@@ -212,20 +255,79 @@ def _parse_tool_call_arguments(arguments: Any) -> Any:
   except json.JSONDecodeError as exc:
     json_error = exc
 
+  # Retry with Python literal eval (handles single-quoted keys, etc.).
   try:
-    return ast.literal_eval(arguments)
+    result = ast.literal_eval(arguments)
+    _log_repaired_arguments(
+        "Repaired non-strict JSON tool call arguments using literal_eval",
+        arguments,
+        function_name=function_name,
+        level=logging.DEBUG,
+    )
+    return result
   except (SyntaxError, ValueError):
     pass
 
+  # Retry after quoting unquoted JSON object keys.
   repaired_arguments = _quote_unquoted_json_object_keys(arguments)
   if repaired_arguments != arguments:
     try:
-      return json.loads(repaired_arguments)
+      result = json.loads(repaired_arguments)
+      _log_repaired_arguments(
+          "Repaired unquoted JSON object keys in tool call arguments",
+          arguments,
+          function_name=function_name,
+      )
+      return result
     except json.JSONDecodeError:
       try:
-        return ast.literal_eval(repaired_arguments)
+        result = ast.literal_eval(repaired_arguments)
+        _log_repaired_arguments(
+            "Repaired unquoted JSON object keys in tool call arguments using"
+            " literal_eval",
+            arguments,
+            function_name=function_name,
+        )
+        return result
       except (SyntaxError, ValueError):
         pass
+
+  # Retry after stripping Markdown code fences (```json ... ```).
+  stripped = arguments.strip()
+  if (
+      stripped.startswith("```")
+      and stripped.endswith("```")
+      and len(stripped) >= 6
+  ):
+    candidate = stripped[3:-3].strip()
+    if candidate.lower().startswith("json"):
+      candidate = candidate[4:].strip()
+    if candidate and candidate != arguments:
+      candidates = [candidate]
+      repaired_candidate = _quote_unquoted_json_object_keys(candidate)
+      if repaired_candidate != candidate:
+        candidates.append(repaired_candidate)
+      for text in candidates:
+        try:
+          result = json.loads(text)
+          _log_repaired_arguments(
+              "Repaired Markdown-fenced tool call arguments",
+              arguments,
+              function_name=function_name,
+          )
+          return result
+        except json.JSONDecodeError:
+          pass
+        try:
+          result = ast.literal_eval(text)
+          _log_repaired_arguments(
+              "Repaired Markdown-fenced tool call arguments using literal_eval",
+              arguments,
+              function_name=function_name,
+          )
+          return result
+        except (SyntaxError, ValueError):
+          pass
 
   raise json_error
 
@@ -382,6 +484,134 @@ def _strip_proxy_prefix(model: str) -> str:
   return model
 
 
+_UPLOAD_ENDPOINT_KEYS = ("api_base", "api_key", "api_version")
+
+# LiteLLM reads these when the completion call carries no explicit endpoint,
+# so a proxy configured only through the environment still has to be honored
+# by the upload.
+_PROXY_ENV_FALLBACKS = {
+    "api_base": "LITELLM_PROXY_API_BASE",
+    "api_key": "LITELLM_PROXY_API_KEY",
+}
+
+
+def _normalize_endpoint_value(key: str, value: Any) -> Any:
+  """Strips whitespace and trailing api_base slashes from endpoint values."""
+  if isinstance(value, str):
+    value = value.strip()
+    if key == "api_base":
+      value = value.rstrip("/")
+  return value
+
+
+def _get_upload_params(
+    model: str, completion_args: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+  """Endpoint overrides to forward to `litellm.acreate_file`.
+
+  File uploads resolve their endpoint independently of the completion call, so
+  without these they fall back to the underlying provider's own credentials.
+  For a proxied model that splits the request in two: the completion goes to
+  the proxy while the upload goes straight to the provider. That fails when the
+  caller holds only proxy credentials, and when the provider resolves to
+  ``openai`` it is worse than a failure -- `get_openai_credentials` defaults to
+  ``https://api.openai.com/v1``, so a stray ``OPENAI_API_KEY`` in the
+  environment sends proxied file content to the public OpenAI API instead.
+  Direct models with an explicit endpoint (e.g. `api_base` pointing to a
+  custom or local OpenAI gateway) suffer the same leak without these overrides
+  forwarded.
+
+  Explicit completion arguments win, falling back for proxied models to the
+  proxy's own environment variables and module attributes so that proxies
+  configured purely through the environment are still routed correctly.
+
+  Args:
+    model: The LiteLLM model string.
+    completion_args: The arguments the caller passes to the completion call.
+
+  Returns:
+    The subset of endpoint overrides to forward, or None when no overrides
+    exist.
+  """
+  upload_params: Dict[str, Any] = {}
+  for key in _UPLOAD_ENDPOINT_KEYS:
+    if key in completion_args and completion_args[key] is not None:
+      val = _normalize_endpoint_value(key, completion_args[key])
+      if val:
+        upload_params[key] = val
+  if _is_proxied_model(model, completion_args):
+    # LiteLLM resolves the proxy endpoint from these when the completion call
+    # does not carry one, so the upload has to follow the same fallback. Strip
+    # whitespace and trailing slashes so empty, whitespace-only, or slash-only
+    # environment variables do not pass the endpoint guard and reach
+    # acreate_file as malformed endpoints.
+    for key, env_var in _PROXY_ENV_FALLBACKS.items():
+      if not upload_params.get(key):
+        value = _normalize_endpoint_value(key, os.environ.get(env_var, ""))
+        if value:
+          upload_params[key] = value
+    litellm_mod = sys.modules.get("litellm") or litellm
+    if litellm_mod is not None:
+      for key in _UPLOAD_ENDPOINT_KEYS:
+        if not upload_params.get(key):
+          litellm_val = _normalize_endpoint_value(
+              key, getattr(litellm_mod, key, None)
+          )
+          if litellm_val:
+            upload_params[key] = litellm_val
+    if not upload_params.get("api_base"):
+      openai_base = _normalize_endpoint_value(
+          "api_base", os.environ.get("OPENAI_BASE_URL", "")
+      ) or _normalize_endpoint_value(
+          "api_base", os.environ.get("OPENAI_API_BASE", "")
+      )
+      if openai_base:
+        upload_params["api_base"] = openai_base
+    if not upload_params.get("api_key"):
+      openai_key = _normalize_endpoint_value(
+          "api_key", os.environ.get("OPENAI_API_KEY", "")
+      )
+      if openai_key:
+        upload_params["api_key"] = openai_key
+  return upload_params or None
+
+
+def _is_proxied_model(
+    model: str, completion_args: Optional[Dict[str, Any]] = None
+) -> bool:
+  """Returns True if the model is served through a LiteLLM Proxy.
+
+  Covers the explicit ``litellm_proxy/`` prefix, ``custom_llm_provider`` set to
+  ``litellm_proxy``, the ``use_litellm_proxy`` argument in completion args or
+  the ``litellm.use_litellm_proxy`` module flag, and LiteLLM's
+  ``USE_LITELLM_PROXY`` environment variable, which route unprefixed models
+  through the proxy as well.
+  """
+  if not model:
+    return False
+  if model.lower().startswith(_PROXY_PROVIDER + "/"):
+    return True
+  if completion_args:
+    custom_provider = completion_args.get("custom_llm_provider")
+    if (
+        isinstance(custom_provider, str)
+        and custom_provider.strip().lower() == _PROXY_PROVIDER
+    ):
+      return True
+    val = completion_args.get("use_litellm_proxy")
+    if isinstance(val, str):
+      if val.strip().lower() == "true":
+        return True
+    elif bool(val):
+      return True
+  litellm_mod = sys.modules.get("litellm") or litellm
+  if litellm_mod is not None and getattr(
+      litellm_mod, "use_litellm_proxy", False
+  ):
+    return True
+  return os.environ.get("USE_LITELLM_PROXY", "").strip().lower() == "true"
+
+
 def _get_provider_from_model(model: str) -> str:
   """Extracts the provider name from a LiteLLM model string.
 
@@ -525,10 +755,16 @@ def _redact_file_uri_for_log(
   return f"{parsed.scheme}://<redacted>"
 
 
-def _is_file_uri_supported(provider: str, model: str, file_uri: str) -> bool:
+def _is_file_uri_supported(
+    provider: str,
+    model: str,
+    file_uri: str,
+    *,
+    is_proxied: bool = False,
+) -> bool:
   """Returns True when `file_uri` can be sent as a file content block."""
   # If the model is proxied, the proxy might accept arbitrary URIs.
-  if model.lower().startswith(_PROXY_PROVIDER + "/"):
+  if is_proxied or _is_proxied_model(model):
     return True
   if provider in _FILE_ID_REQUIRED_PROVIDERS:
     return _looks_like_openai_file_id(file_uri)
@@ -724,9 +960,15 @@ def _extract_reasoning_value(message: Message | Delta | None) -> Any:
 
 
 _GEMMA4_MODEL_PATTERN = re.compile(r"gemma-?4")
+_STANDARD_TOOL_ROLE_PROVIDERS = frozenset({"openai", "azure", "lm_studio"})
 
 
-def _is_gemma4_model(model: str) -> bool:
+def _is_gemma4_model(
+    model: str,
+    *,
+    provider: str = "",
+    custom_llm_provider: Optional[str] = None,
+) -> bool:
   """Detects Gemma 4 models across naming conventions.
 
   Ollama uses "gemma4" (e.g. "ollama/gemma4:e2b"), while Hugging Face,
@@ -734,12 +976,34 @@ def _is_gemma4_model(model: str) -> bool:
   "google/gemma-4-26B-A4B"). Both need role='tool_responses' for tool
   results.
 
+  OpenAI-compatible endpoints (e.g. "openai/google/gemma-4-e4b",
+  "lm_studio/google/gemma-4-e4b") require the standard role='tool' and are
+  excluded.
+
   Args:
     model: The model name to check.
+    provider: The provider name if known.
+    custom_llm_provider: The custom LLM provider if specified.
 
   Returns:
-    True if the model is a Gemma 4 model, False otherwise.
+    True if the model is a Gemma 4 model requiring tool_responses, False
+    otherwise.
   """
+  effective_provider = next(
+      (
+          candidate
+          for raw in (
+              custom_llm_provider,
+              provider,
+              _get_provider_from_model(model),
+          )
+          # Skip 'litellm_proxy' because it only names the transport.
+          if raw and (candidate := raw.strip().lower()) != _PROXY_PROVIDER
+      ),
+      "",
+  )
+  if effective_provider in _STANDARD_TOOL_ROLE_PROVIDERS:
+    return False
   return bool(_GEMMA4_MODEL_PATTERN.search(model.lower()))
 
 
@@ -878,6 +1142,9 @@ class FunctionChunk(BaseModel):
   name: Optional[str]
   args: Optional[str]
   index: Optional[int] = 0
+  # Gemini signs only some calls (the first of a parallel batch), so most
+  # chunks carry none.
+  thought_signature: bytes | None = None
 
 
 class TextChunk(BaseModel):
@@ -1166,6 +1433,12 @@ def _decode_thought_signature(value: Any) -> Optional[bytes]:
     return None
 
 
+def _decode_tool_call_id_signature(suffix: str) -> Optional[bytes]:
+  """Decodes a signature embedded in a tool call id, urlsafe or unpadded."""
+  standard = suffix.replace("-", "+").replace("_", "/")
+  return _decode_thought_signature(standard + "=" * (-len(standard) % 4))
+
+
 def _extract_reasoning_tokens(usage: Any) -> int:
   """Extracts reasoning tokens from LiteLLM usage.
 
@@ -1277,7 +1550,7 @@ def _extract_thought_signature_from_tool_call(
   if _THOUGHT_SIGNATURE_SEPARATOR in tool_call_id:
     parts = tool_call_id.split(_THOUGHT_SIGNATURE_SEPARATOR, 1)
     if len(parts) == 2:
-      return _decode_thought_signature(parts[1])
+      return _decode_tool_call_id_signature(parts[1])
 
   return None
 
@@ -1304,6 +1577,9 @@ async def _content_to_message_param(
     *,
     provider: str = "",
     model: str = "",
+    upload_params: Optional[Dict[str, Any]] = None,
+    is_proxied: bool = False,
+    custom_llm_provider: Optional[str] = None,
 ) -> Union[Message, list[Message]] | None:
   """Converts a types.Content to a litellm Message or list of Messages.
 
@@ -1314,6 +1590,9 @@ async def _content_to_message_param(
     content: The content to convert.
     provider: The LLM provider name (e.g., "openai", "azure").
     model: The LiteLLM model string, used for provider-specific behavior.
+    upload_params: Endpoint overrides forwarded to file uploads.
+    is_proxied: Whether the request is routed through a LiteLLM Proxy.
+    custom_llm_provider: The custom LLM provider if specified.
 
   Returns:
     A litellm Message, a list of litellm Messages, or None if skipped.
@@ -1336,12 +1615,16 @@ async def _content_to_message_param(
           if isinstance(response, str)
           else _safe_json_serialize(response)
       )
-      # gemma4 requires role='tool_responses' for recognizing function_response parts as responses
-      # from the tool call, instead of OpenAI-compatible 'tool' role used by other models.
-      # Earlier Gemma versions before version 4 do not support tool use,
-      # so this check is intentionally scoped to only look for "gemma4" in the model name.
+      # gemma4 requires role='tool_responses' for recognizing function_response
+      # parts as responses from the tool call, except on OpenAI-compatible
+      # endpoints (openai, azure, lm_studio) which require the standard 'tool'
+      # role. Earlier Gemma versions before version 4 do not support tool use.
       tool_role: Literal["tool", "tool_responses"] = (
-          "tool_responses" if _is_gemma4_model(model) else "tool"
+          "tool_responses"
+          if _is_gemma4_model(
+              model, provider=provider, custom_llm_provider=custom_llm_provider
+          )
+          else "tool"
       )
       tool_messages.append(
           _tool_message(
@@ -1365,6 +1648,9 @@ async def _content_to_message_param(
         types.Content(role=content.role, parts=non_tool_parts),
         provider=provider,
         model=model,
+        upload_params=upload_params,
+        is_proxied=is_proxied,
+        custom_llm_provider=custom_llm_provider,
     )
     follow_up_messages = (
         follow_up if isinstance(follow_up, list) else [follow_up]
@@ -1377,7 +1663,14 @@ async def _content_to_message_param(
   if role == "user":
     user_parts = [part for part in parts if not part.thought]
     message_content = (
-        await _get_content(user_parts, provider=provider, model=model) or None
+        await _get_content(
+            user_parts,
+            provider=provider,
+            model=model,
+            upload_params=upload_params,
+            is_proxied=is_proxied,
+        )
+        or None
     )
     return ChatCompletionUserMessage(
         role="user",
@@ -1423,16 +1716,24 @@ async def _content_to_message_param(
         content_parts.append(part)
 
     final_content = (
-        await _get_content(content_parts, provider=provider, model=model)
+        await _get_content(
+            content_parts,
+            provider=provider,
+            model=model,
+            upload_params=upload_params,
+            is_proxied=is_proxied,
+        )
         if content_parts
         else None
     )
     if final_content and isinstance(final_content, list):
-      # when the content is a single text object, we can use it directly.
-      # this is needed for ollama_chat provider which fails if content is a list
-      first_content = final_content[0]
-      if first_content["type"] == "text":
-        final_content = first_content["text"]
+      # Send the text as a plain string: ollama_chat fails if content is a
+      # list, and OpenAI-style APIs accept only text in assistant content.
+      text_blocks = [
+          block["text"] for block in final_content if block["type"] == "text"
+      ]
+      if text_blocks:
+        final_content = _NEW_LINE.join(text_blocks)
 
     # For Anthropic models, rebuild thinking_blocks with signatures so that
     # thinking is preserved across tool call boundaries. Without this,
@@ -1498,7 +1799,12 @@ async def _content_to_message_param(
     )
 
 
-def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
+def _ensure_tool_results(
+    messages: List[Message],
+    model: str,
+    *,
+    custom_llm_provider: Optional[str] = None,
+) -> List[Message]:
   """Insert placeholder tool messages for missing tool results.
 
   LiteLLM-backed providers like OpenAI and Anthropic reject histories where an
@@ -1517,7 +1823,9 @@ def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
   healed_messages: List[Message] = []
   pending_tool_call_ids: List[str] = []
   expected_tool_role: Literal["tool", "tool_responses"] = (
-      "tool_responses" if _is_gemma4_model(model) else "tool"
+      "tool_responses"
+      if _is_gemma4_model(model, custom_llm_provider=custom_llm_provider)
+      else "tool"
   )
 
   for message in messages:
@@ -1573,6 +1881,8 @@ async def _get_content(
     *,
     provider: str = "",
     model: str = "",
+    upload_params: Optional[Dict[str, Any]] = None,
+    is_proxied: bool = False,
 ) -> _MessageContent:
   """Converts a list of parts to litellm content.
 
@@ -1584,6 +1894,11 @@ async def _get_content(
     provider: The LLM provider name (e.g., "openai", "azure").
     model: The LiteLLM model string (e.g., "openai/gpt-4o",
       "vertex_ai/gemini-2.5-flash").
+    upload_params: Endpoint overrides (``api_base``, ``api_key``,
+      ``api_version``) forwarded to the file upload. Needed when the model is
+      served through a LiteLLM Proxy, since the upload would otherwise fall
+      back to provider environment variables and bypass the proxy.
+    is_proxied: Whether the request is routed through a LiteLLM Proxy.
 
   Returns:
     The litellm content.
@@ -1647,11 +1962,20 @@ async def _get_content(
       elif mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
         # OpenAI/Azure require file_id from uploaded file, not inline data
         if provider in _FILE_ID_REQUIRED_PROVIDERS:
-          upload_provider = (
-              "openai"
-              if model.lower().startswith(_PROXY_PROVIDER + "/")
-              else provider
-          )
+          proxied = is_proxied or _is_proxied_model(model)
+          if proxied and not (upload_params or {}).get("api_base"):
+            # Without an endpoint the upload would fall back to the provider's
+            # own credentials. For `openai` that default is the public
+            # https://api.openai.com/v1, so proxied file content would leave
+            # the proxy entirely. Fail instead of silently sending it there.
+            raise ValueError(
+                f"Cannot upload file for proxied model {model!r}: the LiteLLM"
+                " Proxy endpoint is unknown. Pass `api_base` (and `api_key`) to"
+                " LiteLlm(...), or set LITELLM_PROXY_API_BASE and"
+                " LITELLM_PROXY_API_KEY, so the upload reaches the proxy"
+                " instead of the provider's default endpoint."
+            )
+          upload_provider = "openai" if proxied else provider
           ext = (
               mimetypes.guess_extension(mime_type)
               or _MIME_TYPE_TO_EXTENSION.get(mime_type)
@@ -1662,6 +1986,7 @@ async def _get_content(
               file=(filename, part.inline_data.data, mime_type),
               purpose="assistants",
               custom_llm_provider=upload_provider,
+              **(upload_params or {}),
           )
           content_objects.append(
               _FileContentObject(
@@ -1728,7 +2053,12 @@ async def _get_content(
             )
             continue
 
-      if not _is_file_uri_supported(provider, model, part.file_data.file_uri):
+      if not _is_file_uri_supported(
+          provider,
+          model,
+          part.file_data.file_uri,
+          is_proxied=is_proxied or _is_proxied_model(model),
+      ):
         redacted_file_uri = _redact_file_uri_for_log(
             part.file_data.file_uri,
             display_name=part.file_data.display_name,
@@ -1973,7 +2303,7 @@ def _extract_json_from_deepseek_args(args_text: str) -> Optional[str]:
 
 
 def _parse_deepseek_tool_calls_from_text(
-    text_block: str,
+    text_block: str, *, start_index: int = 0
 ) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
   """Parses DeepSeek proprietary inline tool-call tokens from text.
 
@@ -2055,7 +2385,7 @@ def _parse_deepseek_tool_calls_from_text(
         continue
       tool_call = _build_tool_call_from_json_dict(
           {"name": func_name, "arguments": args_json},
-          index=len(tool_calls),
+          index=start_index + len(tool_calls),
       )
       if tool_call:
         tool_calls.append(tool_call)
@@ -2064,8 +2394,534 @@ def _parse_deepseek_tool_calls_from_text(
   return tool_calls, remainder or None
 
 
+_TOOL_CALL_OPEN = "<tool_call>"
+_TOOL_CALL_CLOSE = "</tool_call>"
+# As in CommonMark, a fence opens and closes only at a line start, and a
+# backtick fence's info string cannot contain a backtick.
+_FENCE_OPEN_RE = re.compile(r" {0,3}(`{3,}(?=[^`\n]*$)|~{3,})", re.MULTILINE)
+_FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*\r?$", re.MULTILINE)
+_CALL_BLOCK_ENDS = {
+    _TOOL_CALL_OPEN: _TOOL_CALL_CLOSE,
+    _DS_TCALLS_BEGIN: _DS_TCALLS_END,
+    _DS_TCALL_BEGIN: _DS_TCALL_END,
+}
+_CALL_BLOCK_PATTERN = "|".join(re.escape(token) for token in _CALL_BLOCK_ENDS)
+_CALL_BLOCK_RE = re.compile(_CALL_BLOCK_PATTERN)
+_CODE_SCAN_RE = re.compile(rf"{_CALL_BLOCK_PATTERN}|<think>|`+|~{{3,}}")
+_INLINE_CODE_SCAN_RE = re.compile(rf"{_CALL_BLOCK_PATTERN}|`+")
+# Inline code may wrap lines but ends with its paragraph: at a blank line or a
+# fence.
+_PARAGRAPH_END_RE = re.compile(r"\n(?=[ \t]*\r?(?:\n|$)| {0,3}(?:```|~~~))")
+_CODE_INDENT_RE = re.compile(r" {4}| {0,3}\t")
+_ATX_HEADING_RE = re.compile(r" {0,3}#{1,6}(?:[ \t]|\r?$)")
+# An indented code block cannot interrupt a paragraph, so it starts at the text
+# start or after a blank line, an ATX heading or a fence line, and runs over
+# indented and blank lines.
+_INDENTED_CODE_RE = re.compile(
+    r"(?:\A|^(?:[ \t]*| {0,3}(?:#{1,6}(?:[ \t].*)?|`{3,}[ \t]*|~{3,}[ \t]*))"
+    r"\r?\n)((?: {4}| {0,3}\t).*(?:\n(?:[ \t]*\r?$|(?: {4}| {0,3}\t).*))*)",
+    re.MULTILINE,
+)
+_LEADING_CALL_PREFIX_RE = re.compile(r"(?:<\|python_tag\|>|\[TOOL_CALLS\])?\s*")
+_THINK_TAG_RE = re.compile(r"</?think>")
+_BACKTICK_RUN_RE = re.compile(r"`+")
+# A model may fence the JSON inside a `<tool_call>` tag.
+_TAG_PAYLOAD_FENCE_RE = re.compile(
+    r"(`{3,}|~{3,})[ \t]*(?:json)?[ \t]*\r?\n", re.IGNORECASE
+)
+
+
+def _skip_whitespace(text: str, pos: int) -> int:
+  while pos < len(text) and text[pos].isspace():
+    pos += 1
+  return pos
+
+
+def _decode_tool_calls(
+    text: str,
+    pos: int,
+    *,
+    start_index: int = 0,
+    indented_code: Sequence[tuple[int, int]] = (),
+) -> tuple[list[ChatCompletionMessageToolCall], int]:
+  """Decodes consecutive JSON tool calls, or arrays of them, from `pos`."""
+  tool_calls: list[ChatCompletionMessageToolCall] = []
+  while (
+      text.startswith(("{", "["), pos)
+      and _span_end_at(indented_code, pos) is None
+  ):
+    try:
+      candidate, end = _JSON_DECODER.raw_decode(text, pos)
+    except json.JSONDecodeError:
+      break
+    candidates = candidate if isinstance(candidate, list) else [candidate]
+    calls = [
+        call
+        for i, item in enumerate(candidates)
+        if (
+            call := _build_tool_call_from_json_dict(
+                item, index=start_index + len(tool_calls) + i
+            )
+        )
+    ]
+    if not calls or len(calls) != len(candidates):
+      break
+    tool_calls.extend(calls)
+    pos = _skip_whitespace(text, end)
+  return tool_calls, pos
+
+
+def _match_tool_call_tag(
+    text: str, pos: int, *, start_index: int = 0
+) -> tuple[list[ChatCompletionMessageToolCall], int] | None:
+  """Returns the calls in the `<tool_call>` block at `pos` and its end."""
+  start = _skip_whitespace(text, pos + len(_TOOL_CALL_OPEN))
+  fence = _TAG_PAYLOAD_FENCE_RE.match(text, start)
+  if fence:
+    start = _skip_whitespace(text, fence.end())
+  tool_calls, end = _decode_tool_calls(text, start, start_index=start_index)
+  if fence:
+    if not text.startswith(fence.group(1), end):
+      return None
+    end = _skip_whitespace(text, end + len(fence.group(1)))
+  if not tool_calls or not text.startswith(_TOOL_CALL_CLOSE, end):
+    return None
+  return tool_calls, end + len(_TOOL_CALL_CLOSE)
+
+
+def _call_block_end(text: str, start: int, token: str) -> int | None:
+  """Returns the end of the complete call block `token` opens at `start`."""
+  if token == _TOOL_CALL_OPEN:
+    tag = _match_tool_call_tag(text, start)
+    return tag[1] if tag else None
+  end_token = _CALL_BLOCK_ENDS[token]
+  end = text.find(end_token, start + len(token))
+  if end == -1:
+    return None
+  # A begin token with another one before its end is a lone quoted token, not
+  # the start of a block.
+  inner = start + len(token)
+  if text.find(token, inner, end) != -1 or (
+      text.find(_DS_TCALLS_BEGIN, inner, end) != -1
+  ):
+    return None
+  # As for `<tool_call>`, only a block that parses as a call is one.
+  block_end = end + len(end_token)
+  ds_calls, ds_remainder = _parse_deepseek_tool_calls_from_text(
+      text[start:block_end]
+  )
+  return block_end if ds_calls and ds_remainder is None else None
+
+
+def _find_think_close(text: str, pos: int) -> int | None:
+  """Returns the end of the `</think>` closing a block at `pos`, if any.
+
+  A `</think>` inside a call block's arguments does not close it.
+  """
+  scan_pos = pos
+  while (close := text.find("</think>", scan_pos)) != -1:
+    while call := _CALL_BLOCK_RE.search(text, scan_pos, close):
+      block_end = _call_block_end(text, call.start(), call.group())
+      scan_pos = block_end or call.end()
+      if block_end is not None and block_end > close:
+        break
+    else:
+      return close + len("</think>")
+  return None
+
+
+def _call_block_spans(text: str) -> list[tuple[int, int]]:
+  """Returns the complete `<tool_call>` and DeepSeek call blocks in `text`."""
+  spans: list[tuple[int, int]] = []
+  pos = 0
+  while call := _CALL_BLOCK_RE.search(text, pos):
+    block_end = _call_block_end(text, call.start(), call.group())
+    if block_end is not None:
+      spans.append((call.start(), block_end))
+    pos = block_end or call.end()
+  return spans
+
+
+def _indented_code_spans(
+    text: str, opaque: Sequence[tuple[int, int]]
+) -> list[tuple[int, int]]:
+  """Returns indented code blocks, reading each sorted `opaque` span as a word.
+
+  A blank line, heading or indented line inside an opaque span then cannot
+  start or extend an indented code block.
+  """
+  parts: list[str] = []
+  prev = 0
+  for start, end in opaque:
+    if end <= prev:
+      continue
+    start = max(start, prev)
+    parts.append(text[prev:start])
+    # As in `_StreamTextTracker._close_think`, a multi-line span ends the line
+    # it opens on and starts the line it closes on. A call block opening on an
+    # indented line, or a `<think>` block opening and closing on indented
+    # lines, stays one indented line, so it cannot end indented code.
+    line_start = text.rfind("\n", 0, start) + 1
+    close_line_start = text.rfind("\n", start, end) + 1
+    if "\n" in text[start:end] and (
+        not _CODE_INDENT_RE.match(text, line_start)
+        or (
+            text.startswith("<think>", start)
+            and not _CODE_INDENT_RE.match(text, close_line_start)
+        )
+    ):
+      parts.append("x\n" + "x" * (end - start - 2))
+    else:
+      parts.append("x" * (end - start))
+    prev = end
+  parts.append(text[prev:])
+  return [m.span(1) for m in _INDENTED_CODE_RE.finditer("".join(parts))]
+
+
+def _span_end_at(spans: Sequence[tuple[int, int]], pos: int) -> int | None:
+  """Returns the end of the span holding `pos` in sorted, disjoint `spans`."""
+  i = bisect.bisect_right(spans, pos, key=lambda span: span[0]) - 1
+  if i >= 0 and pos < spans[i][1]:
+    return spans[i][1]
+  return None
+
+
+def _open_inline_ticks(ticks: int, line: str) -> int:
+  """Returns the backtick run length of inline code open after `line`."""
+  for run in _BACKTICK_RUN_RE.finditer(line):
+    if ticks:
+      if len(run.group()) == ticks:
+        ticks = 0
+      continue
+    escape_start = run.start()
+    while escape_start and line[escape_start - 1] == "\\":
+      escape_start -= 1
+    ticks = len(run.group()) - (run.start() - escape_start) % 2
+  return ticks
+
+
+def _markdown_code_spans(
+    text: str,
+    *,
+    start_pos: int = 0,
+    opaque: Sequence[tuple[int, int]] | None = None,
+) -> list[tuple[int, int]]:
+  """Returns the closed Markdown code fences and spans and indented code.
+
+  A fence, backtick run or `<think>` tag that is never closed is plain text, so
+  a tool call after it still parses. A `<tool_call>` or DeepSeek block is
+  skipped whole, so a backtick inside its arguments cannot open or close code. A
+  closed `<think>` block is reasoning, so it counts as code too. Complete call
+  blocks and closed `<think>` blocks are also read as one word when finding
+  indented code, so a heading or blank line inside one cannot start it.
+
+  This is not a full CommonMark parser. Blocks start only at columns 0-3 with
+  no container prefix, so these still read as text: indented code right after
+  a setext heading underline or a thematic break, a fence or indented code
+  inside a blockquote, and a fence indented four or more spaces in a list item.
+  Scanning begins at `start_pos`, and the text before it is read as one word.
+  `opaque` is for the recursive calls: the sorted spans already known to be
+  read as one word.
+  """
+  if opaque is None:
+    prefix = [(0, start_pos)] if start_pos else []
+    call_blocks = sorted(prefix + _call_block_spans(text))
+    first_pass = _markdown_code_spans(
+        text, start_pos=start_pos, opaque=call_blocks
+    )
+    # Only now are the closed `<think>` blocks known, so scan again with them.
+    think_blocks = [
+        span for span in first_pass if text.startswith("<think>", span[0])
+    ]
+    if not think_blocks:
+      return first_pass
+    return _markdown_code_spans(
+        text,
+        start_pos=start_pos,
+        opaque=sorted(call_blocks + think_blocks),
+    )
+  indented = [
+      span for span in _indented_code_spans(text, opaque) if span[1] > start_pos
+  ]
+  spans: list[tuple[int, int]] = []
+  pos = start_pos
+  paragraph_end_pos = -1
+  think_unclosed = False
+  # Per fence character, the shortest opener already found to never close: no
+  # later opener at least that long can close either.
+  unclosed_fence_len: dict[str, int] = {}
+  while match := _CODE_SCAN_RE.search(text, pos):
+    start, run = match.start(), match.group()
+    pos = match.end()
+    end: int | None = None
+    # A `<think>` tag opens reasoning even on an indented line.
+    if run == "<think>":
+      think_close = None if think_unclosed else _find_think_close(text, pos)
+      if think_close is None:
+        think_unclosed = True
+        continue
+      spans.append((start, think_close))
+      pos = think_close
+      continue
+    block_end = _span_end_at(indented, start)
+    if block_end is not None:
+      spans.append((start, block_end))
+      pos = block_end
+      continue
+    if run in _CALL_BLOCK_ENDS:
+      pos = _call_block_end(text, start, run) or pos
+      continue
+    fence = _FENCE_OPEN_RE.match(text, text.rfind("\n", 0, start) + 1)
+    if fence and fence.start(1) == start:
+      if len(run) >= unclosed_fence_len.get(run[0], len(run) + 1):
+        continue
+      scan_pos = pos
+      while close := _FENCE_CLOSE_RE.search(text, scan_pos):
+        while call := _CALL_BLOCK_RE.search(text, scan_pos, close.start()):
+          call_end = _call_block_end(text, call.start(), call.group())
+          scan_pos = call_end or call.end()
+          if call_end is not None and call_end > close.start():
+            break
+        else:
+          if close.group(1)[0] == run[0] and len(close.group(1)) >= len(run):
+            end = close.end()
+            break
+          scan_pos = close.end()
+      if end is None:
+        unclosed_fence_len[run[0]] = len(run)
+    elif run[0] == "`":
+      escape_start = start
+      while escape_start and text[escape_start - 1] == "\\":
+        escape_start -= 1
+      if (start - escape_start) % 2:
+        # A backslash-escaped backtick is literal, as in CommonMark.
+        start, run = start + 1, run[1:]
+        if not run:
+          continue
+      # Reuse the paragraph end while still inside that paragraph, so many
+      # code spans in one paragraph do not each search to its end.
+      if pos > paragraph_end_pos:
+        paragraph_end = _PARAGRAPH_END_RE.search(text, pos)
+        paragraph_end_pos = (
+            paragraph_end.start() if paragraph_end else len(text)
+        )
+      scan_pos = pos
+      while inner := _INLINE_CODE_SCAN_RE.search(
+          text, scan_pos, paragraph_end_pos
+      ):
+        if inner.group() in _CALL_BLOCK_ENDS:
+          scan_pos = (
+              _call_block_end(text, inner.start(), inner.group()) or inner.end()
+          )
+          # A blank line or fence inside a call block does not end the
+          # paragraph.
+          if paragraph_end_pos < scan_pos:
+            paragraph_end = _PARAGRAPH_END_RE.search(text, scan_pos)
+            paragraph_end_pos = (
+                paragraph_end.start() if paragraph_end else len(text)
+            )
+        elif inner.group() == run:
+          end = inner.end()
+          break
+        else:
+          scan_pos = inner.end()
+    if end is not None:
+      spans.append((start, end))
+      pos = end
+  return spans
+
+
+def _next_fence(fence: str, line: str) -> str:
+  """Returns the Markdown fence open after `line`, given the one open before."""
+  if not fence:
+    match = _FENCE_OPEN_RE.match(line)
+    return match.group(1) if match else ""
+  close = _FENCE_CLOSE_RE.fullmatch(line)
+  if (
+      close
+      and close.group(1)[0] == fence[0]
+      and len(close.group(1)) >= len(fence)
+  ):
+    return ""
+  return fence
+
+
+class _StreamTextTracker:
+  """Tracks streamed text for prose, open Markdown code and `<think>` blocks.
+
+  This only gates the `partial=True` chunks, whose calls never run; the final
+  response re-parses the whole text. So unlike `_markdown_code_spans`, it does
+  not skip call blocks: a fence or `<think>` tag inside a call's arguments or
+  sharing a `<tool_call>` line can briefly hold back or show a partial call
+  that the final response does not.
+  """
+
+  def __init__(self) -> None:
+    self.reset()
+
+  def reset(self) -> None:
+    self.has_non_whitespace = False
+    self._fence = ""
+    self._line_parts: list[str] = []
+    self._line_head = ""
+    self._line_has_text = False
+    self._line_start_ticks = 0
+    self._paragraph_has_code_mark = False
+    self._indented_code_may_follow = True
+    self.in_think = False
+    self._think_parts: list[str] = []
+    self._think_tail = ""
+    # Line offsets of `<think>` tags read as inline code before the code
+    # span is known to close, and whether one may have opened a block.
+    self._maybe_think_offsets: list[int] = []
+    self._maybe_in_think = False
+
+  @property
+  def in_code(self) -> bool:
+    # A backtick or tilde may open inline code that a later delta closes, so
+    # the rest of its paragraph counts as code.
+    if self._fence or self._paragraph_has_code_mark:
+      return True
+    return (
+        self._indented_code_may_follow
+        and bool(self._line_head)
+        and (
+            not self._line_head.strip()
+            or bool(_CODE_INDENT_RE.match(self._line_head))
+        )
+    )
+
+  def in_think_for(self, text: str) -> bool:
+    """Returns whether `text`, fed next, may hold part of a `<think>` block."""
+    return (
+        self.in_think
+        or self._maybe_in_think
+        or bool(_THINK_TAG_RE.search(self._think_tail + text))
+    )
+
+  def completes_line(self, text: str) -> bool:
+    """Returns whether `text` ends a begun line, which can decide its code."""
+    return self._line_has_text and "\n" in text
+
+  def feed(self, text: str) -> None:
+    if text.strip():
+      self.has_non_whitespace = True
+    # Keep a tag's head so a tag split across deltas is still seen; a tag
+    # wholly inside it was handled with the previous delta.
+    window = self._think_tail + text
+    offset = len(self._think_tail)
+    pos = 0
+    for tag in _THINK_TAG_RE.finditer(window):
+      if tag.end() <= offset:
+        continue
+      tag_start = max(tag.start() - offset, pos)
+      tag_end = tag.end() - offset
+      if self.in_think:
+        self._think_parts.append(text[pos:tag_start])
+        if tag.group() == "</think>":
+          self._close_think()
+        if self.in_think:
+          self._think_parts.append(text[tag_start:tag_end])
+      else:
+        self._feed_markdown(text[pos:tag_start])
+        # As in `_markdown_code_spans`, a `<think>` tag in code is text, and
+        # Markdown inside a `<think>` block neither opens nor closes code.
+        line = "".join(self._line_parts)
+        if tag.group() == "<think>" and not self._fence:
+          if _open_inline_ticks(self._line_start_ticks, line):
+            self._maybe_think_offsets.append(
+                len(line) + min(0, tag.start() - offset)
+            )
+          else:
+            self.in_think = True
+            self._think_parts.clear()
+            self._feed_markdown("<think>")
+        if not self.in_think:
+          self._feed_markdown(text[tag_start:tag_end])
+      pos = tag_end
+    if self.in_think:
+      self._think_parts.append(text[pos:])
+    else:
+      self._feed_markdown(text[pos:])
+    self._think_tail = window[-len("</think") :]
+
+  def _close_think(self) -> None:
+    """Closes the `<think>` block unless its `</think>` may be in a call."""
+    body = "".join(self._think_parts)
+    scan_pos = 0
+    while call := _CALL_BLOCK_RE.search(body, scan_pos):
+      block_end = _call_block_end(body, call.start(), call.group())
+      if (
+          block_end is None
+          and body.find(_CALL_BLOCK_ENDS[call.group()], call.end()) == -1
+      ):
+        return
+      scan_pos = block_end or call.end()
+    self.in_think = False
+    # The block's lines are opaque text: the line it opened on ends at its
+    # first newline, and the line after its last newline starts with it. As in
+    # `_indented_code_spans`, a block opening and closing on indented lines
+    # keeps the closing line indented.
+    if "\n" not in body:
+      self._feed_markdown("</think>")
+    elif _CODE_INDENT_RE.match(
+        "".join(self._line_parts)
+    ) and _CODE_INDENT_RE.match(body, body.rfind("\n") + 1):
+      self._feed_markdown("\n    </think>")
+    else:
+      self._feed_markdown("\n</think>")
+
+  def _feed_markdown(self, text: str) -> None:
+    *lines, tail = text.split("\n")
+    for line in lines:
+      self._line_parts.append(line)
+      line = "".join(self._line_parts)
+      self._line_parts.clear()
+      self._line_head = ""
+      self._line_has_text = False
+      if self._maybe_think_offsets:
+        # Each such tag must sit in an inline code span that closes on its
+        # own line; otherwise it may open a block, so later calls wait for
+        # the end. Indentation is dropped, since the line may not be code.
+        text_start = len(line) - len(line.lstrip())
+        spans = _markdown_code_spans(line[text_start:])
+        if not all(
+            any(s < tag_pos - text_start < e for s, e in spans)
+            for tag_pos in self._maybe_think_offsets
+        ):
+          self._maybe_in_think = True
+        self._maybe_think_offsets.clear()
+      fence = _next_fence(self._fence, line)
+      if fence or self._fence or not line.strip():
+        self._paragraph_has_code_mark = False
+        self._line_start_ticks = 0
+      else:
+        if "`" in line or "~" in line:
+          self._paragraph_has_code_mark = True
+        self._line_start_ticks = _open_inline_ticks(
+            self._line_start_ticks, line
+        )
+      if fence or self._fence:
+        # Indented code may follow a closing fence line, not an opening one.
+        self._indented_code_may_follow = not fence
+      elif line.strip():
+        self._indented_code_may_follow = bool(_ATX_HEADING_RE.match(line)) or (
+            self._indented_code_may_follow and bool(_CODE_INDENT_RE.match(line))
+        )
+      else:
+        self._indented_code_may_follow = True
+      self._fence = fence
+    self._line_parts.append(tail)
+    self._line_head = (self._line_head + tail[:4])[:4]
+    self._line_has_text = self._line_has_text or bool(tail.strip())
+    if "`" in tail or "~" in tail:
+      self._paragraph_has_code_mark = True
+
+
 def _parse_tool_calls_from_text(
     text_block: str,
+    *,
+    allow_bare_json: bool = True,
 ) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
   """Extracts inline JSON tool calls from LiteLLM text responses."""
   tool_calls: list[ChatCompletionMessageToolCall] = []
@@ -2074,52 +2930,114 @@ def _parse_tool_calls_from_text(
 
   _ensure_litellm_imported()
 
-  # Try DeepSeek proprietary format first, then fall back to generic JSON.
-  ds_tool_calls, ds_remainder = _parse_deepseek_tool_calls_from_text(text_block)
-  if ds_tool_calls:
-    # If the remainder still contains content, re-parse it for
-    # additional generic inline JSON tool calls (mixed formats).
-    if ds_remainder:
-      extra_calls, extra_remainder = _parse_tool_calls_from_text(ds_remainder)
-      tool_calls = ds_tool_calls + (extra_calls or [])
-      return tool_calls, extra_remainder
-    return ds_tool_calls, None
-
-  remainder_segments = []
+  # DeepSeek and `<tool_call>` blocks may mix, so find both in one pass over the
+  # whole text: working out code spans again on text with blocks removed could
+  # pair backticks the removed blocks kept apart. The spans are only needed
+  # for a block after the opening run of calls, so they are found once, then.
+  code_spans: list[tuple[int, int]] | None = None
+  code_start = 0
+  # Bare JSON only counts in the run of calls the text opens with, after
+  # optional `<think>` blocks or a `<|python_tag|>`, `[TOOL_CALLS]` or unclosed
+  # `<tool_call>` prefix; bare JSON after prose or inside Markdown code is
+  # quoted text, not a tool call. Leading `<think>` blocks are reasoning, so no
+  # call inside them runs; one that never closes is plain text, as an unclosed
+  # fence is.
+  pos = _skip_whitespace(text_block, 0)
+  think_blocks: list[tuple[int, int]] = []
+  while text_block.startswith("<think>", pos) and (
+      think_close := _find_think_close(text_block, pos + len("<think>"))
+  ):
+    think_blocks.append((pos, think_close))
+    pos = _skip_whitespace(text_block, think_close)
+  prefix = _LEADING_CALL_PREFIX_RE.match(text_block, pos)
+  run_pos = (prefix.end() if prefix else pos) if allow_bare_json else -1
+  call_blocks = _call_block_spans(text_block) if allow_bare_json else []
+  indented_code = (
+      _indented_code_spans(text_block, sorted(think_blocks + call_blocks))
+      if allow_bare_json
+      else []
+  )
+  remainder_parts: list[str] = []
   cursor = 0
-  text_length = len(text_block)
-
-  while cursor < text_length:
-    brace_index = text_block.find("{", cursor)
-    if brace_index == -1:
-      remainder_segments.append(text_block[cursor:])
-      break
-
-    remainder_segments.append(text_block[cursor:brace_index])
-    try:
-      candidate, end = _JSON_DECODER.raw_decode(text_block, brace_index)
-    except json.JSONDecodeError:
-      remainder_segments.append(text_block[brace_index])
-      cursor = brace_index + 1
-      continue
-
-    tool_call = _build_tool_call_from_json_dict(
-        candidate, index=len(tool_calls)
+  while True:
+    if pos == run_pos:
+      json_calls, end = _decode_tool_calls(
+          text_block,
+          pos,
+          start_index=len(tool_calls),
+          indented_code=indented_code,
+      )
+      if json_calls:
+        # A backtick, `<think>` tag, blank line or indented line in the
+        # arguments is not Markdown, so work out code from after the calls,
+        # reading all before them as one word. JSON holds no heading or fence
+        # line, so its blank and indented lines only change the indented code
+        # after it when that code already runs on past it.
+        json_end = len(text_block[:end].rstrip())
+        multi_line = "\n" in text_block[pos:json_end]
+        if multi_line and _span_end_at(indented_code, end) is not None:
+          indented_code = _indented_code_spans(
+              text_block, sorted([(0, json_end)] + call_blocks)
+          )
+        if multi_line or _CODE_SCAN_RE.search(text_block, pos, json_end):
+          code_start = json_end
+        remainder_parts.append(text_block[cursor:pos])
+        tool_calls.extend(json_calls)
+        cursor = pos = run_pos = end
+        continue
+    match = _CALL_BLOCK_RE.search(
+        text_block, pos, run_pos if pos < run_pos else len(text_block)
     )
-    if tool_call:
-      tool_calls.append(tool_call)
+    if not match:
+      if pos >= run_pos:
+        break
+      pos = run_pos
+      continue
+    start, token = match.start(), match.group()
+    # A block opening the run follows only whitespace after the calls before
+    # it, so only indented code can hold it.
+    if start == run_pos:
+      span_end = _span_end_at(indented_code, start)
     else:
-      remainder_segments.append(text_block[brace_index:end])
-    cursor = end
-
-  remainder = "".join(segment for segment in remainder_segments if segment)
-  remainder = remainder.strip()
-
-  return tool_calls, remainder or None
+      if code_spans is None:
+        code_spans = _markdown_code_spans(text_block, start_pos=code_start)
+      span_end = _span_end_at(code_spans, start)
+    if span_end is not None:
+      pos = span_end
+      continue
+    found = None
+    if token == _TOOL_CALL_OPEN:
+      found = _match_tool_call_tag(
+          text_block, start, start_index=len(tool_calls)
+      )
+    elif (block_end := _call_block_end(text_block, start, token)) is not None:
+      ds_calls, _ = _parse_deepseek_tool_calls_from_text(
+          text_block[start:block_end], start_index=len(tool_calls)
+      )
+      found = (ds_calls, block_end) if ds_calls else None
+    if found is None:
+      # A `<tool_call>` opening the run that never closes (a truncated
+      # response) still opens it.
+      if token == _TOOL_CALL_OPEN and start == run_pos:
+        pos = run_pos = _skip_whitespace(text_block, match.end())
+      else:
+        pos = match.end()
+      continue
+    block_calls, end = found
+    remainder_parts.append(text_block[cursor:start])
+    tool_calls.extend(block_calls)
+    cursor = pos = end
+    if start == run_pos:
+      pos = run_pos = _skip_whitespace(text_block, end)
+  remainder_parts.append(text_block[cursor:])
+  return tool_calls, "".join(remainder_parts).strip() or None
 
 
 def _split_message_content_and_tool_calls(
     message: Message,
+    *,
+    parse_inline_tool_calls: bool = True,
+    allow_bare_json: bool = True,
 ) -> tuple[Optional[OpenAIMessageContent], list[ChatCompletionMessageToolCall]]:
   """Returns message content and tool calls, parsing inline JSON when needed."""
   existing_tool_calls = message.get("tool_calls") or []
@@ -2130,10 +3048,16 @@ def _split_message_content_and_tool_calls(
 
   # LiteLLM responses either provide structured tool_calls or inline JSON, not
   # both. When tool_calls are present we trust them and skip the fallback parser.
-  if normalized_tool_calls or not isinstance(content, str):
+  if (
+      normalized_tool_calls
+      or not isinstance(content, str)
+      or not parse_inline_tool_calls
+  ):
     return content, normalized_tool_calls
 
-  fallback_tool_calls, remainder = _parse_tool_calls_from_text(content)
+  fallback_tool_calls, remainder = _parse_tool_calls_from_text(
+      content, allow_bare_json=allow_bare_json
+  )
   if fallback_tool_calls:
     return remainder, fallback_tool_calls
 
@@ -2423,6 +3347,9 @@ def _function_declaration_to_tool_param(
 
 def _model_response_to_chunk(
     response: ModelResponse | ModelResponseStream,
+    *,
+    parse_inline_tool_calls: bool = True,
+    allow_bare_json: bool = True,
 ) -> Generator[
     Tuple[
         Optional[
@@ -2493,11 +3420,15 @@ def _model_response_to_chunk(
     reasoning_parts: List[types.Part] = []
 
     if message is not None:
-      # Both Delta and Message support dict-like .get() access
+      # Both Delta and Message support dict-like .get() access.
       (
           message_content,
           tool_calls,
-      ) = _split_message_content_and_tool_calls(message)
+      ) = _split_message_content_and_tool_calls(
+          message,
+          parse_inline_tool_calls=parse_inline_tool_calls,
+          allow_bare_json=allow_bare_json,
+      )
       reasoning_value = _extract_reasoning_value(message)
       if reasoning_value:
         reasoning_parts = _convert_reasoning_value_to_parts(reasoning_value)
@@ -2519,9 +3450,14 @@ def _model_response_to_chunk(
           func_args = function_obj.get("arguments")
           func_index = tool_call.get("index", idx)
           tool_call_id = tool_call.get("id")
+          thought_signature = _extract_thought_signature_from_tool_call(
+              tool_call
+          )
 
-          # Ignore empty chunks that don't carry any information.
-          if not func_name and not func_args:
+          # Ignore empty chunks that don't carry any information. A chunk
+          # with only a signature still counts: the signature belongs to the
+          # call another chunk names.
+          if not func_name and not func_args and not thought_signature:
             continue
 
           yield FunctionChunk(
@@ -2529,6 +3465,7 @@ def _model_response_to_chunk(
               name=func_name,
               args=func_args,
               index=func_index,
+              thought_signature=thought_signature,
           ), finish_reason
 
     if finish_reason and not (message_content or tool_calls or reasoning_parts):
@@ -2652,6 +3589,7 @@ def _model_response_to_generate_content_response(
           "cache_creation_input_tokens",
           cache_creation,
       )
+    llm_response.cache_creation_token_count = cache_creation
 
   grounding_metadata = _extract_grounding_metadata(response)
   if grounding_metadata:
@@ -2687,7 +3625,9 @@ def _message_to_generate_content_response(
     )
   if thought_parts:
     parts.extend(thought_parts)
-  message_content, tool_calls = _split_message_content_and_tool_calls(message)
+  message_content, tool_calls = _split_message_content_and_tool_calls(
+      message, parse_inline_tool_calls=not is_partial
+  )
   if isinstance(message_content, str) and message_content:
     parts.append(types.Part.from_text(text=message_content))
 
@@ -2697,7 +3637,10 @@ def _message_to_generate_content_response(
       if tool_call.type == "function":
         thought_signature = _extract_thought_signature_from_tool_call(tool_call)
         try:
-          args = _parse_tool_call_arguments(tool_call.function.arguments)
+          args = _parse_tool_call_arguments(
+              tool_call.function.arguments,
+              function_name=tool_call.function.name,
+          )
         except json.JSONDecodeError:
           args = None
         # Report the condition the way Gemini reports it natively instead of
@@ -2727,7 +3670,20 @@ def _message_to_generate_content_response(
           raise ValueError(
               "Function-call part factory returned no function call"
           )
-        function_call.id = tool_call.id
+        # The signature is carried on the part, so strip it back out of the id.
+        # Leaving it there appends a few hundred characters of base64 to every
+        # consumer of `function_call_id`, and `_content_to_message_param`
+        # re-attaches it to the outgoing tool call from `thought_signature`
+        # anyway. Only an id whose suffix decodes as a signature is LiteLLM's
+        # own; every other id is the provider's and stays opaque.
+        call_id, separator, suffix = (tool_call.id or "").partition(
+            _THOUGHT_SIGNATURE_SEPARATOR
+        )
+        function_call.id = (
+            call_id
+            if separator and _decode_tool_call_id_signature(suffix)
+            else tool_call.id
+        )
         if thought_signature:
           part.thought_signature = thought_signature
         parts.append(part)
@@ -2938,9 +3894,60 @@ def _to_litellm_response_format(
   }
 
 
+_ANTHROPIC_MIN_THINKING_BUDGET_TOKENS = 1024
+_ANTHROPIC_EFFORT_BUDGETS: dict[str, int] = {
+    "minimal": _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS,
+    "low": 1024,
+    "medium": 2048,
+    "high": 4096,
+}
+_CLAUDE_4_6_SUBSTRINGS = (
+    "opus-4-6",
+    "opus_4_6",
+    "opus-4.6",
+    "opus_4.6",
+    "sonnet-4-6",
+    "sonnet_4_6",
+    "sonnet-4.6",
+    "sonnet_4.6",
+)
+_CLAUDE_4_7_SUBSTRINGS = (
+    "opus-4-7",
+    "opus_4_7",
+    "opus-4.7",
+    "opus_4.7",
+)
+_GEMINI_MIN_THINKING_BUDGETS: dict[str, int] = {
+    "gemini-2.5-pro": 128,
+    "gemini-2.5-flash-lite": 512,
+}
+
+
+def _drop_params_rejected_by_anthropic_thinking(params: dict[str, Any]) -> None:
+  """Drops sampling params Anthropic rejects while thinking is enabled."""
+  thinking = params.get("thinking")
+  if params.get("reasoning_effort") in (None, "none") and not (
+      isinstance(thinking, dict)
+      and thinking.get("type") in ("enabled", "adaptive")
+  ):
+    return
+  if params.get("temperature") != 1:
+    params.pop("temperature", None)
+  params.pop("top_k", None)
+  top_p = params.get("top_p")
+  if top_p is not None and top_p < 0.95:
+    params.pop("top_p")
+
+
 async def _get_completion_inputs(
     llm_request: LlmRequest,
     model: str,
+    upload_params: Optional[Dict[str, Any]] = None,
+    *,
+    is_proxied: bool = False,
+    custom_llm_provider: Optional[str] = None,
+    max_tokens: Optional[int] = None,
+    has_constructor_reasoning: bool = False,
 ) -> Tuple[
     List[Message],
     Optional[List[Dict[str, Any]]],
@@ -2953,6 +3960,12 @@ async def _get_completion_inputs(
   Args:
     llm_request: The LlmRequest to convert.
     model: The model string to use for determining provider-specific behavior.
+    upload_params: Endpoint overrides forwarded to file uploads.
+    is_proxied: Whether the request is routed through a LiteLLM Proxy.
+    custom_llm_provider: The custom LLM provider if specified.
+    max_tokens: Fallback token limit (e.g. from the LiteLlm constructor).
+    has_constructor_reasoning: Whether the LiteLlm constructor set `thinking`
+      or `reasoning_effort`, which an include_thoughts-only request keeps.
 
   Returns:
     The litellm inputs (message list, tool dictionary, response format,
@@ -2967,7 +3980,12 @@ async def _get_completion_inputs(
   messages: List[Message] = []
   for content in llm_request.contents or []:
     message_param_or_list = await _content_to_message_param(
-        content, provider=provider, model=model
+        content,
+        provider=provider,
+        model=model,
+        upload_params=upload_params,
+        is_proxied=is_proxied,
+        custom_llm_provider=custom_llm_provider,
     )
     if isinstance(message_param_or_list, list):
       messages.extend(message_param_or_list)
@@ -2983,7 +4001,11 @@ async def _get_completion_inputs(
             content=system_instruction,
         ),
     )
-  messages = _ensure_tool_results(messages, model)
+  messages = _ensure_tool_results(
+      messages,
+      model,
+      custom_llm_provider=custom_llm_provider,
+  )
 
   # 2. Convert tool declarations
   tools: Optional[List[Dict[str, Any]]] = None
@@ -3038,6 +4060,186 @@ async def _get_completion_inputs(
       if key in config_dict:
         mapped_key = param_mapping.get(key, key)
         generation_params[mapped_key] = config_dict[key]
+
+    thinking_config = config_dict.get("thinking_config") or {}
+    stripped_model = _strip_proxy_prefix(model)
+    effective_custom_provider = (
+        custom_llm_provider
+        if custom_llm_provider
+        and custom_llm_provider.strip().lower() != _PROXY_PROVIDER
+        else None
+    )
+    if thinking_config and litellm.supports_reasoning(
+        model=stripped_model,
+        custom_llm_provider=effective_custom_provider,
+    ):
+      supported_params = (
+          litellm.get_supported_openai_params(
+              model=stripped_model,
+              custom_llm_provider=effective_custom_provider,
+          )
+          or ()
+      )
+      try:
+        model_info = litellm.get_model_info(
+            model=stripped_model,
+            custom_llm_provider=effective_custom_provider,
+        )
+      except Exception:
+        model_info = None
+      stripped_lower = stripped_model.lower()
+      is_anthropic = (
+          _is_anthropic_model(model)
+          or "claude" in stripped_lower
+          or bool(
+              effective_custom_provider
+              and _is_anthropic_route(effective_custom_provider, model)
+          )
+          or bool(
+              model_info and model_info.get("litellm_provider") == "anthropic"
+          )
+      )
+      is_claude_4_7 = is_anthropic and any(
+          sub in stripped_lower for sub in _CLAUDE_4_7_SUBSTRINGS
+      )
+      is_adaptive_anthropic = is_anthropic and (
+          is_claude_4_7
+          or any(sub in stripped_lower for sub in _CLAUDE_4_6_SUBSTRINGS)
+          or bool(model_info and model_info.get("supports_adaptive_thinking"))
+      )
+      is_gemini = is_gemini_model(stripped_lower)
+      is_gemini_3_or_newer = is_gemini and "gemini-3" in stripped_lower
+      effective_max_tokens = generation_params.get("max_completion_tokens")
+      if effective_max_tokens is None:
+        effective_max_tokens = max_tokens
+      thinking_level = thinking_config.get("thinking_level")
+      thinking_budget = thinking_config.get("thinking_budget")
+      include_thoughts = thinking_config.get("include_thoughts")
+      if thinking_level and thinking_level != "THINKING_LEVEL_UNSPECIFIED":
+        effort = str(getattr(thinking_level, "value", thinking_level)).lower()
+        if is_anthropic and not is_adaptive_anthropic:
+          effort_budget = _ANTHROPIC_EFFORT_BUDGETS.get(effort)
+          if (
+              effective_max_tokens is not None
+              and effective_max_tokens <= _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS
+          ):
+            pass
+          elif effort == "minimal" or (
+              effective_max_tokens is not None
+              and effort_budget is not None
+              and effective_max_tokens <= effort_budget
+          ):
+            if "thinking" in supported_params:
+              budget = (
+                  min(effort_budget, effective_max_tokens - 1)
+                  if effective_max_tokens is not None
+                  and effort_budget is not None
+                  else _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS
+              )
+              generation_params["thinking"] = {
+                  "type": "enabled",
+                  "budget_tokens": budget,
+              }
+          elif "reasoning_effort" in supported_params:
+            generation_params["reasoning_effort"] = effort
+        elif "reasoning_effort" in supported_params and (
+            effort != "minimal"
+            or "thinking" in supported_params
+            or (
+                model_info
+                and model_info.get("supports_minimal_reasoning_effort")
+            )
+        ):
+          generation_params["reasoning_effort"] = effort
+      elif thinking_budget == 0:
+        if "thinking" in supported_params and not is_gemini_3_or_newer:
+          if is_gemini:
+            if "gemini-2.5-pro" not in stripped_lower:
+              generation_params["thinking"] = {
+                  "type": "enabled",
+                  "budget_tokens": 0,
+              }
+          else:
+            generation_params["thinking"] = {"type": "disabled"}
+        elif "reasoning_effort" in supported_params and (
+            is_gemini_3_or_newer
+            or (model_info and model_info.get("supports_none_reasoning_effort"))
+        ):
+          generation_params["reasoning_effort"] = "none"
+      elif thinking_budget and thinking_budget > 0:
+        if (
+            "thinking" in supported_params
+            and not is_gemini_3_or_newer
+            and not is_claude_4_7
+        ):
+          min_budget = 0
+          if is_anthropic:
+            min_budget = _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS
+          elif is_gemini:
+            min_budget = next(
+                (
+                    floor
+                    for sub, floor in _GEMINI_MIN_THINKING_BUDGETS.items()
+                    if sub in stripped_lower
+                ),
+                0,
+            )
+          raw_budget: int = max(min_budget, thinking_budget)
+          budget_val: int | None = raw_budget
+          if is_anthropic and effective_max_tokens is not None:
+            budget_val = (
+                min(raw_budget, effective_max_tokens - 1)
+                if effective_max_tokens > _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS
+                else None
+            )
+          if budget_val is not None:
+            generation_params["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": budget_val,
+            }
+        elif "reasoning_effort" in supported_params:
+          if thinking_budget <= 1024:
+            generation_params["reasoning_effort"] = "low"
+          elif thinking_budget <= 2048:
+            generation_params["reasoning_effort"] = "medium"
+          else:
+            generation_params["reasoning_effort"] = "high"
+
+      if (
+          "thinking" not in generation_params
+          and "reasoning_effort" not in generation_params
+          and (
+              not thinking_level
+              or thinking_level == "THINKING_LEVEL_UNSPECIFIED"
+          )
+          and (thinking_budget is None or thinking_budget < 0)
+          and not has_constructor_reasoning
+      ):
+        if include_thoughts is True:
+          if "thinking" in supported_params and not is_gemini_3_or_newer:
+            if is_anthropic:
+              if is_claude_4_7:
+                generation_params["thinking"] = {"type": "adaptive"}
+              elif (
+                  effective_max_tokens is None
+                  or effective_max_tokens
+                  > _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS
+              ):
+                generation_params["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS,
+                }
+            else:
+              generation_params["thinking"] = {"type": "enabled"}
+        elif (
+            include_thoughts is False
+            and is_gemini
+            and "thinking" in supported_params
+        ):
+          generation_params["thinking"] = {"type": "disabled"}
+
+      if is_anthropic:
+        _drop_params_rejected_by_anthropic_thinking(generation_params)
 
     if not generation_params:
       generation_params = None
@@ -3212,7 +4414,9 @@ def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
   return litellm_model
 
 
-def _warn_gemini_via_litellm(model_string: str) -> None:
+def _warn_gemini_via_litellm(
+    model_string: str, completion_args: Optional[Dict[str, Any]] = None
+) -> None:
   """Warn if Gemini is being used via LiteLLM.
 
   This function logs a warning suggesting users use Gemini directly rather than
@@ -3220,12 +4424,13 @@ def _warn_gemini_via_litellm(model_string: str) -> None:
 
   Args:
     model_string: The LiteLLM model string to check
+    completion_args: Optional completion arguments to check for proxy settings.
   """
   if not _is_litellm_gemini_model(model_string):
     return
 
   # Do not warn if using a proxy, as native Gemini client might not support it.
-  if model_string.lower().startswith(_PROXY_PROVIDER + "/"):
+  if _is_proxied_model(model_string, completion_args):
     return
 
   # Check if warning should be suppressed via environment variable
@@ -3354,7 +4559,7 @@ class LiteLlm(BaseLlm):
     drop_params = kwargs.pop("drop_params", None)
     super().__init__(model=model, **kwargs)
     # Warn if using Gemini via LiteLLM
-    _warn_gemini_via_litellm(model)
+    _warn_gemini_via_litellm(model, kwargs)
     self._additional_args = dict(kwargs)
     # preventing generation call with llm_client
     # and overriding messages, tools and stream which are managed internally
@@ -3481,13 +4686,32 @@ class LiteLlm(BaseLlm):
       logger.debug(_build_request_log(llm_request))
 
     effective_model = llm_request.model or self.model
+    custom_llm_provider = self._additional_args.get("custom_llm_provider")
+    constructor_max_tokens = self._additional_args.get("max_completion_tokens")
+    if constructor_max_tokens is None:
+      constructor_max_tokens = self._additional_args.get("max_tokens")
     messages, tools, response_format, generation_params, tool_choice = (
-        await _get_completion_inputs(llm_request, effective_model)
+        await _get_completion_inputs(
+            llm_request,
+            effective_model,
+            upload_params=_get_upload_params(
+                effective_model, self._additional_args
+            ),
+            is_proxied=_is_proxied_model(
+                effective_model, self._additional_args
+            ),
+            custom_llm_provider=custom_llm_provider,
+            max_tokens=constructor_max_tokens,
+            has_constructor_reasoning=(
+                self._additional_args.get("thinking") is not None
+                or self._additional_args.get("reasoning_effort") is not None
+            ),
+        )
     )
     normalized_messages = _normalize_ollama_chat_messages(
         messages,
         model=effective_model,
-        custom_llm_provider=self._additional_args.get("custom_llm_provider"),
+        custom_llm_provider=custom_llm_provider,
     )
 
     if "functions" in self._additional_args:
@@ -3525,7 +4749,23 @@ class LiteLlm(BaseLlm):
       )
 
     if generation_params:
+      if "max_completion_tokens" in generation_params:
+        completion_args.pop("max_tokens", None)
+      if "thinking" in generation_params:
+        completion_args.pop("reasoning_effort", None)
+      if "reasoning_effort" in generation_params:
+        completion_args.pop("thinking", None)
       completion_args.update(generation_params)
+
+    if (
+        _is_anthropic_model(effective_model)
+        or "claude" in _strip_proxy_prefix(effective_model).lower()
+        or bool(
+            custom_llm_provider
+            and _is_anthropic_route(custom_llm_provider, effective_model)
+        )
+    ):
+      _drop_params_rejected_by_anthropic_thinking(completion_args)
 
     if tool_choice is not None:
       completion_args["tool_choice"] = tool_choice
@@ -3555,27 +4795,54 @@ class LiteLlm(BaseLlm):
       if http_opts.extra_body is not None:
         completion_args["extra_body"] = http_opts.extra_body
 
+    include_thoughts = (
+        llm_request.config.thinking_config.include_thoughts
+        if llm_request.config and llm_request.config.thinking_config
+        else None
+    )
+
     if stream:
       # Accumulate into lists and join once: `+=` on a closure cell or a dict
       # item does not get CPython's in-place unicode concat, so it would copy
       # the whole buffer on every streamed chunk.
       text_parts: list[str] = []
+      # Every delta's text, including text parsed into calls on arrival.
+      raw_text_parts: list[str] = []
+      text_tracker = _StreamTextTracker()
+      saw_structured_tool_calls = False
       reasoning_parts: List[types.Part] = []
       # Track function calls by index
       function_calls: dict[int, dict[str, Any]] = (
           {}
-      )  # index -> {name, args_parts, id}
+      )  # index -> {name, args_parts, id, thought_signature}
+      # Signatures that arrived before any chunk naming their call.
+      pending_signatures: dict[int, bytes] = {}
       tool_call_trackers: Dict[int, _BraceDepthTracker] = {}
       completion_args["stream"] = True
       completion_args["stream_options"] = {"include_usage": True}
       aggregated_llm_response = None
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
+      cache_creation_token_count = None
       grounding_metadata = None
       last_finish_reason: str | None = None
       last_model_version: str | None = None
       fallback_index = 0
       multiple_choices_logged = False
+
+      def _finalized_thought_parts(
+          *, has_tool_calls: bool
+      ) -> list[types.Part] | None:
+        if not reasoning_parts:
+          return None
+        thought_parts = _aggregate_streaming_thought_parts(reasoning_parts)
+        if include_thoughts is False:
+          # Anthropic rejects a tool_use turn replayed without its signed
+          # thinking, so only tool-call turns keep it.
+          thought_parts = [
+              p for p in thought_parts if has_tool_calls and p.thought_signature
+          ]
+        return thought_parts or None
 
       def _finalize_tool_call_response(
           *, model_version: str, finish_reason: str
@@ -3585,27 +4852,50 @@ class LiteLlm(BaseLlm):
         # one. Whether the arguments parse is the only evidence left.
         tool_calls = []
         has_incomplete_tool_call_args = False
-        for index, func_data in function_calls.items():
+        # Calls parsed from text are rebuilt from the whole text below.
+        streamed_calls = function_calls if saw_structured_tool_calls else {}
+        for index, func_data in streamed_calls.items():
           if func_data["id"]:
             args = "".join(func_data["args_parts"])
+            tool_call_arguments: Any = args
             try:
-              _parse_tool_call_arguments(args)
+              tool_call_arguments = _parse_tool_call_arguments(
+                  args,
+                  function_name=func_data["name"],
+              )
             except json.JSONDecodeError:
               has_incomplete_tool_call_args = True
               continue
-            tool_calls.append(
-                ChatCompletionMessageToolCall(
-                    type="function",
-                    id=func_data["id"],
-                    function=ChatCompletionToolCallFunctionChunk(
-                        name=func_data["name"],
-                        arguments=args,
+            tool_call = ChatCompletionMessageToolCall(
+                type="function",
+                id=func_data["id"],
+                function=ChatCompletionToolCallFunctionChunk(
+                    name=func_data["name"],
+                    # Serialise a repaired dict to strict JSON so the
+                    # downstream parse finds valid JSON and logs no second
+                    # repair. A non-dict must stay the original string.
+                    arguments=(
+                        json.dumps(tool_call_arguments)
+                        if isinstance(tool_call_arguments, dict)
+                        else args
                     ),
-                    index=index,
-                )
+                ),
+                index=index,
             )
+            # Put the signature back where a non-streamed tool call carries
+            # it, so the conversion below restores it onto the part. Gemini 3
+            # rejects the next request when a call in the current turn has
+            # lost its signature.
+            signature = func_data["thought_signature"]
+            if signature:
+              tool_call["extra_content"] = {
+                  "google": {"thought_signature": signature}
+              }
+            tool_calls.append(tool_call)
 
         if has_incomplete_tool_call_args:
+          # Dropping complete calls when any call in the batch is incomplete
+          # ensures the caller never acts on a partially understood batch.
           if finish_reason == "length":
             return LlmResponse(
                 error_code=types.FinishReason.MAX_TOKENS,
@@ -3629,17 +4919,34 @@ class LiteLlm(BaseLlm):
               model_version=model_version,
           )
 
+        content: str | None = "".join(text_parts)
+        if not saw_structured_tool_calls:
+          # Every call came from text, and a delta parsed alone cannot see the
+          # text around it, so parse the whole text as an unstreamed response
+          # would be: calls keep their text order and quoted calls stay text.
+          tool_calls, content = _parse_tool_calls_from_text(
+              "".join(raw_text_parts)
+          )
+          # Keep the id each call already streamed with in a partial response.
+          streamed = [
+              (fd["name"], "".join(fd["args_parts"]), fd["id"])
+              for fd in function_calls.values()
+          ]
+          for tc in tool_calls:
+            key = (tc.function.name, tc.function.arguments)
+            match = next((s for s in streamed if s[:2] == key), None)
+            if match:
+              streamed.remove(match)
+              tc.id = match[2]
         llm_response = _message_to_generate_content_response(
             ChatCompletionAssistantMessage(
                 role="assistant",
-                content="".join(text_parts),
+                content=content,
                 tool_calls=tool_calls,
             ),
             model_version=model_version,
-            thought_parts=(
-                _aggregate_streaming_thought_parts(reasoning_parts)
-                if reasoning_parts
-                else None
+            thought_parts=_finalized_thought_parts(
+                has_tool_calls=bool(tool_calls)
             ),
         )
         mapped_finish_reason = _map_finish_reason(finish_reason)
@@ -3662,11 +4969,7 @@ class LiteLlm(BaseLlm):
                 content=message_content,
             ),
             model_version=model_version,
-            thought_parts=(
-                _aggregate_streaming_thought_parts(reasoning_parts)
-                if reasoning_parts
-                else None
-            ),
+            thought_parts=_finalized_thought_parts(has_tool_calls=False),
         )
         mapped_finish_reason = _map_finish_reason(finish_reason)
         if _malformed_args_outrank_provider(
@@ -3679,14 +4982,27 @@ class LiteLlm(BaseLlm):
         return llm_response
 
       def _reset_stream_buffers() -> None:
-        nonlocal reasoning_parts, last_finish_reason
+        nonlocal reasoning_parts, last_finish_reason, saw_structured_tool_calls
         text_parts.clear()
+        raw_text_parts.clear()
+        text_tracker.reset()
+        saw_structured_tool_calls = False
         reasoning_parts = []
         function_calls.clear()
+        pending_signatures.clear()
         tool_call_trackers.clear()
         # The reason belongs to the segment just finalized; carrying it into
         # the next one would stamp the wrong reason on the next response.
         last_finish_reason = None
+
+      def _has_held_back_tool_calls() -> bool:
+        # A call in a delta held back from parsing on arrival yields no
+        # FunctionChunk, so only the whole text shows it.
+        return (
+            not function_calls
+            and not saw_structured_tool_calls
+            and bool(_parse_tool_calls_from_text("".join(raw_text_parts))[0])
+        )
 
       async for part in await self.llm_client.acompletion(**completion_args):
         if getattr(part, "model", None):
@@ -3706,16 +5022,100 @@ class LiteLlm(BaseLlm):
         part_grounding = _extract_grounding_metadata(part)
         if part_grounding:
           grounding_metadata = part_grounding
-        for chunk, finish_reason in _model_response_to_chunk(part):
+        # One delta can carry several complete tool calls, and
+        # _model_response_to_chunk yields a FunctionChunk per call, each paired
+        # with the same choice-level finish_reason. Record what this part asks
+        # for and finalize once, after every chunk in it has been accumulated:
+        # finalizing inside the loop rebuilds the response per call and keeps
+        # only the last one.
+        finalize_tool_calls = False
+        finalize_text = False
+        finalize_finish_reason: str = ""
+        choice = next((c for c in part_choices if not c.get("index")), None)
+        # As in _model_response_to_chunk, a ModelResponse chunk carries
+        # `message` where a stream chunk carries `delta`.
+        delta = (
+            choice.get(
+                "message" if isinstance(part, ModelResponse) else "delta"
+            )
+            if choice
+            else None
+        )
+        delta_text = (delta.get("content") if delta else None) or ""
+        if delta and (delta.get("tool_calls") or delta.get("function_call")):
+          saw_structured_tool_calls = True
+        # A backtick or tilde can open or close Markdown code, so whether a
+        # tool call in such a delta is quoted waits for the whole text, as does
+        # one inside a `<think>` block or in a delta with a `<think>` tag, and
+        # one in a delta that ends a begun line (`#` then ` Usage\n    ...`).
+        parse_inline_tool_calls = not (
+            text_tracker.in_code
+            or text_tracker.in_think
+            or (
+                isinstance(delta_text, str)
+                and (
+                    "`" in delta_text
+                    or "~" in delta_text
+                    or text_tracker.in_think_for(delta_text)
+                    or text_tracker.completes_line(delta_text)
+                )
+            )
+        )
+        allow_bare_json = not text_tracker.has_non_whitespace
+        # Feed the tracker every delta, including one parsed into calls, so a
+        # later delta is judged against all the text before it.
+        if isinstance(delta_text, str) and delta_text:
+          raw_text_parts.append(delta_text)
+          text_tracker.feed(delta_text)
+        for chunk, finish_reason in _model_response_to_chunk(
+            part,
+            parse_inline_tool_calls=parse_inline_tool_calls,
+            allow_bare_json=allow_bare_json,
+        ):
           if finish_reason:
             last_finish_reason = finish_reason
-          if isinstance(chunk, FunctionChunk):
-            index = chunk.index or fallback_index
+          if (
+              isinstance(chunk, FunctionChunk)
+              and not chunk.name
+              and not chunk.args
+              and chunk.thought_signature
+          ):
+            # Only a signature. Opening a call for it would send the model a
+            # call with no name, so attach it to the call at its own index
+            # (the fallback index may already point past that call), or hold
+            # it for the call that starts there next.
+            index = chunk.index if chunk.index is not None else fallback_index
+            signed_call = function_calls.get(index)
+            if signed_call is not None:
+              signed_call["thought_signature"] = chunk.thought_signature
+            else:
+              pending_signatures[index] = chunk.thought_signature
+          elif isinstance(chunk, FunctionChunk):
+            if not saw_structured_tool_calls:
+              # Each delta numbers the calls parsed from its text from 0, and
+              # each such call is complete, so it takes the next free slot.
+              index = len(function_calls)
+            else:
+              index = (
+                  0
+                  if chunk.index == 0
+                  and not function_calls.get(0, {}).get("args_complete")
+                  else (chunk.index or fallback_index)
+              )
             if index not in function_calls:
-              function_calls[index] = {"name": "", "args_parts": [], "id": None}
+              function_calls[index] = {
+                  "name": "",
+                  "args_parts": [],
+                  "id": None,
+                  "thought_signature": pending_signatures.pop(index, None),
+              }
 
             if chunk.name:
               function_calls[index]["name"] += chunk.name
+            if chunk.thought_signature:
+              function_calls[index][
+                  "thought_signature"
+              ] = chunk.thought_signature
             if chunk.args:
               args_parts = function_calls[index]["args_parts"]
               args_parts.append(chunk.args)
@@ -3728,6 +5128,7 @@ class LiteLlm(BaseLlm):
               if tracker.feed(chunk.args):
                 try:
                   json.loads("".join(args_parts))
+                  function_calls[index]["args_complete"] = True
                   fallback_index += 1
                 except json.JSONDecodeError:
                   pass
@@ -3774,11 +5175,14 @@ class LiteLlm(BaseLlm):
           elif isinstance(chunk, ReasoningChunk):
             if chunk.parts:
               reasoning_parts.extend(chunk.parts)
-              yield LlmResponse(
-                  content=types.Content(role="model", parts=list(chunk.parts)),
-                  partial=True,
-                  model_version=part.model,
-              )
+              if include_thoughts is not False:
+                yield LlmResponse(
+                    content=types.Content(
+                        role="model", parts=list(chunk.parts)
+                    ),
+                    partial=True,
+                    model_version=part.model,
+                )
           elif isinstance(chunk, UsageMetadataChunk):
             usage_metadata = types.GenerateContentResponseUsageMetadata(
                 prompt_token_count=chunk.prompt_tokens,
@@ -3795,23 +5199,19 @@ class LiteLlm(BaseLlm):
                   "cache_creation_input_tokens",
                   chunk.cache_creation_tokens,
               )
+            cache_creation_token_count = chunk.cache_creation_tokens
 
           # LiteLLM 1.81+ can set finish_reason="stop" on partial chunks. Only
           # finalize tool calls on an explicit tool_calls/length finish_reason,
           # or on a stop-only chunk (no content/tool deltas).
-          if function_calls and (
+          if (
               finish_reason == "tool_calls"
               or finish_reason == "length"
               or (finish_reason == "stop" and chunk is None)
-          ):
-            aggregated_llm_response_with_tool_call = (
-                _finalize_tool_call_response(
-                    model_version=part.model,
-                    finish_reason=finish_reason,
-                )
-            )
-            _reset_stream_buffers()
-          elif (text_parts or reasoning_parts) and (
+          ) and (function_calls or _has_held_back_tool_calls()):
+            finalize_tool_calls = True
+            finalize_finish_reason = finish_reason
+          if (text_parts or reasoning_parts) and (
               finish_reason == "length"
               or (
                   finish_reason == "stop"
@@ -3819,11 +5219,35 @@ class LiteLlm(BaseLlm):
                   and not function_calls
               )
           ):
+            finalize_text = True
+            finalize_finish_reason = finish_reason
+
+        # Tool calls take precedence for a part that asks for both:
+        # _finalize_tool_call_response carries the buffered text and reasoning
+        # into the tool-call response, so nothing accumulated here is dropped.
+        # But if tool-call finalization returns an error response with no
+        # content, text finalization still runs so text and reasoning are kept
+        # in their own response.
+        if finalize_tool_calls:
+          aggregated_llm_response_with_tool_call = _finalize_tool_call_response(
+              model_version=part.model,
+              finish_reason=finalize_finish_reason,
+          )
+          if (
+              text_parts or reasoning_parts
+          ) and aggregated_llm_response_with_tool_call.content is None:
+            # Assign to the single text slot so the later stream segment wins.
             aggregated_llm_response = _finalize_text_response(
                 model_version=part.model,
-                finish_reason=finish_reason,
+                finish_reason=finalize_finish_reason,
             )
-            _reset_stream_buffers()
+          _reset_stream_buffers()
+        elif finalize_text:
+          aggregated_llm_response = _finalize_text_response(
+              model_version=part.model,
+              finish_reason=finalize_finish_reason,
+          )
+          _reset_stream_buffers()
 
       # The in-loop finalizers only fire on the reasons known to end a stream,
       # so any other terminal reason ("content_filter" above all) reaches the
@@ -3832,11 +5256,25 @@ class LiteLlm(BaseLlm):
       # filtered stream reports the same finish_reason and error_code that the
       # non-streaming path reports.
       resolved_model_version = last_model_version or effective_model
-      if function_calls and not aggregated_llm_response_with_tool_call:
+      if (
+          function_calls or _has_held_back_tool_calls()
+      ) and not aggregated_llm_response_with_tool_call:
         aggregated_llm_response_with_tool_call = _finalize_tool_call_response(
             model_version=resolved_model_version,
             finish_reason=last_finish_reason or "tool_calls",
         )
+        if (
+            (text_parts or reasoning_parts)
+            and not aggregated_llm_response
+            and aggregated_llm_response_with_tool_call.content is None
+        ):
+          # Default to "stop" so error_code remains unset on the rescued
+          # text response, avoiding two error-bearing responses for one
+          # cut-off stream.
+          aggregated_llm_response = _finalize_text_response(
+              model_version=resolved_model_version,
+              finish_reason=last_finish_reason or "stop",
+          )
         _reset_stream_buffers()
 
       if (text_parts or reasoning_parts) and not aggregated_llm_response:
@@ -3865,6 +5303,11 @@ class LiteLlm(BaseLlm):
       if aggregated_llm_response:
         if usage_metadata:
           aggregated_llm_response.usage_metadata = usage_metadata
+          aggregated_llm_response.cache_creation_token_count = (
+              cache_creation_token_count
+          )
+          # Clear usage so tokens are not counted twice across yielded
+          # responses.
           usage_metadata = None
         if grounding_metadata:
           aggregated_llm_response.grounding_metadata = grounding_metadata
@@ -3873,6 +5316,9 @@ class LiteLlm(BaseLlm):
       if aggregated_llm_response_with_tool_call:
         if usage_metadata:
           aggregated_llm_response_with_tool_call.usage_metadata = usage_metadata
+          aggregated_llm_response_with_tool_call.cache_creation_token_count = (
+              cache_creation_token_count
+          )
         if grounding_metadata:
           aggregated_llm_response_with_tool_call.grounding_metadata = (
               grounding_metadata
@@ -3881,7 +5327,21 @@ class LiteLlm(BaseLlm):
 
     else:
       response = await self.llm_client.acompletion(**completion_args)
-      yield _model_response_to_generate_content_response(response)
+      llm_response = _model_response_to_generate_content_response(response)
+      if (
+          include_thoughts is False
+          and llm_response.content
+          and llm_response.content.parts
+      ):
+        has_tool_calls = any(
+            p.function_call for p in llm_response.content.parts
+        )
+        llm_response.content.parts = [
+            p
+            for p in llm_response.content.parts
+            if not p.thought or (has_tool_calls and p.thought_signature)
+        ]
+      yield llm_response
 
   @classmethod
   @override

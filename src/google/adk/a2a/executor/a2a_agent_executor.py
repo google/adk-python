@@ -42,6 +42,7 @@ from .executor_context import ExecutorContext
 from .task_result_aggregator import TaskResultAggregator
 from .utils import _enqueue_canceled_task_event
 from .utils import _require_request_context
+from .utils import _require_user_id
 from .utils import execute_after_agent_interceptors
 from .utils import execute_after_event_interceptors
 from .utils import execute_before_agent_interceptors
@@ -192,6 +193,9 @@ class A2aAgentExecutor(AgentExecutor):
 
     # ensure the session exists
     session = await self._prepare_session(context, run_request, runner)
+    if not run_request.session_id:
+      # A _prepare_session override may not write the id back to the request.
+      run_request.session_id = session.id
 
     # create invocation context
     invocation_context = runner._new_invocation_context(
@@ -202,7 +206,7 @@ class A2aAgentExecutor(AgentExecutor):
 
     executor_context = ExecutorContext(
         app_name=runner.app_name,
-        user_id=run_request.user_id,
+        user_id=_require_user_id(run_request),
         session_id=run_request.session_id,
         runner=runner,
     )
@@ -320,7 +324,7 @@ class A2aAgentExecutor(AgentExecutor):
 
     session_id = run_request.session_id
     # create a new session if not exists
-    user_id = run_request.user_id
+    user_id = _require_user_id(run_request)
     session = None
     if session_id:
       session = await runner.session_service.get_session(

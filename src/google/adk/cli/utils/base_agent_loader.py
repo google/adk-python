@@ -25,6 +25,13 @@ from ...agents.base_agent import BaseAgent
 from ...apps.app import App
 
 
+class _AgentLoadError(RuntimeError):
+  """An agent exists but raised while loading.
+
+  Deliberately not a ValueError, which from a loader means no such agent.
+  """
+
+
 class BaseAgentLoader(ABC):
   """Abstract base class for agent loaders."""
 
@@ -32,7 +39,12 @@ class BaseAgentLoader(ABC):
 
   @abstractmethod
   def load_agent(self, agent_name: str) -> Union[BaseAgent, App]:
-    """Loads an instance of an agent with the given name."""
+    """Loads an instance of an agent with the given name.
+
+    Raises:
+      ValueError: If no agent exists under this name. The API server answers
+        it with a 404.
+    """
 
   @abstractmethod
   def list_agents(self) -> list[str]:

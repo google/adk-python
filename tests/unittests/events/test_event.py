@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import copy
 import json
+from unittest import mock
 
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.event_actions import EventActions
 from google.adk.events.request_input import RequestInput
 from google.genai import types
+import pydantic
 import pytest
 
 
@@ -247,6 +249,25 @@ def test_event_constructor_without_state():
   my_event = Event()
   assert my_event.actions is not None
   assert my_event.actions.state_delta == {}
+
+
+def test_event_constructor_reads_fields_only_for_convenience_kwargs():
+  """Only a convenience kwarg makes construction look up the model's fields."""
+  with mock.patch.object(
+      Event,
+      'model_fields',
+      new_callable=mock.PropertyMock,
+      return_value=Event.model_fields,
+  ) as model_fields:
+    Event(
+        author='agent',
+        content=types.Content(parts=[types.Part(text='hi')]),
+        actions=EventActions(state_delta={'key': 'value'}),
+    )
+    assert model_fields.call_count == 0
+
+    Event(author='agent', state={'key': 'value'})
+    assert model_fields.call_count > 0
 
 
 # --- isolation scope ---------------------------------------------------------
@@ -530,3 +551,92 @@ class TestLongRunningToolIdsSerialization:
     event = Event(author='user', long_running_tool_ids=set())
 
     assert event.model_dump(exclude_none=True)['long_running_tool_ids'] == []
+
+
+class TestConvenienceKwargsMerge:
+  """Tests convenience kwargs merging into existing actions and node_info."""
+
+  @pytest.mark.parametrize(
+      'actions',
+      [
+          EventActions(skip_summarization=True, escalate=True),
+          {'skip_summarization': True, 'escalate': True},
+      ],
+  )
+  def test_state_and_route_merge_into_existing_actions(self, actions):
+    event = Event.model_validate(
+        {'actions': actions, 'state': {'k': 'v'}, 'route': 'branch_a'}
+    )
+
+    assert event.actions.skip_summarization is True
+    assert event.actions.escalate is True
+    assert event.actions.state_delta == {'k': 'v'}
+    assert event.actions.route == 'branch_a'
+
+  @pytest.mark.parametrize(
+      'node_info',
+      [
+          NodeInfo(output_for=['target'], message_as_output=True),
+          {'output_for': ['target'], 'message_as_output': True},
+      ],
+  )
+  def test_node_path_merges_into_existing_node_info(self, node_info):
+    event = Event.model_validate(
+        {'node_info': node_info, 'node_path': 'wf@1/step@2'}
+    )
+
+    assert event.node_info.path == 'wf@1/step@2'
+    assert event.node_info.output_for == ['target']
+    assert event.node_info.message_as_output is True
+
+  def test_subclass_field_alias_takes_the_convenience_kwarg(self):
+    class _AliasedEvent(Event):
+      custom_route: str = pydantic.Field(default='', alias='route')
+
+    event = _AliasedEvent(route='custom_target')
+
+    assert event.custom_route == 'custom_target'
+    assert event.actions.route is None
+
+
+@pytest.mark.parametrize(
+    'path, name, run_id, parent_run_id',
+    [
+        ('workflow@10/child_node@20', 'child_node', '20', '10'),
+        ('root_node@5', 'root_node', '5', None),
+        ('workflow/child_node', 'child_node', '', None),
+    ],
+)
+def test_node_info_path_properties(path, name, run_id, parent_run_id):
+  info = NodeInfo(path=path)
+  assert (info.name, info.run_id, info.parent_run_id) == (
+      name,
+      run_id,
+      parent_run_id,
+  )
+
+
+@pytest.mark.parametrize(
+    'event, expected_name',
+    [
+        (Event(node_path='wf@1/worker@2'), 'worker'),
+        (Event(), ''),
+        (
+            Event(
+                node_path='wf@1/worker@2',
+                actions=EventActions(agent_state={'step': 1}),
+            ),
+            '',
+        ),
+        (
+            Event(
+                node_path='wf@1/worker@2',
+                actions=EventActions(end_of_agent=True),
+            ),
+            '',
+        ),
+    ],
+    ids=['leaf_name', 'no_node_info', 'agent_state', 'end_of_agent'],
+)
+def test_event_node_name(event, expected_name):
+  assert event.node_name == expected_name

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import logging
 import signal
 import sys
 from unittest import mock
@@ -109,10 +110,76 @@ class TestValidateCommand:
     assert bash_tool._validate_command("echo hello | grep h", policy) is None
     assert bash_tool._validate_command("ls ; rm -rf /", policy) is None
 
+  def test_empty_allowlist_blocks_everything(self, workspace):
+    policy = bash_tool.BashToolPolicy(allowed_command_prefixes=())
+    assert bash_tool._validate_command("ls", policy) is not None
+    assert "<none>" in bash_tool._validate_command("ls", policy)
+    tool = bash_tool.ExecuteBashTool(workspace=workspace, policy=policy)
+    assert "Allowed: commands matching prefixes: <none>." in tool.description
+
   def test_restricted_policy_allows_prefixes(self):
     policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("ls", "cat"))
     assert bash_tool._validate_command("ls -la", policy) is None
     assert bash_tool._validate_command("cat file.txt", policy) is None
+
+  def test_restricted_policy_blocks_prefix_bypasses(self):
+    policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("ls", "cat"))
+    assert bash_tool._validate_command("lsof -i", policy) is not None
+    assert bash_tool._validate_command("lscpu", policy) is not None
+    assert bash_tool._validate_command("catfish", policy) is not None
+
+  def test_restricted_policy_blocks_planted_executables(self):
+    policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("ls",))
+    assert bash_tool._validate_command("./ls", policy) is not None
+    assert bash_tool._validate_command("/tmp/payload/ls", policy) is not None
+    assert bash_tool._validate_command("/bin/ls", policy) is not None
+
+  def test_restricted_policy_allows_path_entries(self):
+    policy = bash_tool.BashToolPolicy(
+        allowed_command_prefixes=("/bin/ls", "/usr/bin/unbuffer /bin/cat")
+    )
+    assert bash_tool._validate_command("/bin/ls -la", policy) is None
+    assert (
+        bash_tool._validate_command("/usr/bin/unbuffer /bin/cat f", policy)
+        is None
+    )
+    assert bash_tool._validate_command("/bin/lsof", policy) is not None
+    assert bash_tool._validate_command("ls", policy) is not None
+    assert (
+        bash_tool._validate_command("/usr/bin/unbuffer sh", policy) is not None
+    )
+
+  def test_restricted_policy_ignores_entry_padding(self):
+    policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("ls ", "cat "))
+    assert bash_tool._validate_command("ls", policy) is None
+    assert bash_tool._validate_command("cat file.txt", policy) is None
+    assert bash_tool._validate_command("lsof", policy) is not None
+
+  def test_restricted_policy_supports_multi_token_entries(self):
+    policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("git status",))
+    assert bash_tool._validate_command("git status --short", policy) is None
+    assert bash_tool._validate_command("git statuses", policy) is not None
+    assert bash_tool._validate_command("git push", policy) is not None
+
+  def test_empty_prefix_entry_is_ignored(self):
+    policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("", "   "))
+    assert bash_tool._validate_command("ls", policy) is not None
+
+  def test_unparsable_prefix_entry_is_ignored_with_warning(self, caplog):
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
+      policy = bash_tool.BashToolPolicy(
+          allowed_command_prefixes=("git commit -m 'unterminated", "ls")
+      )
+    assert "Ignoring unparsable allowed_command_prefixes entry" in caplog.text
+    assert bash_tool._validate_command("git status", policy) is not None
+    assert bash_tool._validate_command("ls -la", policy) is None
+
+  def test_unparsable_command_is_blocked(self):
+    policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("ls",))
+    assert (
+        bash_tool._validate_command("ls 'unterminated", policy)
+        == "Unable to parse command."
+    )
 
   def test_restricted_policy_blocks_others(self):
     policy = bash_tool.BashToolPolicy(allowed_command_prefixes=("ls", "cat"))

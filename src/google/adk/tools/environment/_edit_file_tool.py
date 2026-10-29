@@ -26,7 +26,6 @@ from google.genai import types
 from typing_extensions import override
 
 from ...environment._base_environment import BaseEnvironment
-from ...utils.feature_decorator import experimental
 from ..base_tool import BaseTool
 
 if TYPE_CHECKING:
@@ -36,7 +35,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@experimental
 class EditFileTool(BaseTool):
   """Perform a surgical text replacement in an existing file."""
 

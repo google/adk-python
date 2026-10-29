@@ -28,6 +28,7 @@ The main asynchronous entry point. Use this in production.
 | `state_delta` | State changes to apply to the session. |
 | `run_config` | Run config for the agent. |
 | `yield_user_message` | Yield the user-message event before agent/node events. |
+| `abort_signal` | Optional `asyncio.Event` for cooperative cancellation. Setting it halts the active invocation cleanly. |
 
 ### `run`
 
@@ -47,3 +48,24 @@ Audio/video streaming entry point, driven by a `LiveRequestQueue`
 Convenience harness for local iteration: takes one message or a list of
 messages, creates the session if needed, and prints the exchange (`quiet` and
 `verbose` control how much).
+
+## Execution cancellation (`abort_signal`)
+
+When `abort_signal` is passed to `run_async` and set during execution:
+
+- `InvocationContext.is_aborted` flips to `True` and active agent or workflow
+  tasks are cancelled cleanly without surfacing an unhandled `CancelledError` to
+  the caller.
+- `Runner._synthesize_abort_events_if_needed` appends and yields synthetic
+  abort `Event`s with `error_code='INVOCATION_ABORTED'`. When function calls are
+  dangling, it emits one abort event per `(author, branch, isolation_scope)`
+  tuple sealing those calls with synthetic `FunctionResponse(response={'error':
+  'Invocation was aborted by client.'})` parts so each response pairs with its
+  call in the issuing agent's view. If nothing is dangling, it yields a single
+  root-authored abort event instead. This preserves session log invariants so
+  that subsequent conversational turns or resumes do not fail on dangling tool
+  calls or re-run the cancelled tool.
+- `PluginManager.run_after_run_callback` still executes before `run_async`
+  exits.
+- In the FastAPI server (`/run_sse`), client HTTP disconnects automatically set
+  `abort_signal` on the active runner invocation.

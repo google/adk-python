@@ -25,6 +25,7 @@ from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._interrupts import extract_event_interrupt_ids
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 # Added for the moved test
@@ -41,7 +42,6 @@ from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
-from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
 from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
@@ -95,10 +95,15 @@ class _FlakyNode(BaseNode):
     )
 
 
-async def _run_workflow(wf, message='start'):
+from .._invariants import InvariantPlugin
+
+
+async def _run_workflow(wf, message='start', *, check_invariants: bool = True):
   """Run a Workflow through Runner, return collected events."""
   ss = InMemorySessionService()
   runner = Runner(app_name='test', node=wf, session_service=ss)
+  if check_invariants:
+    runner.plugin_manager.plugins.insert(0, InvariantPlugin())
   session = await ss.create_session(app_name='test', user_id='u')
   msg = types.Content(parts=[types.Part(text=message)], role='user')
   events = []
@@ -768,6 +773,91 @@ def test_retry_config_rejects_invalid_exception_types():
 def test_retry_config_normalizes_classes_to_strings():
   config = RetryConfig(exceptions=[ValueError, 'KeyError'])
   assert config.exceptions == ['ValueError', 'KeyError']
+
+
+@pytest.mark.parametrize('topology', ['static', 'nested', 'dynamic'])
+@pytest.mark.parametrize('termination', ['sibling_failure', 'caller_cancel'])
+async def test_cancellation_awaits_cleanup_without_retrying(
+    topology: str, termination: str
+) -> None:
+  """Cancellation finishes asynchronous child cleanup before returning.
+
+  Setup: a retry-enabled worker holds a resource inside a static branch,
+    nested workflow, or dynamically scheduled child.
+  Act: fail a sibling or cancel the caller while the worker is running;
+    pause its asynchronous resource release until explicitly allowed.
+  Assert: the invocation stays pending until release completes, preserves
+    the original error/cancellation, and never retries the cancelled worker.
+  """
+  started = asyncio.Event()
+  cleanup_started = asyncio.Event()
+  release_cleanup = asyncio.Event()
+  attempts: list[int] = []
+  released: list[str] = []
+
+  @node(retry_config=RetryConfig(max_attempts=3, initial_delay=0, jitter=0))
+  async def worker(ctx: Context) -> str:
+    attempts.append(ctx.attempt_count)
+    started.set()
+    try:
+      await asyncio.Event().wait()
+      return 'unreachable'
+    finally:
+      cleanup_started.set()
+      await release_cleanup.wait()
+      released.append('resource')
+
+  @node(rerun_on_resume=True)
+  async def parent(ctx: Context) -> Any:
+    return await ctx.run_node(worker)
+
+  if topology == 'nested':
+    branch = Workflow(name='inner', edges=[(START, worker)])
+  elif topology == 'dynamic':
+    branch = parent
+  else:
+    branch = worker
+
+  @node
+  async def failing_sibling() -> str:
+    await started.wait()
+    raise ValueError('sibling failed')
+
+  edges = [(START, branch)]
+  if termination == 'sibling_failure':
+    edges.append((START, failing_sibling))
+  runner = testing_utils.InMemoryRunner(node=Workflow(name='wf', edges=edges))
+  run_task = asyncio.create_task(runner.run_async('start'))
+
+  try:
+    await asyncio.wait_for(started.wait(), timeout=5)
+    if termination == 'caller_cancel':
+      run_task.cancel()
+    await asyncio.wait_for(cleanup_started.wait(), timeout=5)
+
+    # Keep cleanup blocked while giving an invocation that incorrectly skips
+    # the cleanup wait an opportunity to finish. Unlike wait_for, wait does
+    # not cancel the invocation when this observation window expires.
+    done, _ = await asyncio.wait({run_task}, timeout=0.1)
+    assert not done
+    assert released == []
+    release_cleanup.set()
+
+    if termination == 'caller_cancel':
+      with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(run_task, timeout=5)
+    else:
+      with pytest.raises(ValueError, match='sibling failed'):
+        await asyncio.wait_for(run_task, timeout=5)
+
+    assert released == ['resource']
+    assert attempts == [1]
+  finally:
+    # Unblock and reap the invocation even when a contract assertion fails.
+    release_cleanup.set()
+    if not run_task.done():
+      run_task.cancel()
+    await asyncio.gather(run_task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -1653,7 +1743,7 @@ async def test_retried_node_not_rerun_on_resume(
   assert flaky_in_graph.tracker['iteration_count'] == 2
 
   req_events = get_request_input_events(events)
-  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  [interrupt_id] = extract_event_interrupt_ids(req_events[0])
   user_input = create_request_input_response(interrupt_id, {'ok': True})
   await runner.run_async(
       new_message=testing_utils.UserContent(user_input),

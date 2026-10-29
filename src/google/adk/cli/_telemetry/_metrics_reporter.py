@@ -106,7 +106,7 @@ def _set_rate_limit_timestamp(wait_ms: int) -> None:
     try:
       lock_time = time.time() + (wait_ms / 1000.0)
       os.makedirs(os.path.dirname(_constants.LOCK_FILE), exist_ok=True)
-      with open(_constants.LOCK_FILE, "w") as lf:
+      with open(_constants.LOCK_FILE, "w", encoding="utf-8") as lf:
         lf.write(str(lock_time))
     except Exception:  # pylint: disable=broad-exception-caught
       pass

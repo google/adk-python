@@ -80,7 +80,7 @@ We expose agents as production APIs using FastAPI.
 ```Python
 
 from google.adk.cli.fast_api import get_fast_api_app
-app = get_fast_api_app(agent_dir="./agents")
+app = get_fast_api_app(agents_dir="./agents", web=False)
 
 @app.get("/health")
 async def health_check():
@@ -98,7 +98,7 @@ However, if the environment variable `ADK_DEFAULT_APP_NAME` is set, or if the se
 
 ## Deployment to Production
 
-The adk cli provides the "adk deploy" command to deploy to Google Vertex Agent Engine, Google CloudRun, Google GKE.
+The adk cli provides the "adk deploy" command to deploy to Google Vertex Agent Engine, Google CloudRun, Google GKE, or a local Docker container.
 
 ## Testing & Evaluation Strategy
 

@@ -38,6 +38,9 @@ someone else's package on any machine that happened to have it installed.
 
 from __future__ import annotations
 
+from typing import Awaitable
+from typing import Callable
+
 from mcp import ClientSession as ClientSession
 from mcp import SamplingCapability as SamplingCapability
 from mcp import StdioServerParameters as StdioServerParameters
@@ -46,9 +49,9 @@ from mcp.client.session import ElicitationFnT as ElicitationFnT
 from mcp.client.session import SamplingFnT as SamplingFnT
 from mcp.client.sse import sse_client as sse_client
 from mcp.client.stdio import stdio_client as stdio_client
-from mcp.client.streamable_http import create_mcp_http_client as create_mcp_http_client
 from mcp.client.streamable_http import streamable_http_client as streamable_http_client
 from mcp.server.session import ServerSession as ServerSession
+from mcp.shared._httpx_utils import create_mcp_http_client as create_mcp_http_client
 from mcp.types import ListResourcesResult as ListResourcesResult
 from mcp.types import ListToolsResult as ListToolsResult
 from mcp.types import Tool as Tool
@@ -56,7 +59,7 @@ from mcp.types import Tool as Tool
 try:
   from mcp.server.mcpserver import Context as Context
   from mcp.server.mcpserver import MCPServer as FastMCP
-  from mcp.shared.exceptions import MCPError as McpError
+  from mcp.shared.exceptions import MCPError as McpError  # type: ignore[attr-defined]  # mcp 2.x only
 
   # Which major resolved. Three places downstream need it and cannot ask the
   # SDK themselves: `_httpx` pairs the HTTP library to it, `session_context`
@@ -70,6 +73,22 @@ except ImportError:
   from mcp.shared.exceptions import McpError as McpError
 
   IS_MCP_SDK_V2 = False
+
+# Tries `server/discover` and falls back to `initialize`. SDK 2.x only exposes
+# this through its high-level `Client`, so we import the private function.
+# Separate try so that if it moves, we don't misdetect the SDK as 1.x.
+# `None` means connections use the legacy handshake.
+if IS_MCP_SDK_V2:
+  try:
+    from mcp.client._probe import negotiate_auto as _negotiate_auto
+  except ImportError:
+    _negotiate_auto = None
+else:
+  _negotiate_auto = None
+
+negotiate_auto: Callable[[ClientSession], Awaitable[None]] | None = (
+    _negotiate_auto
+)
 
 __all__ = [
     "IS_MCP_SDK_V2",
@@ -86,6 +105,7 @@ __all__ = [
     "StdioServerParameters",
     "Tool",
     "create_mcp_http_client",
+    "negotiate_auto",
     "sse_client",
     "stdio_client",
     "streamable_http_client",

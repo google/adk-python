@@ -27,6 +27,18 @@ gcloud run deploy $SERVICE_NAME \
   --region="us-central1" \
   --port=8080 \
   --quiet
+
+# 3. Set OIDC audience to the deployed service URL
+export SERVICE_URL=$(gcloud run services describe $SERVICE_NAME \
+  --project="$GCP_PROJECT_ID" \
+  --region="us-central1" \
+  --format='value(status.url)')
+
+gcloud run services update $SERVICE_NAME \
+  --set-env-vars TRIGGER_OIDC_AUDIENCE=$SERVICE_URL \
+  --project="$GCP_PROJECT_ID" \
+  --region="us-central1" \
+  --quiet
 ```
 
 ### Phase 2: Wire Infrastructure (Terraform)

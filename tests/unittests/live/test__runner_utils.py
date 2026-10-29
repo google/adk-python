@@ -16,6 +16,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import logging
 from typing import Any
 from typing import AsyncGenerator
 
@@ -83,6 +86,102 @@ async def test_new_invocation_context_for_live_subagents_audio_transcription():
   assert ic.live_request_queue is queue
   assert ic.run_config.output_audio_transcription is not None
   assert ic.run_config.input_audio_transcription is not None
+
+
+def _multi_agent_runner() -> Runner:
+  parent_agent = _MockLiveAgent(name="parent")
+  parent_agent.sub_agents = [_MockLiveAgent(name="child")]
+  return Runner(
+      app_name="test_app",
+      agent=parent_agent,
+      session_service=InMemorySessionService(),
+  )
+
+
+@pytest.mark.asyncio
+async def test_new_invocation_context_for_live_respects_explicit_opt_out(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  runner = _multi_agent_runner()
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+  run_config = RunConfig(
+      response_modalities=[types.Modality.AUDIO],
+      output_audio_transcription=None,
+      input_audio_transcription=None,
+  )
+
+  with caplog.at_level(logging.WARNING, logger="google_adk"):
+    ic = _runner_utils.new_invocation_context_for_live(
+        runner,
+        session,
+        live_request_queue=LiveRequestQueue(),
+        run_config=run_config,
+    )
+
+  assert ic.run_config is not None
+  assert ic.run_config.output_audio_transcription is None
+  assert ic.run_config.input_audio_transcription is None
+  # The caller's config object must not be mutated either.
+  assert run_config.output_audio_transcription is None
+  assert run_config.input_audio_transcription is None
+  assert "agent transfer" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_new_invocation_context_for_live_opt_out_without_modalities(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  runner = _multi_agent_runner()
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+  run_config = RunConfig(input_audio_transcription=None)
+
+  with caplog.at_level(logging.WARNING, logger="google_adk"):
+    ic = _runner_utils.new_invocation_context_for_live(
+        runner,
+        session,
+        live_request_queue=LiveRequestQueue(),
+        run_config=run_config,
+    )
+
+  assert ic.run_config is not None
+  assert ic.run_config.input_audio_transcription is None
+  assert "agent transfer" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_new_invocation_context_for_live_without_subagents_passthrough(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  runner = Runner(
+      app_name="test_app",
+      agent=_MockLiveAgent(name="solo"),
+      session_service=InMemorySessionService(),
+  )
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+  run_config = RunConfig(
+      response_modalities=[types.Modality.AUDIO],
+      output_audio_transcription=None,
+      input_audio_transcription=None,
+  )
+
+  with caplog.at_level(logging.WARNING, logger="google_adk"):
+    ic = _runner_utils.new_invocation_context_for_live(
+        runner,
+        session,
+        live_request_queue=LiveRequestQueue(),
+        run_config=run_config,
+    )
+
+  assert ic.run_config is not None
+  assert ic.run_config.output_audio_transcription is None
+  assert ic.run_config.input_audio_transcription is None
+  assert "agent transfer" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -207,15 +306,41 @@ class _FailingNode(BaseNode):
     yield  # pylint: disable=unreachable
 
 
+class _EchoLiveNode(BaseNode):
+  """A non-agent root node that yields one event."""
+
+  ran: bool = False
+
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Any, None]:
+    self.ran = True
+    yield Event(author=self.name)
+
+
 class _RecordingPlugin(BasePlugin):
 
-  def __init__(self):
+  def __init__(self, early_exit_content: types.Content | None = None):
     super().__init__(name="recording")
+    self.early_exit_content = early_exit_content
+    self.call_order: list[str] = []
     self.errors: list[Exception] = []
+
+  async def before_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> types.Content | None:
+    self.call_order.append("before_run")
+    return self.early_exit_content
+
+  async def after_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    self.call_order.append("after_run")
 
   async def on_run_error_callback(
       self, *, invocation_context: InvocationContext, error: Exception
   ) -> None:
+    self.call_order.append("on_run_error")
     self.errors.append(error)
 
 
@@ -250,13 +375,74 @@ async def test_run_node_live_notifies_plugins_when_the_root_node_fails():
       pass
 
   assert [str(e) for e in plugin.errors] == ["root node exploded"]
+  assert plugin.call_order == ["before_run", "on_run_error"]
+
+
+@pytest.mark.asyncio
+async def test_run_node_live_halts_when_before_run_callback_returns_content():
+  """Returning Content from before_run_callback halts run_node_live early."""
+  early_content = types.Content(
+      role="model", parts=[types.Part(text="blocked by plugin")]
+  )
+  plugin = _RecordingPlugin(early_exit_content=early_content)
+  node = _EchoLiveNode(name="root_node")
+  runner = Runner(
+      app=App(name="test_app", root_agent=node, plugins=[plugin]),
+      session_service=InMemorySessionService(),
+  )
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+
+  events = [
+      e
+      async for e in _runner_utils.run_node_live(
+          runner, session=session, live_request_queue=LiveRequestQueue()
+      )
+  ]
+
+  assert node.ran is False
+  assert len(events) == 1
+  assert events[0].content == early_content
+  assert [e.content for e in session.events] == [early_content]
+  assert plugin.call_order == ["before_run", "after_run"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close_early", [False, True])
+async def test_run_node_live_runs_before_and_after_run_callbacks(
+    close_early: bool,
+):
+  """Normal completion and early generator close dispatch before/after_run."""
+  plugin = _RecordingPlugin()
+  node = _EchoLiveNode(name="root_node")
+  runner = Runner(
+      app=App(name="test_app", root_agent=node, plugins=[plugin]),
+      session_service=InMemorySessionService(),
+  )
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+
+  events = []
+  async with contextlib.aclosing(
+      _runner_utils.run_node_live(
+          runner, session=session, live_request_queue=LiveRequestQueue()
+      )
+  ) as agen:
+    async for e in agen:
+      events.append(e)
+      if close_early:
+        break
+
+  assert node.ran is True
+  assert any(e.author == "root_node" for e in events)
+  assert plugin.call_order == ["before_run", "after_run"]
 
 
 @pytest.mark.asyncio
 async def test_merge_live_event_streams_interleaves_agent_and_queued_events():
   """merge_live_event_streams drains both agent_events and ic._event_queue."""
-  import asyncio
-
   agent = _MockLiveAgent(name="root")
   runner = Runner(
       app_name="test_app",
@@ -266,8 +452,8 @@ async def test_merge_live_event_streams_interleaves_agent_and_queued_events():
   session = await runner.session_service.create_session(
       user_id="u1", session_id="s1", app_name=runner.app_name
   )
-  ic = runner._new_invocation_context_for_live(
-      session, live_request_queue=LiveRequestQueue()
+  ic = _runner_utils.new_invocation_context_for_live(
+      runner, session, live_request_queue=LiveRequestQueue()
   )
   ic._event_queue = asyncio.Queue()
 
@@ -282,3 +468,58 @@ async def test_merge_live_event_streams_interleaves_agent_and_queued_events():
       )
   ]
   assert set(collected) == {"agent_turn", "queued_tool"}
+
+
+@pytest.mark.asyncio
+async def test_merge_live_event_streams_closes_while_queued_events_back_up():
+  """Stopping the merge early must not hang on events nobody will read.
+
+  A streaming tool can enqueue faster than the caller reads, which leaves the
+  queue pump parked on the full merged queue. When the caller stops, the merge
+  cancels that pump, and the pump must end rather than block on putting its
+  end-of-stream sentinel into a queue that is no longer drained.
+  """
+  agent = _MockLiveAgent(name="root")
+  runner = Runner(
+      app_name="test_app",
+      agent=agent,
+      session_service=InMemorySessionService(),
+  )
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+  ic = _runner_utils.new_invocation_context_for_live(
+      runner, session, live_request_queue=LiveRequestQueue()
+  )
+  ic._event_queue = asyncio.Queue()
+  for i in range(3):
+    # Partial, so the producer does not wait for each one to be consumed.
+    ic._event_queue.put_nowait(
+        (Event(author=f"streaming_tool_{i}", partial=True), None)
+    )
+
+  async def _agent_stream() -> AsyncGenerator[Event, None]:
+    # A live session stays open until the caller ends it.
+    await asyncio.Event().wait()
+    yield Event(author="unreachable")
+
+  async def _read_one_then_stop() -> str:
+    async with contextlib.aclosing(
+        _runner_utils._merge_live_event_streams(runner, ic, _agent_stream())
+    ) as events:
+      async for event in events:
+        return event.author
+    return ""
+
+  # Bounded, so a regression fails here instead of hanging the whole run. Not
+  # asyncio.wait_for: its cancellation unblocks the stuck pump, the merge's
+  # cleanup swallows that, and the call then returns as if nothing hung.
+  task = asyncio.create_task(_read_one_then_stop())
+  done, _ = await asyncio.wait({task}, timeout=5)
+  if not done:
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+      await task
+    pytest.fail("Closing the merge hung on the backed-up queue pump.")
+
+  assert task.result() == "streaming_tool_0"

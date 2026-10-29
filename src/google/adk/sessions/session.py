@@ -23,6 +23,7 @@ from pydantic import Field
 from pydantic import PrivateAttr
 
 from ..events.event import Event
+from ..utils import _model_copy
 
 
 class Session(BaseModel):
@@ -35,6 +36,8 @@ class Session(BaseModel):
       populate_by_name=True,
   )
   """The pydantic model config."""
+
+  __deepcopy__ = _model_copy.deep_copy_model
 
   id: str = Field(
       description="Unique identifier of the session.",

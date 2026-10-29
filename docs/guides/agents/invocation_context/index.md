@@ -188,8 +188,8 @@ Configuration fields supporting live bidirectional audio, streaming tools, and t
 | Member | Kind | Return or Signature | Description |
 | :--- | :--- | :--- | :--- |
 | `live_request_queue` | Field | `LiveRequestQueue \| None` | Queue for receiving real-time input chunks in live sessions. |
-| `active_streaming_tools` | Field | `dict[str, ActiveStreamingTool] \| None` | Active background streaming tools for live agents. |
-| `active_non_blocking_tool_tasks` | Field | `dict[str, Task[Any]] \| None` | Running background tool tasks executing concurrently with live audio. |
+| `active_streaming_tools` | Property (deprecated) | `MutableMapping[str, ActiveStreamingTool] \| None` | Read/write view of running streaming tool calls, keyed by tool name; reading a tool returns its latest call. Writes update the registry the framework uses. |
+| `active_non_blocking_tool_tasks` | Property (deprecated) | `MutableMapping[str, Task[Any]] \| None` | Read/write view of running non-blocking tool tasks, keyed by `{tool_name}_{function_call_id}`. Writes update the registry the framework uses. |
 | `transcription_cache` | Field | `list[TranscriptionEntry] \| None` | Cached transcriptions and audio buffers for live streaming. |
 | `run_config` | Field | `RunConfig \| None` | Runtime limits and metadata configuration (such as `max_llm_calls`). |
 | `resumability_config` | Field | `ResumabilityConfig \| None` | Configuration controlling session pause and resume capabilities. |

@@ -106,7 +106,9 @@ At call time:
     the port has to be given twice: once so the card tells clients where to
     connect, and once so uvicorn listens there. If the two disagree, the server
     works and every client that reads the card goes to the wrong place.
-5.  An `AgentCardBuilder` is constructed with the agent and that URL.
+5.  An `AgentCardBuilder` is constructed with the agent, that URL, and (when
+    `agent_card` is not supplied) `security_schemes` and
+    `default_skill_security`.
 
 At server startup, inside the lifespan:
 
@@ -140,6 +142,8 @@ exception at import time.
 | `runner` | `Runner \| None` | `None` | A pre-built runner, in place of the in-memory default. |
 | `lifespan` | `Callable[[Starlette], AbstractAsyncContextManager[None]] \| None` | `None` | Your own startup and shutdown logic. |
 | `agent_executor_factory` | `Callable[[Runner], A2aAgentExecutor] \| None` | `None` | Builds the executor, given the resolved runner. |
+| `security_schemes` | `dict[str, SecurityScheme] \| None` | `None` | Named auth schemes published on the auto-built card. Ignored with a warning when `agent_card` is set. |
+| `default_skill_security` | `list[dict[str, list[str]]] \| None` | `None` | Default security requirements applied to every skill on the auto-built card unless overridden via `BaseTool.custom_metadata['security']`. Ignored with a warning when `agent_card` is set. |
 
 **`host`, `port`, `protocol`.** These three exist to compose one string, the URL
 a client should post tasks to. If you are deploying behind a load balancer or a
@@ -166,12 +170,20 @@ will still point at the unprefixed location.
 
 **`agent_card`.** Passing a string loads that file as JSON and parses it; a
 failure is re-raised as `ValueError`. Supply a card object when you need fields
-that `to_a2a` cannot reach. It only ever passes `agent` and `rpc_url` to
-`AgentCardBuilder`, which leaves the provider, the capabilities, the security
-schemes, the documentation URL, and the version at whatever defaults the builder
-picks. To set any of those, build the card with
+that `to_a2a` cannot reach. It only ever passes `agent`, `rpc_url`,
+`security_schemes`, and `default_skill_security` to `AgentCardBuilder`, which
+leaves the provider, the capabilities, the documentation URL, and the version at
+whatever defaults the builder picks. Passing `security_schemes` or
+`default_skill_security` alongside `agent_card` logs a warning, because a
+supplied card is served as-is and skips the builder. To set fields `to_a2a`
+does not expose, build the card with
 [`AgentCardBuilder`](../agent_card_builder/index.md) yourself and pass the
 result back here.
+
+**`security_schemes`, `default_skill_security`.** Forwarded to
+`AgentCardBuilder` when `agent_card` is not supplied. Both populate metadata on
+the published card only; the Starlette application does not enforce
+authentication or scopes on incoming requests.
 
 **`task_store`.** The default `InMemoryTaskStore` forgets every task when the
 process exits, which means a client cannot poll for a long-running task across
@@ -241,8 +253,7 @@ module is being imported, before any server starts.
 ### Control the published card
 
 *   **Problem solved**: clients decide whether to call your agent by reading its
-    card, and the auto-built card carries no provider, no security schemes, and
-    version `0.0.1`.
+    card, and the auto-built card carries no provider and version `0.0.1`.
 *   **Implementation**: build the card yourself and pass it in. Set `rpc_url` to
     the same URL `to_a2a` would advertise, because a supplied card is never
     rewritten. `AgentCardBuilder.build()` is a coroutine, so it has to be
@@ -313,8 +324,10 @@ because the URL was set correctly by hand.
     content, and an `Event(output=...)` carries none. That is exactly what a
     function node produces when it returns a value, so nothing is published, no
     artifact is built, and no `completed` status is sent. The client is left
-    holding a task stuck in `working` and will poll forever. Have at least one
-    node also yield
+    holding a task stuck in `working` and will poll forever. For the same
+    reason, the structured object validated against `Workflow.output_schema` is
+    not placed into the A2A response artifact, which contains only the raw text
+    emitted by the executed nodes. Have at least one node also yield
     `Event(message=...)` with the text the caller should receive. The mechanism
     is in [A2aAgentExecutor](../../executor/a2a_agent_executor/index.md).
 

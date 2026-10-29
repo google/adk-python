@@ -14,21 +14,12 @@
 
 from __future__ import annotations
 
-import warnings
-
-from google.adk.features._feature_registry import _WARNED_FEATURES
 from google.adk.tools.spanner.settings import Capabilities
 from google.adk.tools.spanner.settings import QueryResultMode
 from google.adk.tools.spanner.settings import SpannerToolSettings
 from google.adk.tools.spanner.settings import SpannerVectorStoreSettings
 from pydantic import ValidationError
 import pytest
-
-
-@pytest.fixture(autouse=True)
-def reset_warned_features():
-  """Reset warned features before each test."""
-  _WARNED_FEATURES.clear()
 
 
 def common_spanner_vector_store_settings(vector_length=None):
@@ -41,14 +32,6 @@ def common_spanner_vector_store_settings(vector_length=None):
       "embedding_column": "test-embedding-column",
       "vector_length": 128 if vector_length is None else vector_length,
   }
-
-
-def test_spanner_tool_settings_experimental_warning():
-  """Test SpannerToolSettings experimental warning."""
-  with warnings.catch_warnings(record=True) as w:
-    SpannerToolSettings()
-    assert len(w) == 1
-    assert "SPANNER_TOOL_SETTINGS is enabled." in str(w[0].message)
 
 
 def test_spanner_vector_store_settings_all_fields_present():

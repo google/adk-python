@@ -41,6 +41,12 @@ def test_validate_path_segment_rejects_path_separators(value):
     validate_path_segment(value, "field")
 
 
+@pytest.mark.parametrize("value", ["C:evil", "c:", "Z:eval_set_1"])
+def test_validate_path_segment_rejects_drive_qualified_values(value):
+  with pytest.raises(ValueError, match="must not be drive-qualified"):
+    validate_path_segment(value, "field")
+
+
 @pytest.mark.parametrize("value", [".", ".."])
 def test_validate_path_segment_rejects_traversal_segments(value):
   with pytest.raises(ValueError, match="must not contain traversal segments"):

@@ -14,12 +14,17 @@
 
 from __future__ import annotations
 
-import asyncio
+import logging
+import re
+import sys
+import textwrap
 from typing import Optional
 
+from google.adk import runners
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.errors.not_found_error import NotFoundError
+from google.adk.evaluation import local_eval_service
 from google.adk.evaluation.base_eval_service import EvaluateConfig
 from google.adk.evaluation.base_eval_service import EvaluateRequest
 from google.adk.evaluation.base_eval_service import InferenceConfig
@@ -48,14 +53,22 @@ from google.adk.evaluation.evaluator import PerInvocationResult
 from google.adk.evaluation.local_eval_service import _add_rubrics_to_invocation
 from google.adk.evaluation.local_eval_service import _copy_eval_case_rubrics_to_actual_invocations
 from google.adk.evaluation.local_eval_service import _copy_invocation_rubrics_to_actual_invocations
+from google.adk.evaluation.local_eval_service import _get_session_id
 from google.adk.evaluation.local_eval_service import LocalEvalService
 from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from google.adk.evaluation.simulation.user_simulator import NextUserMessage
 from google.adk.evaluation.simulation.user_simulator import Status as UserSimulatorStatus
 from google.adk.models.registry import LLMRegistry
+from google.adk.tools.mcp_tool import mcp_toolset
+from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.genai import types as genai_types
+from mcp import StdioServerParameters
 import pytest
+import pytest_asyncio
 from typing_extensions import override
+
+from tests.unittests.testing_utils import MockModel
 
 
 @pytest.fixture
@@ -253,6 +266,301 @@ async def test_perform_inference_success(
 
 
 @pytest.mark.asyncio
+async def test_perform_inference_repeats_each_case_num_runs_times(
+    eval_service,
+    dummy_agent,
+    mock_eval_sets_manager,
+    mocker,
+):
+  eval_set = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(eval_id="case1", conversation=[], session_input=None),
+          EvalCase(eval_id="case2", conversation=[], session_input=None),
+      ],
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = eval_set
+
+  mock_inference_result = mocker.MagicMock()
+  eval_service._perform_inference_single_eval_item = mocker.AsyncMock(
+      return_value=mock_inference_result
+  )
+
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(parallelism=2, num_runs=3),
+  )
+
+  results = []
+  async for result in eval_service.perform_inference(inference_request):
+    results.append(result)
+
+  # 2 eval cases, each inferenced 3 times.
+  assert len(results) == 6
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_num_runs_runs_pinned_case_in_fresh_sessions(
+    eval_service,
+    dummy_agent,
+    mock_eval_sets_manager,
+):
+  eval_set = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(
+              eval_id="case1",
+              conversation=[],
+              session_input=SessionInput(
+                  app_name="test_app",
+                  user_id="test_user",
+                  session_id="pinned_session",
+                  state={"counter": 0},
+              ),
+          ),
+      ],
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = eval_set
+
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(parallelism=1, num_runs=3),
+  )
+
+  results = []
+  async for result in eval_service.perform_inference(inference_request):
+    results.append(result)
+
+  # Each repeat runs in its own session instead of reusing the pinned one.
+  session_ids = {result.session_id for result in results}
+  assert len(results) == 3
+  assert len(session_ids) == 3
+  assert "pinned_session" not in session_ids
+  # The eval set itself is left untouched.
+  assert eval_set.eval_cases[0].session_input.session_id == "pinned_session"
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_warns_once_when_runs_drop_a_pinned_session(
+    eval_service,
+    mock_eval_sets_manager,
+    mocker,
+    caplog,
+):
+  """A case that pins a session and runs twice logs one warning, not two."""
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(
+              eval_id="case1",
+              conversation=[],
+              session_input=SessionInput(
+                  app_name="test_app",
+                  user_id="test_user",
+                  session_id="pinned_session",
+              ),
+          )
+      ],
+  )
+  eval_service._perform_inference_single_eval_item = mocker.AsyncMock(
+      return_value=mocker.MagicMock()
+  )
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(num_runs=2),
+  )
+
+  with caplog.at_level(logging.WARNING, logger=local_eval_service.logger.name):
+    async for _ in eval_service.perform_inference(inference_request):
+      pass
+
+  assert [
+      record.getMessage()
+      for record in caplog.records
+      if record.name == local_eval_service.logger.name
+  ] == [
+      "Eval case case1 pins session pinned_session, but num_runs is 2, so"
+      " each run starts a fresh session and the pinned session is not used."
+  ]
+
+
+@pytest.mark.parametrize(
+    ("num_runs", "session_id"),
+    [(1, "pinned_session"), (2, None)],
+    ids=["one_run_with_a_pin", "runs_without_a_pin"],
+)
+@pytest.mark.asyncio
+async def test_perform_inference_warns_only_when_a_pinned_session_is_dropped(
+    eval_service,
+    mock_eval_sets_manager,
+    mocker,
+    caplog,
+    num_runs,
+    session_id,
+):
+  """A case run once keeps its pin, and a case with no pin has none to drop."""
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(
+              eval_id="case1",
+              conversation=[],
+              session_input=SessionInput(
+                  app_name="test_app",
+                  user_id="test_user",
+                  session_id=session_id,
+              ),
+          )
+      ],
+  )
+  eval_service._perform_inference_single_eval_item = mocker.AsyncMock(
+      return_value=mocker.MagicMock()
+  )
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(num_runs=num_runs),
+  )
+
+  with caplog.at_level(logging.WARNING, logger=local_eval_service.logger.name):
+    async for _ in eval_service.perform_inference(inference_request):
+      pass
+
+  assert not [
+      record
+      for record in caplog.records
+      if record.name == local_eval_service.logger.name
+  ]
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_labels_each_run_with_its_index(
+    eval_service,
+    dummy_agent,
+    mock_eval_sets_manager,
+):
+  """Each run of an eval case carries its 0-based run index."""
+  eval_set = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(eval_id="case1", conversation=[], session_input=None),
+          EvalCase(eval_id="case2", conversation=[], session_input=None),
+      ],
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = eval_set
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(parallelism=2, num_runs=3),
+  )
+
+  results = []
+  async for result in eval_service.perform_inference(inference_request):
+    results.append(result)
+
+  run_indices_by_case: dict[str, list[int]] = {}
+  for result in results:
+    run_indices_by_case.setdefault(result.eval_case_id, []).append(
+        result.repetition_index
+    )
+  assert {
+      case_id: sorted(run_indices)
+      for case_id, run_indices in run_indices_by_case.items()
+  } == {"case1": [0, 1, 2], "case2": [0, 1, 2]}
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_labels_a_single_run_as_run_zero(
+    eval_service,
+    dummy_agent,
+    mock_eval_sets_manager,
+):
+  """With the default single run, each result is labeled as run 0."""
+  eval_set = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(eval_id="case1", conversation=[], session_input=None),
+      ],
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = eval_set
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(parallelism=1),
+  )
+
+  results = []
+  async for result in eval_service.perform_inference(inference_request):
+    results.append(result)
+
+  assert [result.repetition_index for result in results] == [0]
+
+
+@pytest.mark.asyncio
+async def test_evaluate_labels_each_result_with_its_run_index(
+    eval_service, mock_eval_sets_manager, mocker
+):
+  """An EvalCaseResult carries the run index of the inference it scored.
+
+  Setup: two runs of one case; run 0 succeeded, run 1 failed to inference.
+  Assert: both results, including the failed run's, keep their run index.
+  """
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="test user content.")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="test final response.")]
+      ),
+  )
+  inference_results = [
+      InferenceResult(
+          app_name="test_app",
+          eval_set_id="test_eval_set",
+          eval_case_id="case1",
+          inferences=[invocation.model_copy(deep=True)],
+          session_id="session0",
+          status=InferenceStatus.SUCCESS,
+          repetition_index=0,
+      ),
+      InferenceResult(
+          app_name="test_app",
+          eval_set_id="test_eval_set",
+          eval_case_id="case1",
+          inferences=None,
+          session_id="session1",
+          status=InferenceStatus.FAILURE,
+          error_message="model unavailable",
+          repetition_index=1,
+      ),
+  ]
+  evaluate_request = EvaluateRequest(
+      inference_results=inference_results,
+      evaluate_config=EvaluateConfig(
+          eval_metrics=[EvalMetric(metric_name="fake_metric", threshold=0.5)],
+          parallelism=1,
+      ),
+  )
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
+  mock_eval_case.conversation = [invocation.model_copy(deep=True)]
+  mock_eval_case.conversation_scenario = None
+  mock_eval_case.session_input = None
+  mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
+
+  results = []
+  async for result in eval_service.evaluate(evaluate_request):
+    results.append(result)
+
+  run_index_by_session = {
+      result.session_id: result.repetition_index for result in results
+  }
+  assert run_index_by_session == {"session0": 0, "session1": 1}
+
+
+@pytest.mark.asyncio
 async def test_perform_inference_with_case_ids(
     eval_service,
     dummy_agent,
@@ -293,6 +601,7 @@ async def test_perform_inference_with_case_ids(
       root_agent=dummy_agent,
       use_live=False,
       live_timeout_seconds=300,
+      repetition_index=0,
   )
   eval_service._perform_inference_single_eval_item.assert_any_call(
       app_name="test_app",
@@ -301,6 +610,7 @@ async def test_perform_inference_with_case_ids(
       root_agent=dummy_agent,
       use_live=False,
       live_timeout_seconds=300,
+      repetition_index=0,
   )
 
 
@@ -344,6 +654,7 @@ async def test_perform_inference_with_use_live(
       root_agent=dummy_agent,
       use_live=True,
       live_timeout_seconds=600,
+      repetition_index=0,
   )
 
 
@@ -732,145 +1043,6 @@ def test_generate_final_eval_status_doesn_t_throw_on(eval_service):
     eval_service._generate_final_eval_status([eval_metric_result])
 
 
-@pytest.mark.asyncio
-async def test_mcp_stdio_agent_no_runtime_error(mocker):
-  """Test that LocalEvalService can handle MCP stdio agents without RuntimeError.
-
-  This is a regression test for the reported failure:
-  "RuntimeError: Attempted to exit cancel scope in a different task than it was
-  entered in"
-
-  The fix ensures that Runner.close() is called to properly cleanup MCP
-  connections.
-  """
-  import tempfile
-
-  from google.adk.evaluation.local_eval_service import LocalEvalService
-  from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
-  from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
-  from mcp import StdioServerParameters
-
-  # Mock LLM responses to avoid real API calls
-  from tests.unittests.testing_utils import MockModel
-
-  mock_responses = [
-      genai_types.Content(
-          parts=[genai_types.Part(text="Mocked response from test agent")]
-      )
-  ]
-  mock_model = MockModel.create(responses=mock_responses)
-
-  # Create a test agent with MCP stdio toolset and mocked model
-  test_dir = tempfile.mkdtemp()
-  try:
-    agent = LlmAgent(
-        model=mock_model,
-        name="test_mcp_agent",
-        instruction="Test agent for MCP stdio regression test.",
-        tools=[
-            MCPToolset(
-                connection_params=StdioConnectionParams(
-                    server_params=StdioServerParameters(
-                        command="npx",
-                        args=[
-                            "-y",
-                            "@modelcontextprotocol/server-filesystem",
-                            test_dir,
-                        ],
-                    ),
-                    timeout=5,
-                ),
-                tool_filter=["read_file", "list_directory"],
-            )
-        ],
-    )
-
-    # Create a mock eval sets manager that returns an eval case
-    mock_eval_sets_manager = mocker.create_autospec(EvalSetsManager)
-    test_eval_case = EvalCase(
-        eval_id="test_mcp_case",
-        conversation=[
-            Invocation(
-                user_content=genai_types.Content(
-                    parts=[genai_types.Part(text="List directory contents")]
-                ),
-            )
-        ],
-    )
-    mock_eval_sets_manager.get_eval_case.return_value = test_eval_case
-    eval_set = EvalSet(
-        eval_set_id="test_set",
-        eval_cases=[test_eval_case],
-    )
-    mock_eval_sets_manager.get_eval_set.return_value = eval_set
-
-    # Create LocalEvalService with MCP agent
-    eval_service = LocalEvalService(
-        root_agent=agent,
-        eval_sets_manager=mock_eval_sets_manager,
-    )
-
-    # Create inference request to actually trigger the code path with the fix
-    inference_request = InferenceRequest(
-        app_name="test_app",
-        eval_set_id="test_set",
-        inference_config=InferenceConfig(parallelism=1),
-    )
-
-    # The main test: actually call perform_inference which will trigger
-    # _generate_inferences_from_root_agent where the fix is located
-
-    # Note: In Python 3.10 and 3.11, there may be asyncio.CancelledError during cleanup
-    # due to anyio cancel scope context violations when MCP toolsets are cleaned up
-    # via asyncio.wait_for() in different task contexts. Python 3.12+ enhanced task
-    # context management (Task.get_context(), improved context propagation) resolves this.
-
-    try:
-      results = []
-      async for result in eval_service.perform_inference(inference_request):
-        results.append(result)
-        # We should get at least one result since we mocked the LLM
-        break
-
-      # Test passes if we get here without the cancel scope RuntimeError
-      # With mocked model, we should get successful inference results
-      assert len(results) >= 1
-
-    except RuntimeError as e:
-      # If we get a RuntimeError about cancel scope, the fix isn't working
-      if "cancel scope" in str(e) and "different task" in str(e):
-        pytest.fail(f"MCP stdio RuntimeError regression detected: {e}")
-      else:
-        # Other RuntimeErrors might be acceptable
-        pass
-    except asyncio.CancelledError as e:
-      # In Python 3.10 and 3.11, anyio cancel scope context violations may manifest as CancelledError
-      # when MCP RequestResponder.__exit__() is called in a different task than __enter__()
-      if (
-          hasattr(e, "args")
-          and len(e.args) > 0
-          and "cancel scope" in str(e.args[0])
-      ):
-        pytest.fail(f"MCP stdio cancel scope error regression detected: {e}")
-      else:
-        # Re-raise other CancelledErrors
-        raise
-    except Exception as e:
-      # Check if this is the specific cancel scope error we're testing for
-      if "cancel scope" in str(e) and "different task" in str(e):
-        pytest.fail(f"MCP stdio RuntimeError regression detected: {e}")
-      # Other exceptions are acceptable for this test
-
-    # The main goal is to ensure the test completes without the specific
-    # RuntimeError about cancel scopes. If we reach here, the fix is working.
-
-  finally:
-    # Cleanup
-    import shutil
-
-    shutil.rmtree(test_dir, ignore_errors=True)
-
-
 def test_add_rubrics_to_invocation_initializes_rubrics_list():
   invocation = Invocation(user_content=genai_types.Content())
   rubric = Rubric(
@@ -1116,8 +1288,9 @@ async def test_perform_inference_pinned_session_id_across_runs(
 ):
   """A pinned session_id survives repeated runs and keeps artifacts reachable.
 
-  Reusing one eval service across runs (as num_runs > 1 does) must not collide
-  on the pinned session_id, and an artifact pre-loaded under it stays loadable.
+  Reusing one eval service across runs (as `AgentEvaluator` does when its
+  `num_runs` is above 1) must not collide on the pinned session_id, and an
+  artifact pre-loaded under it stays loadable.
   """
   eval_case = EvalCase(
       eval_id="case1",
@@ -1156,7 +1329,7 @@ async def test_perform_inference_pinned_session_id_across_runs(
   mock_runner.__aexit__ = mocker.AsyncMock(return_value=None)
 
   results = []
-  for _ in range(2):  # Mirrors the default num_runs=2.
+  for _ in range(2):  # Mirrors AgentEvaluator's default num_runs=2.
     async for inference_result in eval_service.perform_inference(
         inference_request=InferenceRequest(
             app_name="test_app",
@@ -1469,3 +1642,320 @@ async def test_evaluate_rejects_non_positive_parallelism(
   with pytest.raises(ValueError, match="`parallelism` must be at least 1"):
     async for _ in eval_service.evaluate(evaluate_request):
       pass
+
+
+# Vertex AI Agent Engine Sessions only accept custom session IDs that match
+# `[a-z0-9-]`, with a letter or digit as the first and last character.
+_AGENT_ENGINE_SESSION_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]*[a-z0-9]")
+
+
+def test_eval_session_id_matches_agent_engine_constraints():
+  """Generated eval session IDs match Vertex AI Agent Engine constraints."""
+  session_id = _get_session_id()
+  assert _AGENT_ENGINE_SESSION_ID_PATTERN.fullmatch(session_id), (
+      f"Generated eval session id {session_id!r} must match"
+      f" {_AGENT_ENGINE_SESSION_ID_PATTERN.pattern}."
+  )
+  assert len(session_id) <= 63
+  assert session_id.startswith("adk-eval-session-")
+
+
+@pytest_asyncio.fixture
+async def native_stdio_toolset(tmp_path):
+  calls = tmp_path / "calls.txt"
+  ready = tmp_path / "ready.txt"
+  exited = tmp_path / "exited.txt"
+  server = tmp_path / "server.py"
+  # A finite wire peer avoids a test-only dependency on one SDK's server API.
+  server.write_text(
+      textwrap.dedent("""\
+      import json
+      from pathlib import Path
+      import sys
+
+      tool_error = False
+      Path(@@READY@@).write_text('ready\\n')
+      for line in sys.stdin:
+          request = json.loads(line)
+          assert request['jsonrpc'] == '2.0'
+          if 'id' not in request:
+              continue
+          request_id = request['id']
+          method = request['method']
+          params = request.get('params', {})
+          if method == 'initialize':
+              result = {
+                  'protocolVersion': params['protocolVersion'],
+                  'capabilities': {'tools': {'listChanged': False}},
+                  'serverInfo': {
+                      'name': 'finite-evaluation-test',
+                      'version': '1',
+                  },
+              }
+          elif method == 'ping':
+              result = {}
+          elif method == 'tools/list':
+              result = {'tools': [{
+                  'name': 'probe',
+                  'description': 'Return one recorded finite probe.',
+                  'inputSchema': {
+                      'type': 'object',
+                      'properties': {'value': {'type': 'string'}},
+                      'required': ['value'],
+                  },
+              }]}
+          elif method == 'tools/call':
+              assert params['name'] == 'probe'
+              value = params['arguments']['value']
+              assert isinstance(value, str)
+              with Path(@@CALLS@@).open('a') as output:
+                  output.write(value + '\\n')
+              result = {
+                  'content': [
+                      {'type': 'text', 'text': 'native-result:' + value}
+                  ],
+                  'isError': tool_error,
+              }
+          else:
+              print(
+                  json.dumps({
+                      'jsonrpc': '2.0',
+                      'id': request_id,
+                      'error': {
+                          'code': -32601,
+                          'message': 'Method not found: ' + method,
+                      },
+                  }),
+                  flush=True,
+              )
+              continue
+          print(json.dumps({
+              'jsonrpc': '2.0', 'id': request_id, 'result': result,
+          }), flush=True)
+      Path(@@EXITED@@).write_text('exited\\n')
+      """)
+      .replace("@@READY@@", repr(str(ready)))
+      .replace("@@CALLS@@", repr(str(calls)))
+      .replace("@@EXITED@@", repr(str(exited)))
+  )
+  toolset = McpToolset(
+      connection_params=StdioConnectionParams(
+          server_params=StdioServerParameters(
+              command=sys.executable, args=[str(server)]
+          ),
+          timeout=5,
+      ),
+      tool_filter=["probe"],
+  )
+  real_close = toolset.close
+  try:
+    yield toolset, calls, ready, exited, server
+  finally:
+    # Test failures must not leave the fixture's real subprocess running.
+    await real_close()
+
+
+async def _run_native_eval(mocker, model, toolset):
+  agent = LlmAgent(name="native_mcp_agent", model=model, tools=[toolset])
+  case = EvalCase(
+      eval_id="native_mcp_case",
+      conversation=[
+          Invocation(
+              user_content=genai_types.Content(
+                  parts=[genai_types.Part(text="Run the probe.")]
+              )
+          )
+      ],
+  )
+  manager = mocker.create_autospec(EvalSetsManager)
+  manager.get_eval_case.return_value = case
+  manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="native_mcp_set", eval_cases=[case]
+  )
+  service = LocalEvalService(root_agent=agent, eval_sets_manager=manager)
+  request = InferenceRequest(
+      app_name="native_mcp_app",
+      eval_set_id="native_mcp_set",
+      inference_config=InferenceConfig(parallelism=1),
+  )
+  return [result async for result in service.perform_inference(request)]
+
+
+@pytest.mark.asyncio
+async def test_native_stdio_eval_calls_tool_and_closes(
+    mocker, native_stdio_toolset, caplog
+):
+  """Evaluation runs an MCP stdio tool and closes the server cleanly."""
+  toolset, calls, ready, exited, _ = native_stdio_toolset
+  close = mocker.spy(toolset, "close")
+  model = MockModel.create(
+      responses=[
+          genai_types.Part.from_function_call(
+              name="probe", args={"value": "checked"}
+          ),
+          genai_types.Part(text="Probe complete."),
+      ]
+  )
+
+  results = await _run_native_eval(mocker, model, toolset)
+
+  assert len(results) == 1
+  result = results[0]
+  assert (
+      result.status == InferenceStatus.SUCCESS
+  ), f"MCP inference failed: {result.error_message}"
+  assert result.error_message is None
+  assert result.inferences is not None and len(result.inferences) == 1
+  assert ready.is_file()
+  assert ready.read_text() == "ready\n"
+  assert calls.is_file()
+  assert calls.read_text().splitlines() == ["checked"]
+  assert exited.is_file()
+  assert exited.read_text() == "exited\n"
+  invocation = result.inferences[0]
+  assert invocation.final_response is not None
+  assert invocation.final_response.parts is not None
+  assert invocation.final_response.parts[0].text == "Probe complete."
+  responses = [
+      part.function_response
+      for content in model.requests[-1].contents
+      if content.parts is not None
+      for part in content.parts
+      if part.function_response is not None
+  ]
+  assert len(responses) == 1 and responses[0].name == "probe"
+  assert responses[0].response is not None
+  assert responses[0].response["isError"] is False
+  assert responses[0].response["content"][0]["text"] == "native-result:checked"
+  close.assert_awaited_once_with()
+  assert not [
+      record.getMessage()
+      for record in caplog.records
+      if (
+          record.name.startswith(mcp_toolset.logger.name.rsplit(".", 1)[0])
+          or record.name == runners.logger.name
+          or record.name.startswith("mcp.client.stdio")
+      )
+      and record.levelno >= logging.WARNING
+  ]
+
+
+@pytest.mark.asyncio
+async def test_toolset_load_failure_logs_error_and_inference_succeeds(
+    mocker, native_stdio_toolset, caplog
+):
+  """A failing MCP toolset logs an error and inference still succeeds."""
+  toolset, calls, ready, exited, server = native_stdio_toolset
+  server.write_text("raise RuntimeError('unexpected setup failure')\n")
+  close = mocker.spy(toolset, "close")
+  model = MockModel.create(responses=["A response without the MCP tool."])
+
+  results = await _run_native_eval(mocker, model, toolset)
+
+  assert len(results) == 1
+  assert results[0].status == InferenceStatus.SUCCESS
+  assert results[0].error_message is None
+  assert model.requests
+  assert not ready.exists() and not calls.exists() and not exited.exists()
+  assert any(
+      "will run without the tools from toolset McpToolset"
+      in record.getMessage()
+      and record.levelno == logging.ERROR
+      for record in caplog.records
+  )
+  close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_error_reaches_model_with_is_error(
+    mocker, native_stdio_toolset
+):
+  """An MCP tool response with isError=True is forwarded to the model."""
+  toolset, calls, ready, exited, server = native_stdio_toolset
+  server.write_text(
+      server.read_text().replace("tool_error = False", "tool_error = True")
+  )
+  close = mocker.spy(toolset, "close")
+  model = MockModel.create(
+      responses=[
+          genai_types.Part.from_function_call(
+              name="probe", args={"value": "checked"}
+          ),
+          genai_types.Part(text="Probe complete."),
+      ]
+  )
+
+  results = await _run_native_eval(mocker, model, toolset)
+
+  assert len(results) == 1
+  assert results[0].status == InferenceStatus.SUCCESS
+  assert ready.read_text() == "ready\n"
+  assert calls.read_text().splitlines() == ["checked"]
+  assert exited.read_text() == "exited\n"
+  responses = [
+      part.function_response
+      for content in model.requests[-1].contents
+      if content.parts is not None
+      for part in content.parts
+      if part.function_response is not None
+  ]
+  assert len(responses) == 1 and responses[0].name == "probe"
+  response = responses[0]
+  assert response.response is not None
+  assert response.response["isError"] is True
+  assert response.response["content"][0]["text"] == "native-result:checked"
+  close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_model_error_returns_failure_status(mocker, native_stdio_toolset):
+  """A model error returns FAILURE status and closes the MCP toolset."""
+  toolset, _, ready, exited, _ = native_stdio_toolset
+  close = mocker.spy(toolset, "close")
+  model = MockModel.create(
+      responses=[], error=RuntimeError("unexpected model failure")
+  )
+
+  results = await _run_native_eval(mocker, model, toolset)
+
+  assert ready.read_text() == "ready\n"
+  assert exited.read_text() == "exited\n"
+  assert len(results) == 1
+  assert results[0].status == InferenceStatus.FAILURE
+  assert results[0].inferences is None
+  assert results[0].error_message == "unexpected model failure"
+  close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_toolset_close_error_is_logged(
+    mocker, native_stdio_toolset, caplog
+):
+  """A toolset close error during evaluation is logged as an error."""
+  toolset, calls, _, _, _ = native_stdio_toolset
+  model = MockModel.create(
+      responses=[
+          genai_types.Part.from_function_call(
+              name="probe", args={"value": "checked"}
+          ),
+          genai_types.Part(text="Probe complete."),
+      ]
+  )
+  close = mocker.patch.object(
+      toolset,
+      "close",
+      side_effect=RuntimeError("unexpected cleanup failure"),
+  )
+
+  results = await _run_native_eval(mocker, model, toolset)
+
+  assert len(results) == 1
+  assert results[0].status == InferenceStatus.SUCCESS
+  assert calls.read_text().splitlines() == ["checked"]
+  close.assert_awaited_once_with()
+  assert any(
+      record.name == runners.logger.name
+      and record.levelno == logging.ERROR
+      and "unexpected cleanup failure" in record.getMessage()
+      for record in caplog.records
+  )

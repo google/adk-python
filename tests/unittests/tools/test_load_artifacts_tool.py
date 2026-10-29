@@ -14,7 +14,9 @@
 
 import base64
 import io
+import logging
 from typing import Any
+from typing import cast
 from unittest import mock
 import zipfile
 
@@ -24,6 +26,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.tools.load_artifacts_tool import _maybe_base64_to_bytes
 from google.adk.tools.load_artifacts_tool import load_artifacts_tool
 from google.adk.tools.load_artifacts_tool import LoadArtifactsTool
+from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pandas as pd
 import pytest
@@ -393,11 +396,21 @@ async def test_load_artifacts_converts_docx_with_custom_namespace_prefix_to_text
 
 
 @pytest.mark.asyncio
-async def test_load_artifacts_keeps_supported_mime_types():
-  """Supported inline MIME types are passed through unchanged."""
+@pytest.mark.parametrize(
+    ('mime_type', 'expected_mime_type'),
+    [
+        ('application/pdf', 'application/pdf'),
+        ('APPLICATION/PDF', 'application/pdf'),
+        ('Image/PNG; charset=UTF-8', 'image/png; charset=UTF-8'),
+    ],
+)
+async def test_load_artifacts_keeps_supported_mime_types(
+    mime_type: str, expected_mime_type: str
+) -> None:
+  """Supported inline MIME types are kept with a normalized MIME type."""
   artifact_name = 'test.pdf'
   artifact = types.Part(
-      inline_data=types.Blob(data=b'%PDF-1.4', mime_type='application/pdf')
+      inline_data=types.Blob(data=b'%PDF-1.4', mime_type=mime_type)
   )
 
   tool_context = _StubToolContext({artifact_name: artifact})
@@ -423,13 +436,22 @@ async def test_load_artifacts_keeps_supported_mime_types():
 
   artifact_part = llm_request.contents[-1].parts[1]
   assert artifact_part.inline_data is not None
-  assert artifact_part.inline_data.mime_type == 'application/pdf'
+  assert artifact_part.inline_data.mime_type == expected_mime_type
+  assert artifact.inline_data is not None
+  assert artifact.inline_data.mime_type == mime_type
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     'mime_type',
-    ['image/svg+xml', 'image/svg', 'application/svg+xml', 'image/xml'],
+    [
+        'image/svg+xml',
+        'image/svg',
+        'application/svg+xml',
+        'image/xml',
+        'Image/SVG+XML; charset=UTF-8',
+        'APPLICATION/SVG+XML',
+    ],
 )
 async def test_load_artifacts_converts_svg_to_text(mime_type):
   """SVG/XML image variants are rejected by Gemini with 400 INVALID_ARGUMENT,
@@ -487,10 +509,10 @@ def test_maybe_base64_to_bytes_decodes_urlsafe_base64():
   assert _maybe_base64_to_bytes(encoded) == original
 
 
-def test_maybe_base64_to_bytes_returns_none_for_invalid():
+@pytest.mark.parametrize('data', ['x', 'good days', 'hello world!'])
+def test_maybe_base64_to_bytes_returns_none_for_invalid(data):
   """Invalid base64 strings return None."""
-  # Single character is invalid (base64 requires length % 4 == 0 after padding)
-  assert _maybe_base64_to_bytes('x') is None
+  assert _maybe_base64_to_bytes(data) is None
 
 
 def test_get_declaration_with_json_schema_feature_enabled():
@@ -536,6 +558,134 @@ async def test_load_artifacts_registers_dynamic_instructions():
   assert 'You have a list of artifacts' in llm_request._dynamic_instructions[0]
   assert llm_request.config.system_instruction is None
   assert len(llm_request.contents) == 0
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_hides_filtered_names_and_contents():
+  """Filtered artifacts are omitted from both instructions and LLM contents."""
+  visible_name = 'visible.txt'
+  hidden_name = 'internal.txt'
+
+  def filter_artifact_names(artifact_names: list[str]) -> list[str]:
+    return [name for name in artifact_names if name == visible_name]
+
+  tool = LoadArtifactsTool(process_artifact_names=filter_artifact_names)
+  tool_context = _StubToolContext({
+      visible_name: types.Part.from_text(text='visible content'),
+      hidden_name: types.Part.from_text(text='hidden content'),
+  })
+  tool_response = await tool.run_async(
+      args={'artifact_names': [visible_name, hidden_name]},
+      tool_context=cast(ToolContext, tool_context),
+  )
+  assert tool_response['artifact_names'] == [visible_name]
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response=tool_response,
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  instruction = llm_request._dynamic_instructions[0]
+  assert visible_name in instruction
+  assert hidden_name not in instruction
+  assert len(llm_request.contents) == 2
+  assert llm_request.contents[-1].parts[0].text == (
+      f'Artifact {visible_name} is:'
+  )
+  assert llm_request.contents[-1].parts[1].text == 'visible content'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_accepts_async_process_artifact_names():
+  """Async artifact-name callbacks filter names before LLM context assembly."""
+  artifact_names_seen = []
+
+  async def filter_artifact_names(artifact_names: list[str]) -> list[str]:
+    artifact_names_seen.extend(artifact_names)
+    return ['visible.txt']
+
+  tool = LoadArtifactsTool(process_artifact_names=filter_artifact_names)
+  tool_context = _StubToolContext({
+      'visible.txt': types.Part.from_text(text='visible content'),
+      'internal.txt': types.Part.from_text(text='hidden content'),
+  })
+  llm_request = LlmRequest()
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert artifact_names_seen == ['visible.txt', 'internal.txt']
+  assert 'visible.txt' in llm_request._dynamic_instructions[0]
+  assert 'internal.txt' not in llm_request._dynamic_instructions[0]
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_process_artifact_names_exception_logged(caplog):
+  """When callback raises, error is logged and empty name list is returned."""
+
+  def failing_filter(artifact_names: list[str]) -> list[str]:
+    raise ValueError('Filtering failed!')
+
+  tool = LoadArtifactsTool(process_artifact_names=failing_filter)
+  tool_context = _StubToolContext({
+      'test.txt': types.Part.from_text(text='content'),
+  })
+  with caplog.at_level(logging.ERROR):
+    response = await tool.run_async(
+        args={'artifact_names': ['test.txt']},
+        tool_context=cast(ToolContext, tool_context),
+    )
+  assert response['artifact_names'] == []
+  assert 'Failed to process artifact names, skipping.' in caplog.text
+
+  llm_request = LlmRequest()
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+  assert not llm_request._dynamic_instructions
+  assert not llm_request.contents
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_process_artifact_names_rejects_set(caplog):
+  """When callback returns a set, error is logged and empty list is returned."""
+
+  def set_filter(artifact_names: list[str]) -> Any:
+    return set(artifact_names)
+
+  tool = LoadArtifactsTool(process_artifact_names=set_filter)
+  tool_context = _StubToolContext({
+      'test.txt': types.Part.from_text(text='content'),
+  })
+  with caplog.at_level(logging.ERROR):
+    response = await tool.run_async(
+        args={'artifact_names': ['test.txt']},
+        tool_context=cast(ToolContext, tool_context),
+    )
+  assert response['artifact_names'] == []
+  assert 'Failed to process artifact names, skipping.' in caplog.text
+
+  llm_request = LlmRequest()
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+  assert not llm_request._dynamic_instructions
+  assert not llm_request.contents
 
 
 def test_load_artifacts_tool_keyword_only():
@@ -1457,4 +1607,184 @@ async def test_load_artifacts_ignores_non_list_artifact_names():
   )
 
   assert not tool_context.loaded_names
+  assert len(llm_request.contents) == 1
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_process_artifact_names_keeps_user_fallback():
+  """Preserves user-prefix fallback when process_artifact_names is set."""
+  tool = LoadArtifactsTool(process_artifact_names=lambda names: names)
+  artifact = types.Part.from_text(text='user-scoped data')
+  tool_context = _StubToolContext({'user:doc.txt': artifact})
+  tool_response = await tool.run_async(
+      args={'artifact_names': ['doc.txt']},
+      tool_context=cast(ToolContext, tool_context),
+  )
+  assert tool_response['artifact_names'] == ['doc.txt']
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response=tool_response,
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+  assert len(llm_request.contents) == 2
+  assert llm_request.contents[-1].parts[0].text == 'Artifact doc.txt is:'
+  assert llm_request.contents[-1].parts[1].text == 'user-scoped data'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_process_artifact_names_hides_session_artifact():
+  """Does not load hidden session artifact when user artifact is allowed."""
+  session_artifact = types.Part.from_text(text='hidden session data')
+  user_artifact = types.Part.from_text(text='allowed user data')
+  tool = LoadArtifactsTool(
+      process_artifact_names=lambda names: ['user:doc.txt']
+  )
+  tool_context = _StubToolContext({
+      'doc.txt': session_artifact,
+      'user:doc.txt': user_artifact,
+  })
+  tool_response = await tool.run_async(
+      args={'artifact_names': ['doc.txt']},
+      tool_context=cast(ToolContext, tool_context),
+  )
+  assert tool_response['artifact_names'] == ['doc.txt']
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response=tool_response,
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+  assert len(llm_request.contents) == 2
+  assert llm_request.contents[-1].parts[0].text == 'Artifact doc.txt is:'
+  assert llm_request.contents[-1].parts[1].text == 'allowed user data'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_process_artifact_names_hides_user_artifact():
+  """Does not load hidden user artifact when session artifact is allowed."""
+  session_artifact = types.Part.from_text(text='allowed session data')
+  user_artifact = types.Part.from_text(text='hidden user data')
+  tool = LoadArtifactsTool(process_artifact_names=lambda names: ['doc.txt'])
+  tool_context = _StubToolContext({
+      'doc.txt': session_artifact,
+      'user:doc.txt': user_artifact,
+  })
+  tool_response = await tool.run_async(
+      args={'artifact_names': ['user:doc.txt']},
+      tool_context=cast(ToolContext, tool_context),
+  )
+  assert tool_response['artifact_names'] == ['user:doc.txt']
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response=tool_response,
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+  assert len(llm_request.contents) == 2
+  assert llm_request.contents[-1].parts[0].text == 'Artifact user:doc.txt is:'
+  assert llm_request.contents[-1].parts[1].text == 'allowed session data'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_process_artifact_names_skips_withheld_user():
+  """Does not retry loading user-scoped artifact when callback withholds it."""
+  user_artifact = types.Part.from_text(text='withheld user data')
+  tool = LoadArtifactsTool(process_artifact_names=lambda names: ['doc.txt'])
+  tool_context = _StubToolContext({'user:doc.txt': user_artifact})
+  tool_response = await tool.run_async(
+      args={'artifact_names': ['doc.txt']},
+      tool_context=cast(ToolContext, tool_context),
+  )
+  assert tool_response['artifact_names'] == []
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response=tool_response,
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+  assert len(llm_request.contents) == 1
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_process_artifact_names_no_withheld_fallback():
+  """Does not load withheld user artifact when bare name falls back."""
+  user_artifact = types.Part.from_text(text='withheld user data')
+  tool = LoadArtifactsTool(process_artifact_names=lambda names: ['doc.txt'])
+  tool_context = _StubToolContext({
+      'doc.txt': None,
+      'user:doc.txt': user_artifact,
+  })
+  tool_response = await tool.run_async(
+      args={'artifact_names': ['doc.txt']},
+      tool_context=cast(ToolContext, tool_context),
+  )
+  assert tool_response['artifact_names'] == ['doc.txt']
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response=tool_response,
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+  assert 'user:doc.txt' not in tool_context.loaded_names
   assert len(llm_request.contents) == 1

@@ -89,6 +89,7 @@ def create_server_app(
     run_async_fn=None,
     config: A2aAgentExecutorConfig | None = None,
     task_store=None,
+    force_new_version: bool = False,
 ):
   """Creates an A2A FastAPI application with a mocked runner.
 
@@ -97,12 +98,16 @@ def create_server_app(
       objects.
     config: Optional executor configuration.
     task_store: Optional task store instance. Defaults to InMemoryTaskStore.
+    force_new_version: Whether to run the new executor even for clients that
+      do not request the new integration extension.
 
   Returns:
     A FastAPI application instance.
   """
   runner = FakeRunner(run_async_fn)
-  executor = A2aAgentExecutor(runner=runner, config=config)
+  executor = A2aAgentExecutor(
+      runner=runner, config=config, force_new_version=force_new_version
+  )
   if task_store is None:
     task_store = InMemoryTaskStore()
   handler = DefaultRequestHandler(
@@ -140,7 +145,9 @@ class FakeRunnerV1(Runner):
 
 
 def create_server_app_v1(
-    run_async_fn=None, config: A2aAgentExecutorConfig | None = None
+    run_async_fn=None,
+    config: A2aAgentExecutorConfig | None = None,
+    force_new_version: bool = False,
 ):
   """Creates a 1.x Starlette app hosting an A2A executor (JSON-RPC routes).
 
@@ -148,12 +155,16 @@ def create_server_app_v1(
   ``_compat.attach_a2a_routes_to_app`` instead of the 0.3-only
   ``A2AFastAPIApplication``. Returns the Starlette app; callers must drive the
   app's lifespan so the routes are attached before sending requests.
+  ``force_new_version`` runs the new executor even for clients that do not
+  request the new integration extension.
   """
   from a2a.server.tasks import InMemoryTaskStore as TaskStore
   from starlette.applications import Starlette
 
   runner = FakeRunnerV1(run_async_fn)
-  executor = A2aAgentExecutor(runner=runner, config=config)
+  executor = A2aAgentExecutor(
+      runner=runner, config=config, force_new_version=force_new_version
+  )
   app = Starlette()
   _compat.attach_a2a_routes_to_app(
       app,

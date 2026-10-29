@@ -18,6 +18,9 @@ from unittest import mock
 from unittest.mock import patch
 
 from google.adk.cli import service_registry
+from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.sessions.sqlite_session_service import SqliteSessionService
 import pytest
 
 
@@ -69,6 +72,78 @@ def registry():
 def test_create_session_service_sqlite(registry, mock_services):
   registry.create_session_service("sqlite:///test.db")
   mock_services["sqlite_session"].assert_called_once_with(db_path="test.db")
+
+
+@pytest.mark.parametrize(
+    "uri", ["sqlite://", "sqlite:///", "sqlite:///:memory:"]
+)
+async def test_sqlite_memory_session_uri_keeps_sessions_and_events(
+    registry: service_registry.ServiceRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+    uri: str,
+) -> None:
+  """SQLite memory URIs retain sessions across service operations."""
+  monkeypatch.setattr(
+      "google.adk.sessions.sqlite_session_service.SqliteSessionService",
+      SqliteSessionService,
+  )
+  session_service = registry.create_session_service(uri)
+  assert session_service is not None
+  try:
+    session = await session_service.create_session(
+        app_name="app", user_id="user", session_id="session", state={"count": 0}
+    )
+    event = Event(
+        author="agent",
+        invocation_id="invocation",
+        actions=EventActions(state_delta={"count": 1}),
+    )
+    await session_service.append_event(session, event)
+
+    stored_session = await session_service.get_session(
+        app_name="app", user_id="user", session_id=session.id
+    )
+
+    assert stored_session is not None
+    assert stored_session.state == {"count": 1}
+    assert [stored_event.id for stored_event in stored_session.events] == [
+        event.id
+    ]
+  finally:
+    if isinstance(session_service, SqliteSessionService):
+      await session_service.close()
+
+
+async def test_sqlite_file_session_uri_persists_sessions(
+    registry: service_registry.ServiceRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+  """SQLite file URIs retain sessions when a new service opens the file."""
+  monkeypatch.setattr(
+      "google.adk.sessions.sqlite_session_service.SqliteSessionService",
+      SqliteSessionService,
+  )
+  uri = f"sqlite:///{(tmp_path / 'sessions.db').as_posix()}"
+  session_service = registry.create_session_service(uri)
+  assert session_service is not None
+  session = await session_service.create_session(
+      app_name="app", user_id="user", session_id="session", state={"count": 1}
+  )
+  event = Event(author="agent", invocation_id="invocation")
+  await session_service.append_event(session, event)
+  reopened_service = registry.create_session_service(uri)
+  assert reopened_service is not None
+
+  stored_session = await reopened_service.get_session(
+      app_name="app", user_id="user", session_id=session.id
+  )
+
+  assert stored_session is not None
+  assert stored_session.state == {"count": 1}
+  assert [stored_event.id for stored_event in stored_session.events] == [
+      event.id
+  ]
 
 
 def test_create_session_service_sqlite_ignores_unsupported_kwargs(

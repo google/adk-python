@@ -23,6 +23,7 @@ installed a2a-sdk version.
 from __future__ import annotations
 
 import base64
+import copy
 import dataclasses
 from datetime import datetime
 from datetime import timezone
@@ -39,8 +40,9 @@ from typing import TypeAlias
 from typing import TypeVar
 
 from a2a.client.client import ClientConfig as A2AClientConfig
-from a2a.client.client_factory import ClientFactory as A2AClientFactory
+from a2a.client.client_factory import ClientFactory as _ClientFactory
 from a2a.types import AgentCard
+from a2a.types import AgentSkill
 from a2a.types import APIKeySecurityScheme
 from a2a.types import Artifact
 from a2a.types import Message
@@ -56,6 +58,9 @@ from google.protobuf.json_format import MessageToDict
 from google.protobuf.json_format import ParseDict
 
 from ..utils.context_utils import Aclosing
+
+# Re-exported: callers construct factories via ``_compat.A2AClientFactory``.
+A2AClientFactory = _ClientFactory
 
 # -----------------------------------------------------------------------------
 # Version detection
@@ -148,6 +153,7 @@ if IS_A2A_V1:
   TS_INPUT_REQUIRED = TaskState.Value("TASK_STATE_INPUT_REQUIRED")
   TS_AUTH_REQUIRED = TaskState.Value("TASK_STATE_AUTH_REQUIRED")
   TS_CANCELED = TaskState.Value("TASK_STATE_CANCELED")
+  TS_REJECTED = TaskState.Value("TASK_STATE_REJECTED")
 
   TP_JSONRPC = TransportProtocol.JSONRPC
   TP_HTTP_JSON = TransportProtocol.HTTP_JSON
@@ -164,6 +170,7 @@ else:
   TS_INPUT_REQUIRED = TaskState.input_required
   TS_AUTH_REQUIRED = TaskState.auth_required
   TS_CANCELED = TaskState.canceled
+  TS_REJECTED = TaskState.rejected
 
   TP_JSONRPC = getattr(TransportProtocol, "jsonrpc")
   TP_HTTP_JSON = getattr(TransportProtocol, "http_json")
@@ -571,6 +578,71 @@ def build_agent_card(
   return parse_agent_card(card_data)
 
 
+def build_agent_skill(
+    *,
+    id: str,
+    name: str,
+    description: str,
+    tags: list[str],
+    examples: list[str] | None = None,
+    input_modes: list[str] | None = None,
+    output_modes: list[str] | None = None,
+    security: list[dict[str, list[str]]] | None = None,
+) -> AgentSkill:
+  """Builds an ``AgentSkill`` from primitive fields."""
+  if IS_A2A_V1:
+    security_requirements = []
+    if security:
+      for req in security:
+        schemes = {}
+        for scheme_name, scopes in req.items():
+          schemes[scheme_name] = {"list": scopes}
+        security_requirements.append({"schemes": schemes})
+
+    skill_data = {
+        "id": id,
+        "name": name,
+        "description": description,
+        "tags": list(tags) if tags is not None else [],
+        "examples": list(examples) if examples is not None else [],
+        "input_modes": list(input_modes) if input_modes is not None else [],
+        "output_modes": list(output_modes) if output_modes is not None else [],
+        "security_requirements": security_requirements,
+    }
+    msg = AgentSkill()
+    ParseDict(skill_data, msg)
+    return msg
+  else:
+    return _as_factory(AgentSkill)(
+        id=id,
+        name=name,
+        description=description,
+        tags=tags,
+        examples=examples,
+        input_modes=input_modes,
+        output_modes=output_modes,
+        security=security,
+    )
+
+
+def get_skill_security(
+    skill: AgentSkill,
+) -> list[dict[str, list[str]]] | None:
+  """Gets security requirements from an ``AgentSkill``."""
+  if IS_A2A_V1:
+    if not skill.security_requirements:
+      return None
+    security = []
+    for req in skill.security_requirements:
+      req_dict = {}
+      for scheme_name, string_list in req.schemes.items():
+        req_dict[scheme_name] = list(string_list.list)
+      security.append(req_dict)
+    return security
+  else:
+    return getattr(skill, "security", None)
+
+
 # -----------------------------------------------------------------------------
 # Client error & ClientCallContext shims
 # -----------------------------------------------------------------------------
@@ -727,8 +799,16 @@ def make_stream_normalizer() -> Callable[[Any], Any]:
     if kind == "message":
       return payload
     if kind == "task":
-      # A full task state is already passed; use it as the aggregate.
-      state["task"] = payload
+      # A full task state is already passed; use it as the aggregate. Carry over
+      # any artifacts the running aggregate already holds that the snapshot lacks.
+      running: Optional[Task] = state["task"]
+      aggregate = _snapshot(payload)
+      if running is not None and running.artifacts:
+        known = {a.artifact_id for a in aggregate.artifacts}
+        for artifact in running.artifacts:
+          if artifact.artifact_id not in known:
+            aggregate.artifacts.append(artifact)
+      state["task"] = aggregate
       return (_snapshot(payload), None)
     task = _ensure_task(payload)
     if kind == "artifact_update":
@@ -763,7 +843,8 @@ async def send_message(
   1.x: ``send_message(request, *, context)`` takes no ``request_metadata``
   kwarg; metadata is embedded in ``SendMessageRequest.metadata`` (a proto
   ``Struct``).
-  0.3.x: ``send_message`` accepts ``request_metadata`` directly as a kwarg.
+  0.3.x: ``request_metadata`` is passed as a kwarg only when set, because
+  clients before a2a-sdk 0.3.11 do not accept it.
   """
   if IS_A2A_V1:
     from a2a.types import SendMessageRequest
@@ -776,10 +857,11 @@ async def send_message(
       async for item in agen:
         yield item
   else:
+    kwargs: dict[str, Any] = {}
+    if request_metadata:
+      kwargs["request_metadata"] = request_metadata
     async with Aclosing(
-        client.send_message(
-            request=request, request_metadata=request_metadata, context=context
-        )
+        client.send_message(request=request, context=context, **kwargs)
     ) as agen:
       async for item in agen:
         yield item
@@ -817,30 +899,48 @@ def make_client_config(*, httpx_client: Any, **kwargs: Any) -> Any:
 def rebind_client_factory_httpx(factory: Any, httpx_client: Any) -> Any:
   """Returns a client factory bound to ``httpx_client``.
 
-  0.3.x: the factory is rebuilt preserving its internal state — the existing
-         ``ClientConfig`` (with the new httpx client swapped in via
-         ``dataclasses.replace``), its ``consumers``, and any custom transports
-         re-registered from ``_registry``. This keeps custom transports working.
-  1.x:   the ``ClientFactory`` constructor only accepts ``config`` (no
-         ``consumers``/registry to carry over), so a fresh factory is created
-         with only the standard protocol bindings (custom transports are not
-         carried over — intended behavior).
+  0.3.x: the factory is copied preserving its internal state (consumers and
+         custom transports), with ``_config.httpx_client`` rebound to
+         ``httpx_client``.
+  1.x:   the factory is copied preserving subclass state, with
+         ``_config.httpx_client`` and ``_httpx_client`` rebound to
+         ``httpx_client``, and default protocol bindings applied if none were
+         set.
   """
-  if IS_A2A_V1:
-    return A2AClientFactory(
-        config=make_client_config(httpx_client=httpx_client)
-    )
+  if hasattr(factory, "_config") and factory._config is not None:
+    config = dataclasses.replace(factory._config, httpx_client=httpx_client)
+    if IS_A2A_V1:
+      if not getattr(config, "supported_protocol_bindings", None):
+        config = dataclasses.replace(
+            config,
+            supported_protocol_bindings=[
+                TP_JSONRPC,
+                TP_HTTP_JSON,
+            ],
+        )
+  else:
+    config = make_client_config(httpx_client=httpx_client)
 
-  registry = factory._registry  # pylint: disable=protected-access
-  new_factory: Any = _as_factory(A2AClientFactory)(
-      config=dataclasses.replace(
-          factory._config,  # pylint: disable=protected-access
-          httpx_client=httpx_client,
-      ),
-      consumers=factory._consumers,  # pylint: disable=protected-access
-  )
-  for label, generator in registry.items():
-    new_factory.register(label, generator)
+  new_factory = copy.copy(factory)
+  new_factory._config = config
+  if hasattr(new_factory, "_httpx_client"):
+    new_factory._httpx_client = httpx_client
+    if hasattr(httpx_client, "headers"):
+      try:
+        from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
+        from a2a.utils.constants import VERSION_HEADER
+
+        httpx_client.headers.setdefault(
+            VERSION_HEADER, PROTOCOL_VERSION_CURRENT
+        )
+      except ImportError:
+        pass
+  if hasattr(new_factory, "_registry") and new_factory._registry is not None:
+    new_factory._registry = copy.copy(factory._registry)
+  if hasattr(new_factory, "_register_defaults"):
+    bindings = getattr(config, "supported_protocol_bindings", None)
+    if bindings is not None:
+      new_factory._register_defaults(bindings)
   return new_factory
 
 
@@ -1039,12 +1139,20 @@ def make_message(
   )
 
 
-def make_task(*, id: str, status: Any, **kwargs: Any) -> Any:
+def make_task(
+    *,
+    id: str,
+    status: Any,
+    context_id: str = "",
+    **kwargs: Any,
+) -> Any:
   """Build a Task, dropping 0.3-only kwargs (``kind``, ``metadata_version``) on 1.x."""
+  if "contextId" in kwargs:
+    context_id = kwargs.pop("contextId")
   if IS_A2A_V1:
     kwargs.pop("kind", None)
     kwargs.pop("metadata_version", None)
-  return Task(id=id, status=status, **kwargs)
+  return Task(id=id, context_id=context_id, status=status, **kwargs)
 
 
 def make_artifact(*, artifact_id: str, parts: Any = None, **kwargs: Any) -> Any:

@@ -21,23 +21,85 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 from google.genai import types
-from pydantic import ValidationError
 
+from ...auth.auth_credential import AuthCredential
 from ...auth.auth_credential import AuthCredentialTypes as _AuthCredentialTypes
-from ...auth.auth_handler import AuthHandler
-from ...auth.auth_tool import AuthConfig
-from ...auth.auth_tool import AuthToolArguments
+from ...auth.auth_credential import OAuth2Auth
 from ...events.event import Event
 from ...events.request_input import RequestInput
+from ...tools.tool_confirmation import ToolConfirmation
+from ...utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
+from ...utils._function_call_names import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...utils._schema_utils import schema_to_json_schema
 from .._errors import WorkflowDataError
 
 if TYPE_CHECKING:
-  from ...auth.auth_credential import AuthCredential
+  from ...agents.context import Context
+  from ...auth.auth_tool import AuthConfig
   from ...sessions.state import State
 
-REQUEST_INPUT_FUNCTION_CALL_NAME = 'adk_request_input'
-REQUEST_CREDENTIAL_FUNCTION_CALL_NAME = 'adk_request_credential'
+
+def confirmation_interrupt_id(node_path: str) -> str:
+  """Returns the interrupt id of a node run's confirmation request."""
+  return f'wf_tool_confirmation:{node_path}'
+
+
+def auth_interrupt_id(node_path: str) -> str:
+  """Returns the interrupt id of a node run's auth request."""
+  return f'wf_auth:{node_path}'
+
+
+def parse_tool_confirmation(response: Any) -> ToolConfirmation:
+  """Parses the user's answer to a tool or node confirmation request.
+
+  Resume validation against the `ToolConfirmation` schema yields a dict in
+  which the fields the user left out are None, so those are dropped to fall
+  back to the model defaults.
+  """
+  if isinstance(response, ToolConfirmation):
+    return response
+  if not isinstance(response, dict):
+    raise WorkflowDataError(
+        'A tool confirmation response must be a ToolConfirmation payload, but'
+        f' got {type(response).__name__}.'
+    )
+  try:
+    return ToolConfirmation.from_response_dict(
+        {k: v for k, v in response.items() if v is not None}
+    )
+  except ValueError as e:
+    raise WorkflowDataError(
+        f'Invalid tool confirmation response: {response!r}'
+    ) from e
+
+
+def apply_confirmation_resume(ctx: Context) -> bool:
+  """Applies resumed tool confirmation input onto ctx if present."""
+  response = ctx.resume_inputs.get(confirmation_interrupt_id(ctx.node_path))
+  if response is None:
+    return False
+  ctx.tool_confirmation = parse_tool_confirmation(response)
+  return True
+
+
+def create_confirmation_request_input(
+    *,
+    node_path: str,
+    tool_name: str,
+    args: dict[str, Any],
+    hint: str | None = None,
+    confirmation_payload: Any = None,
+) -> RequestInput:
+  """Builds a RequestInput asking to approve or reject a tool call."""
+  payload: dict[str, Any] = {'tool_name': tool_name, 'args': args}
+  if confirmation_payload is not None:
+    payload['confirmation_payload'] = confirmation_payload
+  return RequestInput(
+      interrupt_id=confirmation_interrupt_id(node_path),
+      message=hint or f'Please approve or reject the tool call {tool_name}().',
+      payload=payload,
+      response_schema=ToolConfirmation,
+  )
 
 
 def create_request_input_event(request_input: RequestInput) -> Event:
@@ -65,28 +127,6 @@ def create_request_input_event(request_input: RequestInput) -> Event:
   )
 
 
-def has_request_input_function_call(event: Event) -> bool:
-  """Checks if an event contains a `request_input` function call."""
-  if not (event.content and event.content.parts):
-    return False
-  return any(
-      p.function_call
-      and p.function_call.name == REQUEST_INPUT_FUNCTION_CALL_NAME
-      for p in event.content.parts
-  )
-
-
-def has_auth_request_function_call(event: Event) -> bool:
-  """Checks if an event contains an `adk_request_credential` function call."""
-  if not (event.content and event.content.parts):
-    return False
-  return any(
-      p.function_call
-      and p.function_call.name == REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
-      for p in event.content.parts
-  )
-
-
 def create_request_input_response(
     interrupt_id: str,
     response: Mapping[str, Any],
@@ -110,34 +150,9 @@ def create_request_input_response(
   )
 
 
-def get_request_input_interrupt_ids(event: Event) -> list[str]:
-  """Extracts interrupt_ids from an event containing `request_input` function
-  calls.
-  """
-  interrupt_ids: list[str] = []
-  if not event.content or not event.content.parts:
-    return interrupt_ids
-  for part in event.content.parts:
-    if (
-        part.function_call
-        and part.function_call.name == REQUEST_INPUT_FUNCTION_CALL_NAME
-        and part.function_call.id is not None
-    ):
-      interrupt_ids.append(part.function_call.id)
-  return interrupt_ids
-
-
 # ---------------------------------------------------------------------------
 # Auth credential utilities
 # ---------------------------------------------------------------------------
-
-_OAUTH_STATE_KEY_PREFIX = 'adk_oauth_state:'
-"""Session state prefix under which a generated OAuth state is kept."""
-
-
-def _oauth_state_key(interrupt_id: str) -> str:
-  """Returns the session state key holding the generated OAuth state."""
-  return f'{_OAUTH_STATE_KEY_PREFIX}{interrupt_id}'
 
 
 def _build_auth_message(auth_config: AuthConfig) -> str:
@@ -169,21 +184,35 @@ def create_auth_request_event(
   Args:
     auth_config: The auth configuration for the node.
     interrupt_id: The interrupt ID for this auth request.
-    state: The session state. The OAuth state generated for this request is
-      kept there so the resume response can be checked against it.
+    state: The session state. The OAuth state and any PKCE verifier
+      credential generated for this request are kept there for
+      ``process_auth_resume``.
 
   Returns:
     An Event containing an ``adk_request_credential`` function call.
   """
+  from ...auth._auth_resume import _oauth_credential_key
+  from ...auth._auth_resume import _oauth_state_key
+  from ...auth.auth_handler import AuthHandler
+  from ...auth.auth_tool import AuthToolArguments
+
   auth_handler = AuthHandler(auth_config)
   auth_request = auth_handler.generate_auth_request()
   generated_credential = auth_request.exchanged_auth_credential
-  if (
-      generated_credential
-      and generated_credential.oauth2
-      and generated_credential.oauth2.state
-  ):
-    state[_oauth_state_key(interrupt_id)] = generated_credential.oauth2.state
+  if generated_credential and generated_credential.oauth2:
+    if generated_credential.oauth2.state:
+      state[_oauth_state_key(interrupt_id)] = generated_credential.oauth2.state
+    if generated_credential.oauth2.code_verifier:
+      state[_oauth_credential_key(interrupt_id)] = AuthCredential(
+          auth_type=generated_credential.auth_type,
+          oauth2=OAuth2Auth(
+              code_verifier=generated_credential.oauth2.code_verifier,
+              code_challenge_method=(
+                  generated_credential.oauth2.code_challenge_method
+              ),
+          ),
+      )
+      generated_credential.oauth2.code_verifier = None
   args = AuthToolArguments(
       function_call_id=interrupt_id,
       auth_config=auth_request,
@@ -198,7 +227,7 @@ def create_auth_request_event(
           parts=[
               types.Part(
                   function_call=types.FunctionCall(
-                      name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+                      name=REQUEST_EUC_FUNCTION_CALL_NAME,
                       id=interrupt_id,
                       args=args,
                   )
@@ -207,30 +236,6 @@ def create_auth_request_event(
       ),
       long_running_tool_ids=[interrupt_id],
   )
-
-
-def _build_credential_from_value(
-    auth_config: AuthConfig,
-    value: Any,
-) -> 'AuthCredential':
-  """Builds an AuthCredential from a raw user-provided value.
-
-  For API_KEY, the value is used as the key string directly.
-  For all other types, the value is parsed as an AuthCredential dict.
-  """
-  from ...auth.auth_credential import AuthCredential
-
-  raw_cred = auth_config.raw_auth_credential
-  if raw_cred is None:
-    return AuthCredential.model_validate(value)
-
-  if raw_cred.auth_type == _AuthCredentialTypes.API_KEY:
-    return AuthCredential(
-        auth_type=_AuthCredentialTypes.API_KEY,
-        api_key=str(value),
-    )
-
-  return AuthCredential.model_validate(value)
 
 
 async def process_auth_resume(
@@ -244,14 +249,14 @@ async def process_auth_resume(
   Only the credential is read from the response; the node's own auth config
   decides which scheme the credential is exchanged and stored under. When an
   OAuth state was generated for this request, the response must carry that
-  same state back.
+  same state back. Any PKCE verifier cached in ``state`` for this request is
+  restored onto the credential and cleared from ``state``.
 
   Accepts multiple response formats (tried in order):
     1. A full AuthConfig dict (from web UI OAuth flow).
     2. An AuthCredential dict.
-    3. A plain value (string for API key). The node's
-       auth_config.raw_auth_credential.auth_type determines how the
-       value is interpreted.
+    3. A plain string value (e.g. API key or HTTP bearer token). The node's
+       auth_config.auth_scheme.type_ determines how the value is interpreted.
 
   The caller is responsible for unwrapping {"result": ...} wrappers
   before calling this function.
@@ -259,38 +264,28 @@ async def process_auth_resume(
   Args:
     response_data: The unwrapped response from the client.
     auth_config: The original auth configuration for the node.
-    state: The session state to store credentials in.
+    state: The session state to read the cached OAuth state and PKCE verifier
+      from, and to store exchanged credentials in.
     interrupt_id: The interrupt ID of the auth request being resumed.
 
   Raises:
-    WorkflowDataError: If the response does not carry back the OAuth state that
-      was generated for this auth request.
+    WorkflowDataError: If the response is malformed or does not carry back the
+      OAuth state that was generated for this auth request.
   """
-  try:
-    exchanged_credential = AuthConfig.model_validate(
-        response_data
-    ).exchanged_auth_credential
-  except (ValidationError, TypeError):
-    exchanged_credential = _build_credential_from_value(
-        auth_config, response_data
-    )
+  from ...auth._auth_resume import store_auth_response
 
-  generated_state = state.get(_oauth_state_key(interrupt_id))
-  if generated_state is not None:
-    oauth2 = exchanged_credential.oauth2 if exchanged_credential else None
-    if not oauth2 or oauth2.state != generated_state:
-      raise WorkflowDataError(
-          'The auth response does not carry back the state generated for this'
-          ' auth request. Return the auth config from the credential request'
-          ' with the authorization result filled in.'
-      )
-
-  resumed_config = auth_config.model_copy(deep=True)
-  resumed_config.exchanged_auth_credential = exchanged_credential
-
-  await AuthHandler(auth_config=resumed_config).parse_and_store_auth_response(
-      state=state
+  stored = await store_auth_response(
+      requested=auth_config,
+      response=response_data,
+      state=state,
+      interrupt_id=interrupt_id,
   )
+  if stored is None:
+    raise WorkflowDataError(
+        'The auth response is malformed or does not carry back the state'
+        ' generated for this auth request. Return the auth config from the'
+        ' credential request with the authorization result filled in.'
+    )
 
 
 def has_auth_credential(
@@ -298,4 +293,6 @@ def has_auth_credential(
     state: State,
 ) -> bool:
   """Returns True if a credential for the given auth config exists in state."""
+  from ...auth.auth_handler import AuthHandler
+
   return AuthHandler(auth_config).has_auth_response(state)

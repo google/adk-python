@@ -14,7 +14,9 @@
 
 """Tests for LlamaIndexRetrieval tool."""
 
+import asyncio
 from dataclasses import dataclass
+import threading
 from typing import Optional
 
 from google.adk.tools.retrieval.llama_index_retrieval import LlamaIndexRetrieval
@@ -86,6 +88,35 @@ async def test_run_async_passes_the_query_argument_to_the_retriever():
   )
 
   assert retriever.received_query == 'how do i retrieve'
+
+
+@pytest.mark.asyncio
+async def test_run_async_keeps_the_event_loop_free_while_retrieving():
+  """Other tasks keep running on the loop while the retriever blocks on I/O."""
+
+  class _BlockingRetriever(_FakeRetriever):
+    """Blocks in `retrieve` until a task on the event loop releases it."""
+
+    def __init__(self, nodes: list[_FakeNode]):
+      super().__init__(nodes)
+      self.released = threading.Event()
+
+    def retrieve(self, query):
+      if not self.released.wait(timeout=5):
+        raise TimeoutError('retrieve blocked the event loop')
+      return super().retrieve(query)
+
+  retriever = _BlockingRetriever([_FakeNode('a document')])
+
+  async def release_retriever():
+    retriever.released.set()
+
+  result, _ = await asyncio.gather(
+      _tool(retriever).run_async(args={'query': 'anything'}, tool_context=None),
+      release_retriever(),
+  )
+
+  assert result == 'a document'
 
 
 def test_name_and_description_are_forwarded_to_the_declaration():

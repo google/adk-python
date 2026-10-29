@@ -91,8 +91,8 @@ A synchronous tool function is awaited inline on the event loop, so anything
 blocking inside it — a `requests` call, `time.sleep`, a large file read —
 freezes the entire run, not just that tool.
 
-Make the tool `async`. In live mode only, you can instead hand tools to a thread
-pool:
+Make the callable `async`, or hand synchronous `FunctionTool` and `FunctionNode`
+callables (and all tools in live mode) to a thread pool:
 
 ```python
 from google.adk.agents.run_config import RunConfig, ToolThreadPoolConfig
@@ -100,9 +100,10 @@ from google.adk.agents.run_config import RunConfig, ToolThreadPoolConfig
 run_config = RunConfig(tool_thread_pool_config=ToolThreadPoolConfig())  # 4 workers
 ```
 
-Source: `FunctionTool._invoke_callable` in
-`src/google/adk/tools/function_tool.py`,
-`_call_tool_in_thread_pool` in `src/google/adk/flows/llm_flows/functions.py`.
+Source: `_resolve_sync_callable_runner` in
+`src/google/adk/utils/_sync_runner.py`, `FunctionTool._invoke_callable` in
+`src/google/adk/tools/function_tool.py`, and `_call_tool_in_thread_pool` in
+`src/google/adk/flows/llm_flows/tools/_thread_pool.py`.
 
 ## The run stops early and nothing looks wrong
 
@@ -116,3 +117,12 @@ Read `gen_ai.response.finish_reasons` on the `call_llm` span rather than
 inferring from the text — `max_tokens` means raise `max_output_tokens`,
 `safety` and `recitation` mean the model refused. See
 `references/logs-and-traces.md`.
+
+## The run ends with `error_code="INVOCATION_ABORTED"`
+
+`abort_signal` was set on `runner.run_async`, or the HTTP client disconnected
+from `/run_sse` before the stream finished. The runner synthesizes a terminal
+event with `error_code="INVOCATION_ABORTED"` and seals any in-flight
+`FunctionCall` with a `FunctionResponse` carrying `{"error": "Invocation was
+aborted by client."}` so the session remains valid for the next turn. Source: `Runner._synthesize_abort_events_if_needed` in
+`src/google/adk/runners.py`, `src/google/adk/cli/api_server.py`.

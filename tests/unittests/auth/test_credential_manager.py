@@ -12,19 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from authlib.oauth2.rfc6749 import OAuth2Error
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlowClientCredentials
 from fastapi.openapi.models import OAuthFlowImplicit
 from fastapi.openapi.models import OAuthFlows
 from fastapi.openapi.models import SecurityBase
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
+from google.adk.auth import oauth2_credential_util
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
@@ -34,11 +38,13 @@ from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.auth_schemes import AuthSchemeType
 from google.adk.auth.auth_schemes import CustomAuthScheme
 from google.adk.auth.auth_schemes import ExtendedOAuth2
+from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.base_auth_provider import BaseAuthProvider
 from google.adk.auth.credential_manager import _rehydrate_custom_scheme
 from google.adk.auth.credential_manager import CredentialManager
 from google.adk.auth.credential_manager import ServiceAccountCredentialExchanger
+from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from google.adk.auth.oauth2_discovery import AuthorizationServerMetadata
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.tool_context import ToolContext
@@ -189,6 +195,7 @@ class TestCredentialManager:
     auth_config.auth_scheme = auth_scheme
     auth_config.raw_auth_credential = api_key_cred
     auth_config.exchanged_auth_credential = None
+    auth_config.credential_key = "test_key"
 
     manager = CredentialManager(auth_config)
 
@@ -262,6 +269,7 @@ class TestCredentialManager:
     auth_config.raw_auth_credential = None
     auth_config.exchanged_auth_credential = None
     auth_config.auth_scheme = Mock(spec=AuthScheme)
+    auth_config.credential_key = "test_key"
 
     # Mock the credential that will be returned
     mock_credential = Mock(spec=AuthCredential)
@@ -305,6 +313,7 @@ class TestCredentialManager:
     auth_config = Mock(spec=AuthConfig)
     auth_config.raw_auth_credential = None
     auth_config.exchanged_auth_credential = None
+    auth_config.credential_key = "test_key"
     # Add auth_scheme for the _is_client_credentials_flow method
     auth_config.auth_scheme = Mock()
     auth_config.auth_scheme.flows = None
@@ -392,6 +401,482 @@ class TestCredentialManager:
     assert called_arg.auth_type == AuthCredentialTypes.SERVICE_ACCOUNT
 
     assert result == exchanged_credential
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_serializes_same_credential_key(self):
+    """Concurrent managers for the same user and key deduplicate via credential_service."""
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            clientCredentials=OAuthFlowClientCredentials(
+                tokenUrl="https://example.com/token",
+                scopes={},
+            )
+        )
+    )
+    raw_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="mock_client_id",
+            client_secret="mock_client_secret",
+        ),
+    )
+    processed_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="mock_client_id",
+            client_secret="mock_client_secret",
+            access_token="exchanged_token",
+        ),
+    )
+    auth_config = AuthConfig(
+        auth_scheme=auth_scheme,
+        raw_auth_credential=raw_credential,
+        credential_key="shared-key",
+    )
+    managers = [
+        CredentialManager(auth_config.model_copy(deep=True)),
+        CredentialManager(auth_config.model_copy(deep=True)),
+    ]
+    session_service = InMemorySessionService()
+    session = await session_service.create_session(
+        app_name="test_app",
+        user_id="user_a",
+        session_id="session_a",
+    )
+    invocation_context = InvocationContext(
+        session_service=session_service,
+        invocation_id="invocation_a",
+        session=session,
+        credential_service=InMemoryCredentialService(),
+    )
+    context = CallbackContext(invocation_context)
+    exchange_count = 0
+
+    async def exchange_credential(credential):
+      nonlocal exchange_count
+      if credential.oauth2 and credential.oauth2.access_token:
+        return credential, False
+      exchange_count += 1
+      await asyncio.sleep(0)
+      return processed_credential.model_copy(deep=True), True
+
+    for manager in managers:
+      manager._exchange_credential = AsyncMock(side_effect=exchange_credential)
+
+    results = await asyncio.gather(
+        *(manager.get_auth_credential(context) for manager in managers)
+    )
+
+    assert results == [processed_credential, processed_credential]
+    assert exchange_count == 1
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_without_credential_service_reexchanges_serially(
+      self,
+  ):
+    """Without a credential_service, waiters serialize but cannot reuse exchanged tokens."""
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            clientCredentials=OAuthFlowClientCredentials(
+                tokenUrl="https://example.com/token",
+                scopes={},
+            )
+        )
+    )
+    raw_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="mock_client_id",
+            client_secret="mock_client_secret",
+        ),
+    )
+    processed_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="mock_client_id",
+            client_secret="mock_client_secret",
+            access_token="exchanged_token",
+        ),
+    )
+    auth_config = AuthConfig(
+        auth_scheme=auth_scheme,
+        raw_auth_credential=raw_credential,
+        credential_key="shared-key",
+    )
+    managers = [
+        CredentialManager(auth_config.model_copy(deep=True)),
+        CredentialManager(auth_config.model_copy(deep=True)),
+    ]
+    session_service = InMemorySessionService()
+    session = await session_service.create_session(
+        app_name="test_app",
+        user_id="user_a",
+        session_id="session_a",
+    )
+    invocation_context = InvocationContext(
+        session_service=session_service,
+        invocation_id="invocation_a",
+        session=session,
+        credential_service=None,
+    )
+    context = CallbackContext(invocation_context)
+    exchange_count = 0
+    active_count = 0
+    max_active_count = 0
+
+    async def exchange_credential(credential):
+      nonlocal exchange_count, active_count, max_active_count
+      if credential.oauth2 and credential.oauth2.access_token:
+        return credential, False
+      exchange_count += 1
+      active_count += 1
+      max_active_count = max(max_active_count, active_count)
+      await asyncio.sleep(0)
+      active_count -= 1
+      return processed_credential.model_copy(deep=True), True
+
+    for manager in managers:
+      manager._exchange_credential = AsyncMock(side_effect=exchange_credential)
+
+    results = await asyncio.gather(
+        *(manager.get_auth_credential(context) for manager in managers)
+    )
+
+    assert results == [processed_credential, processed_credential]
+    assert max_active_count == 1
+    assert exchange_count == 2
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_keeps_different_keys_concurrent(self):
+    """Credential processing for different keys should not block."""
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            clientCredentials=OAuthFlowClientCredentials(
+                tokenUrl="https://example.com/token",
+                scopes={},
+            )
+        )
+    )
+    raw_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="mock_client_id",
+            client_secret="mock_client_secret",
+        ),
+    )
+    session_service = InMemorySessionService()
+    session = await session_service.create_session(
+        app_name="test_app",
+        user_id="user_a",
+        session_id="session_a",
+    )
+    invocation_context = InvocationContext(
+        session_service=session_service,
+        invocation_id="invocation_a",
+        session=session,
+        credential_service=InMemoryCredentialService(),
+    )
+    context = CallbackContext(invocation_context)
+    both_started = asyncio.Event()
+    active_count = 0
+    max_active_count = 0
+
+    async def exchange_credential(credential):
+      nonlocal active_count, max_active_count
+      active_count += 1
+      max_active_count = max(max_active_count, active_count)
+      if active_count == 2:
+        both_started.set()
+      await asyncio.wait_for(both_started.wait(), timeout=1)
+      active_count -= 1
+      return credential, True
+
+    managers = []
+    for credential_key in ("key-a", "key-b"):
+      auth_config = AuthConfig(
+          auth_scheme=auth_scheme,
+          raw_auth_credential=raw_credential,
+          credential_key=credential_key,
+      )
+      manager = CredentialManager(auth_config)
+      manager._exchange_credential = AsyncMock(side_effect=exchange_credential)
+      managers.append(manager)
+
+    await asyncio.gather(
+        *(manager.get_auth_credential(context) for manager in managers)
+    )
+
+    assert max_active_count == 2
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_keeps_different_users_concurrent(self):
+    """Credential processing for different users with the same key should not block."""
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            clientCredentials=OAuthFlowClientCredentials(
+                tokenUrl="https://example.com/token",
+                scopes={},
+            )
+        )
+    )
+    raw_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="mock_client_id",
+            client_secret="mock_client_secret",
+        ),
+    )
+    auth_config = AuthConfig(
+        auth_scheme=auth_scheme,
+        raw_auth_credential=raw_credential,
+        credential_key="shared-key",
+    )
+    session_service = InMemorySessionService()
+    credential_service = InMemoryCredentialService()
+    both_started = asyncio.Event()
+    active_count = 0
+    max_active_count = 0
+
+    calls = []
+    for user_id in ("user_a", "user_b"):
+      session = await session_service.create_session(
+          app_name="test_app",
+          user_id=user_id,
+          session_id=f"session_{user_id}",
+      )
+      invocation_context = InvocationContext(
+          session_service=session_service,
+          invocation_id=f"invocation_{user_id}",
+          session=session,
+          credential_service=credential_service,
+      )
+      context = CallbackContext(invocation_context)
+      manager = CredentialManager(auth_config.model_copy(deep=True))
+
+      async def exchange_credential(credential, uid=user_id):
+        nonlocal active_count, max_active_count
+        active_count += 1
+        max_active_count = max(max_active_count, active_count)
+        if active_count == 2:
+          both_started.set()
+        await asyncio.wait_for(both_started.wait(), timeout=1)
+        active_count -= 1
+        exchanged = credential.model_copy(deep=True)
+        exchanged.oauth2.access_token = f"token_{uid}"
+        return exchanged, True
+
+      manager._exchange_credential = AsyncMock(side_effect=exchange_credential)
+      calls.append(manager.get_auth_credential(context))
+
+    results = await asyncio.gather(*calls)
+
+    assert max_active_count == 2
+    assert [r.oauth2.access_token for r in results] == [
+        "token_user_a",
+        "token_user_b",
+    ]
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "auth_code, auth_response_uri",
+      [
+          ("a-code-the-server-already-consumed", None),
+          (None, "https://example.com/callback?code=spent"),
+      ],
+  )
+  async def test_get_auth_credential_discards_a_spent_authorization_code(
+      self, mocker, auth_code, auth_response_uri
+  ):
+    """A code the exchange failed to redeem must not be kept or returned."""
+    unexchanged = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_code=auth_code,
+            auth_response_uri=auth_response_uri,
+        ),
+    )
+    auth_config = AuthConfig(auth_scheme=_authorization_code_scheme())
+    manager = CredentialManager(auth_config)
+    manager._validate_credential = mocker.AsyncMock()
+    manager._is_credential_ready = mocker.Mock(return_value=False)
+    manager._load_existing_credential = mocker.AsyncMock(return_value=None)
+    manager._load_from_auth_response = mocker.AsyncMock(
+        return_value=unexchanged
+    )
+    # The exchanger swallowed the token-endpoint error and returned its input.
+    manager._exchange_credential = mocker.AsyncMock(
+        return_value=(unexchanged, False)
+    )
+    manager._refresh_credential = mocker.AsyncMock(
+        return_value=(unexchanged, False)
+    )
+    manager._save_credential = mocker.AsyncMock()
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result is None
+    manager._save_credential.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_keeps_a_redeemed_authorization_code(
+      self, mocker
+  ):
+    """The same path still saves and returns a credential that has a token."""
+    redeemed = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_code="a-code-the-server-already-consumed",
+            access_token="an-access-token",
+        ),
+    )
+    auth_config = AuthConfig(auth_scheme=_authorization_code_scheme())
+    manager = CredentialManager(auth_config)
+    manager._validate_credential = mocker.AsyncMock()
+    manager._is_credential_ready = mocker.Mock(return_value=False)
+    manager._load_existing_credential = mocker.AsyncMock(return_value=None)
+    manager._load_from_auth_response = mocker.AsyncMock(return_value=redeemed)
+    manager._exchange_credential = mocker.AsyncMock(
+        return_value=(redeemed, True)
+    )
+    manager._refresh_credential = mocker.AsyncMock(
+        return_value=(redeemed, False)
+    )
+    manager._save_credential = mocker.AsyncMock()
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result == redeemed
+    manager._save_credential.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_discards_a_spent_oidc_code(self, mocker):
+    """OIDC shares the oauth2 payload and exchanger, so it spends codes too."""
+    unexchanged = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_code="a-code-the-server-already-consumed",
+        ),
+    )
+    auth_config = AuthConfig(
+        auth_scheme=OpenIdConnectWithConfig(
+            authorization_endpoint="https://example.com/auth",
+            token_endpoint="https://example.com/token",
+        )
+    )
+    manager = CredentialManager(auth_config)
+    manager._validate_credential = mocker.AsyncMock()
+    manager._is_credential_ready = mocker.Mock(return_value=False)
+    manager._load_existing_credential = mocker.AsyncMock(return_value=None)
+    manager._load_from_auth_response = mocker.AsyncMock(
+        return_value=unexchanged
+    )
+    manager._exchange_credential = mocker.AsyncMock(
+        return_value=(unexchanged, False)
+    )
+    manager._refresh_credential = mocker.AsyncMock(
+        return_value=(unexchanged, False)
+    )
+    manager._save_credential = mocker.AsyncMock()
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result is None
+    manager._save_credential.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_prefers_auth_response_over_spent_store(
+      self, mocker
+  ):
+    """A stored dead code must not shadow a newly granted credential."""
+    stored_spent = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_code="a-code-the-server-already-consumed",
+        ),
+    )
+    freshly_granted = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_code="a-brand-new-code",
+            access_token="an-access-token",
+        ),
+    )
+    auth_config = AuthConfig(auth_scheme=_authorization_code_scheme())
+    manager = CredentialManager(auth_config)
+    manager._validate_credential = mocker.AsyncMock()
+    manager._is_credential_ready = mocker.Mock(return_value=False)
+    manager._load_existing_credential = mocker.AsyncMock(
+        return_value=stored_spent
+    )
+    manager._load_from_auth_response = mocker.AsyncMock(
+        return_value=freshly_granted
+    )
+    manager._exchange_credential = mocker.AsyncMock(
+        return_value=(freshly_granted, True)
+    )
+    manager._refresh_credential = mocker.AsyncMock(
+        return_value=(freshly_granted, False)
+    )
+    manager._save_credential = mocker.AsyncMock()
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result == freshly_granted
+    manager._load_from_auth_response.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_discards_code_the_real_exchanger_rejected(
+      self, mocker
+  ):
+    """The real exchanger runs here; only the token endpoint is stubbed out."""
+    mock_oauth2_session = mocker.patch.object(
+        oauth2_credential_util, "OAuth2Session", autospec=True
+    )
+    mock_client = mock_oauth2_session.return_value
+    mock_client.fetch_token.side_effect = OAuth2Error(error="invalid_grant")
+    unexchanged = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_code="a-code-the-server-already-consumed",
+        ),
+    )
+    auth_config = AuthConfig(auth_scheme=_authorization_code_scheme())
+    manager = CredentialManager(auth_config)
+    manager._validate_credential = mocker.AsyncMock()
+    manager._is_credential_ready = mocker.Mock(return_value=False)
+    manager._load_existing_credential = mocker.AsyncMock(return_value=None)
+    manager._load_from_auth_response = mocker.AsyncMock(
+        return_value=unexchanged
+    )
+    manager._save_credential = mocker.AsyncMock()
+
+    result = await manager.get_auth_credential(
+        mocker.Mock(spec=CallbackContext)
+    )
+
+    assert result is None
+    mock_client.fetch_token.assert_called_once()
+    manager._save_credential.assert_not_called()
 
   @pytest.mark.asyncio
   async def test_load_existing_credential_already_exchanged(self):
@@ -1048,6 +1533,19 @@ class TestCredentialManager:
     manager = CredentialManager(auth_config)
 
     assert manager._is_client_credentials_flow() is False
+
+
+def _authorization_code_scheme():
+  """A real OAuth2 authorization-code scheme, which AuthConfig will validate."""
+  return OAuth2(
+      flows=OAuthFlows(
+          authorizationCode=OAuthFlowAuthorizationCode(
+              authorizationUrl="https://example.com/auth",
+              tokenUrl="https://example.com/token",
+              scopes={},
+          )
+      )
+  )
 
 
 @pytest.fixture

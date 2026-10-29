@@ -15,6 +15,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Collection
+from collections.abc import Mapping
+from collections.abc import Sequence
+import hashlib
 import logging
 import re
 from typing import Optional
@@ -23,6 +27,7 @@ from typing import TYPE_CHECKING
 from google.cloud.firestore_v1.base_query import FieldFilter
 from typing_extensions import override
 
+from ...events._rewind_events import _apply_rewinds
 from ...memory import _utils
 from ...memory.base_memory_service import BaseMemoryService
 from ...memory.base_memory_service import SearchMemoryResponse
@@ -32,12 +37,25 @@ from ._stop_words import DEFAULT_STOP_WORDS
 if TYPE_CHECKING:
   from google.cloud import firestore
 
+  from ...events.event import Event
   from ...sessions.session import Session
 
 logger = logging.getLogger("google_adk." + __name__)
 
 DEFAULT_EVENTS_COLLECTION = "events"
 DEFAULT_MEMORIES_COLLECTION = "memories"
+
+
+def _memory_doc_id(
+    *, app_name: str, user_id: str, session_id: str | None, event_id: str
+) -> str:
+  """Returns a stable memory document ID for an event.
+
+  Hashed because app names and user IDs may contain characters that are not
+  allowed in document IDs, such as "/".
+  """
+  key = "\x00".join((app_name, user_id, session_id or "", event_id))
+  return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
@@ -81,11 +99,60 @@ class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
 
   @override
   async def add_session_to_memory(self, session: Session) -> None:
-    """Extracts keywords from session events and stores them in the memories collection."""
+    """Stores live events and deletes those a rewind took back."""
+    live_events = _apply_rewinds(session.events)
+    live_ids = {event.id for event in live_events}
+    await self._write_memories(
+        app_name=session.app_name,
+        user_id=session.user_id,
+        session_id=session.id,
+        events=live_events,
+        rewound_event_ids={
+            event.id for event in session.events if event.id not in live_ids
+        },
+    )
+
+  @override
+  async def add_events_to_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      events: Sequence[Event],
+      session_id: str | None = None,
+      custom_metadata: Mapping[str, object] | None = None,
+  ) -> None:
+    """Adds events, such as the latest turn, to the memories collection.
+
+    Re-adding an event with the same session ID overwrites its entry.
+    """
+    _ = custom_metadata
+    await self._write_memories(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        events=events,
+    )
+
+  async def _write_memories(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str | None,
+      events: Sequence[Event],
+      rewound_event_ids: Collection[str] = (),
+  ) -> None:
+    """Writes one memory document per event that has text keywords."""
     batch = self.client.batch()
     count = 0
+    seen_event_ids = set()
 
-    for event in session.events:
+    for event in events:
+      if event.id in seen_event_ids:
+        continue
+      seen_event_ids.add(event.id)
+
       if not event.content or not event.content.parts:
         continue
 
@@ -97,12 +164,20 @@ class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
       if not keywords:
         continue
 
-      doc_ref = self.client.collection(self.memories_collection).document()
+      doc_ref = self.client.collection(self.memories_collection).document(
+          _memory_doc_id(
+              app_name=app_name,
+              user_id=user_id,
+              session_id=session_id,
+              event_id=event.id,
+          )
+      )
       batch.set(
           doc_ref,
           {
-              "appName": session.app_name,
-              "userId": session.user_id,
+              "appName": app_name,
+              "userId": user_id,
+              "sessionId": session_id,
               "keywords": list(keywords),
               "author": event.author,
               "content": event.content.model_dump(
@@ -110,6 +185,23 @@ class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
               ),
               "timestamp": event.timestamp,
           },
+      )
+      count += 1
+      if count >= 500:
+        await batch.commit()
+        batch = self.client.batch()
+        count = 0
+
+    for event_id in rewound_event_ids:
+      batch.delete(
+          self.client.collection(self.memories_collection).document(
+              _memory_doc_id(
+                  app_name=app_name,
+                  user_id=user_id,
+                  session_id=session_id,
+                  event_id=event_id,
+              )
+          )
       )
       count += 1
       if count >= 500:
