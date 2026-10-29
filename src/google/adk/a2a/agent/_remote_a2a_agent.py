@@ -1951,6 +1951,104 @@ class RemoteA2aAgent(BaseAgent):
           branch=ctx.branch,
       )
 
+  async def _read_completed_peer_task(
+      self,
+      ctx: InvocationContext,
+      client: A2AClient,
+      request: A2AMessage,
+      parameters: ParametersConfig,
+  ) -> Optional[Event]:
+    """Reads a paused delegation's result if the peer finished out of band."""
+    if (
+        self.mode != AgentMode.TASK
+        or not request.task_id
+        or request.task_id
+        != self._get_resumable_task_id(ctx, request.context_id)
+    ):
+      return None
+
+    task = await _compat.get_task(
+        client,
+        task_id=request.task_id,
+        context=parameters.client_call_context,
+    )
+    if task.id != request.task_id or task.context_id != request.context_id:
+      raise A2AClientError("Peer returned a different task or context")
+    if task.status.state != _compat.TS_COMPLETED:
+      return None
+
+    if _compat.metadata_get(task.metadata, _NEW_A2A_ADK_INTEGRATION_EXTENSION):
+      event = await self._handle_a2a_response_v2((task, None), ctx)
+    else:
+      event = await self._handle_a2a_response((task, None), ctx)
+    completed_response = (
+        next(
+            (
+                response
+                for response in reversed(event.get_function_responses())
+                if response.name == FINISH_TASK_TOOL_NAME
+                and response.response
+                and response.response.get("result")
+                == FINISH_TASK_SUCCESS_RESULT
+            ),
+            None,
+        )
+        if event is not None
+        else None
+    )
+    if completed_response is None:
+      return None
+    completed_id = completed_response.id
+
+    def output_args(source: Optional[Event]) -> Optional[dict[str, Any]]:
+      if source is None:
+        return None
+      return next(
+          (
+              dict(call.args or {})
+              for call in reversed(source.get_function_calls())
+              if call.name == FINISH_TASK_TOOL_NAME and call.id == completed_id
+          ),
+          None,
+      )
+
+    args = output_args(event)
+    if args is None:
+      # A unary task snapshot can put only the response in its artifacts.
+      for message in reversed(task.history or []):
+        if message.role != _compat.ROLE_AGENT:
+          continue
+        args = output_args(
+            convert_a2a_message_to_event(
+                message, self.name, ctx, self._a2a_part_converter
+            )
+        )
+        if args is not None:
+          break
+    if args is None:
+      raise A2AClientError(
+          "Completed peer task has no matching finish_task call"
+      )
+
+    wrapper_key = get_output_wrapper_key(self.output_schema)
+    output = args[wrapper_key] if wrapper_key and wrapper_key in args else args
+    result = _create_finish_task_event(ctx, self.name, output=output)
+    result.custom_metadata = {
+        A2A_METADATA_PREFIX + "operation": "get_task",
+        A2A_METADATA_PREFIX + "task_id": task.id,
+        A2A_METADATA_PREFIX + "context_id": task.context_id,
+        A2A_METADATA_PREFIX + "request": {"id": task.id},
+        A2A_METADATA_PREFIX
+        + "response": {
+            "id": task.id,
+            "contextId": task.context_id,
+            "status": {
+                "state": _compat.a2a_to_dict(task.status).get("state"),
+            },
+        },
+    }
+    return result
+
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
@@ -2048,6 +2146,14 @@ class RemoteA2aAgent(BaseAgent):
           parameters.request_metadata = self._a2a_request_meta_provider(
               ctx, a2a_request
           )
+
+        completed_event = await self._read_completed_peer_task(
+            ctx, a2a_client, a2a_request, parameters
+        )
+        if completed_event is not None:
+          should_release_task_control = True
+          yield completed_event
+          return
 
         # TODO: Add support for requested_extension and
         # message_send_configuration once they are supported by the A2A client.
