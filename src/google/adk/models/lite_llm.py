@@ -263,19 +263,37 @@ def _parse_tool_call_arguments(
   """
   result = _decode_tool_call_arguments(arguments, function_name=function_name)
   doc = arguments if isinstance(arguments, str) else ""
-  if isinstance(result, dict) and not all(
-      isinstance(key, str) for key in result
-  ):
-    raise json.JSONDecodeError(
-        "Tool call argument keys must be strings", doc, 0
-    )
   try:
     json.dumps(result)
   except (TypeError, ValueError, RecursionError):
     raise json.JSONDecodeError(
         "Tool call arguments cannot be encoded as JSON", doc, 0
     ) from None
+  # After the encoding check, which has ruled out cycles and deep nesting.
+  if not _has_only_string_keys(result):
+    raise json.JSONDecodeError(
+        "Tool call argument keys must be strings", doc, 0
+    )
   return result
+
+
+def _has_only_string_keys(value: Any) -> bool:
+  """Whether every dict in `value`, at any depth, has only string keys.
+
+  A Python literal repair can give `{1: 2}` at any level, and json.dumps
+  would quietly turn the key into "1". Expects a value json.dumps has
+  already accepted, so it has no cycles.
+  """
+  stack = [value]
+  while stack:
+    item = stack.pop()
+    if isinstance(item, dict):
+      if not all(isinstance(key, str) for key in item):
+        return False
+      stack.extend(item.values())
+    elif isinstance(item, (list, tuple)):
+      stack.extend(item)
+  return True
 
 
 def _decode_tool_call_arguments(

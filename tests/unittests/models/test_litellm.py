@@ -3603,6 +3603,9 @@ _DEEPLY_NESTED_OBJECT = '{"a":' * 1_000_000 + "1" + "}" * 1_000_000
 _UNUSABLE_TOOL_CALL_ARGUMENTS = [
     pytest.param("{[]: 1}", id="unhashable_key"),
     pytest.param("{1: 2}", id="non_string_key"),
+    pytest.param("{'a': {1: 2}}", id="nested_non_string_key"),
+    pytest.param("{'a': [{1: 2}]}", id="non_string_key_in_list"),
+    pytest.param("{'a': ({1: 2},)}", id="non_string_key_in_tuple"),
     pytest.param("{'a': {1, 2}}", id="set_value"),
     pytest.param("{'a': b'x'}", id="bytes_value"),
     pytest.param(_DEEPLY_NESTED, id="deeply_nested"),
@@ -14096,6 +14099,13 @@ class TestParseToolCallArguments:
   )
   def test_ambiguous_and_malformed_arguments_raise(self, arguments):
     """Ambiguous or unrecoverable inputs raise JSONDecodeError."""
+    with pytest.raises(json.JSONDecodeError):
+      _parse_tool_call_arguments(arguments)
+
+  def test_self_referencing_arguments_raise(self):
+    """A dict that contains itself is reported, not walked forever."""
+    arguments = {}
+    arguments["a"] = arguments
     with pytest.raises(json.JSONDecodeError):
       _parse_tool_call_arguments(arguments)
 
