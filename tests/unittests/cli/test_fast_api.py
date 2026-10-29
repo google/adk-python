@@ -30,6 +30,7 @@ from urllib.parse import quote
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from google.adk.a2a import _compat
+from google.adk.agents._caller_principal import CallerPrincipal
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
@@ -68,7 +69,9 @@ from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import ListSessionsResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_confirmation import ToolConfirmation
+from google.adk.utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.api_core.exceptions import GoogleAPICallError
 from google.api_core.exceptions import InvalidArgument
 from google.genai import types
@@ -77,6 +80,8 @@ import pytest
 from starlette.applications import Starlette
 import starlette.requests
 from starlette.routing import Mount
+
+from tests.unittests import testing_utils
 
 # Configure logging to help diagnose server startup issues
 logging.basicConfig(
@@ -3452,6 +3457,319 @@ async def test_agent_run_sse_session_check_loads_no_events(
 
   assert response.status_code == 200
   assert loaded_event_counts == [0]
+
+
+class _CallerPrincipalInjector:
+  """ASGI wrapper standing in for a deployment's own authentication.
+
+  Sets ``request.state.caller_principal`` the way an auth middleware would,
+  before the request reaches the ADK routes.
+  """
+
+  def __init__(self, app, principal: CallerPrincipal):
+    self._app = app
+    self._principal = principal
+
+  async def __call__(self, scope, receive, send):
+    if scope["type"] == "http":
+      scope.setdefault("state", {})["caller_principal"] = self._principal
+    await self._app(scope, receive, send)
+
+
+def _capture_caller_principal(monkeypatch) -> dict[str, Any]:
+  """Patches Runner.run_async to record the caller_principal it is given."""
+  captured: dict[str, Any] = {"calls": 0, "caller_principal": "unset"}
+
+  async def run_async_capture(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+      caller_principal: Optional[CallerPrincipal] = None,
+      **kwargs,
+  ):
+    del self, user_id, session_id, invocation_id, new_message, state_delta
+    del run_config, kwargs
+    captured["calls"] += 1
+    captured["caller_principal"] = caller_principal
+    yield _event_1()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_capture)
+  return captured
+
+
+@pytest.mark.parametrize("route", ["/run", "/run_sse"])
+def test_agent_run_records_unauthenticated_caller_by_default(
+    test_app, create_test_session, monkeypatch, route
+):
+  """Without authentication in front of the server, a run is unauthenticated.
+
+  The user_id in the body is a claim the caller made, so it must not turn
+  into an authenticated principal.
+  """
+  info = create_test_session
+  captured = _capture_caller_principal(monkeypatch)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+      "streaming": False,
+  }
+
+  response = test_app.post(route, json=payload)
+
+  assert response.status_code == 200
+  assert captured["calls"] == 1
+  assert captured["caller_principal"] == CallerPrincipal(
+      authenticated=False, source="api_server"
+  )
+
+
+@pytest.mark.parametrize("route", ["/run", "/run_sse"])
+def test_agent_run_uses_caller_principal_set_by_middleware(
+    test_app, create_test_session, monkeypatch, route
+):
+  """A principal the deployment's own authentication set is used as is."""
+  info = create_test_session
+  captured = _capture_caller_principal(monkeypatch)
+  principal = CallerPrincipal(
+      authenticated=True, user_name="operator", source="gateway"
+  )
+  client = TestClient(_CallerPrincipalInjector(test_app.app, principal))
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+      "streaming": False,
+  }
+
+  response = client.post(route, json=payload)
+
+  assert response.status_code == 200
+  assert captured["caller_principal"] == principal
+
+
+def test_agent_run_omits_caller_principal_for_runner_without_the_parameter(
+    test_app, create_test_session, monkeypatch
+):
+  """A Runner subclass whose run_async predates the parameter still works."""
+  info = create_test_session
+  captured: dict[str, Any] = {"kwargs": None}
+
+  async def run_async_capture(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del self, user_id, session_id, new_message, state_delta, run_config
+    captured["kwargs"] = {"invocation_id": invocation_id}
+    yield _event_1()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_capture)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+      "streaming": False,
+  }
+
+  response = test_app.post("/run", json=payload)
+
+  assert response.status_code == 200
+  assert captured["kwargs"] == {"invocation_id": None}
+
+
+def _confirmation_gated_app(info, calls: list[str]) -> App:
+  """An App whose agent calls a confirmation-gated tool on the first turn."""
+
+  def rm_all() -> dict:
+    calls.append("rm_all")
+    return {"status": "deleted"}
+
+  model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name="rm_all", args={}),
+          "after tool",
+          "after tool 2",
+      ]
+  )
+  return App(
+      name=info["app_name"],
+      root_agent=LlmAgent(
+          name="ops_agent",
+          model=model,
+          tools=[FunctionTool(func=rm_all, require_confirmation=True)],
+      ),
+  )
+
+
+def _run_payload(info, parts):
+  return {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": parts},
+      "streaming": False,
+  }
+
+
+def _approve_through_run(client, info) -> list[dict]:
+  """Triggers the gated tool over /run, then answers its confirmation."""
+  first = client.post("/run", json=_run_payload(info, [{"text": "delete"}]))
+  assert first.status_code == 200
+  confirmation_id = next(
+      part["functionCall"]["id"]
+      for event in first.json()
+      for part in (event.get("content") or {}).get("parts", [])
+      if part.get("functionCall", {}).get("name")
+      == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+  )
+  second = client.post(
+      "/run",
+      json=_run_payload(
+          info,
+          [{
+              "functionResponse": {
+                  "id": confirmation_id,
+                  "name": REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                  "response": {"confirmed": True},
+              }
+          }],
+      ),
+  )
+  assert second.status_code == 200
+  return [
+      part["functionResponse"]["response"]
+      for event in second.json()
+      for part in (event.get("content") or {}).get("parts", [])
+      if part.get("functionResponse", {}).get("name") == "rm_all"
+  ]
+
+
+def test_agent_run_strict_mode_refuses_confirmation_without_authentication(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """A /run caller cannot approve its own gated tool call in strict mode."""
+  info = create_test_session
+  monkeypatch.setenv("ADK_ENABLE_STRICT_CALLER_PRINCIPAL", "1")
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+  calls: list[str] = []
+  loaded_app = _confirmation_gated_app(info, calls)
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: loaded_app
+  )
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+  results = _approve_through_run(client, info)
+
+  assert calls == []
+  assert results == [{"error": "This tool call is rejected."}]
+
+
+def test_agent_run_strict_mode_honors_confirmation_from_authenticated_operator(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """A principal set by the deployment's authentication is honored."""
+  info = create_test_session
+  monkeypatch.setenv("ADK_ENABLE_STRICT_CALLER_PRINCIPAL", "1")
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+  calls: list[str] = []
+  loaded_app = _confirmation_gated_app(info, calls)
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: loaded_app
+  )
+  base = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  client = TestClient(
+      _CallerPrincipalInjector(
+          base.app,
+          CallerPrincipal(
+              authenticated=True, user_name="operator", source="gateway"
+          ),
+      )
+  )
+
+  results = _approve_through_run(client, info)
+
+  assert calls == ["rm_all"]
+  assert results == [{"status": "deleted"}]
+
+
+def test_agent_run_default_mode_honors_confirmation_with_a_warning(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+    caplog,
+):
+  """Without strict mode the behavior is unchanged apart from the warning."""
+  info = create_test_session
+  monkeypatch.delenv("ADK_ENABLE_STRICT_CALLER_PRINCIPAL", raising=False)
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+  calls: list[str] = []
+  loaded_app = _confirmation_gated_app(info, calls)
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: loaded_app
+  )
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+  with caplog.at_level("WARNING", logger="google_adk"):
+    results = _approve_through_run(client, info)
+
+  assert calls == ["rm_all"]
+  assert results == [{"status": "deleted"}]
+  assert any(
+      "unauthenticated caller" in record.getMessage()
+      and "api_server" in record.getMessage()
+      for record in caplog.records
+  )
 
 
 def test_agent_run_sse_splits_artifact_delta(

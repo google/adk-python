@@ -71,6 +71,7 @@ from typing_extensions import deprecated
 from typing_extensions import override
 import yaml
 
+from ..agents._caller_principal import CallerPrincipal
 from ..agents._streaming_mode import StreamingMode
 from ..agents.base_agent import BaseAgent
 from ..agents.llm_agent import LlmAgent
@@ -492,21 +493,66 @@ def _accepts_kwargs(func: Callable[..., Any], kwargs: dict[str, Any]) -> bool:
   return True
 
 
+def _run_async_accepts(runner: Runner, name: str) -> bool:
+  """Whether runner.run_async takes the keyword ``name`` (or ``**kwargs``)."""
+  try:
+    params = inspect.signature(runner.run_async).parameters
+  except (ValueError, TypeError):
+    return True
+  return name in params or any(
+      p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+  )
+
+
 def _with_abort_signal_kwarg(
     runner: Runner,
     kwargs: dict[str, Any],
     abort_signal: asyncio.Event,
 ) -> dict[str, Any]:
   """Adds abort_signal to kwargs when runner.run_async accepts it."""
-  try:
-    params = inspect.signature(runner.run_async).parameters
-    if "abort_signal" in params or any(
-        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-    ):
-      kwargs["abort_signal"] = abort_signal
-  except (ValueError, TypeError):
+  if _run_async_accepts(runner, "abort_signal"):
     kwargs["abort_signal"] = abort_signal
   return kwargs
+
+
+def _with_caller_principal_kwarg(
+    runner: Runner,
+    kwargs: dict[str, Any],
+    caller_principal: CallerPrincipal,
+) -> dict[str, Any]:
+  """Adds caller_principal to kwargs when runner.run_async accepts it."""
+  if _run_async_accepts(runner, "caller_principal"):
+    kwargs["caller_principal"] = caller_principal
+  return kwargs
+
+
+_API_SERVER_PRINCIPAL_SOURCE = "api_server"
+
+
+def _caller_principal_for_request(
+    request: Optional[Request],
+) -> CallerPrincipal:
+  """Returns the caller identity to run a /run or /run_sse request as.
+
+  The API server does not authenticate callers itself. A deployment that does,
+  in middleware or a dependency in front of these routes, states the result on
+  ``request.state.caller_principal`` and that value is used as is. Without
+  one, the request is recorded as unauthenticated from the ``api_server``
+  edge, so a tool confirmation it carries is warned about (default) or refused
+  (strict mode), the same decision made for an unauthenticated A2A caller.
+  The ``user_id`` in the request body is a claim the caller made rather than
+  one the server checked, so it is not consulted here.
+  """
+  principal = (
+      getattr(request.state, "caller_principal", None)
+      if request is not None
+      else None
+  )
+  if isinstance(principal, CallerPrincipal):
+    return principal
+  return CallerPrincipal(
+      authenticated=False, source=_API_SERVER_PRINCIPAL_SOURCE
+  )
 
 
 async def _monitor_client_disconnect(
@@ -2343,6 +2389,7 @@ class ApiServer:
         )
 
       abort_signal = asyncio.Event()
+      caller_principal = _caller_principal_for_request(request)
       live_run = _LiveSessionRun(
           abort_signal=abort_signal,
           finished=asyncio.Event(),
@@ -2364,6 +2411,9 @@ class ApiServer:
                   "run_config": run_config,
               },
               abort_signal,
+          )
+          run_async_kwargs = _with_caller_principal_kwarg(
+              runner, run_async_kwargs, caller_principal
           )
           async with Aclosing(runner.run_async(**run_async_kwargs)) as agen:
             return [public_event(event) async for event in agen]
@@ -2462,6 +2512,8 @@ class ApiServer:
               detail=f"Session not found: {req.session_id}",
           )
 
+      caller_principal = _caller_principal_for_request(request)
+
       # Convert the events to properly formatted SSE
       async def event_generator() -> AsyncIterator[str]:
         is_closing = False
@@ -2491,6 +2543,9 @@ class ApiServer:
                   "invocation_id": req.invocation_id,
               },
               abort_signal,
+          )
+          run_async_kwargs = _with_caller_principal_kwarg(
+              runner, run_async_kwargs, caller_principal
           )
           try:
             async with Aclosing(runner.run_async(**run_async_kwargs)) as agen:
