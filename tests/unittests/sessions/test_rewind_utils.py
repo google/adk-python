@@ -339,6 +339,69 @@ async def test_rewind_session_rewinds_to_first_event_of_invocation():
   assert session.state["step"] == "from_inv1"
 
 
+async def test_rewind_keeps_state_seeded_at_session_creation():
+  """State seeded by create_session survives a rewind that no event touches.
+
+  `create_session` writes initial state without recording an event, so no
+  event delta mentions it. Rewinding must not report it as "added after the
+  rewind point" and delete it.
+  """
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name="app",
+      user_id="u1",
+      session_id="s1",
+      state={"cart": "apple", "user:name": "alice"},
+  )
+  for invocation_id in ["inv1", "inv2"]:
+    await session_service.append_event(
+        session,
+        Event(
+            invocation_id=invocation_id,
+            author="user",
+            actions=EventActions(state_delta={"step": invocation_id}),
+        ),
+    )
+
+  await _rewind_utils.rewind_session(
+      session_service=session_service,
+      session=session,
+      rewind_before_invocation_id="inv2",
+  )
+
+  assert session.state["cart"] == "apple"
+  assert session.state["user:name"] == "alice"
+  assert session.state["step"] == "inv1"
+
+
+async def test_compute_state_delta_still_clears_keys_a_rewound_event_adds():
+  """A key that a rewound event added is still removed."""
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      state={
+          "seeded": "kept",
+          "from_inv1": "value",
+          "added_in_inv2": "removed",
+      },
+      events=[
+          Event(
+              invocation_id="inv1",
+              actions=EventActions(state_delta={"from_inv1": "value"}),
+          ),
+          Event(
+              invocation_id="inv2",
+              actions=EventActions(state_delta={"added_in_inv2": "removed"}),
+          ),
+      ],
+  )
+
+  delta = await _rewind_utils.compute_state_delta_for_rewind(session, 1)
+
+  assert delta == {"added_in_inv2": None}
+
+
 _DOC_V0 = types.Part.from_text(text="doc v0")
 _UNCHANGED = types.Part.from_text(text="unchanged")
 
