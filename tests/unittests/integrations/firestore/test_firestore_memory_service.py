@@ -299,6 +299,97 @@ async def test_add_session_to_memory(mock_firestore_client):
   assert data["timestamp"] == 1234567890.0
 
 
+def _mock_batch(client):
+  batch = mock.MagicMock()
+  batch.commit = mock.AsyncMock()
+  client.batch.return_value = batch
+  return batch
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_keeps_thoughts_out(mock_firestore_client):
+  service = FirestoreMemoryService(client=mock_firestore_client)
+  batch = _mock_batch(mock_firestore_client)
+  session = Session(id="s1", app_name="test_app", user_id="test_user")
+  session.events.append(
+      Event(
+          invocation_id="inv",
+          author="model",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      text="weighing the hidden escalation", thought=True
+                  ),
+                  types.Part.from_text(text="quick brown fox"),
+              ],
+          ),
+      )
+  )
+
+  await service.add_session_to_memory(session)
+
+  # The model's thoughts are not part of the conversation, so they must not
+  # become search keywords or be handed back to the model as a memory.
+  data = batch.set.call_args.args[1]
+  assert set(data["keywords"]) == {"quick", "brown", "fox"}
+  assert data["content"]["parts"] == [{"text": "quick brown fox"}]
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_thought_only_events(
+    mock_firestore_client,
+):
+  service = FirestoreMemoryService(client=mock_firestore_client)
+  batch = _mock_batch(mock_firestore_client)
+  session = Session(id="s1", app_name="test_app", user_id="test_user")
+  session.events.append(
+      Event(
+          invocation_id="inv",
+          author="model",
+          content=types.Content(
+              role="model",
+              parts=[types.Part(text="planning the reply", thought=True)],
+          ),
+      )
+  )
+
+  await service.add_session_to_memory(session)
+
+  batch.set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_memory_drops_stored_thought_parts(mock_firestore_client):
+  service = FirestoreMemoryService(client=mock_firestore_client)
+  doc_snapshot = mock_firestore_client.collection.return_value.get.return_value[
+      0
+  ]
+  # A memory written before thoughts were filtered at ingest.
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="weighing the hidden escalation", thought=True),
+          types.Part.from_text(text="quick brown fox"),
+      ],
+  )
+  doc_snapshot.to_dict.return_value = {
+      "appName": "test_app",
+      "userId": "test_user",
+      "author": "model",
+      "content": content.model_dump(exclude_none=True, mode="json"),
+      "timestamp": 1234567890.0,
+  }
+
+  response = await service.search_memory(
+      app_name="test_app", user_id="test_user", query="fox"
+  )
+
+  assert [p.text for p in response.memories[0].content.parts] == [
+      "quick brown fox"
+  ]
+
+
 def _text_event(text, event_id):
   return Event(
       id=event_id,
