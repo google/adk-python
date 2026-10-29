@@ -59,6 +59,7 @@ from ...tool_context import ToolContext
 from ..auth.auth_helpers import credential_to_param
 from ..auth.auth_helpers import dict_to_auth_scheme
 from ..auth.credential_exchangers.auto_auth_credential_exchanger import AutoAuthCredentialExchanger
+from ..common.common import _schema_from_openapi
 from ..common.common import ApiParameter
 from .openapi_spec_parser import OperationEndpoint
 from .openapi_spec_parser import ParsedOperation
@@ -570,7 +571,14 @@ class RestApiTool(BaseTool):
     request_body = self.operation.requestBody
     if request_body:
       for mime_type, media_type_object in request_body.content.items():
-        schema = media_type_object.schema_
+        # Normalized exactly as OperationParser did when it built the body
+        # parameters, so a media type declared without a schema (e.g.
+        # `application/octet-stream: {}`) gets the same single body parameter
+        # instead of crashing here.
+        schema = _schema_from_openapi(
+            media_type_object.schema_,
+            context=f"request body media type {mime_type!r}",
+        )
         body_data = None
 
         if schema.type == "object":
