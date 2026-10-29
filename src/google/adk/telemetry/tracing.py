@@ -1331,6 +1331,10 @@ def _use_native_generate_content_span(
     set_operation_details_attributes_from_request(
         gc_span.operation_details_attributes,
         llm_request,
+        include_content=(
+            telemetry_config.should_add_content_to_logs
+            or telemetry_config.should_add_content_to_experimental_spans
+        ),
     )
     yield gc_span
 
