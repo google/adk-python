@@ -126,6 +126,31 @@ class TestReadFileWriteFile:
     with pytest.raises(FileNotFoundError):
       await env.read_file(Path("does_not_exist.txt"))
 
+  @pytest.mark.asyncio
+  async def test_read_file_stream_yields_read_file_bytes_in_chunks(
+      self, env: LocalEnvironment, monkeypatch: pytest.MonkeyPatch
+  ):
+    """read_file_stream yields read_file's bytes without a whole-file read."""
+    await env.write_file("big.txt", b"line\n" * 30_000)
+    expected = await env.read_file("big.txt")
+
+    def _fail_sync_read(path: Path) -> bytes:
+      raise AssertionError(f"_sync_read should not be called: {path}")
+
+    monkeypatch.setattr(env, "_sync_read", _fail_sync_read)
+
+    chunks = [chunk async for chunk in env.read_file_stream("big.txt")]
+
+    assert b"".join(chunks) == expected
+    assert len(chunks) > 1
+
+  @pytest.mark.asyncio
+  async def test_read_file_stream_missing_raises(self, env: LocalEnvironment):
+    """Streaming a missing file raises FileNotFoundError."""
+    with pytest.raises(FileNotFoundError):
+      async for _ in env.read_file_stream("does_not_exist.txt"):
+        pass
+
 
 class TestExecuteTimeout:
   """Timeout and cancellation must reach the whole process tree."""

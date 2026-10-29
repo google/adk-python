@@ -14,12 +14,15 @@
 
 """Tests for ReadFileTool."""
 
+from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Optional
 
 from google.adk.environment._base_environment import BaseEnvironment
 from google.adk.environment._base_environment import ExecutionResult
 from google.adk.environment._local_environment import LocalEnvironment
+from google.adk.tools.environment._read_file_tool import _read_line_range
 from google.adk.tools.environment._read_file_tool import ReadFileTool
 import pytest
 import pytest_asyncio
@@ -194,3 +197,299 @@ class TestReadFileTool:
         'status': 'error',
         'error': '`end_line` must be an integer if provided.',
     }
+
+  @pytest.mark.asyncio
+  async def test_read_file_lines_exceeds_total(self, env: LocalEnvironment):
+    """Test start_line exceeding total lines of file."""
+    await env.write_file('sample.txt', 'line1\nline2\n')
+
+    tool = ReadFileTool(env)
+    result = await tool.run_async(
+        args={'path': 'sample.txt', 'start_line': 5},
+        tool_context=None,
+    )
+
+    assert result == {
+        'status': 'error',
+        'error': '`start_line` 5 exceeds file length (2 lines).',
+        'total_lines': 2,
+    }
+
+  @pytest.mark.asyncio
+  async def test_read_file_lines_order_violation(self, env: LocalEnvironment):
+    """Test start_line after end_line error handling."""
+    await env.write_file('sample.txt', 'line1\nline2\n')
+
+    tool = ReadFileTool(env)
+    result = await tool.run_async(
+        args={'path': 'sample.txt', 'start_line': 3, 'end_line': 2},
+        tool_context=None,
+    )
+
+    # Note that start_line is 3, which is also exceeding the file length.
+    # Therefore, the start_line exceeding check is fired first.
+    assert result == {
+        'status': 'error',
+        'error': '`start_line` 3 exceeds file length (2 lines).',
+        'total_lines': 2,
+    }
+
+    # Now let's try with start_line = 2, end_line = 1 (valid lines but out of
+    # order)
+    result_out_of_order = await tool.run_async(
+        args={'path': 'sample.txt', 'start_line': 2, 'end_line': 1},
+        tool_context=None,
+    )
+    assert result_out_of_order == {
+        'status': 'error',
+        'error': '`start_line` (2) is after `end_line` (1).',
+        'total_lines': 2,
+    }
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      'line_range',
+      [{'end_line': 0}, {'start_line': 0}, {'start_line': -1, 'end_line': 0}],
+  )
+  async def test_read_file_lines_zero_or_negative_bounds_read_whole_file(
+      self, env: LocalEnvironment, line_range: dict[str, int]
+  ):
+    """Test start_line below 1 reads from line 1 and end_line=0 reads to EOF."""
+    await env.write_file('sample.txt', 'line1\nline2\n')
+
+    tool = ReadFileTool(env)
+    result = await tool.run_async(
+        args={'path': 'sample.txt', **line_range},
+        tool_context=None,
+    )
+    assert result == {
+        'status': 'ok',
+        'content': '     1\tline1\n     2\tline2\n',
+    }
+
+  @pytest.mark.asyncio
+  async def test_read_file_tool_reads_through_read_file_stream(self):
+    """ReadFileTool reads lines split across stream chunks."""
+
+    class _ChunkedEnvironment(_StubEnvironment):
+
+      def __init__(self):
+        super().__init__({})
+        self.seen_paths: list[str] = []
+
+      async def read_file(self, path: Path) -> bytes:
+        raise AssertionError('read_file should not be called.')
+
+      async def read_file_stream(
+          self, path: Path
+      ) -> AsyncGenerator[bytes, None]:
+        self.seen_paths.append(path)
+        for chunk in (b'fir', b'st\nsec', b'ond\nthi', b'rd\n'):
+          yield chunk
+
+    environment = _ChunkedEnvironment()
+    result = await ReadFileTool(environment).run_async(
+        args={'path': 'sample.txt', 'start_line': 2, 'end_line': 2},
+        tool_context=None,
+    )
+
+    assert result == {
+        'status': 'ok',
+        'content': '     2\tsecond\n',
+        'total_lines': 3,
+    }
+    assert environment.seen_paths == ['sample.txt']
+
+  @pytest.mark.asyncio
+  async def test_read_file_tool_closes_stream_on_mid_read_exit(self):
+    """The stream is closed when the tool stops reading partway through."""
+
+    class _StreamingEnvironment(_StubEnvironment):
+
+      def __init__(self):
+        super().__init__({})
+        self.closed = False
+
+      async def read_file_stream(self, path: Path):
+        try:
+          yield b'alpha\n'
+          yield 'not bytes'  # Makes the tool fail between chunks.
+          yield b'never read\n'
+        finally:
+          self.closed = True
+
+    environment = _StreamingEnvironment()
+    result = await ReadFileTool(environment).run_async(
+        args={'path': 'sample.txt'},
+        tool_context=None,
+    )
+
+    assert result['status'] == 'error'
+    assert environment.closed
+
+  @pytest.mark.asyncio
+  async def test_read_file_tool_read_file_only_env_gets_path_unchanged(self):
+    """An environment overriding only read_file gets the path as is."""
+
+    class _RecordingEnvironment(_StubEnvironment):
+
+      def __init__(self):
+        super().__init__({'/workspace/notes.txt': b'alpha\n'})
+        self.seen_paths = []
+
+      async def read_file(self, path: Path) -> bytes:
+        self.seen_paths.append(path)
+        return await super().read_file(path)
+
+    environment = _RecordingEnvironment()
+    result = await ReadFileTool(environment).run_async(
+        args={'path': '/workspace/notes.txt'},
+        tool_context=None,
+    )
+
+    assert result == {'status': 'ok', 'content': '     1\talpha\n'}
+    assert environment.seen_paths == ['/workspace/notes.txt']
+    assert isinstance(environment.seen_paths[0], str)
+
+  @pytest.mark.asyncio
+  async def test_read_file_tool_splits_on_newline_only(self):
+    """Lone carriage returns do not split lines."""
+    environment = _StubEnvironment({'progress.log': b'step1\rstep2\nstep3\n'})
+
+    result = await ReadFileTool(environment).run_async(
+        args={'path': 'progress.log', 'start_line': 2},
+        tool_context=None,
+    )
+
+    assert result == {
+        'status': 'ok',
+        'content': '     2\tstep3\n',
+        'total_lines': 2,
+    }
+
+  @pytest.mark.asyncio
+  async def test_read_file_tool_read_file_only_env_bounds_large_file(self):
+    """A read_file-only environment reports total_lines when truncated."""
+    lines_data = [f'line {i:04d}\n'.encode('utf-8') for i in range(1, 5001)]
+    environment = _StubEnvironment({'large_log.txt': b''.join(lines_data)})
+
+    result = await ReadFileTool(environment, max_output_chars=500).run_async(
+        args={'path': 'large_log.txt'},
+        tool_context=None,
+    )
+
+    assert result['status'] == 'ok'
+    assert result['total_lines'] == 5000
+    assert result['content'].endswith('\n... (truncated, 5000 total lines)')
+    assert 'total chars' not in result['content']
+
+  @pytest.mark.asyncio
+  async def test_read_file_tool_bounds_large_file(self, env: LocalEnvironment):
+    """ReadFileTool bounds reading large file and reports total_lines."""
+    lines_data = [f'line {i:04d}\n'.encode('utf-8') for i in range(1, 5001)]
+    await env.write_file('large_log.txt', b''.join(lines_data))
+
+    tool = ReadFileTool(env, max_output_chars=500)
+    result = await tool.run_async(
+        args={'path': 'large_log.txt'},
+        tool_context=None,
+    )
+
+    assert result['status'] == 'ok'
+    assert result['total_lines'] == 5000
+    assert result['content'].endswith('\n... (truncated, 5000 total lines)')
+    assert 'total chars' not in result['content']
+
+  @pytest.mark.asyncio
+  async def test_read_file_tool_bounds_single_line_large_file(
+      self, env: LocalEnvironment
+  ):
+    """ReadFileTool bounds reading a multi-chunk single-line file."""
+    await env.write_file('single_line.txt', 'x' * 150_000)
+
+    tool = ReadFileTool(env, max_output_chars=500)
+    result = await tool.run_async(
+        args={'path': 'single_line.txt'},
+        tool_context=None,
+    )
+
+    assert result['status'] == 'ok'
+    assert result['total_lines'] == 1
+    assert result['content'].startswith('     1\t' + 'x' * 493)
+    assert result['content'].endswith('\n... (truncated, 1 total lines)')
+    assert 'total chars' not in result['content']
+    assert len(result['content']) < 600
+
+  @pytest.mark.asyncio
+  async def test_read_file_tool_bounds_multibyte_utf8_truncates_content(
+      self, env: LocalEnvironment
+  ):
+    """ReadFileTool bounds multibyte UTF-8 file and truncates content."""
+    lines_data = [f'line {i:04d} ' + '中' * 20 + '\n' for i in range(1, 100)]
+    await env.write_file('cjk_log.txt', ''.join(lines_data))
+
+    tool = ReadFileTool(env, max_output_chars=500)
+    result = await tool.run_async(
+        args={'path': 'cjk_log.txt'},
+        tool_context=None,
+    )
+
+    assert result['status'] == 'ok'
+    assert result['total_lines'] == 99
+    assert result['content'].endswith('\n... (truncated, 99 total lines)')
+    assert 'total chars' not in result['content']
+
+  @pytest.mark.asyncio
+  async def test_read_file_tool_counts_lines_past_range_across_chunks(
+      self, env: LocalEnvironment
+  ):
+    """total_lines counts every line, including past the 64 KiB chunks."""
+    # A 70000-byte line straddles the first chunk boundary; no trailing \n.
+    content = b'first\n' + b'y' * 70_000 + b'\n' + b'z\n' * 50_000 + b'tail'
+    await env.write_file('mixed.txt', content)
+
+    result = await ReadFileTool(env).run_async(
+        args={'path': 'mixed.txt', 'end_line': 1},
+        tool_context=None,
+    )
+
+    assert result == {
+        'status': 'ok',
+        'content': '     1\tfirst\n',
+        'total_lines': 50_003,
+    }
+
+
+async def _chunks(*parts: bytes) -> AsyncIterator[bytes]:
+  for part in parts:
+    yield part
+
+
+@pytest.mark.asyncio
+async def test_read_line_range_cuts_selected_lines_at_max_bytes():
+  """Selected lines stop at max_bytes while every line is still counted."""
+  data = b''.join(f'line {i:03d}\n'.encode('utf-8') for i in range(1, 101))
+
+  lines, total = await _read_line_range(
+      _chunks(data[:40], data[40:]),
+      start_line=1,
+      end_line=None,
+      max_bytes=25,
+  )
+
+  assert lines == [b'line 001\n', b'line 002\n', b'line 00']
+  assert total == 100
+
+
+@pytest.mark.asyncio
+async def test_read_line_range_counts_lines_split_across_chunks():
+  """Lines split across chunk boundaries are kept and counted once."""
+  lines, total = await _read_line_range(
+      _chunks(b'first\nyy', b'yy\nz', b'\nz\n', b'tail'),
+      start_line=2,
+      end_line=2,
+      max_bytes=100,
+  )
+
+  assert lines == [b'yyyy\n']
+  assert total == 5
