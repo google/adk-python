@@ -2489,6 +2489,41 @@ def test_unhashable_callable_field_does_not_override_call_annotations(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("json_schema_enabled", [True, False])
+async def test_partial_keyword_arguments_are_not_exposed_to_the_model(
+    mock_tool_context, json_schema_enabled
+):
+  """Arguments a partial binds by keyword are neither declared nor overridable."""
+
+  def transfer(amount: int, to_account: str, from_account: str) -> dict:
+    return {"amount": amount, "to": to_account, "from": from_account}
+
+  with temporary_feature_override(
+      FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, json_schema_enabled
+  ):
+    tool = FunctionTool(
+        functools.partial(transfer, from_account="alice-checking")
+    )
+    declaration = tool._get_declaration()
+
+  if json_schema_enabled:
+    declared = declaration.parameters_json_schema["properties"]
+  else:
+    declared = declaration.parameters.properties
+  assert sorted(declared) == ["amount", "to_account"]
+
+  result = await tool.run_async(
+      args={
+          "amount": 5,
+          "to_account": "bob",
+          "from_account": "mallory-savings",
+      },
+      tool_context=mock_tool_context,
+  )
+  assert result == {"amount": 5, "to": "bob", "from": "alice-checking"}
+
+
+@pytest.mark.asyncio
 async def test_partial_tool_with_context_parameter(mock_tool_context):
   """functools.partial tools detect context and exclude it from declaration."""
 
