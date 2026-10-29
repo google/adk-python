@@ -561,6 +561,14 @@ class InferenceScope:
   llm_request: LlmRequest
   user_id: str
   span: tracing.GenerateContentSpan | trace.Span | None = None
+  streamed_request: LlmRequest | None = None
+  """The request whose response chunks are timed. None when the call does not
+  stream, or when ADK leaves its inference telemetry to another library."""
+  span_started_ns: int = 0
+  """When the inference span started, in `time.time_ns` nanoseconds. For a span
+  that records no start time (sampled out, or no tracer provider), when it
+  opened."""
+  _last_chunk_received_ns: int | None = None
   _llm_responses: list[LlmResponse] = dataclasses.field(default_factory=list)
   _inference_span_ended: bool = False
 
@@ -572,11 +580,12 @@ class InferenceScope:
       self, invocation_context: InvocationContext, response: LlmResponse
   ) -> None:
     self._llm_responses.append(response)
-    # Anything after the span ended (a second complete response for the same
-    # call) can no longer be recorded on it, but still counts for the metrics.
+    # Anything after the span ended (a stream's aggregate, a second complete
+    # response) is neither traced nor timed, but still counts for the metrics.
     if self._inference_span_ended:
       return
 
+    self._record_chunk_timing(response)
     tracing.trace_inference_result(invocation_context, self.span, response)
     # The inference ends at the response that says why generation stopped. End
     # the span there, before the response is handed back to the caller, so what
@@ -594,6 +603,60 @@ class InferenceScope:
     ):
       exit_stack.close()
       self._inference_span_ended = True
+
+  def _record_chunk_timing(self, response: LlmResponse) -> None:
+    """Records the wait for ``response``, if it is a chunk being timed.
+
+    Args:
+      response: The response that arrived.
+    """
+    if self.streamed_request is None:
+      return
+    # On the span's clock, so the first chunk is timed from the span's start,
+    # like the operation duration is.
+    received_ns = time.time_ns()
+    if self._last_chunk_received_ns is None:
+      is_first_chunk = True
+      wait_ns = received_ns - self.span_started_ns
+    else:
+      is_first_chunk = False
+      wait_ns = received_ns - self._last_chunk_received_ns
+    self._last_chunk_received_ns = received_ns
+    wait_s = wait_ns / 1e9
+
+    try:
+      _metrics.record_client_inference_chunk(
+          llm_request=self.streamed_request,
+          response=response,
+          elapsed_s=wait_s,
+          first_chunk=is_first_chunk,
+      )
+    except Exception:  # pylint: disable=broad-exception-caught
+      logger.exception("Failed to record chunk timing")
+
+
+def _is_sse_request(invocation_context: InvocationContext) -> bool:
+  """Whether the model call is an SSE streaming request.
+
+  A live call (`support_cfc`) is excluded: it is one long exchange rather than
+  a request, so there is no request to time its first chunk from.
+
+  Args:
+    invocation_context: The invocation the model call belongs to.
+
+  Returns:
+    True when the call streams over SSE, as `call_llm_async` decides it.
+  """
+  from ..agents._streaming_mode import StreamingMode
+
+  # Callers drive agents with their own lightweight context objects, which may
+  # carry no run config.
+  run_config = getattr(invocation_context, "run_config", None)
+  return (
+      run_config is not None
+      and run_config.streaming_mode == StreamingMode.SSE
+      and not run_config.support_cfc
+  )
 
 
 def _record_agent_metrics(
@@ -1059,6 +1122,16 @@ async def record_inference_telemetry(
         model_response_event,
     ) as gc_span:
       tel_ctx.span = gc_span
+      if gc_span is not None and _is_sse_request(invocation_context):
+        tel_ctx.streamed_request = llm_request
+      span_start_ns = None
+      if gc_span is not None:
+        span_start_ns = getattr(gc_span.span, "start_time", None)
+      if isinstance(span_start_ns, int):
+        tel_ctx.span_started_ns = span_start_ns
+      else:
+        # A span that is not recorded has no start time.
+        tel_ctx.span_started_ns = time.time_ns()
       yield tel_ctx
   finally:
     context_api.detach(token)
