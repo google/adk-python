@@ -51,6 +51,7 @@
                   "gcp.vertex.agent.event_id": "PRESENT",
                   "gcp.vertex.agent.invocation_id": "PRESENT",
                   "gen_ai.provider.name": "gcp.gemini",
+                  "error.type": "ValueError",
                   "gen_ai.tool.definitions": [
                     {
                       "name": "some_tool",
