@@ -34,10 +34,12 @@ from google.adk.platform import uuid as platform_uuid
 
 _sqlalchemy_import_error: ImportError | None = None
 try:
+  from sqlalchemy import and_
   from sqlalchemy import delete
   from sqlalchemy import event
   from sqlalchemy import inspect
   from sqlalchemy import MetaData
+  from sqlalchemy import or_
   from sqlalchemy import select
   from sqlalchemy.engine import Connection
   from sqlalchemy.engine import make_url
@@ -56,6 +58,7 @@ except ImportError as e:
   _sqlalchemy_import_error = e
 from typing_extensions import override
 
+from . import _pagination
 from . import _session_util
 from ..errors._stale_session_error import StaleSessionError
 from ..errors.already_exists_error import AlreadyExistsError
@@ -104,6 +107,10 @@ _NAIVE_DATETIME_DIALECTS = (
     _MARIADB_DIALECT,
     _MSSQL_DIALECT,
 )
+# The most user IDs a paged list_sessions filters user state by; a page with
+# more falls back to loading the app's user state, which has no bind-parameter
+# limit to hit.
+_MAX_USER_ID_FILTER = 500
 # The driver a URL falls back to when it names none is synchronous for each of
 # these backends, and the asyncio extension of SQLAlchemy refuses a synchronous
 # driver, so such a URL cannot be used here.
@@ -814,8 +821,17 @@ class DatabaseSessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: str | None = None
+      self,
+      *,
+      app_name: str,
+      user_id: str | None = None,
+      page_size: int | None = None,
+      page_token: str | None = None,
   ) -> ListSessionsResponse:
+    _pagination.validate_page_size(page_size)
+    cursor = _pagination.decode_page_token(
+        page_token, app_name=app_name, user_id=user_id
+    )
     await self.prepare_tables()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session(
@@ -826,16 +842,50 @@ class DatabaseSessionService(BaseSessionService):
       )
       if user_id is not None:
         stmt = stmt.filter(schema.StorageSession.user_id == user_id)
+      if cursor is not None:
+        # Keyset condition for "sorts after the cursor". Spelled out instead of
+        # a row-value comparison, which not every supported dialect has.
+        cursor_time = datetime.fromtimestamp(
+            cursor.last_update_time, timezone.utc
+        )
+        if self._uses_naive_datetime():
+          cursor_time = cursor_time.replace(tzinfo=None)
+        update_time = schema.StorageSession.update_time
+        stmt = stmt.filter(
+            or_(
+                update_time > cursor_time,
+                and_(
+                    update_time == cursor_time,
+                    schema.StorageSession.user_id > cursor.user_id,
+                ),
+                and_(
+                    update_time == cursor_time,
+                    schema.StorageSession.user_id == cursor.user_id,
+                    schema.StorageSession.id > cursor.session_id,
+                ),
+            )
+        )
       stmt = stmt.order_by(
           schema.StorageSession.update_time.asc(),
           schema.StorageSession.user_id.asc(),
           schema.StorageSession.id.asc(),
       )
+      if page_size is not None:
+        # One extra row tells whether another page follows.
+        stmt = stmt.limit(page_size + 1)
 
       result = await sql_session.execute(stmt)
       results = [
           _require_storage_session(row) for row in result.scalars().all()
       ]
+      next_page_token = None
+      if page_size is not None and len(results) > page_size:
+        results = results[:page_size]
+        next_page_token = _pagination.encode_page_token(
+            app_name=app_name,
+            user_id=user_id,
+            last_session=results[-1].to_session(),
+        )
 
       # Fetch app state from storage
       storage_app_state = _optional_storage_app_state(
@@ -855,6 +905,15 @@ class DatabaseSessionService(BaseSessionService):
         user_state_stmt = select(schema.StorageUserState).filter(
             schema.StorageUserState.app_name == app_name
         )
+        page_user_ids = {row.user_id for row in results}
+        if (
+            page_size is not None
+            and 0 < len(page_user_ids) <= _MAX_USER_ID_FILTER
+        ):
+          # Only the users on this page need their state.
+          user_state_stmt = user_state_stmt.filter(
+              schema.StorageUserState.user_id.in_(page_user_ids)
+          )
         user_state_result = await sql_session.execute(user_state_stmt)
         for storage_user_state_row in user_state_result.scalars().all():
           storage_user_state = _require_storage_user_state(
@@ -868,7 +927,9 @@ class DatabaseSessionService(BaseSessionService):
         user_state = user_states_map.get(storage_session.user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
         sessions.append(storage_session.to_session(state=merged_state))
-      return ListSessionsResponse(sessions=sessions)
+      return ListSessionsResponse(
+          sessions=sessions, next_page_token=next_page_token
+      )
 
   @override
   async def delete_session(

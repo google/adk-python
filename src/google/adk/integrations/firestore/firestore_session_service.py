@@ -33,6 +33,7 @@ from ...errors.already_exists_error import AlreadyExistsError
 from ...errors.session_not_found_error import SessionNotFoundError
 from ...events.event import Event
 from ...platform import uuid as platform_uuid
+from ...sessions import _pagination
 from ...sessions import _session_util
 from ...sessions.base_session_service import BaseSessionService
 from ...sessions.base_session_service import GetSessionConfig
@@ -365,9 +366,24 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
     return session
 
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self,
+      *,
+      app_name: str,
+      user_id: Optional[str] = None,
+      page_size: Optional[int] = None,
+      page_token: Optional[str] = None,
   ) -> ListSessionsResponse:
-    """Lists sessions from Firestore."""
+    """Lists sessions from Firestore.
+
+    ``page_size`` and ``page_token`` slice the sorted list of every matching
+    session, which is loaded on each call: paging keeps the order stable but
+    does not reduce the work of each call.
+    """
+    # Fail before touching Firestore on bad arguments.
+    _pagination.validate_page_size(page_size)
+    _pagination.decode_page_token(
+        page_token, app_name=app_name, user_id=user_id
+    )
     if user_id == "":
       # Firestore rejects an empty document ID, so no session can exist here.
       return ListSessionsResponse()
@@ -443,8 +459,15 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
           )
       )
 
-    sessions.sort(key=lambda s: (s.last_update_time, s.user_id, s.id))
-    return ListSessionsResponse(sessions=sessions)
+    sessions.sort(key=_pagination.session_sort_key)
+    page, next_page_token = _pagination.paginate_sorted_sessions(
+        sessions,
+        app_name=app_name,
+        user_id=user_id,
+        page_size=page_size,
+        page_token=page_token,
+    )
+    return ListSessionsResponse(sessions=page, next_page_token=next_page_token)
 
   async def get_user_state(
       self, *, app_name: str, user_id: str

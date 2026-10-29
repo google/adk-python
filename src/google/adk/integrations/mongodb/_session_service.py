@@ -36,6 +36,7 @@ from ...features import experimental
 from ...features import FeatureName
 from ...platform import time as platform_time
 from ...platform import uuid as platform_uuid
+from ...sessions import _pagination
 from ...sessions import _session_util
 from ...sessions.base_session_service import BaseSessionService
 from ...sessions.base_session_service import GetSessionConfig
@@ -589,9 +590,24 @@ class MongoDbSessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: str | None = None
+      self,
+      *,
+      app_name: str,
+      user_id: str | None = None,
+      page_size: int | None = None,
+      page_token: str | None = None,
   ) -> ListSessionsResponse:
-    """Lists sessions from MongoDB, oldest update first."""
+    """Lists sessions from MongoDB, oldest update first.
+
+    ``page_size`` and ``page_token`` slice the sorted list of every matching
+    session, which is loaded on each call: paging keeps the order stable but
+    does not reduce the work of each call.
+    """
+    # Fail before touching MongoDB on bad arguments.
+    _pagination.validate_page_size(page_size)
+    _pagination.decode_page_token(
+        page_token, app_name=app_name, user_id=user_id
+    )
     await self._ensure_indexes_once()
 
     def _list() -> list[Session]:
@@ -622,10 +638,17 @@ class MongoDbSessionService(BaseSessionService):
           )
           for doc in docs
       ]
-      sessions.sort(key=lambda s: (s.last_update_time, s.user_id, s.id))
+      sessions.sort(key=_pagination.session_sort_key)
       return sessions
 
-    return ListSessionsResponse(sessions=await asyncio.to_thread(_list))
+    page, next_page_token = _pagination.paginate_sorted_sessions(
+        await asyncio.to_thread(_list),
+        app_name=app_name,
+        user_id=user_id,
+        page_size=page_size,
+        page_token=page_token,
+    )
+    return ListSessionsResponse(sessions=page, next_page_token=next_page_token)
 
   @override
   async def delete_session(

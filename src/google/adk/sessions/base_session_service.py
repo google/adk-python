@@ -55,9 +55,16 @@ class ListSessionsResponse(BaseModel):
   """The response of listing sessions.
 
   The events and states are not set within each Session object.
+
+  Attributes:
+    sessions: The sessions of this page, oldest last update first.
+    next_page_token: An opaque token to pass as ``page_token`` to retrieve the
+      next page. None if the response holds the last page, which is always the
+      case when ``list_sessions`` was called without ``page_size``.
   """
 
   sessions: list[Session] = Field(default_factory=list)
+  next_page_token: Optional[str] = None
 
 
 class BaseSessionService(abc.ABC):
@@ -101,20 +108,44 @@ class BaseSessionService(abc.ABC):
 
   @abc.abstractmethod
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self,
+      *,
+      app_name: str,
+      user_id: Optional[str] = None,
+      page_size: Optional[int] = None,
+      page_token: Optional[str] = None,
   ) -> ListSessionsResponse:
-    """Lists all the sessions for a user.
+    """Lists the sessions for a user, optionally one page at a time.
 
     Sessions are ordered by last update time, oldest first, so the last session
-    is the most recently active one.
+    is the most recently active one. Sessions with equal update times are
+    ordered by user ID and then session ID, so the order is deterministic.
+
+    Without ``page_size`` and ``page_token`` every session is returned. To page,
+    pass ``page_size`` and then pass each response's ``next_page_token`` as
+    ``page_token`` of the next call, with the same ``app_name`` and
+    ``user_id``, until ``next_page_token`` is None. The token is a cursor on the
+    sort order, so sessions created, updated or deleted between two calls never
+    make a session that exists throughout the walk be skipped or repeated. A
+    session updated after it was returned moves to the end of the order and is
+    returned again if its page has not been reached yet.
 
     Args:
       app_name: The name of the app.
       user_id: The ID of the user. If not provided, lists all sessions for all
         users.
+      page_size: The maximum number of sessions to return. If None, all the
+        sessions (after ``page_token``, if given) are returned in one response.
+      page_token: The ``next_page_token`` of the previous response. If None,
+        listing starts from the first session.
 
     Returns:
-      A ListSessionsResponse containing the sessions.
+      A ListSessionsResponse containing the sessions, and the token of the next
+      page if there are more sessions.
+
+    Raises:
+      ValueError: If ``page_size`` is not a positive integer, or ``page_token``
+        is malformed or was issued for a different ``app_name`` or ``user_id``.
     """
 
   @abc.abstractmethod

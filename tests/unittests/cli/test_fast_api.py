@@ -2317,6 +2317,82 @@ async def test_list_sessions_filters_eval_sessions(
   assert "___eval___session___old-style" not in session_ids
 
 
+async def test_list_sessions_pages_with_header_token(
+    test_app, test_session_info, mock_session_service
+):
+  """page_size/page_token page the list; the next token is a response header."""
+  app_name = test_session_info["app_name"]
+  user_id = test_session_info["user_id"]
+  for i in range(5):
+    await mock_session_service.create_session(
+        app_name=app_name, user_id=user_id, session_id=f"s{i}", state={}
+    )
+  url = f"/apps/{app_name}/users/{user_id}/sessions"
+
+  full = test_app.get(url)
+  assert full.status_code == 200
+  assert "x-next-page-token" not in full.headers
+
+  ids = []
+  token = None
+  for _ in range(10):
+    params = {"page_size": 2}
+    if token:
+      params["page_token"] = token
+    response = test_app.get(url, params=params)
+    assert response.status_code == 200
+    assert len(response.json()) <= 2
+    ids += [s["id"] for s in response.json()]
+    token = response.headers.get("x-next-page-token")
+    if token is None:
+      break
+
+  assert ids == [s["id"] for s in full.json()]
+  assert len(ids) == 5
+
+
+async def test_list_sessions_rejects_bad_paging_parameters(
+    test_app, test_session_info, mock_session_service
+):
+  app_name = test_session_info["app_name"]
+  user_id = test_session_info["user_id"]
+  await mock_session_service.create_session(
+      app_name=app_name, user_id=user_id, session_id="s0", state={}
+  )
+  url = f"/apps/{app_name}/users/{user_id}/sessions"
+
+  assert test_app.get(url, params={"page_size": 0}).status_code == 422
+  assert test_app.get(url, params={"page_size": -3}).status_code == 422
+  assert test_app.get(url, params={"page_token": "garbage"}).status_code == 400
+  # An empty token means "no token", as for the first page.
+  assert test_app.get(url, params={"page_token": ""}).status_code == 200
+
+
+async def test_list_sessions_without_paging_parameters_omits_them(
+    test_app, test_session_info, mock_session_service, monkeypatch
+):
+  """Services written before paging existed keep working for plain calls."""
+  calls = []
+
+  async def legacy_list_sessions(*, app_name, user_id=None):
+    calls.append((app_name, user_id))
+    return ListSessionsResponse(sessions=[])
+
+  monkeypatch.setattr(
+      mock_session_service, "list_sessions", legacy_list_sessions
+  )
+  url = (
+      f"/apps/{test_session_info['app_name']}/users/"
+      f"{test_session_info['user_id']}/sessions"
+  )
+
+  assert test_app.get(url).status_code == 200
+  assert test_app.get(url, params={"page_size": 2}).status_code == 501
+  assert calls == [
+      (test_session_info["app_name"], test_session_info["user_id"])
+  ]
+
+
 def test_delete_session(test_app, create_test_session):
   """Test deleting a session."""
   info = create_test_session

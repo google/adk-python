@@ -208,9 +208,16 @@ class PerAgentDatabaseSessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: Optional[str] = None,
+      page_size: Optional[int] = None,
+      page_token: Optional[str] = None,
   ) -> ListSessionsResponse:
     service = await self._get_service(app_name)
-    return await service.list_sessions(app_name=app_name, user_id=user_id)
+    return await service.list_sessions(
+        app_name=app_name,
+        user_id=user_id,
+        page_size=page_size,
+        page_token=page_token,
+    )
 
   @override
   async def delete_session(
