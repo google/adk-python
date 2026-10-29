@@ -632,7 +632,7 @@ def _details(*counts: tuple[str, int]) -> list[types.ModalityTokenCount]:
             {"text": 10},
         ),
         (8, _details(("TEXT", 8), ("IMAGE", 0)), {"text": 8}),
-        (0, None, {}),
+        (0, None, {"unknown": 0}),
     ],
 )
 def test_record_inference_token_usage_schema_v2_splits_by_modality(
@@ -655,7 +655,7 @@ def test_record_inference_token_usage_schema_v2_splits_by_modality(
 def test_record_inference_token_usage_schema_v2_records_zero_per_operation(
     monkeypatch, inference_token_instruments
 ):
-  """A call that spent nothing is a zero in the histograms, no counter add."""
+  """A call that spent nothing records a zero on every instrument."""
   monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "2")
 
   _record_inference_tokens(
@@ -667,17 +667,21 @@ def test_record_inference_token_usage_schema_v2_records_zero_per_operation(
   assert {
       attr: _points(instrument)
       for attr, instrument in inference_token_instruments.items()
-      if _points(instrument)
   } == {
       "_inference_operation_input_tokens": [(_INFERENCE_ATTRIBUTES, 0)],
       "_inference_operation_output_tokens": [(_INFERENCE_ATTRIBUTES, 0)],
+      "_inference_usage_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_output_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_cache_read_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_cache_write_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_reasoning_output_tokens": _by_modality({"unknown": 0}),
   }
 
 
-def test_record_inference_token_usage_schema_v2_skips_an_unreported_direction(
+def test_record_inference_token_usage_schema_v2_records_zero_when_unreported(
     monkeypatch, inference_token_instruments
 ):
-  """No output count reported is no output point, not a zero."""
+  """No output count reported is a zero output point."""
   monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "2")
 
   _record_inference_tokens(
@@ -687,10 +691,56 @@ def test_record_inference_token_usage_schema_v2_skips_an_unreported_direction(
   assert {
       attr: _points(instrument)
       for attr, instrument in inference_token_instruments.items()
-      if _points(instrument)
   } == {
       "_inference_operation_input_tokens": [(_INFERENCE_ATTRIBUTES, 20)],
+      "_inference_operation_output_tokens": [(_INFERENCE_ATTRIBUTES, 0)],
       "_inference_usage_input_tokens": _by_modality({"unknown": 20}),
+      "_inference_usage_output_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_cache_read_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_cache_write_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_reasoning_output_tokens": _by_modality({"unknown": 0}),
+  }
+
+
+def test_record_inference_token_usage_schema_v2_keeps_usage_before_trailing(
+    monkeypatch, inference_token_instruments
+):
+  """A trailing response without usage does not hide the usage before it."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "2")
+
+  _metrics.record_inference_token_usage(
+      llm_request=mock.MagicMock(model="test-model"),
+      responses=[
+          LlmResponse(
+              content=types.ModelContent("text "),
+              model_version="test-model-v1",
+              usage_metadata=types.GenerateContentResponseUsageMetadata(
+                  prompt_token_count=10, candidates_token_count=2
+              ),
+          ),
+          LlmResponse(
+              content=types.ModelContent("response"),
+              finish_reason=types.FinishReason.STOP,
+              model_version="test-model-v1",
+              usage_metadata=types.GenerateContentResponseUsageMetadata(
+                  prompt_token_count=10, candidates_token_count=5
+              ),
+          ),
+          LlmResponse(model_version="test-model-v1"),
+      ],
+  )
+
+  assert {
+      attr: _points(instrument)
+      for attr, instrument in inference_token_instruments.items()
+  } == {
+      "_inference_operation_input_tokens": [(_INFERENCE_ATTRIBUTES, 10)],
+      "_inference_operation_output_tokens": [(_INFERENCE_ATTRIBUTES, 5)],
+      "_inference_usage_input_tokens": _by_modality({"unknown": 10}),
+      "_inference_usage_output_tokens": _by_modality({"unknown": 5}),
+      "_inference_usage_cache_read_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_cache_write_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_reasoning_output_tokens": _by_modality({"unknown": 0}),
   }
 
 

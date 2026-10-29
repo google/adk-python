@@ -1063,6 +1063,8 @@ async def record_inference_telemetry(
   finally:
     context_api.detach(token)
     inference_error = sys.exc_info()[1]
+    # Only a real error counts; a closed stream or cancelled task is not one.
+    error = inference_error if isinstance(inference_error, Exception) else None
     _accumulate_inference_call(workflow_scope)
     usage = _token_usage.TokenUsage.from_llm_responses(tel_ctx.llm_responses)
     if usage is not None:
@@ -1078,11 +1080,7 @@ async def record_inference_telemetry(
             elapsed_s=elapsed_s,
             llm_request=llm_request,
             responses=tel_ctx.llm_responses,
-            error=(
-                inference_error
-                if isinstance(inference_error, Exception)
-                else None
-            ),
+            error=error,
         )
         _metrics.record_client_token_usage(
             agent_name=agent.name,
@@ -1100,6 +1098,7 @@ async def record_inference_telemetry(
           _metrics.record_inference_token_usage(
               llm_request=llm_request,
               responses=tel_ctx.llm_responses,
+              error=error,
           )
     except Exception:  # pylint: disable=broad-exception-caught
       logger.exception(

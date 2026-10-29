@@ -745,46 +745,53 @@ def record_client_token_usage(
 def record_inference_token_usage(
     llm_request: LlmRequest,
     responses: list[LlmResponse],
+    error: Exception | None = None,
 ) -> None:
-  """Records the semconv-genai inference token metrics, from schema v2."""
+  """Records the semconv-genai inference token metrics, from schema v2.
+
+  Every model call records each of them once, failed calls included. A count
+  the model did not report, or a call that got no usage back, records `0`.
+
+  Args:
+    llm_request: The request sent to the model.
+    responses: The response chunks received, if any.
+    error: The exception the call failed with, if any.
+  """
   if resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED:
     return
-  # As above, the last response chunk holds the whole request's usage.
-  if not responses or not responses[-1].usage_metadata:
-    return
-  last_response = responses[-1]
-  usage_metadata = last_response.usage_metadata
-  token_usage = TokenUsage.from_usage_metadata(usage_metadata)
+  last_response = responses[-1] if responses else None
+  token_usage = TokenUsage.from_llm_responses(responses)
+  if token_usage is None:
+    token_usage = TokenUsage()
   inference_attrs = _inference_attributes(llm_request, last_response)
 
-  # A reported zero is recorded; a direction the model did not report is not.
-  if token_usage.input_tokens is not None:
-    _inference_operation_input_tokens.record(
-        token_usage.input_tokens, attributes=inference_attrs
+  histogram_attrs = inference_attrs.copy()
+  if error is not None:
+    histogram_attrs[error_attributes.ERROR_TYPE] = tracing.resolve_error_type(
+        error
     )
-  if token_usage.output_tokens is not None:
-    _inference_operation_output_tokens.record(
-        token_usage.output_tokens, attributes=inference_attrs
-    )
-  input_details = (usage_metadata.prompt_tokens_details or []) + (
-      usage_metadata.tool_use_prompt_tokens_details or []
+  _inference_operation_input_tokens.record(
+      token_usage.input_tokens or 0, attributes=histogram_attrs
+  )
+  _inference_operation_output_tokens.record(
+      token_usage.output_tokens or 0, attributes=histogram_attrs
   )
   _add_by_modality(
       counter=_inference_usage_input_tokens,
       tokens=token_usage.input_tokens,
-      details=input_details,
+      details=token_usage.input_tokens_details,
       attrs=inference_attrs,
   )
   _add_by_modality(
       counter=_inference_usage_output_tokens,
       tokens=token_usage.output_tokens,
-      details=usage_metadata.candidates_tokens_details,
+      details=token_usage.output_tokens_details,
       attrs=inference_attrs,
   )
   _add_by_modality(
       counter=_inference_usage_cache_read_input_tokens,
       tokens=token_usage.cache_read_input_tokens,
-      details=usage_metadata.cache_tokens_details,
+      details=token_usage.cache_read_input_tokens_details,
       attrs=inference_attrs,
   )
   # Cache writes and thoughts tokens come with no modality breakdown.
@@ -809,7 +816,8 @@ def _add_by_modality(
     details: list[types.ModalityTokenCount] | None,
     attrs: dict[str, AttributeValue],
 ) -> None:
-  for modality, count in _split_by_modality(tokens or 0, details).items():
+  by_modality = _split_by_modality(tokens or 0, details) or {"unknown": 0}
+  for modality, count in by_modality.items():
     counter.add(count, attributes=attrs | {"gen_ai.token.modality": modality})
 
 
@@ -844,10 +852,9 @@ def _split_by_modality(
 
 
 def _inference_attributes(
-    llm_request: LlmRequest, last_response: LlmResponse
+    llm_request: LlmRequest, last_response: LlmResponse | None
 ) -> dict[str, AttributeValue]:
   """The semconv attributes every inference token metric carries."""
-  response_model = last_response.model_version or llm_request.model
   attrs: dict[str, AttributeValue] = {
       gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",
       gen_ai_attributes.GEN_AI_PROVIDER_NAME: _get_provider_name(
@@ -856,8 +863,10 @@ def _inference_attributes(
   }
   if llm_request.model:
     attrs[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = llm_request.model
-  if response_model:
-    attrs[gen_ai_attributes.GEN_AI_RESPONSE_MODEL] = response_model
+  if last_response is not None:
+    response_model = last_response.model_version or llm_request.model
+    if response_model:
+      attrs[gen_ai_attributes.GEN_AI_RESPONSE_MODEL] = response_model
   return attrs
 
 
