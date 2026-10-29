@@ -17,6 +17,9 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 from typing import Any
 from unittest import mock
 
@@ -50,16 +53,30 @@ class _FakeCollection:
     self.create_index_error: Exception | None = None
     self.bulk_write_calls: list[tuple[list[Any], bool]] = []
     self.last_pipeline: list[dict[str, Any]] | None = None
+    self.search_index_models: list[Any] = []
 
   def create_index(
-      self, keys: list[tuple[str, int]], *, name: str | None = None
+      self,
+      keys: list[tuple[str, int]],
+      *,
+      name: str | None = None,
+      expireAfterSeconds: int | None = None,
   ) -> str:
     self.create_index_calls += 1
     if self.create_index_error is not None:
       raise self.create_index_error
     index_name = name or "_".join(f"{k}_{v}" for k, v in keys)
-    self._indexes[index_name] = {"key": list(keys)}
+    spec: dict[str, Any] = {"key": list(keys)}
+    if expireAfterSeconds is not None:
+      spec["expireAfterSeconds"] = expireAfterSeconds
+    self._indexes[index_name] = spec
     return index_name
+
+  def create_search_index(self, *, model: Any) -> str:
+    if self.create_index_error is not None:
+      raise self.create_index_error
+    self.search_index_models.append(model)
+    return model.document["name"]
 
   def index_information(self) -> dict[str, dict[str, Any]]:
     return copy.deepcopy(self._indexes)
@@ -110,6 +127,16 @@ class _FakeCollection:
           )
       elif "$limit" in stage:
         docs = docs[: stage["$limit"]]
+      elif "$vectorSearch" in stage:
+        spec = stage["$vectorSearch"]
+        if "filter" in spec:
+          docs = [doc for doc in docs if _matches(doc, spec["filter"])]
+        docs = docs[: spec.get("limit", len(docs))]
+      elif "$project" in stage:
+        excluded = {f for f, v in stage["$project"].items() if v == 0}
+        docs = [
+            {k: v for k, v in doc.items() if k not in excluded} for doc in docs
+        ]
       else:
         raise NotImplementedError(f"Unsupported stage: {stage}")
     return docs
@@ -156,6 +183,16 @@ class _FakeDatabase:
   def __getitem__(self, name: str) -> _FakeCollection:
     if name not in self._collections:
       self._collections[name] = _FakeCollection()
+    return self._collections[name]
+
+  def list_collection_names(self) -> list[str]:
+    return list(self._collections)
+
+  def create_collection(self, name: str) -> _FakeCollection:
+    if name in self._collections:
+      error = _OperationFailure("collection already exists", code=48)
+      raise error
+    self._collections[name] = _FakeCollection()
     return self._collections[name]
 
 
@@ -207,7 +244,7 @@ class _OperationFailure(Exception):
 
 
 async def test_recall_index_created_once_by_default() -> None:
-  """The app/user/keywords index is created once without opting in."""
+  """The recall and TTL indexes are created once without opting in."""
   client: Any = _FakeMongoClient()
   svc = MongoDbMemoryService(mongo_client=client, database_name="test_db")
   await svc.add_session_to_memory(_session_with_texts("hello world"))
@@ -216,7 +253,10 @@ async def test_recall_index_created_once_by_default() -> None:
   collection = client["test_db"]["memories"]
   indexes = collection.index_information()
   assert "app_user_keywords" in indexes
-  assert collection.create_index_calls == 1
+  assert "memory_ttl" in indexes
+  assert indexes["memory_ttl"]["expireAfterSeconds"] == 0
+  # Two create_index calls (recall + TTL), and first-use guard keeps it at 2.
+  assert collection.create_index_calls == 2
 
 
 async def test_search_without_keywords_skips_index_creation() -> None:
@@ -267,9 +307,10 @@ async def test_index_privilege_error_warns_once_and_falls_back(
     )
 
   assert len(response.memories) == 1
-  assert collection.create_index_calls == 1
+  # Recall and TTL index are each attempted once; each denied call warns once.
+  assert collection.create_index_calls == 2
   warnings = [r for r in caplog.records if "createIndex" in r.getMessage()]
-  assert len(warnings) == 1
+  assert len(warnings) == 2
 
 
 async def test_existing_index_under_other_name_is_accepted(
@@ -289,7 +330,8 @@ async def test_existing_index_under_other_name_is_accepted(
     )
 
   assert len(response.memories) == 1
-  assert collection.create_index_calls == 1
+  # Both create_index calls (recall + TTL) hit code 85 and are tolerated.
+  assert collection.create_index_calls == 2
   assert not [r for r in caplog.records if "createIndex" in r.getMessage()]
 
 
@@ -302,11 +344,14 @@ async def test_index_creation_errors_other_than_privilege_propagate() -> None:
   with pytest.raises(_OperationFailure, match="connection dropped"):
     await svc.add_session_to_memory(_session_with_texts("hello world"))
 
-  # The failure is not cached: the next operation retries index creation.
+  # The failure is not cached: the next operation retries index creation,
+  # creating the recall and TTL indexes (the failed first call plus two
+  # successful ones).
   collection.create_index_error = None
   await svc.add_session_to_memory(_session_with_texts("hello world"))
-  assert collection.create_index_calls == 2
+  assert collection.create_index_calls == 3
   assert "app_user_keywords" in collection.index_information()
+  assert "memory_ttl" in collection.index_information()
 
 
 async def test_add_session_then_search_by_keyword(
@@ -826,6 +871,269 @@ async def test_close_only_closes_owned_client() -> None:
     )
   await svc_owned.close()
   assert owned_client.closed
+
+
+def _memory_doc(text: str, doc_id: Any = None) -> dict[str, Any]:
+  """Builds a stored memory document as the service would write it."""
+  if doc_id is None:
+    doc_id = {
+        "app_name": APP,
+        "user_id": USER,
+        "session_id": "s1",
+        "event_id": "e0",
+    }
+  return {
+      "_id": doc_id,
+      "app_name": APP,
+      "user_id": USER,
+      "author": "user",
+      "text": text,
+      "content": (
+          types.Content(role="user", parts=[types.Part(text=text)]).model_dump(
+              exclude_none=True, mode="json"
+          )
+      ),
+      "timestamp": 1.0,
+  }
+
+
+def _vector_service(**kwargs: Any) -> MongoDbMemoryService:
+  defaults: dict[str, Any] = dict(
+      database_name="test_db",
+      ensure_indexes=False,
+      retrieval_mode="vector",
+      genai_client=mock.MagicMock(),
+  )
+  defaults.update(kwargs)
+  return MongoDbMemoryService(**defaults)
+
+
+async def test_vector_mode_ingest_embeds_in_one_batch() -> None:
+  """Vector mode embeds all event texts in one call and stores the vectors."""
+  client: Any = _FakeMongoClient()
+  genai_client = mock.MagicMock()
+  embedding = mock.MagicMock()
+  embedding.values = [0.1, 0.2]
+  genai_client.aio.models.embed_content = mock.AsyncMock(
+      return_value=mock.MagicMock(embeddings=[embedding, embedding])
+  )
+  svc = _vector_service(mongo_client=client, genai_client=genai_client)
+
+  await svc.add_session_to_memory(
+      _session_with_texts("first memory", "second memory")
+  )
+
+  embed_call = genai_client.aio.models.embed_content.await_args
+  assert embed_call.kwargs["contents"] == ["first memory", "second memory"]
+  assert embed_call.kwargs["model"] == "text-embedding-005"
+  docs = list(client["test_db"]["memories"]._docs.values())
+  assert len(docs) == 2
+  assert all(doc["embedding"] == [0.1, 0.2] for doc in docs)
+  assert all("text" in doc and "keywords" not in doc for doc in docs)
+
+
+async def test_vector_mode_recall_runs_vector_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Vector mode recalls via $vectorSearch with an embedded query."""
+  embed_query = mock.AsyncMock(return_value=[0.1, 0.2])
+  monkeypatch.setattr(
+      "google.adk.integrations.mongodb._search_tool._embed_query", embed_query
+  )
+  client: Any = _FakeMongoClient()
+  collection = client["test_db"]["memories"]
+  collection._docs[_doc_key("m1")] = _memory_doc("nearest memory", "m1")
+  svc = _vector_service(mongo_client=client)
+
+  response = await svc.search_memory(
+      app_name=APP, user_id=USER, query="coffee machine"
+  )
+
+  assert embed_query.await_args.kwargs["query"] == "coffee machine"
+  stage = collection.last_pipeline[0]["$vectorSearch"]
+  assert stage["queryVector"] == [0.1, 0.2]
+  assert stage["path"] == "embedding"
+  assert stage["filter"] == {"app_name": APP, "user_id": USER}
+  assert stage["limit"] == svc._max_results
+  texts = [
+      " ".join(p.text for p in m.content.parts if p.text)
+      for m in response.memories
+  ]
+  assert texts == ["nearest memory"]
+
+
+async def test_auto_mode_ingest_stores_plain_text_without_embeddings() -> None:
+  """Auto mode stores plain text; Atlas embeds it, not the genai client."""
+  client: Any = _FakeMongoClient()
+  genai_client = mock.MagicMock()
+  svc = MongoDbMemoryService(
+      mongo_client=client,
+      database_name="test_db",
+      ensure_indexes=False,
+      retrieval_mode="auto",
+      genai_client=genai_client,
+  )
+
+  await svc.add_session_to_memory(_session_with_texts("just text"))
+
+  doc = next(iter(client["test_db"]["memories"]._docs.values()))
+  assert doc["text"] == "just text"
+  assert "embedding" not in doc and "keywords" not in doc
+  genai_client.aio.models.embed_content.assert_not_called()
+
+
+async def test_auto_mode_recall_sends_query_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Auto mode sends query.text to the autoEmbed index; no embed call."""
+  embed_query = mock.AsyncMock(return_value=[0.1])
+  monkeypatch.setattr(
+      "google.adk.integrations.mongodb._search_tool._embed_query", embed_query
+  )
+  client: Any = _FakeMongoClient()
+  collection = client["test_db"]["memories"]
+  collection._docs[_doc_key("m1")] = _memory_doc("atlas recall", "m1")
+  svc = MongoDbMemoryService(
+      mongo_client=client,
+      database_name="test_db",
+      ensure_indexes=False,
+      retrieval_mode="auto",
+  )
+
+  response = await svc.search_memory(
+      app_name=APP, user_id=USER, query="coffee machine"
+  )
+
+  embed_query.assert_not_awaited()
+  stage = collection.last_pipeline[0]["$vectorSearch"]
+  assert stage["query"] == {"text": "coffee machine"}
+  assert stage["path"] == "text"
+  assert stage["filter"] == {"app_name": APP, "user_id": USER}
+  assert len(response.memories) == 1
+
+
+def test_vector_mode_creates_vector_index() -> None:
+  """ensure_indexes in vector mode creates a vectorSearch index."""
+  client: Any = _FakeMongoClient()
+  svc = _vector_service(mongo_client=client, ensure_indexes=True)
+
+  svc._ensure_indexes_once()
+
+  collection = client["test_db"]["memories"]
+  assert len(collection.search_index_models) == 1
+  model = collection.search_index_models[0]
+  fields = model.document["definition"]["fields"]
+  assert {
+      "type": "vector",
+      "path": "embedding",
+      "numDimensions": 768,
+      "similarity": "cosine",
+  } in fields
+  assert {"type": "filter", "path": "app_name"} in fields
+  assert model.document["name"] == "memory_vector_index"
+  # The TTL index is created alongside the vector index (default TTL).
+  assert "memory_ttl" in collection.index_information()
+
+
+def test_auto_mode_creates_autoembed_index() -> None:
+  """ensure_indexes in auto mode creates an autoEmbed index on `text`."""
+  client: Any = _FakeMongoClient()
+  svc = MongoDbMemoryService(
+      mongo_client=client,
+      database_name="test_db",
+      ensure_indexes=True,
+      retrieval_mode="auto",
+  )
+
+  svc._ensure_indexes_once()
+
+  collection = client["test_db"]["memories"]
+  model = collection.search_index_models[0]
+  fields = model.document["definition"]["fields"]
+  assert {
+      "type": "autoEmbed",
+      "modality": "text",
+      "path": "text",
+      "model": "voyage-4",
+  } in fields
+
+
+def test_retrieval_mode_must_be_known() -> None:
+  """An unknown retrieval mode is a config error."""
+  with pytest.raises(ValueError, match="retrieval_mode"):
+    MongoDbMemoryService(
+        mongo_client=_FakeMongoClient(),
+        database_name="test_db",
+        retrieval_mode="semantic",
+    )
+
+
+def test_memory_ttl_days_must_be_positive_or_none() -> None:
+  """memory_ttl_days of zero or negative is a config error; None is valid."""
+  with pytest.raises(ValueError, match="memory_ttl_days"):
+    MongoDbMemoryService(
+        mongo_client=_FakeMongoClient(),
+        database_name="test_db",
+        memory_ttl_days=0,
+    )
+  # None disables expiry and is accepted.
+  MongoDbMemoryService(
+      mongo_client=_FakeMongoClient(),
+      database_name="test_db",
+      memory_ttl_days=None,
+  )
+
+
+async def test_ingest_writes_expire_at_default_seven_days() -> None:
+  """Each memory document stores an expire_at ~7 days in the future."""
+  client: Any = _FakeMongoClient()
+  svc = MongoDbMemoryService(mongo_client=client, database_name="test_db")
+  before = datetime.now(timezone.utc)
+  await svc.add_session_to_memory(
+      _session_with_texts("first memory", "second memory")
+  )
+  after = datetime.now(timezone.utc)
+
+  docs = list(client["test_db"]["memories"]._docs.values())
+  assert len(docs) == 2
+  for doc in docs:
+    expire_at = doc["expire_at"]
+    if expire_at.tzinfo is None:
+      expire_at = expire_at.replace(tzinfo=timezone.utc)
+    assert expire_at - before >= timedelta(days=7) - timedelta(seconds=1)
+    assert expire_at - after <= timedelta(days=7)
+
+
+async def test_ttl_days_configurable() -> None:
+  """A custom memory_ttl_days shifts the stored expire_at accordingly."""
+  client: Any = _FakeMongoClient()
+  svc = MongoDbMemoryService(
+      mongo_client=client, database_name="test_db", memory_ttl_days=30
+  )
+  before = datetime.now(timezone.utc)
+  await svc.add_session_to_memory(_session_with_texts("hello world"))
+
+  doc = next(iter(client["test_db"]["memories"]._docs.values()))
+  expire_at = doc["expire_at"]
+  if expire_at.tzinfo is None:
+    expire_at = expire_at.replace(tzinfo=timezone.utc)
+  assert expire_at - before >= timedelta(days=30) - timedelta(seconds=1)
+
+
+async def test_ttl_disabled_omits_expire_at_and_index() -> None:
+  """memory_ttl_days=None stores no expire_at and creates no TTL index."""
+  client: Any = _FakeMongoClient()
+  svc = MongoDbMemoryService(
+      mongo_client=client, database_name="test_db", memory_ttl_days=None
+  )
+  await svc.add_session_to_memory(_session_with_texts("hello world"))
+
+  doc = next(iter(client["test_db"]["memories"]._docs.values()))
+  assert "expire_at" not in doc
+  indexes = client["test_db"]["memories"].index_information()
+  assert "memory_ttl" not in indexes
+  # The recall index is still created regardless of the TTL setting.
+  assert "app_user_keywords" in indexes
 
 
 def test_constructor_validates_client_args() -> None:

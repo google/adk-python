@@ -24,7 +24,9 @@ and memory services work with any MongoDB deployment reachable by PyMongo.
   (`FeatureName.MONGODB_SESSION_SERVICE`) and emits a one-time warning on
   first use.
 - **Long-term Memory (`MongoDbMemoryService`):** Ingests session events into a
-  memory collection and recalls them by keyword matching.
+  memory collection and recalls them by keyword matching (default), by
+  `$vectorSearch` with Google embeddings (`retrieval_mode="vector"`), or with
+  Atlas Automated Embedding (`retrieval_mode="auto"`).
 - **Flexible Connection Options:** Pass a connection string and let the
   integration create/own the PyMongo client, or bring your own pre-configured
   `pymongo.MongoClient`.
@@ -50,7 +52,7 @@ pip install "pymongo>=4.9,<5"
 | `mongodb_vector_search` | A **vector search index** on the collection, and a deployment that supports `$vectorSearch` (MongoDB Atlas 6.0.11+/7.0.2+, or self-managed MongoDB 8.2+). |
 | `mongodb_hybrid_search` | A **vector search index** and a **full-text search index** on the collection, and a deployment that supports `$rankFusion` (MongoDB Atlas 8.0+). |
 | `MongoDbSessionService` | Any MongoDB deployment reachable by PyMongo (no search indexes needed). |
-| `MongoDbMemoryService` | Any MongoDB deployment reachable by PyMongo (no search indexes needed). |
+| `MongoDbMemoryService` | Keyword mode (default): any MongoDB deployment reachable by PyMongo (no search indexes needed). `"vector"` / `"auto"` modes: a deployment with vector search (Atlas or self-managed 8.0+). |
 
 ## Quick Start: Search Tools
 
@@ -279,40 +281,74 @@ runner = Runner(
 )
 ```
 
-Events ingested via `add_session_to_memory` or `add_events_to_memory` are
-written in a single unordered `bulk_write` batch as memory documents (one per
-event) keyed by a compound `_id` of `(app_name, user_id, session_id,
-event_id)`, each carrying the lowercase keywords extracted from its text
-content (a compact English stop-word list is ignored; pass `stop_words` to
-customize). `search_memory` returns up to `max_results` (default `50`) entries
-whose keyword array intersects the query's keywords, ranked by keyword overlap
-with `timestamp` descending as a tie-breaker. Ingestion is idempotent —
-re-adding events or a session overwrites existing memories rather than
-duplicating them.
+Events ingested via `add_session_to_memory` are written in a single
+unordered `bulk_write` batch as memory documents (one per event) keyed by a
+compound `_id` of `(app_name, user_id, session_id, event_id)`. Ingestion is
+idempotent — re-adding a session overwrites its memories rather than
+duplicating them — and every search returns at most `max_results` (default
+20) ranked entries, so a query carrying a common term returns the best few
+memories rather than everything it touched.
 
-Retrieval is intentionally keyword-only: it needs no embedding model, no
-Google credentials, and no vector index, so it works on any MongoDB
-deployment (not just Atlas) at zero per-query cost. Vector recall is a
-possible follow-up that can build on this integration's own search tools.
+`retrieval_mode` selects how `search_memory` recalls memories:
 
-### Memory secondary index (`ensure_indexes`)
+| Mode | How it works | Requirements |
+| :--- | :--- | :--- |
+| `"keyword"` (default) | Documents carry the lowercase keywords extracted from their text (a compact English stop-word list is ignored; pass `stop_words` to customize); recall matches the query's keywords, ranked by overlap with `timestamp` descending as a tie-breaker. | Any MongoDB deployment — no embedding model, credentials, or search index. |
+| `"vector"` | Texts are embedded at ingest with a Google embedding model (`embedding_model_name`, default `text-embedding-005`) through the genai client; recall embeds the query and runs `$vectorSearch`. | A deployment with vector search (Atlas or self-managed 8.0+), Google credentials, and a vector index on the `embedding` field. |
+| `"auto"` | Documents carry plain text only; an `autoEmbed` index over the `text` field makes Atlas embed documents on write and queries on read with a Voyage AI model (Atlas Automated Embedding, Preview). | Atlas, and an `autoEmbed` vector index. Freshly ingested memories become recallable once Atlas embeds them (typically seconds). |
+
+```python
+# Default: keyword recall, no embeddings anywhere.
+memory_service = MongoDbMemoryService(
+    connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
+    database_name="my_app",
+)
+
+# Vector recall with Google embeddings (needs Google credentials).
+vector_memory = MongoDbMemoryService(
+    connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
+    database_name="my_app",
+    retrieval_mode="vector",
+)
+
+# Atlas Automated Embedding: Atlas embeds memories and queries for you.
+auto_memory = MongoDbMemoryService(
+    connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
+    database_name="my_app",
+    retrieval_mode="auto",
+)
+```
+
+Keyword is the default because it is dependency-free and works everywhere;
+pick a vector mode when semantic similarity matters more than synonym-blind
+exactness, or when no Google credentials are available but Atlas is
+(`"auto"`). The retrieval mode must match how memories were ingested:
+memories ingested in one mode are invisible to the others (keyword docs
+carry no embedding, vector/auto docs carry no keywords).
+
+### Memory secondary indexes (`ensure_indexes`)
 
 Writes are keyed by `_id`, which MongoDB indexes implicitly. However,
-`search_memory` reads `memories` by `(app_name, user_id)` with a `$in` match on
-the `keywords` array, which becomes a collection scan as data grows.
+`search_memory` reads `memories` by `(app_name, user_id)` — with a `$in`
+match on the `keywords` array in keyword mode, or a `$vectorSearch` pre-filter
+in vector/auto modes — which becomes a collection scan as data grows.
 
-The service therefore creates the recommended secondary index on first use by
-default (`ensure_indexes=True`):
+With `ensure_indexes=True` (the default) the service creates the index its
+mode needs on first use:
 
-| Collection | Index | Keys |
+| Collection | Index | Keys / definition |
 | :--- | :--- | :--- |
-| `memories` | `app_user_keywords` | `(app_name, user_id, keywords)` (multikey) |
+| `memories` (keyword) | `app_user_keywords` | `(app_name, user_id, keywords)` (multikey) |
+| `memories` (vector) | `memory_vector_index` | cosine `vector` field on `embedding` (sized from `embedding_output_dimensionality`, default 768) with `app_name`/`user_id` filter fields |
+| `memories` (auto) | `memory_vector_index` | `autoEmbed` field over `text` (model from `auto_embedding_model_name`) with `app_name`/`user_id` filter fields |
+| `memories` (all modes) | `memory_ttl` | `expire_at` (TTL) — created when `memory_ttl_days` is set (default 7) |
 
 Index creation is idempotent — re-running with the same spec is a no-op. When
 the runtime user lacks the `createIndex` privilege (see
 [Required permissions](#required-permissions-least-privilege-setup)), the
 service logs one warning and falls back to unindexed reads rather than
-failing; other index-creation errors still propagate. Pass
+failing; other index-creation errors still propagate. Vector search indexes
+build asynchronously — recall works once the index reports READY. Pass
 `ensure_indexes=False` to skip the attempt entirely (and silence the warning)
 on a deliberately least-privileged user:
 
@@ -321,6 +357,32 @@ memory_service = MongoDbMemoryService(
     connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
     database_name="my_app",
     ensure_indexes=False,
+)
+```
+
+### Memory retention (`memory_ttl_days`)
+
+Memories are retained for `memory_ttl_days` (default **7**) measured from
+ingest: each memory document stores an `expire_at` date that many days in the
+future, and the `memory_ttl` TTL index (created when `ensure_indexes=True`)
+lets MongoDB's TTL monitor delete a memory once its `expire_at` passes.
+Re-ingesting a session refreshes `expire_at`. Pass `memory_ttl_days=None` to
+keep memories indefinitely (no `expire_at`, no TTL index). Deletion runs in
+the background, so expired memories may linger briefly past their `expire_at`.
+
+```python
+# Keep memories for 30 days.
+memory_service = MongoDbMemoryService(
+    connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
+    database_name="my_app",
+    memory_ttl_days=30,
+)
+
+# Keep memories indefinitely.
+memory_service = MongoDbMemoryService(
+    connection_string="mongodb+srv://user:pass@cluster.mongodb.net/",
+    database_name="my_app",
+    memory_ttl_days=None,
 )
 ```
 
@@ -333,7 +395,7 @@ and separate database users keep the privileges separated:
 | :--- | :--- | :--- |
 | **Search user** (read-only) | `MongoDbToolset` | `find` on each collection the agent may search. |
 | **State user** (read-write) | `MongoDbSessionService` | `find`, `insert`, `update`, `remove` on `sessions` and `events` (session deletion); `find`, `insert`, `update` on `app_states` and `user_states` (upserts only, never deletes). Add `createIndex` on `sessions` and `events` so `ensure_indexes` (on by default) can work; without it the service logs one warning and falls back to unindexed reads, or pass `ensure_indexes=False` to opt out. |
-| **Memory user** (read-write) | `MongoDbMemoryService` | `find`, `insert`, `update`, `createIndex` on `memories` (upserts only, never deletes). `createIndex` lets `ensure_indexes` (on by default) build the recall index; without it the service logs one warning and falls back to unindexed reads, or drop it and pass `ensure_indexes=False` to opt out. |
+| **Memory user** (read-write) | `MongoDbMemoryService` | `find`, `insert`, `update`, `createIndex` on `memories` (upserts only, never deletes). `createIndex` lets `ensure_indexes` (on by default) build the recall and TTL indexes; without it the service logs one warning and falls back to unindexed reads, or drop it and pass `ensure_indexes=False` to opt out. |
 
 ```javascript
 // mongosh, as an admin user: one read-only role for the search tools, and
@@ -374,7 +436,7 @@ Creating and dropping **search indexes** is an administrative action, not
 something the tools do at run time — run setup with a separate user holding
 the `createSearchIndexes`, `listSearchIndexes`, and `dropSearchIndexes`
 actions (on Atlas, the built-in `Project Data Access Admin` role covers
-this), and keep those privileges off the runtime user above.
+this), and keep those privileges off the runtime users above.
 
 ### The model chooses the collection
 
@@ -455,6 +517,10 @@ remote = agent_engines.create(
     },
 )
 ```
+
+The MongoDB session and memory services cannot be deployed to Agent Engine
+yet — wiring them in (including the same pickling and secret handling) is
+planned as a follow-up.
 
 ## Configuration: `MongoDbToolSettings`
 
