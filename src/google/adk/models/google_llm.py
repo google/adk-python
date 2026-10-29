@@ -40,6 +40,7 @@ from typing_extensions import override
 
 from google import genai
 
+from ..utils._event_loop_cache import clear_per_loop_value
 from ..utils._event_loop_cache import PerLoopCachedProperty
 from ..utils._gcp_metadata import get_gcp_client_defaults
 from ..utils._google_client_headers import get_tracking_headers
@@ -202,6 +203,22 @@ class Gemini(BaseLlm):
     )
   )
   ```
+  """
+
+  client_max_age: Optional[float] = Field(default=None, gt=0, exclude=True)
+  """Seconds after which the cached genai clients are rebuilt.
+
+  By default (``None``) a client built for an event loop is reused for as long
+  as that loop lives. A long-running process whose client captured credentials
+  at build time (for example a short-lived workload certificate) can set this
+  to rebuild the clients before those credentials go stale. The age is counted
+  from when the client was built; once it reaches this many seconds, the next
+  read of ``api_client`` or the live client builds a new one.
+
+  The old client is dropped, not closed, so a request that is still using it
+  keeps working and the client is released once that request finishes. Has no
+  effect when ``client`` is provided, and does not apply to an ``api_client``
+  that a subclass overrides with its own caching. Must be greater than 0.
   """
 
   @classmethod
@@ -544,6 +561,28 @@ class Gemini(BaseLlm):
     )
 
     return Client(**kwargs)
+
+  @property
+  def _per_loop_max_age(self) -> Optional[float]:
+    """Read by ``PerLoopCachedProperty`` to age out the cached clients."""
+    return self.client_max_age
+
+  def invalidate_clients(self) -> None:
+    """Drops the cached genai clients so the next use builds new ones.
+
+    Covers the client behind ``api_client`` and the one used for live
+    connections, for every event loop. Nothing is closed: a request or live
+    session already using a dropped client keeps working on it, and only new
+    reads get a replacement. Safe to call from any thread or event loop.
+
+    Call this when the credentials the clients were built with have rotated, or
+    set ``client_max_age`` to have it done automatically. It does not replace a
+    ``client`` passed to the constructor, and it does not touch an
+    ``api_client`` a subclass overrides with its own caching or assigns as an
+    instance attribute; such a subclass owns that client's lifetime.
+    """
+    clear_per_loop_value(self, '_per_loop_api_client')
+    clear_per_loop_value(self, '_per_loop__live_api_client')
 
   def _with_adk_http_options(
       self,
