@@ -82,6 +82,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [MongoDbSessionService](integrations/mongodb/session_service/index.md) - Sharing sessions across processes through MongoDB, with transactional writes where the deployment supports them.
 * [MongoDbToolset](integrations/mongodb/mongodb_toolset/index.md) - Vector and hybrid search over a MongoDB database, with the query text embedded on the way through.
 * [RedisSessionService](integrations/redis/redis_session_service/index.md) - Sharing sessions across processes through Redis, including the expiry every other backend lacks.
+* [TeamsRunner](integrations/teams/teams_runner/index.md) - Running an agent as a Microsoft Teams bot, and why replies arrive after the request is acknowledged.
 * [TypesafeClassifier](integrations/typesafe/typesafe_classifier/index.md) - Answering `Choice`, `Binary`, and `Score` questions with TypeSafe's Jev decision models instead of a model turn.
 
 ### Labs
