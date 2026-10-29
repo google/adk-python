@@ -407,6 +407,43 @@ class TestConvertPartToInteractionContent:
         is_error=True,
     )
 
+  @pytest.mark.parametrize('error_key', ['isError', 'is_error'])
+  def test_function_response_failed_mcp_result_is_error(self, error_key):
+    """A failed MCP CallToolResult reports the error with isError/is_error."""
+    mcp_result = {
+        'content': [{'type': 'text', 'text': 'Permission denied: /etc/shadow'}],
+        error_key: True,
+    }
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            name='read_file', id='call_123', response=mcp_result
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result['is_error'] is True
+    assert result['result'] == mcp_result
+
+  @pytest.mark.parametrize('error_key', ['isError', 'is_error'])
+  def test_function_response_successful_mcp_result_is_not_error(
+      self, error_key
+  ):
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            name='read_file',
+            id='call_123',
+            response={
+                'content': [{'type': 'text', 'text': 'ok'}],
+                error_key: False,
+            },
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result['is_error'] is False
+
   def test_function_response_dict_not_double_serialized(self):
     """Regression test: avoid double-serializing bash tool outputs.
 
