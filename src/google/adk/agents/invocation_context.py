@@ -238,10 +238,18 @@ class InvocationContext(BaseModel):
   """The handle for live session resumption."""
 
   input_realtime_cache: list[RealtimeCacheEntry] | None = None
-  """Caches input audio chunks before flushing to session and artifact services."""
+  """Caches the user's audio chunks before flushing to session and artifact services.
+
+  Holds audio only; the user's image frames are cached separately.
+  """
 
   output_realtime_cache: list[RealtimeCacheEntry] | None = None
-  """Caches output audio chunks before flushing to session and artifact services."""
+  """Caches the model's audio chunks before flushing to session and artifact services."""
+
+  _input_visual_cache: list[RealtimeCacheEntry] = PrivateAttr(
+      default_factory=list
+  )
+  """The user's image frames, such as camera or screen-share frames, cached until the next flush (Live only)."""
 
   run_config: RunConfig | None = None
   """Configurations for live agents under this invocation."""

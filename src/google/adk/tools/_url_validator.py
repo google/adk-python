@@ -76,6 +76,10 @@ def _parse_request_target(url: str) -> _RequestTarget:
   if scheme not in _ALLOWED_URL_SCHEMES:
     raise ValueError(f'Unsupported url scheme: {url}')
 
+  # Browsers and urllib3 end the host at a backslash; urlparse reads past it.
+  if '\\' in parsed_url.netloc:
+    raise ValueError(f'Backslash in url authority: {url}')
+
   hostname = parsed_url.hostname
   if not hostname:
     raise ValueError(f'URL is missing a hostname: {url}')

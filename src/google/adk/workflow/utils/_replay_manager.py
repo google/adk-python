@@ -22,6 +22,7 @@ from ...agents.context import Context
 from ...events._branch_path import _BranchPath
 from ...events._interrupts import is_interrupt_event
 from ...events._node_path_builder import _NodePathBuilder
+from ...events._node_path_builder import parent_node_path
 from ...events._rewind_events import _apply_rewinds
 from ...events.event import Event
 from ._rehydration_utils import _ChildScanState
@@ -141,8 +142,7 @@ class ReplayManager:
       if not path:
         continue
 
-      path_builder = _NodePathBuilder.from_string(path)
-      parent_path = str(path_builder.parent) if path_builder.parent else ""
+      parent_path = parent_node_path(path)
 
       self._add_event_to_index(parent_path, event)
 
@@ -197,11 +197,9 @@ class ReplayManager:
       return []
 
     session_events = self._ensure_index(ctx)
-    path_builder = _NodePathBuilder.from_string(node_path)
-    parent_builder = path_builder.parent
-    if not parent_builder or not str(parent_builder):
+    parent_path = parent_node_path(node_path)
+    if not parent_path:
       return session_events
-    parent_path = str(parent_builder)
 
     node_events = self._transitive_events_by_parent.get(parent_path, [])
     if not node_events:
@@ -235,12 +233,10 @@ class ReplayManager:
 
     # Propagate event up through all ancestor paths so parent and grandparent nodes
     # can query all sub-tree events in O(1) via _transitive_events_by_parent.
-    curr: _NodePathBuilder | None = (
-        _NodePathBuilder.from_string(parent_path) if parent_path else None
-    )
-    while curr is not None and str(curr):
-      self._transitive_events_by_parent.setdefault(str(curr), []).append(event)
-      curr = curr.parent
+    curr = parent_path
+    while curr:
+      self._transitive_events_by_parent.setdefault(curr, []).append(event)
+      curr = parent_node_path(curr)
 
     self._transitive_events_by_parent.setdefault("", []).append(event)
 

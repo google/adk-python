@@ -3871,6 +3871,28 @@ def test_fast_api_common_options_rejects_missing_avatar_config_file(
   assert "missing_avatar.json" in result.output
 
 
+@pytest.mark.parametrize(
+    "contents",
+    [b'{"avatarName":"\xff"}', '{"avatarName":"Kai"}'.encode("utf-16")],
+    ids=["invalid-utf8", "utf16"],
+)
+def test_fast_api_common_options_rejects_non_utf8_avatar_config_file(
+    tmp_path: Path, contents: bytes
+) -> None:
+  """Non-UTF-8 avatar files produce a usage error before server startup."""
+  command, captured = _fast_api_command()
+  config_path = tmp_path / "avatar.json"
+  config_path.write_bytes(contents)
+
+  result = CliRunner().invoke(command, ["--avatar_config", str(config_path)])
+
+  assert result.exit_code == 2
+  assert "--avatar_config" in result.output
+  assert "could not read avatar configuration file" in result.output
+  assert "avatar.json" in result.output
+  assert captured == {}
+
+
 def test_fast_api_common_options_parses_max_llm_calls() -> None:
   """The common server option parses an explicit per-run LLM call limit."""
   command, captured = _fast_api_command()

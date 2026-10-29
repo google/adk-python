@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import logging
 import sys
 from typing import Any
@@ -25,6 +26,8 @@ from typing import TYPE_CHECKING
 
 from google.genai import types
 
+from ..agents._callback_metadata import _callback_scope
+from ..agents._callback_metadata import CallbackType
 from .base_plugin import BasePlugin
 
 if TYPE_CHECKING:
@@ -55,6 +58,18 @@ PluginCallbackName = Literal[
     "on_agent_error_callback",
     "on_run_error_callback",
 ]
+
+_CALLBACK_TYPE_BY_NAME: dict[str, CallbackType] = {
+    "before_agent_callback": CallbackType.BEFORE_AGENT,
+    "after_agent_callback": CallbackType.AFTER_AGENT,
+    "before_tool_callback": CallbackType.BEFORE_TOOL,
+    "after_tool_callback": CallbackType.AFTER_TOOL,
+    "before_model_callback": CallbackType.BEFORE_MODEL,
+    "after_model_callback": CallbackType.AFTER_MODEL,
+    "on_tool_error_callback": CallbackType.ON_TOOL_ERROR,
+    "on_model_error_callback": CallbackType.ON_MODEL_ERROR,
+    "on_agent_error_callback": CallbackType.ON_AGENT_ERROR,
+}
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -298,28 +313,40 @@ class PluginManager:
       RuntimeError: If a plugin encounters an unhandled exception during
         execution. The original exception is chained.
     """
-    for plugin in self.plugins:
-      # Each plugin might not implement all callbacks. The base class provides
-      # default `pass` implementations, so `getattr` will always succeed.
-      callback_method = getattr(plugin, callback_name)
-      try:
-        result = await callback_method(**kwargs)
-        if result is not None:
-          # Early exit: A plugin has returned a value. We stop
-          # processing further plugins and return this value immediately.
-          logger.debug(
-              "Plugin '%s' returned a value for callback '%s', exiting early.",
-              plugin.name,
-              callback_name,
+    callback_context = kwargs.get("callback_context")
+    if callback_context is None:
+      callback_context = kwargs.get("tool_context")
+    callback_type = _CALLBACK_TYPE_BY_NAME.get(callback_name)
+    callback_scope = (
+        _callback_scope(callback_type, callback_context)
+        if callback_context is not None and callback_type is not None
+        else nullcontext()
+    )
+
+    with callback_scope:
+      for plugin in self.plugins:
+        # Each plugin might not implement all callbacks. The base class provides
+        # default `pass` implementations, so `getattr` will always succeed.
+        callback_method = getattr(plugin, callback_name)
+        try:
+          result = await callback_method(**kwargs)
+          if result is not None:
+            # Early exit: A plugin has returned a value. We stop
+            # processing further plugins and return this value immediately.
+            logger.debug(
+                "Plugin '%s' returned a value for callback '%s', exiting"
+                " early.",
+                plugin.name,
+                callback_name,
+            )
+            return result
+        except Exception as e:
+          error_message = (
+              f"Error in plugin '{plugin.name}' during '{callback_name}'"
+              f" callback: {e}"
           )
-          return result
-      except Exception as e:
-        error_message = (
-            f"Error in plugin '{plugin.name}' during '{callback_name}'"
-            f" callback: {e}"
-        )
-        logger.error(error_message, exc_info=True)
-        raise RuntimeError(error_message) from e
+          logger.error(error_message, exc_info=True)
+          raise RuntimeError(error_message) from e
 
     return None
 
@@ -365,18 +392,27 @@ class PluginManager:
       callback_name: The name of the callback method to execute.
       **kwargs: Keyword arguments to be passed to the callback method.
     """
-    for plugin in self.plugins:
-      callback_method = getattr(plugin, callback_name)
-      try:
-        await callback_method(**kwargs)
-      except Exception as e:
-        logger.error(
-            "Error in plugin '%s' during '%s' callback: %s",
-            plugin.name,
-            callback_name,
-            e,
-            exc_info=True,
-        )
+    callback_context = kwargs.get("callback_context")
+    callback_type = _CALLBACK_TYPE_BY_NAME.get(callback_name)
+    callback_scope = (
+        _callback_scope(callback_type, callback_context)
+        if callback_context is not None and callback_type is not None
+        else nullcontext()
+    )
+
+    with callback_scope:
+      for plugin in self.plugins:
+        callback_method = getattr(plugin, callback_name)
+        try:
+          await callback_method(**kwargs)
+        except Exception as e:
+          logger.error(
+              "Error in plugin '%s' during '%s' callback: %s",
+              plugin.name,
+              callback_name,
+              e,
+              exc_info=True,
+          )
 
   async def close(self) -> None:
     """Calls the close method on all registered plugins sequentially.

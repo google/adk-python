@@ -93,7 +93,10 @@ agent's next command still runs.
 code as an `ExecutionResult`. A non-zero exit code is a normal result, not an
 exception, so the agent can read the error and react. A command that runs past
 its timeout is stopped by the sandbox and reported with `timed_out` set to
-`True`. `EnvironmentToolset` gives each command a 30 second timeout.
+`True`. `EnvironmentToolset` gives each command a 30 second timeout. The
+sandbox service stops waiting for a command after about 10 minutes, so a
+longer timeout is lowered to 570 seconds, and a command without a timeout gets
+the sandbox's default of 300 seconds.
 
 `read_file()` and `write_file()` move file contents through shell commands in
 the sandbox. A relative path resolves against the sandbox working directory,
@@ -191,9 +194,16 @@ instance shares that sandbox and its files. An agent served to several users
 through one runner gives all of them the same sandbox, so give each user or
 session its own environment when their files must stay apart.
 
-`write_file()` sends file contents inside a single shell command, which limits
-a write to about 90 KB. A larger write raises `ValueError` before anything is
-sent.
+`write_file()` sends file contents base64-encoded inside shell commands. A file
+larger than about 72 KB is uploaded in several commands to a temporary file
+next to the target, which is then renamed over the target, so a failed write
+leaves an existing file unchanged. Writes are limited to 64 MiB; a larger
+write raises `ValueError` before anything is sent.
+
+The service rejects a command whose response is larger than about 2 MB. A
+command that prints that much output raises an error instead of returning, so
+redirect large output to a file. `read_file()` reads files larger than 1 MiB
+in 1 MiB slices, one command each, to stay under this limit.
 
 The first command on a new or resumed sandbox can take half a minute or
 longer, while the service starts routing to the sandbox. Later commands return
@@ -205,3 +215,7 @@ it with an empty one the next time it initializes.
 
 The `working_dir` property is not available until `initialize()` has run, and
 accessing it earlier raises `RuntimeError`.
+
+## Related samples
+
+- [agent_engine_environment](../../../../../contributing/samples/environment_and_skills/agent_engine_environment/agent.py) - A data analysis agent that writes and runs Python in an Agent Engine sandbox.

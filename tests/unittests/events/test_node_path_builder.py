@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 from google.adk.events._node_path_builder import _NodePathBuilder
+from google.adk.events._node_path_builder import join_node_path
+from google.adk.events._node_path_builder import parent_node_path
 import pytest
 
 
@@ -98,6 +100,37 @@ def test_parent_returns_none_for_root_path():
   """parent returns None for a path with a single segment."""
   path = _NodePathBuilder.from_string('wf@1')
   assert path.parent is None
+
+
+@pytest.mark.parametrize(
+    'path', ['', 'wf', 'wf@1', 'wf@1/node@2', 'wf@1/a@1/b@2', '/a', 'a/', '//']
+)
+def test_parent_node_path_matches_parent(path):
+  """parent_node_path returns the string form of the builder's parent."""
+  parent = _NodePathBuilder.from_string(path).parent
+  assert parent_node_path(path) == (str(parent) if parent else '')
+
+
+@pytest.mark.parametrize(
+    ('parent_path', 'node_name', 'run_id'),
+    [
+        ('', 'node', None),
+        ('', 'node', '2'),
+        ('', '', '2'),
+        (None, 'node', '2'),
+        ('wf@1', 'node', None),
+        ('wf@1', 'node', '2'),
+        ('wf@1', '', '2'),
+        ('wf@1/a@1', 'b', '2'),
+        ('wf', 'node', '2'),
+    ],
+)
+def test_join_node_path_matches_append(parent_path, node_name, run_id):
+  """join_node_path returns the string form of the builder's appended child."""
+  appended = _NodePathBuilder.from_string(parent_path or '').append(
+      node_name, run_id
+  )
+  assert join_node_path(parent_path, node_name, run_id) == str(appended)
 
 
 def test_append_adds_segment_with_id():

@@ -24,6 +24,8 @@ from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from ....agents._callback_metadata import _callback_scope
+from ....agents._callback_metadata import CallbackType
 from ....tools.base_tool import BaseTool
 from ....tools.tool_context import ToolContext
 from ....utils._callback_pipeline import _invoke_callback
@@ -127,6 +129,7 @@ async def run_on_tool_error_callbacks(
       args=tool_args,
       tool_context=tool_context,
       error=error,
+      callback_type=CallbackType.ON_TOOL_ERROR,
   )
 
 
@@ -161,58 +164,59 @@ async def notify_tool_cancelled(
     tool_context: The tool context of the call.
     cancelled: The cancellation that interrupted the call.
   """
-  for plugin in invocation_context.plugin_manager.plugins:
-    try:
-      callback_method = getattr(plugin, 'on_tool_error_callback', None)
-      if callback_method is not None:
-        result = callback_method(
+  with _callback_scope(CallbackType.ON_TOOL_ERROR, tool_context):
+    for plugin in invocation_context.plugin_manager.plugins:
+      try:
+        callback_method = getattr(plugin, 'on_tool_error_callback', None)
+        if callback_method is not None:
+          result = callback_method(
+              tool=tool,
+              tool_args=tool_args,
+              tool_context=tool_context,
+              error=cancelled,
+          )
+          if inspect.isawaitable(result):
+            await result
+      except asyncio.CancelledError:
+        logger.warning(
+            'Plugin %r on_tool_error_callback was cancelled while tool %r was'
+            ' being cancelled; continuing remaining cleanup callbacks.',
+            plugin.name,
+            tool.name,
+        )
+      except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception(
+            'Plugin %r on_tool_error_callback raised while tool %r was being'
+            ' cancelled; the cancellation propagates regardless.',
+            plugin.name,
+            tool.name,
+        )
+
+    if agent is None:
+      return
+
+    for callback in agent.canonical_on_tool_error_callbacks:
+      try:
+        result = _invoke_callback(
+            callback,
             tool=tool,
-            tool_args=tool_args,
+            args=tool_args,
             tool_context=tool_context,
             error=cancelled,
         )
         if inspect.isawaitable(result):
           await result
-    except asyncio.CancelledError:
-      logger.warning(
-          'Plugin %r on_tool_error_callback was cancelled while tool %r was'
-          ' being cancelled; continuing remaining cleanup callbacks.',
-          plugin.name,
-          tool.name,
-      )
-    except Exception:  # pylint: disable=broad-exception-caught
-      logger.exception(
-          'Plugin %r on_tool_error_callback raised while tool %r was being'
-          ' cancelled; the cancellation propagates regardless.',
-          plugin.name,
-          tool.name,
-      )
-
-  if agent is None:
-    return
-
-  for callback in agent.canonical_on_tool_error_callbacks:
-    try:
-      result = _invoke_callback(
-          callback,
-          tool=tool,
-          args=tool_args,
-          tool_context=tool_context,
-          error=cancelled,
-      )
-      if inspect.isawaitable(result):
-        await result
-    except asyncio.CancelledError:
-      logger.warning(
-          'Agent %r on_tool_error callback was cancelled while tool %r was'
-          ' being cancelled; continuing remaining cleanup callbacks.',
-          agent.name,
-          tool.name,
-      )
-    except Exception:  # pylint: disable=broad-exception-caught
-      logger.exception(
-          'Agent %r on_tool_error callback raised while tool %r was being'
-          ' cancelled; the cancellation propagates regardless.',
-          agent.name,
-          tool.name,
-      )
+      except asyncio.CancelledError:
+        logger.warning(
+            'Agent %r on_tool_error callback was cancelled while tool %r was'
+            ' being cancelled; continuing remaining cleanup callbacks.',
+            agent.name,
+            tool.name,
+        )
+      except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception(
+            'Agent %r on_tool_error callback raised while tool %r was being'
+            ' cancelled; the cancellation propagates regardless.',
+            agent.name,
+            tool.name,
+        )
