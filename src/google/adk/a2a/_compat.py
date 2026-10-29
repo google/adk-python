@@ -59,6 +59,9 @@ from google.protobuf.json_format import ParseDict
 
 from ..utils.context_utils import Aclosing
 
+if TYPE_CHECKING:
+  from a2a.client import Client as A2AClient
+
 # Re-exported: callers construct factories via ``_compat.A2AClientFactory``.
 A2AClientFactory = _ClientFactory
 
@@ -865,6 +868,16 @@ async def send_message(
     ) as agen:
       async for item in agen:
         yield item
+
+
+async def get_task(
+    client: A2AClient, *, task_id: str, context: Any = None
+) -> Task:
+  """Reads a task using the request type supported by the installed SDK."""
+  request_type = _dynamic_type(
+      "a2a.types", "GetTaskRequest" if IS_A2A_V1 else "TaskQueryParams"
+  )
+  return await client.get_task(request_type(id=task_id), context=context)
 
 
 # -----------------------------------------------------------------------------
