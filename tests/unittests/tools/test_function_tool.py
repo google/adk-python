@@ -1621,6 +1621,177 @@ async def test_run_async_leaves_list_float_param_alone(mock_tool_context):
   assert result == {"types": ["float"]}
 
 
+class _Color(Enum):
+  RED = "red"
+  GREEN = "green"
+
+
+@pytest.mark.asyncio
+async def test_run_async_converts_list_enum_values_to_members(
+    mock_tool_context,
+):
+  """The declaration lists the enum's values, so each element is one of them.
+
+  The function must receive the Enum members, not the raw values.
+  """
+
+  async def tool_with_list_enum(colors: list[_Color]):
+    return {"colors": colors, "types": [type(c).__name__ for c in colors]}
+
+  tool = FunctionTool(tool_with_list_enum)
+  result = await tool.run_async(
+      args={"colors": ["red", "green"]},
+      tool_context=mock_tool_context,
+  )
+  assert result == {
+      "colors": [_Color.RED, _Color.GREEN],
+      "types": ["_Color", "_Color"],
+  }
+
+
+@pytest.mark.asyncio
+async def test_run_async_converts_optional_list_enum_values_to_members(
+    mock_tool_context,
+):
+  """Optional[list[Enum]] is unwrapped before the check."""
+
+  async def tool_with_optional_list_enum(
+      colors: Optional[list[_Color]] = None,
+  ):
+    return {"colors": colors}
+
+  tool = FunctionTool(tool_with_optional_list_enum)
+  result = await tool.run_async(
+      args={"colors": ["green"]},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"colors": [_Color.GREEN]}
+
+
+@pytest.mark.asyncio
+async def test_run_async_passes_none_optional_list_enum(mock_tool_context):
+  """None for an Optional[list[Enum]] stays None."""
+
+  async def tool_with_optional_list_enum(
+      colors: Optional[list[_Color]] = None,
+  ):
+    return {"colors": colors}
+
+  tool = FunctionTool(tool_with_optional_list_enum)
+  result = await tool.run_async(
+      args={"colors": None},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"colors": None}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arg_validation", [False, True])
+async def test_run_async_converts_json_rendered_list_enum_values(
+    mock_tool_context, caplog, arg_validation
+):
+  """The legacy declaration lists non-str item values as json strings."""
+
+  class Level(Enum):
+    LOW = 1
+    HIGH = 2
+
+  def tool_with_list_enum(levels: list[Level]):
+    return {"levels": levels}
+
+  tool = FunctionTool(tool_with_list_enum)
+  with (
+      temporary_feature_override(
+          FeatureName.FUNCTION_TOOL_ARG_VALIDATION, arg_validation
+      ),
+      caplog.at_level(logging.WARNING, logger="google_adk"),
+  ):
+    result = await tool.run_async(
+        args={"levels": ["2"]},
+        tool_context=mock_tool_context,
+    )
+  assert result == {"levels": [Level.HIGH]}
+  assert "not members" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_async_converts_list_int_enum_values_from_floats(
+    mock_tool_context,
+):
+  """A proto Struct round-trip can turn each IntEnum element into a float."""
+
+  class Level(int, Enum):
+    LOW = 1
+    HIGH = 2
+
+  async def tool_with_list_int_enum(levels: list[Level]):
+    return {"levels": levels, "types": [type(lv).__name__ for lv in levels]}
+
+  tool = FunctionTool(tool_with_list_int_enum)
+  result = await tool.run_async(
+      args={"levels": [2.0, 1]},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"levels": [Level.HIGH, Level.LOW], "types": ["Level"] * 2}
+
+
+@pytest.mark.asyncio
+async def test_run_async_passes_through_unknown_value_in_list_enum(
+    mock_tool_context,
+    caplog,
+):
+  """An element that is not a value of the enum is kept as is, with a warning.
+
+  Rejecting bad values stays the job of FUNCTION_TOOL_ARG_VALIDATION; the
+  other elements are still converted.
+  """
+
+  async def tool_with_list_enum(colors: list[_Color]):
+    return {"got": colors}
+
+  tool = FunctionTool(tool_with_list_enum)
+  with caplog.at_level("WARNING"):
+    result = await tool.run_async(
+        args={"colors": ["red", "purple"]},
+        tool_context=mock_tool_context,
+    )
+  assert result == {"got": [_Color.RED, "purple"]}
+  assert "Argument 'colors'" in caplog.text
+  assert "purple" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_async_keeps_enum_members_in_list_enum(mock_tool_context):
+  """Elements that already are members are left alone."""
+
+  async def tool_with_list_enum(colors: list[_Color]):
+    return {"colors": colors}
+
+  tool = FunctionTool(tool_with_list_enum)
+  result = await tool.run_async(
+      args={"colors": [_Color.GREEN, "red"]},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"colors": [_Color.GREEN, _Color.RED]}
+
+
+@pytest.mark.asyncio
+async def test_run_async_leaves_non_list_arg_for_list_enum_param_alone(
+    mock_tool_context,
+):
+  """A value that is not a list is not iterated, so a string isn't split."""
+
+  async def tool_with_list_enum(colors: list[_Color]):
+    return {"got": colors}
+
+  tool = FunctionTool(tool_with_list_enum)
+  result = await tool.run_async(
+      args={"colors": "red"},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"got": "red"}
+
+
 @pytest.mark.asyncio
 async def test_run_async_leaves_untyped_list_param_alone(mock_tool_context):
   """A bare list annotation carries no element type, so nothing is coerced."""
