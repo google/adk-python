@@ -573,7 +573,10 @@ class RestApiTool(BaseTool):
         schema = media_type_object.schema_
         body_data = None
 
-        if schema.type == "object":
+        # OpenAPI allows a media type with no schema (e.g.
+        # application/octet-stream: {}). Treat a missing schema like a
+        # non-object so the single body parameter is sent as raw data.
+        if schema is not None and schema.type == "object":
           body_data = {}
           for param in parameters:
             if param.param_location == "body" and param.py_name in kwargs:

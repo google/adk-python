@@ -2253,6 +2253,41 @@ class TestRestApiTool:
         request_params["headers"]["Content-Type"] == "application/octet-stream"
     )
 
+  def test_prepare_request_params_octet_stream_without_schema(
+      self, sample_endpoint, sample_auth_scheme, sample_auth_credential
+  ):
+    """Media types with no schema still send the body (OpenAPI allows {})."""
+    mock_operation = Operation(
+        operationId="upload_contract",
+        requestBody=RequestBody(
+            content={"application/octet-stream": MediaType()}
+        ),
+    )
+    tool = RestApiTool(
+        name="upload_contract",
+        description="upload",
+        endpoint=sample_endpoint,
+        operation=mock_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name="",
+            py_name="body",
+            param_location="body",
+            param_schema=OpenAPISchema(),
+        )
+    ]
+    kwargs = {"body": b"%PDF-1.7"}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert request_params["data"] == b"%PDF-1.7"
+    assert (
+        request_params["headers"]["Content-Type"] == "application/octet-stream"
+    )
+
   def test_prepare_request_params_path_param(
       self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
