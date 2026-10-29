@@ -100,12 +100,18 @@ class _LoopState(DynamicNodeState):
   """Cached static node branches."""
 
   join_arrivals: dict[str, set[str]] = field(default_factory=dict)
-  """Predecessors that arrived since each wait-for-all node last fired.
+  """Predecessor arrivals that each wait-for-all node has not consumed yet.
 
   Keyed by the wait-for-all node's name. Cleared when that node fires, so in
   a loop it waits for every predecessor's next run instead of counting runs
-  left over from an earlier iteration.
+  left over from an earlier iteration. The exception, for a node on a cycle,
+  is a predecessor the node cannot reach by following edges, such as a setup
+  step before the loop: the loop does not run it again, so its arrival stays
+  recorded.
   """
+
+  descendants: dict[str, frozenset[str]] = field(default_factory=dict)
+  """Nodes reachable from each node, memoized by ``Workflow._descendants``."""
 
   pending_tasks: dict[str, asyncio.Task[Context]] = field(default_factory=dict)
   """Running static node tasks."""
@@ -893,8 +899,9 @@ class Workflow(BaseNode):
   ) -> None:
     """Buffer a trigger for target_name once all predecessors have completed.
 
-    No-op while any predecessor is still outstanding. Only runs completed
-    since target_name last fired count, so each firing consumes them.
+    No-op while any predecessor is still outstanding. Each firing consumes
+    the runs it used, except that in a loop the run of a predecessor that
+    target_name cannot reach is kept, because the loop does not run it again.
     """
     graph = self._require_graph()
     predecessors = {
@@ -912,7 +919,16 @@ class Workflow(BaseNode):
         for p in predecessors
     ):
       return
-    loop_state.join_arrivals.pop(target_name, None)
+    reachable = self._descendants(loop_state, target_name)
+    if target_name in reachable:
+      # The join is on a cycle. A predecessor it cannot reach, such as a
+      # setup step before the loop, is not run again by the loop, so clearing
+      # its arrival would stop the join after the first iteration.
+      arrivals.difference_update(predecessors & reachable)
+    else:
+      # Off a cycle, no predecessor is reachable, so the rule above would keep
+      # every arrival and fire the join again whenever a predecessor reruns.
+      loop_state.join_arrivals.pop(target_name, None)
 
     outputs = {p: loop_state.node_outputs.get(p) for p in predecessors}
     branches = [loop_state.node_branches.get(p, "") for p in predecessors]
@@ -1009,6 +1025,28 @@ class Workflow(BaseNode):
       if node.name == name:
         return node
     raise WorkflowInvariantError(f"Node {name} not found in graph.")
+
+  def _descendants(
+      self, loop_state: _LoopState, node_name: str
+  ) -> frozenset[str]:
+    """Returns the nodes reachable from node_name through one or more edges.
+
+    Every edge counts, including routes the run never takes. The graph does
+    not change during a run, so each result is memoized in ``loop_state``.
+    """
+    if node_name not in loop_state.descendants:
+      successors: dict[str, list[str]] = {}
+      for edge in self._require_graph().edges:
+        successors.setdefault(edge.from_node.name, []).append(edge.to_node.name)
+      reached: set[str] = set()
+      frontier = [node_name]
+      while frontier:
+        for name in successors.get(frontier.pop(), []):
+          if name not in reached:
+            reached.add(name)
+            frontier.append(name)
+      loop_state.descendants[node_name] = frozenset(reached)
+    return loop_state.descendants[node_name]
 
   def _pop_completed_task(
       self, loop_state: _LoopState, task: asyncio.Task[Context]
