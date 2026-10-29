@@ -18,6 +18,7 @@ Verifies that the gate holds back a call that needs confirmation, records the
 confirmation request, and lets approved or unguarded calls through.
 """
 
+import json
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -26,8 +27,10 @@ from google.adk.sessions.session import Session
 from google.adk.tools._confirmation_utils import apply_confirmation_gate
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_confirmation import ConfirmationRequest
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
+import pytest
 
 _FUNCTION_CALL_ID = 'call-1'
 
@@ -78,6 +81,7 @@ async def test_unanswered_call_requests_confirmation():
       'Please approve or reject the tool call _delete_file() by responding'
       ' with a FunctionResponse with an expected ToolConfirmation payload.'
   )
+  assert requested[_FUNCTION_CALL_ID].payload is None
   assert not tool_context.actions.skip_summarization
 
 
@@ -139,4 +143,160 @@ async def test_non_bool_confirmation_answer_proceeds():
   response = await apply_confirmation_gate(tool, {}, tool_context)
 
   assert response is None
+  assert not tool_context.actions.requested_tool_confirmations
+
+
+class _DescribingTool(BaseTool):
+  """A gated tool that tells the user what they are approving."""
+
+  def __init__(self, request: ConfirmationRequest):
+    super().__init__(name='describing', description='Describes its call.')
+    self._request = request
+    self.hook_calls: list[tuple[dict[str, Any], ToolContext]] = []
+
+  async def check_require_confirmation(
+      self, args: dict[str, Any], tool_context: ToolContext
+  ) -> bool:
+    return True
+
+  async def get_confirmation_request(
+      self, args: dict[str, Any], tool_context: ToolContext
+  ) -> ConfirmationRequest:
+    self.hook_calls.append((args, tool_context))
+    return self._request
+
+
+async def test_base_tool_default_request_is_the_generic_hint():
+  """A tool that does not override the hook asks with the generic hint."""
+  tool = FunctionTool(func=_delete_file)
+
+  request = await tool.get_confirmation_request(
+      {'path': 'a'}, _make_tool_context()
+  )
+
+  assert request == ConfirmationRequest(
+      hint=(
+          'Please approve or reject the tool call _delete_file() by responding'
+          ' with a FunctionResponse with an expected ToolConfirmation payload.'
+      ),
+      payload=None,
+  )
+
+
+async def test_tool_supplied_hint_and_payload_are_requested():
+  """The gate asks with the hint and payload the tool supplies."""
+  tool = _DescribingTool(
+      ConfirmationRequest(
+          hint='Delete a?', payload={'label': 'A', 'tags': ['x', 1, None]}
+      )
+  )
+  tool_context = _make_tool_context()
+
+  response = await apply_confirmation_gate(tool, {'path': 'a'}, tool_context)
+
+  assert response == {
+      'error': 'This tool call requires confirmation, please approve or reject.'
+  }
+  requested = tool_context.actions.requested_tool_confirmations[
+      _FUNCTION_CALL_ID
+  ]
+  assert requested.hint == 'Delete a?'
+  assert requested.payload == {'label': 'A', 'tags': ['x', 1, None]}
+  assert requested.confirmed is False
+  # The payload reaches the client as JSON.
+  assert json.loads(requested.model_dump_json())['payload'] == {
+      'label': 'A',
+      'tags': ['x', 1, None],
+  }
+
+
+async def test_tool_supplied_payload_without_hint_keeps_payload():
+  """A payload is sent even when the tool leaves the hint empty."""
+  tool = _DescribingTool(ConfirmationRequest(payload={'k': 'v'}))
+  tool_context = _make_tool_context()
+
+  await apply_confirmation_gate(tool, {}, tool_context)
+
+  requested = tool_context.actions.requested_tool_confirmations[
+      _FUNCTION_CALL_ID
+  ]
+  assert requested.hint == ''
+  assert requested.payload == {'k': 'v'}
+
+
+async def test_hook_receives_call_args_and_context():
+  """The hook is given the arguments of the call and its tool context."""
+  tool = _DescribingTool(ConfirmationRequest(hint='h'))
+  tool_context = _make_tool_context()
+  args = {'path': '/prod/a', 'force': True}
+
+  await apply_confirmation_gate(tool, args, tool_context)
+
+  assert len(tool.hook_calls) == 1
+  seen_args, seen_context = tool.hook_calls[0]
+  assert seen_args == args
+  assert seen_context is tool_context
+
+
+async def test_hook_is_not_called_for_ungated_call():
+  """A tool that does not need confirmation is never asked for a request."""
+
+  class _UngatedTool(_DescribingTool):
+
+    async def check_require_confirmation(
+        self, args: dict[str, Any], tool_context: ToolContext
+    ) -> bool:
+      return False
+
+  tool = _UngatedTool(ConfirmationRequest(hint='h'))
+  tool_context = _make_tool_context()
+
+  response = await apply_confirmation_gate(tool, {}, tool_context)
+
+  assert response is None
+  assert tool.hook_calls == []
+  assert not tool_context.actions.requested_tool_confirmations
+
+
+@pytest.mark.parametrize(
+    ('confirmation', 'expected_response'),
+    [
+        (ToolConfirmation(confirmed=True), None),
+        (
+            ToolConfirmation(confirmed=False),
+            {'error': 'This tool call is rejected.'},
+        ),
+    ],
+    ids=['approved', 'rejected'],
+)
+async def test_hook_is_not_called_once_the_call_is_answered(
+    confirmation: ToolConfirmation, expected_response: dict[str, str] | None
+):
+  """An answered call is approved or rejected without asking again."""
+  tool = _DescribingTool(ConfirmationRequest(hint='h', payload={'k': 'v'}))
+  tool_context = _make_tool_context(confirmation)
+
+  response = await apply_confirmation_gate(tool, {}, tool_context)
+
+  assert response == expected_response
+  assert tool.hook_calls == []
+  assert not tool_context.actions.requested_tool_confirmations
+
+
+async def test_failing_hook_neither_requests_nor_lets_the_call_through():
+  """A hook that raises propagates, so the call is not run or approved."""
+
+  class _FailingTool(_DescribingTool):
+
+    async def get_confirmation_request(
+        self, args: dict[str, Any], tool_context: ToolContext
+    ) -> ConfirmationRequest:
+      raise RuntimeError('cannot describe the call')
+
+  tool = _FailingTool(ConfirmationRequest())
+  tool_context = _make_tool_context()
+
+  with pytest.raises(RuntimeError, match='cannot describe the call'):
+    await apply_confirmation_gate(tool, {}, tool_context)
+
   assert not tool_context.actions.requested_tool_confirmations

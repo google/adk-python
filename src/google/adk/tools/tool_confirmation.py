@@ -50,3 +50,20 @@ class ToolConfirmation(BaseModel):
     if response and len(response) == 1 and "response" in response:
       return cls.model_validate(json.loads(response["response"]))
     return cls.model_validate(response)
+
+
+class ConfirmationRequest(BaseModel):
+  """What the user is asked when a tool call is held for confirmation.
+
+  Returned by `BaseTool.get_confirmation_request()`. The framework copies it
+  into the `ToolConfirmation` it sends to the client.
+  """
+
+  model_config = ConfigDict(extra="forbid")
+  """The pydantic model config."""
+
+  hint: str = ""
+  """The hint text shown to the user for why the confirmation is needed."""
+  payload: Optional[Any] = None
+  """Custom data sent to the client with the request, for example the details
+  an approval card renders. It should be JSON serializable."""

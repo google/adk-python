@@ -595,12 +595,9 @@ class McpTool(BaseAuthenticatedTool):
 
       if require_confirmation:
         if not tool_context.tool_confirmation:
+          request = await self.get_confirmation_request(args, tool_context)
           tool_context.request_confirmation(
-              hint=(
-                  f"Please approve or reject the tool call {self.name}() by"
-                  " responding with a FunctionResponse with an expected"
-                  " ToolConfirmation payload."
-              ),
+              hint=request.hint, payload=request.payload
           )
           # The pause is not a tool result for the model to summarize; without
           # this the flow re-invokes the model, which calls the tool again.

@@ -232,7 +232,9 @@ for approval only when the `amount` argument is above 1,000.
 
 ADK treats only the value `True` as a request for approval, so return a real
 `bool`. The method receives the `tool_context`, so it can base the decision on
-session state as well as on the arguments. The
+session state as well as on the arguments. To change the hint and payload the
+person sees, override `get_confirmation_request` and return a
+`ConfirmationRequest`. The
 [tool confirmation guide](../tool_confirmation/index.md) explains how your
 application receives the request and sends back the answer.
 

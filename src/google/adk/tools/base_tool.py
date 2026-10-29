@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 # Re-exported for backward compatibility: existing code imports ToolContext
 # from this module and annotates tool methods with base_tool.ToolContext, which
 # ADK resolves at runtime via get_type_hints(), so it must be importable here.
+from .tool_confirmation import ConfirmationRequest
 from .tool_context import ToolContext  # pylint: disable=unused-import
 
 SelfTool = TypeVar("SelfTool", bound="BaseTool")
@@ -196,6 +197,36 @@ class BaseTool(ABC):
   ) -> bool:
     """Returns whether the tool requires confirmation for the given args."""
     return False
+
+  async def get_confirmation_request(
+      self, args: dict[str, Any], tool_context: ToolContext
+  ) -> ConfirmationRequest:
+    """Returns what the user is asked when this call is held for confirmation.
+
+    The framework calls this when `check_require_confirmation()` returns True
+    and the call has not been answered yet, and sends the result to the client
+    in the `adk_request_confirmation` function call. Override it to tell the
+    user what they are approving, for example to name the resources behind
+    ids in `args`. The default is a generic hint and no payload.
+
+    The call is still held and only runs once it is approved, whatever this
+    returns. If this raises, the call is neither run nor held for
+    confirmation; the error is handled like an error from the tool itself.
+
+    Args:
+      args: The arguments of the tool call.
+      tool_context: The context of the tool call.
+
+    Returns:
+      The hint and the JSON serializable payload to ask the user with.
+    """
+    return ConfirmationRequest(
+        hint=(
+            f"Please approve or reject the tool call {self.name}() by"
+            " responding with a FunctionResponse with an expected"
+            " ToolConfirmation payload."
+        ),
+    )
 
   @property
   def _api_variant(self) -> GoogleLLMVariant:

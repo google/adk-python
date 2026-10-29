@@ -39,6 +39,7 @@ from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.flows.llm_flows.context import _fencing
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools import _confirmation_utils
 from google.adk.tools.mcp_tool import mcp_tool
 from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_IDLE_TTL_SECONDS
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
@@ -47,6 +48,7 @@ from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.mcp_tool.mcp_tool import ProgressCallbackFactory
 from google.adk.tools.mcp_tool.mcp_tool import ProgressFnT
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
+from google.adk.tools.tool_confirmation import ConfirmationRequest
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
 from google.genai.types import GroundingMetadata
@@ -1626,6 +1628,71 @@ class TestMCPTool:
     }
     tool_context.request_confirmation.assert_called_once()
     assert tool_context.actions.skip_summarization is True
+
+  @pytest.mark.asyncio
+  async def test_confirmation_request_hook_supplies_hint_and_payload(self):
+    """A subclass's get_confirmation_request feeds the request MCPTool raises."""
+
+    class _DescribingMCPTool(MCPTool):
+
+      async def get_confirmation_request(self, args, tool_context):
+        return ConfirmationRequest(
+            hint=f"Run test_tool on {args['param1']}?",
+            payload={"param1": args["param1"]},
+        )
+
+    tool = _DescribingMCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=True,
+    )
+    tool_context = Mock(spec=ToolContext)
+    tool_context.tool_confirmation = None
+    tool_context.request_confirmation = Mock()
+    tool_context.actions = EventActions()
+
+    await tool.run_async(
+        args={"param1": "test_value"}, tool_context=tool_context
+    )
+
+    tool_context.request_confirmation.assert_called_once_with(
+        hint="Run test_tool on test_value?", payload={"param1": "test_value"}
+    )
+
+  @pytest.mark.asyncio
+  async def test_confirmation_gate_uses_the_hook_of_a_declaratively_gated_tool(
+      self,
+  ):
+    """The framework gate asks with what an MCPTool subclass supplies."""
+
+    class _DescribingMCPTool(MCPTool):
+
+      async def get_confirmation_request(self, args, tool_context):
+        return ConfirmationRequest(
+            hint="Run test_tool?", payload={"args": args}
+        )
+
+    tool = _DescribingMCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=True,
+    )
+    invocation_context = Mock(spec=InvocationContext)
+    invocation_context._state_schema = None
+    invocation_context.session = Mock(state={})
+    tool_context = Context(
+        invocation_context=invocation_context, function_call_id="call-1"
+    )
+
+    response = await _confirmation_utils.apply_confirmation_gate(
+        tool, {"param1": "test_value"}, tool_context
+    )
+
+    assert response is not None
+    requested = tool_context.actions.requested_tool_confirmations["call-1"]
+    assert requested.hint == "Run test_tool?"
+    assert requested.payload == {"args": {"param1": "test_value"}}
+    self.mock_session.call_tool.assert_not_called()
 
   @pytest.mark.asyncio
   async def test_run_async_require_confirmation_true_rejected(self):

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 
+from google.adk.tools.tool_confirmation import ConfirmationRequest
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from pydantic import ValidationError
 import pytest
@@ -130,3 +131,23 @@ class TestFromResponseDict:
     """A wrapper whose payload is not JSON is a caller error, not a default."""
     with pytest.raises(json.JSONDecodeError):
       ToolConfirmation.from_response_dict({"response": "not json"})
+
+
+class TestConfirmationRequest:
+  """Tests for the ConfirmationRequest model."""
+
+  def test_defaults_are_empty_hint_and_no_payload(self):
+    request = ConfirmationRequest()
+
+    assert request.hint == ""
+    assert request.payload is None
+
+  def test_stores_hint_and_payload(self):
+    request = ConfirmationRequest(hint="Approve?", payload={"a": [1, 2]})
+
+    assert request.hint == "Approve?"
+    assert request.payload == {"a": [1, 2]}
+
+  def test_rejects_unknown_fields(self):
+    with pytest.raises(ValidationError):
+      ConfirmationRequest(hint="Approve?", confirmed=True)
