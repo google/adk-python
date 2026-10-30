@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+
 import asyncio
 import collections.abc
 from collections.abc import AsyncGenerator
@@ -59,6 +62,11 @@ from .utils._workflow_hitl_utils import has_auth_credential
 from .utils._workflow_hitl_utils import process_auth_resume
 
 logger = logging.getLogger("google_adk." + __name__)
+
+def _annotation_is_bytes(annotated_type: Any) -> bool:
+  """True when the annotation is exactly ``bytes`` or ``bytearray``."""
+  return annotated_type is bytes or annotated_type is bytearray
+
 _ANY_TYPE_ADAPTER: TypeAdapter[Any] = TypeAdapter(Any)
 
 
@@ -696,6 +704,15 @@ class FunctionNode(BaseNode):
       value = _unwrap_content_payload(value, annotated_type)
     if param_name in self._failed_type_adapters:
       return value
+    # JSON session stores (DatabaseSessionService / SqliteSessionService) dump
+    # bytes inside Event.output (typed Any) as base64 strings. TypeAdapter(bytes)
+    # then utf-8-encodes the string (so b"\x00\x01" becomes b"AAE="). Prefer
+    # base64 decode when the annotation is bytes and the value is still a str.
+    if isinstance(value, str) and _annotation_is_bytes(annotated_type):
+      try:
+        return base64.b64decode(value, validate=True)
+      except binascii.Error:
+        pass
     adapter = self._type_adapters.get(param_name)
     if adapter is None:
       adapter = self._build_type_adapter(param_name, annotated_type)
