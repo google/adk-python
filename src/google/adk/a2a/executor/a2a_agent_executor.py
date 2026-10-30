@@ -31,6 +31,7 @@ from google.adk.sessions.session import Session
 from typing_extensions import override
 
 from .. import _compat
+from ...agents.llm.task._finish_task_tool import is_nested_branch_finish_task
 from ...utils.context_utils import Aclosing
 from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..converters.request_converter import AgentRunRequest
@@ -230,6 +231,9 @@ class A2aAgentExecutor(AgentExecutor):
     last_adk_event = None
     async with Aclosing(runner.run_async(**vars(run_request))) as agen:
       async for adk_event in agen:
+        # A task-hop finish_task (branch has a run id) is not this task.
+        if is_nested_branch_finish_task(adk_event):
+          continue
         last_adk_event = adk_event
         for a2a_event in self._config.event_converter(
             adk_event,

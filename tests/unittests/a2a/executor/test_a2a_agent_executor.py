@@ -42,6 +42,12 @@ import pytest
 from tests.unittests import testing_utils
 
 
+def _mock_event():
+  event = Mock(spec=Event)
+  event.branch = None
+  return event
+
+
 def _get_meta_val(metadata, key):
   """Get a value from metadata, handling both dict (0.3) and proto Struct (1.x)."""
   if hasattr(metadata, "DESCRIPTOR"):
@@ -157,7 +163,7 @@ class TestA2aAgentExecutor:
     )
 
     # Mock agent run with proper async generator
-    mock_event = Mock(spec=Event)
+    mock_event = _mock_event()
 
     # Configure run_async to return the async generator when awaited
     async def mock_run_async(**kwargs):
@@ -252,7 +258,7 @@ class TestA2aAgentExecutor:
     self.mock_runner._new_invocation_context.return_value = Mock()
 
     async def mock_run_async(**kwargs):
-      async for item in self._create_async_generator([Mock(spec=Event)]):
+      async for item in self._create_async_generator([_mock_event()]):
         yield item
 
     self.mock_runner.run_async = mock_run_async
@@ -324,7 +330,7 @@ class TestA2aAgentExecutor:
     )
 
     # Mock agent run with proper async generator
-    mock_event = Mock(spec=Event)
+    mock_event = _mock_event()
 
     # Configure run_async to return the async generator when awaited
     async def mock_run_async(**kwargs):
@@ -420,7 +426,7 @@ class TestA2aAgentExecutor:
   @pytest.mark.asyncio
   async def test_executor_context_uses_prepared_session_id(self):
     """An overridden _prepare_session that leaves session_id unset still names the session."""
-    adk_event = Mock(spec=Event)
+    adk_event = _mock_event()
     self.mock_event_converter.return_value = [Mock(spec=A2AEvent)]
     self.mock_request_converter.return_value = AgentRunRequest(
         user_id="test-user",
@@ -607,7 +613,7 @@ class TestA2aAgentExecutor:
     )
 
     # Mock agent run with proper async generator
-    mock_event = Mock(spec=Event)
+    mock_event = _mock_event()
 
     async def mock_run_async(**kwargs):
       async for item in self._create_async_generator([mock_event]):
@@ -665,7 +671,7 @@ class TestA2aAgentExecutor:
     )
 
     # Mock agent run with proper async generator
-    mock_event = Mock(spec=Event)
+    mock_event = _mock_event()
 
     async def mock_run_async(**kwargs):
       async for item in self._create_async_generator([mock_event]):
@@ -721,7 +727,7 @@ class TestA2aAgentExecutor:
     )
 
     # Mock agent run with multiple events using proper async generator
-    mock_events = [Mock(spec=Event), Mock(spec=Event)]
+    mock_events = [_mock_event(), _mock_event()]
 
     # Configure run_async to return the async generator when awaited
     async def mock_run_async(**kwargs):
@@ -884,7 +890,7 @@ class TestA2aAgentExecutor:
     )
 
     # Mock agent run with multiple events using proper async generator
-    mock_events = [Mock(spec=Event), Mock(spec=Event)]
+    mock_events = [_mock_event(), _mock_event()]
 
     # Configure run_async to return the async generator when awaited
     async def mock_run_async(**kwargs):
@@ -955,7 +961,7 @@ class TestA2aAgentExecutor:
     )
 
     # Mock agent run with multiple events using proper async generator
-    mock_events = [Mock(spec=Event), Mock(spec=Event)]
+    mock_events = [_mock_event(), _mock_event()]
 
     # Configure run_async to return the async generator when awaited
     async def mock_run_async(**kwargs):
@@ -1029,7 +1035,7 @@ class TestA2aAgentExecutor:
     )
 
     # Mock agent run with multiple events using proper async generator
-    mock_events = [Mock(spec=Event), Mock(spec=Event)]
+    mock_events = [_mock_event(), _mock_event()]
 
     # Configure run_async to return the async generator when awaited
     async def mock_run_async(**kwargs):
@@ -1117,7 +1123,7 @@ class TestA2aAgentExecutor:
     )
 
     # Mock agent run with multiple events using proper async generator
-    mock_events = [Mock(spec=Event), Mock(spec=Event)]
+    mock_events = [_mock_event(), _mock_event()]
 
     # Configure run_async to return the async generator when awaited
     async def mock_run_async(**kwargs):
@@ -1168,6 +1174,7 @@ class TestA2aAgentExecutor:
     """Test that after_event interceptors receive correct arguments and can modify the event."""
     # Create distinct mock objects for ADK event and A2A event
     adk_event = Mock(spec=Event, name="ADK_EVENT")
+    adk_event.branch = None
     a2a_event = Mock(spec=A2AEvent, name="A2A_EVENT")
     modified_a2a_event = Mock(spec=A2AEvent, name="MODIFIED_A2A_EVENT")
 
@@ -1300,7 +1307,7 @@ class TestA2aAgentExecutor:
     )
 
     # Mock ADK event with specific metadata to preserve
-    mock_adk_event = Mock(spec=Event)
+    mock_adk_event = _mock_event()
     mock_adk_event.invocation_id = "test-invocation-id"
     mock_adk_event.author = "test-author"
     mock_adk_event.id = "test-event-id"
@@ -1524,3 +1531,113 @@ class TestA2aAgentExecutor:
     else:
       assert part_dict.name == "finish_task"
       assert part_dict.response == {"result": "Task completed."}
+
+
+def _hop_event(author, branch, kind):
+  if kind == "text":
+    part = types.Part(text="kept")
+    role = "model"
+  elif kind == "call":
+    part = types.Part(
+        function_call=types.FunctionCall(
+            id="fc", name="finish_task", args={"result": "x"}
+        )
+    )
+    role = "model"
+  else:
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id="fc", name="finish_task", response={"result": "Task completed."}
+        )
+    )
+    role = "user"
+  return Event(
+      author=author,
+      invocation_id="inv",
+      branch=branch,
+      content=types.Content(role=role, parts=[part]),
+  )
+
+
+async def _legacy_forwarded(events):
+  converter = Mock(return_value=[Mock()])
+  runner = Mock(spec=Runner)
+  runner.app_name = "test-app"
+  runner.agent = Mock()
+  runner.agent.name = "workflow"
+  runner.session_service = Mock()
+  session = Mock()
+  session.id = "s"
+  runner.session_service.get_session = AsyncMock(return_value=session)
+  runner._new_invocation_context = Mock()
+
+  async def run_async(**kwargs):
+    del kwargs
+    for item in events:
+      yield item
+
+  runner.run_async = run_async
+  config = A2aAgentExecutorConfig(
+      a2a_part_converter=Mock(),
+      gen_ai_part_converter=Mock(),
+      request_converter=Mock(
+          return_value=AgentRunRequest(
+              user_id="u",
+              session_id="s",
+              new_message=Mock(spec=Content),
+              run_config=RunConfig(),
+          )
+      ),
+      event_converter=converter,
+  )
+  context = Mock(spec=RequestContext)
+  context.message = Message(
+      message_id="m",
+      role=_compat.ROLE_AGENT,
+      parts=[_compat.make_text_part("go")],
+  )
+  context.current_task = None
+  context.task_id = "t"
+  context.context_id = "c"
+  context.requested_extensions = []
+  aggregator = Mock()
+  aggregator.task_state = _compat.TS_WORKING
+  aggregator.task_status_message = None
+  with patch(
+      "google.adk.a2a.executor.a2a_agent_executor.TaskResultAggregator",
+      return_value=aggregator,
+  ):
+    await A2aAgentExecutor(runner=runner, config=config)._handle_request(
+        context, Mock(spec=EventQueue)
+    )
+  return [call.args[0].author for call in converter.call_args_list]
+
+
+_HOP = [
+    _hop_event("inner", "inner@fc", "text"),
+    _hop_event("inner", "inner@fc", "call"),
+    _hop_event("inner", "inner@fc", "fr"),
+    _hop_event("middle", None, "fr"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "events,expected",
+    [
+        (_HOP, ["inner", "middle"]),
+        ([_hop_event("reporter", None, "fr")], ["reporter"]),
+        (
+            [
+                _hop_event("inner", "inner@fc", "call"),
+                _hop_event("inner", "inner@fc", "fr"),
+                _hop_event("middle", None, "text"),
+            ],
+            ["middle"],
+        ),
+        ([_hop_event("child", "par.child", "fr")], ["child"]),
+    ],
+    ids=["control", "workflow-child", "chat-root", "parallel-child"],
+)
+async def test_legacy_executor_forwards_finish_task_by_run_id(events, expected):
+  assert await _legacy_forwarded(events) == expected

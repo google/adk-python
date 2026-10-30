@@ -35,6 +35,7 @@ from google.adk.events.event import Event
 from google.adk.runners import RunConfig
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import GetSessionConfig
+from google.genai import types
 from google.genai.types import Content
 import pytest
 
@@ -933,3 +934,104 @@ class TestA2aAgentExecutor:
     assert self.mock_event_queue.enqueue_event.call_count == 1
     final_event = self.mock_event_queue.enqueue_event.call_args_list[0][0][0]
     assert final_event.status.state == _compat.TS_COMPLETED
+
+
+def _hop_event(author, branch, kind):
+  if kind == "text":
+    part = types.Part(text="kept")
+    role = "model"
+  elif kind == "call":
+    part = types.Part(
+        function_call=types.FunctionCall(
+            id="fc", name="finish_task", args={"result": "x"}
+        )
+    )
+    role = "model"
+  else:
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id="fc", name="finish_task", response={"result": "Task completed."}
+        )
+    )
+    role = "user"
+  return Event(
+      author=author,
+      invocation_id="inv",
+      branch=branch,
+      content=types.Content(role=role, parts=[part]),
+  )
+
+
+async def _new_forwarded(events):
+  converter = Mock(return_value=[Mock()])
+  runner = Mock(spec=Runner)
+  runner.app_name = "test-app"
+  runner.agent = Mock()
+  runner.agent.name = "workflow"
+
+  async def run_async(**kwargs):
+    del kwargs
+    for item in events:
+      yield item
+
+  runner.run_async = run_async
+  executor = A2aAgentExecutor(
+      runner=runner,
+      config=A2aAgentExecutorConfig(
+          a2a_part_converter=Mock(),
+          gen_ai_part_converter=Mock(),
+          request_converter=Mock(),
+          adk_event_converter=converter,
+      ),
+  )
+  executor._invocation_metadata = {}
+  executor_context = Mock()
+  executor_context.app_name = "test-app"
+  executor_context.user_id = "u"
+  executor_context.session_id = "s"
+  context = Mock(spec=RequestContext)
+  context.task_id = "t"
+  context.context_id = "c"
+  await executor._handle_request(
+      context,
+      executor_context,
+      Mock(spec=EventQueue),
+      runner,
+      AgentRunRequest(
+          user_id="u",
+          session_id="s",
+          new_message=Mock(spec=Content),
+          run_config=RunConfig(),
+      ),
+  )
+  return [call.args[0].author for call in converter.call_args_list]
+
+
+_HOP = [
+    _hop_event("inner", "inner@fc", "text"),
+    _hop_event("inner", "inner@fc", "call"),
+    _hop_event("inner", "inner@fc", "fr"),
+    _hop_event("middle", None, "fr"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "events,expected",
+    [
+        (_HOP, ["inner", "middle"]),
+        ([_hop_event("reporter", None, "fr")], ["reporter"]),
+        (
+            [
+                _hop_event("inner", "inner@fc", "call"),
+                _hop_event("inner", "inner@fc", "fr"),
+                _hop_event("middle", None, "text"),
+            ],
+            ["middle"],
+        ),
+        ([_hop_event("child", "par.child", "fr")], ["child"]),
+    ],
+    ids=["control", "workflow-child", "chat-root", "parallel-child"],
+)
+async def test_new_executor_forwards_finish_task_by_run_id(events, expected):
+  assert await _new_forwarded(events) == expected
