@@ -46,37 +46,57 @@ _NON_SESSION_STATE_PREFIXES = (
 )
 
 
+def _is_session_scoped_key(key: str) -> bool:
+  """Returns whether a state key is scoped to the session being rewound."""
+  return not key.startswith(_NON_SESSION_STATE_PREFIXES)
+
+
 async def compute_state_delta_for_rewind(
     session: Session, rewind_event_index: int
 ) -> dict[str, Any]:
-  """Computes the state delta to reverse changes."""
+  """Computes the state delta that reverses changes made after a rewind point.
+
+  Restores keys present at the rewind point and clears session-scoped keys that
+  an event at or after the rewind point added, leaving other keys untouched.
+
+  Args:
+    session: The session to rewind.
+    rewind_event_index: Index in `session.events` of the first event to undo.
+
+  Returns:
+    A state delta that restores keys from `state_at_rewind_point` that differ
+    from `session.state` and sets keys written only at or after the rewind point
+    to None.
+  """
   state_at_rewind_point: dict[str, Any] = {}
-  for i in range(rewind_event_index):
-    if session.events[i].actions.state_delta:
-      for k, v in session.events[i].actions.state_delta.items():
-        if k.startswith(_NON_SESSION_STATE_PREFIXES):
-          continue
-        if v is None:
-          state_at_rewind_point.pop(k, None)
-        else:
-          state_at_rewind_point[k] = v
+  for event in session.events[:rewind_event_index]:
+    for key, value in (event.actions.state_delta or {}).items():
+      if not _is_session_scoped_key(key):
+        continue
+      if value is None:
+        state_at_rewind_point.pop(key, None)
+      else:
+        state_at_rewind_point[key] = value
 
   current_state = session.state
-  rewind_state_delta = {}
+  rewind_state_delta: dict[str, Any] = {}
 
   # 1. Add/update keys in rewind_state_delta to match state_at_rewind_point.
   for key, value_at_rewind in state_at_rewind_point.items():
     if key not in current_state or current_state[key] != value_at_rewind:
       rewind_state_delta[key] = value_at_rewind
 
-  # 2. Set keys to None in rewind_state_delta if they are in current_state
-  #    but not in state_at_rewind_point. These keys were added after the
-  #    rewind point and need to be removed.
-  for key in current_state:
-    if key.startswith(_NON_SESSION_STATE_PREFIXES):
-      continue
-    if key not in state_at_rewind_point:
-      rewind_state_delta[key] = None
+  # 2. Clear session-scoped keys that an undone event wrote and that had no
+  #    value at the rewind point. Iterating over the undone events rather than
+  #    `current_state` keeps initial `create_session` state untouched, except
+  #    for an initial key an undone event overwrote: its initial value is not
+  #    recorded in any event, so it is cleared too.
+  for event in session.events[rewind_event_index:]:
+    for key in event.actions.state_delta or {}:
+      if not _is_session_scoped_key(key):
+        continue
+      if key not in state_at_rewind_point and key in current_state:
+        rewind_state_delta[key] = None
 
   return rewind_state_delta
 

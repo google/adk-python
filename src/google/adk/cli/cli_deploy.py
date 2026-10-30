@@ -44,7 +44,9 @@ from .deployers import DeployerFactory
 from .deployers._dockerfile_template import _DEFAULT_PYTHON_VERSION
 from .deployers._dockerfile_template import _render_dockerfile
 from .deployers._dockerfile_template import _render_install_agent_deps
+from .deployers._dockerfile_template import _to_exec_form
 from .deployers._dockerfile_template import _validate_app_name
+from .deployers._dockerfile_template import _validate_dockerfile_literal
 from .deployers._dockerfile_template import _validate_python_version
 from .utils import _onboarding
 
@@ -1100,6 +1102,25 @@ def _get_ignore_patterns_func(
   return shutil.ignore_patterns(*patterns)
 
 
+def _validate_extra_package_name(base: str) -> str:
+  """Validates an extra_packages basename before writing it into a Dockerfile."""
+  _validate_dockerfile_literal('extra_packages', base)
+  if (
+      not base
+      or base in ('.', '..')
+      or '"' in base
+      or '\\' in base
+      or '/' in base
+      or '$' in base
+      or any(ch.isspace() for ch in base)
+  ):
+    raise click.ClickException(
+        f'Invalid extra_packages entry {base!r}. The basename must not contain'
+        ' whitespace, quotes, backslashes, dollar signs, or path separators.'
+    )
+  return base
+
+
 def _stage_extra_packages(
     requested_extra_packages: Sequence[tuple[str, str]],
     build_context: str,
@@ -1128,7 +1149,9 @@ def _stage_extra_packages(
     pkg_src = os.path.abspath(pkg_src)
     if not os.path.exists(pkg_src):
       raise click.ClickException(f'extra_packages path not found: {pkg}')
-    base = os.path.basename(os.path.normpath(pkg_src))
+    base = _validate_extra_package_name(
+        os.path.basename(os.path.normpath(pkg_src))
+    )
     dst = os.path.join(build_context, base)
     if os.path.exists(dst) or base in reserved_names:
       raise click.ClickException(
@@ -1143,19 +1166,82 @@ def _stage_extra_packages(
   return staged_extra_packages
 
 
+_INSTALLABLE_ARCHIVE_SUFFIXES: Final[tuple[str, ...]] = (
+    '.whl',
+    '.tar.gz',
+    '.tgz',
+    '.zip',
+)
+
+
 def _get_extra_packages_copy(
     staged_extra_packages: Sequence[str], build_context: str
 ) -> str:
-  """Returns the Dockerfile lines that copy staged extra packages."""
+  """Returns the Dockerfile lines that copy and install staged extra packages.
+
+  Each staged entry is handled one of two ways:
+
+  * An installable distribution (a file ending in one of
+    `_INSTALLABLE_ARCHIVE_SUFFIXES`, or a directory containing
+    `pyproject.toml` or `setup.py` without a root `__init__.py`) is copied to
+    `/tmp/extra_packages/<base>` and installed with `pip install`, so its
+    modules land in site-packages together with the dependencies it declares.
+  * Anything else (a plain module, a folder of modules, or a package folder
+    with a root `__init__.py` that may also carry a `pyproject.toml` for tool
+    config) is copied to `/app/<base>` and `/app` is added to PYTHONPATH.
+
+  Installable entries are deliberately kept out of `/app`: a flat-layout
+  package such as `my_pkg/pyproject.toml` + `my_pkg/my_pkg/__init__.py` copied
+  to `/app/my_pkg` would otherwise resolve as a PEP 420 namespace package
+  ahead of its own site-packages install. For the same reason PYTHONPATH is
+  only set when at least one plain entry is present.
+
+  Args:
+    staged_extra_packages: Basenames returned by `_stage_extra_packages`.
+    build_context: The folder the entries were staged into.
+
+  Returns:
+    The `COPY`, `ENV`, and `RUN` lines to splice into the Dockerfile, or an
+    empty string when nothing was staged.
+  """
   if not staged_extra_packages:
     return ''
-  copy_lines = [
-      f'COPY --chown=myuser:myuser "{base}/" "/app/{base}/"'
-      if os.path.isdir(os.path.join(build_context, base))
-      else f'COPY --chown=myuser:myuser "{base}" "/app/{base}"'
-      for base in staged_extra_packages
-  ]
-  copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
+  copy_lines: list[str] = []
+  installable_targets: list[str] = []
+  has_plain_packages = False
+  for base in staged_extra_packages:
+    _validate_extra_package_name(base)
+    staged_path = os.path.join(build_context, base)
+    if os.path.isdir(staged_path):
+      has_build_file = os.path.isfile(
+          os.path.join(staged_path, 'pyproject.toml')
+      ) or os.path.isfile(os.path.join(staged_path, 'setup.py'))
+      has_root_init = os.path.isfile(os.path.join(staged_path, '__init__.py'))
+      if has_build_file and not has_root_init:
+        copy_lines.append(
+            f'COPY --chown=myuser:myuser "{base}/"'
+            f' "/tmp/extra_packages/{base}/"'
+        )
+        installable_targets.append(f'/tmp/extra_packages/{base}')
+      else:
+        copy_lines.append(
+            f'COPY --chown=myuser:myuser "{base}/" "/app/{base}/"'
+        )
+        has_plain_packages = True
+    elif base.endswith(_INSTALLABLE_ARCHIVE_SUFFIXES):
+      copy_lines.append(
+          f'COPY --chown=myuser:myuser "{base}" "/tmp/extra_packages/{base}"'
+      )
+      installable_targets.append(f'/tmp/extra_packages/{base}')
+    else:
+      copy_lines.append(f'COPY --chown=myuser:myuser "{base}" "/app/{base}"')
+      has_plain_packages = True
+  if has_plain_packages:
+    copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
+  if installable_targets:
+    copy_lines.append(
+        _to_exec_form('RUN', ['pip', 'install', *installable_targets])
+    )
   return '\n'.join(copy_lines)
 
 
@@ -1229,8 +1315,11 @@ def run(
     with_cloud_run_sandbox: Whether to enable the Cloud Run sandbox for code
       execution.
     extra_packages: Additional local file or directory paths to stage alongside
-      the agent and make importable in the image. A relative path is resolved
-      against the current working directory.
+      the agent and make importable in the image. A wheel, source archive, or
+      a project directory containing `pyproject.toml` or `setup.py` (without a
+      root `__init__.py`) is installed with pip; any other entry is copied to
+      `/app/<basename>` and `/app` is added to PYTHONPATH. A relative path is
+      resolved against the current working directory.
     python_version: The Python version for the container base image.
   """
   _validate_trigger_options(
@@ -1540,7 +1629,11 @@ def to_agent_engine(
       deployment. If not specified, the version in the dev environment will be
       used.
     extra_packages (list[str]): Optional. Additional local file or directory
-      paths to stage alongside the agent and make importable in the image.
+      paths to stage alongside the agent and make importable in the image. A
+      wheel, source archive, or a project directory containing `pyproject.toml`
+      or `setup.py` (without a root `__init__.py`) is installed with pip; any
+      other entry is copied to `/app/<basename>` and `/app` is added to
+      PYTHONPATH.
     worker_pool (str): Optional. Full Cloud Build private worker pool resource
       name
       (`projects/{project}/locations/{location}/workerPools/{pool}`).
@@ -2040,8 +2133,11 @@ def to_gke(
     use_local_storage: Whether to use local .adk storage in the container.
     service_type: The Kubernetes Service type (default: ClusterIP).
     extra_packages: Additional local file or directory paths to stage alongside
-      the agent and make importable in the image. A relative path is resolved
-      against the current working directory.
+      the agent and make importable in the image. A wheel, source archive, or
+      a project directory containing `pyproject.toml` or `setup.py` (without a
+      root `__init__.py`) is installed with pip; any other entry is copied to
+      `/app/<basename>` and `/app` is added to PYTHONPATH. A relative path is
+      resolved against the current working directory.
     python_version: The Python version for the container base image.
   """
   _validate_trigger_options(

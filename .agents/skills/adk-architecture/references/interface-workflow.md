@@ -376,6 +376,13 @@ stages:
      a checkpoint if a replayed node comes back `WAITING`) and seeding
      `loop_state.runs[node_path]` with
      `DynamicNodeRun(state=NodeState(run_id=run_id), recovered_state=recovered, is_static=True)`.
+     `_at_concurrency_limit` excludes `replayed_nodes` from the
+     `max_concurrency` count. A resolved-transfer fast-forward is not in that
+     set because it runs its transfer target once the replay barrier releases
+     it, so under `max_concurrency` `_schedule_ready_nodes` keeps its trigger
+     buffered (`_is_held_transfer`) until its barrier key is released and then
+     counts it like any running node. If nothing else is pending, it starts
+     one held node anyway so the barrier reports the divergence.
    - `_start_node_task` then dispatches `ctx._run_node_internal` to
      `DynamicNodeScheduler._check_existing_run`, which runs
      `check_interception(node=curr_node, recovered=run.recovered_state, current_run=run)`:

@@ -810,6 +810,14 @@ class Runner:
           get_task = None
         if event_or_done is done_sentinel:
           break
+        # (None, signal) is a barrier from NodeRunner._wait_for_enqueued_events:
+        # acknowledge it once everything queued ahead of it has been appended,
+        # without running plugins or yielding anything to the caller.
+        if event_or_done is None and isinstance(
+            processed_signal, asyncio.Event
+        ):
+          processed_signal.set()
+          continue
         if not isinstance(event_or_done, Event):
           raise TypeError(
               'Unexpected node event queue item:'

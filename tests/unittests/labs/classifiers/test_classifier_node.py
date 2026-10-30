@@ -32,6 +32,7 @@ from google.adk.labs.classifiers import ClassifierInput
 from google.adk.labs.classifiers import ClassifierNode
 from google.adk.labs.classifiers import ClassifierResponse
 from google.adk.labs.classifiers import Question
+from google.adk.labs.classifiers import RefusalAnswer
 from google.adk.labs.classifiers import ScoreAnswer
 from google.adk.workflow import DEFAULT_ROUTE
 from google.adk.workflow import START
@@ -257,6 +258,7 @@ def test_model_dump_keeps_classifier_subclass_fields():
             ScoreAnswer(score=1.0, probabilities={0: 0.0, 1: 1.0}),
             'score answer to a choice question',
         ),
+        (RefusalAnswer(), 'declined to answer'),
     ],
 )
 async def test_unusable_answer_raises(answer, match):

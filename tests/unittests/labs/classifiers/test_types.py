@@ -22,6 +22,7 @@ from google.adk.labs.classifiers import Choice
 from google.adk.labs.classifiers import ChoiceAnswer
 from google.adk.labs.classifiers import ClassifierResponse
 from google.adk.labs.classifiers import Question
+from google.adk.labs.classifiers import RefusalAnswer
 from google.adk.labs.classifiers import Score
 from google.adk.labs.classifiers import ScoreAnswer
 import pydantic
@@ -69,6 +70,7 @@ def test_question_rejects_non_json_content():
         lambda: BinaryAnswer(probability=0.5, extra=1),
         lambda: ChoiceAnswer(choice='a', probabilities={'a': 1.0}, extra=1),
         lambda: ScoreAnswer(score=0, probabilities={0: 1.0}, extra=1),
+        lambda: RefusalAnswer(extra=1),
         lambda: ClassifierResponse(answers={}, extra=1),
     ],
 )
@@ -121,6 +123,7 @@ def test_classifier_response_round_trips_through_json():
           'urgency': ScoreAnswer(
               score=0.75, probabilities={0: 0.25, 1: 0.75}, confidence=0.5
           ),
+          'refused': RefusalAnswer(),
       },
   )
 

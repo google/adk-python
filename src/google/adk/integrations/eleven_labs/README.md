@@ -53,16 +53,17 @@ root_agent = Agent(
 sentence at a time:
 
 - A sentence ends at `.`, `!`, `?`, or `…` (followed by optional quotes or
-  brackets and then whitespace), or at a line break.
+  brackets and then whitespace), at `。`, `！`, or `？` (followed by optional
+  closing quotes or brackets once the next character arrives), or at a line
+  break.
 - If no sentence end appears within `max_sentence_chars` (240 by default), the
-  text is split at the last space before that limit.
+  text is split at the last space before that limit, or at `max_sentence_chars`
+  when there is no space.
 
 Limitations:
 
 - Abbreviations such as `Dr.` or `Inc.` are split at the period.
-- Punctuation such as the CJK `。` or the Hindi `।` is not recognized. Chinese
-  and Japanese text has no spaces, so the whole reply is buffered and spoken
-  only after the model finishes.
+- Punctuation such as the Hindi `।` is not recognized.
 - For reliable splitting across languages, split the text with a library such
   as `pysbd`, `blingfire`, or `PyICU` (Unicode UAX #29) before it reaches the
   TTS.

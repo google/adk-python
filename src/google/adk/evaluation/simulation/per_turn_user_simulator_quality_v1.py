@@ -27,7 +27,6 @@ from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ...models.registry import LLMRegistry
 from ...utils.context_utils import Aclosing
-from ...utils.feature_decorator import experimental
 from .._retry_options_utils import add_default_retry_options_if_not_present
 from ..eval_case import ConversationScenario
 from ..eval_case import Invocation
@@ -104,7 +103,6 @@ def _get_stop_signal_invocation(stop_signal: str) -> Invocation:
   )
 
 
-@experimental
 class PerTurnUserSimulatorQualityV1(Evaluator):
   """Per turn user simulator evaluator.
 

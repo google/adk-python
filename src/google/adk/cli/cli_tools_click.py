@@ -56,8 +56,6 @@ if TYPE_CHECKING:
   from google.genai import types
 
   from ..agents.llm_agent import LlmAgent
-  from ..evaluation.eval_set_results_manager import EvalSetResultsManager
-  from ..evaluation.eval_sets_manager import EvalSetsManager
 
 _R = TypeVar("_R")
 _T = TypeVar("_T")
@@ -110,7 +108,7 @@ def _parse_avatar_config(
   else:
     try:
       config_json = Path(value).read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
       raise click.BadParameter(
           f"could not read avatar configuration file {value!r}: {exc}",
           param=param,
@@ -1098,6 +1096,15 @@ def adk_services_options(
     ),
     default=None,
 )
+@click.option(
+    "--reload_agents",
+    is_flag=True,
+    default=False,
+    help=(
+        "Optional. Watch the agent folder for .py/.yaml/.yml changes and"
+        " hot-reload the agent in interactive mode."
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -1123,6 +1130,7 @@ def cli_run(
     default_llm_model: Optional[str] = None,
     log_level: str = "INFO",
     state_file: Optional[str] = None,
+    reload_agents: bool = False,
 ) -> None:
   """Runs an agent. If no query is provided, enters interactive mode.
 
@@ -1197,6 +1205,7 @@ def cli_run(
             timeout=timeout,
             in_memory=in_memory,
             jsonl=jsonl,
+            reload_agents=reload_agents,
             session_service_uri=session_service_uri,
             artifact_service_uri=artifact_service_uri,
             memory_service_uri=memory_service_uri,
@@ -1304,7 +1313,8 @@ def eval_options() -> Callable[[Callable[..., _R]], Callable[..., _R]]:
         type=str,
         help=(
             "Optional. The evals storage URI to store agent evals,"
-            " supported URIs: gs://<bucket name>."
+            " supported URIs: gs://<bucket name> or file://<path>. When"
+            " omitted, ADK_EVAL_STORAGE_URI is used if set."
         ),
         default=None,
     )
@@ -1461,9 +1471,7 @@ def cli_eval(
     from ..evaluation.evaluator import EvalStatus
     from ..evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
     from ..evaluation.local_eval_service import LocalEvalService
-    from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
     from ..evaluation.local_eval_sets_manager import load_eval_set_from_file
-    from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
     from ..evaluation.metric_evaluator_registry import register_custom_metrics_from_config
     from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
@@ -1472,25 +1480,19 @@ def cli_eval(
     from .cli_eval import get_app_or_root_agent
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
+    from .utils import _eval_storage
   except ModuleNotFoundError as mnf:
     raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
   app, root_agent = asyncio.run(get_app_or_root_agent(agent_module_file_path))
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
-  eval_sets_manager: EvalSetsManager | None = None
-  eval_set_results_manager: EvalSetResultsManager | None = None
-
-  if eval_storage_uri:
-    from .utils import evals
-
-    gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
-        eval_storage_uri
+  try:
+    eval_sets_manager, eval_set_results_manager = (
+        _eval_storage.create_eval_managers(eval_storage_uri, agents_dir)
     )
-    eval_sets_manager = gcs_eval_managers.eval_sets_manager
-    eval_set_results_manager = gcs_eval_managers.eval_set_results_manager
-  else:
-    eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
+  except ValueError as ve:
+    raise click.ClickException(str(ve)) from ve
 
   inference_requests = []
   eval_set_file_or_id_to_evals = parse_and_get_evals_to_run(
@@ -1570,13 +1572,6 @@ def cli_eval(
       )
   else:
     # We assume that what we have are eval set ids instead.
-    # eval_sets_manager is set exactly when eval_storage_uri is.
-    eval_sets_manager = (
-        eval_sets_manager
-        if eval_sets_manager is not None
-        else LocalEvalSetsManager(agents_dir=agents_dir)
-    )
-
     for eval_set_id_key, eval_case_ids in eval_set_file_or_id_to_evals.items():
       inference_requests.append(
           InferenceRequest(
@@ -1744,7 +1739,6 @@ def cli_optimize(
 
   try:
     from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator  # noqa: F401
-    from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
     from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizer
     from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizerConfig
     from ..optimization.local_eval_sampler import LocalEvalSampler
@@ -1752,6 +1746,7 @@ def cli_optimize(
     from .cli_eval import _collect_eval_results  # noqa: F401
     from .cli_eval import _collect_inferences  # noqa: F401
     from .cli_eval import get_root_agent
+    from .utils import _eval_storage
 
   except ModuleNotFoundError as mnf:
     raise click.ClickException(_missing_eval_dependencies_message()) from mnf
@@ -1777,7 +1772,10 @@ def cli_optimize(
         f"App name in the agent module file path ({app_name}) does not match"
         f" the app name in the sampler config file ({sampler_config.app_name})."
     )
-  eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
+  try:
+    eval_sets_manager, _ = _eval_storage.create_eval_managers(None, agents_dir)
+  except ValueError as ve:
+    raise click.ClickException(str(ve)) from ve
 
   sampler = LocalEvalSampler(sampler_config, eval_sets_manager)
   optimizer = GEPARootAgentPromptOptimizer(optimizer_config)
@@ -1835,9 +1833,9 @@ def cli_create_eval_set(
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
-  eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
 
   try:
+    eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
     eval_sets_manager.create_eval_set(
         app_name=app_name, eval_set_id=eval_set_id
     )
@@ -1898,7 +1896,10 @@ def cli_add_eval_case(
 
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
-  eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
+  try:
+    eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
+  except ValueError as ve:
+    raise click.ClickException(str(ve)) from ve
 
   try:
     if session_input_file is None:
@@ -2196,7 +2197,8 @@ def fast_api_common_options() -> (
         type=str,
         help=(
             "Optional. The evals storage URI to store agent evals,"
-            " supported URIs: gs://<bucket name>."
+            " supported URIs: gs://<bucket name> or file://<path>. When"
+            " omitted, ADK_EVAL_STORAGE_URI is used if set."
         ),
         default=None,
     )
@@ -2677,10 +2679,12 @@ def cli_api_server(
     help=(
         "Optional. Additional local package paths (a file or directory) to"
         " stage and deploy alongside the agent, and make importable in the"
-        " deployed image. Each entry is placed at `/app/<basename>` and `/app`"
-        " is added to PYTHONPATH, so a top-level name that matches an installed"
-        " dependency will shadow it at runtime; pick distinct names."
-        " Repeatable."
+        " deployed image. A wheel (.whl), source archive (.tar.gz, .tgz,"
+        " .zip), or a project directory containing pyproject.toml or setup.py"
+        " (without a root __init__.py) is installed with pip. Any other entry"
+        " is placed at `/app/<basename>` and `/app` is added to PYTHONPATH, so"
+        " a top-level name that matches an installed dependency will shadow it"
+        " at runtime; pick distinct names. Repeatable."
     ),
 )
 @deploy_options
@@ -3111,10 +3115,12 @@ def cli_migrate_session(
     help=(
         "Optional. Additional local package paths (a file or directory) to"
         " stage and deploy alongside the agent, and make importable in the"
-        " deployed image. Each entry is placed at `/app/<basename>` and `/app`"
-        " is added to PYTHONPATH, so a top-level name that matches an installed"
-        " dependency will shadow it at runtime; pick distinct names."
-        " Repeatable."
+        " deployed image. A wheel (.whl), source archive (.tar.gz, .tgz,"
+        " .zip), or a project directory containing pyproject.toml or setup.py"
+        " (without a root __init__.py) is installed with pip. Any other entry"
+        " is placed at `/app/<basename>` and `/app` is added to PYTHONPATH, so"
+        " a top-level name that matches an installed dependency will shadow it"
+        " at runtime; pick distinct names. Repeatable."
     ),
 )
 @click.option(
@@ -3414,10 +3420,12 @@ def cli_deploy_agent_engine(
     help=(
         "Optional. Additional local package paths (a file or directory) to"
         " stage and deploy alongside the agent, and make importable in the"
-        " deployed image. Each entry is placed at `/app/<basename>` and `/app`"
-        " is added to PYTHONPATH, so a top-level name that matches an installed"
-        " dependency will shadow it at runtime; pick distinct names."
-        " Repeatable."
+        " deployed image. A wheel (.whl), source archive (.tar.gz, .tgz,"
+        " .zip), or a project directory containing pyproject.toml or setup.py"
+        " (without a root __init__.py) is installed with pip. Any other entry"
+        " is placed at `/app/<basename>` and `/app` is added to PYTHONPATH, so"
+        " a top-level name that matches an installed dependency will shadow it"
+        " at runtime; pick distinct names. Repeatable."
     ),
 )
 @adk_services_options(default_use_local_storage=False)

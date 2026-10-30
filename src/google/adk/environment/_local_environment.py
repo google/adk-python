@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
 import logging
 import os
 from pathlib import Path
@@ -35,6 +36,8 @@ logger = logging.getLogger('google_adk.' + __name__)
 # SIGKILL, and then for its output pipes to close, so that tearing a command
 # down cannot itself block forever.
 _TERMINATE_GRACE_SECONDS = 5
+
+_READ_CHUNK_SIZE = 64 * 1024
 
 
 def _signal_group(group: int, sig: int) -> None:
@@ -204,6 +207,21 @@ class LocalEnvironment(BaseEnvironment):
 
     resolved = self._resolve_path(path)
     return await asyncio.to_thread(self._sync_read, resolved)
+
+  @override
+  async def read_file_stream(
+      self, path: str | Path
+  ) -> AsyncGenerator[bytes, None]:
+    if self._working_dir is None:
+      raise RuntimeError('`working_dir` is not set. Call initialize() first.')
+
+    resolved = self._resolve_path(path)
+    f = await asyncio.to_thread(open, resolved, 'rb')
+    try:
+      while chunk := await asyncio.to_thread(f.read, _READ_CHUNK_SIZE):
+        yield chunk
+    finally:
+      f.close()
 
   @override
   async def write_file(self, path: str | Path, content: str | bytes) -> None:

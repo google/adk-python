@@ -12,8 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests that before/after/error model callbacks all observe the same call_llm span."""
+"""Tests that plugin callbacks run inside the span of the call they observe.
 
+The before/after/error model callbacks all observe the same span (call_llm
+on schema v1, the agent's invoke_agent span on v2), and every ``BasePlugin``
+callback sees the span of its own operation, for an agent root and a workflow
+root. A plugin that reads ``trace.get_current_span()`` to stamp what it records
+relies on both.
+"""
+
+import collections
+from typing import Any
 from typing import AsyncGenerator
 from typing import Optional
 
@@ -26,7 +35,10 @@ from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.utils.context_utils import Aclosing
+from google.adk.workflow import START
+from google.adk.workflow import Workflow
 from google.genai import types
 from google.genai.errors import ClientError
 from opentelemetry import trace
@@ -555,6 +567,261 @@ async def test_cfc_error_callback_shares_span():
   assert (
       plugin.before_capture.span_id == plugin.error_capture.span_id
   ), 'CFC error: before and error callbacks saw different spans'
+
+
+# ---------------------------------------------------------------------------
+# Tests: every plugin callback runs inside the span of the call it observes
+# ---------------------------------------------------------------------------
+
+_AGENT_SPAN = 'invoke_agent assistant'
+
+
+class _ActiveSpanRecorder(BasePlugin):
+  """Records the name of the span active in each callback it receives.
+
+  Entries are keyed by callback name without its ``_callback`` suffix, and
+  for the tool callbacks also by tool name, since an agent tool and a tool
+  node run in the same workflow. ``None`` records a callback that ran with
+  no span active.
+  """
+
+  def __init__(self, tool_error_answer: dict[str, Any] | None = None):
+    super().__init__(name='active_span_recorder')
+    self.active_spans: dict[str, set[str | None]] = collections.defaultdict(set)
+    self._tool_error_answer = tool_error_answer
+
+  def _record(self, callback: str) -> None:
+    span = trace.get_current_span()
+    name = (
+        getattr(span, 'name', None)
+        if span.get_span_context().is_valid
+        else None
+    )
+    self.active_spans[callback].add(name)
+
+  async def on_user_message_callback(self, *, invocation_context, user_message):
+    self._record('on_user_message')
+
+  async def before_run_callback(self, *, invocation_context):
+    self._record('before_run')
+
+  async def on_event_callback(self, *, invocation_context, event):
+    self._record('on_event')
+
+  async def after_run_callback(self, *, invocation_context):
+    self._record('after_run')
+
+  async def on_run_error_callback(self, *, invocation_context, error):
+    self._record('on_run_error')
+
+  async def before_agent_callback(self, *, agent, callback_context):
+    self._record('before_agent')
+
+  async def after_agent_callback(self, *, agent, callback_context):
+    self._record('after_agent')
+
+  async def on_agent_error_callback(self, *, agent, callback_context, error):
+    self._record('on_agent_error')
+
+  async def before_model_callback(self, *, callback_context, llm_request):
+    self._record('before_model')
+
+  async def after_model_callback(self, *, callback_context, llm_response):
+    self._record('after_model')
+
+  async def on_model_error_callback(
+      self, *, callback_context, llm_request, error
+  ):
+    self._record('on_model_error')
+
+  async def before_tool_callback(self, *, tool, tool_args, tool_context):
+    self._record(f'before_tool {tool.name}')
+
+  async def after_tool_callback(self, *, tool, tool_args, tool_context, result):
+    self._record(f'after_tool {tool.name}')
+
+  async def on_tool_error_callback(
+      self, *, tool, tool_args, tool_context, error
+  ):
+    self._record(f'on_tool_error {tool.name}')
+    return self._tool_error_answer
+
+
+def agent_tool(city: str) -> dict[str, str]:
+  return {'city': city}
+
+
+def failing_agent_tool(city: str) -> dict[str, str]:
+  raise ValueError(f'no data for {city}')
+
+
+def node_tool(city: str) -> dict[str, str]:
+  return {'city': city}
+
+
+def failing_node_tool(city: str) -> dict[str, str]:
+  raise ValueError(f'no data for {city}')
+
+
+def _assistant(
+    *, tool=agent_tool, model_error: Exception | None = None
+) -> Agent:
+  """An agent that calls ``tool`` once, then answers, or whose model fails."""
+  if model_error is not None:
+    model = testing_utils.MockModel.create(responses=[], error=model_error)
+  else:
+    model = testing_utils.MockModel.create(
+        responses=[
+            types.Part.from_function_call(
+                name=tool.__name__, args={'city': 'Paris'}
+            ),
+            'done',
+        ]
+    )
+  return Agent(name='assistant', model=model, tools=[tool])
+
+
+def _workflow(assistant: Agent, *, tool=node_tool) -> Workflow:
+  """A workflow root that runs ``assistant``, then ``tool`` as a tool node."""
+  return Workflow(
+      name='root_workflow',
+      edges=[(START, assistant, FunctionTool(func=tool))],
+  )
+
+
+async def _run(root: Agent | Workflow, recorder: _ActiveSpanRecorder) -> None:
+  app = testing_utils.App(name='test_app', root_agent=root, plugins=[recorder])
+  await testing_utils.InMemoryRunner(app=app).run_async('hi')
+
+
+def _run_span(schema_version: str, root: Agent | Workflow) -> str:
+  """The span the run-level callbacks see: the root's ``invoke_workflow``.
+
+  Schema v1 has none for an agent root, whose run gets ``invocation``.
+  """
+  if schema_version == '1' and not isinstance(root, Workflow):
+    return 'invocation'
+  return f'invoke_workflow {root.name}'
+
+
+def _model_span(schema_version: str) -> str:
+  """Schema v2 has no call_llm span, so model callbacks see the agent's."""
+  return 'call_llm' if schema_version == '1' else _AGENT_SPAN
+
+
+def test_recorder_covers_every_plugin_callback():
+  """A callback added to ``BasePlugin`` would otherwise go unchecked here."""
+  callbacks = {name for name in vars(BasePlugin) if name.endswith('_callback')}
+  recorded = {
+      name for name in vars(_ActiveSpanRecorder) if name.endswith('_callback')
+  }
+
+  assert recorded == callbacks
+
+
+@pytest.mark.asyncio
+async def test_agent_root_callbacks_run_inside_the_span_they_observe(
+    schema_version: str,
+):
+  """Run-level callbacks see the root span, the rest the span of their call."""
+  recorder = _ActiveSpanRecorder()
+  root = _assistant()
+
+  await _run(root, recorder)
+
+  run_span = _run_span(schema_version, root)
+  model_span = _model_span(schema_version)
+  assert recorder.active_spans == {
+      'on_user_message': {run_span},
+      'before_run': {run_span},
+      'on_event': {run_span},
+      'after_run': {run_span},
+      'before_agent': {_AGENT_SPAN},
+      'after_agent': {_AGENT_SPAN},
+      'before_model': {model_span},
+      'after_model': {model_span},
+      'before_tool agent_tool': {'execute_tool agent_tool'},
+      'after_tool agent_tool': {'execute_tool agent_tool'},
+  }
+
+
+@pytest.mark.asyncio
+async def test_workflow_root_callbacks_run_inside_the_span_they_observe(
+    schema_version: str,
+):
+  """Run-level callbacks see the workflow's span, the rest their call's.
+
+  A tool node's callbacks see its ``invoke_node`` span, while an agent tool's
+  callbacks see its ``execute_tool`` span.
+  """
+  recorder = _ActiveSpanRecorder()
+  root = _workflow(_assistant())
+
+  await _run(root, recorder)
+
+  run_span = _run_span(schema_version, root)
+  model_span = _model_span(schema_version)
+  assert recorder.active_spans == {
+      'on_user_message': {run_span},
+      'before_run': {run_span},
+      'on_event': {run_span},
+      'after_run': {run_span},
+      'before_agent': {_AGENT_SPAN},
+      'after_agent': {_AGENT_SPAN},
+      'before_model': {model_span},
+      'after_model': {model_span},
+      'before_tool agent_tool': {'execute_tool agent_tool'},
+      'after_tool agent_tool': {'execute_tool agent_tool'},
+      'before_tool node_tool': {'invoke_node node_tool'},
+      'after_tool node_tool': {'invoke_node node_tool'},
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('root_kind', 'failing_tool', 'tool_span'),
+    [
+        ('agent', 'failing_agent_tool', 'execute_tool failing_agent_tool'),
+        ('workflow', 'failing_node_tool', 'invoke_node failing_node_tool'),
+    ],
+)
+async def test_tool_error_callbacks_run_inside_the_failed_calls_span(
+    root_kind: str, failing_tool: str, tool_span: str
+):
+  """The failed call's span stays active while a plugin answers the failure."""
+  recorder = _ActiveSpanRecorder(tool_error_answer={'error': 'handled'})
+  if root_kind == 'agent':
+    root = _assistant(tool=failing_agent_tool)
+  else:
+    root = _workflow(_assistant(), tool=failing_node_tool)
+
+  await _run(root, recorder)
+
+  assert recorder.active_spans[f'before_tool {failing_tool}'] == {tool_span}
+  assert recorder.active_spans[f'on_tool_error {failing_tool}'] == {tool_span}
+  assert recorder.active_spans[f'after_tool {failing_tool}'] == {tool_span}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('root_kind', ['agent', 'workflow'])
+async def test_model_failure_callbacks_run_inside_the_spans_it_fails(
+    schema_version: str, root_kind: str
+):
+  """Each error callback sees the span of the operation the failure ends."""
+  recorder = _ActiveSpanRecorder()
+  assistant = _assistant(model_error=ValueError('model down'))
+  root = assistant if root_kind == 'agent' else _workflow(assistant)
+
+  with pytest.raises(ValueError, match='model down'):
+    await _run(root, recorder)
+
+  assert recorder.active_spans['on_model_error'] == {
+      _model_span(schema_version)
+  }
+  assert recorder.active_spans['on_agent_error'] == {_AGENT_SPAN}
+  assert recorder.active_spans['on_run_error'] == {
+      _run_span(schema_version, root)
+  }
 
 
 if __name__ == '__main__':

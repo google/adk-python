@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+import contextlib
 import logging
 from typing import Any
 from typing import Optional
@@ -39,6 +41,58 @@ logger = logging.getLogger('google_adk.' + __name__)
 def _is_valid_line_number(value: Any) -> bool:
   """Returns True when *value* is a non-bool integer."""
   return isinstance(value, int) and not isinstance(value, bool)
+
+
+async def _read_line_range(
+    chunks: AsyncIterator[bytes],
+    *,
+    start_line: int,
+    end_line: int | None,
+    max_bytes: int,
+) -> tuple[list[bytes], int]:
+  """Returns lines start_line..end_line, cut at max_bytes, and the line count.
+
+  Lines split on newline only. Lines past the range are counted, not kept.
+  """
+  selected_lines: list[bytes] = []
+  total_lines = 0
+  total_bytes = 0
+  at_line_start = True
+  line_buf = bytearray()
+  async for chunk in chunks:
+    pos = 0
+    while pos < len(chunk):
+      if total_bytes >= max_bytes or (
+          end_line is not None
+          and (
+              total_lines > end_line
+              or (total_lines == end_line and at_line_start)
+          )
+      ):
+        # Nothing left to keep; count the remaining lines without a per-line
+        # loop.
+        ends_with_nl = chunk.endswith(b'\n')
+        total_lines += (
+            chunk.count(b'\n', pos) + int(at_line_start) - int(ends_with_nl)
+        )
+        at_line_start = ends_with_nl
+        break
+      if at_line_start:
+        total_lines += 1
+      nl = chunk.find(b'\n', pos)
+      seg_end = len(chunk) if nl == -1 else nl + 1
+      if start_line <= total_lines:
+        seg = chunk[pos:seg_end][: max_bytes - total_bytes]
+        line_buf.extend(seg)
+        total_bytes += len(seg)
+      at_line_start = nl != -1
+      if at_line_start and line_buf:
+        selected_lines.append(bytes(line_buf))
+        line_buf.clear()
+      pos = seg_end
+  if line_buf:
+    selected_lines.append(bytes(line_buf))
+  return selected_lines, total_lines
 
 
 class ReadFileTool(BaseTool):
@@ -112,13 +166,19 @@ class ReadFileTool(BaseTool):
         }
 
     try:
-      # TODO: Avoid loading the entire file into memory to prevent OOM on large files.
-      data_bytes = await self._environment.read_file(path)
-      # Slice data_bytes by line boundaries before decoding.
-      lines_bytes = data_bytes.splitlines(keepends=True)
-      total = len(lines_bytes)
       start = max(1, start_line or 1)
-      end = min(total, end_line or total)
+      # end_line=0 reads to the end of the file, as before.
+      end_line = end_line or None
+      max_bytes = self._max_output_chars * 4
+      async with contextlib.aclosing(
+          self._environment.read_file_stream(path)
+      ) as chunks:
+        selected_bytes, total = await _read_line_range(
+            chunks,
+            start_line=start,
+            end_line=end_line,
+            max_bytes=max_bytes + 1,
+        )
       if start > total:
         return {
             'status': 'error',
@@ -127,13 +187,13 @@ class ReadFileTool(BaseTool):
             ),
             'total_lines': total,
         }
+      end = total if end_line is None else min(total, end_line)
       if start > end:
         return {
             'status': 'error',
             'error': f'`start_line` ({start}) is after `end_line` ({end}).',
             'total_lines': total,
         }
-      selected_bytes = lines_bytes[start - 1 : end]
       lines = [
           line_bytes.decode('utf-8', errors='replace')
           for line_bytes in selected_bytes
@@ -141,14 +201,25 @@ class ReadFileTool(BaseTool):
       numbered = ''.join(
           f'{start + i:6d}\t{line}' for i, line in enumerate(lines)
       )
+      bounded_by_bytes = (
+          len(lines) < (end - start + 1)
+          or sum(len(b) for b in selected_bytes) > max_bytes
+      )
+      if bounded_by_bytes:
+        content = (
+            numbered[: self._max_output_chars]
+            + f'\n... (truncated, {total} total lines)'
+        )
+      else:
+        content = _truncate(
+            numbered,
+            limit=self._max_output_chars,
+        )
       result: dict[str, str | int] = {
           'status': 'ok',
-          'content': _truncate(
-              numbered,
-              limit=self._max_output_chars,
-          ),
+          'content': content,
       }
-      if start > 1 or end < total:
+      if start > 1 or end < total or bounded_by_bytes:
         result['total_lines'] = total
       return result
     except FileNotFoundError:
