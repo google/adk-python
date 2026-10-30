@@ -15,11 +15,13 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 import inspect
 import logging
 from typing import AsyncGenerator
 from typing import Callable
 from typing import Optional
+from typing import Union
 import uuid
 
 from typing_extensions import override
@@ -52,6 +54,7 @@ from .eval_set import EvalCase
 from .eval_set_results_manager import EvalSetResultsManager
 from .eval_sets_manager import EvalSetsManager
 from .evaluation_generator import EvaluationGenerator
+from .evaluator import _is_coroutine_callable
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import PerInvocationResult
@@ -593,11 +596,23 @@ class LocalEvalService(BaseEvalService):
         eval_metric=eval_metric
     )
 
-    result = metric_evaluator.evaluate_invocations(
-        actual_invocations=actual_invocations,
-        expected_invocations=expected_invocations,
-        conversation_scenario=conversation_scenario,
-    )
+    result: Union[EvaluationResult, Awaitable[EvaluationResult]]
+    if _is_coroutine_callable(metric_evaluator.evaluate_invocations):
+      result = await metric_evaluator.evaluate_invocations(
+          actual_invocations=actual_invocations,
+          expected_invocations=expected_invocations,
+          conversation_scenario=conversation_scenario,
+      )
+    else:
+      # Offload synchronous evaluators (such as the Vertex Gen AI Evaluation SDK
+      # facade) to a worker thread so blocking I/O does not stall the event
+      # loop.
+      result = await asyncio.to_thread(
+          metric_evaluator.evaluate_invocations,
+          actual_invocations=actual_invocations,
+          expected_invocations=expected_invocations,
+          conversation_scenario=conversation_scenario,
+      )
     if inspect.isawaitable(result):
       return await result
     return result

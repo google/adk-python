@@ -15,8 +15,12 @@ from __future__ import annotations
 
 from abc import ABC
 from collections.abc import Awaitable
+from collections.abc import Callable
+import functools
+import inspect
 from typing import ClassVar
 from typing import Optional
+from typing import TypeGuard
 
 from pydantic import BaseModel
 
@@ -27,6 +31,18 @@ from .eval_metrics import DurationDetails
 from .eval_metrics import EvalStatus as EvalStatus
 from .eval_metrics import TokenUsageDetails
 from .eval_rubrics import RubricScore
+
+
+def _is_coroutine_callable(
+    fn: object,
+) -> TypeGuard[Callable[..., Awaitable[EvaluationResult]]]:
+  """Returns whether calling `fn` produces a coroutine."""
+  while isinstance(fn, functools.partial):
+    fn = fn.func
+  return inspect.iscoroutinefunction(fn) or (
+      callable(fn)
+      and inspect.iscoroutinefunction(getattr(fn, "__call__", None))
+  )
 
 
 def _validate_invocation_lengths(
