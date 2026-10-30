@@ -30,6 +30,7 @@ from google.genai import types
 from typing_extensions import override
 
 from . import _utils
+from ..events._rewind_events import _apply_rewinds
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
@@ -233,7 +234,7 @@ class VertexAiRagMemoryService(BaseMemoryService):
       raise ValueError("rag_corpus must be set on every RAG resource.")
 
     output_lines = []
-    for event in session.events:
+    for event in _apply_rewinds(session.events):
       if not event.content or not event.content.parts:
         continue
       text_parts = [

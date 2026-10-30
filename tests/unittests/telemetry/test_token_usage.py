@@ -385,15 +385,15 @@ def test_add_starts_a_bucket_the_first_report_brings():
 
 
 def test_add_sums_the_span_only_buckets():
-  """cache_creation and system_instruction accumulate like the rest."""
+  """cache_write and system_instruction accumulate like the rest."""
   totals = _token_usage.TokenUsage(
-      cache_creation_input_tokens=30, system_instruction_tokens=5
+      cache_write_input_tokens=30, system_instruction_tokens=5
   )
   totals.add(
       _token_usage.TokenUsage(
-          cache_creation_input_tokens=20, system_instruction_tokens=5
+          cache_write_input_tokens=20, system_instruction_tokens=5
       )
   )
 
-  assert totals.cache_creation_input_tokens == 50
+  assert totals.cache_write_input_tokens == 50
   assert totals.system_instruction_tokens == 10

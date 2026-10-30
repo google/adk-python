@@ -625,6 +625,54 @@ def test_no_auth_warning_on_non_loopback_bind(
   assert warned is expect_warning
 
 
+def test_get_fast_api_app_creates_file_eval_storage_dir(tmp_path, monkeypatch):
+  """file:// eval_storage_uri creates that directory for local eval managers."""
+  monkeypatch.delenv("ADK_EVAL_STORAGE_URI", raising=False)
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  storage_dir = tmp_path / "adk_evals"
+
+  with (
+      patch.object(
+          fast_api_module, "LocalEvalSetsManager", autospec=True
+      ) as mock_sets_cls,
+      patch.object(
+          fast_api_module, "LocalEvalSetResultsManager", autospec=True
+      ) as mock_results_cls,
+  ):
+    get_fast_api_app(
+        agents_dir=str(agents_dir),
+        web=False,
+        eval_storage_uri=storage_dir.as_uri(),
+    )
+
+  assert storage_dir.is_dir()
+  mock_sets_cls.assert_called_once_with(agents_dir=str(storage_dir))
+  mock_results_cls.assert_called_once_with(agents_dir=str(storage_dir))
+
+
+def test_get_fast_api_app_honors_eval_storage_uri_env(tmp_path, monkeypatch):
+  """ADK_EVAL_STORAGE_URI is used when eval_storage_uri is omitted."""
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  storage_dir = tmp_path / "from_env"
+  monkeypatch.setenv("ADK_EVAL_STORAGE_URI", storage_dir.as_uri())
+
+  with (
+      patch.object(
+          fast_api_module, "LocalEvalSetsManager", autospec=True
+      ) as mock_sets_cls,
+      patch.object(
+          fast_api_module, "LocalEvalSetResultsManager", autospec=True
+      ) as mock_results_cls,
+  ):
+    get_fast_api_app(agents_dir=str(agents_dir), web=False)
+
+  assert storage_dir.is_dir()
+  mock_sets_cls.assert_called_once_with(agents_dir=str(storage_dir))
+  mock_results_cls.assert_called_once_with(agents_dir=str(storage_dir))
+
+
 def test_agent_with_bigquery_analytics_plugin(
     tmp_path,
     mock_session_service,
@@ -946,6 +994,7 @@ def test_app(
 
 @pytest.fixture
 def builder_test_app(
+    request,
     tmp_path,
     mock_session_service,
     mock_artifact_service,
@@ -1008,7 +1057,7 @@ def builder_test_app(
         session_service_uri="",
         artifact_service_uri="",
         memory_service_uri="",
-        allow_origins=None,
+        allow_origins=getattr(request, "param", None),
         a2a=False,
         host="127.0.0.1",
         bind_host="127.0.0.1",
@@ -5980,6 +6029,156 @@ def test_builder_get_allows_request_without_origin(builder_test_client):
 
   assert response.status_code == 200
   assert not response.text
+
+
+@pytest.mark.parametrize(
+    "builder_test_app", [["*"], ["regex:https://.*"]], indirect=True
+)
+def test_builder_save_rejects_origin_allowed_only_by_wildcard(
+    builder_test_client, tmp_path
+):
+  """A wildcard opens CORS to every site, but not agent file writes."""
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save",
+      headers={"origin": "https://evil.example"},
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: pwned\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 403
+  assert "own origin" in response.json()["detail"]
+  assert not (tmp_path / "app" / "root_agent.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    "builder_test_app", [["*", "https://ide.example"]], indirect=True
+)
+@pytest.mark.parametrize("origin", [_LOOPBACK_BASE_URL, "https://ide.example"])
+def test_builder_save_allows_own_or_literally_listed_origin(
+    builder_test_client, tmp_path, origin
+):
+  """The dev UI and an origin the developer named still reach the builder."""
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save",
+      headers={"origin": origin},
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 200
+  assert (tmp_path / "app" / "root_agent.yaml").is_file()
+
+
+@pytest.mark.parametrize(
+    "method, path, body",
+    [
+        ("GET", "/apps/__internal_assistant/app-info", None),
+        (
+            "POST",
+            "/run",
+            {
+                "app_name": "__internal_assistant",
+                "user_id": "u",
+                "session_id": "s",
+                "new_message": {"role": "user", "parts": [{"text": "hi"}]},
+            },
+        ),
+    ],
+)
+def test_special_agent_rejects_origin_allowed_only_by_wildcard(
+    method,
+    path,
+    body,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Internal agents write code, so a wildcard does not open them to sites."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=["*"],
+      bind_host="127.0.0.1",
+  )
+  headers = {"host": "127.0.0.1:8000", "origin": "https://evil.example"}
+
+  response = client.request(method, path, json=body, headers=headers)
+
+  assert response.status_code == 403
+  assert "own origin" in response.json()["detail"]
+
+
+def test_special_agent_allows_own_origin_with_wildcard(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """The dev UI keeps the builder assistant when allow_origins has '*'."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=["*"],
+      bind_host="127.0.0.1",
+  )
+
+  response = client.get(
+      "/apps/__internal_assistant/app-info",
+      headers={"host": "127.0.0.1:8000", "origin": _LOOPBACK_BASE_URL},
+  )
+
+  assert response.status_code == 400
+  assert response.json()["detail"] == "Root agent is not an LlmAgent"
+
+
+def test_special_agent_allows_proxied_origin_without_allow_origins(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Without a wildcard, the forwarded-host same-origin check still applies."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=None,
+      bind_host="127.0.0.1",
+  )
+
+  response = client.get(
+      "/apps/__internal_assistant/app-info",
+      headers={
+          "host": "127.0.0.1:8000",
+          "x-forwarded-host": "localhost:9000",
+          "origin": "http://localhost:9000",
+      },
+  )
+
+  assert response.status_code == 400
+  assert response.json()["detail"] == "Root agent is not an LlmAgent"
 
 
 def test_builder_save_rejects_remote_client(

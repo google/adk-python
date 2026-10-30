@@ -222,6 +222,29 @@ class NodeRunner:
           self._node.name,
       )
       attempt_count += 1
+      await self._wait_for_enqueued_events(ctx)
+
+  async def _wait_for_enqueued_events(self, ctx: Context) -> None:
+    """Waits until every event enqueued so far has been appended to the session.
+
+    A retried node rebuilds its state from session events. Sibling tasks that
+    finished around the failure may still have their final events sitting in
+    the runner's event queue: the task blocks in ``_enqueue_event`` until the
+    main loop appends the event, and a task cancelled there leaves its queued
+    event to be appended later. A rescan that reads ``ic.session.events``
+    before those appends complete misses the siblings' outputs and the retry
+    re-executes work that already happened.
+
+    A barrier item ``(None, processed)`` is acknowledged by
+    ``_consume_event_queue`` without calling plugins or yielding an event,
+    after everything queued ahead of it has been processed.
+    """
+    event_queue = ctx._invocation_context._event_queue
+    if event_queue is None:
+      return
+    processed = asyncio.Event()
+    await event_queue.put((None, processed))
+    await processed.wait()
 
   def _snapshot_dynamic_children(
       self, ctx: Context
@@ -307,12 +330,11 @@ class NodeRunner:
     if ic.session and ic.session.events:
       from ..events._rewind_events import _apply_rewinds
 
-      live_events = _apply_rewinds(ic.session.events)
       node_path = ctx.node_path
       node_path_builder = _NodePathBuilder.from_string(node_path)
-      has_prior_node_events = bool(self._prior_interrupt_ids)
-      if not has_prior_node_events:
-        for ev in live_events:
+
+      def _has_node_event(events: list[Event]) -> bool:
+        for ev in events:
           if ic.invocation_id and ev.invocation_id != ic.invocation_id:
             continue
           if ev.node_info is not None and ev.node_info.path:
@@ -320,26 +342,33 @@ class NodeRunner:
             if ev_path == node_path_builder or ev_path.is_descendant_of(
                 node_path_builder
             ):
-              has_prior_node_events = True
-              break
-      if has_prior_node_events:
-        from .utils._rehydration_utils import _reconstruct_node_states
+              return True
+        return False
 
-        states = _reconstruct_node_states(
-            events=live_events,
-            base_path=node_path,
-            invocation_id=ic.invocation_id,
-        )
-        if node_path in states:
-          rehydrated = dict(states[node_path].resolved_responses)
-          if ctx._resume_inputs:
-            rehydrated.update(ctx._resume_inputs)
-          ctx._resume_inputs = rehydrated
-          logger.debug(
-              "node %s rehydrated resume_inputs: %s",
-              node_path,
-              ctx._resume_inputs,
+      # Fast path: check the raw history first so a node with no event of its
+      # own skips _apply_rewinds entirely. Rewinds only drop events, so no raw
+      # match implies no live match; the second check only matters when a
+      # rewind removed the match.
+      if self._prior_interrupt_ids or _has_node_event(ic.session.events):
+        live_events = _apply_rewinds(ic.session.events)
+        if self._prior_interrupt_ids or _has_node_event(live_events):
+          from .utils._rehydration_utils import _reconstruct_node_states
+
+          states = _reconstruct_node_states(
+              events=live_events,
+              base_path=node_path,
+              invocation_id=ic.invocation_id,
           )
+          if node_path in states:
+            rehydrated = dict(states[node_path].resolved_responses)
+            if ctx._resume_inputs:
+              rehydrated.update(ctx._resume_inputs)
+            ctx._resume_inputs = rehydrated
+            logger.debug(
+                "node %s rehydrated resume_inputs: %s",
+                node_path,
+                ctx._resume_inputs,
+            )
 
     # override the inherited isolation_scope when explicitly set.
     if self._override_isolation_scope is not None:

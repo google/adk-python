@@ -113,6 +113,13 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
     A tuple of (isolation_scope, invocation_id) for the active task if found,
     or None if no active task scope is found.
   """
+  # Fast path: this function can only return an event that has an
+  # isolation_scope, and _apply_rewinds never adds events, so a history with
+  # no scoped event has no active task scope and both passes below can be
+  # skipped.
+  if not any(event.isolation_scope for event in session.events):
+    return None
+
   live_events = _apply_rewinds(session.events)
   finished_runs = _find_finished_scope_runs(live_events)
 
@@ -803,6 +810,14 @@ class Runner:
           get_task = None
         if event_or_done is done_sentinel:
           break
+        # (None, signal) is a barrier from NodeRunner._wait_for_enqueued_events:
+        # acknowledge it once everything queued ahead of it has been appended,
+        # without running plugins or yielding anything to the caller.
+        if event_or_done is None and isinstance(
+            processed_signal, asyncio.Event
+        ):
+          processed_signal.set()
+          continue
         if not isinstance(event_or_done, Event):
           raise TypeError(
               'Unexpected node event queue item:'

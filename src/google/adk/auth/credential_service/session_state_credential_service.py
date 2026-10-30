@@ -20,7 +20,6 @@ from typing import Optional
 from typing_extensions import override
 
 from ...agents.callback_context import CallbackContext
-from ...utils.feature_decorator import experimental
 from ..auth_credential import AuthCredential
 from ..auth_tool import AuthConfig
 from ..oauth2_credential_util import _credential_without_client_secret
@@ -30,7 +29,6 @@ from .base_credential_service import BaseCredentialService
 logger = logging.getLogger("google_adk." + __name__)
 
 
-@experimental
 class SessionStateCredentialService(BaseCredentialService):
   """Class for implementation of credential service using session state as the
   store.

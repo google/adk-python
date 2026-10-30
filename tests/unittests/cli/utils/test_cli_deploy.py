@@ -3053,3 +3053,505 @@ def test_cli_deploy_agent_engine_passes_service_account(
     mock_to_agent_engine.assert_called_once()
     _, kwargs = mock_to_agent_engine.call_args
     assert kwargs["service_account"] == _VALID_SERVICE_ACCOUNT
+
+
+@pytest.mark.parametrize(
+    "python_version,expected_from",
+    [
+        ("3.11", "FROM python:3.11-slim"),
+        ("3.12", "FROM python:3.12-slim"),
+        ("3.13", "FROM python:3.13-slim"),
+        ("3.12.1", "FROM python:3.12.1-slim"),
+    ],
+)
+def test_render_dockerfile_with_python_version(
+    python_version: str, expected_from: str
+) -> None:
+  """_render_dockerfile renders FROM python:<version>-slim for valid versions."""
+  rendered = cli_deploy._render_dockerfile(
+      app_name="my_agent",
+      port=8080,
+      command="api_server",
+      install_agent_deps="# No requirements.txt found.",
+      service_options=[],
+      trace_to_cloud_option="",
+      otel_to_cloud_option="",
+      allow_origins_option="",
+      adk_version="1.2.0",
+      host_option="--host=0.0.0.0",
+      a2a_option="",
+      trigger_sources_option="",
+      python_version=python_version,
+  )
+  assert expected_from in rendered
+
+
+@pytest.mark.parametrize(
+    "bad_version",
+    [
+        "3.12\nRUN echo pwned",
+        "3.12\r\nRUN echo pwned",
+        "3.10",
+        "2.7",
+        "",
+        "3.12-alpine",
+        "3.12; echo pwned",
+    ],
+)
+def test_render_dockerfile_rejects_invalid_python_version(
+    bad_version: str,
+) -> None:
+  """_render_dockerfile raises ClickException on invalid python_version."""
+  with pytest.raises(click.ClickException):
+    cli_deploy._render_dockerfile(
+        app_name="my_agent",
+        port=8080,
+        command="api_server",
+        install_agent_deps="# No requirements.txt found.",
+        service_options=[],
+        trace_to_cloud_option="",
+        otel_to_cloud_option="",
+        allow_origins_option="",
+        adk_version="1.2.0",
+        host_option="--host=0.0.0.0",
+        a2a_option="",
+        trigger_sources_option="",
+        python_version=bad_version,
+    )
+
+
+def test_to_agent_engine_renders_python_version_and_pops_config_key(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """to_agent_engine supports python_version from .agent_engine_config.json."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  recording_agentplatform = _make_recording_agentplatform(captured)
+  monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
+  monkeypatch.setattr(
+      "src.google.adk.dependencies._agentplatform.agentplatform",
+      recording_agentplatform,
+  )
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+  (src_dir / ".agent_engine_config.json").write_text(
+      json.dumps({"python_version": "3.12"})
+  )
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+  )
+
+  dockerfile_content = (tmp_dir / "Dockerfile").read_text()
+  assert "FROM python:3.12-slim" in dockerfile_content
+  assert "python_version" not in captured[0]
+
+
+@pytest.mark.parametrize("cli_python_version", ["3.11", "3.13"])
+def test_to_agent_engine_cli_python_version_overrides_config_file(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    cli_python_version: str,
+) -> None:
+  """An explicit python_version wins over .agent_engine_config.json.
+
+  Covers both the value that equals the built-in default (3.11) and a
+  different one, so the override cannot depend on a default sentinel.
+  """
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  recording_agentplatform = _make_recording_agentplatform(captured)
+  monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
+  monkeypatch.setattr(
+      "src.google.adk.dependencies._agentplatform.agentplatform",
+      recording_agentplatform,
+  )
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+  (src_dir / ".agent_engine_config.json").write_text(
+      json.dumps({"python_version": "3.12"})
+  )
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      python_version=cli_python_version,
+  )
+
+  dockerfile_content = (tmp_dir / "Dockerfile").read_text()
+  assert f"FROM python:{cli_python_version}-slim" in dockerfile_content
+
+
+def test_to_agent_engine_defaults_python_version_without_flag_or_config(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """With neither the flag nor a config key, the image is built on 3.11."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  recording_agentplatform = _make_recording_agentplatform(captured)
+  monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
+  monkeypatch.setattr(
+      "src.google.adk.dependencies._agentplatform.agentplatform",
+      recording_agentplatform,
+  )
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+  )
+
+  dockerfile_content = (tmp_dir / "Dockerfile").read_text()
+  assert "FROM python:3.11-slim" in dockerfile_content
+
+
+def test_to_agent_engine_rejects_non_string_python_version_in_config(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """A numeric python_version in .agent_engine_config.json is rejected."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  src_dir = agent_dir(False, False)
+  (src_dir / ".agent_engine_config.json").write_text(
+      json.dumps({"python_version": 3.12})
+  )
+
+  with pytest.raises(click.ClickException, match="must be a string"):
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+    )
+
+
+def test_to_agent_engine_reports_python_version_override(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """Overriding the config file's python_version prints a notice naming the winner."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  recording_agentplatform = _make_recording_agentplatform(captured)
+  monkeypatch.setitem(sys.modules, "agentplatform", recording_agentplatform)
+  monkeypatch.setattr(
+      "src.google.adk.dependencies._agentplatform.agentplatform",
+      recording_agentplatform,
+  )
+  src_dir = agent_dir(False, False)
+  (src_dir / ".agent_engine_config.json").write_text(
+      json.dumps({"python_version": "3.12"})
+  )
+
+  with mock.patch("click.echo") as mocked_echo:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        python_version="3.13",
+    )
+
+  messages = [str(c[0][0]) for c in mocked_echo.call_args_list if c[0]]
+  override_messages = [m for m in messages if "Overriding python_version" in m]
+  assert len(override_messages) == 1
+  assert "3.13" in override_messages[0]
+
+
+def test_to_agent_engine_rejects_invalid_python_version_before_copying(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """An invalid python_version fails before any agent source is staged."""
+  copytree = _Recorder()
+  monkeypatch.setattr(shutil, "copytree", copytree)
+  src_dir = agent_dir(False, False)
+
+  with pytest.raises(click.ClickException, match="Invalid python_version"):
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        python_version="3.10",
+    )
+
+  assert not copytree.calls
+  assert not (src_dir.parent / "tmp").exists()
+
+
+def test_to_gke_renders_python_version(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """to_gke renders FROM python:3.12-slim when python_version='3.12'."""
+  src_dir = agent_dir(False, False)
+  temp_dir = tmp_path / "gke_temp"
+  monkeypatch.setattr(
+      subprocess,
+      "run",
+      lambda *a, **k: types.SimpleNamespace(stdout="deployment created"),
+  )
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      temp_folder=str(temp_dir),
+      project="my-project",
+      region="us-central1",
+      cluster_name="my-cluster",
+      service_name="my-service",
+      app_name="my-app",
+      port=8000,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      adk_version="1.2.0",
+      log_level="INFO",
+      python_version="3.12",
+  )
+
+  dockerfile_content = (temp_dir / "Dockerfile").read_text()
+  assert "FROM python:3.12-slim" in dockerfile_content
+
+
+def test_run_renders_python_version(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """run renders FROM python:3.12-slim when python_version='3.12'."""
+  src_dir = agent_dir(False, False)
+  temp_dir = tmp_path / "run_temp"
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="cloud_run",
+      project="my-project",
+      region="us-central1",
+      service_name="my-service",
+      app_name="my-app",
+      temp_folder=str(temp_dir),
+      port=8000,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="INFO",
+      verbosity="INFO",
+      adk_version="1.2.0",
+      python_version="3.12",
+  )
+
+  dockerfile_content = (temp_dir / "Dockerfile").read_text()
+  assert "FROM python:3.12-slim" in dockerfile_content
+
+
+@pytest.mark.parametrize(
+    "target,deploy_fn",
+    [
+        ("cloud_run", "run"),
+        ("docker", "run"),
+        ("agent_engine", "to_agent_engine"),
+        ("gke", "to_gke"),
+    ],
+)
+def test_cli_deploy_passes_python_version(
+    tmp_path: Path, target: str, deploy_fn: str
+) -> None:
+  """--python_version on each deploy target reaches its deploy function."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+
+  with mock.patch(f"src.google.adk.cli.cli_deploy.{deploy_fn}") as mock_deploy:
+    result = runner.invoke(
+        cli_tools_click.main,
+        ["deploy", target, "--python_version=3.12", str(agent_dir)],
+        catch_exceptions=False,
+    )
+
+  assert result.exit_code == 0
+  assert mock_deploy.call_args.kwargs["python_version"] == "3.12"
+
+
+def test_extra_packages_pip_installs_installable_packages_and_wheels(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """Installable extra_packages (pyproject.toml, setup.py, .whl) are pip-installed."""
+  src_dir = agent_dir(False, False)
+  build_dir = tmp_path / "build"
+
+  schemas_dir = tmp_path / "libs" / "schemas"
+  (schemas_dir / "agent_schemas").mkdir(parents=True)
+  (schemas_dir / "pyproject.toml").write_text(
+      '[project]\nname = "agent-schemas"\nversion = "0.1.0"\n'
+  )
+  (schemas_dir / "agent_schemas" / "__init__.py").write_text("SCHEMA = {}\n")
+
+  wheel_file = tmp_path / "pkg.whl"
+  wheel_file.write_bytes(b"fake-wheel-bytes")
+
+  plain_dir = tmp_path / "common"
+  plain_dir.mkdir()
+  (plain_dir / "helper.py").write_text("VALUE = 1\n")
+
+  def mock_subprocess_run(*args, **kwargs):
+    del kwargs
+    if args[0][0:2] == ["kubectl", "apply"]:
+      return types.SimpleNamespace(stdout="service/gke-svc created")
+    return None
+
+  monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="gke-proj",
+      region="us-east1",
+      cluster_name="my-gke-cluster",
+      service_name="gke-svc",
+      app_name="agent",
+      temp_folder=str(build_dir),
+      port=9090,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="debug",
+      adk_version="1.2.0",
+      extra_packages=[str(schemas_dir), str(wheel_file), str(plain_dir)],
+  )
+
+  dockerfile_content = (build_dir / "Dockerfile").read_text()
+  assert (
+      'COPY --chown=myuser:myuser "schemas/" "/tmp/extra_packages/schemas/"'
+      in dockerfile_content
+  )
+  assert (
+      'COPY --chown=myuser:myuser "pkg.whl" "/tmp/extra_packages/pkg.whl"'
+      in dockerfile_content
+  )
+  assert (
+      'COPY --chown=myuser:myuser "common/" "/app/common/"'
+      in dockerfile_content
+  )
+  assert 'ENV PYTHONPATH="/app:$PYTHONPATH"' in dockerfile_content
+  assert (
+      'RUN ["pip", "install", "/tmp/extra_packages/schemas",'
+      ' "/tmp/extra_packages/pkg.whl"]'
+      in dockerfile_content
+  )
+
+
+def test_get_extra_packages_copy_pip_installs_setup_py_package(
+    tmp_path: Path,
+) -> None:
+  """A staged directory with setup.py is installed without setting PYTHONPATH."""
+  legacy_pkg = tmp_path / "legacy_pkg"
+  legacy_pkg.mkdir()
+  (legacy_pkg / "setup.py").write_text(
+      "from setuptools import setup; setup()\n"
+  )
+
+  rendered = cli_deploy._get_extra_packages_copy(["legacy_pkg"], str(tmp_path))
+
+  assert (
+      'COPY --chown=myuser:myuser "legacy_pkg/"'
+      ' "/tmp/extra_packages/legacy_pkg/"'
+      in rendered
+  )
+  assert "PYTHONPATH" not in rendered
+  assert 'RUN ["pip", "install", "/tmp/extra_packages/legacy_pkg"]' in rendered
+
+
+@pytest.mark.parametrize(
+    "build_file,build_content",
+    [
+        ("pyproject.toml", "[tool.ruff]\nline-length = 100\n"),
+        ("setup.py", "from setuptools import setup; setup()\n"),
+    ],
+)
+def test_get_extra_packages_copy_keeps_package_with_root_init_on_pythonpath(
+    tmp_path: Path,
+    build_file: str,
+    build_content: str,
+) -> None:
+  """A package directory with root __init__.py stays on PYTHONPATH."""
+  common_pkg = tmp_path / "common"
+  common_pkg.mkdir()
+  (common_pkg / "__init__.py").write_text("")
+  (common_pkg / "helper.py").write_text("VALUE = 1\n")
+  (common_pkg / "util.py").write_text("VALUE = 2\n")
+  (common_pkg / build_file).write_text(build_content)
+
+  rendered = cli_deploy._get_extra_packages_copy(["common"], str(tmp_path))
+
+  assert 'COPY --chown=myuser:myuser "common/" "/app/common/"' in rendered
+  assert 'ENV PYTHONPATH="/app:$PYTHONPATH"' in rendered
+  assert "pip" not in rendered
+  assert "/tmp/extra_packages" not in rendered
+
+
+@pytest.mark.parametrize(
+    "archive_name",
+    ["pkg-0.1.0.tar.gz", "pkg-0.1.0.tgz", "pkg-0.1.0.zip"],
+)
+def test_get_extra_packages_copy_pip_installs_source_archives(
+    tmp_path: Path,
+    archive_name: str,
+) -> None:
+  """Source distribution archives (.tar.gz, .tgz, .zip) are pip-installed."""
+  (tmp_path / archive_name).write_bytes(b"fake-archive-bytes")
+
+  rendered = cli_deploy._get_extra_packages_copy([archive_name], str(tmp_path))
+
+  assert (
+      f'COPY --chown=myuser:myuser "{archive_name}"'
+      f' "/tmp/extra_packages/{archive_name}"'
+      in rendered
+  )
+  assert "PYTHONPATH" not in rendered
+  assert (
+      f'RUN ["pip", "install", "/tmp/extra_packages/{archive_name}"]'
+      in rendered
+  )
+
+
+@pytest.mark.parametrize(
+    "unsafe_base",
+    [
+        'pkg"\nRUN touch /tmp/pwned',
+        'pkg" "/tmp/evil',
+        "../outside",
+        "pkg with space",
+        "pkg\twith\ttab",
+        "pkg$VAR",
+    ],
+)
+def test_get_extra_packages_copy_rejects_unsafe_basename(
+    tmp_path: Path,
+    unsafe_base: str,
+) -> None:
+  """Unsafe extra_packages basenames cannot break out of Dockerfile COPY."""
+  with pytest.raises(click.ClickException):
+    cli_deploy._get_extra_packages_copy([unsafe_base], str(tmp_path))

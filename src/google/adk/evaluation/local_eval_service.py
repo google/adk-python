@@ -34,7 +34,6 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..utils._client_labels_utils import client_label_context
 from ..utils._client_labels_utils import EVAL_CLIENT_LABEL
-from ..utils.feature_decorator import experimental
 from .base_eval_service import BaseEvalService
 from .base_eval_service import EvaluateConfig
 from .base_eval_service import EvaluateRequest
@@ -156,7 +155,6 @@ def _copy_invocation_rubrics_to_actual_invocations(
         )
 
 
-@experimental
 class LocalEvalService(BaseEvalService):
   """An implementation of BaseEvalService, that runs the evals locally."""
 

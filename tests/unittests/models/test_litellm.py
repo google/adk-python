@@ -3709,6 +3709,40 @@ def test_message_to_generate_content_response_leaves_partial_unstamped():
   assert response.error_message is None
 
 
+def test_message_to_generate_content_response_tool_call_without_arguments():
+  """A tool call carrying no arguments is kept, not reported as malformed."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments="",
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  function_calls = [
+      part.function_call
+      for part in response.content.parts
+      if part.function_call is not None
+  ]
+  assert len(function_calls) == 1
+  assert function_calls[0].name == "test_function"
+  assert function_calls[0].id == "test_tool_call_id"
+  assert isinstance(function_calls[0].args, dict)
+  assert not function_calls[0].args
+  assert response.finish_reason is None
+  assert response.error_code is None
+  assert response.error_message is None
+
+
 def test_message_to_generate_content_response_inline_tool_call_text():
   message = ChatCompletionAssistantMessage(
       role="assistant",

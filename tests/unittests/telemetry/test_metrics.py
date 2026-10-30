@@ -498,6 +498,269 @@ def test_record_client_token_usage_keeps_usage_before_trailing_response(
   assert recorded == {"input": 120, "output": 40}
 
 
+_INFERENCE_TOKEN_INSTRUMENTS = (
+    "_inference_operation_input_tokens",
+    "_inference_operation_output_tokens",
+    "_inference_usage_input_tokens",
+    "_inference_usage_output_tokens",
+    "_inference_usage_cache_read_input_tokens",
+    "_inference_usage_cache_write_input_tokens",
+    "_inference_usage_reasoning_output_tokens",
+)
+
+_INFERENCE_ATTRIBUTES = {
+    "gen_ai.operation.name": "generate_content",
+    "gen_ai.provider.name": "gcp.gemini",
+    "gen_ai.request.model": "test-model",
+    "gen_ai.response.model": "test-model-v1",
+}
+
+
+@pytest.fixture(name="inference_token_instruments")
+def _inference_token_instruments(monkeypatch):
+  """Redirects the schema v2 inference token instruments."""
+  instruments = {
+      attr: mock.MagicMock() for attr in _INFERENCE_TOKEN_INSTRUMENTS
+  }
+  for attr, instrument in instruments.items():
+    monkeypatch.setattr(_metrics, attr, instrument)
+  return instruments
+
+
+def _record_inference_tokens(
+    usage_metadata: types.GenerateContentResponseUsageMetadata,
+) -> None:
+  _metrics.record_inference_token_usage(
+      llm_request=mock.MagicMock(model="test-model"),
+      responses=[
+          mock.MagicMock(
+              model_version="test-model-v1", usage_metadata=usage_metadata
+          )
+      ],
+  )
+
+
+def _points(instrument) -> list[tuple[dict[str, object], int]]:
+  """The points a redirected counter or histogram took, as (attributes, value)."""
+  calls = instrument.record.call_args_list + instrument.add.call_args_list
+  return [(kwargs["attributes"], args[0]) for args, kwargs in calls]
+
+
+def _by_modality(
+    modalities: dict[str, int],
+) -> list[tuple[dict[str, object], int]]:
+  return [
+      (_INFERENCE_ATTRIBUTES | {"gen_ai.token.modality": modality}, count)
+      for modality, count in modalities.items()
+  ]
+
+
+def test_record_inference_token_usage_schema_v2(
+    monkeypatch, inference_token_instruments
+):
+  """Under v2 every bucket is split by modality."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "2")
+  usage_metadata = types.GenerateContentResponseUsageMetadata(
+      prompt_token_count=20,
+      prompt_tokens_details=[
+          types.ModalityTokenCount(modality="TEXT", token_count=15),
+          types.ModalityTokenCount(modality="IMAGE", token_count=5),
+      ],
+      tool_use_prompt_token_count=5,
+      tool_use_prompt_tokens_details=[
+          types.ModalityTokenCount(modality="TEXT", token_count=3)
+      ],
+      candidates_token_count=30,
+      candidates_tokens_details=[
+          types.ModalityTokenCount(modality="TEXT", token_count=30)
+      ],
+      thoughts_token_count=10,
+      cached_content_token_count=8,
+      cache_tokens_details=[
+          types.ModalityTokenCount(modality="TEXT", token_count=8)
+      ],
+  )
+  # Set by hand, as the Anthropic paths do.
+  object.__setattr__(usage_metadata, "cache_creation_input_tokens", 7)
+
+  _record_inference_tokens(usage_metadata)
+
+  assert {
+      attr: _points(instrument)
+      for attr, instrument in inference_token_instruments.items()
+  } == {
+      "_inference_operation_input_tokens": [(_INFERENCE_ATTRIBUTES, 25)],
+      "_inference_operation_output_tokens": [(_INFERENCE_ATTRIBUTES, 40)],
+      "_inference_usage_input_tokens": _by_modality(
+          {"text": 18, "image": 5, "unknown": 2}
+      ),
+      "_inference_usage_output_tokens": _by_modality(
+          {"text": 30, "unknown": 10}
+      ),
+      "_inference_usage_cache_read_input_tokens": _by_modality({"text": 8}),
+      "_inference_usage_cache_write_input_tokens": _by_modality({"unknown": 7}),
+      "_inference_usage_reasoning_output_tokens": _by_modality({"unknown": 10}),
+  }
+
+
+def _details(*counts: tuple[str, int]) -> list[types.ModalityTokenCount]:
+  return [
+      types.ModalityTokenCount(modality=modality, token_count=count)
+      for modality, count in counts
+  ]
+
+
+@pytest.mark.parametrize(
+    "prompt_tokens,details,expected",
+    [
+        (25, None, {"unknown": 25}),
+        (20, _details(("TEXT", 12), ("IMAGE", 8)), {"text": 12, "image": 8}),
+        # Tokens the details leave out, such as thoughts tokens.
+        (
+            25,
+            _details(("TEXT", 12), ("AUDIO", 8)),
+            {"text": 12, "audio": 8, "unknown": 5},
+        ),
+        (
+            30,
+            _details(("VIDEO", 10), ("DOCUMENT", 20)),
+            {"video": 10, "document": 20},
+        ),
+        (
+            10,
+            _details(("TEXT", 3), ("TEXT", 2), ("MODALITY_UNSPECIFIED", 5)),
+            {"text": 10},
+        ),
+        (8, _details(("TEXT", 8), ("IMAGE", 0)), {"text": 8}),
+        (0, None, {"unknown": 0}),
+    ],
+)
+def test_record_inference_token_usage_schema_v2_splits_by_modality(
+    monkeypatch, inference_token_instruments, prompt_tokens, details, expected
+):
+  """Tests the per-modality values sum to the total."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "2")
+
+  _record_inference_tokens(
+      types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=prompt_tokens, prompt_tokens_details=details
+      )
+  )
+
+  assert _points(
+      inference_token_instruments["_inference_usage_input_tokens"]
+  ) == _by_modality(expected)
+
+
+def test_record_inference_token_usage_schema_v2_records_zero_per_operation(
+    monkeypatch, inference_token_instruments
+):
+  """A call that spent nothing records a zero on every instrument."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "2")
+
+  _record_inference_tokens(
+      types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=0, candidates_token_count=0
+      )
+  )
+
+  assert {
+      attr: _points(instrument)
+      for attr, instrument in inference_token_instruments.items()
+  } == {
+      "_inference_operation_input_tokens": [(_INFERENCE_ATTRIBUTES, 0)],
+      "_inference_operation_output_tokens": [(_INFERENCE_ATTRIBUTES, 0)],
+      "_inference_usage_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_output_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_cache_read_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_cache_write_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_reasoning_output_tokens": _by_modality({"unknown": 0}),
+  }
+
+
+def test_record_inference_token_usage_schema_v2_records_zero_when_unreported(
+    monkeypatch, inference_token_instruments
+):
+  """No output count reported is a zero output point."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "2")
+
+  _record_inference_tokens(
+      types.GenerateContentResponseUsageMetadata(prompt_token_count=20)
+  )
+
+  assert {
+      attr: _points(instrument)
+      for attr, instrument in inference_token_instruments.items()
+  } == {
+      "_inference_operation_input_tokens": [(_INFERENCE_ATTRIBUTES, 20)],
+      "_inference_operation_output_tokens": [(_INFERENCE_ATTRIBUTES, 0)],
+      "_inference_usage_input_tokens": _by_modality({"unknown": 20}),
+      "_inference_usage_output_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_cache_read_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_cache_write_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_reasoning_output_tokens": _by_modality({"unknown": 0}),
+  }
+
+
+def test_record_inference_token_usage_schema_v2_keeps_usage_before_trailing(
+    monkeypatch, inference_token_instruments
+):
+  """A trailing response without usage does not hide the usage before it."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "2")
+
+  _metrics.record_inference_token_usage(
+      llm_request=mock.MagicMock(model="test-model"),
+      responses=[
+          LlmResponse(
+              content=types.ModelContent("text "),
+              model_version="test-model-v1",
+              usage_metadata=types.GenerateContentResponseUsageMetadata(
+                  prompt_token_count=10, candidates_token_count=2
+              ),
+          ),
+          LlmResponse(
+              content=types.ModelContent("response"),
+              finish_reason=types.FinishReason.STOP,
+              model_version="test-model-v1",
+              usage_metadata=types.GenerateContentResponseUsageMetadata(
+                  prompt_token_count=10, candidates_token_count=5
+              ),
+          ),
+          LlmResponse(model_version="test-model-v1"),
+      ],
+  )
+
+  assert {
+      attr: _points(instrument)
+      for attr, instrument in inference_token_instruments.items()
+  } == {
+      "_inference_operation_input_tokens": [(_INFERENCE_ATTRIBUTES, 10)],
+      "_inference_operation_output_tokens": [(_INFERENCE_ATTRIBUTES, 5)],
+      "_inference_usage_input_tokens": _by_modality({"unknown": 10}),
+      "_inference_usage_output_tokens": _by_modality({"unknown": 5}),
+      "_inference_usage_cache_read_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_cache_write_input_tokens": _by_modality({"unknown": 0}),
+      "_inference_usage_reasoning_output_tokens": _by_modality({"unknown": 0}),
+  }
+
+
+def test_record_inference_token_usage_schema_v1(
+    monkeypatch, inference_token_instruments
+):
+  """Under v1 none of the inference token metrics are recorded."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "1")
+
+  _record_inference_tokens(
+      types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=20, candidates_token_count=30
+      )
+  )
+
+  assert not any(
+      _points(instrument) for instrument in inference_token_instruments.values()
+  )
+
+
 @pytest.fixture(name="call_count_histograms")
 def _call_count_histograms(monkeypatch):
   """Redirects the two per-invocation call-count histograms."""

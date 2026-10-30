@@ -28,6 +28,7 @@ from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.agents.run_config import StreamingMode
 from google.adk.events.event import Event
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -48,7 +49,9 @@ from opentelemetry import context as context_api
 from opentelemetry import trace
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
 from opentelemetry.trace import StatusCode
 import pytest
 
@@ -360,7 +363,9 @@ def _agent(name: str = "root_agent", description: str = "") -> LlmAgent:
   )
 
 
-async def _invocation_context(agent: LlmAgent) -> InvocationContext:
+async def _invocation_context(
+    agent: LlmAgent, run_config: RunConfig | None = None
+) -> InvocationContext:
   session_service = InMemorySessionService()
   session = await session_service.create_session(
       app_name="test_app", user_id="test_user"
@@ -370,7 +375,7 @@ async def _invocation_context(agent: LlmAgent) -> InvocationContext:
       agent=agent,
       session=session,
       session_service=session_service,
-      run_config=RunConfig(),
+      run_config=run_config or RunConfig(),
   )
 
 
@@ -1624,6 +1629,168 @@ async def test_record_llm_response_traces_the_result_onto_the_carried_span(
   assert attributes["gen_ai.response.finish_reasons"] == ("stop",)
   assert attributes["gen_ai.usage.input_tokens"] == 10
   assert attributes["gen_ai.usage.output_tokens"] == 5
+
+
+_TIME_TO_FIRST_CHUNK = "gen_ai.client.inference.time_to_first_chunk"
+_TIME_PER_OUTPUT_CHUNK = "gen_ai.client.inference.time_per_output_chunk"
+
+
+@pytest.mark.asyncio
+async def test_record_inference_telemetry_times_each_streamed_chunk(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """Times the first chunk from the span's start, each later one from the last.
+
+  The aggregate the model yields after the last chunk is no chunk.
+  """
+  clock = mock.Mock(return_value=0)
+  monkeypatch.setattr(
+      _instrumentation,
+      "time",
+      mock.Mock(time_ns=clock, monotonic=time.monotonic),
+  )
+  agent = _agent()
+  ctx = await _invocation_context(
+      agent, RunConfig(streaming_mode=StreamingMode.SSE)
+  )
+  llm_request = LlmRequest(model="some-model")
+  model_response_event = mock.MagicMock()
+  model_response_event.id = "event-1"
+  unfinished_chunk = _llm_response(
+      partial=True, finish_reason=None, usage_metadata=None
+  )
+  # Chunks 0.5s, 0.75s and 1.25s after the span started. The aggregate would
+  # be timed at 10s if it were counted.
+  responses = [
+      (500_000_000, unfinished_chunk),
+      (750_000_000, unfinished_chunk),
+      (1_250_000_000, _llm_response(partial=True)),
+      (10_000_000_000, _llm_response()),
+  ]
+
+  async with _instrumentation.record_inference_telemetry(
+      llm_request, ctx, model_response_event
+  ) as tel_ctx:
+    span_start_ns = tel_ctx.span.span.start_time
+    for since_span_start_ns, response in responses:
+      clock.return_value = span_start_ns + since_span_start_ns
+      tel_ctx.record_llm_response(ctx, response)
+
+  attributes = {
+      "gen_ai.operation.name": "generate_content",
+      "gen_ai.provider.name": "gcp.gemini",
+      "gen_ai.request.model": "some-model",
+      "gen_ai.response.model": "some-model-001",
+  }
+  assert telemetry.points(_TIME_TO_FIRST_CHUNK) == [(attributes, 0.5)]
+  assert telemetry.points(_TIME_PER_OUTPUT_CHUNK) == [(attributes, 0.75)]
+
+
+@pytest.mark.asyncio
+async def test_first_chunk_is_timed_from_span_open_if_span_is_sampled_out(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """A sampled-out span has no start time, so timing starts as it opens."""
+  # The span opens at 10s, the first chunk arrives at 10.5s.
+  clock = mock.Mock(side_effect=[10_000_000_000, 10_500_000_000])
+  monkeypatch.setattr(
+      _instrumentation,
+      "time",
+      mock.Mock(time_ns=clock, monotonic=time.monotonic),
+  )
+  sampled_out_tracer = TracerProvider(sampler=ALWAYS_OFF).get_tracer(__name__)
+  monkeypatch.setattr(
+      tracing.tracer,
+      "start_as_current_span",
+      sampled_out_tracer.start_as_current_span,
+  )
+  agent = _agent()
+  ctx = await _invocation_context(
+      agent, RunConfig(streaming_mode=StreamingMode.SSE)
+  )
+  model_response_event = mock.MagicMock()
+  model_response_event.id = "event-1"
+
+  async with _instrumentation.record_inference_telemetry(
+      LlmRequest(model="some-model"), ctx, model_response_event
+  ) as tel_ctx:
+    tel_ctx.record_llm_response(ctx, _llm_response(partial=True))
+
+  attributes = {
+      "gen_ai.operation.name": "generate_content",
+      "gen_ai.provider.name": "gcp.gemini",
+      "gen_ai.request.model": "some-model",
+      "gen_ai.response.model": "some-model-001",
+  }
+  assert telemetry.points(_TIME_TO_FIRST_CHUNK) == [(attributes, 0.5)]
+
+
+@pytest.mark.parametrize(
+    "run_config",
+    [
+        RunConfig(),
+        RunConfig(streaming_mode=StreamingMode.SSE, support_cfc=True),
+    ],
+    ids=["not_streamed", "live"],
+)
+@pytest.mark.asyncio
+async def test_record_inference_telemetry_times_no_chunks_unless_streamed(
+    telemetry: _Telemetry, run_config: RunConfig
+):
+  """Times nothing for a call that is not a streamed request.
+
+  A whole answer has no chunks, and a live exchange no request to time the
+  first one from.
+  """
+  agent = _agent()
+  ctx = await _invocation_context(agent, run_config)
+  model_response_event = mock.MagicMock()
+  model_response_event.id = "event-1"
+
+  async with _instrumentation.record_inference_telemetry(
+      LlmRequest(model="some-model"), ctx, model_response_event
+  ) as tel_ctx:
+    tel_ctx.record_llm_response(ctx, _llm_response())
+
+  assert not telemetry.points(_TIME_TO_FIRST_CHUNK)
+  assert not telemetry.points(_TIME_PER_OUTPUT_CHUNK)
+
+
+@pytest.mark.asyncio
+async def test_chunk_timing_is_left_to_the_genai_instrumentor(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """Times nothing for a Gemini call the google-genai instrumentor wraps.
+
+  The instrumentor times the same chunks, so ADK recording them too would
+  report every streamed call twice.
+  """
+  monkeypatch.setattr(
+      "google.adk.telemetry._genai_instrumentor.is_instrumented",
+      lambda: True,
+  )
+  # ADK delegates only the experimental semconv to the instrumentor.
+  monkeypatch.setenv(
+      "OTEL_SEMCONV_STABILITY_OPT_IN", "gen_ai_latest_experimental"
+  )
+  monkeypatch.setattr(tracing, "_is_gemini_agent", lambda _: True)
+  agent = _agent()
+  ctx = await _invocation_context(
+      agent, RunConfig(streaming_mode=StreamingMode.SSE)
+  )
+  model_response_event = mock.MagicMock()
+  model_response_event.id = "event-1"
+
+  async with _instrumentation.record_inference_telemetry(
+      LlmRequest(model="some-model"), ctx, model_response_event
+  ) as tel_ctx:
+    tel_ctx.record_llm_response(
+        ctx, _llm_response(partial=True, finish_reason=None)
+    )
+    tel_ctx.record_llm_response(ctx, _llm_response(partial=True))
+
+  assert not telemetry.points(_TIME_TO_FIRST_CHUNK)
+  assert not telemetry.points(_TIME_PER_OUTPUT_CHUNK)
 
 
 # --- record_invocation -----------------------------------------------------

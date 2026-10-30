@@ -21,7 +21,6 @@ from typing import Optional
 from typing import Protocol
 
 from ..errors.not_found_error import NotFoundError
-from ..utils.feature_decorator import experimental
 from ._efficiency_evaluators import _InferenceCallCountV1Evaluator
 from ._efficiency_evaluators import _InvocationDurationV1Evaluator
 from ._efficiency_evaluators import _TokenUsageV1Evaluator
@@ -72,7 +71,6 @@ class _EvalMetricEvaluatorFactory(Protocol):
     """Creates an evaluator for one metric configuration."""
 
 
-@experimental
 class MetricEvaluatorRegistry:
   """A registry for metric Evaluators."""
 
@@ -189,8 +187,7 @@ class MetricEvaluatorRegistry:
     a single eval run without mutating process-wide state.
     """
     # Copied rather than constructed: `__init__` would re-register the standard
-    # metrics only for them to be overwritten below, and would emit the
-    # `@experimental` warning on every eval run.
+    # metrics only for them to be overwritten below.
     forked = copy.copy(self)
     # pylint: disable=protected-access
     forked._registry = dict(self._registry)

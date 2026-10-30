@@ -20,13 +20,16 @@ and that resume state (prior_output, prior_interrupt_ids) is carried
 forward correctly.
 """
 
+from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import _rewind_events
 from google.adk.events.event import Event
+from google.adk.events.event import NodeInfo
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.workflow._base_node import BaseNode
@@ -497,6 +500,83 @@ async def test_prior_and_new_interrupt_ids_merged():
   ).run()
 
   assert child_ctx.interrupt_ids == {'fc-old', 'fc-new'}
+
+
+class _IdleNode(BaseNode):
+
+  async def _run_impl(self, *, ctx, node_input):
+    return
+    yield  # noqa: unreachable
+
+
+def _node_event(path: str, invocation_id: str = 'inv-test') -> Event:
+  return Event(
+      author='node',
+      invocation_id=invocation_id,
+      node_info=NodeInfo(path=path),
+      content=types.Content(parts=[types.Part(text=path)]),
+  )
+
+
+@pytest.mark.asyncio
+async def test_node_without_history_skips_rewind_pass():
+  """A node with no event of its own in the history skips the rewind pass."""
+  parent_ctx, _ = _make_ctx()
+  parent_ctx.session.events.extend([
+      _node_event('n@1', invocation_id='earlier-turn'),
+      _node_event('other@1'),
+      _node_event('n@10'),
+  ])
+
+  with mock.patch.object(
+      _rewind_events, '_apply_rewinds', wraps=_rewind_events._apply_rewinds
+  ) as apply_rewinds:
+    child_ctx = await NodeRunner(
+        node=_IdleNode(name='n'), parent_ctx=parent_ctx
+    ).run()
+
+  apply_rewinds.assert_not_called()
+  assert not child_ctx.resume_inputs
+
+
+@pytest.mark.asyncio
+async def test_node_with_answered_interrupt_rehydrates_resume_inputs():
+  """A node's answered interrupt in this invocation is still resumed."""
+  parent_ctx, _ = _make_ctx()
+  interrupt = _node_event('n@1')
+  interrupt.content = types.Content(
+      parts=[
+          types.Part(
+              function_call=types.FunctionCall(name='ask', args={}, id='fc-1')
+          )
+      ]
+  )
+  interrupt.long_running_tool_ids = {'fc-1'}
+  answer = Event(
+      author='user',
+      invocation_id='inv-test',
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name='ask', id='fc-1', response={'answer': 'yes'}
+                  )
+              )
+          ],
+      ),
+  )
+  parent_ctx.session.events.extend([interrupt, answer])
+
+  with mock.patch.object(
+      _rewind_events, '_apply_rewinds', wraps=_rewind_events._apply_rewinds
+  ) as apply_rewinds:
+    child_ctx = await NodeRunner(
+        node=_IdleNode(name='n'), parent_ctx=parent_ctx
+    ).run()
+
+  apply_rewinds.assert_called_once()
+  assert child_ctx.resume_inputs == {'fc-1': {'answer': 'yes'}}
 
 
 # =========================================================================
