@@ -1457,6 +1457,37 @@ async def test_append_event_partial_does_not_update_session_last_update_time():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_does_not_store_partial_events(
+    mock_api_client_instance: MockAsyncClient,
+):
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.create_session(app_name='123', user_id='user')
+  partial = Event(
+      invocation_id='inv',
+      author='agent',
+      partial=True,
+      content=genai_types.Content(
+          role='model', parts=[genai_types.Part.from_text(text='Stream')]
+      ),
+      actions=EventActions(state_delta={'key': 'value'}),
+  )
+
+  returned = await session_service.append_event(session, partial)
+
+  # Partial events are streaming chunks: returned untouched and never stored,
+  # here or in any other backend.
+  assert returned is partial
+  assert session.id not in mock_api_client_instance.event_dict
+  assert session.events == []
+  assert 'key' not in session.state
+  reloaded = await session_service.get_session(
+      app_name='123', user_id='user', session_id=session.id
+  )
+  assert reloaded.events == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_append_multiple_events_advances_last_update_time() -> None:
   """Multiple sequential appends advance session.last_update_time each time."""
   session_service = mock_vertex_ai_session_service()
