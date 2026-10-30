@@ -20,6 +20,7 @@ import copy
 from datetime import datetime
 from datetime import timezone
 import json
+import re
 import logging
 import os
 from typing import Any
@@ -206,7 +207,10 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       )
     if value in (".", ".."):
       raise ValueError(f"{name} must not be '.' or '..', got {value!r}.")
-    if value.startswith("__") and value.endswith("__"):
+    # Firestore reserved ids match __.*__ (at least four chars). "__" and
+    # "___" are valid document ids; startswith/endswith("__") wrongly rejects
+    # them because the prefix and suffix overlap.
+    if re.fullmatch(r"__.*__", value):
       raise ValueError(
           f"{name} must not match the Firestore-reserved __.*__ pattern, got"
           f" {value!r}."
