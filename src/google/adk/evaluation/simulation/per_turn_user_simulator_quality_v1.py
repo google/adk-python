@@ -14,9 +14,14 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Coroutine
+from collections.abc import Iterable
+import contextlib
 import re
 from typing import ClassVar
 from typing import Optional
+from typing import TypeVar
 
 from google.genai import types as genai_types
 from pydantic import ValidationError
@@ -103,6 +108,24 @@ def _get_stop_signal_invocation(stop_signal: str) -> Invocation:
   )
 
 
+_T = TypeVar("_T")
+
+
+async def _gather_cancelling_on_error(
+    coros: Iterable[Coroutine[object, object, _T]],
+) -> list[_T]:
+  """Runs coroutines concurrently, cancelling and draining siblings on error."""
+  tasks = [asyncio.create_task(coro) for coro in coros]
+  try:
+    return list(await asyncio.gather(*tasks))
+  except BaseException:
+    for task in tasks:
+      if not task.done():
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    raise
+
+
 class PerTurnUserSimulatorQualityV1(Evaluator):
   """Per turn user simulator evaluator.
 
@@ -169,32 +192,37 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     if conversation_scenario is None:
       raise ValueError("conversation_scenario is needed by this metric.")
 
-    # Evaluate the first invocation contains the given starting prompt.
-    results = [
-        self._evaluate_first_turn(actual_invocations[0], conversation_scenario)
-    ]
-
-    # Evaluate the rest of the invocations.
-    for i, invocation in enumerate(actual_invocations):
-      # skip the first invocation.
-      if i == 0:
-        continue
-
-      result = await self._evaluate_intermediate_turn(
-          invocation_at_step=invocation,
-          invocation_history=actual_invocations[:i],
-          conversation_scenario=conversation_scenario,
-      )
-      results.append(result)
-
-    if not results:
+    if not actual_invocations:
       return EvaluationResult()
 
-    # Evaluate whether the conversation ended correctly.
-    stop_signal_evaluation = await self._evaluate_stop_signal_turn(
-        invocation_history=actual_invocations,
-        conversation_scenario=conversation_scenario,
+    # Evaluate the first invocation contains the given starting prompt.
+    first_turn_result = self._evaluate_first_turn(
+        actual_invocations[0], conversation_scenario
     )
+
+    semaphore = asyncio.Semaphore(self._llm_options.parallelism_limit)
+
+    # Evaluate the rest of the invocations and whether the conversation ended
+    # correctly under the shared judge parallelism limit.
+    coros = [
+        self._evaluate_intermediate_turn(
+            invocation_at_step=invocation,
+            invocation_history=actual_invocations[:i],
+            conversation_scenario=conversation_scenario,
+            semaphore=semaphore,
+        )
+        for i, invocation in enumerate(actual_invocations[1:], start=1)
+    ]
+    coros.append(
+        self._evaluate_stop_signal_turn(
+            invocation_history=actual_invocations,
+            conversation_scenario=conversation_scenario,
+            semaphore=semaphore,
+        )
+    )
+    gathered_results = await _gather_cancelling_on_error(coros)
+    results = [first_turn_result, *gathered_results[:-1]]
+    stop_signal_evaluation = gathered_results[-1]
 
     # If the conversation did not end correctly, indicate so by marking the
     # last user turn as failed.
@@ -331,6 +359,7 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
       invocation_at_step: Invocation,
       invocation_history: list[Invocation],
       conversation_scenario: ConversationScenario,
+      semaphore: Optional[asyncio.Semaphore] = None,
   ) -> PerInvocationResult:
 
     auto_rater_prompt = self._format_llm_prompt(
@@ -351,18 +380,20 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     )
     add_default_retry_options_if_not_present(llm_request)
     num_samples = self._llm_options.num_samples
-    samples = []
-    for _ in range(num_samples):
-      llm_score = await self._sample_llm(llm_request)
-      samples.append(
-          PerInvocationResult(
-              eval_status=get_eval_status(
-                  llm_score.score, self._criterion.threshold
-              ),
-              score=llm_score.score,
-              actual_invocation=invocation_at_step,
-          )
-      )
+    llm_scores = await _gather_cancelling_on_error(
+        self._sample_llm(llm_request, semaphore=semaphore)
+        for _ in range(num_samples)
+    )
+    samples = [
+        PerInvocationResult(
+            eval_status=get_eval_status(
+                llm_score.score, self._criterion.threshold
+            ),
+            score=llm_score.score,
+            actual_invocation=invocation_at_step,
+        )
+        for llm_score in llm_scores
+    ]
     if not samples:
       return PerInvocationResult(
           eval_status=EvalStatus.NOT_EVALUATED,
@@ -375,16 +406,25 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
       self,
       invocation_history: list[Invocation],
       conversation_scenario: ConversationScenario,
+      semaphore: Optional[asyncio.Semaphore] = None,
   ) -> PerInvocationResult:
     return await self._evaluate_intermediate_turn(
         invocation_at_step=_get_stop_signal_invocation(self._stop_signal),
         invocation_history=invocation_history,
         conversation_scenario=conversation_scenario,
+        semaphore=semaphore,
     )
 
-  async def _sample_llm(self, llm_request: LlmRequest) -> AutoRaterScore:
-    async with Aclosing(self._llm.generate_content_async(llm_request)) as agen:
-      async for llm_response in agen:
-        # Non-streaming call, so there is only one response content.
-        return self._convert_llm_response_to_score(llm_response)
+  async def _sample_llm(
+      self,
+      llm_request: LlmRequest,
+      semaphore: Optional[asyncio.Semaphore] = None,
+  ) -> AutoRaterScore:
+    async with semaphore if semaphore is not None else contextlib.nullcontext():
+      async with Aclosing(
+          self._llm.generate_content_async(llm_request)
+      ) as agen:
+        async for llm_response in agen:
+          # Non-streaming call, so there is only one response content.
+          return self._convert_llm_response_to_score(llm_response)
     return AutoRaterScore()
