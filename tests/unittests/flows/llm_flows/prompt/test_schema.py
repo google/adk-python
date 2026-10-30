@@ -420,6 +420,115 @@ async def test_end_to_end_integration():
   assert llm_request.config.response_schema is None
 
 
+def _schema_agent_with_transfer_only(
+    shape: str, output_schema_and_tools: bool
+) -> LlmAgent:
+  """Returns an agent with output_schema and transfer targets but no tools."""
+  model = testing_utils.ModelWithCapabilities(
+      output_schema_and_tools=output_schema_and_tools
+  )
+  if shape == 'sub_agent':
+    # A sub-agent can transfer to its parent and peers by default.
+    schema_agent = LlmAgent(
+        name='schema_agent', model=model, output_schema=PersonSchema
+    )
+    LlmAgent(
+        name='coordinator',
+        model=model,
+        sub_agents=[schema_agent, LlmAgent(name='peer', model=model)],
+    )
+    return schema_agent
+  return LlmAgent(
+      name='schema_agent',
+      model=model,
+      output_schema=PersonSchema,
+      sub_agents=[LlmAgent(name='child', model=model)],
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('shape', ['sub_agent', 'coordinator'])
+async def test_output_schema_with_only_transfer_uses_set_model_response(shape):
+  """Transfer is a function tool, so it must not be paired with JSON mode."""
+  from google.adk.flows.llm_flows.auto_flow import AutoFlow
+
+  agent = _schema_agent_with_transfer_only(shape, output_schema_and_tools=False)
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+
+  async for _ in AutoFlow()._preprocess_async(invocation_context, llm_request):
+    pass
+
+  assert 'transfer_to_agent' in llm_request.tools_dict
+  assert 'set_model_response' in llm_request.tools_dict
+  assert 'set_model_response' in llm_request.config.system_instruction
+  assert llm_request.config.response_schema is None
+  assert llm_request.config.response_mime_type != 'application/json'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('shape', ['sub_agent', 'coordinator'])
+async def test_output_schema_with_only_transfer_keeps_native_schema(shape):
+  """A model that pairs a schema with tools keeps the native output schema."""
+  from google.adk.flows.llm_flows.auto_flow import AutoFlow
+
+  agent = _schema_agent_with_transfer_only(shape, output_schema_and_tools=True)
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+
+  async for _ in AutoFlow()._preprocess_async(invocation_context, llm_request):
+    pass
+
+  assert 'transfer_to_agent' in llm_request.tools_dict
+  assert 'set_model_response' not in llm_request.tools_dict
+  assert llm_request.config.response_schema == PersonSchema
+  assert llm_request.config.response_mime_type == 'application/json'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('shape', ['transfer_disallowed', 'under_sequential'])
+async def test_output_schema_without_transfer_targets_keeps_native_schema(
+    shape,
+):
+  """No transfer target means no function tool, so JSON mode stays."""
+  from google.adk.agents.sequential_agent import SequentialAgent
+  from google.adk.flows.llm_flows.auto_flow import AutoFlow
+
+  model = testing_utils.ModelWithCapabilities(output_schema_and_tools=False)
+  if shape == 'transfer_disallowed':
+    agent = LlmAgent(
+        name='schema_agent',
+        model=model,
+        output_schema=PersonSchema,
+        disallow_transfer_to_parent=True,
+        disallow_transfer_to_peers=True,
+    )
+    LlmAgent(
+        name='coordinator',
+        model=model,
+        sub_agents=[agent, LlmAgent(name='peer', model=model)],
+    )
+  else:
+    # A SequentialAgent parent offers no transfer targets.
+    agent = LlmAgent(
+        name='schema_agent', model=model, output_schema=PersonSchema
+    )
+    SequentialAgent(
+        name='pipeline',
+        sub_agents=[agent, LlmAgent(name='next_step', model=model)],
+    )
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+
+  async for _ in AutoFlow()._preprocess_async(invocation_context, llm_request):
+    pass
+
+  assert 'transfer_to_agent' not in llm_request.tools_dict
+  assert 'set_model_response' not in llm_request.tools_dict
+  assert llm_request.config.response_schema == PersonSchema
+  assert llm_request.config.response_mime_type == 'application/json'
+
+
 @pytest.mark.asyncio
 async def test_flow_yields_both_events_for_set_model_response():
   """Test that the flow yields both function response and final model response events."""
