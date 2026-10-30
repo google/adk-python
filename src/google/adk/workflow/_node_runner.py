@@ -136,6 +136,11 @@ class NodeRunner:
     self._prior_output = prior_output
     self._prior_interrupt_ids = prior_interrupt_ids
 
+    # Whether the current attempt has put an event of its own in the session.
+    self._emitted_in_attempt = False
+    # Whether the current attempt stopped on a child that is still waiting.
+    self._interrupted_in_attempt = False
+
   @property
   def run_id(self) -> str:
     """The run ID assigned to this node run."""
@@ -157,6 +162,8 @@ class NodeRunner:
       ctx = self._create_child_context(
           resume_inputs, attempt_count=attempt_count
       )
+      self._emitted_in_attempt = False
+      self._interrupted_in_attempt = False
       # A retry after a dynamic child failure rewinds to this point, so it
       # replays only the children this attempt completed.
       counters_at_start = self._snapshot_dynamic_children(ctx)
@@ -176,6 +183,7 @@ class NodeRunner:
               ctx.error, attempt_count
           ):
             await self._flush_output_and_deltas(ctx)
+            await self._record_completion_without_result(ctx)
             logger.debug("node %s end.", ctx.node_path)
             return ctx
       except asyncio.CancelledError:
@@ -402,7 +410,7 @@ class NodeRunner:
       # The child's interrupt_ids are already on ctx
       # (set by the schedule callback). Nothing more to do —
       # the caller reads ctx.interrupt_ids.
-      pass
+      self._interrupted_in_attempt = True
 
   async def _run_node_loop(self, ctx: Context, node_input: Any) -> None:
     """Iterate node.run(), track events in context, and enqueue them."""
@@ -483,6 +491,7 @@ class NodeRunner:
     if not event.partial:
       self._flush_deltas(event, ctx)
     await ctx._invocation_context._enqueue_event(event)
+    self._emitted_in_attempt = True
 
     if event.output is not None:
       ctx._output_emitted = True
@@ -524,10 +533,46 @@ class NodeRunner:
 
     self._enrich_event(event, ctx)
     await ctx._invocation_context._enqueue_event(event)
+    self._emitted_in_attempt = True
     if has_deferred_output:
       ctx._output_emitted = True
     if has_unflushed_route:
       ctx._route_emitted = True
+
+  async def _record_completion_without_result(self, ctx: Context) -> None:
+    """Emit a completion marker for a run that finished leaving no trace.
+
+    A run that emitted no event and has no output, route or transfer leaves
+    nothing in the session that shows it ran, so resume would run it (and its
+    side effects) again. The marker lets the scan replay it instead.
+    """
+    from ..events.event import Event
+    from ._workflow import Workflow
+
+    if (
+        self._emitted_in_attempt
+        or self._interrupted_in_attempt
+        # A nested workflow always reruns and replays its own children.
+        or isinstance(self._node, Workflow)
+        or ctx.error is not None
+        or ctx.interrupt_ids
+        or ctx.output is not None
+        or ctx._output_delegated
+        or ctx.route is not None
+        or ctx.actions.transfer_to_agent is not None
+        # Finishing without output means a wait_for_output node is still
+        # waiting for more input, not that it is done.
+        or self._node.wait_for_output
+        # Tests wrap Context around invocation-context stubs that lack
+        # is_aborted or return a truthy Mock; neither means aborted.
+        or getattr(ctx._invocation_context, "is_aborted", False) is True
+    ):
+      return
+
+    event = Event()
+    event.node_info.completed = True
+    self._enrich_event(event, ctx)
+    await ctx._invocation_context._enqueue_event(event)
 
   def _flush_deltas(self, event: Event, ctx: Context) -> None:
     """Move pending state/artifact deltas from ctx onto the event."""

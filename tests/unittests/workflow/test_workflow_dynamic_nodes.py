@@ -770,9 +770,6 @@ async def test_dynamic_node_use_as_output_with_interrupt():
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason='No completion marker event for None output (event design flaw)'
-)
 async def test_dynamic_node_none_output_not_rerun():
   """Dynamic child that completed with None output is not re-run.
 
@@ -783,9 +780,6 @@ async def test_dynamic_node_none_output_not_rerun():
   Assert:
     - On Run 3, A should NOT re-run (it already completed).
     - A should return None (cached), B resumes.
-    - Currently fails because A's None completion leaves no
-      trace in session events — the lazy scan thinks A still
-      needs to re-run.
   """
   run_count_a = [0]
 

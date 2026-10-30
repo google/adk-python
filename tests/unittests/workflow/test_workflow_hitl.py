@@ -2548,3 +2548,116 @@ async def test_parallel_nested_workflows_with_hitl_resume_does_not_deadlock(
   assert workflow_testing_utils.get_request_input_events(events2) == []
   outputs2 = [e.output for e in events2 if e.output is not None]
   assert outputs2
+
+
+async def _run_and_answer_first_request(
+    runner: testing_utils.InMemoryRunner,
+) -> list[Event]:
+  """Runs the workflow once, then answers the request it paused on."""
+  events1 = await runner.run_async('start')
+  [interrupt_id] = [
+      interrupt_id
+      for event in workflow_testing_utils.get_request_input_events(events1)
+      for interrupt_id in extract_event_interrupt_ids(event)
+  ]
+  return await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id, {'ok': True})
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+
+def _app(name: str, root: Workflow, resumable: bool) -> App:
+  return App(
+      name=name,
+      root_agent=root,
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_node_returning_none_is_not_rerun_on_resume(resumable: bool):
+  """A node that finished without output is replayed, not run again."""
+  emails_sent = []
+
+  def send_email():
+    emails_sent.append('email')
+
+  def ask():
+    return RequestInput(message='Approve?')
+
+  def finish(node_input: Any):
+    return node_input
+
+  wf = Workflow(name='wf', edges=[(START, send_email, ask, finish)])
+  runner = testing_utils.InMemoryRunner(
+      app=_app('none_output_seq', wf, resumable)
+  )
+
+  events2 = await _run_and_answer_first_request(runner)
+
+  assert emails_sent == ['email']
+  assert [
+      e.output for e in events2 if e.node_info.name == 'finish' and e.output
+  ] == [{'ok': True}]
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_parallel_node_returning_none_is_not_rerun_on_resume(
+    resumable: bool,
+):
+  """A parallel branch that finished without output is not run again."""
+  emails_sent = []
+
+  def send_email():
+    emails_sent.append('email')
+
+  def ask():
+    return RequestInput(message='Approve?')
+
+  wf = Workflow(name='wf', edges=[(START, send_email), (START, ask)])
+  runner = testing_utils.InMemoryRunner(
+      app=_app('none_output_parallel', wf, resumable)
+  )
+
+  await _run_and_answer_first_request(runner)
+
+  assert emails_sent == ['email']
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.asyncio
+async def test_dynamic_child_returning_none_is_not_rerun_on_resume(
+    resumable: bool,
+):
+  """A ctx.run_node child that finished without output is not run again."""
+  emails_sent = []
+
+  @node
+  def send_email():
+    emails_sent.append('email')
+
+  @node
+  def ask():
+    return RequestInput(message='Approve?')
+
+  @node(rerun_on_resume=True)
+  async def parent(*, ctx: Context, node_input: Any):
+    await ctx.run_node(send_email)
+    answer = await ctx.run_node(ask)
+    yield answer
+
+  wf = Workflow(name='wf', edges=[(START, parent)])
+  runner = testing_utils.InMemoryRunner(
+      app=_app('none_output_dynamic', wf, resumable)
+  )
+
+  events2 = await _run_and_answer_first_request(runner)
+
+  assert emails_sent == ['email']
+  assert {'ok': True} in [e.output for e in events2 if e.output is not None]

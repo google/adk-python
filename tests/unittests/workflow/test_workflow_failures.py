@@ -1295,6 +1295,38 @@ async def test_retry_config_on_nested_workflow_replays_completed_children():
 
 
 @pytest.mark.asyncio
+async def test_retry_config_on_nested_workflow_replays_child_without_output():
+  """A retried sub-workflow does not redo a child that finished with no output."""
+  side_effect_attempts = 0
+  flaky_attempts = 0
+
+  @node()
+  def side_effect_node(ctx: Context):
+    nonlocal side_effect_attempts
+    side_effect_attempts += 1
+
+  @node()
+  def flaky_node(ctx: Context, node_input: Any):
+    nonlocal flaky_attempts
+    flaky_attempts += 1
+    if flaky_attempts < 3:
+      raise CustomError('Node failed')
+    yield 'recovered'
+
+  inner_wf = Workflow(
+      name='inner_wf',
+      edges=[(START, side_effect_node, flaky_node)],
+      retry_config=RetryConfig(max_attempts=3, initial_delay=0.0, jitter=0.0),
+  )
+  outer_wf = Workflow(name='outer_wf', edges=[(START, inner_wf)])
+
+  await _run_workflow(outer_wf)
+
+  assert flaky_attempts == 3
+  assert side_effect_attempts == 1
+
+
+@pytest.mark.asyncio
 async def test_retry_config_on_outer_workflow_retries_nested_failure():
   """A failure inside a sub-workflow is a failure of the outer workflow too."""
   attempts = 0

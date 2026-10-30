@@ -75,6 +75,15 @@ class NodeInfo(BaseModel):
   carries the output value.
   """
 
+  completed: bool | None = None
+  """When True, the node run at ``path`` finished without emitting any other
+  event and without an output, route or transfer.
+
+  Such a run leaves no other trace in the session, so this event records that
+  it finished. On resume the run is replayed from history instead of running
+  again.
+  """
+
   @property
   def run_id(self) -> str:
     """The run ID of the node that generated the event."""
