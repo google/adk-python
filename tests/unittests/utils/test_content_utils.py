@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from google.adk.utils.content_utils import _filter_media_history
 from google.adk.utils.content_utils import _filter_media_parts
 from google.adk.utils.content_utils import _is_adk_live_artifact_part
 from google.adk.utils.content_utils import extract_text_from_content
@@ -307,6 +308,25 @@ def test_filter_media_parts_all_filtered_returns_none():
   )
 
   assert _filter_media_parts(content) is None
+
+
+def test_filter_media_history_filters_each_content_and_drops_empty_ones():
+  """Roles and order are kept; contents with nothing left are left out."""
+  user_text = types.Content(role='user', parts=[types.Part(text='hi')])
+  user_audio = types.Content(role='user', parts=[_file_part('audio/pcm')])
+  model_text_and_audio = types.Content(
+      role='model',
+      parts=[types.Part(text='hello'), _blob_part('audio/pcm')],
+  )
+
+  filtered = _filter_media_history(
+      [user_text, user_audio, model_text_and_audio]
+  )
+
+  assert filtered == [
+      user_text,
+      types.Content(role='model', parts=[types.Part(text='hello')]),
+  ]
 
 
 def test_filter_media_parts_empty_parts_returns_none():
