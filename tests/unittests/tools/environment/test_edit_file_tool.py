@@ -148,3 +148,86 @@ class TestEditFileTool:
     assert result["status"] == "ok"
     data = await env.read_file("test.txt")
     assert data == b"replaced\nline2"
+
+  @pytest.mark.asyncio
+  async def test_edit_file_preserves_non_utf8_bytes(
+      self, env: LocalEnvironment
+  ):
+    """Bytes outside the edited region survive the write-back."""
+    # Arrange
+    tool = EditFileTool(env)
+    await env.write_file("notes.py", b"# header \xe9\nOLD\n")
+
+    args = {
+        "path": "notes.py",
+        "old_string": "OLD",
+        "new_string": "NEW",
+    }
+
+    # Act
+    result = await tool.run_async(args=args, tool_context=None)
+
+    # Assert
+    assert result["status"] == "ok"
+    data = await env.read_file("notes.py")
+    assert data == b"# header \xe9\nNEW\n"
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("old_string", "expected_error"),
+      [
+          ("# header \ufffd\nOLD", "not valid UTF-8"),
+          ("# missing \ufffd\nOLD", "not found in file"),
+      ],
+  )
+  async def test_edit_file_explains_replacement_char_miss(
+      self, env: LocalEnvironment, old_string: str, expected_error: str
+  ):
+    """A miss with U+FFFD in `old_string` names invalid bytes only if present.
+
+    Over invalid UTF-8 bytes it gets the invalid-bytes error; otherwise it
+    gets the generic not-found error. The file is left alone either way.
+    """
+    # Arrange
+    tool = EditFileTool(env)
+    original = b"# header \xe9\nOLD\n"
+    await env.write_file("notes.py", original)
+
+    args = {
+        "path": "notes.py",
+        "old_string": old_string,
+        "new_string": "# header\nNEW",
+    }
+
+    # Act
+    result = await tool.run_async(args=args, tool_context=None)
+
+    # Assert
+    assert result["status"] == "error"
+    assert expected_error in result["error"]
+    assert await env.read_file("notes.py") == original
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("new_string", ["\ud800", "\udce9"])
+  async def test_edit_file_reports_unencodable_new_string(
+      self, env: LocalEnvironment, new_string: str
+  ):
+    """An unencodable `new_string` is refused and the file is left alone."""
+    # Arrange
+    tool = EditFileTool(env)
+    original = b"# header \xe9\nOLD\n"
+    await env.write_file("notes.py", original)
+
+    args = {
+        "path": "notes.py",
+        "old_string": "OLD",
+        "new_string": new_string,
+    }
+
+    # Act
+    result = await tool.run_async(args=args, tool_context=None)
+
+    # Assert
+    assert result["status"] == "error"
+    assert "cannot be encoded" in result["error"]
+    assert await env.read_file("notes.py") == original
