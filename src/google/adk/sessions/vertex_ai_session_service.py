@@ -467,10 +467,12 @@ class VertexAiSessionService(BaseSessionService):
     if event.actions:
       config['actions'] = {
           'skip_summarization': event.actions.skip_summarization,
-          # TODO: coerce the delta to a JSON-safe form the way the database,
-          # sqlite and firestore backends do. Sent raw, a value the JSON
-          # encoder rejects fails the whole append and the event is lost.
-          'state_delta': event.actions.state_delta,
+          # Coerced like the database, sqlite and firestore backends do. Sent
+          # raw, a value the JSON encoder rejects fails the whole append and
+          # the event is lost.
+          'state_delta': _session_util.make_json_safe_state(
+              event.actions.state_delta
+          ),
           'artifact_delta': event.actions.artifact_delta,
           'transfer_agent': event.actions.transfer_to_agent,
           'escalate': event.actions.escalate,
