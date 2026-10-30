@@ -115,6 +115,61 @@ async def test_construct_payload_with_config(client, llm_request):
     assert payload['response_format'] == {'type': 'json_object'}
 
 
+@pytest.mark.parametrize(
+    ('model', 'expected_token_key'),
+    [
+        ('apigee/openai/gpt-5-mini', 'max_completion_tokens'),
+        ('apigee/openai/o3', 'max_completion_tokens'),
+        ('apigee/openai/o4-mini', 'max_completion_tokens'),
+        ('apigee/openai/gpt-4o', 'max_tokens'),
+        ('apigee/openai/gpt-5-chat-latest', 'max_tokens'),
+        ('apigee/openai/qwen3', 'max_tokens'),
+    ],
+)
+@pytest.mark.parametrize('max_output_tokens', [None, 0, 1024])
+async def test_token_limit_uses_supported_parameter(
+    client: CompletionsHTTPClient,
+    llm_request: LlmRequest,
+    model: str,
+    expected_token_key: str,
+    max_output_tokens: int | None,
+) -> None:
+  """Requests use the token-limit parameter accepted by the model."""
+  llm_request.model = model
+  llm_request.config = types.GenerateContentConfig(
+      max_output_tokens=max_output_tokens
+  )
+  response = mock.Mock(spec=httpx.Response)
+  response.json.return_value = {
+      'choices': [{'message': {'role': 'assistant', 'content': 'Hi'}}]
+  }
+
+  with mock.patch.object(
+      httpx.AsyncClient,
+      'post',
+      new_callable=mock.AsyncMock,
+      return_value=response,
+  ) as post:
+    _ = [
+        r
+        async for r in client.generate_content_async(llm_request, stream=False)
+    ]
+
+  post.assert_called_once()
+  payload = post.call_args.kwargs['json']
+  token_limits = {
+      key: payload[key]
+      for key in ('max_tokens', 'max_completion_tokens')
+      if key in payload
+  }
+  expected = (
+      {}
+      if max_output_tokens is None
+      else {expected_token_key: max_output_tokens}
+  )
+  assert token_limits == expected
+
+
 @pytest.mark.asyncio
 async def test_construct_payload_with_tools(client, llm_request):
   tool = types.Tool(
