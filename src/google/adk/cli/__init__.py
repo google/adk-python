@@ -19,11 +19,15 @@ from typing import TYPE_CHECKING
 from ..utils import _lazy
 
 if TYPE_CHECKING:
+  from ._sse import format_event_frames
+  from ._sse import serialize_event
   from .cli_tools_click import main
 
 _LAZY_MEMBERS: dict[str, str] = {
+    'format_event_frames': '._sse',
     'main': '.cli_tools_click',
+    'serialize_event': '._sse',
 }
-__all__ = ['main']
+__all__ = ['format_event_frames', 'main', 'serialize_event']
 
 __getattr__, __dir__ = _lazy.accessors(globals(), _LAZY_MEMBERS)
