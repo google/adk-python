@@ -61,6 +61,8 @@ Before invoking the function, `FunctionTool` validates and coerces each annotate
 
 `FunctionTool` accepts both synchronous `def` functions and asynchronous `async def` coroutines. Coroutines are awaited on the event loop. Synchronous functions run on the tool thread pool when `RunConfig.tool_thread_pool_config` is configured on the runner, preventing blocking I/O or CPU work inside a synchronous tool from stalling concurrent tool calls.
 
+If a synchronous callable returns an awaitable, such as a coroutine from an async function wrapped by a synchronous decorator, `FunctionTool` awaits it before returning the tool result. With a tool thread pool enabled, the synchronous wrapper runs in a worker thread and its awaitable resolves on the caller's event loop. Exceptions from the awaitable propagate to the caller. The same behavior applies to callable confirmation predicates.
+
 ### Generator tools and isolated sub-branches
 
 In standard `Runner.run_async` runs, a synchronous generator or asynchronous generator passed to `FunctionTool` executes as a node on an isolated sub-branch formatted as `{tool_name}@{function_call_id}`. This sub-branch isolates intermediate events from the parent agent's prompt history while still streaming every yielded `Event` to the caller in real time. Intermediate events are never fed back to the model, in the current turn or in later turns; the model only sees the final `FunctionResponse`:
