@@ -1119,6 +1119,48 @@ async def test_create_session_with_custom_session_id(
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_drops_temp_state(
+    mock_api_client_instance: MockAsyncClient,
+):
+  session_service = mock_vertex_ai_session_service()
+
+  session = await session_service.create_session(
+      app_name='123',
+      user_id='user',
+      state={'key': 'value', 'temp:scratch': 'ephemeral'},
+  )
+
+  # temp: keys are invocation-scoped and never stored, so they are not sent
+  # to Agent Engine and do not appear on the created or reloaded session.
+  assert mock_api_client_instance.last_create_session_config[
+      'session_state'
+  ] == {'key': 'value'}
+  assert session.state == {'key': 'value'}
+  reloaded = await session_service.get_session(
+      app_name='123', user_id='user', session_id=session.id
+  )
+  assert reloaded.state == {'key': 'value'}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_with_only_temp_state_sends_no_state(
+    mock_api_client_instance: MockAsyncClient,
+):
+  session_service = mock_vertex_ai_session_service()
+
+  session = await session_service.create_session(
+      app_name='123', user_id='user', state={'temp:scratch': 'ephemeral'}
+  )
+
+  assert 'session_state' not in (
+      mock_api_client_instance.last_create_session_config
+  )
+  assert session.state == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_create_session_with_custom_config(mock_api_client_instance):
   session_service = mock_vertex_ai_session_service()
 

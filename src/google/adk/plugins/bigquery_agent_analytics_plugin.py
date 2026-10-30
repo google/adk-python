@@ -1168,6 +1168,9 @@ def _formatter_failure_message(cls: type, *, raised: bool) -> str:
 _MAX_FORMATTER_TRACEBACK_PART_CHARS = 1024
 _MAX_FORMATTER_TRACEBACK_CHARS = 4096
 _FORMATTER_TRACEBACK_CUT = "\n... [traceback truncated]"
+# Upper bound on the sanitized exception detail appended to the BigQuery row's
+# error_message when log_content_formatter_error_details is enabled.
+_MAX_FORMATTER_ERROR_DETAIL_CHARS = 256
 
 
 def _render_formatter_traceback(error: BaseException) -> str:
@@ -1243,13 +1246,15 @@ def _settle_formatter_outcome(
     *,
     event_type: str,
     debug: bool,
-) -> tuple[Any, Optional[str]]:
+    log_error_details: bool = False,
+) -> tuple[Any, Optional[str], bool]:
   """Decides what the row logs after the content_formatter call, fail closed.
 
   These steps happen behind this one boundary:
   - judging a returned result by its real type;
   - closing a rejected coroutine or generator;
   - naming the failed class;
+  - extracting and sanitizing the exception detail;
   - rendering the debug traceback;
   - emitting the warning through whatever filters and handlers are
     configured.
@@ -1261,9 +1266,11 @@ def _settle_formatter_outcome(
   parser's own boundary, which catches Exception only, applies to it.
 
   Code that the failed class or the rejected result controls runs only while
-  the traceback is rendered and while a rejected coroutine or generator is
-  closed. Those two steps contain anything they raise, ``BaseException``
-  included, so that the content under redaction cannot end the agent run.
+  the traceback is rendered, while sanitized exception details are extracted
+  (when ``log_error_details`` is True), and while a rejected coroutine or
+  generator is closed. Those steps contain anything they raise,
+  ``BaseException`` included, so that the content under redaction cannot end
+  the agent run.
   Everywhere else only this module's code and the application's own log
   filters and handlers run, so a ``KeyboardInterrupt``, ``SystemExit``, or
   ``asyncio.CancelledError`` raised there propagates, and no row is written.
@@ -1273,15 +1280,19 @@ def _settle_formatter_outcome(
     failure: The exception the formatter raised, or None if it returned.
     event_type: The type of the event being logged.
     debug: Whether to append the rendered traceback to the warning.
+    log_error_details: Whether to append sanitized exception details to the
+      ``error_message`` note when ``failure`` is set.
 
   Returns:
-    ``(formatted, None)`` when the parser can log the result as it is; a str
-    subclass is normalized to the exact built-in. Otherwise
-    ``(_FORMATTER_FAILED_SENTINEL, note)``, where ``note`` is the text for
-    the error_message column.
+    ``(formatted, None, False)`` when the parser can log the result as it is; a
+    str subclass is normalized to the exact built-in. Otherwise
+    ``(_FORMATTER_FAILED_SENTINEL, note, detail_content_lost)``, where ``note``
+    is the text for the error_message column and ``detail_content_lost`` is
+    True when sanitizing the exception detail truncated or redacted text.
   """
   outcome = "raised" if failure is not None else "returned unsupported type"
   note = f"content_formatter {outcome} <unknown class>"
+  detail_content_lost = False
   try:
     if failure is not None:
       failed_type: type = type(failure)
@@ -1290,7 +1301,7 @@ def _settle_formatter_outcome(
       if _natively_parsed(formatted, failed_type):
         if failed_type is not str and issubclass(failed_type, str):
           formatted = str.__str__(formatted)
-        return formatted, None
+        return formatted, None, False
       # A non-native result would reach the parser's str() fallback, where
       # a payload-controlled __str__ can republish the content, so it is
       # rejected. Close a coroutine first: released unstarted, it warns
@@ -1308,6 +1319,23 @@ def _settle_formatter_outcome(
         # contained rather than allowed to end the agent run.
         pass
     note = _formatter_failure_message(failed_type, raised=failure is not None)
+    if failure is not None and log_error_details:
+      detail: Optional[str] = None
+      try:
+        raw_detail = str(failure)
+      except BaseException:
+        raw_detail = "[error message could not be rendered]"
+      try:
+        sanitized_detail, detail_content_lost = _sanitize_sensitive_text(
+            raw_detail, _MAX_FORMATTER_ERROR_DETAIL_CHARS
+        )
+        if sanitized_detail:
+          detail = sanitized_detail
+      except Exception:
+        detail = "[REDACTED_SENSITIVE_TEXT]"
+        detail_content_lost = True
+      if detail:
+        note = f"{note}: {detail}"
     if failure is None:
       logger.warning(
           "Content formatter returned an unsupported result type for"
@@ -1331,7 +1359,7 @@ def _settle_formatter_outcome(
     # Nothing is reported: the logger may be what failed, and the exception
     # can carry the content.
     pass
-  return _FORMATTER_FAILED_SENTINEL, note
+  return _FORMATTER_FAILED_SENTINEL, note, detail_content_lost
 
 
 # Recursion bound for _recursive_smart_truncate: id()-based cycle detection
@@ -1831,6 +1859,11 @@ def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
       config.max_observation_summaries_per_segment,
       1,
   )
+  if not isinstance(config.log_content_formatter_error_details, bool):
+    raise ValueError(
+        "log_content_formatter_error_details must be a bool, got"
+        f" {config.log_content_formatter_error_details!r}."
+    )
   _validate_tool_result_classifier(config.tool_result_classifier)
 
 
@@ -2475,9 +2508,11 @@ class BigQueryLoggerConfig:
         ``[FORMATTER_FAILED]``, the ``formatter_failed`` counter of
         ``get_drop_stats()`` is incremented, and ``error_message`` names the
         failure by class only, for example ``content_formatter raised
-        ImportError``. Only built-in types and a few trusted classes are
-        named; any other class is described by its nearest named ancestor,
-        for example ``content_formatter raised <subclass of ValueError>``.
+        ImportError`` (unless ``log_content_formatter_error_details``
+        separately opts into sanitized, bounded exception details). Only
+        built-in types and a few trusted classes are named; any other class is
+        described by its nearest named ancestor, for example
+        ``content_formatter raised <subclass of ValueError>``.
         An event that already carries an ``error_message``, such as a
         ``TOOL_ERROR``, keeps it first, followed by ``; `` and the formatter
         failure. The row's ``status`` is unchanged, so an otherwise
@@ -2545,10 +2580,12 @@ class BigQueryLoggerConfig:
         logger emits, to debug the formatter locally.
         The traceback can embed the unformatted content the formatter was
         protecting, and it reaches every log handler the process has
-        configured, so enable it only where that content may be seen. It is
-        never written to BigQuery: the row's ``error_message`` still names
-        only the exception class. ``False`` (the default) logs a constant
-        message with no traceback.
+        configured, so enable it only where that content may be seen. The
+        traceback is never written to BigQuery: the row's ``error_message``
+        names only the exception class unless
+        ``log_content_formatter_error_details`` separately opts into
+        sanitized, bounded exception details. ``False`` (the default) logs a
+        constant message with no traceback.
       on_schema_error: Optional synchronous callback invoked with the triggering
         exception each time the table readiness pass fails to read, create, or
         upgrade the BigQuery table. It runs on a worker thread, not the event
@@ -2674,6 +2711,18 @@ class BigQueryLoggerConfig:
         bound once path-dedup memory saturates (with un-deduplicated events
         beyond it exposed in ``attributes.adk.untracked_overflow_event_count``).
         Must be an int >= 1.
+      log_content_formatter_error_details: When ``True``, append sanitized and
+        truncated (to 256 characters plus a truncation marker) exception
+        details from a raised ``content_formatter`` exception to the BigQuery
+        row's ``error_message`` column (for example, ``content_formatter raised
+        ValueError: invalid format``) while still writing
+        ``[FORMATTER_FAILED]`` to ``content``. Because exception messages can
+        embed fragments of the unformatted payload that are not recognized as
+        structured credentials, leave this ``False`` (the default) when
+        ``content_formatter`` is used for privacy/PII redaction and enable it
+        only when debugging formatter bugs in environments where those details
+        are safe to store in BigQuery. When sanitizing truncates or redacts
+        the detail, the row's ``is_truncated`` is also set to ``True``.
   """
 
   enabled: bool = True
@@ -2776,6 +2825,9 @@ class BigQueryLoggerConfig:
   eval_view_mode: Literal["full", "conversation_only"] = "full"
   # Cap on workflow observation summaries written per runner call.
   max_observation_summaries_per_segment: int = 200
+  # Opt-in: append sanitized, truncated exception details to the BigQuery
+  # row's error_message column when content_formatter raises an Exception.
+  log_content_formatter_error_details: bool = False
 
 
 _DEFAULT_MAX_OBSERVATION_SUMMARIES_PER_SEGMENT = (
@@ -9339,20 +9391,27 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         # boundary, so its failure must never fall back to the unformatted
         # payload. The exception message and traceback can embed the
         # protected content, and even the class NAME can be payload-derived
-        # via type(name, ...), so the failure is only ever named by a
-        # trusted class label, and its traceback is logged only when
-        # debug_content_formatter_errors opts in.
+        # via type(name, ...), so by default the failure is named only by a
+        # trusted class label (with sanitized, bounded exception details
+        # appended only when log_content_formatter_error_details opts in,
+        # and its traceback logged locally only when
+        # debug_content_formatter_errors opts in).
         failure = e
       # Everything after the call runs behind _settle_formatter_outcome's
       # one boundary: judging the result, closing a rejected coroutine,
-      # naming the class, and logging. It runs after the except block, so
-      # the formatter's exception is no longer the one being handled.
-      raw_content, formatter_error = _settle_formatter_outcome(
-          formatted,
-          failure,
-          event_type=event_type,
-          debug=self.config.debug_content_formatter_errors,
+      # naming the class, sanitizing the exception detail, and logging. It
+      # runs after the except block, so the formatter's exception is no
+      # longer the one being handled.
+      raw_content, formatter_error, formatter_detail_content_lost = (
+          _settle_formatter_outcome(
+              formatted,
+              failure,
+              event_type=event_type,
+              debug=self.config.debug_content_formatter_errors,
+              log_error_details=self.config.log_content_formatter_error_details,
+          )
       )
+      is_truncated = is_truncated or formatter_detail_content_lost
       if formatter_error is not None:
         self._count_local_drop("formatter_failed")
       # The except clause would have dropped this reference itself: the
@@ -9361,8 +9420,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     # The event's own diagnostic (e.g. a TOOL_ERROR's exception text) stays
     # first and intact so an error row keeps its primary cause; a formatter
-    # failure is appended after it. The note skips the bounded sanitizer
-    # above: it is fixed text and a trusted class label, never free text.
+    # failure is appended after it. The note is already sanitized and
+    # bounded inside _settle_formatter_outcome (fixed text + trusted class
+    # label by default, plus at most 256 sanitized chars and a truncation
+    # marker when log_content_formatter_error_details=True).
     error_message = event_data.error_message
     if formatter_error is not None:
       error_message = (

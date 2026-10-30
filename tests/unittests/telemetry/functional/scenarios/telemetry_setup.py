@@ -100,6 +100,16 @@ _PATCHED_HISTOGRAMS: tuple[HistogramSpec, ...] = (
     ),
     HistogramSpec(
         module=_metrics,
+        attr="_client_inference_time_to_first_chunk",
+        metric_name="gen_ai.client.inference.time_to_first_chunk",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_client_inference_time_per_output_chunk",
+        metric_name="gen_ai.client.inference.time_per_output_chunk",
+    ),
+    HistogramSpec(
+        module=_metrics,
         attr="_workflow_invocation_duration",
         metric_name="gen_ai.invoke_workflow.duration",
     ),

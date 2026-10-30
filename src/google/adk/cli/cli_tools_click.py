@@ -1096,6 +1096,15 @@ def adk_services_options(
     ),
     default=None,
 )
+@click.option(
+    "--reload_agents",
+    is_flag=True,
+    default=False,
+    help=(
+        "Optional. Watch the agent folder for .py/.yaml/.yml changes and"
+        " hot-reload the agent in interactive mode."
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -1121,6 +1130,7 @@ def cli_run(
     default_llm_model: Optional[str] = None,
     log_level: str = "INFO",
     state_file: Optional[str] = None,
+    reload_agents: bool = False,
 ) -> None:
   """Runs an agent. If no query is provided, enters interactive mode.
 
@@ -1195,6 +1205,7 @@ def cli_run(
             timeout=timeout,
             in_memory=in_memory,
             jsonl=jsonl,
+            reload_agents=reload_agents,
             session_service_uri=session_service_uri,
             artifact_service_uri=artifact_service_uri,
             memory_service_uri=memory_service_uri,

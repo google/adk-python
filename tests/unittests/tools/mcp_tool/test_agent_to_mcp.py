@@ -239,6 +239,58 @@ async def test_run_agent_reports_intermediate_events_as_progress():
   assert reported == ["thinking"]
 
 
+def _event_with_thought(
+    thought: str, text: str, *, partial: bool = False
+) -> Event:
+  return Event(
+      author="a",
+      partial=partial,
+      content=types.Content(
+          role="model",
+          parts=[types.Part(text=thought, thought=True), types.Part(text=text)],
+      ),
+  )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_leaves_thoughts_out_of_the_result():
+  runner = _FakeRunner([_event_with_thought("private reasoning", "answer")])
+
+  result = await _run_agent(runner, "hi")
+
+  # The model's thoughts are not its answer; MCP clients only get the answer.
+  assert [block.type for block in result] == ["text"]
+  assert result[0].text == "answer"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_leaves_thoughts_out_of_progress():
+  reported: list[str] = []
+
+  class _Ctx:
+
+    async def report_progress(self, *, progress, total=None, message=None):
+      reported.append(message)
+
+  thought_only = Event(
+      author="a",
+      partial=True,
+      content=types.Content(
+          role="model", parts=[types.Part(text="planning", thought=True)]
+      ),
+  )
+  runner = _FakeRunner([
+      thought_only,
+      _event_with_thought("private reasoning", "working", partial=True),
+      _text_event("done"),
+  ])
+
+  result = await _run_agent(runner, "hi", _Ctx())
+
+  assert result[0].text == "done"
+  assert reported == ["working"]
+
+
 @pytest.mark.asyncio
 async def test_run_agent_maps_image_output_to_image_content():
   png = b"\x89PNG\r\n\x1a\n"

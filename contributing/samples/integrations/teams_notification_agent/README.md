@@ -8,8 +8,8 @@ tool posts an [Adaptive Card](https://adaptivecards.io/) with a title, a
 message, and optional key/value facts.
 
 This is one-way: the agent posts to Teams, but users can't chat with the agent
-from Teams. For an interactive bot, see the [Slack sample](../slack_agent/) for
-the equivalent pattern on Slack.
+from Teams. For an interactive bot, see the
+[Teams agent sample](../teams_agent/).
 
 ## Create a Teams webhook
 
