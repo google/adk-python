@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from unittest import mock
 
@@ -367,6 +368,37 @@ def test_content_mapping_sanitizes_function_call_ids_per_request():
   assert items[1]['call_id'] == 'call_adk_fallback_0'
   assert items[2]['call_id'] == 'call_adk_fallback_1'
   assert items[3]['call_id'] == 'call_adk_fallback_2'
+
+
+def _function_output(response: dict[str, object]) -> str:
+  content = types.Content(
+      role='tool',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='call_123', name='tool', response=response
+              )
+          )
+      ],
+  )
+  return _content_to_response_input_items(content)[0]['output']
+
+
+def test_function_response_unwraps_adk_result_wrapper():
+  """Exactly {"result": value} is ADK's wrapper for a non-dict tool return."""
+  assert _function_output({'result': 'sunny'}) == 'sunny'
+  assert _function_output({'result': [1, 2]}) == '[1, 2]'
+
+
+def test_function_response_keeps_keys_beside_result():
+  """A tool dict that merely has a "result" key is sent whole."""
+  response = {
+      'result': 'found 2 contracts',
+      'contracts': ['NDA-12', 'MSA-7'],
+      'next_page_token': 'abc',
+  }
+
+  assert json.loads(_function_output(response)) == response
 
 
 def test_function_response_serializes_mcp_content_as_text():
