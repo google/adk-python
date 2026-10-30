@@ -140,8 +140,30 @@ A module is also exempt when no package `__init__.py` imports from it or names
 it, because then it has no public interface for a guide to describe. The check
 reads every `__init__.py` under `src/google/adk/`, and lazy re-exports count:
 an import under `if TYPE_CHECKING:` or inside `__getattr__`, and a string that
-names the module in a lazy-import table. Its `_` prefix decides nothing, so
-export a name from a new module and that module needs a guide.
+names the module in a lazy-import table. A `_`-prefixed name bound in
+`__init__.py`, such as `from ._mod import X as _X`, is private to that file and
+does not count as an export. The module's own `_` prefix decides nothing, so
+export a public name from a new module and that module needs a guide.
+
+A page that documents several units covers each of them. The check reads every
+page in the module's own directory under `docs/guides/` and below it, plus the
+`index.md` of each directory above that one, and passes the module when those
+pages document everything the package exports from it. That is how
+`docs/guides/errors/index.md`, one page for all of `google.adk.errors`, covers
+`InvocationNotFoundError`. The names come from the same imports and lazy-import
+tables, so a star import or `from . import _mod`, which take the module whole
+without naming anything, leaves it needing a page of its own, even when another
+import names some of its exports. So does a module at the package root. Pages
+anywhere else are not read: `docs/guides/README.md` is the table of contents
+and names nearly every unit, and a module documented only in another topic's
+guide still needs a waiver.
+
+A page documents a name where a heading, the first cell of a table row, or a
+fenced code example names it. A mention in prose or in another table column
+(such as a type column) only refers to the unit, so it does not count: the
+`InvocationContext` guide names `SequentialAgent` once, in passing, and says
+nothing else about it. Each name has to match as a whole word, so `RunResultV2`
+does not document `RunResult`.
 
 Everything else needs a guide or a waiver. A waiver is a `NO_UNIT_GUIDE=` or
 `SKIP_UNIT_GUIDE=` tag carrying the reason, and the two names behave
@@ -154,7 +176,7 @@ Write a reason a reviewer can check against the code, because the tag becomes
 the only record of why the guide is absent:
 
 ```
-NO_UNIT_GUIDE=InvocationNotFoundError is covered by docs/guides/errors/index.md.
+NO_UNIT_GUIDE=ElevenLabsTTS is shown in docs/guides/live/cascade_live/index.md, a guide in another topic.
 ```
 
 ### Where to put the waiver
@@ -172,7 +194,7 @@ not found, and nothing reports the miss.
 The environment carries the tag for a commit that does not exist yet:
 
 ```
-NO_UNIT_GUIDE='covered by docs/guides/errors/index.md' git commit ...
+NO_UNIT_GUIDE='shown in docs/guides/live/cascade_live/index.md' git commit ...
 ```
 
 Reach for that form when the pre-commit hook stops you. A pre-commit hook runs
