@@ -11,8 +11,8 @@ environment toolset gives the agent four tools called `Execute`, `ReadFile`,
 `WriteFile` and `EditFile`, and the skill toolset needs the same facility
 whenever a skill ships executable scripts. Neither of them wants to know about
 subprocesses, sandboxes and remote containers, so both take a `BaseEnvironment`
-instead and call three methods on it: `execute`, `read_file` and `write_file`,
-all relative to its `working_dir`.
+instead and call four methods on it: `execute`, `read_file`, `read_file_stream`
+and `write_file`, all relative to its `working_dir`.
 
 That indirection is the entire reason the class exists. One agent definition can
 run against a local subprocess while you develop and against an isolated remote
@@ -85,13 +85,15 @@ An environment moves through four steps, always in this order.
 2.  **`initialize()`.** Creates the working directory, or connects to the remote
     workspace. Implementations are expected to make this idempotent, so calling
     it twice is safe.
-3.  **`execute`, `read_file`, `write_file`.** The working phase.
+3.  **`execute`, `read_file`, `read_file_stream`, `write_file`.** The working
+    phase.
 4.  **`close()`.** Releases whatever `initialize` acquired. For
     `LocalEnvironment` this deletes an auto-created temporary directory and
     leaves a directory you supplied alone.
 
-Both `initialize` and `close` have no-op default implementations on the base
-class, so an environment that needs neither can leave them alone. The other four
+`initialize` and `close` have no-op default implementations on the base class,
+and `read_file_stream` defaults to yielding the `read_file` result as one chunk,
+so an environment that needs none of them can leave them alone. The four core
 members, `working_dir`, `execute`, `read_file` and `write_file`, are abstract,
 and a subclass that does not provide all of them cannot be instantiated at all.
 
@@ -140,7 +142,8 @@ all. `write_file` creates parent directories as needed, accepts either `str` or
 `read_file` always hands back `bytes`.
 
 Both file methods run on a worker thread through `asyncio.to_thread`, so reading
-or writing a large file will not block the event loop.
+or writing a large file will not block the event loop. `read_file_stream` goes
+through the same path check and reads the file in 64 KiB chunks.
 
 ## Configuration options
 
@@ -207,6 +210,12 @@ environment of your own. `read_file` raises `FileNotFoundError` for a missing
 file rather than returning empty bytes, and `execute` reports failure through
 `exit_code` rather than by raising.
 
+`read_file_stream` is optional. The `ReadFile` tool reads through it, and the
+default yields the whole `read_file` result as one chunk, so the environment
+above works unchanged. Override it to yield the same bytes in chunks when files
+can be larger than you want to hold in memory; `LocalEnvironment`, E2B and
+Daytona do. Raise `FileNotFoundError` for a missing file here as well.
+
 ### Share one environment across a conversation
 
 Construct the environment once and pass the same instance everywhere it is
@@ -241,9 +250,9 @@ command-line agent and wrong for a server.
     command can read anything that user can read, reach the network, and write
     outside the working directory. Use it where you trust the model's output,
     and use a remote sandbox where you do not.
-*   **The path check applies to `read_file` and `write_file` only.** It is a
-    check on the resolved path, so it stops `../../etc/passwd`, but it does
-    nothing about `execute("cat /etc/passwd")`.
+*   **The path check applies to `read_file`, `read_file_stream` and `write_file`
+    only.** It is a check on the resolved path, so it stops `../../etc/passwd`,
+    but it does nothing about `execute("cat /etc/passwd")`.
 *   **No streaming.** `execute` returns once the command has finished, with the
     whole of stdout and stderr buffered in memory. A long-running command
     produces no output until it exits, and a command that prints a gigabyte

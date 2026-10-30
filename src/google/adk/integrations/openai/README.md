@@ -66,3 +66,27 @@ openai_model = OpenAILlm(
 
 > **Tip:** To send every request to one compatible host, leave `client` unset
 > and set `OPENAI_BASE_URL` in the environment. The default client reads it.
+
+## Decisions Classifier
+
+`OpenAIDecisionsClassifier` answers the `Choice`, `Binary`, and `Score`
+questions from `google.adk.labs.classifiers` with the OpenAI Decisions API, so
+it works anywhere ADK takes a `BaseClassifier`, such as a `ClassifierNode`:
+
+```python
+from google.adk.integrations.openai import OpenAIDecisionsClassifier
+from google.adk.labs.classifiers import Binary
+
+classifier = OpenAIDecisionsClassifier()  # reads OPENAI_API_KEY
+response = await classifier.classify(
+    input="Please delete my account and every file in it.",
+    questions={
+        "deletes_data": Binary(instructions="Does the user ask to delete data?"),
+    },
+)
+response.answers["deletes_data"].probability
+```
+
+It takes the same `api_key`, `base_url`, and `client` fields as `OpenAILlm`.
+OpenAI can decline to answer a question while answering the others; the
+answer to that question is a `RefusalAnswer`.

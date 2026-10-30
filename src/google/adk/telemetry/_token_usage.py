@@ -109,6 +109,10 @@ class TokenUsage:
   `cache_write_input_tokens` spans and the schema v2 cache_write metric only.
   `prompt_input_tokens` and `candidate_output_tokens` reach ADK eval's breakdown
   only; no metric reads either.
+
+  The `*_details` lists are Gemini's per-modality breakdown of the bucket they
+  name, which the schema v2 metrics split by. They describe one call only;
+  `add` leaves them alone.
   """
 
   input_tokens: int | None = None
@@ -120,6 +124,9 @@ class TokenUsage:
   candidate_output_tokens: int | None = None
   cache_write_input_tokens: int | None = None
   system_instruction_tokens: int | None = None
+  input_tokens_details: list[types.ModalityTokenCount] | None = None
+  output_tokens_details: list[types.ModalityTokenCount] | None = None
+  cache_read_input_tokens_details: list[types.ModalityTokenCount] | None = None
 
   @classmethod
   def from_usage_metadata(
@@ -138,6 +145,9 @@ class TokenUsage:
     tool_tokens = usage_metadata.tool_use_prompt_token_count
     candidates_tokens = usage_metadata.candidates_token_count
     thoughts_tokens = usage_metadata.thoughts_token_count
+    input_details = (usage_metadata.prompt_tokens_details or []) + (
+        usage_metadata.tool_use_prompt_tokens_details or []
+    )
     return cls(
         input_tokens=(
             None
@@ -161,6 +171,9 @@ class TokenUsage:
         system_instruction_tokens=getattr(
             usage_metadata, 'system_instruction_tokens', None
         ),
+        input_tokens_details=input_details,
+        output_tokens_details=usage_metadata.candidates_tokens_details,
+        cache_read_input_tokens_details=usage_metadata.cache_tokens_details,
     )
 
   @classmethod
