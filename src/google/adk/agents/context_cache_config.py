@@ -89,6 +89,18 @@ class ContextCacheConfig(BaseModel):
       ),
   )
 
+  static_cache_name: str | None = Field(
+      default=None,
+      description=(
+          "Optional pre-created Vertex AI or Gemini cached content resource"
+          " name (e.g. 'cachedContents/123456789' or"
+          " 'projects/.../locations/.../cachedContents/...'). When specified,"
+          " this shared/application-scoped cache is attached immediately to"
+          " the first turn of every session without requiring a prior-turn"
+          " token count."
+      ),
+  )
+
   @property
   def ttl_string(self) -> str:
     """Get TTL as string format for cache creation."""
@@ -99,5 +111,6 @@ class ContextCacheConfig(BaseModel):
     return (
         f"ContextCacheConfig(cache_intervals={self.cache_intervals}, "
         f"ttl={self.ttl_seconds}s, min_tokens={self.min_tokens}, "
-        f"create_http_options={self.create_http_options})"
+        f"create_http_options={self.create_http_options}, "
+        f"static_cache_name={self.static_cache_name})"
     )

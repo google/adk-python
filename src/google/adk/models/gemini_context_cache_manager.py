@@ -137,9 +137,13 @@ class GeminiContextCacheManager:
       else:
         # Invalid cache - clean it up and check if we should create new one
         old_cache_metadata = llm_request.cache_metadata
+        cache_config = _require_cache_config(llm_request)
 
-        # Only cleanup if there's an active cache
-        if old_cache_metadata.cache_name is not None:
+        # Only cleanup if there's an active cache and it is not a shared static cache
+        if (
+            old_cache_metadata.cache_name is not None
+            and old_cache_metadata.cache_name != cache_config.static_cache_name
+        ):
           logger.debug(
               "Cache is invalid, cleaning up: %s",
               old_cache_metadata.cache_name,
@@ -208,8 +212,27 @@ class GeminiContextCacheManager:
             contents_count=cache_contents_count,
         )
 
-    # No existing cache metadata - return fingerprint-only metadata
-    # We don't create cache without previous fingerprint to match
+    # No existing cache metadata - check for static application-scoped cache
+    cache_config = _require_cache_config(llm_request)
+    if cache_config.static_cache_name:
+      logger.info(
+          "Attaching static application-scoped cache on initial request: %s",
+          cache_config.static_cache_name,
+      )
+      cache_name = cache_config.static_cache_name
+      # Static cache covers static instructions/tools (0 dynamic session contents)
+      self._apply_cache_to_request(llm_request, cache_name, 0)
+      created_at = time.time()
+      return CacheMetadata(
+          cache_name=cache_name,
+          expire_time=created_at + cache_config.ttl_seconds,
+          fingerprint=self._generate_cache_fingerprint(llm_request, 0),
+          invocations_used=1,
+          contents_count=0,
+          created_at=created_at,
+      )
+
+    # We don't create dynamic session cache without previous fingerprint to match
     logger.debug(
         "No existing cache metadata, creating fingerprint-only metadata"
     )
@@ -281,12 +304,15 @@ class GeminiContextCacheManager:
     cache_config = _require_cache_config(llm_request)
 
     # Check if cache has expired
-    if time.time() >= expire_time:
+    if cache_name != cache_config.static_cache_name and time.time() >= expire_time:
       logger.info("Cache expired: %s", cache_name)
       return False
 
     # Check if cache has been used for too many invocations
-    if invocations_used > cache_config.cache_intervals:
+    if (
+        cache_name != cache_config.static_cache_name
+        and invocations_used > cache_config.cache_intervals
+    ):
       logger.info(
           "Cache exceeded cache intervals: %s (%d > %d intervals)",
           cache_name,
@@ -296,6 +322,12 @@ class GeminiContextCacheManager:
       return False
 
     # Check if fingerprint matches using cached contents count
+    # When using a static application-scoped cache, system_instruction and tools
+    # may have already been stripped from llm_request.config on turn 1 or turn 2.
+    # The static cache resource itself remains stable across turns.
+    if cache_name == cache_config.static_cache_name:
+      return True
+
     current_fingerprint = self._generate_cache_fingerprint(
         llm_request, cache_metadata.contents_count
     )
@@ -662,9 +694,8 @@ class GeminiContextCacheManager:
       llm_request.config.system_instruction = None
       llm_request.config.tools = None
       llm_request.config.tool_config = None
-
-    # Set cached content reference
-    llm_request.config.cached_content = cache_name
+      # Set cached content reference
+      llm_request.config.cached_content = cache_name
 
     # Remove cached contents from the request (keep only uncached contents).
     # The API rejects a request with no contents, so the final content is
