@@ -14,6 +14,7 @@
 
 """Tests for DaytonaEnvironment."""
 
+import contextlib
 from unittest import mock
 
 import daytona
@@ -192,6 +193,120 @@ async def test_read_file_missing_raises(daytona_patch, sandbox):
 
   with pytest.raises(FileNotFoundError):
     await env.read_file("missing.txt")
+
+
+async def test_read_file_stream_matches_read_file(daytona_patch, sandbox):
+  async def _stream():
+    yield b"da"
+    yield b"ta"
+
+  sandbox.fs.download_file.return_value = b"data"
+  sandbox.fs.download_file_stream = mock.AsyncMock(return_value=_stream())
+  env = DaytonaEnvironment()
+  await env.initialize()
+
+  chunks = [chunk async for chunk in env.read_file_stream("notes.txt")]
+
+  assert chunks == [b"da", b"ta"]
+  assert b"".join(chunks) == await env.read_file("notes.txt")
+  sandbox.fs.download_file_stream.assert_awaited_once_with(
+      "/workspaces/notes.txt"
+  )
+
+
+async def test_read_file_stream_raises_file_not_found_on_daytona_not_found(
+    daytona_patch, sandbox
+):
+  async def _stream():
+    raise DaytonaNotFoundError("not found")
+    yield b""  # Makes this an async generator.
+
+  sandbox.fs.download_file_stream = mock.AsyncMock(return_value=_stream())
+  env = DaytonaEnvironment()
+  await env.initialize()
+
+  with pytest.raises(FileNotFoundError):
+    async for _ in env.read_file_stream("missing.txt"):
+      pass
+
+
+async def test_read_file_stream_empty_file_matches_read_file(
+    daytona_patch, sandbox
+):
+  async def _stream():
+    raise DaytonaError("No file data received for: /workspaces/empty.txt")
+    yield b""  # Makes this an async generator.
+
+  sandbox.fs.download_file.return_value = b""
+  sandbox.fs.download_file_stream = mock.AsyncMock(return_value=_stream())
+  env = DaytonaEnvironment()
+  await env.initialize()
+
+  chunks = [chunk async for chunk in env.read_file_stream("empty.txt")]
+
+  assert b"".join(chunks) == b""
+  sandbox.fs.download_file.assert_awaited_once_with("/workspaces/empty.txt")
+
+
+async def test_read_file_stream_error_before_data_propagates(
+    daytona_patch, sandbox
+):
+  async def _stream():
+    raise DaytonaError("permission denied")
+    yield b""  # Makes this an async generator.
+
+  sandbox.fs.download_file_stream = mock.AsyncMock(return_value=_stream())
+  env = DaytonaEnvironment()
+  await env.initialize()
+
+  with pytest.raises(DaytonaError, match="permission denied"):
+    async for _ in env.read_file_stream("notes.txt"):
+      pass
+  sandbox.fs.download_file.assert_not_awaited()
+
+
+async def test_read_file_stream_error_after_data_propagates(
+    daytona_patch, sandbox
+):
+  async def _stream():
+    yield b"da"
+    raise DaytonaError("connection reset")
+
+  sandbox.fs.download_file_stream = mock.AsyncMock(return_value=_stream())
+  env = DaytonaEnvironment()
+  await env.initialize()
+
+  with pytest.raises(DaytonaError, match="connection reset"):
+    async for _ in env.read_file_stream("notes.txt"):
+      pass
+  sandbox.fs.download_file.assert_not_awaited()
+
+
+async def test_read_file_stream_closes_sdk_stream_on_early_exit(
+    daytona_patch, sandbox
+):
+  closed = False
+
+  async def _stream():
+    nonlocal closed
+    try:
+      yield b"first"
+      yield b"second"
+    finally:
+      closed = True
+
+  sandbox.fs.download_file_stream = mock.AsyncMock(return_value=_stream())
+  env = DaytonaEnvironment()
+  await env.initialize()
+
+  read_chunks: list[bytes] = []
+  async with contextlib.aclosing(env.read_file_stream("notes.txt")) as stream:
+    async for chunk in stream:
+      read_chunks.append(chunk)
+      break
+
+  assert read_chunks == [b"first"]
+  assert closed is True
 
 
 async def test_write_file_resolves_relative_path(daytona_patch, sandbox):

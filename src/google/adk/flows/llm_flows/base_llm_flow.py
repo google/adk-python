@@ -401,7 +401,6 @@ class BaseLlmFlow(ABC):
             # fresh id only after a complete event so distinct responses differ.
             if not event.partial:
               model_response_event.id = Event.new_id()
-            model_response_event.timestamp = platform_time.get_time()
             yield event
 
   async def _preprocess_async(
@@ -498,7 +497,8 @@ class BaseLlmFlow(ABC):
     ):
       return
 
-    # Builds the event.
+    # Stamp at build time so timestamp order matches append order.
+    model_response_event.timestamp = platform_time.get_time()
     model_response_event = self._finalize_model_response_event(
         llm_request, llm_response, model_response_event
     )

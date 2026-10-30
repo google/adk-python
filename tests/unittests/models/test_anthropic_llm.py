@@ -40,6 +40,7 @@ from google.adk.models.anthropic_llm import part_to_message_block
 from google.adk.models.anthropic_llm import to_google_genai_finish_reason
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
@@ -722,6 +723,31 @@ def test_function_declaration_to_tool_param(
   )
 
 
+@pytest.mark.parametrize("keyword", ["additionalItems", "unevaluatedItems"])
+def test_tool_array_tail_schema_types_are_lowercased(keyword):
+  """Array-tail schemas use JSON Schema types without changing default data."""
+  declaration = types.FunctionDeclaration(
+      name="collect_values",
+      parameters_json_schema={
+          "type": "OBJECT",
+          "default": {"type": "USER_DATA"},
+          "properties": {
+              "values": {
+                  "type": "ARRAY",
+                  keyword: {"type": ["STRING", "NULL"]},
+              },
+          },
+      },
+  )
+
+  tool = function_declaration_to_tool_param(declaration)
+
+  assert tool["input_schema"]["properties"]["values"][keyword] == {
+      "type": ["string", "null"],
+  }
+  assert tool["input_schema"]["default"] == {"type": "USER_DATA"}
+
+
 @pytest.mark.asyncio
 async def test_generate_content_async(
     claude_llm, llm_request, generate_content_response, generate_llm_response
@@ -895,6 +921,33 @@ async def test_output_schema_without_tools_is_forced_as_a_tool_call():
   part = responses[0].content.parts[0]
   assert part.function_call is None
   assert json.loads(part.text) == {"name": "Ada", "age": 36}
+
+
+@pytest.mark.asyncio
+async def test_truncated_output_schema_call_is_reported():
+  """A structured output cut off by max_tokens is reported, not returned."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[Content(role="user", parts=[Part.from_text(text="Who?")])],
+      config=types.GenerateContentConfig(response_schema=_Person),
+  )
+  message = _tool_use_message({"name": "Ada"})
+  message.stop_reason = "max_tokens"
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=message)
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  assert len(responses) == 1
+  assert responses[0].content is None
+  assert responses[0].error_code == types.FinishReason.MAX_TOKENS
+  assert "structured output" in responses[0].error_message
 
 
 @pytest.mark.parametrize("thinking_budget", [2048, -1])
@@ -2121,6 +2174,91 @@ async def test_streaming_text_yields_partial_and_final():
   assert responses[2].finish_reason == "STOP"
 
 
+@pytest.mark.parametrize(
+    (
+        "delta_cache_read",
+        "delta_cache_creation",
+        "expected_prompt",
+        "expected_cached",
+        "expected_creation",
+    ),
+    [
+        pytest.param(30, 10, 160, 30, 10, id="delta_has_cache_counts"),
+        pytest.param(None, None, 150, 25, 5, id="delta_omits_cache_counts"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_streaming_takes_input_and_cache_counts_from_message_delta(
+    delta_cache_read,
+    delta_cache_creation,
+    expected_prompt,
+    expected_cached,
+    expected_creation,
+):
+  """Streamed usage takes each count from message_delta, else message_start."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=anthropic_types.Usage(
+                  input_tokens=3,
+                  output_tokens=1,
+                  cache_read_input_tokens=25,
+                  cache_creation_input_tokens=5,
+              ),
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.TextDelta(text="Hi", type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=anthropic_types.MessageDeltaUsage(
+              output_tokens=7,
+              input_tokens=120,
+              cache_read_input_tokens=delta_cache_read,
+              cache_creation_input_tokens=delta_cache_creation,
+          ),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="You are helpful"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  usage = responses[-1].usage_metadata
+  assert usage.prompt_token_count == expected_prompt
+  assert usage.cached_content_token_count == expected_cached
+  assert usage.candidates_token_count == 7
+  assert usage.total_token_count == expected_prompt + 7
+  assert usage.cache_creation_input_tokens == expected_creation
+
+
 @pytest.mark.asyncio
 async def test_streaming_tool_use_yields_function_call():
   """Streaming tool_use should accumulate args and yield in final."""
@@ -2864,6 +3002,53 @@ def test_message_to_generate_content_response_maps_finish_reason(
   response = message_to_generate_content_response(message)
 
   assert response.finish_reason == expected_finish_reason
+
+
+@pytest.mark.parametrize(
+    "stop_reason", ["max_tokens", "model_context_window_exceeded"]
+)
+def test_message_to_generate_content_response_reports_truncated_tool_use(
+    stop_reason,
+):
+  """A truncated tool_use is reported, not returned as a call."""
+  message = anthropic_types.Message(
+      id="msg_truncated",
+      content=[
+          anthropic_types.TextBlock(
+              text="Writing the file.", type="text", citations=None
+          ),
+          anthropic_types.ToolUseBlock(
+              id="toolu_1",
+              name="write_file",
+              input={"path": "app.py", "content": "def main():\n    retu"},
+              type="tool_use",
+          ),
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="max_tokens",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=5,
+          output_tokens=2,
+          cache_creation_input_tokens=7,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+  # The SDK's StopReason literal lacks "model_context_window_exceeded",
+  # so it is assigned after construction, as an unvalidated API response.
+  message.stop_reason = stop_reason
+
+  response = message_to_generate_content_response(message)
+
+  assert response.content is None
+  assert response.error_code == types.FinishReason.MAX_TOKENS
+  assert response.finish_reason == types.FinishReason.MAX_TOKENS
+  assert "max_output_tokens" in response.error_message
+  assert response.cache_creation_token_count == 7
 
 
 def test_message_to_generate_content_response_reports_cache_creation_tokens():
@@ -4390,6 +4575,70 @@ async def test_streaming_sets_finish_reason():
   assert final.finish_reason == types.FinishReason.MAX_TOKENS
 
 
+@pytest.mark.parametrize(
+    "stop_reason", ["max_tokens", "model_context_window_exceeded"]
+)
+@pytest.mark.asyncio
+async def test_streaming_truncated_tool_use_is_reported(stop_reason):
+  """A streamed tool_use cut off mid-input ends in a MAX_TOKENS error."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(
+                  input_tokens=5,
+                  output_tokens=0,
+                  cache_creation_input_tokens=7,
+                  cache_read_input_tokens=0,
+              ),
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.ToolUseBlock(
+              id="toolu_1", name="write_file", input={}, type="tool_use"
+          ),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.InputJSONDelta(
+              partial_json='{"path": "app.py", "content": "def ma',
+              type="input_json_delta",
+          ),
+      ),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason=stop_reason),
+          usage=MagicMock(output_tokens=1),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Write")])],
+      config=types.GenerateContentConfig(system_instruction="Test"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  final = responses[-1]
+  assert final.content is None
+  assert final.error_code == types.FinishReason.MAX_TOKENS
+  assert final.finish_reason == types.FinishReason.MAX_TOKENS
+  assert final.cache_creation_token_count == 7
+
+
 def _make_rate_limit_error() -> RateLimitError:
   request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
   response = httpx.Response(429, request=request)
@@ -4875,3 +5124,142 @@ async def test_cache_config_marks_the_first_turn_of_a_session():
       "tools[1]": _EPHEMERAL,
       "messages[2][0]": _EPHEMERAL,
   }
+
+
+def _get_weather(city: str) -> str:
+  """Returns the weather for a city."""
+  return f"Sunny in {city}"
+
+
+def _get_time(city: str) -> str:
+  """Returns the time in a city."""
+  return f"Noon in {city}"
+
+
+def _tool_choice_request(
+    function_calling_config: types.FunctionCallingConfig | None,
+    thinking_budget: int | None = None,
+) -> LlmRequest:
+  """A request with two tools, as an agent's flow builds it."""
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Paris?")])],
+      config=types.GenerateContentConfig(
+          tool_config=(
+              types.ToolConfig(function_calling_config=function_calling_config)
+              if function_calling_config
+              else None
+          ),
+          thinking_config=(
+              types.ThinkingConfig(thinking_budget=thinking_budget)
+              if thinking_budget is not None
+              else None
+          ),
+      ),
+  )
+  llm_request.append_tools(
+      [FunctionTool(func=_get_weather), FunctionTool(func=_get_time)]
+  )
+  return llm_request
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("function_calling_config", "expected_tool_choice"),
+    [
+        (None, {"type": "auto"}),
+        (types.FunctionCallingConfig(mode="AUTO"), {"type": "auto"}),
+        (types.FunctionCallingConfig(mode="NONE"), {"type": "none"}),
+        (types.FunctionCallingConfig(mode="ANY"), {"type": "any"}),
+        (
+            types.FunctionCallingConfig(
+                mode="ANY", allowed_function_names=["_get_weather"]
+            ),
+            {"type": "tool", "name": "_get_weather"},
+        ),
+        # Claude's tool_choice cannot name a subset of several tools.
+        (
+            types.FunctionCallingConfig(
+                mode="ANY",
+                allowed_function_names=["_get_weather", "_get_time"],
+            ),
+            {"type": "any"},
+        ),
+        (types.FunctionCallingConfig(mode="VALIDATED"), {"type": "auto"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_tool_config_mode_reaches_claude_tool_choice(
+    function_calling_config, expected_tool_choice, stream
+):
+  """The function calling mode an agent configures is the one Claude gets."""
+  kwargs = await _sent_anthropic_kwargs(
+      _tool_choice_request(function_calling_config), stream=stream
+  )
+
+  assert [tool["name"] for tool in kwargs["tools"]] == [
+      "_get_weather",
+      "_get_time",
+  ]
+  assert kwargs["tool_choice"] == expected_tool_choice
+
+
+@pytest.mark.parametrize(
+    "function_calling_config",
+    [
+        types.FunctionCallingConfig(mode="ANY"),
+        types.FunctionCallingConfig(
+            mode="ANY", allowed_function_names=["_get_weather"]
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_forced_tool_choice_with_manual_thinking_falls_back_to_auto(
+    function_calling_config,
+):
+  """Claude rejects forced tool use with manual thinking, so it is offered."""
+  kwargs = await _sent_anthropic_kwargs(
+      _tool_choice_request(function_calling_config, thinking_budget=2048)
+  )
+
+  assert kwargs["thinking"]["type"] == "enabled"
+  assert kwargs["tool_choice"] == {"type": "auto"}
+
+
+@pytest.mark.asyncio
+async def test_forced_tool_choice_is_kept_with_adaptive_thinking():
+  """Claude accepts forced tool use with adaptive thinking."""
+  kwargs = await _sent_anthropic_kwargs(
+      _tool_choice_request(
+          types.FunctionCallingConfig(mode="ANY"), thinking_budget=-1
+      )
+  )
+
+  assert kwargs["thinking"]["type"] == "adaptive"
+  assert kwargs["tool_choice"] == {"type": "any"}
+
+
+@pytest.mark.asyncio
+async def test_forced_tool_choice_is_kept_with_effort():
+  """Claude accepts forced tool use alongside effort."""
+  llm_request = _tool_choice_request(types.FunctionCallingConfig(mode="ANY"))
+  llm_request.config = AnthropicGenerateContentConfig(
+      **llm_request.config.model_dump(exclude_none=True), effort="high"
+  )
+
+  kwargs = await _sent_anthropic_kwargs(llm_request)
+
+  assert kwargs["output_config"] == {"effort": "high"}
+  assert kwargs["tool_choice"] == {"type": "any"}
+
+
+@pytest.mark.asyncio
+async def test_tool_config_none_mode_is_kept_with_thinking():
+  """Claude accepts tool_choice none alongside thinking."""
+  kwargs = await _sent_anthropic_kwargs(
+      _tool_choice_request(
+          types.FunctionCallingConfig(mode="NONE"), thinking_budget=2048
+      )
+  )
+
+  assert kwargs["tool_choice"] == {"type": "none"}

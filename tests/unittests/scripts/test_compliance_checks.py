@@ -179,7 +179,8 @@ def test_legacy_feature_decorator_import_allows_the_registry_decorators() -> (
 def test_legacy_feature_decorator_import_skips_listed_files() -> None:
   content = 'from ..utils.feature_decorator import experimental\n'
   assert compliance_checks.check_legacy_feature_decorator_import(
-      content, 'src/google/adk/auth/credential_manager.py'
+      content,
+      'src/google/adk/optimization/gepa_root_agent_prompt_optimizer.py',
   )
 
 

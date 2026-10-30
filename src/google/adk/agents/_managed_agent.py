@@ -137,7 +137,7 @@ class ManagedAgent(BaseAgent):
   model_config = ConfigDict(arbitrary_types_allowed=True, extra='forbid')
 
   agent_id: str
-  """The Managed Agent id (e.g. 'antigravity-preview-05-2026' or 'agents/ID')."""
+  """The Managed Agent id (e.g. 'antigravity-preview-09-2026' or 'agents/ID')."""
 
   environment: Optional[CreateAgentInteractionEnvironmentParam] = None
   """A sandbox environment spec (e.g. ``{'type': 'remote'}``) or an existing

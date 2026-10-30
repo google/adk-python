@@ -113,6 +113,13 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
     A tuple of (isolation_scope, invocation_id) for the active task if found,
     or None if no active task scope is found.
   """
+  # Fast path: this function can only return an event that has an
+  # isolation_scope, and _apply_rewinds never adds events, so a history with
+  # no scoped event has no active task scope and both passes below can be
+  # skipped.
+  if not any(event.isolation_scope for event in session.events):
+    return None
+
   live_events = _apply_rewinds(session.events)
   finished_runs = _find_finished_scope_runs(live_events)
 
@@ -803,6 +810,14 @@ class Runner:
           get_task = None
         if event_or_done is done_sentinel:
           break
+        # (None, signal) is a barrier from NodeRunner._wait_for_enqueued_events:
+        # acknowledge it once everything queued ahead of it has been appended,
+        # without running plugins or yielding anything to the caller.
+        if event_or_done is None and isinstance(
+            processed_signal, asyncio.Event
+        ):
+          processed_signal.set()
+          continue
         if not isinstance(event_or_done, Event):
           raise TypeError(
               'Unexpected node event queue item:'
@@ -910,12 +925,17 @@ class Runner:
     an already answered invocation fail. Raw events remain persisted and a
     later turn can re-evaluate compaction against its newer snapshot.
     """
+    # is True rather than truthiness: mocked contexts return a truthy Mock.
+    if invocation_context.is_aborted is True:  # pylint: disable=g-bool-id-comparison
+      return
     config = invocation_context.events_compaction_config
     if not config:
       return
 
     from .apps.compaction import _run_compaction_for_sliding_window_config
 
+    raw_signal = getattr(invocation_context, '_abort_signal', None)
+    abort_signal = raw_signal if isinstance(raw_signal, asyncio.Event) else None
     session = invocation_context.session
     logger.debug('Running event compactor.')
     try:
@@ -925,9 +945,14 @@ class Runner:
               session=session,
               session_service=self.session_service,
               agent=self.agent,
+              abort_signal=abort_signal,
           )
       ) as compaction_events:
         async for compaction_event in compaction_events:
+          # is True rather than truthiness: mocked contexts return a truthy
+          # Mock.
+          if invocation_context.is_aborted is True:  # pylint: disable=g-bool-id-comparison
+            return
           await self.session_service.append_event(
               session=session, event=compaction_event
           )

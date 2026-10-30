@@ -26,6 +26,7 @@ from typing import TypeVar
 from google.genai.models import Models
 from packaging.version import Version
 
+from ..utils.model_name_utils import is_gemini_model
 from .context import _read_experimental_genai_semconv
 from .context import TelemetryConfig
 
@@ -34,6 +35,11 @@ _CallableT = TypeVar("_CallableT", bound=Callable[..., object])
 # >= 1.0 rewrites the `co_filename` of each SDK function it wraps to this path
 # (`_set_co_filename`, which it keeps for ADK); < 1.0 wrappers live there.
 _MODULE_PATH = "opentelemetry/instrumentation/google_genai"
+
+# The newest google-genai instrumentor release verified not to record the
+# gen_ai.client.inference.* token metrics, so ADK can record them alongside it
+# without double counting.
+_LAST_INSTRUMENTOR_WITHOUT_INFERENCE_TOKEN_METRICS = Version("0.7b1")
 
 
 def _is_instrumentor_code(function: object) -> bool:
@@ -74,6 +80,25 @@ def records_inference(telemetry_config: TelemetryConfig) -> bool:
       and telemetry_config.should_use_experimental_genai_semconv
       and (not _has_stable_mode() or _read_experimental_genai_semconv())
   )
+
+
+def should_emit_inference_token_metrics(model: str | None) -> bool:
+  """Whether ADK records the inference token metrics for a call to `model`."""
+  # The instrumentor only covers Gemini calls. Without it, ADK is the only one
+  # recording these metrics.
+  if not (is_instrumented() and is_gemini_model(model)):
+    return True
+  # Up to the verified release, the instrumentor records only the older
+  # metrics, so ADK adds these. From 1.0 they depend on the util-genai version
+  # it pulls in, so a newer or unreadable version is skipped to avoid double
+  # counting.
+  try:
+    from opentelemetry.instrumentation.google_genai import version as instrumentor_version
+
+    installed = Version(instrumentor_version.__version__)
+  except (AttributeError, ImportError):
+    return False
+  return installed <= _LAST_INSTRUMENTOR_WITHOUT_INFERENCE_TOKEN_METRICS
 
 
 def maybe_without_genai_instrumentation(method: _CallableT) -> _CallableT:

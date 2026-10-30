@@ -43,6 +43,7 @@ from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
 from .session import Session
+from .state import State
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -72,6 +73,14 @@ _FIELD_BY_FIELD_EVENT_FIELDS = frozenset({
 })
 
 _SESSION_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
+_ALLOWED_CREATE_SESSION_CONFIG_KEYS = frozenset({
+    'display_name',
+    'displayName',
+    'ttl',
+    'expire_time',
+    'expireTime',
+    'labels',
+})
 
 
 def _extract_short_session_id(
@@ -198,21 +207,47 @@ class VertexAiSessionService(BaseSessionService):
       user_id: The ID of the user.
       state: The initial state of the session.
       session_id: The ID of the session.
-      **kwargs: Additional arguments to pass to the session creation. E.g. set
-        ttl='7200s' to set the session time-to-live or
-        expire_time='2025-10-01T00:00:00Z' to set the session expiration time.
-        See https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1beta1/projects.locations.reasoningEngines.sessions
-        for more details.
+      **kwargs: Optional session configuration fields forwarded to the Sessions
+        API. Only ``display_name``, ``ttl``, ``expire_time``, and ``labels``
+        (and the camelCase aliases ``displayName`` and ``expireTime``) are
+        accepted, e.g. ``ttl='7200s'`` or
+        ``expire_time='2025-10-01T00:00:00Z'``.
 
     Returns:
       The created session.
+
+    Raises:
+      ValueError: If an unsupported keyword argument is passed, or if both
+        ``ttl`` and ``expire_time`` (or ``expireTime``) are specified.
     """
-    if kwargs.get('ttl') is not None and kwargs.get('expire_time') is not None:
+    unexpected_keys = sorted(set(kwargs) - _ALLOWED_CREATE_SESSION_CONFIG_KEYS)
+    if unexpected_keys:
+      allowed = ', '.join(
+          repr(key) for key in sorted(_ALLOWED_CREATE_SESSION_CONFIG_KEYS)
+      )
+      raise ValueError(
+          'Unsupported create_session option(s): '
+          f'{", ".join(repr(key) for key in unexpected_keys)}. '
+          f'Supported options are: {allowed}.'
+      )
+    has_expire_time = (
+        kwargs.get('expire_time') is not None
+        or kwargs.get('expireTime') is not None
+    )
+    if kwargs.get('ttl') is not None and has_expire_time:
       raise ValueError(
           "Cannot specify both 'ttl' and 'expire_time' simultaneously."
       )
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
+    # temp: keys live for one invocation and are never stored, so they are
+    # dropped here just as append_event trims them from every state delta.
+    if state:
+      state = {
+          key: value
+          for key, value in state.items()
+          if not key.startswith(State.TEMP_PREFIX)
+      }
     config: dict[str, Any] = {'session_state': state} if state else {}
     if session_id:
       session_id = _extract_short_session_id(
@@ -432,10 +467,12 @@ class VertexAiSessionService(BaseSessionService):
     if event.actions:
       config['actions'] = {
           'skip_summarization': event.actions.skip_summarization,
-          # TODO: coerce the delta to a JSON-safe form the way the database,
-          # sqlite and firestore backends do. Sent raw, a value the JSON
-          # encoder rejects fails the whole append and the event is lost.
-          'state_delta': event.actions.state_delta,
+          # Coerced like the database, sqlite and firestore backends do. Sent
+          # raw, a value the JSON encoder rejects fails the whole append and
+          # the event is lost.
+          'state_delta': _session_util.make_json_safe_state(
+              event.actions.state_delta
+          ),
           'artifact_delta': event.actions.artifact_delta,
           'transfer_agent': event.actions.transfer_to_agent,
           'escalate': event.actions.escalate,

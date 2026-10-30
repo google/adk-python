@@ -50,6 +50,7 @@ class FeatureName(str, Enum):
   EVENTARC_TOOL_CONFIG = "EVENTARC_TOOL_CONFIG"
   EVENTARC_TOOLSET = "EVENTARC_TOOLSET"
   FALLBACK_MODEL = "FALLBACK_MODEL"
+  FSSPEC_ARTIFACT_SERVICE = "FSSPEC_ARTIFACT_SERVICE"
   FUNCTION_TOOL_ARG_VALIDATION = "FUNCTION_TOOL_ARG_VALIDATION"
   GCS_ADMIN_TOOLSET = "GCS_ADMIN_TOOLSET"
   GCS_TOOL_SETTINGS = "GCS_TOOL_SETTINGS"
@@ -81,6 +82,7 @@ class FeatureName(str, Enum):
   SPANNER_ADMIN_TOOLSET = "SPANNER_ADMIN_TOOLSET"
   SPANNER_TOOL_SETTINGS = "SPANNER_TOOL_SETTINGS"
   SPANNER_VECTOR_STORE = "SPANNER_VECTOR_STORE"
+  TEAMS = "TEAMS"
   TOOL_ARGS_MATCHER = "TOOL_ARGS_MATCHER"
   TOOL_CONFIG = "TOOL_CONFIG"
   TOOL_CONFIRMATION = "TOOL_CONFIRMATION"
@@ -188,6 +190,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.FALLBACK_MODEL: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
+    FeatureName.FSSPEC_ARTIFACT_SERVICE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
+    ),
     FeatureName.FUNCTION_TOOL_ARG_VALIDATION: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=False
     ),
@@ -259,6 +264,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName.SPANNER_VECTOR_STORE: FeatureConfig(
         FeatureStage.STABLE, default_on=True
+    ),
+    FeatureName.TEAMS: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.TOOL_ARGS_MATCHER: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True

@@ -802,6 +802,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       )
       # If the formatter returns a string, it's stored directly.
       assert log_entry["content"] == "[REDACTED]"
+      assert log_entry["is_truncated"] is False
 
   @pytest.mark.asyncio
   async def test_content_formatter_error(
@@ -4487,11 +4488,13 @@ def _return_exact_pydantic_model(content, event_type):
 class TestContentFormatterFailureDiagnostics:
   """A failing content_formatter is diagnosable without leaking content.
 
-  The row's error_message names the failure by a trusted class label. The
-  formatter's input, the exception's message, and any class name taken from
-  the class itself never reach the row. Diagnosing the failure never drops
-  the row, and the traceback reaches the local log only when
-  debug_content_formatter_errors is enabled.
+  By default, the row's error_message names the failure only by a trusted
+  class label, so the formatter's input, the exception's message, and any
+  class name taken from the class itself never reach the row (unless
+  log_content_formatter_error_details is explicitly enabled to append
+  sanitized exception details truncated to 256 characters plus a truncation
+  marker). Diagnosing the failure never drops the row, and the traceback
+  reaches the local log only when debug_content_formatter_errors is enabled.
   """
 
   SECRET = "TOPSECRET-4111-1111-1111-1111"
@@ -5595,6 +5598,7 @@ class TestContentFormatterFailureDiagnostics:
           pytest.param("label", True, id="label-raised"),
           pytest.param("label", False, id="label-returned"),
           pytest.param("render", True, id="render-raised"),
+          pytest.param("sanitize", True, id="sanitize-raised"),
           pytest.param("log_handler", True, id="log_handler-raised"),
           pytest.param("log_handler", False, id="log_handler-returned"),
           pytest.param("log_filter", True, id="log_filter-raised"),
@@ -5616,11 +5620,11 @@ class TestContentFormatterFailureDiagnostics:
     """An Exception raised by any step after the formatter call keeps the row.
 
     Judging the result, closing a rejected generator, naming the failed
-    class, rendering the debug traceback, and emitting the warning through
-    the logger's filters and handlers all run behind one boundary. Each step
-    here raises each kind of exception. An Exception is contained, and the
-    sentinel row, its drop count, and a payload-free error_message still
-    come out.
+    class, sanitizing the exception detail, rendering the debug traceback,
+    and emitting the warning through the logger's filters and handlers all
+    run behind one boundary. Each step here raises each kind of exception.
+    An Exception is contained, and the sentinel row, its drop count, and a
+    payload-free error_message still come out.
 
     Closing runs the rejected generator's own code, so whatever it raises,
     BaseException included, is contained. Every other step runs only plugin
@@ -5662,7 +5666,9 @@ class TestContentFormatterFailureDiagnostics:
     else:
       formatter = _return_tuple
     config = plugin_module.BigQueryLoggerConfig(
-        content_formatter=formatter, debug_content_formatter_errors=True
+        content_formatter=formatter,
+        debug_content_formatter_errors=(step != "sanitize"),
+        log_content_formatter_error_details=(step == "sanitize"),
     )
     handler = _RaisingHandler()
     injections = {
@@ -5671,6 +5677,9 @@ class TestContentFormatterFailureDiagnostics:
         ),
         "render": mock.patch.object(
             plugin_module, "_render_formatter_traceback", raise_injected
+        ),
+        "sanitize": mock.patch.object(
+            plugin_module, "_sanitize_sensitive_text", raise_injected
         ),
         "log_handler": contextlib.nullcontext(),
         "log_filter": contextlib.nullcontext(),
@@ -5722,6 +5731,10 @@ class TestContentFormatterFailureDiagnostics:
       expected_error_message = (
           "content_formatter returned unsupported type generator"
       )
+    elif step == "sanitize":
+      expected_error_message = (
+          "content_formatter raised ImportError: [REDACTED_SENSITIVE_TEXT]"
+      )
     elif raised:
       expected_error_message = "content_formatter raised ImportError"
     else:
@@ -5729,9 +5742,109 @@ class TestContentFormatterFailureDiagnostics:
           "content_formatter returned unsupported type tuple"
       )
     assert row["error_message"] == expected_error_message
+    assert row["is_truncated"] is (step == "sanitize")
     assert row["content"] == plugin_module._FORMATTER_FAILED_SENTINEL
     assert drop_stats.get("formatter_failed") == 1
     assert self.SECRET not in json.dumps(row, default=str)
+
+  async def test_log_content_formatter_error_details_writes_sanitized_details(
+      self, mock_write_client, invocation_context, dummy_arrow_schema
+  ):
+    """Sanitized formatter error details reach BigQuery when opted in."""
+
+    def formatter(content, event_type):
+      raise ValueError(
+          "unexpected field format with Authorization: Bearer SECRET-TOKEN-999"
+      )
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=formatter,
+        log_content_formatter_error_details=True,
+    )
+
+    row, drop_stats = await self._log_user_message(
+        config, mock_write_client, invocation_context, dummy_arrow_schema
+    )
+
+    assert (
+        row["content"]
+        == bigquery_agent_analytics_plugin._FORMATTER_FAILED_SENTINEL
+    )
+    assert row["error_message"] == (
+        "content_formatter raised ValueError: unexpected field format with"
+        " Authorization: [REDACTED]"
+    )
+    assert row["is_truncated"] is True
+    assert "SECRET-TOKEN-999" not in json.dumps(row, default=str)
+    assert drop_stats.get("formatter_failed") == 1
+
+  async def test_log_content_formatter_error_details_truncates_long_details(
+      self, mock_write_client, invocation_context, dummy_arrow_schema
+  ):
+    """Oversized formatter error details are truncated to 256 chars + marker."""
+    long_msg = "e" * 400
+
+    def raise_long_error(content, event_type):
+      raise RuntimeError(long_msg)
+
+    config_long = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=raise_long_error,
+        log_content_formatter_error_details=True,
+    )
+
+    row_long, _ = await self._log_user_message(
+        config_long, mock_write_client, invocation_context, dummy_arrow_schema
+    )
+
+    expected_prefix = "content_formatter raised RuntimeError: " + ("e" * 256)
+    assert row_long["error_message"] == expected_prefix + "...[TRUNCATED]"
+    assert row_long["is_truncated"] is True
+
+  async def test_log_content_formatter_error_details_contains_hostile_str(
+      self, mock_write_client, invocation_context, dummy_arrow_schema
+  ):
+    """A __str__ raising KeyboardInterrupt is contained."""
+
+    class _HostileStrError(ValueError):
+
+      def __str__(self):
+        raise KeyboardInterrupt("hostile __str__")
+
+    def raise_hostile_error(content, event_type):
+      raise _HostileStrError()
+
+    config_hostile = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=raise_hostile_error,
+        log_content_formatter_error_details=True,
+    )
+
+    row_hostile, _ = await self._log_user_message_contained(
+        config_hostile,
+        mock_write_client,
+        invocation_context,
+        dummy_arrow_schema,
+    )
+
+    assert row_hostile["error_message"] == (
+        "content_formatter raised <subclass of ValueError>: [error message"
+        " could not be rendered]"
+    )
+    assert row_hostile["is_truncated"] is False
+
+  def test_log_content_formatter_error_details_rejects_non_bool(self):
+    """Non-boolean log_content_formatter_error_details is rejected at init."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        log_content_formatter_error_details="yes"  # type: ignore[arg-type]
+    )
+    with pytest.raises(
+        ValueError, match="log_content_formatter_error_details must be a bool"
+    ):
+      bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=config,
+      )
 
 
 class TestSafeCallbackDecorator:

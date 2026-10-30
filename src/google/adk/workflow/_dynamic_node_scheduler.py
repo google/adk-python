@@ -34,6 +34,7 @@ from ..agents.base_agent import BaseAgent
 from ..agents.context import _derive_node_path
 from ..events._branch_path import _BranchPath
 from ..events._node_path_builder import _NodePathBuilder
+from ..events._node_path_builder import join_node_path
 from ..utils._agent_mode import AgentMode
 from ..utils._agent_mode import DefaultLlmNodeMode
 from ._base_node import BaseNode
@@ -401,12 +402,7 @@ class DynamicNodeScheduler:
       )
       self._state.reserve_run_ids(derived_path)
 
-    base_path_builder = (
-        _NodePathBuilder.from_string(curr_parent_path)
-        if curr_parent_path
-        else _NodePathBuilder([])
-    )
-    node_path = str(base_path_builder.append(target_node_name, run_id))
+    node_path = join_node_path(curr_parent_path, target_node_name, run_id)
     if (
         override_isolation_scope is None
         and getattr(node, 'mode', None) == AgentMode.TASK

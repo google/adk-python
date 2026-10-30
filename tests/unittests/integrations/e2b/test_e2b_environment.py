@@ -14,6 +14,7 @@
 
 """Tests for E2BEnvironment."""
 
+import contextlib
 from unittest import mock
 
 from e2b import CommandExitException
@@ -179,6 +180,74 @@ async def test_read_file_missing_raises(create_patch, sandbox):
 
   with pytest.raises(FileNotFoundError):
     await env.read_file('missing.txt')
+
+
+@pytest.mark.asyncio
+async def test_read_file_stream_matches_read_file(create_patch, sandbox):
+  async def _stream():
+    yield b'da'
+    yield b'ta'
+
+  async def _read(path: str, format: str):
+    return _stream() if format == 'stream' else bytearray(b'data')
+
+  sandbox.files.read.side_effect = _read
+  env = E2BEnvironment()
+  await env.initialize()
+
+  chunks = [chunk async for chunk in env.read_file_stream('notes.txt')]
+
+  assert chunks == [b'da', b'ta']
+  assert b''.join(chunks) == await env.read_file('notes.txt')
+  sandbox.files.read.assert_any_await('/home/user/notes.txt', format='stream')
+
+
+@pytest.mark.asyncio
+async def test_read_file_stream_missing_raises(create_patch, sandbox):
+  sandbox.files.read.side_effect = FileNotFoundException('nope')
+  env = E2BEnvironment()
+  await env.initialize()
+
+  with pytest.raises(FileNotFoundError):
+    async for _ in env.read_file_stream('missing.txt'):
+      pass
+
+
+@pytest.mark.asyncio
+async def test_read_file_stream_closes_sdk_stream_on_early_exit(
+    create_patch, sandbox
+):
+  class _FakeStreamReader:
+
+    def __init__(self):
+      self._chunks = iter([b'first', b'second'])
+      self.closed = False
+
+    def __aiter__(self):
+      return self
+
+    async def __anext__(self) -> bytes:
+      try:
+        return next(self._chunks)
+      except StopIteration as e:
+        raise StopAsyncIteration from e
+
+    async def aclose(self) -> None:
+      self.closed = True
+
+  reader = _FakeStreamReader()
+  sandbox.files.read.return_value = reader
+  env = E2BEnvironment()
+  await env.initialize()
+
+  read_chunks: list[bytes] = []
+  async with contextlib.aclosing(env.read_file_stream('notes.txt')) as stream:
+    async for chunk in stream:
+      read_chunks.append(chunk)
+      break
+
+  assert read_chunks == [b'first']
+  assert reader.closed is True
 
 
 @pytest.mark.asyncio

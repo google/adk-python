@@ -59,6 +59,17 @@ _EVERY_CASE: list[FunctionalTestCase] = [
 _OPERATION_BY_METRIC: dict[str, str] = {
     "gen_ai.client.operation.duration": "generate_content",
     "gen_ai.client.token.usage": "generate_content",
+    "gen_ai.client.inference.usage.input_tokens": "generate_content",
+    "gen_ai.client.inference.usage.output_tokens": "generate_content",
+    "gen_ai.client.inference.usage.cache_read.input_tokens": "generate_content",
+    "gen_ai.client.inference.usage.cache_write.input_tokens": (
+        "generate_content"
+    ),
+    "gen_ai.client.inference.usage.reasoning.output_tokens": "generate_content",
+    "gen_ai.client.inference.operation.input_tokens": "generate_content",
+    "gen_ai.client.inference.operation.output_tokens": "generate_content",
+    "gen_ai.client.inference.time_to_first_chunk": "generate_content",
+    "gen_ai.client.inference.time_per_output_chunk": "generate_content",
     "gen_ai.execute_tool.duration": "execute_tool",
     "gen_ai.invoke_agent.duration": "invoke_agent",
     "gen_ai.invoke_agent.inference_calls": "invoke_agent",
@@ -102,6 +113,10 @@ _METRIC_ONLY_DIMENSIONS: dict[str, str] = {
     "gen_ai.token.type": (
         "one series per direction, while a span reports both directions at"
         " once under gen_ai.usage.*"
+    ),
+    "gen_ai.token.modality": (
+        "one series per modality, while a span reports each call's tokens"
+        " without a modality breakdown"
     ),
     "adk.experimental.skill.script.ended_with_error": (
         "too many possible exit codes for metrics, but span does report"

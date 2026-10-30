@@ -224,9 +224,7 @@ import asyncio
 # Create the agent with tool callbacks
 root_agent = Agent(
     # Find supported models in Vertex here: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api
-    model="gemini-live-2.5-flash-native-audio",  # Vertex
-    # Find supported models in Gemini API here: https://ai.google.dev/gemini-api/docs/models
-    # model='gemini-2.5-flash-native-audio-preview-12-2025',  # Gemini API
+    model="gemini-3.8-live",
     name="tool_callbacks_agent",
     description=(
         "Live streaming agent that demonstrates tool callbacks functionality. "

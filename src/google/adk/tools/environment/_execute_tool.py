@@ -26,7 +26,6 @@ from typing_extensions import override
 
 from ...environment._base_environment import BaseEnvironment
 from ...environment._base_environment import ExecutionResult
-from ...utils.feature_decorator import experimental
 from ..base_tool import BaseTool
 from ._constants import DEFAULT_TIMEOUT
 from ._constants import MAX_OUTPUT_CHARS
@@ -48,7 +47,6 @@ Bad: Execute("head ..."), Execute("cat ...").
 """
 
 
-@experimental
 class ExecuteTool(BaseTool):
   """Run a shell command in the environment's working directory."""
 

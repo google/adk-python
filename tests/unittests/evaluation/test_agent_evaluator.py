@@ -47,6 +47,7 @@ from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from google.adk.evaluation.simulation.user_simulator_provider import UserSimulatorProvider
 from google.adk.evaluation.trajectory_evaluator import TrajectoryEvaluator
+from google.adk.workflow import Workflow
 from google.genai import types as genai_types
 import pandas as pd
 import pytest
@@ -394,6 +395,203 @@ async def test_evaluate_eval_set_raises_when_no_eval_cases_were_evaluated(
 
   mock_get_agent.assert_not_called()
   mock_get_results.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "root_node",
+    [BaseAgent(name="root_agent"), Workflow(name="my_workflow")],
+)
+async def test_evaluate_eval_set_evaluates_node_passed_in(mocker, root_node):
+  """A BaseNode passed in reaches LocalEvalService unchanged."""
+  mock_local_eval_service_cls = mocker.patch(
+      "google.adk.evaluation.local_eval_service.LocalEvalService"
+  )
+  instance = mock_local_eval_service_cls.return_value
+  instance.perform_inference = _empty_async_gen
+  instance.evaluate = _empty_async_gen
+
+  await AgentEvaluator.evaluate_eval_set(
+      agent_module=root_node,
+      eval_set=_make_eval_set(),
+      eval_config=EvalConfig(),
+      num_runs=1,
+  )
+
+  service_kwargs = mock_local_eval_service_cls.call_args.kwargs
+  assert service_kwargs["root_agent"] is root_node
+  assert service_kwargs["app"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "root_node",
+    [BaseAgent(name="root_agent"), Workflow(name="my_workflow")],
+)
+async def test_evaluate_eval_set_evaluates_app_passed_in(mocker, root_node):
+  """An App passed to evaluate_eval_set reaches LocalEvalService unchanged."""
+  app = App(name="my_app", root_agent=root_node)
+  mock_local_eval_service_cls = mocker.patch(
+      "google.adk.evaluation.local_eval_service.LocalEvalService"
+  )
+  instance = mock_local_eval_service_cls.return_value
+  instance.perform_inference = _empty_async_gen
+  instance.evaluate = _empty_async_gen
+
+  await AgentEvaluator.evaluate_eval_set(
+      agent_module=app,
+      eval_set=_make_eval_set(),
+      eval_config=EvalConfig(),
+      num_runs=1,
+  )
+
+  service_kwargs = mock_local_eval_service_cls.call_args.kwargs
+  assert service_kwargs["root_agent"] is root_node
+  assert service_kwargs["app"] is app
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_selects_sub_agent_of_app_passed_in(mocker):
+  """`agent_name` selects a sub-agent of a passed App, keeping the App."""
+  sub_agent = BaseAgent(name="sub_agent")
+  root_agent = BaseAgent(name="root_agent", sub_agents=[sub_agent])
+  app = App(name="my_app", root_agent=root_agent)
+  mock_local_eval_service_cls = mocker.patch(
+      "google.adk.evaluation.local_eval_service.LocalEvalService"
+  )
+  instance = mock_local_eval_service_cls.return_value
+  instance.perform_inference = _empty_async_gen
+  instance.evaluate = _empty_async_gen
+
+  await AgentEvaluator.evaluate_eval_set(
+      agent_module=app,
+      agent_name="sub_agent",
+      eval_set=_make_eval_set(),
+      eval_config=EvalConfig(),
+      num_runs=1,
+  )
+
+  service_kwargs = mock_local_eval_service_cls.call_args.kwargs
+  assert service_kwargs["root_agent"] is sub_agent
+  assert service_kwargs["app"] is app
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "agent_module",
+    [
+        Workflow(name="my_workflow"),
+        App(name="my_app", root_agent=Workflow(name="my_workflow")),
+    ],
+)
+async def test_evaluate_eval_set_rejects_sub_agent_on_non_agent_root(
+    agent_module,
+):
+  """`agent_name` with a non-BaseAgent root raises TypeError."""
+  with pytest.raises(TypeError, match="requires a BaseAgent root"):
+    await AgentEvaluator.evaluate_eval_set(
+        agent_module=agent_module,
+        agent_name="sub_agent",
+        eval_set=_make_eval_set(),
+        eval_config=EvalConfig(),
+        num_runs=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_rejects_app_without_root_agent():
+  """An App whose root_agent is None raises TypeError."""
+  app = App(name="my_app", root_agent=BaseAgent(name="root_agent"))
+  app.root_agent = None
+
+  with pytest.raises(TypeError, match="does not have a root_agent"):
+    await AgentEvaluator.evaluate_eval_set(
+        agent_module=app,
+        eval_set=_make_eval_set(),
+        eval_config=EvalConfig(),
+        num_runs=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_rejects_unsupported_agent_module_type():
+  """An unsupported agent_module type raises TypeError."""
+  with pytest.raises(TypeError, match="Unsupported agent_module type: int"):
+    await AgentEvaluator.evaluate_eval_set(
+        agent_module=123,
+        eval_set=_make_eval_set(),
+        eval_config=EvalConfig(),
+        num_runs=1,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrap_in_app", [False, True])
+async def test_evaluate_evaluates_agent_or_app_passed_in(
+    mocker, tmp_path, wrap_in_app
+):
+  """evaluate forwards a passed-in agent or App to LocalEvalService."""
+  test_file = tmp_path / "simple.test.json"
+  test_file.write_text(_make_eval_set().model_dump_json(), encoding="utf-8")
+  root_agent = BaseAgent(name="root_agent")
+  app = App(name="my_app", root_agent=root_agent) if wrap_in_app else None
+  mock_local_eval_service_cls = mocker.patch(
+      "google.adk.evaluation.local_eval_service.LocalEvalService"
+  )
+  instance = mock_local_eval_service_cls.return_value
+  instance.perform_inference = _empty_async_gen
+  instance.evaluate = _empty_async_gen
+
+  await AgentEvaluator.evaluate(
+      agent_module=app or root_agent,
+      eval_dataset_file_path_or_dir=str(test_file),
+      num_runs=1,
+  )
+
+  service_kwargs = mock_local_eval_service_cls.call_args.kwargs
+  assert service_kwargs["root_agent"] is root_agent
+  assert service_kwargs["app"] is app
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "agent_module, expected_name",
+    [
+        (BaseAgent(name="my_agent"), "my_agent"),
+        (Workflow(name="my_workflow"), "my_workflow"),
+        (App(name="my_app", root_agent=BaseAgent(name="root_agent")), "my_app"),
+    ],
+)
+async def test_evaluate_eval_set_names_agent_passed_in_on_failure(
+    mocker, agent_module, expected_name
+):
+  """Failures for a node or App passed in name it, not a module path."""
+  mock_local_eval_service_cls = mocker.patch(
+      "google.adk.evaluation.local_eval_service.LocalEvalService"
+  )
+
+  async def _one_result(*args, **kwargs):
+    yield EvalCaseResult(
+        eval_set_id="test_eval_set",
+        eval_id="case1",
+        final_eval_status=EvalStatus.FAILED,
+        overall_eval_metric_results=[],
+        eval_metric_result_per_invocation=[],
+        session_id="",
+    )
+
+  instance = mock_local_eval_service_cls.return_value
+  instance.perform_inference = _empty_async_gen
+  instance.evaluate = _one_result
+
+  with pytest.raises(AssertionError, match=f"case1 for {expected_name} Failed"):
+    await AgentEvaluator.evaluate_eval_set(
+        agent_module=agent_module,
+        eval_set=_make_eval_set(),
+        eval_config=EvalConfig(),
+        num_runs=1,
+        print_detailed_results=False,
+    )
 
 
 @pytest.mark.asyncio
