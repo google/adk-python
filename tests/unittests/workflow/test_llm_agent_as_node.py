@@ -42,6 +42,7 @@ from google.adk.sessions.session import Session
 from google.adk.tools.agent_tool import _TaskAgentTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.tools.tool_context import ToolContext
 from google.adk.utils._agent_mode import AgentMode
 from google.adk.workflow import _llm_agent_wrapper as agent_wrapper
 from google.adk.workflow import node
@@ -664,6 +665,390 @@ async def test_single_turn_output_reaches_downstream(
     await runner.run_async(testing_utils.get_user_content('start'))
 
   assert capture.received_inputs == ['Done.']
+
+
+def _transfer_to(agent_name: str) -> types.Part:
+  return types.Part.from_function_call(
+      name='transfer_to_agent', args={'agent_name': agent_name}
+  )
+
+
+def _resume_with(
+    events: list[Event], function_name: str, response: dict[str, Any]
+) -> types.Content:
+  """Builds the user message that answers the paused call in `events`."""
+  from .workflow_testing_utils import find_function_call_event
+
+  fc_event = find_function_call_event(events, function_name)
+  assert fc_event is not None
+  return types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=fc_event.content.parts[0].function_call.id,
+                  name=function_name,
+                  response=response,
+              )
+          )
+      ],
+  )
+
+
+def _new_router_runner(
+    request: pytest.FixtureRequest,
+    lead: LlmAgent,
+    *,
+    is_resumable: bool,
+    downstream: bool = True,
+) -> tuple[_testing_utils.InMemoryRunner, InputCapturingNode]:
+  capture = InputCapturingNode(name='capture')
+  edges = [('START', lead, capture)] if downstream else [('START', lead)]
+  app = App(
+      name=request.function.__name__,
+      root_agent=Workflow(name='wf', edges=edges),
+      resumability_config=ResumabilityConfig(is_resumable=is_resumable),
+  )
+  return _testing_utils.InMemoryRunner(app=app), capture
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('is_resumable', [False, True])
+async def test_single_turn_transfer_output_reaches_downstream(
+    request: pytest.FixtureRequest, is_resumable: bool
+):
+  """A transfer target's reply is the node output and the target runs once."""
+  translate_model = _testing_utils.MockModel.create(['Hello!', 'unused'])
+  summarize_model = _testing_utils.MockModel.create(['Short.', 'unused'])
+  lead = LlmAgent(
+      name='lead',
+      model=_testing_utils.MockModel.create(
+          [_transfer_to('translate'), _transfer_to('summarize')]
+      ),
+      instruction='Route.',
+      sub_agents=[
+          LlmAgent(
+              name='translate', model=translate_model, instruction='Translate.'
+          ),
+          LlmAgent(
+              name='summarize', model=summarize_model, instruction='Summarize.'
+          ),
+      ],
+  )
+  runner, capture = _new_router_runner(request, lead, is_resumable=is_resumable)
+
+  await runner.run_async(_testing_utils.get_user_content('Hola'))
+  await runner.run_async(_testing_utils.get_user_content('Too long'))
+
+  assert capture.received_inputs == ['Hello!', 'Short.']
+  assert len(translate_model.requests) == 1
+  assert len(summarize_model.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('is_resumable', [False, True])
+async def test_single_turn_transfer_terminal_node_replies_once(
+    request: pytest.FixtureRequest, is_resumable: bool
+):
+  """A terminal router node surfaces the target's reply exactly once."""
+  translate_model = _testing_utils.MockModel.create(['Hello!', 'unused'])
+  lead = LlmAgent(
+      name='lead',
+      model=_testing_utils.MockModel.create([_transfer_to('translate')]),
+      sub_agents=[LlmAgent(name='translate', model=translate_model)],
+  )
+  runner, _ = _new_router_runner(
+      request, lead, is_resumable=is_resumable, downstream=False
+  )
+
+  events = await runner.run_async(_testing_utils.get_user_content('Hola'))
+
+  texts = [
+      p.text
+      for e in events
+      if e.content and e.content.parts
+      for p in e.content.parts
+      if p.text
+  ]
+  assert texts.count('Hello!') == 1
+  assert len(translate_model.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('is_resumable', [False, True])
+async def test_single_turn_transfer_back_to_router_reaches_downstream(
+    request: pytest.FixtureRequest, is_resumable: bool
+):
+  """When the target transfers back, the router's final reply is the output."""
+  lead_model = _testing_utils.MockModel.create(
+      [_transfer_to('translate'), 'Back at lead.', 'unused']
+  )
+  lead = LlmAgent(
+      name='lead',
+      model=lead_model,
+      sub_agents=[
+          LlmAgent(
+              name='translate',
+              model=_testing_utils.MockModel.create(
+                  [_transfer_to('lead'), 'unused']
+              ),
+          )
+      ],
+  )
+  runner, capture = _new_router_runner(request, lead, is_resumable=is_resumable)
+
+  await runner.run_async(_testing_utils.get_user_content('Hola'))
+
+  assert capture.received_inputs == ['Back at lead.']
+  assert len(lead_model.requests) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('is_resumable', [False, True])
+async def test_single_turn_nested_transfer_reaches_downstream(
+    request: pytest.FixtureRequest, is_resumable: bool
+):
+  """The reply of the agent that ends a nested transfer chain is the output."""
+  formal_model = _testing_utils.MockModel.create(['Good day.', 'unused'])
+  lead = LlmAgent(
+      name='lead',
+      model=_testing_utils.MockModel.create([_transfer_to('translate')]),
+      sub_agents=[
+          LlmAgent(
+              name='translate',
+              model=_testing_utils.MockModel.create(
+                  [_transfer_to('formal'), 'unused']
+              ),
+              sub_agents=[LlmAgent(name='formal', model=formal_model)],
+          )
+      ],
+  )
+  runner, capture = _new_router_runner(request, lead, is_resumable=is_resumable)
+
+  await runner.run_async(_testing_utils.get_user_content('Hola'))
+
+  assert capture.received_inputs == ['Good day.']
+  assert len(formal_model.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('is_resumable', [False, True])
+async def test_single_turn_transfer_target_structured_output_reaches_downstream(
+    request: pytest.FixtureRequest, is_resumable: bool
+):
+  """A target's output_schema result reaches downstream and its output_key."""
+  lead = LlmAgent(
+      name='lead',
+      model=_testing_utils.MockModel.create([_transfer_to('writer')]),
+      sub_agents=[
+          LlmAgent(
+              name='writer',
+              model=_testing_utils.MockModel.create(
+                  ['{"title": "Story", "content": "Once."}', 'unused']
+              ),
+              output_schema=StoryOutput,
+              output_key='story',
+          )
+      ],
+  )
+  runner, capture = _new_router_runner(request, lead, is_resumable=is_resumable)
+
+  await runner.run_async(_testing_utils.get_user_content('Write'))
+
+  expected = {'title': 'Story', 'content': 'Once.'}
+  assert capture.received_inputs == [expected]
+  assert runner.session.state['story'] == expected
+
+
+@pytest.mark.asyncio
+async def test_single_turn_transfer_explicit_chat_target_reaches_downstream(
+    request: pytest.FixtureRequest,
+):
+  """An explicitly chat-mode target in a single_turn chain still has output.
+
+  A parent stamps chat on every LlmAgent sub-agent that has no mode, so the
+  scheduler cannot tell an explicit chat target from a defaulted one and runs
+  both as single_turn hops.
+  """
+  lead = LlmAgent(
+      name='lead',
+      model=_testing_utils.MockModel.create([_transfer_to('translate')]),
+      sub_agents=[
+          LlmAgent(
+              name='translate',
+              mode='chat',
+              model=_testing_utils.MockModel.create(['Hello!', 'unused']),
+          )
+      ],
+  )
+  runner, capture = _new_router_runner(request, lead, is_resumable=False)
+
+  await runner.run_async(_testing_utils.get_user_content('Hola'))
+
+  assert capture.received_inputs == ['Hello!']
+
+
+def _transfer_to_writer(tool_context: ToolContext) -> dict[str, str]:
+  tool_context.actions.transfer_to_agent = 'writer'
+  return {'status': 'ok'}
+
+
+@pytest.mark.asyncio
+async def test_single_turn_transfer_keeps_task_mode_target(
+    request: pytest.FixtureRequest,
+):
+  """A task-mode target reached by a tool-driven transfer stays in task mode."""
+  writer_model = _testing_utils.MockModel.create([
+      types.Part.from_function_call(
+          name='finish_task',
+          args={'title': 'Story', 'content': 'Once.'},
+      ),
+      'unused',
+  ])
+  lead = LlmAgent(
+      name='lead',
+      model=_testing_utils.MockModel.create([
+          types.Part.from_function_call(name='_transfer_to_writer', args={}),
+          'unused',
+      ]),
+      tools=[_transfer_to_writer],
+      sub_agents=[
+          LlmAgent(
+              name='writer',
+              mode='task',
+              output_schema=StoryOutput,
+              model=writer_model,
+          )
+      ],
+  )
+  runner, _ = _new_router_runner(request, lead, is_resumable=False)
+
+  await runner.run_async(_testing_utils.get_user_content('Write'))
+
+  assert 'finish_task' in writer_model.requests[0].tools_dict
+
+
+@pytest.mark.asyncio
+async def test_single_turn_transfer_respects_target_rerun_on_resume(
+    request: pytest.FixtureRequest,
+):
+  """A target that sets rerun_on_resume=False keeps it on resume."""
+  translate_model = _testing_utils.MockModel.create([
+      types.Part.from_function_call(name='_long_running_tool', args={}),
+      'unused',
+  ])
+  lead = LlmAgent(
+      name='lead',
+      model=_testing_utils.MockModel.create(
+          [_transfer_to('translate'), 'unused']
+      ),
+      sub_agents=[
+          LlmAgent(
+              name='translate',
+              model=translate_model,
+              rerun_on_resume=False,
+              tools=[LongRunningFunctionTool(func=_long_running_tool)],
+          )
+      ],
+  )
+  runner, _ = _new_router_runner(request, lead, is_resumable=True)
+  events = await runner.run_async(_testing_utils.get_user_content('go'))
+
+  await runner.run_async(
+      new_message=_resume_with(
+          events, '_long_running_tool', {'result': 'done'}
+      ),
+      invocation_id=events[0].invocation_id,
+  )
+
+  assert len(translate_model.requests) == 1
+
+
+def _confirmed_tool() -> dict[str, str]:
+  return {'result': 'tool executed'}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('is_resumable', [False, True])
+async def test_single_turn_transfer_target_resumes_after_confirmation(
+    request: pytest.FixtureRequest, is_resumable: bool
+):
+  """A target paused on a tool confirmation passes its reply downstream."""
+  translate_model = _testing_utils.MockModel.create([
+      types.Part.from_function_call(name='_confirmed_tool', args={}),
+      'Done after confirmation.',
+      'unused',
+  ])
+  lead = LlmAgent(
+      name='lead',
+      model=_testing_utils.MockModel.create(
+          [_transfer_to('translate'), 'unused']
+      ),
+      sub_agents=[
+          LlmAgent(
+              name='translate',
+              model=translate_model,
+              tools=[
+                  FunctionTool(func=_confirmed_tool, require_confirmation=True)
+              ],
+          )
+      ],
+  )
+  runner, capture = _new_router_runner(request, lead, is_resumable=is_resumable)
+  events = await runner.run_async(_testing_utils.get_user_content('go'))
+  assert capture.received_inputs == []
+
+  await runner.run_async(
+      new_message=_resume_with(
+          events, REQUEST_CONFIRMATION_FUNCTION_CALL_NAME, {'confirmed': True}
+      ),
+      invocation_id=events[0].invocation_id,
+  )
+
+  assert capture.received_inputs == ['Done after confirmation.']
+  assert len(translate_model.requests) == 2
+
+
+def _long_running_tool() -> None:
+  return None
+
+
+@pytest.mark.asyncio
+async def test_single_turn_transfer_target_resumes_after_long_running_tool(
+    request: pytest.FixtureRequest,
+):
+  """A target paused on a long-running tool passes its reply downstream."""
+  translate_model = _testing_utils.MockModel.create([
+      types.Part.from_function_call(name='_long_running_tool', args={}),
+      'Resumed reply.',
+      'unused',
+  ])
+  lead = LlmAgent(
+      name='lead',
+      model=_testing_utils.MockModel.create(
+          [_transfer_to('translate'), 'unused']
+      ),
+      sub_agents=[
+          LlmAgent(
+              name='translate',
+              model=translate_model,
+              tools=[LongRunningFunctionTool(func=_long_running_tool)],
+          )
+      ],
+  )
+  runner, capture = _new_router_runner(request, lead, is_resumable=True)
+  events = await runner.run_async(_testing_utils.get_user_content('go'))
+  assert capture.received_inputs == []
+
+  await runner.run_async(
+      new_message=_resume_with(
+          events, '_long_running_tool', {'result': 'done'}
+      ),
+      invocation_id=events[0].invocation_id,
+  )
+
+  assert capture.received_inputs == ['Resumed reply.']
+  assert len(translate_model.requests) == 2
 
 
 @pytest.mark.asyncio

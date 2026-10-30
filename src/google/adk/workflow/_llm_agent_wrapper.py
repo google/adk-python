@@ -494,6 +494,10 @@ async def run_llm_agent_as_node(
         async for event in run_iter:
           process_llm_agent_output(effective_agent, ctx, event)
           yield event
+          if event.actions.transfer_to_agent:
+            # Stop here, as chat and task modes do. The scheduler runs the
+            # target as the next hop, both on a fresh run and on resume.
+            break
     finally:
       if injected_input_event is not None:
         _remove_event(agent_ctx.session.events, injected_input_event)
