@@ -63,9 +63,15 @@ def test_package_imports_without_openai():
 
 
 @pytest.mark.parametrize(
-    'name', ['AzureOpenAIResponsesLlm', 'OpenAILlm', 'OpenAIResponsesLlm']
+    'name',
+    [
+        'AzureOpenAIResponsesLlm',
+        'OpenAIDecisionsClassifier',
+        'OpenAILlm',
+        'OpenAIResponsesLlm',
+    ],
 )
-def test_model_classes_raise_import_error_without_openai(name):
+def test_classes_raise_import_error_without_openai(name):
   with _openai_uninstalled():
     package = importlib.import_module(_PACKAGE)
 
