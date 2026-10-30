@@ -19,6 +19,7 @@ workflow behavior through Runner(node=...) instead of agent.run_async().
 """
 
 import asyncio
+import builtins
 from collections import Counter
 import gc
 from typing import Any
@@ -41,6 +42,8 @@ from google.adk.workflow._join_node import JoinNode
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import get_common_branch_prefix
 from google.adk.workflow._workflow import Workflow
+from google.adk.workflow.utils import _workflow_graph_utils
+from google.adk.workflow.utils._workflow_graph_utils import build_node
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
 from google.genai import types
 from pydantic import ConfigDict
@@ -2847,3 +2850,33 @@ def test_workflow_iter_static_children_empty_when_no_graph():
   """Workflow._iter_static_children yields nothing when the workflow has no graph."""
   wf = Workflow(name='empty_wf')
   assert list(wf._iter_static_children()) == []
+
+
+def test_build_node_resolves_the_optional_a2a_import_once():
+  """Building nodes repeatedly does not retry the optional a2a import.
+
+  The workflow graph is rebuilt on every turn, so resolving the optional
+  `RemoteA2aAgent` import inside `build_node` re-parsed a module that cannot be
+  imported whenever the a2a extra is absent: a failed import is not cached by
+  Python, which made that cost per node per turn.
+  """
+  resolve = getattr(_workflow_graph_utils, '_remote_a2a_agent_type', None)
+  if resolve is not None:
+    resolve.cache_clear()
+  attempts = 0
+  real_import = builtins.__import__
+
+  def counting_import(name, *args, **kwargs):
+    nonlocal attempts
+    if name.endswith('agents.remote_a2a_agent'):
+      attempts += 1
+    return real_import(name, *args, **kwargs)
+
+  def node() -> dict[str, bool]:
+    return {'ran': True}
+
+  with mock.patch('builtins.__import__', counting_import):
+    for _ in range(3):
+      build_node(node)
+
+  assert attempts == 1
