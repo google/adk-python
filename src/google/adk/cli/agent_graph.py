@@ -28,6 +28,7 @@ from ..agents.sequential_agent import SequentialAgent
 from ..tools.agent_tool import AgentTool
 from ..tools.base_tool import BaseTool
 from ..tools.function_tool import FunctionTool
+from .utils.graph_visualization import _Digraph
 
 if TYPE_CHECKING:
   from collections.abc import Sequence
@@ -235,7 +236,7 @@ async def build_graph(
         if name in highlight_tuple:
           # if in highlight, draw highlight node
           if as_cluster:
-            cluster = graphviz.Digraph(
+            cluster = _Digraph(
                 name='cluster_' + name
             )  # adding "cluster_" to the name makes the graph render as a cluster subgraph
             await build_cluster(cluster, agent, name)
@@ -253,7 +254,7 @@ async def build_graph(
           return
     # if not in highlight, draw non-highlight node
     if as_cluster:
-      cluster = graphviz.Digraph(
+      cluster = _Digraph(
           name='cluster_' + name
       )  # adding "cluster_" to the name makes the graph render as a cluster subgraph
       await build_cluster(cluster, agent, name)
@@ -314,7 +315,7 @@ async def get_agent_graph(
     dark_mode: bool = True,
 ) -> graphviz.Digraph | bytes:
   bg_color = '#333537' if dark_mode else '#ffffff'
-  graph = graphviz.Digraph(
+  graph = _Digraph(
       graph_attr={'rankdir': 'LR', 'bgcolor': bg_color}, strict=True
   )
   await build_graph(graph, root_agent, highlights_pairs)
