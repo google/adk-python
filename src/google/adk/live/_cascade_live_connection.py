@@ -181,8 +181,18 @@ class CascadeLiveConnection(BaseLlmConnection):
   # ------------------------------------------------------------------
 
   async def send_history(self, history: list[types.Content]) -> None:
-    """Seeds the conversation. Does not itself trigger reasoning."""
+    """Seeds the conversation, and replies if it ends with a user turn.
+
+    As `BaseLlmConnection.send_history` requires: a history ending in a user
+    turn, such as a workflow node's input or an agent transfer, gets a reply
+    without waiting for new input.
+
+    Args:
+      history: The conversation so far, replacing any seeded contents.
+    """
     self._contents = list(history)
+    if self._contents and self._contents[-1].role == 'user':
+      self._start_reasoning()
 
   async def send_content(self, content: types.Content) -> None:
     """Appends a turn-completing content and starts reasoning.
