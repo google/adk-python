@@ -809,6 +809,44 @@ async def test_partial_client_content_is_not_recorded():
   ]
 
 
+@pytest.mark.asyncio
+async def test_history_ending_with_a_user_turn_is_answered():
+  """Seeded history ending with a user turn gets a reply, as in native live.
+
+  A workflow node's input and an agent transfer reach the connection this way,
+  with no new user input to start the turn (base_llm_connection.py:38-47).
+  """
+  stt, tts = FakeStt(), FakeTts()
+  reasoner = ScriptedReasoner(turns=[[_model_text(_ANSWER)]])
+  connection = CascadeLiveConnection(LlmRequest(), reasoner, stt, tts)
+
+  await connection.send_history([_user(_UTTERANCE)])
+  responses = await _drain_turn(connection)
+  await connection.close()
+
+  assert _replayed(reasoner.requests[0]) == [f'user:{_UTTERANCE}']
+  assert tts.synthesized == [_ANSWER]
+  assert responses[-1].turn_complete
+
+
+@pytest.mark.asyncio
+async def test_history_ending_with_a_model_turn_waits_for_input():
+  """Seeded history that the model already answered starts no turn."""
+  stt, tts = FakeStt(), FakeTts()
+  reasoner = ScriptedReasoner(turns=[[_model_text(_ANSWER)]])
+  connection = CascadeLiveConnection(LlmRequest(), reasoner, stt, tts)
+
+  await connection.send_history([
+      _user(_UTTERANCE),
+      types.Content(role='model', parts=[types.Part(text=_ANSWER)]),
+  ])
+  # Long enough for a started turn to reach the reasoner.
+  await asyncio.sleep(0.1)
+  await connection.close()
+
+  assert not reasoner.requests
+
+
 class _ClosingReasoner(ScriptedReasoner):
   """Records when its response stream is closed."""
 
@@ -1144,3 +1182,63 @@ async def test_stt_failure_is_raised_from_run_live():
   with pytest.raises(RuntimeError, match='invalid API key'):
     await asyncio.wait_for(_consume(), timeout=_TIMEOUT_S)
   assert not reasoner.requests
+
+
+@pytest.mark.asyncio
+async def test_sub_agent_replies_right_after_an_agent_transfer():
+  """After a transfer, the sub-agent speaks without waiting for the user.
+
+  The sub-agent's new connection is seeded with the history, which ends with
+  the transfer quoted as user turns, as in native live.
+  """
+  root_reasoner = ScriptedReasoner(
+      turns=[[_call('transfer_to_agent', {'agent_name': 'helper'})]]
+  )
+  helper_reasoner = ScriptedReasoner(turns=[[_model_text('Helper here.')]])
+  helper = Agent(
+      name='helper',
+      model=CascadeLive(model=helper_reasoner, stt=FakeStt(), tts=FakeTts()),
+  )
+  root = Agent(
+      name='root_agent',
+      model=CascadeLive(model=root_reasoner, stt=FakeStt(), tts=FakeTts()),
+      sub_agents=[helper],
+  )
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(app_name='app', agent=root, session_service=session_service)
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(_blob(_UTTERANCE))
+  helper_events: list[Event] = []
+
+  async def _consume() -> None:
+    async with aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=live_request_queue,
+            run_config=RunConfig(response_modalities=['AUDIO']),
+        )
+    ) as agen:
+      async for event in agen:
+        if event.author != 'helper':
+          continue
+        helper_events.append(event)
+        if event.turn_complete:
+          return
+
+  try:
+    await asyncio.wait_for(_consume(), timeout=_TIMEOUT_S)
+  except asyncio.TimeoutError:
+    pytest.fail('The sub-agent never replied after the transfer.')
+
+  assert _spoken(helper_events) == 'Helper here.'
+  # One request, sent before the user said anything else: the user's request
+  # and the quoted transfer.
+  assert len(helper_reasoner.requests) == 1
+  replayed = _replayed(helper_reasoner.requests[0])
+  assert replayed[0] == f'user:{_UTTERANCE}'
+  assert replayed[-1].startswith('user:')
+  assert 'transfer_to_agent' in replayed[-1]
