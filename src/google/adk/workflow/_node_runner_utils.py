@@ -35,10 +35,10 @@ from ..sessions.session import Session
 from ..telemetry import _instrumentation
 from ..utils._runner_utils import _notify_run_error
 from ._dynamic_node_scheduler import DynamicNodeScheduler
+from ._dynamic_node_scheduler import DynamicNodeState
 from ._errors import DynamicNodeFailError
 from ._errors import NodeInterruptedError
 from ._errors import WorkflowInvariantError
-from ._workflow import _LoopState
 
 if TYPE_CHECKING:
   from ..runners import Runner
@@ -255,7 +255,7 @@ async def run_node_async(
                 # Rehydration warning: DynamicNodeScheduler relies on
                 # session.events scanning. Stateful live EUC/LRO streams
                 # may rehydrate freshly if not yet persisted.
-                scheduler = DynamicNodeScheduler(state=_LoopState())
+                scheduler = DynamicNodeScheduler(state=DynamicNodeState())
                 root_ctx._workflow_scheduler = scheduler  # pylint: disable=protected-access
 
               try:
