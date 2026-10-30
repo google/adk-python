@@ -33,6 +33,7 @@ from google.adk.sessions.session import Session
 from typing_extensions import override
 
 from .. import _compat
+from ...agents.llm.task._finish_task_tool import without_nested_finish_task
 from ...events.event import Event
 from ...utils._error_reporting import report_error
 from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
@@ -259,13 +260,17 @@ class A2aAgentExecutor(AgentExecutor):
 
     async def _on_event(adk_event: Event) -> None:
       nonlocal aborted, last_adk_event
-      last_adk_event = adk_event
-      if adk_event and _is_abort_adk_event(adk_event):
+      # Before last_adk_event: a nested finish_task is not this task.
+      forwarded = without_nested_finish_task(adk_event)
+      if forwarded is None:
+        return
+      last_adk_event = forwarded
+      if _is_abort_adk_event(forwarded):
         aborted = True
-      error_tracker.observe(adk_event)
-      is_error_event = _is_error_event(adk_event)
+      error_tracker.observe(forwarded)
+      is_error_event = _is_error_event(forwarded)
       for a2a_event in self._config.event_converter(
-          adk_event,
+          forwarded,
           invocation_context,
           task_id,
           context_id,
@@ -274,7 +279,7 @@ class A2aAgentExecutor(AgentExecutor):
         a2a_events = await execute_after_event_interceptors(
             a2a_event,
             executor_context,
-            adk_event,
+            forwarded,
             self._config.execute_interceptors,
         )
         for e in a2a_events:
@@ -283,7 +288,7 @@ class A2aAgentExecutor(AgentExecutor):
               and e.status.state == _compat.TS_FAILED
           ):
             failures.append(
-                (adk_event if is_error_event else None, e.status.message)
+                (forwarded if is_error_event else None, e.status.message)
             )
           task_result_aggregator.process_event(e)
           await event_queue.enqueue_event(e)
