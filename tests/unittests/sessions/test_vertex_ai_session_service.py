@@ -14,6 +14,8 @@
 import asyncio
 import copy
 import datetime
+import decimal
+import json
 import re
 import types
 from typing import Any
@@ -21,6 +23,7 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 from unittest import mock
+import uuid
 
 from dateutil.parser import isoparse
 from fastapi.openapi import models as openapi_models
@@ -1115,6 +1118,39 @@ async def test_create_session_with_custom_session_id(
   assert session == await session_service.get_session(
       app_name='123', user_id='user', session_id=session_id
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_sends_json_safe_state_delta(
+    mock_api_client_instance: MockAsyncClient,
+):
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.create_session(app_name='123', user_id='user')
+  request_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
+  event = Event(
+      invocation_id='inv',
+      author='agent',
+      actions=EventActions(
+          state_delta={
+              'due': datetime.date(2026, 11, 1),
+              'request_id': request_id,
+              'total': decimal.Decimal('19.99'),
+          }
+      ),
+  )
+
+  await session_service.append_event(session, event)
+
+  # The SDK JSON-encodes the request body, and only converts datetimes, bytes
+  # and Pydantic models first, so any other rich value would fail the append.
+  sent_events, _ = mock_api_client_instance.event_dict[session.id]
+  sent_delta = sent_events[-1]['actions']['state_delta']
+  assert json.loads(json.dumps(sent_delta)) == {
+      'due': '2026-11-01',
+      'request_id': str(request_id),
+      'total': '19.99',
+  }
 
 
 @pytest.mark.asyncio
