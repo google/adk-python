@@ -73,6 +73,14 @@ _FIELD_BY_FIELD_EVENT_FIELDS = frozenset({
 })
 
 _SESSION_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
+_ALLOWED_CREATE_SESSION_CONFIG_KEYS = frozenset({
+    'display_name',
+    'displayName',
+    'ttl',
+    'expire_time',
+    'expireTime',
+    'labels',
+})
 
 
 def _extract_short_session_id(
@@ -199,16 +207,34 @@ class VertexAiSessionService(BaseSessionService):
       user_id: The ID of the user.
       state: The initial state of the session.
       session_id: The ID of the session.
-      **kwargs: Additional arguments to pass to the session creation. E.g. set
-        ttl='7200s' to set the session time-to-live or
-        expire_time='2025-10-01T00:00:00Z' to set the session expiration time.
-        See https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1beta1/projects.locations.reasoningEngines.sessions
-        for more details.
+      **kwargs: Optional session configuration fields forwarded to the Sessions
+        API. Only ``display_name``, ``ttl``, ``expire_time``, and ``labels``
+        (and the camelCase aliases ``displayName`` and ``expireTime``) are
+        accepted, e.g. ``ttl='7200s'`` or
+        ``expire_time='2025-10-01T00:00:00Z'``.
 
     Returns:
       The created session.
+
+    Raises:
+      ValueError: If an unsupported keyword argument is passed, or if both
+        ``ttl`` and ``expire_time`` (or ``expireTime``) are specified.
     """
-    if kwargs.get('ttl') is not None and kwargs.get('expire_time') is not None:
+    unexpected_keys = sorted(set(kwargs) - _ALLOWED_CREATE_SESSION_CONFIG_KEYS)
+    if unexpected_keys:
+      allowed = ', '.join(
+          repr(key) for key in sorted(_ALLOWED_CREATE_SESSION_CONFIG_KEYS)
+      )
+      raise ValueError(
+          'Unsupported create_session option(s): '
+          f'{", ".join(repr(key) for key in unexpected_keys)}. '
+          f'Supported options are: {allowed}.'
+      )
+    has_expire_time = (
+        kwargs.get('expire_time') is not None
+        or kwargs.get('expireTime') is not None
+    )
+    if kwargs.get('ttl') is not None and has_expire_time:
       raise ValueError(
           "Cannot specify both 'ttl' and 'expire_time' simultaneously."
       )

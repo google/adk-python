@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from bisect import bisect_right
 from typing import AsyncGenerator
 from typing import TYPE_CHECKING
@@ -41,11 +42,16 @@ class CompactionRequestProcessor(BaseLlmRequestProcessor):
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
     del llm_request
+    # is True rather than truthiness: mocked contexts return a truthy Mock.
+    if invocation_context.is_aborted is True:  # pylint: disable=g-bool-id-comparison
+      return
     config = invocation_context.events_compaction_config
     if not _has_token_threshold_config(config):
       return
       yield  # Required for AsyncGenerator.
 
+    raw_signal = getattr(invocation_context, '_abort_signal', None)
+    abort_signal = raw_signal if isinstance(raw_signal, asyncio.Event) else None
     agent = require_agent(invocation_context)
     token_compacted = await _run_compaction_for_token_threshold_config(
         config=config,
@@ -55,6 +61,7 @@ class CompactionRequestProcessor(BaseLlmRequestProcessor):
         agent_name=agent.name,
         current_branch=invocation_context.branch,
         isolation_scope=invocation_context.isolation_scope,
+        abort_signal=abort_signal,
     )
     if token_compacted:
       invocation_context.token_compaction_checked = True
