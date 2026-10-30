@@ -1215,6 +1215,86 @@ async def test_create_session_with_ttl_none_and_expire_time_none_does_not_raise(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'allowed_kwargs',
+    [
+        {
+            'display_name': 'Demo session',
+            'labels': {'env': 'dev'},
+            'ttl': '3600s',
+        },
+        {
+            'displayName': 'Camel session',
+            'expireTime': '2025-12-12T12:12:12.123456Z',
+        },
+    ],
+)
+async def test_create_session_with_allowed_options(allowed_kwargs):
+  """Allowed create_session options forward cleanly to the Sessions API."""
+  mock_client = MockAsyncClient()
+  session_service = mock_vertex_ai_session_service()
+  with mock.patch.object(
+      session_service, '_get_api_client', return_value=mock_client
+  ):
+    await session_service.create_session(
+        app_name='123', user_id='user', **allowed_kwargs
+    )
+    assert mock_client.last_create_session_config == allowed_kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_with_ttl_and_camel_case_expire_time_raises():
+  """Setting both ttl and expireTime is rejected."""
+  session_service = mock_vertex_ai_session_service()
+  with pytest.raises(
+      ValueError,
+      match="Cannot specify both 'ttl' and 'expire_time' simultaneously.",
+  ):
+    await session_service.create_session(
+        app_name='123',
+        user_id='user',
+        ttl='7200s',
+        expireTime='2025-12-12T12:12:12.123456Z',
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'disallowed_kwargs',
+    [
+        {'http_options': {'base_url': 'https://attacker.example.com'}},
+        {'httpOptions': {'baseUrl': 'https://attacker.example.com'}},
+        {'sessionId': '../other'},
+        {'session_state': {'app:role': 'admin'}},
+        {'sessionState': {'app:role': 'admin'}},
+        {'wait_for_completion': False},
+        {'waitForCompletion': False},
+    ],
+)
+async def test_create_session_rejects_disallowed_config_options(
+    disallowed_kwargs,
+):
+  """Disallowed create_session config keys raise before any API call."""
+  mock_client = MockAsyncClient()
+  session_service = mock_vertex_ai_session_service()
+  with mock.patch.object(
+      session_service, '_get_api_client', return_value=mock_client
+  ):
+    with pytest.raises(
+        ValueError,
+        match='Unsupported create_session option.*Supported options are:',
+    ):
+      await session_service.create_session(
+          app_name='123',
+          user_id='user',
+          state={'safe': 'value'},
+          **disallowed_kwargs,
+      )
+  mock_client.sessions.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
 async def test_append_event():
   session_service = mock_vertex_ai_session_service()
