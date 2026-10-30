@@ -23,11 +23,13 @@ from unittest import mock
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.live import _live_llm_flow
 from google.adk.live._active_background_tool import ActiveBackgroundTool
 from google.adk.live._active_streaming_tool import ActiveStreamingTool
+from google.adk.live._visual_frames import unpack_visual_frames
 from google.adk.live.live_request_queue import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -231,12 +233,15 @@ async def test_handle_control_event_flush_on_interrupted():
 
   assert len(events) == 1
   mock_flush.assert_awaited_once_with(
-      context, flush_user_audio=False, flush_model_audio=True
+      context,
+      flush_user_audio=False,
+      flush_model_audio=True,
+      flush_user_visual=False,
   )
 
 
 async def test_handle_control_event_flush_on_turn_complete():
-  """A turn_complete response triggers both user and model audio cache flushes."""
+  """A turn_complete response triggers both user and model cache flushes."""
   flow = _TestBaseLlmFlow()
   context = _create_test_context(live_request_queue=LiveRequestQueue())
   response = LlmResponse(turn_complete=True)
@@ -251,7 +256,10 @@ async def test_handle_control_event_flush_on_turn_complete():
 
   assert len(events) == 1
   mock_flush.assert_awaited_once_with(
-      context, flush_user_audio=True, flush_model_audio=True
+      context,
+      flush_user_audio=True,
+      flush_model_audio=True,
+      flush_user_visual=True,
   )
 
 
@@ -415,8 +423,8 @@ async def test_send_to_model_uses_flow_realtime_cache_manager():
   )
 
 
-async def test_send_to_model_caches_only_audio_blobs():
-  """Non-audio blobs such as video frames are sent but not cached."""
+async def test_send_to_model_keeps_non_audio_blobs_out_of_audio_cache():
+  """Non-audio blobs are sent but stay out of the audio cache."""
   flow = _TestBaseLlmFlow()
   queue = LiveRequestQueue()
   audio_blob = types.Blob(mime_type='audio/pcm', data=b'audio_bytes')
@@ -497,8 +505,8 @@ async def test_send_to_model_feeds_streams_set_through_deprecated_field():
   assert forwarded.blob == blob
 
 
-async def test_receive_from_model_caches_only_audio_blobs():
-  """Model audio blobs are cached; other inline blobs are not."""
+async def test_receive_from_model_keeps_non_audio_blobs_out_of_audio_cache():
+  """Model audio blobs go to the audio cache; other inline blobs don't."""
   flow = _TestBaseLlmFlow()
   context = _create_test_context(run_config=RunConfig(save_live_blob=True))
   calls = 0
@@ -537,6 +545,106 @@ async def test_receive_from_model_caches_only_audio_blobs():
   assert [entry.data.data for entry in context.output_realtime_cache] == [
       b'model_audio'
   ]
+
+
+async def test_turn_complete_saves_image_frames_sent_to_the_model():
+  """Camera frames sent during a turn are saved as one archive at its end."""
+  flow = _TestBaseLlmFlow()
+  queue = LiveRequestQueue()
+  for data in (b'frame_1', b'frame_2'):
+    queue.send_realtime(types.Blob(mime_type='image/jpeg', data=data))
+  queue.close()
+  context = _create_test_context(
+      live_request_queue=queue, run_config=RunConfig(save_live_blob=True)
+  )
+  artifact_service = InMemoryArtifactService()
+  context.artifact_service = artifact_service
+  await _live_llm_flow.send_to_model(
+      flow, mock.AsyncMock(), context, LlmRequest()
+  )
+
+  events = await _live_llm_flow.handle_control_event_flush(
+      flow, context, LlmResponse(turn_complete=True)
+  )
+
+  (event,) = events
+  file_data = event.content.parts[0].file_data
+  assert event.author == 'user'
+  assert file_data.mime_type == 'application/zip'
+  filename = file_data.file_uri.split('/_adk_live/')[1].split('#')[0]
+  saved = await artifact_service.load_artifact(
+      app_name=context.app_name,
+      user_id=context.user_id,
+      session_id=context.session.id,
+      filename=filename,
+  )
+  frames, _ = unpack_visual_frames(saved.inline_data.data)
+  assert [frame.blob.data for frame in frames] == [b'frame_1', b'frame_2']
+
+
+async def _postprocess(
+    flow: BaseLlmFlow, context: InvocationContext, response: LlmResponse
+) -> list[Event]:
+  """Returns the events `postprocess_live_flow` yields for one response."""
+  event = Event(
+      id='ev-1', invocation_id=context.invocation_id, author='test_agent'
+  )
+  return [
+      e
+      async for e in _live_llm_flow.postprocess_live_flow(
+          flow, context, LlmRequest(), response, event
+      )
+  ]
+
+
+def _context_with_cached_frames(flow: BaseLlmFlow) -> InvocationContext:
+  """Returns a save_live_blob context holding two cached camera frames."""
+  context = _create_test_context(
+      live_request_queue=LiveRequestQueue(),
+      run_config=RunConfig(save_live_blob=True),
+  )
+  context.artifact_service = InMemoryArtifactService()
+  for data in (b'frame_1', b'frame_2'):
+    flow._realtime_cache_manager.cache_blob(
+        context, types.Blob(mime_type='image/jpeg', data=data), 'input'
+    )
+  return context
+
+
+async def test_turn_complete_follows_the_saved_frames_in_a_text_session():
+  """Frames from a session without audio are saved before turn_complete."""
+  flow = _TestBaseLlmFlow()
+  context = _context_with_cached_frames(flow)
+
+  saved, turn_end = await _postprocess(
+      flow, context, LlmResponse(turn_complete=True)
+  )
+
+  assert saved.content.parts[0].file_data.mime_type == 'application/zip'
+  assert turn_end.turn_complete is True
+
+
+async def test_interrupted_keeps_frames_for_the_turn_end():
+  """interrupted is yielded alone; the frames are saved at the turn end."""
+  flow = _TestBaseLlmFlow()
+  context = _context_with_cached_frames(flow)
+
+  interrupted = await _postprocess(flow, context, LlmResponse(interrupted=True))
+  saved, turn_end = await _postprocess(
+      flow, context, LlmResponse(turn_complete=True)
+  )
+
+  assert [event.interrupted for event in interrupted] == [True]
+  file_uri = saved.content.parts[0].file_data.file_uri
+  archive = await context.artifact_service.load_artifact(
+      app_name=context.app_name,
+      user_id=context.user_id,
+      session_id=context.session.id,
+      filename=file_uri.split('/_adk_live/')[1].split('#')[0],
+  )
+  frames, _ = unpack_visual_frames(archive.inline_data.data)
+  assert [frame.blob.data for frame in frames] == [b'frame_1', b'frame_2']
+  assert turn_end.turn_complete is True
 
 
 def test_audio_cache_manager_alias_points_to_realtime_cache_manager():

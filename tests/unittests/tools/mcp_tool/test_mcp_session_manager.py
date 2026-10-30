@@ -1701,6 +1701,31 @@ class TestMCPSessionManager:
 
   @pytest.mark.asyncio
   @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  @pytest.mark.parametrize(
+      ("use_client_cert", "expected_probes"), [(False, 0), (True, 1)]
+  )
+  async def test_mtls_probe_follows_google_auth_client_cert_decision(
+      self, monkeypatch, use_client_cert, expected_probes
+  ):
+    """An unset GOOGLE_API_USE_CLIENT_CERTIFICATE defers to google-auth."""
+    monkeypatch.delenv("GOOGLE_API_USE_CLIENT_CERTIFICATE", raising=False)
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://localhost:8000/mcp")
+    )
+
+    with patch(
+        "google.auth.transport.mtls.should_use_client_cert",
+        return_value=use_client_cert,
+    ):
+      with patch(
+          "google.auth.default", side_effect=Exception("no credentials")
+      ) as mock_auth_default:
+        assert await manager._get_mtls_transport() is None
+
+    assert mock_auth_default.call_count == expected_probes
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
   async def test_get_mtls_transport_success(self):
     """Test successful _GoogleAuthAsyncTransport creation with mTLS."""
     sse_params = SseConnectionParams(url="https://example.com/mcp")

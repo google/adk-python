@@ -625,6 +625,54 @@ def test_no_auth_warning_on_non_loopback_bind(
   assert warned is expect_warning
 
 
+def test_get_fast_api_app_creates_file_eval_storage_dir(tmp_path, monkeypatch):
+  """file:// eval_storage_uri creates that directory for local eval managers."""
+  monkeypatch.delenv("ADK_EVAL_STORAGE_URI", raising=False)
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  storage_dir = tmp_path / "adk_evals"
+
+  with (
+      patch.object(
+          fast_api_module, "LocalEvalSetsManager", autospec=True
+      ) as mock_sets_cls,
+      patch.object(
+          fast_api_module, "LocalEvalSetResultsManager", autospec=True
+      ) as mock_results_cls,
+  ):
+    get_fast_api_app(
+        agents_dir=str(agents_dir),
+        web=False,
+        eval_storage_uri=storage_dir.as_uri(),
+    )
+
+  assert storage_dir.is_dir()
+  mock_sets_cls.assert_called_once_with(agents_dir=str(storage_dir))
+  mock_results_cls.assert_called_once_with(agents_dir=str(storage_dir))
+
+
+def test_get_fast_api_app_honors_eval_storage_uri_env(tmp_path, monkeypatch):
+  """ADK_EVAL_STORAGE_URI is used when eval_storage_uri is omitted."""
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  storage_dir = tmp_path / "from_env"
+  monkeypatch.setenv("ADK_EVAL_STORAGE_URI", storage_dir.as_uri())
+
+  with (
+      patch.object(
+          fast_api_module, "LocalEvalSetsManager", autospec=True
+      ) as mock_sets_cls,
+      patch.object(
+          fast_api_module, "LocalEvalSetResultsManager", autospec=True
+      ) as mock_results_cls,
+  ):
+    get_fast_api_app(agents_dir=str(agents_dir), web=False)
+
+  assert storage_dir.is_dir()
+  mock_sets_cls.assert_called_once_with(agents_dir=str(storage_dir))
+  mock_results_cls.assert_called_once_with(agents_dir=str(storage_dir))
+
+
 def test_agent_with_bigquery_analytics_plugin(
     tmp_path,
     mock_session_service,
@@ -946,6 +994,7 @@ def test_app(
 
 @pytest.fixture
 def builder_test_app(
+    request,
     tmp_path,
     mock_session_service,
     mock_artifact_service,
@@ -1008,7 +1057,7 @@ def builder_test_app(
         session_service_uri="",
         artifact_service_uri="",
         memory_service_uri="",
-        allow_origins=None,
+        allow_origins=getattr(request, "param", None),
         a2a=False,
         host="127.0.0.1",
         bind_host="127.0.0.1",
@@ -2683,7 +2732,6 @@ async def test_rewind_aborts_active_run_sse(
       new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
       streaming=True,
   )
-  response = await run_sse_handler(req)
 
   async def receive():
     await asyncio.Event().wait()
@@ -2694,9 +2742,13 @@ async def test_rewind_aborts_active_run_sse(
     if message.get("type") == "http.response.body" and message.get("body"):
       sent_chunks.append(message["body"].decode("utf-8"))
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+  response = await run_sse_handler(req, request)
+
   sse_task = asyncio.create_task(
       response(
-          {"type": "http", "asgi": {"spec_version": "2.1"}},
+          scope,
           receive,
           send,
       )
@@ -2913,7 +2965,6 @@ async def test_invalid_rewind_does_not_abort_active_run_sse(
       new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
       streaming=True,
   )
-  response = await run_sse_handler(req)
 
   async def receive():
     await asyncio.Event().wait()
@@ -2921,9 +2972,13 @@ async def test_invalid_rewind_does_not_abort_active_run_sse(
   async def send(message):
     del message
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+  response = await run_sse_handler(req, request)
+
   sse_task = asyncio.create_task(
       response(
-          {"type": "http", "asgi": {"spec_version": "2.1"}},
+          scope,
           receive,
           send,
       )
@@ -3021,7 +3076,6 @@ async def test_rewind_abort_timeout_returns_409(
       new_message={"role": "user", "parts": [{"text": "Run stuck tool"}]},
       streaming=True,
   )
-  response = await run_sse_handler(req)
 
   async def receive():
     await asyncio.Event().wait()
@@ -3029,9 +3083,13 @@ async def test_rewind_abort_timeout_returns_409(
   async def send(message):
     del message
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+  response = await run_sse_handler(req, request)
+
   sse_task = asyncio.create_task(
       response(
-          {"type": "http", "asgi": {"spec_version": "2.1"}},
+          scope,
           receive,
           send,
       )
@@ -4679,8 +4737,16 @@ async def test_agent_run_sse_disconnect_with_cleanup_exception(
       streaming=True,
   )
 
+  async def receive():
+    await asyncio.Event().wait()
+
+  request = starlette.requests.Request(
+      {"type": "http", "method": "POST", "path": "/run_sse", "headers": []},
+      receive=receive,
+  )
+
   # Call handler
-  response = await handler(req)
+  response = await handler(req, request)
   assert response.status_code == 200
 
   # Iterate generator and close it early
@@ -4752,8 +4818,16 @@ async def test_agent_run_sse_disconnect_with_cleanup_exception_and_cancellation(
       streaming=True,
   )
 
+  async def receive():
+    await asyncio.Event().wait()
+
+  request = starlette.requests.Request(
+      {"type": "http", "method": "POST", "path": "/run_sse", "headers": []},
+      receive=receive,
+  )
+
   # Call handler
-  response = await handler(req)
+  response = await handler(req, request)
   assert response.status_code == 200
 
   # Iterate generator
@@ -4869,9 +4943,6 @@ async def test_agent_run_sse_disconnect_seals_dangling_function_call(
       streaming=True,
   )
 
-  response = await handler(req)
-  assert response.status_code == 200
-
   sent_chunks: list[str] = []
 
   async def receive():
@@ -4882,8 +4953,14 @@ async def test_agent_run_sse_disconnect_seals_dangling_function_call(
     if message["type"] == "http.response.body" and message.get("body"):
       sent_chunks.append(message["body"].decode("utf-8"))
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+
+  response = await handler(req, request)
+  assert response.status_code == 200
+
   await response(
-      {"type": "http", "asgi": {"spec_version": "2.1"}},
+      scope,
       receive,
       send,
   )
@@ -4906,6 +4983,105 @@ async def test_agent_run_sse_disconnect_seals_dangling_function_call(
   frs = abort_events[0].get_function_responses()
   assert len(frs) == 1
   assert frs[0].id == "call_sse_1"
+  assert frs[0].name == "slow_tool"
+
+
+async def test_agent_run_sse_disconnect_aborts_under_asgi_2_4(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test /run_sse disconnect aborts under ASGI 2.4 when send() no-ops."""
+  info = create_test_session
+  captured_contexts = []
+  tool_in_flight = asyncio.Event()
+  after_run_flag = asyncio.Event()
+
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+  loaded_app = _slow_tool_app(
+      info,
+      captured_contexts,
+      tool_in_flight,
+      after_run_flag,
+      call_id="call_sse_asgi_24",
+  )
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: loaded_app
+  )
+
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  app = client.app
+  handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      handler = route.endpoint
+      break
+  assert handler is not None
+
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
+      streaming=True,
+  )
+
+  sent_chunks: list[str] = []
+
+  async def receive():
+    await tool_in_flight.wait()
+    return {"type": "http.disconnect"}
+
+  async def send(message):
+    if tool_in_flight.is_set():
+      return
+    if message["type"] == "http.response.body" and message.get("body"):
+      sent_chunks.append(message["body"].decode("utf-8"))
+
+  scope = {
+      "type": "http",
+      "asgi": {"spec_version": "2.4"},
+      "method": "POST",
+      "path": "/run_sse",
+      "headers": [],
+  }
+  request = starlette.requests.Request(scope, receive=receive)
+
+  response = await handler(req, request)
+  assert response.status_code == 200
+
+  await asyncio.wait_for(
+      response(scope, receive, send),
+      timeout=2.0,
+  )
+
+  assert any("slow_tool" in chunk for chunk in sent_chunks)
+  assert len(captured_contexts) == 1
+  assert captured_contexts[0].is_aborted
+  assert after_run_flag.is_set()
+
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  abort_events = [
+      e for e in session.events if e.error_code == "INVOCATION_ABORTED"
+  ]
+  assert len(abort_events) == 1
+  frs = abort_events[0].get_function_responses()
+  assert len(frs) == 1
+  assert frs[0].id == "call_sse_asgi_24"
   assert frs[0].name == "slow_tool"
 
 
@@ -4950,9 +5126,6 @@ async def test_agent_run_sse_consumer_exception_surfaces_error_event(
   monkeypatch.setattr(Event, "model_dump", _failing_model_dump_json)
   monkeypatch.setattr(Event, "model_dump_json", _failing_model_dump_json)
 
-  response = await handler(req)
-  assert response.status_code == 200
-
   sent_chunks: list[str] = []
 
   async def receive():
@@ -4963,8 +5136,14 @@ async def test_agent_run_sse_consumer_exception_surfaces_error_event(
     if message["type"] == "http.response.body" and message.get("body"):
       sent_chunks.append(message["body"].decode("utf-8"))
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+
+  response = await handler(req, request)
+  assert response.status_code == 200
+
   await response(
-      {"type": "http", "asgi": {"spec_version": "2.1"}},
+      scope,
       receive,
       send,
   )
@@ -5850,6 +6029,156 @@ def test_builder_get_allows_request_without_origin(builder_test_client):
 
   assert response.status_code == 200
   assert not response.text
+
+
+@pytest.mark.parametrize(
+    "builder_test_app", [["*"], ["regex:https://.*"]], indirect=True
+)
+def test_builder_save_rejects_origin_allowed_only_by_wildcard(
+    builder_test_client, tmp_path
+):
+  """A wildcard opens CORS to every site, but not agent file writes."""
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save",
+      headers={"origin": "https://evil.example"},
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: pwned\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 403
+  assert "own origin" in response.json()["detail"]
+  assert not (tmp_path / "app" / "root_agent.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    "builder_test_app", [["*", "https://ide.example"]], indirect=True
+)
+@pytest.mark.parametrize("origin", [_LOOPBACK_BASE_URL, "https://ide.example"])
+def test_builder_save_allows_own_or_literally_listed_origin(
+    builder_test_client, tmp_path, origin
+):
+  """The dev UI and an origin the developer named still reach the builder."""
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save",
+      headers={"origin": origin},
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 200
+  assert (tmp_path / "app" / "root_agent.yaml").is_file()
+
+
+@pytest.mark.parametrize(
+    "method, path, body",
+    [
+        ("GET", "/apps/__internal_assistant/app-info", None),
+        (
+            "POST",
+            "/run",
+            {
+                "app_name": "__internal_assistant",
+                "user_id": "u",
+                "session_id": "s",
+                "new_message": {"role": "user", "parts": [{"text": "hi"}]},
+            },
+        ),
+    ],
+)
+def test_special_agent_rejects_origin_allowed_only_by_wildcard(
+    method,
+    path,
+    body,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Internal agents write code, so a wildcard does not open them to sites."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=["*"],
+      bind_host="127.0.0.1",
+  )
+  headers = {"host": "127.0.0.1:8000", "origin": "https://evil.example"}
+
+  response = client.request(method, path, json=body, headers=headers)
+
+  assert response.status_code == 403
+  assert "own origin" in response.json()["detail"]
+
+
+def test_special_agent_allows_own_origin_with_wildcard(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """The dev UI keeps the builder assistant when allow_origins has '*'."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=["*"],
+      bind_host="127.0.0.1",
+  )
+
+  response = client.get(
+      "/apps/__internal_assistant/app-info",
+      headers={"host": "127.0.0.1:8000", "origin": _LOOPBACK_BASE_URL},
+  )
+
+  assert response.status_code == 400
+  assert response.json()["detail"] == "Root agent is not an LlmAgent"
+
+
+def test_special_agent_allows_proxied_origin_without_allow_origins(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Without a wildcard, the forwarded-host same-origin check still applies."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=None,
+      bind_host="127.0.0.1",
+  )
+
+  response = client.get(
+      "/apps/__internal_assistant/app-info",
+      headers={
+          "host": "127.0.0.1:8000",
+          "x-forwarded-host": "localhost:9000",
+          "origin": "http://localhost:9000",
+      },
+  )
+
+  assert response.status_code == 400
+  assert response.json()["detail"] == "Root agent is not an LlmAgent"
 
 
 def test_builder_save_rejects_remote_client(

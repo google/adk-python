@@ -9,7 +9,7 @@ is the enumeration of the flags that exist.
 
 ## Introduction
 
-You construct something, a `GCSToolset` for instance, and get a `UserWarning`
+You construct something, an `EventarcToolset` for instance, and get a `UserWarning`
 reading `[EXPERIMENTAL] feature <name> is enabled.` Or you disable something and
 the next construction raises `RuntimeError: Feature <name> is not enabled.`
 
@@ -93,8 +93,9 @@ Whenever the resolution ends in "enabled" for a flag whose stage is not stable,
 ADK emits a `UserWarning` whose text starts `[EXPERIMENTAL] feature` or
 `[WIP] feature` and names the flag. It is emitted once per flag per process,
 from `is_feature_enabled` itself, and it is purely informational, so nothing is
-failing when you see it. Suppress it with the standard `warnings` filters if it
-is noise in your logs.
+failing when you see it. If it is noise in your logs, set
+`ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS=1` to silence the `[EXPERIMENTAL]`
+ones, or use the standard `warnings` filters, which also cover `[WIP]`.
 
 Nothing is cached. Every call re-reads the override dictionary and
 `os.environ`, so changing an environment variable mid-process does take effect.
@@ -107,7 +108,7 @@ There are two enforcement styles, and the symptom differs.
 
 **A gated unit.** Some classes and functions carry one of the `@experimental`,
 `@working_in_progress` or `@stable` decorators, which call `is_feature_enabled`
-before running. `GCSToolset`, `SpannerToolset` and `ComputerUseTool` are all
+before running. `EventarcToolset`, `MongoDbToolset` and `FallbackModel` are all
 gated this way. If the flag is off, constructing the
 class or calling the function raises a `RuntimeError` saying the feature is not
 enabled. The object is not half-built; the failure is immediate and total. Every
@@ -118,16 +119,16 @@ only after deliberately disabling one.
 selects between an old and a new behavior. Nothing raises. The flag changes
 what happens, and the only way to know is the release note or the source.
 
-**A label with no flag.** Some older classes and functions, such as the
-credential services and several evaluators, carry the legacy `@experimental`
-from `google.adk.utils.feature_decorator` instead. It predates the registry: it
+**A label with no flag.** The two GEPA optimizers, `GEPARootAgentOptimizer` and
+`GEPARootAgentPromptOptimizer`, carry the legacy `@experimental` from
+`google.adk.utils.feature_decorator` instead. It predates the registry: it
 has no `FeatureName`, so `ADK_ENABLE_<NAME>` and `ADK_DISABLE_<NAME>` do not
 apply, and it never blocks anything. It only warns, once per unit, with text of
 the form `[EXPERIMENTAL] <ClassName>: <message>`. Set
-`ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS=1` to silence those warnings; that
-variable has no effect on the registry's `[EXPERIMENTAL] feature <name>`
-warnings. New code does not use the legacy decorator, and a compliance check
-rejects new imports of it.
+`ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS=1` to silence those warnings; the
+same variable also silences the registry's `[EXPERIMENTAL] feature <name>`
+warnings, but not its `[WIP] feature <name>` ones. New code does not use the
+legacy decorator, and a compliance check rejects new imports of it.
 
 ## Functions and types
 
@@ -196,9 +197,10 @@ experimental feature you have decided not to take yet.
 *   **When a flag is read is feature-specific.** Some units read their flag at
     construction, some on every call. Setting a variable after the relevant
     object exists may have no effect.
-*   **The warning has no per-flag switch.** Silencing the experimental warning
-    means a `warnings` filter, which also hides other `UserWarning`s unless
-    you match on the message.
+*   **The warning has no per-flag switch.**
+    `ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS` silences every `[EXPERIMENTAL]`
+    warning at once; to silence one flag, or a `[WIP]` warning, use a `warnings`
+    filter that matches on the message.
 
 ## Related guides
 

@@ -113,6 +113,13 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
     A tuple of (isolation_scope, invocation_id) for the active task if found,
     or None if no active task scope is found.
   """
+  # Fast path: this function can only return an event that has an
+  # isolation_scope, and _apply_rewinds never adds events, so a history with
+  # no scoped event has no active task scope and both passes below can be
+  # skipped.
+  if not any(event.isolation_scope for event in session.events):
+    return None
+
   live_events = _apply_rewinds(session.events)
   finished_runs = _find_finished_scope_runs(live_events)
 
@@ -803,6 +810,14 @@ class Runner:
           get_task = None
         if event_or_done is done_sentinel:
           break
+        # (None, signal) is a barrier from NodeRunner._wait_for_enqueued_events:
+        # acknowledge it once everything queued ahead of it has been appended,
+        # without running plugins or yielding anything to the caller.
+        if event_or_done is None and isinstance(
+            processed_signal, asyncio.Event
+        ):
+          processed_signal.set()
+          continue
         if not isinstance(event_or_done, Event):
           raise TypeError(
               'Unexpected node event queue item:'
@@ -898,27 +913,33 @@ class Runner:
   async def _run_post_invocation_compaction(
       self,
       *,
-      session: Session,
+      invocation_context: InvocationContext,
   ) -> None:
     """Run best-effort derived compaction after a completed invocation.
+
+    The config comes from the invocation, so a before_run_callback that
+    replaced or cleared it for this session is honored here too.
 
     A later turn is allowed to update the same session while summarization is
     running. If that happens, the old summary is discarded rather than making
     an already answered invocation fail. Raw events remain persisted and a
     later turn can re-evaluate compaction against its newer snapshot.
     """
-    if not self.app or not self.app.events_compaction_config:
+    config = invocation_context.events_compaction_config
+    if not config:
       return
 
-    from google.adk.apps.compaction import _run_compaction_for_sliding_window
+    from .apps.compaction import _run_compaction_for_sliding_window_config
 
+    session = invocation_context.session
     logger.debug('Running event compactor.')
     try:
       async with aclosing(
-          _run_compaction_for_sliding_window(
-              self.app,
-              session,
-              self.session_service,
+          _run_compaction_for_sliding_window_config(
+              config=config,
+              session=session,
+              session_service=self.session_service,
+              agent=self.agent,
           )
       ) as compaction_events:
         async for compaction_event in compaction_events:
@@ -989,10 +1010,10 @@ class Runner:
       This sync interface is only for local testing and convenience purpose.
       Consider using `run_async` for production usage.
 
-    If event compaction is enabled in the App configuration, it will be
-    performed after all agent events for the current invocation have been
-    yielded. The generator will only finish iterating after event
-    compaction is complete.
+    If event compaction is enabled for the invocation, by the App or by a
+    plugin's before_run_callback, it will be performed after all agent events
+    for the current invocation have been yielded. The generator will only
+    finish iterating after event compaction is complete.
 
     Args:
       user_id: The user ID of the session.
@@ -1109,11 +1130,12 @@ class Runner:
   ) -> AsyncGenerator[Event, None]:
     """Main entry method to run the agent in this runner.
 
-    If event compaction is enabled in the App configuration, it will be
-    performed after all agent events for the current invocation have been
-    yielded. The async generator will only finish iterating after event
-    compaction is complete. However, this does not block new `run_async`
-    calls for subsequent user queries, which can be started concurrently.
+    If event compaction is enabled for the invocation, by the App or by a
+    plugin's before_run_callback, it will be performed after all agent events
+    for the current invocation have been yielded. The async generator will only
+    finish iterating after event compaction is complete. However, this does not
+    block new `run_async` calls for subsequent user queries, which can be
+    started concurrently.
 
     Args:
       user_id: The user ID of the session.
@@ -1337,7 +1359,7 @@ class Runner:
         # (We don't compact in the middle of an invocation, we only compact at
         # the end of an invocation.)
         await self._run_post_invocation_compaction(
-            session=invocation_context.session,
+            invocation_context=invocation_context,
         )
 
     from .telemetry import _instrumentation

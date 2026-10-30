@@ -58,6 +58,8 @@ The plugin hooks two points of the model pipeline exposed by `BasePlugin`:
 3. **Track and retry**: On a caught failure it increments a per-model counter via `ScopedFailureTracker`. While the count is within `max_retries`, it returns a synthetic `LlmResponse` calling `adk_handle_model_error` with the error details and attempt number — a reflection turn telling the model not to repeat the same call.
 4. **Exhaustion**: Once the count exceeds `max_retries`, it either raises `RuntimeError` or returns the original failed response, depending on `throw_exception_if_retry_exceeded`.
 
+Under `TrackingScope.INVOCATION`, the plugin also drops an invocation's counters when a run ends, is aborted, or fails with an unhandled error, through `after_run_callback` and `on_run_error_callback`. A run that pauses on an unanswered interrupt (such as a long-running, confirmation, or credential call) keeps its counters, so the run that answers it, which reuses the invocation id, continues the same retry budget. `GLOBAL` counters persist across runs.
+
 For counting, the plugin depends on `_reflect_retry_utils`: `ScopedFailureTracker`, `TrackingScope` (invocation vs. global lifecycle), and `resolve_scope_key`. The model name is read from `agent.canonical_model.model`; a non-`LlmAgent`, or one without a resolvable model, raises `ValueError`.
 
 ## Configuration options

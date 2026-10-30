@@ -17,6 +17,7 @@ import threading
 import unicodedata
 
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.memory.base_memory_service import BaseMemoryService
 from google.adk.memory.base_memory_service import SearchMemoryResponse
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
@@ -158,6 +159,34 @@ async def test_add_events_to_memory_without_session_id_uses_default_bucket():
   unknown_session_events = next(iter(session_memory.values()))
   assert len(unknown_session_events) == 1
   assert unknown_session_events[0].id == 'event-1a'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'session_id', ['ordinary-session', '__unknown_session_id__']
+)
+async def test_add_session_to_memory_keeps_sessionless_memories(session_id):
+  """A session must not replace events added without a session ID."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=[MOCK_SESSION_1.events[0]],
+  )
+
+  await memory_service.add_session_to_memory(
+      Session(
+          app_name=MOCK_APP_NAME,
+          user_id=MOCK_USER_ID,
+          id=session_id,
+          last_update_time=1000,
+      )
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='toolkit'
+  )
+  assert [memory.id for memory in result.memories] == ['event-1a']
 
 
 @pytest.mark.asyncio
@@ -1059,3 +1088,41 @@ async def test_search_results_are_detached_from_stored_memory(
   assert len(repeated.memories) == 1
   assert repeated.memories[0].content == original_content
   assert event.content == original_content
+
+
+def _rewind_event(rewind_before_invocation_id: str) -> Event:
+  return Event(
+      invocation_id='inv-rewind',
+      author='user',
+      actions=EventActions(
+          rewind_before_invocation_id=rewind_before_invocation_id
+      ),
+  )
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_rewound_events():
+  """Turns a rewind took back are not stored, also when added before it."""
+  memory_service = InMemoryMemoryService()
+  session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='session-rewound',
+      events=[
+          _text_event('kept', 'trip to paris'),
+          _text_event('rewound', 'address is baker street'),
+      ],
+  )
+  await memory_service.add_session_to_memory(session)
+
+  session.events.append(_rewind_event('inv-rewound'))
+  await memory_service.add_session_to_memory(session)
+
+  rewound = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='baker'
+  )
+  kept = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='paris'
+  )
+  assert not rewound.memories
+  assert [m.content.parts[0].text for m in kept.memories] == ['trip to paris']

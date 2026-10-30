@@ -60,13 +60,13 @@ def test_construction_sets_fields_and_injectable_client():
   client = _FakeClient()
   agent = ManagedAgent(
       name='mgr',
-      agent_id='antigravity-preview-05-2026',
+      agent_id='antigravity-preview-09-2026',
       environment={'type': 'remote'},
       api_client=client,
   )
 
   assert agent.name == 'mgr'
-  assert agent.agent_id == 'antigravity-preview-05-2026'
+  assert agent.agent_id == 'antigravity-preview-09-2026'
   assert agent.environment == {'type': 'remote'}
   assert agent.tools == []
   # Injected client is returned without constructing a real genai client.

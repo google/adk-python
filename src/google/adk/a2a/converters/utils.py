@@ -14,12 +14,24 @@
 
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import quote
 from urllib.parse import unquote
+
+from .. import _compat
 
 ADK_METADATA_KEY_PREFIX = "adk_"
 ADK_CONTEXT_ID_PREFIX = "ADK"
 ADK_CONTEXT_ID_SEPARATOR = "/"
+A2A_TASK_FAILED_ERROR_CODE = "A2A_TASK_FAILED"
+A2A_TASK_FAILED_ERROR_MESSAGE = "Remote agent task failed"
+
+
+def _is_failed_status(status: Any) -> bool:
+  """Returns whether an A2A task status is in the failed state."""
+  return (
+      status is not None and getattr(status, "state", None) == _compat.TS_FAILED
+  )
 
 
 def _get_adk_metadata_key(key: str) -> str:

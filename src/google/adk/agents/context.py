@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
+from ._callback_metadata import CallbackInfo
 from .readonly_context import ReadonlyContext
 
 if TYPE_CHECKING:
@@ -76,12 +77,11 @@ def _derive_node_path(
   # Fallback: Reconstruct parent_path from static parent_agent Tree
   # if parent_path is missing during multi-turn session resumption.
   from ..agents.base_agent import BaseAgent
-  from ..events._node_path_builder import _NodePathBuilder
+  from ..events._node_path_builder import join_node_path
 
   derived_run_id = run_id or '1'
 
   if not parent_path and isinstance(node, BaseAgent) and node.parent_agent:
-    path_builder = _NodePathBuilder([])
     curr: BaseAgent | None = node.parent_agent
     parent_agents: list[BaseAgent] = []
     depth = 0
@@ -89,9 +89,9 @@ def _derive_node_path(
       parent_agents.insert(0, curr)
       curr = curr.parent_agent
       depth += 1
+    parent_path = ''
     for agent in parent_agents:
-      path_builder = path_builder.append(agent.name, '1')
-    parent_path = str(path_builder)
+      parent_path = join_node_path(parent_path, agent.name, '1')
 
   # Root contexts have no node name and no parent path. Return an empty path
   # to ensure they are correctly identified as the root of the execution
@@ -99,14 +99,8 @@ def _derive_node_path(
   if not node_name and not parent_path:
     return '', derived_run_id
 
-  base_path_builder = (
-      _NodePathBuilder.from_string(parent_path)
-      if parent_path
-      else _NodePathBuilder([])
-  )
-
-  derived_node_path = str(
-      base_path_builder.append(node_name or '', derived_run_id)
+  derived_node_path = join_node_path(
+      parent_path, node_name or '', derived_run_id
   )
   return derived_node_path, derived_run_id
 
@@ -119,6 +113,7 @@ class Context(ReadonlyContext):
   """
 
   _workflow_scheduler: DynamicNodeScheduler | None = None
+  _callback_info: CallbackInfo | None = None
 
   def __init__(
       self,
@@ -193,6 +188,7 @@ class Context(ReadonlyContext):
     # Tool Execution
     self._function_call_id = function_call_id
     self._tool_confirmation = tool_confirmation
+    self._callback_info: CallbackInfo | None = None
 
     # Workflow Execution
     effective_node_path = node_path
@@ -254,6 +250,11 @@ class Context(ReadonlyContext):
   def function_call_id(self, value: str | None) -> None:
     """Sets the function call id of the current tool call."""
     self._function_call_id = value
+
+  @property
+  def callback_info(self) -> CallbackInfo | None:
+    """Returns metadata for the callback currently being invoked, if any."""
+    return self._callback_info
 
   @property
   def branch(self) -> str | None:

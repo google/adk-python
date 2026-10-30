@@ -45,7 +45,7 @@ def test_require_live_request_queue_raises_when_missing():
 
 
 async def test_handle_control_event_flush_flushes_model_audio_on_interrupt():
-  """Flushes only model audio when the response indicates an interruption."""
+  """Flushes only the model's audio on an interruption."""
   flushed_event = Event(author='model')
   realtime_cache_manager = mock.Mock()
   realtime_cache_manager.flush_caches = mock.AsyncMock(
@@ -64,11 +64,12 @@ async def test_handle_control_event_flush_flushes_model_audio_on_interrupt():
       invocation_context,
       flush_user_audio=False,
       flush_model_audio=True,
+      flush_user_visual=False,
   )
 
 
 async def test_handle_control_event_flush_flushes_both_on_turn_complete():
-  """Flushes both user and model audio when the turn completes."""
+  """Flushes the user's audio and frames and the model's audio at a turn's end."""
   flushed_event = Event(author='model')
   realtime_cache_manager = mock.Mock()
   realtime_cache_manager.flush_caches = mock.AsyncMock(
@@ -87,4 +88,5 @@ async def test_handle_control_event_flush_flushes_both_on_turn_complete():
       invocation_context,
       flush_user_audio=True,
       flush_model_audio=True,
+      flush_user_visual=True,
   )

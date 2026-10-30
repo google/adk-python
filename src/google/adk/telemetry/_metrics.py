@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import collections
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -24,6 +25,8 @@ from google.adk.telemetry import _hallucination
 from google.adk.telemetry import _schema_version
 from google.adk.telemetry import tracing
 from google.adk.telemetry._decorators import experimental_telemetry
+from google.adk.telemetry._schema_version import resolve_schema_version
+from google.adk.telemetry._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
 from google.adk.telemetry._token_usage import CACHE_READ_INPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import INPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import OUTPUT_TOKENS_MEANING
@@ -31,6 +34,7 @@ from google.adk.telemetry._token_usage import REASONING_OUTPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import TokenUsage
 from google.adk.telemetry._token_usage import TOOL_INPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import TOTAL_TOKENS_MEANING
+from google.genai import types
 from opentelemetry import metrics
 from opentelemetry.semconv._incubating.attributes import gen_ai_attributes
 from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
@@ -66,56 +70,217 @@ meter = metrics.get_meter(
 )
 
 
+# The semconv bounds for gen_ai.invoke_agent.duration.
+_AGENT_DURATION_BUCKET_BOUNDS = [
+    0.1,
+    0.2,
+    0.4,
+    0.8,
+    1.6,
+    3.2,
+    6.4,
+    12.8,
+    25.6,
+    51.2,
+    102.4,
+    204.8,
+    409.6,
+]
+# The semconv bounds for gen_ai.invoke_workflow.duration.
+_WORKFLOW_DURATION_BUCKET_BOUNDS = [
+    1,
+    5,
+    10,
+    30,
+    60,
+    120,
+    300,
+    600,
+    1800,
+    3600,
+    7200,
+]
+
 _agent_invocation_duration = meter.create_histogram(
     "gen_ai.invoke_agent.duration",
     unit="s",
     description="Duration of agent invocations.",
-    explicit_bucket_boundaries_advisory=[
-        0.1,
-        0.2,
-        0.4,
-        0.8,
-        1.6,
-        3.2,
-        6.4,
-        12.8,
-        25.6,
-        51.2,
-        102.4,
-        204.8,
-        409.6,
-    ],
+    explicit_bucket_boundaries_advisory=_AGENT_DURATION_BUCKET_BOUNDS,
 )
 _workflow_invocation_duration = meter.create_histogram(
     "gen_ai.invoke_workflow.duration",
     unit="s",
     description="Duration of workflow invocations.",
+    explicit_bucket_boundaries_advisory=_WORKFLOW_DURATION_BUCKET_BOUNDS,
 )
+# The semconv bounds for gen_ai.client.operation.duration, also used for tool
+# executions.
+_OPERATION_DURATION_BUCKET_BOUNDS = [
+    0.01,
+    0.02,
+    0.04,
+    0.08,
+    0.16,
+    0.32,
+    0.64,
+    1.28,
+    2.56,
+    5.12,
+    10.24,
+    20.48,
+    40.96,
+    81.92,
+]
+# The semconv bounds for gen_ai.client.token.usage.
+_TOKEN_USAGE_BUCKET_BOUNDS = [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024,
+    4096,
+    16384,
+    65536,
+    262144,
+    1048576,
+    4194304,
+    16777216,
+    67108864,
+]
+
 _tool_execution_duration = meter.create_histogram(
     "gen_ai.execute_tool.duration",
     unit="s",
     description="Duration of tool executions.",
-    explicit_bucket_boundaries_advisory=[
-        0.01,
-        0.02,
-        0.04,
-        0.08,
-        0.16,
-        0.32,
-        0.64,
-        1.28,
-        2.56,
-        5.12,
-        10.24,
-        20.48,
-        40.96,
-        81.92,
-    ],
+    explicit_bucket_boundaries_advisory=_OPERATION_DURATION_BUCKET_BOUNDS,
 )
-_client_operation_duration = (
-    gen_ai_metrics.create_gen_ai_client_operation_duration(meter)
+# Not made with the semconv `create_gen_ai_client_*` helpers, which set no
+# bucket bounds.
+# TODO: Use the semconv helpers and bucket bounds once semconv publishes them.
+_client_operation_duration = meter.create_histogram(
+    gen_ai_metrics.GEN_AI_CLIENT_OPERATION_DURATION,
+    unit="s",
+    description="GenAI operation duration.",
+    explicit_bucket_boundaries_advisory=_OPERATION_DURATION_BUCKET_BOUNDS,
 )
-_client_token_usage = gen_ai_metrics.create_gen_ai_client_token_usage(meter)
+_client_token_usage = meter.create_histogram(
+    gen_ai_metrics.GEN_AI_CLIENT_TOKEN_USAGE,
+    unit="{token}",
+    description="Number of input and output tokens used.",
+    explicit_bucket_boundaries_advisory=_TOKEN_USAGE_BUCKET_BOUNDS,
+)
+
+# ---- Inference token metrics, schema v2 only ----
+_inference_usage_input_tokens = meter.create_counter(
+    "gen_ai.client.inference.usage.input_tokens",
+    unit="{token}",
+    description=(
+        "The number of input (prompt) tokens used, including cached tokens."
+    ),
+)
+_inference_usage_output_tokens = meter.create_counter(
+    "gen_ai.client.inference.usage.output_tokens",
+    unit="{token}",
+    description=(
+        "The number of output (completion) tokens used, including reasoning"
+        " tokens."
+    ),
+)
+_inference_usage_cache_read_input_tokens = meter.create_counter(
+    "gen_ai.client.inference.usage.cache_read.input_tokens",
+    unit="{token}",
+    description=(
+        "The number of input tokens served from a provider-managed cache."
+    ),
+)
+_inference_usage_cache_write_input_tokens = meter.create_counter(
+    "gen_ai.client.inference.usage.cache_write.input_tokens",
+    unit="{token}",
+    description=(
+        "The number of input tokens written to a provider-managed cache."
+    ),
+)
+_inference_usage_reasoning_output_tokens = meter.create_counter(
+    "gen_ai.client.inference.usage.reasoning.output_tokens",
+    unit="{token}",
+    description=(
+        "The number of output tokens used for reasoning (e.g. chain-of-thought,"
+        " extended thinking)."
+    ),
+)
+# The boundaries semconv-genai advises for both histograms below.
+_INFERENCE_OPERATION_TOKEN_BUCKET_BOUNDS = [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024,
+    4096,
+    16384,
+    65536,
+    262144,
+    1048576,
+    4194304,
+    16777216,
+    67108864,
+]
+_inference_operation_input_tokens = meter.create_histogram(
+    "gen_ai.client.inference.operation.input_tokens",
+    unit="{token}",
+    description=(
+        "The number of input (prompt) tokens used per inference operation."
+    ),
+    explicit_bucket_boundaries_advisory=_INFERENCE_OPERATION_TOKEN_BUCKET_BOUNDS,
+)
+_inference_operation_output_tokens = meter.create_histogram(
+    "gen_ai.client.inference.operation.output_tokens",
+    unit="{token}",
+    description=(
+        "The number of output (completion) tokens used per inference operation."
+    ),
+    explicit_bucket_boundaries_advisory=_INFERENCE_OPERATION_TOKEN_BUCKET_BOUNDS,
+)
+
+# Declared here rather than through `gen_ai_metrics`, which only has these under
+# the `gen_ai.client.operation.*` names semantic-conventions-genai#521 replaced.
+_INFERENCE_CHUNK_BUCKET_BOUNDS = [
+    0.01,
+    0.02,
+    0.04,
+    0.08,
+    0.16,
+    0.32,
+    0.64,
+    1.28,
+    2.56,
+    5.12,
+    10.24,
+    20.48,
+    40.96,
+    81.92,
+]
+_client_inference_time_to_first_chunk = meter.create_histogram(
+    "gen_ai.client.inference.time_to_first_chunk",
+    unit="s",
+    description=(
+        "Time to receive the first chunk, measured from when the client issues"
+        " the generation request to when the first chunk is received in the"
+        " response stream."
+    ),
+    explicit_bucket_boundaries_advisory=_INFERENCE_CHUNK_BUCKET_BOUNDS,
+)
+_client_inference_time_per_output_chunk = meter.create_histogram(
+    "gen_ai.client.inference.time_per_output_chunk",
+    unit="s",
+    description=(
+        "Time per output chunk, recorded for each chunk received after the"
+        " first one, measured as the time elapsed from the end of the previous"
+        " chunk to the end of the current chunk."
+    ),
+    explicit_bucket_boundaries_advisory=_INFERENCE_CHUNK_BUCKET_BOUNDS,
+)
 
 # Bounds are upper inclusive, so the leading 0 buckets exact zeros on their own.
 # The tail is sized for a workflow rather than a single agent: a coding agent
@@ -572,6 +737,40 @@ def record_client_operation_duration(
   _client_operation_duration.record(elapsed_s, attributes=attrs)
 
 
+def record_client_inference_chunk(
+    llm_request: LlmRequest,
+    response: LlmResponse,
+    elapsed_s: float,
+    first_chunk: bool,
+) -> None:
+  """Records how long one chunk of a streamed response took to arrive.
+
+  Args:
+    llm_request: The request being streamed.
+    response: The chunk that arrived.
+    elapsed_s: Seconds since the request was issued for the first chunk, and
+      since the previous chunk for every later one.
+    first_chunk: Whether this is the first chunk of the response.
+  """
+  attrs = {
+      gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",
+      gen_ai_attributes.GEN_AI_PROVIDER_NAME: _get_provider_name(
+          llm_request.model
+      ),
+  }
+  if llm_request.model:
+    attrs[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = llm_request.model
+  if response.model_version:
+    attrs[gen_ai_attributes.GEN_AI_RESPONSE_MODEL] = response.model_version
+
+  histogram = (
+      _client_inference_time_to_first_chunk
+      if first_chunk
+      else _client_inference_time_per_output_chunk
+  )
+  histogram.record(elapsed_s, attributes=attrs)
+
+
 def record_client_token_usage(
     agent_name: str,
     llm_request: LlmRequest,
@@ -601,18 +800,9 @@ def record_client_token_usage(
   # `total_token_count` is omitted as SemConv expects input/output breakdown.
   input_token_count = token_usage.input_tokens or 0
   output_token_count = token_usage.output_tokens or 0
-  response_model = responses[-1].model_version or llm_request.model
-  base_attrs = {
-      gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
-      gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",
-      gen_ai_attributes.GEN_AI_PROVIDER_NAME: _get_provider_name(
-          llm_request.model
-      ),
-  }
-  if llm_request.model:
-    base_attrs[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = llm_request.model
-  if response_model:
-    base_attrs[gen_ai_attributes.GEN_AI_RESPONSE_MODEL] = response_model
+  base_attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name} | (
+      _inference_attributes(llm_request, responses[-1])
+  )
 
   if input_token_count > 0:
     input_attrs = base_attrs.copy()
@@ -623,6 +813,134 @@ def record_client_token_usage(
     output_attrs = base_attrs.copy()
     output_attrs[gen_ai_attributes.GEN_AI_TOKEN_TYPE] = "output"
     _client_token_usage.record(output_token_count, attributes=output_attrs)
+
+
+def record_inference_token_usage(
+    llm_request: LlmRequest,
+    responses: list[LlmResponse],
+    error: Exception | None = None,
+) -> None:
+  """Records the semconv-genai inference token metrics, from schema v2.
+
+  Every model call records each of them once, failed calls included. A count
+  the model did not report, or a call that got no usage back, records `0`.
+
+  Args:
+    llm_request: The request sent to the model.
+    responses: The response chunks received, if any.
+    error: The exception the call failed with, if any.
+  """
+  if resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED:
+    return
+  last_response = responses[-1] if responses else None
+  token_usage = TokenUsage.from_llm_responses(responses)
+  if token_usage is None:
+    token_usage = TokenUsage()
+  inference_attrs = _inference_attributes(llm_request, last_response)
+
+  histogram_attrs = inference_attrs.copy()
+  if error is not None:
+    histogram_attrs[error_attributes.ERROR_TYPE] = tracing.resolve_error_type(
+        error
+    )
+  _inference_operation_input_tokens.record(
+      token_usage.input_tokens or 0, attributes=histogram_attrs
+  )
+  _inference_operation_output_tokens.record(
+      token_usage.output_tokens or 0, attributes=histogram_attrs
+  )
+  _add_by_modality(
+      counter=_inference_usage_input_tokens,
+      tokens=token_usage.input_tokens,
+      details=token_usage.input_tokens_details,
+      attrs=inference_attrs,
+  )
+  _add_by_modality(
+      counter=_inference_usage_output_tokens,
+      tokens=token_usage.output_tokens,
+      details=token_usage.output_tokens_details,
+      attrs=inference_attrs,
+  )
+  _add_by_modality(
+      counter=_inference_usage_cache_read_input_tokens,
+      tokens=token_usage.cache_read_input_tokens,
+      details=token_usage.cache_read_input_tokens_details,
+      attrs=inference_attrs,
+  )
+  # Cache writes and thoughts tokens come with no modality breakdown.
+  _add_by_modality(
+      counter=_inference_usage_cache_write_input_tokens,
+      tokens=token_usage.cache_write_input_tokens,
+      details=None,
+      attrs=inference_attrs,
+  )
+  _add_by_modality(
+      counter=_inference_usage_reasoning_output_tokens,
+      tokens=token_usage.reasoning_output_tokens,
+      details=None,
+      attrs=inference_attrs,
+  )
+
+
+def _add_by_modality(
+    *,
+    counter: metrics.Counter,
+    tokens: int | None,
+    details: list[types.ModalityTokenCount] | None,
+    attrs: dict[str, AttributeValue],
+) -> None:
+  by_modality = _split_by_modality(tokens or 0, details) or {"unknown": 0}
+  for modality, count in by_modality.items():
+    counter.add(count, attributes=attrs | {"gen_ai.token.modality": modality})
+
+
+def _split_by_modality(
+    total: int, details: list[types.ModalityTokenCount] | None
+) -> dict[str, int]:
+  """Splits `total` tokens across the modalities `details` reports.
+
+  Whatever the details leave unaccounted for, such as thoughts tokens, goes to
+  `unknown`, so the values sum to `total` unless the details exceed it.
+  Modalities are lowercased, e.g. `TEXT` becomes `text`; zeros are dropped.
+
+  Args:
+    total: The token count to split.
+    details: Gemini's per-modality breakdown of `total`, if it gave one.
+
+  Returns:
+    The token count per `gen_ai.token.modality` value.
+  """
+  by_modality: collections.Counter[str] = collections.Counter()
+  for entry in details or []:
+    if entry.modality:
+      modality = entry.modality.name.lower()
+      # The genai SDK treats MODALITY_UNSPECIFIED as TEXT.
+      if modality == "modality_unspecified":
+        modality = "text"
+      by_modality[modality] += entry.token_count or 0
+  unknown = total - sum(by_modality.values())
+  if unknown > 0:
+    by_modality["unknown"] = unknown
+  return {modality: count for modality, count in by_modality.items() if count}
+
+
+def _inference_attributes(
+    llm_request: LlmRequest, last_response: LlmResponse | None
+) -> dict[str, AttributeValue]:
+  """The semconv attributes every inference token metric carries."""
+  attrs: dict[str, AttributeValue] = {
+      gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",
+      gen_ai_attributes.GEN_AI_PROVIDER_NAME: _get_provider_name(
+          llm_request.model
+      ),
+  }
+  if llm_request.model:
+    attrs[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = llm_request.model
+  if last_response is not None:
+    response_model = last_response.model_version or llm_request.model
+    if response_model:
+      attrs[gen_ai_attributes.GEN_AI_RESPONSE_MODEL] = response_model
+  return attrs
 
 
 def _get_provider_name(model: str | None) -> str:

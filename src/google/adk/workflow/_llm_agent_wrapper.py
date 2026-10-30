@@ -186,6 +186,12 @@ def _find_unresolved_task_delegations(
   from ..events._rewind_events import _apply_rewinds
   from ..tools.agent_tool import _TaskAgentTool
 
+  # Fast path: only calls to a _TaskAgentTool are collected below, so an agent
+  # with no task tool cannot have an unresolved delegation; skip the history
+  # walk.
+  if not any(isinstance(tool, _TaskAgentTool) for tool in tools_dict.values()):
+    return []
+
   fc_by_id: dict[str, types.FunctionCall] = {}
   fr_ids: set[str] = set()
   for event in _apply_rewinds(session.events):
@@ -415,6 +421,26 @@ def process_llm_agent_output(
     event.node_info.message_as_output = True
 
 
+def _remove_event(events: list[Event], event: Event) -> None:
+  """Removes the first entry equal to `event`, as `list.remove` would.
+
+  A drop-in for list.remove that compares ids before falling back to
+  pydantic's field-by-field ==, which is the expensive part; equal events
+  always share an id, so the result is identical.
+
+  Args:
+    events: The events to remove from.
+    event: The event to remove. Nothing is removed if no entry equals it.
+  """
+  # getattr: some test doubles carry no id.
+  for i, candidate in enumerate(events):
+    if candidate is event or (
+        getattr(candidate, 'id', None) == event.id and candidate == event
+    ):
+      del events[i]
+      return
+
+
 async def run_llm_agent_as_node(
     agent: LlmAgent,
     *,
@@ -469,11 +495,8 @@ async def run_llm_agent_as_node(
           process_llm_agent_output(effective_agent, ctx, event)
           yield event
     finally:
-      if (
-          injected_input_event is not None
-          and injected_input_event in agent_ctx.session.events
-      ):
-        agent_ctx.session.events.remove(injected_input_event)
+      if injected_input_event is not None:
+        _remove_event(agent_ctx.session.events, injected_input_event)
     return
 
   # Chat and Task modes share the outer task-delegation dispatch loop.

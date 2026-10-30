@@ -4,7 +4,8 @@
     "attributes": {
       "gen_ai.operation.name": "invoke_workflow",
       "gen_ai.conversation.id": "PRESENT",
-      "gen_ai.workflow.name": "some_root_agent"
+      "gen_ai.workflow.name": "some_root_agent",
+      "error.type": "ValueError"
     },
     "status": "ERROR",
     "children": [
@@ -14,7 +15,8 @@
           "gen_ai.operation.name": "invoke_agent",
           "gen_ai.agent.description": "A sample root agent.",
           "gen_ai.agent.name": "some_root_agent",
-          "gen_ai.conversation.id": "PRESENT"
+          "gen_ai.conversation.id": "PRESENT",
+          "error.type": "ValueError"
         },
         "status": "ERROR",
         "children": [
@@ -64,7 +66,8 @@
                   },
                   "type": "function"
                 }
-              ]
+              ],
+              "error.type": "ValueError"
             },
             "status": "ERROR",
             "children": [],
@@ -127,6 +130,83 @@
     "logs": []
   },
   "metric_points": {
+    "gen_ai.client.inference.operation.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "error.type": "ValueError"
+        },
+        "value": 0
+      }
+    ],
+    "gen_ai.client.inference.operation.output_tokens": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "error.type": "ValueError"
+        },
+        "value": 0
+      }
+    ],
+    "gen_ai.client.inference.usage.cache_read.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.token.modality": "unknown"
+        },
+        "value": 0
+      }
+    ],
+    "gen_ai.client.inference.usage.cache_write.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.token.modality": "unknown"
+        },
+        "value": 0
+      }
+    ],
+    "gen_ai.client.inference.usage.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.token.modality": "unknown"
+        },
+        "value": 0
+      }
+    ],
+    "gen_ai.client.inference.usage.output_tokens": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.token.modality": "unknown"
+        },
+        "value": 0
+      }
+    ],
+    "gen_ai.client.inference.usage.reasoning.output_tokens": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gcp.gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.token.modality": "unknown"
+        },
+        "value": 0
+      }
+    ],
     "gen_ai.client.operation.duration": [
       {
         "attributes": {

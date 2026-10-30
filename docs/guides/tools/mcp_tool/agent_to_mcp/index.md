@@ -74,6 +74,9 @@ On each tool call the handler:
     `EmbeddedResource`. This is why a multimodal agent's output is preserved
     rather than flattened to text.
 
+The model's thought parts (`thought=True`) are not part of its answer, so they
+are left out of both the progress notifications and the returned content.
+
 ### Session continuity
 
 `to_mcp_server` keeps one ADK session per MCP connection, so successive tool
@@ -132,8 +135,7 @@ instance of that class, which the caller runs on a transport of their choice.
     sessions accumulate with no eviction; inject a `runner` with a persistent or
     cleaning session service. Tool calls on a single connection are expected to
     be sequential, since they share one session.
-*   **Experimental**: `to_mcp_server` is `@experimental` and lives behind the
-    `mcp` extra; its behavior may change in future releases.
+*   **Optional dependency**: `to_mcp_server` requires the `mcp` extra.
 
 ## Related samples
 

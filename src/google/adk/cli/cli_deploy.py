@@ -41,9 +41,13 @@ from packaging.version import parse
 
 from ..version import __version__
 from .deployers import DeployerFactory
+from .deployers._dockerfile_template import _DEFAULT_PYTHON_VERSION
 from .deployers._dockerfile_template import _render_dockerfile
 from .deployers._dockerfile_template import _render_install_agent_deps
+from .deployers._dockerfile_template import _to_exec_form
 from .deployers._dockerfile_template import _validate_app_name
+from .deployers._dockerfile_template import _validate_dockerfile_literal
+from .deployers._dockerfile_template import _validate_python_version
 from .utils import _onboarding
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -252,6 +256,50 @@ def _apply_service_account_to_agent_config(
         'service_account in agent platform config must be a string email.'
     )
   agent_config['service_account'] = _validate_service_account(existing)
+
+
+def _resolve_python_version_from_agent_config(
+    agent_config: dict[str, Any],
+    python_version: Optional[str],
+) -> str:
+  """Resolves the container Python version for an Agent Engine deploy.
+
+  Supports three sources, in increasing precedence:
+
+  1. The default, ``3.11``.
+  2. Top-level ``python_version`` in ``.agent_engine_config.json`` (popped so
+     it is not forwarded to the Agent Engine API, which ignores it when the
+     image is built from a Dockerfile).
+  3. Explicit ``python_version`` argument (CLI flag), which overrides both.
+
+  Args:
+    agent_config: The parsed agent platform config; ``python_version`` is
+      removed from it.
+    python_version: The CLI value, or None when the flag was omitted.
+
+  Returns:
+    The validated Python version to render into the Dockerfile.
+
+  Raises:
+    click.ClickException: If either value is not a valid Python 3.11+ version
+      string.
+  """
+  config_python_version = agent_config.pop('python_version', None)
+  if config_python_version is not None:
+    if not isinstance(config_python_version, str):
+      raise click.ClickException(
+          'python_version in agent platform config must be a string.'
+      )
+    config_python_version = _validate_python_version(config_python_version)
+  if python_version is not None:
+    python_version = _validate_python_version(python_version)
+    if config_python_version and config_python_version != python_version:
+      click.echo(
+          'Overriding python_version in agent platform config with'
+          f' {python_version}'
+      )
+    return python_version
+  return config_python_version or _DEFAULT_PYTHON_VERSION
 
 
 def _on_rm_error(func: Callable[..., Any], path: str, exc_info: Any) -> None:
@@ -1054,6 +1102,25 @@ def _get_ignore_patterns_func(
   return shutil.ignore_patterns(*patterns)
 
 
+def _validate_extra_package_name(base: str) -> str:
+  """Validates an extra_packages basename before writing it into a Dockerfile."""
+  _validate_dockerfile_literal('extra_packages', base)
+  if (
+      not base
+      or base in ('.', '..')
+      or '"' in base
+      or '\\' in base
+      or '/' in base
+      or '$' in base
+      or any(ch.isspace() for ch in base)
+  ):
+    raise click.ClickException(
+        f'Invalid extra_packages entry {base!r}. The basename must not contain'
+        ' whitespace, quotes, backslashes, dollar signs, or path separators.'
+    )
+  return base
+
+
 def _stage_extra_packages(
     requested_extra_packages: Sequence[tuple[str, str]],
     build_context: str,
@@ -1082,7 +1149,9 @@ def _stage_extra_packages(
     pkg_src = os.path.abspath(pkg_src)
     if not os.path.exists(pkg_src):
       raise click.ClickException(f'extra_packages path not found: {pkg}')
-    base = os.path.basename(os.path.normpath(pkg_src))
+    base = _validate_extra_package_name(
+        os.path.basename(os.path.normpath(pkg_src))
+    )
     dst = os.path.join(build_context, base)
     if os.path.exists(dst) or base in reserved_names:
       raise click.ClickException(
@@ -1097,19 +1166,82 @@ def _stage_extra_packages(
   return staged_extra_packages
 
 
+_INSTALLABLE_ARCHIVE_SUFFIXES: Final[tuple[str, ...]] = (
+    '.whl',
+    '.tar.gz',
+    '.tgz',
+    '.zip',
+)
+
+
 def _get_extra_packages_copy(
     staged_extra_packages: Sequence[str], build_context: str
 ) -> str:
-  """Returns the Dockerfile lines that copy staged extra packages."""
+  """Returns the Dockerfile lines that copy and install staged extra packages.
+
+  Each staged entry is handled one of two ways:
+
+  * An installable distribution (a file ending in one of
+    `_INSTALLABLE_ARCHIVE_SUFFIXES`, or a directory containing
+    `pyproject.toml` or `setup.py` without a root `__init__.py`) is copied to
+    `/tmp/extra_packages/<base>` and installed with `pip install`, so its
+    modules land in site-packages together with the dependencies it declares.
+  * Anything else (a plain module, a folder of modules, or a package folder
+    with a root `__init__.py` that may also carry a `pyproject.toml` for tool
+    config) is copied to `/app/<base>` and `/app` is added to PYTHONPATH.
+
+  Installable entries are deliberately kept out of `/app`: a flat-layout
+  package such as `my_pkg/pyproject.toml` + `my_pkg/my_pkg/__init__.py` copied
+  to `/app/my_pkg` would otherwise resolve as a PEP 420 namespace package
+  ahead of its own site-packages install. For the same reason PYTHONPATH is
+  only set when at least one plain entry is present.
+
+  Args:
+    staged_extra_packages: Basenames returned by `_stage_extra_packages`.
+    build_context: The folder the entries were staged into.
+
+  Returns:
+    The `COPY`, `ENV`, and `RUN` lines to splice into the Dockerfile, or an
+    empty string when nothing was staged.
+  """
   if not staged_extra_packages:
     return ''
-  copy_lines = [
-      f'COPY --chown=myuser:myuser "{base}/" "/app/{base}/"'
-      if os.path.isdir(os.path.join(build_context, base))
-      else f'COPY --chown=myuser:myuser "{base}" "/app/{base}"'
-      for base in staged_extra_packages
-  ]
-  copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
+  copy_lines: list[str] = []
+  installable_targets: list[str] = []
+  has_plain_packages = False
+  for base in staged_extra_packages:
+    _validate_extra_package_name(base)
+    staged_path = os.path.join(build_context, base)
+    if os.path.isdir(staged_path):
+      has_build_file = os.path.isfile(
+          os.path.join(staged_path, 'pyproject.toml')
+      ) or os.path.isfile(os.path.join(staged_path, 'setup.py'))
+      has_root_init = os.path.isfile(os.path.join(staged_path, '__init__.py'))
+      if has_build_file and not has_root_init:
+        copy_lines.append(
+            f'COPY --chown=myuser:myuser "{base}/"'
+            f' "/tmp/extra_packages/{base}/"'
+        )
+        installable_targets.append(f'/tmp/extra_packages/{base}')
+      else:
+        copy_lines.append(
+            f'COPY --chown=myuser:myuser "{base}/" "/app/{base}/"'
+        )
+        has_plain_packages = True
+    elif base.endswith(_INSTALLABLE_ARCHIVE_SUFFIXES):
+      copy_lines.append(
+          f'COPY --chown=myuser:myuser "{base}" "/tmp/extra_packages/{base}"'
+      )
+      installable_targets.append(f'/tmp/extra_packages/{base}')
+    else:
+      copy_lines.append(f'COPY --chown=myuser:myuser "{base}" "/app/{base}"')
+      has_plain_packages = True
+  if has_plain_packages:
+    copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
+  if installable_targets:
+    copy_lines.append(
+        _to_exec_form('RUN', ['pip', 'install', *installable_targets])
+    )
   return '\n'.join(copy_lines)
 
 
@@ -1143,6 +1275,7 @@ def run(
     extra_gcloud_args: tuple[str, ...] | None = None,
     with_cloud_run_sandbox: bool = False,
     extra_packages: list[str] | None = None,
+    python_version: str = _DEFAULT_PYTHON_VERSION,
 ) -> None:
   """Deploys an agent to Google Cloud Run.
 
@@ -1182,8 +1315,12 @@ def run(
     with_cloud_run_sandbox: Whether to enable the Cloud Run sandbox for code
       execution.
     extra_packages: Additional local file or directory paths to stage alongside
-      the agent and make importable in the image. A relative path is resolved
-      against the current working directory.
+      the agent and make importable in the image. A wheel, source archive, or
+      a project directory containing `pyproject.toml` or `setup.py` (without a
+      root `__init__.py`) is installed with pip; any other entry is copied to
+      `/app/<basename>` and `/app` is added to PYTHONPATH. A relative path is
+      resolved against the current working directory.
+    python_version: The Python version for the container base image.
   """
   _validate_trigger_options(
       trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
@@ -1191,6 +1328,7 @@ def run(
   app_name = _validate_app_name(
       app_name or os.path.basename(os.path.normpath(agent_folder))
   )
+  python_version = _validate_python_version(python_version)
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
     session_service_uri = session_service_uri or 'memory://'
     artifact_service_uri = artifact_service_uri or 'memory://'
@@ -1267,6 +1405,7 @@ def run(
             staged_extra_packages, temp_folder
         ),
         extra_env_vars='',
+        python_version=python_version,
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -1326,6 +1465,7 @@ def to_cloud_run(
     extra_gcloud_args: tuple[str, ...] | None = None,
     with_cloud_run_sandbox: bool = False,
     extra_packages: list[str] | None = None,
+    python_version: str = _DEFAULT_PYTHON_VERSION,
 ) -> None:
   """Deploys an agent to Google Cloud Run (deprecated)."""
   warnings.warn(
@@ -1362,6 +1502,7 @@ def to_cloud_run(
       extra_gcloud_args=extra_gcloud_args,
       with_cloud_run_sandbox=with_cloud_run_sandbox,
       extra_packages=extra_packages,
+      python_version=python_version,
   )
 
 
@@ -1422,6 +1563,7 @@ def to_agent_engine(
     extra_packages: Optional[list[str]] = None,
     worker_pool: Optional[str] = None,
     service_account: Optional[str] = None,
+    python_version: Optional[str] = None,
 ) -> None:
   """Deploys an agent to Gemini Enterprise Agent Platform.
 
@@ -1487,7 +1629,11 @@ def to_agent_engine(
       deployment. If not specified, the version in the dev environment will be
       used.
     extra_packages (list[str]): Optional. Additional local file or directory
-      paths to stage alongside the agent and make importable in the image.
+      paths to stage alongside the agent and make importable in the image. A
+      wheel, source archive, or a project directory containing `pyproject.toml`
+      or `setup.py` (without a root `__init__.py`) is installed with pip; any
+      other entry is copied to `/app/<basename>` and `/app` is added to
+      PYTHONPATH.
     worker_pool (str): Optional. Full Cloud Build private worker pool resource
       name
       (`projects/{project}/locations/{location}/workerPools/{pool}`).
@@ -1500,12 +1646,19 @@ def to_agent_engine(
       ``GOOGLE_CLOUD_SERVICE_ACCOUNT`` in the ``.env`` file and
       ``service_account`` in ``.agent_engine_config.json`` when both are
       present. When omitted, Agent Engine uses its default service agent.
+    python_version (str): Optional. The Python version for the container base
+      image. Overrides ``python_version`` in ``.agent_engine_config.json``
+      when both are present. When neither is set, ``3.11`` is used.
   """
   _validate_trigger_options(
       trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
   )
   app_name = os.path.basename(os.path.normpath(agent_folder))
   _validate_app_name(app_name)
+  # Fail on a bad flag value before the temp folder is replaced and the agent
+  # source copied; the config-file value is resolved once the file is read.
+  if python_version is not None:
+    python_version = _validate_python_version(python_version)
   display_name = display_name or app_name
   parent_folder = os.path.dirname(os.path.normpath(agent_folder))
   if adk_app_object:
@@ -1602,6 +1755,9 @@ def to_agent_engine(
       agent_config['description'] = description
 
     _apply_worker_pool_to_agent_config(agent_config, worker_pool)
+    python_version = _resolve_python_version_from_agent_config(
+        agent_config, python_version
+    )
 
     config_extra_packages = agent_config.pop('extra_packages', None) or []
     # CLI entries resolve against the invocation dir; config-file entries
@@ -1868,6 +2024,7 @@ def to_agent_engine(
               staged_extra_packages, temp_folder_path
           ),
           extra_env_vars=extra_env_vars,
+          python_version=python_version,
       )
       with open('Dockerfile', 'w', encoding='utf-8') as f:
         f.write(dockerfile_content)
@@ -1946,6 +2103,7 @@ def to_gke(
         'ClusterIP', 'NodePort', 'LoadBalancer'
     ] = 'ClusterIP',
     extra_packages: Optional[list[str]] = None,
+    python_version: str = _DEFAULT_PYTHON_VERSION,
 ) -> None:
   """Deploys an agent to Google Kubernetes Engine(GKE).
 
@@ -1975,8 +2133,12 @@ def to_gke(
     use_local_storage: Whether to use local .adk storage in the container.
     service_type: The Kubernetes Service type (default: ClusterIP).
     extra_packages: Additional local file or directory paths to stage alongside
-      the agent and make importable in the image. A relative path is resolved
-      against the current working directory.
+      the agent and make importable in the image. A wheel, source archive, or
+      a project directory containing `pyproject.toml` or `setup.py` (without a
+      root `__init__.py`) is installed with pip; any other entry is copied to
+      `/app/<basename>` and `/app` is added to PYTHONPATH. A relative path is
+      resolved against the current working directory.
+    python_version: The Python version for the container base image.
   """
   _validate_trigger_options(
       trigger_sources, trigger_oidc_audience, trigger_oidc_service_accounts
@@ -1994,6 +2156,7 @@ def to_gke(
 
   app_name = app_name or os.path.basename(os.path.normpath(agent_folder))
   _validate_app_name(app_name)
+  python_version = _validate_python_version(python_version)
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
     session_service_uri = session_service_uri or 'memory://'
     artifact_service_uri = artifact_service_uri or 'memory://'
@@ -2070,6 +2233,7 @@ def to_gke(
             staged_extra_packages, temp_folder
         ),
         extra_env_vars='',
+        python_version=python_version,
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)

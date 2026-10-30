@@ -59,6 +59,17 @@ _EVERY_CASE: list[FunctionalTestCase] = [
 _OPERATION_BY_METRIC: dict[str, str] = {
     "gen_ai.client.operation.duration": "generate_content",
     "gen_ai.client.token.usage": "generate_content",
+    "gen_ai.client.inference.usage.input_tokens": "generate_content",
+    "gen_ai.client.inference.usage.output_tokens": "generate_content",
+    "gen_ai.client.inference.usage.cache_read.input_tokens": "generate_content",
+    "gen_ai.client.inference.usage.cache_write.input_tokens": (
+        "generate_content"
+    ),
+    "gen_ai.client.inference.usage.reasoning.output_tokens": "generate_content",
+    "gen_ai.client.inference.operation.input_tokens": "generate_content",
+    "gen_ai.client.inference.operation.output_tokens": "generate_content",
+    "gen_ai.client.inference.time_to_first_chunk": "generate_content",
+    "gen_ai.client.inference.time_per_output_chunk": "generate_content",
     "gen_ai.execute_tool.duration": "execute_tool",
     "gen_ai.invoke_agent.duration": "invoke_agent",
     "gen_ai.invoke_agent.inference_calls": "invoke_agent",
@@ -103,6 +114,10 @@ _METRIC_ONLY_DIMENSIONS: dict[str, str] = {
         "one series per direction, while a span reports both directions at"
         " once under gen_ai.usage.*"
     ),
+    "gen_ai.token.modality": (
+        "one series per modality, while a span reports each call's tokens"
+        " without a modality breakdown"
+    ),
     "adk.experimental.skill.script.ended_with_error": (
         "too many possible exit codes for metrics, but span does report"
         " exit code"
@@ -141,24 +156,13 @@ _REDUCED_CARDINALITY: dict[str, list[AttributeValue]] = {
 
 # The facts the metrics record and the spans still do not.
 _FACTS_MISSING_FROM_SPANS: dict[str, str] = {
-    "error.type": "resolved for the metric, then never set on the span",
+    "error.type": (
+        "skill-script metric points pair with the span of the script that"
+        " succeeded"
+    ),
     "gen_ai.provider.name": "spans carry only the deprecated gen_ai.system",
     "gen_ai.response.model": "spans carry the requested model only",
 }
-
-# The cases whose spans are marked ERROR without naming the error.
-_CASES_MISSING_ERROR_TYPE: frozenset[str] = frozenset({
-    "agent-inference-error-resource-exhausted-schema-v1",
-    "agent-inference-error-resource-exhausted-schema-v2",
-    "agent-inference-error-valueerror-schema-v2",
-    "agent-inference-error-valueerror-span-and-event-schema-v2",
-    "agent-tool-error-valueerror-schema-v2",
-    "agent-tool-error-valueerror-span-only-schema-v2",
-})
-
-_MISSING_ERROR_TYPE_REASON: str = (
-    "the metric for the same operation records error.type; the span does not"
-)
 
 
 def _case_id(case: FunctionalTestCase) -> str:
@@ -218,18 +222,7 @@ def _xfail(reason: str | None) -> list[pytest.MarkDecorator]:
 
 @pytest.mark.parametrize(
     "case",
-    [
-        pytest.param(
-            case,
-            id=_case_id(case),
-            marks=_xfail(
-                _MISSING_ERROR_TYPE_REASON
-                if _case_id(case) in _CASES_MISSING_ERROR_TYPE
-                else None
-            ),
-        )
-        for case in _EVERY_CASE
-    ],
+    [pytest.param(case, id=_case_id(case)) for case in _EVERY_CASE],
 )
 def test_error_status_implies_error_type(case: FunctionalTestCase) -> None:
   """A span that ended in an error says which error, as semconv requires."""

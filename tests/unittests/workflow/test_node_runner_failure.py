@@ -1552,3 +1552,54 @@ async def test_workflow_retry_with_parallel_branches_runs_succeeded_branch_once(
       'parallel_wf@1/branch_a@1': 'a_out',
       'parallel_wf@1/join@1': {'branch_a': 'a_out', 'branch_b': 'b_out'},
   }
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_never_reruns_the_batch_for_an_item_failure() -> (
+    None
+):
+  """A parallel worker Node reports an item failure without rerunning the batch.
+
+  A Node subclass with parallel_worker=True keeps retry_config on both the
+  outer node and the inner item node. Once the item node exhausts its
+  attempts, the outer node must not retry the batch again.
+  """
+  invocation_context = InvocationContext(
+      invocation_id='retry_inv',
+      agent=mock.MagicMock(spec=BaseAgent),
+      session=Session(
+          id='test_session', app_name='test_app', user_id='test_user'
+      ),
+      session_service=InMemorySessionService(),
+  )
+  object.__setattr__(invocation_context, '_enqueue_event', mock.AsyncMock())
+  root_ctx = Context(invocation_context=invocation_context, node_path='')
+
+  class _FlakyParallelWorker(Node):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    parallel_worker: bool = True
+    tracker: dict[str, int] = Field(default_factory=dict)
+
+    @override
+    async def run_node_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      self.tracker['iteration_count'] = (
+          self.tracker.get('iteration_count', 0) + 1
+      )
+      raise CustomRetryableError('item failed')
+      yield
+
+  worker = _FlakyParallelWorker(
+      name='worker',
+      retry_config=RetryConfig(max_attempts=3, initial_delay=0.0, jitter=0.0),
+  )
+
+  ctx = await NodeRunner(node=worker, parent_ctx=root_ctx).run(
+      node_input=['only_item']
+  )
+
+  assert isinstance(ctx.error, CustomRetryableError)
+  assert ctx.attempt_count == 1
+  assert worker.tracker['iteration_count'] == 3

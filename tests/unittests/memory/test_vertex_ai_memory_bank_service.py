@@ -24,6 +24,7 @@ from unittest import mock
 import agentplatform
 from agentplatform import types as agentplatform_types
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.memory import vertex_ai_memory_bank_service as memory_service_module
 from google.adk.memory.memory_entry import MemoryEntry
 from google.adk.memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
@@ -1765,3 +1766,45 @@ async def test_search_memory_returns_partial_results_on_iterator_error(
 
   assert len(result.memories) == 1
   assert result.memories[0].content.parts[0].text == 'good fact'
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_rewound_events(
+    mock_agentplatform_client,
+):
+  """Turns a rewind took back are not sent to Memory Bank."""
+  memory_service = mock_vertex_ai_memory_bank_service()
+  session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='333',
+      last_update_time=22333,
+      events=[
+          MOCK_SESSION.events[0],
+          Event(
+              id='777',
+              invocation_id='789',
+              author='user',
+              timestamp=23456,
+              content=types.Content(parts=[types.Part(text='rewound')]),
+          ),
+          Event(
+              id='888',
+              invocation_id='999',
+              author='user',
+              timestamp=34567,
+              actions=EventActions(rewind_before_invocation_id='789'),
+          ),
+      ],
+  )
+
+  await memory_service.add_session_to_memory(session)
+
+  # Allow the fire-and-forget task to complete.
+  await asyncio.sleep(0)
+
+  call_kwargs = (
+      mock_agentplatform_client.memory_banks.ingest_events.call_args.kwargs
+  )
+  source = call_kwargs['direct_contents_source']
+  assert [event.event_id for event in source.events] == ['444']

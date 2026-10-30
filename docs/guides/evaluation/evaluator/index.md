@@ -193,8 +193,13 @@ so `adk eval`, reads the statuses: a case is `FAILED` as soon as any metric
 reports `FAILED`, `PASSED` if at least one passed and none failed, and
 `NOT_EVALUATED` otherwise. `AgentEvaluator` additionally averages the
 per-invocation `score` values across every run and compares that mean against
-the configured threshold, which is where its failure messages come from. Setting
-both the scores and the statuses, as the example above does, satisfies both.
+the configured threshold, which is where its failure messages come from.
+`adk eval` averages the same way by default when it runs each case more than
+once, through `--num_runs` or `multi_run_config`, and a metric's status then
+comes from that mean rather than from the status your metric reported; a rule
+in `multi_run_config` that counts passing runs reads the statuses instead.
+Setting both the scores and the statuses, as the example above does, satisfies
+both.
 
 ## Advanced applications
 
@@ -309,9 +314,7 @@ that two-stage validation works.
     the evaluation does.
 *   **Registration is process-global.** `DEFAULT_METRIC_EVALUATOR_REGISTRY` is a
     module-level singleton, so registering the same metric name twice replaces
-    the first registration and logs it. Constructing any registry also emits an
-    experimental-feature warning, `MetricEvaluatorRegistry` being marked
-    experimental.
+    the first registration and logs it.
 *   **Nothing is re-exported at package level.** Import from
     `google.adk.evaluation.evaluator` and
     `google.adk.evaluation.metric_evaluator_registry` directly; the package
