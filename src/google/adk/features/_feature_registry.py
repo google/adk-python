@@ -50,6 +50,7 @@ class FeatureName(str, Enum):
   EVENTARC_TOOL_CONFIG = "EVENTARC_TOOL_CONFIG"
   EVENTARC_TOOLSET = "EVENTARC_TOOLSET"
   FALLBACK_MODEL = "FALLBACK_MODEL"
+  FSSPEC_ARTIFACT_SERVICE = "FSSPEC_ARTIFACT_SERVICE"
   FUNCTION_TOOL_ARG_VALIDATION = "FUNCTION_TOOL_ARG_VALIDATION"
   GCS_ADMIN_TOOLSET = "GCS_ADMIN_TOOLSET"
   GCS_TOOL_SETTINGS = "GCS_TOOL_SETTINGS"
@@ -188,6 +189,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName.FALLBACK_MODEL: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.FSSPEC_ARTIFACT_SERVICE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
     ),
     FeatureName.FUNCTION_TOOL_ARG_VALIDATION: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=False
