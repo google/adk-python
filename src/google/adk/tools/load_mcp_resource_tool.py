@@ -108,7 +108,9 @@ NOTE: Call when you need access to resources.""",
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
     try:
-      resource_names = await self._mcp_toolset.list_resources()
+      resource_names = await self._mcp_toolset.list_resources(
+          readonly_context=tool_context
+      )
       if resource_names:
         llm_request._append_dynamic_instructions(
             [f"""You have a list of MCP resources:
@@ -131,7 +133,9 @@ before answering questions related to the resources.
           resource_names = response.get("resource_names", [])
           for resource_name in resource_names:
             try:
-              contents = await self._mcp_toolset.read_resource(resource_name)
+              contents = await self._mcp_toolset.read_resource(
+                  resource_name, readonly_context=tool_context
+              )
 
               for content in contents:
                 part = self._mcp_content_to_part(content, resource_name)
