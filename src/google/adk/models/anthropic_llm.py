@@ -1192,6 +1192,53 @@ def _apply_cache_breakpoints(
   return system
 
 
+
+def _ensure_messages_end_with_user(
+    messages: list[anthropic_types.MessageParam],
+) -> None:
+  """Append a user turn when the conversation would otherwise end on assistant.
+
+  Claude treats a final assistant message as a prefill. Claude 4.6+ rejects
+  that with a 400; older models continue the previous reply instead of
+  answering again. Gemini/LiteLlm/Apigee avoid this via
+  ``BaseLlm._maybe_append_user_content``; AnthropicLlm converts contents
+  without that guard, so a LoopAgent's second iteration can send
+  ``[user, assistant]``.
+
+  Call this after empty-message filtering and after cache breakpoints are
+  placed, so a dropped turn cannot leave two user turns in a row and the
+  synthetic turn is not part of the cached session prefix.
+  """
+  continue_text = (
+      "Continue processing previous requests as instructed."
+      " Exit or provide a summary if no more outputs are"
+      " needed."
+  )
+  empty_text = (
+      "Handle the requests as specified in the System Instruction."
+  )
+  if not messages:
+    messages.append(
+        {
+            "role": "user",
+            "content": [
+                anthropic_types.TextBlockParam(type="text", text=empty_text)
+            ],
+        }
+    )
+    return
+  if messages[-1]["role"] != "user":
+    messages.append(
+        {
+            "role": "user",
+            "content": [
+                anthropic_types.TextBlockParam(type="text", text=continue_text)
+            ],
+        }
+    )
+
+
+
 class AnthropicLlm(BaseLlm):
   """Integration with Claude models via the Anthropic API.
 
@@ -1266,6 +1313,10 @@ class AnthropicLlm(BaseLlm):
           messages=messages,
           tools=tools,
       )
+
+    # After cache breakpoints: synthetic user turn is not part of the
+    # cached session prefix (see _ensure_messages_end_with_user).
+    _ensure_messages_end_with_user(messages)
 
     model_to_use = self._resolve_model_name(llm_request.model)
     kwargs: dict[str, Any] = {
