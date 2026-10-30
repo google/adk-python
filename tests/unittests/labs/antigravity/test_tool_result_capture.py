@@ -273,16 +273,25 @@ async def test_subagent_call_capture_queues_subagent_name_and_allows():
   res = await capture.run(
       None,
       sdk_types.ToolCall(
-          name=sdk_types.BuiltinTools.START_SUBAGENT,
+          name='invoke_subagent',
           args={'TypeName': 'word_counter'},
           id='call_sub_1',
       ),
   )
   assert res.allow
+  res_legacy = await capture.run(
+      None,
+      sdk_types.ToolCall(
+          name='start_subagent',
+          args={'Role': 'threat_hunting_agent'},
+          id='call_sub_legacy',
+      ),
+  )
+  assert res_legacy.allow
   res_batch = await capture.run(
       None,
       sdk_types.ToolCall(
-          name=sdk_types.BuiltinTools.START_SUBAGENT,
+          name='invoke_subagent',
           args={
               'Subagents': [{
                   'TypeName': 'reverse_engineering_agent',
@@ -293,10 +302,37 @@ async def test_subagent_call_capture_queues_subagent_name_and_allows():
       ),
   )
   assert res_batch.allow
+  res_dup_id = await capture.run(
+      None,
+      sdk_types.ToolCall(
+          name='invoke_subagent',
+          args={'TypeName': 'word_counter'},
+          id='call_sub_1',
+      ),
+  )
+  assert res_dup_id.allow
+  res_repeat = await capture.run(
+      None,
+      sdk_types.ToolCall(
+          name='invoke_subagent',
+          args={'TypeName': 'word_counter'},
+          id='call_sub_3',
+      ),
+  )
+  assert res_repeat.allow
   assert buffer.pending_subagents == [
       'word_counter',
+      'threat_hunting_agent',
       'reverse_engineering_agent',
+      'word_counter',
   ]
+  assert buffer.seen_subagent_calls == {
+      'call_sub_1',
+      'call_sub_legacy',
+      'call_sub_2',
+      'call_sub_3',
+  }
 
   buffer.clear()
   assert not buffer.pending_subagents
+  assert not buffer.seen_subagent_calls
