@@ -250,10 +250,14 @@ class LocalEnvironment(BaseEnvironment):
 
   @staticmethod
   def _sync_write(path: Path, content: str | bytes) -> None:
-    os.makedirs(path.parent, exist_ok=True)
     if isinstance(content, str):
-      with open(path, 'w', encoding='utf-8', newline='') as f:
-        f.write(content)
+      data = content.encode('utf-8')
+    elif isinstance(content, bytes):
+      data = content
     else:
-      with open(path, 'wb') as f:
-        f.write(content)
+      raise TypeError(
+          f'content must be str or bytes, got {type(content).__name__}'
+      )
+    os.makedirs(path.parent, exist_ok=True)
+    with open(path, 'wb') as f:
+      f.write(data)
