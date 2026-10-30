@@ -45,6 +45,7 @@ from ..features import FeatureName
 from ..features import override_feature_enabled
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
+from ._cli_generate_agent_card import generate_agent_card
 from ._telemetry._metrics_collector import MetricsCollector
 from .utils import envs
 from .utils import logs
@@ -3505,3 +3506,6 @@ def cli_deploy_gke(
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
     click.get_current_context().exit(1)
+
+
+main.add_command(generate_agent_card)
