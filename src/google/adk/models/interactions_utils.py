@@ -1055,12 +1055,10 @@ def _handle_thought_signature(
   signature = delta.signature
   if not signature:
     return None
-  for part in reversed(state.parts):
-    if part.thought:
-      part.thought_signature = base64.b64decode(signature)
-      return None
-  # A signature often arrives with no preceding thought summary, leaving no
-  # part to attach it to. Keep it on its own part rather than dropping it.
+  # Keep every signature on a part of its own, as the non-streaming conversion
+  # does. On the step's thought summary part it would be re-encoded as a text
+  # step, which drops the signature, and on an earlier step's signature part it
+  # would overwrite that step's signature.
   state.parts.append(
       types.Part(thought=True, thought_signature=base64.b64decode(signature))
   )
