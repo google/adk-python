@@ -243,7 +243,10 @@ def _serialize_value(value: Any) -> Optional[Any]:
   # Handle Pydantic models
   if hasattr(value, "model_dump"):
     try:
+      # JSON mode, so datetimes, bytes, sets and enums become JSON values
+      # that the protobuf Struct metadata can hold.
       dumped = value.model_dump(
+          mode="json",
           exclude_none=True,
           exclude_defaults=True,
           by_alias=True,
