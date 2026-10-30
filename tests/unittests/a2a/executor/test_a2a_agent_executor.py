@@ -38,6 +38,8 @@ from google.adk.runners import RunConfig
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai.types import Content
+from google.genai.types import FunctionCall
+from google.genai.types import FunctionResponse
 from google.genai.types import Part
 import pytest
 
@@ -100,6 +102,35 @@ def _final_events(call_args_list):
   if _compat.IS_A2A_V1:
     return events[-1:]
   return [e for e in events if getattr(e, "final", False)]
+
+
+def _text_event(author, branch, *extra):
+  return Event(
+      author=author,
+      invocation_id="inv",
+      branch=branch,
+      content=Content(role="model", parts=[Part(text="kept"), *extra]),
+  )
+
+
+def _finish_event(author, branch):
+  return Event(
+      author=author,
+      invocation_id="inv",
+      branch=branch,
+      content=Content(
+          role="user",
+          parts=[
+              Part(
+                  function_response=FunctionResponse(
+                      id="fc",
+                      name="finish_task",
+                      response={"result": "Task completed."},
+                  )
+              )
+          ],
+      ),
+  )
 
 
 class TestA2aAgentExecutor:
@@ -1676,3 +1707,52 @@ class TestA2aAgentExecutor:
         e.status.state
         for e in _final_events(idle_queue.enqueue_event.call_args_list)
     ] == [_compat.TS_CANCELED]
+
+  @pytest.mark.asyncio
+  async def test_nested_run_id_finish_task_is_stripped(self):
+    """Drop a task-hop finish_task. Keep sibling text and root branches."""
+    self.mock_request_converter.return_value = AgentRunRequest(
+        user_id="test-user",
+        session_id="test-session",
+        new_message=Mock(spec=Content),
+        run_config=RunConfig(),
+    )
+    mock_session = Mock()
+    mock_session.id = "test-session"
+    self.mock_runner.session_service.get_session = AsyncMock(
+        return_value=mock_session
+    )
+    self.mock_runner._new_invocation_context.return_value = Mock()
+    call = Part(
+        function_call=FunctionCall(
+            id="fc", name="finish_task", args={"result": "x"}
+        )
+    )
+    text = _text_event("inner", "inner@fc")
+    mixed = _text_event("inner", "inner@fc", call)
+    nested = _finish_event("inner", "inner@fc")
+    middle = _text_event("middle", None)
+    parallel = _finish_event("child", "par.child")
+    root = _finish_event("reporter", None)
+
+    async def mock_run_async(**kwargs):
+      del kwargs
+      for item in (text, mixed, nested, middle, parallel, root):
+        yield item
+
+    self.mock_runner.run_async = mock_run_async
+    self.mock_event_converter.return_value = []
+    await self.executor.execute(self.mock_context, self.mock_event_queue)
+    forwarded = [
+        call.args[0] for call in self.mock_event_converter.call_args_list
+    ]
+    assert [event.author for event in forwarded] == [
+        "inner",
+        "inner",
+        "middle",
+        "child",
+        "reporter",
+    ]
+    assert forwarded[1].get_function_calls() == []
+    assert forwarded[1].content.parts[0].text == "kept"
+    assert mixed.get_function_calls()

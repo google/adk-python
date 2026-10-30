@@ -30,6 +30,7 @@ from a2a.types import TaskStatusUpdateEvent
 from typing_extensions import override
 
 from .. import _compat
+from ...agents.llm.task._finish_task_tool import without_nested_finish_task
 from ...events.event import Event
 from ...runners import Runner
 from ...sessions import base_session_service
@@ -209,7 +210,12 @@ class _A2aAgentExecutor(AgentExecutor):
 
     async def _on_event(adk_event: Event) -> None:
       nonlocal canceled_event, error_event
-      if adk_event and _is_abort_adk_event(adk_event):
+      # A nested finish_task is not this task. Other parts in the event stay.
+      forwarded = without_nested_finish_task(adk_event)
+      if forwarded is None:
+        return
+      adk_event = forwarded
+      if _is_abort_adk_event(adk_event):
         canceled_event = create_error_status_event(
             adk_event, task_id, context_id
         )

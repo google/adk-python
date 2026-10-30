@@ -25,6 +25,7 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError
 from typing_extensions import override
 
+from ....events._branch_path import _BranchPath
 from ....events.event import Event
 from ....tools.base_tool import BaseTool
 from ....utils._schema_utils import schema_to_json_schema
@@ -204,6 +205,44 @@ no accompanying text output."""
     del validated_output
 
     return FINISH_TASK_SUCCESS_RESULT
+
+
+def _is_nested_finish_part(part: types.Part) -> bool:
+  """True for a finish_task call or a terminal finish_task response."""
+  call = part.function_call
+  if call is not None and call.name == FINISH_TASK_TOOL_NAME:
+    return True
+  response = part.function_response
+  if response is None or response.name != FINISH_TASK_TOOL_NAME:
+    return False
+  body = response.response or {}
+  return body.get('result') in (
+      FINISH_TASK_SUCCESS_RESULT,
+      FINISH_TASK_ERROR_RESULT,
+  )
+
+
+def without_nested_finish_task(event: Event) -> Event | None:
+  """Drop a task-hop finish_task, keeping any other parts.
+
+  A branch with a run id is a nested task hop. ParallelAgent's
+  ``parent.child`` has no run id, and an unset branch is the served
+  root. Returns None when the event has nothing left to forward.
+  """
+  branch = getattr(event, 'branch', None)
+  if not branch or not _BranchPath.from_string(branch).run_ids:
+    return event
+  content = event.content
+  if content is None or not content.parts:
+    return event
+  kept = [part for part in content.parts if not _is_nested_finish_part(part)]
+  if len(kept) == len(content.parts):
+    return event
+  if not kept:
+    return None
+  return event.model_copy(
+      update={'content': content.model_copy(update={'parts': kept})}
+  )
 
 
 def is_finish_task_terminal_fr(event: Event) -> bool:
