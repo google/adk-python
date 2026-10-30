@@ -31,6 +31,7 @@ from .core._utils import as_llm_agent
 from .core._utils import copy_http_options as _copy_http_options
 from .core._utils import copy_or_none as _copy_or_none
 from .core._utils import require_run_config
+from .prompt._schema import _has_function_tools
 
 
 def _merge_run_config_http_options(
@@ -126,16 +127,19 @@ def _build_basic_request(
     if llm_request.config.labels is None:
       llm_request.config.labels = {}
     llm_request.config.labels.update(invocation_context.run_config.labels)
-  # Only set output_schema if no tools are specified. as of now, model don't
-  # support output_schema and tools together. we have a workaround to support
-  # both output_schema and tools at the same time. see prompt/_schema.py for
-  # details
+  # Only set output_schema if no function tools, including transfer_to_agent,
+  # are declared. as of now, model don't support output_schema and tools
+  # together. we have a workaround to support both output_schema and tools at
+  # the same time. see prompt/_schema.py for details
   #
   # task-mode agents skip output_schema configuration in
   # the basic flow. Structured output for tasks is collected via the
   # finish_task tool schema instead.
   if getattr(agent, 'mode', None) != _AgentMode.TASK and agent.output_schema:
-    if not agent.tools or model.capabilities.output_schema_and_tools:
+    if (
+        not _has_function_tools(agent)
+        or model.capabilities.output_schema_and_tools
+    ):
       llm_request.set_output_schema(agent.output_schema)
 
   # A live session reads `live_connect_config`, not `llm_request.config`, so
