@@ -55,6 +55,7 @@ from google.genai.interactions import TextContent
 from google.genai.interactions import ThoughtStep
 from google.genai.interactions import UnknownStepDeltaData
 from google.genai.interactions import Usage
+import pydantic
 import pytest
 
 
@@ -3567,6 +3568,214 @@ class TestServiceTier:
     # Assert.
     assert len(api_client.create_calls) == 1
     assert api_client.create_calls[0]['service_tier'] == 'flex'
+
+
+class _Verdict(pydantic.BaseModel):
+  ok: bool
+  reason: str
+
+
+_JSON_SCHEMA = {
+    'type': 'object',
+    'properties': {'answer': {'type': 'integer'}},
+    'required': ['answer'],
+}
+
+
+class TestOutputSchema:
+  """Tests for sending an output schema on the interactions create call."""
+
+  @pytest.mark.parametrize(
+      ('config', 'expected_schema'),
+      [
+          pytest.param(
+              types.GenerateContentConfig(response_schema=_Verdict),
+              _Verdict.model_json_schema(),
+              id='pydantic-model',
+          ),
+          pytest.param(
+              types.GenerateContentConfig(response_schema=list[_Verdict]),
+              pydantic.TypeAdapter(list[_Verdict]).json_schema(),
+              id='list-of-pydantic-models',
+          ),
+          pytest.param(
+              types.GenerateContentConfig(
+                  response_schema=types.Schema(
+                      type=types.Type.OBJECT,
+                      properties={
+                          'tags': types.Schema(
+                              type=types.Type.ARRAY,
+                              items=types.Schema(type=types.Type.STRING),
+                              max_items=3,
+                          )
+                      },
+                      required=['tags'],
+                  )
+              ),
+              {
+                  'type': 'object',
+                  'properties': {
+                      'tags': {
+                          'type': 'array',
+                          'items': {'type': 'string'},
+                          'maxItems': 3,
+                      }
+                  },
+                  'required': ['tags'],
+              },
+              id='genai-schema',
+          ),
+          pytest.param(
+              types.GenerateContentConfig(response_json_schema=_JSON_SCHEMA),
+              _JSON_SCHEMA,
+              id='json-schema',
+          ),
+          pytest.param(
+              types.GenerateContentConfig(
+                  response_schema=_Verdict, response_json_schema=_JSON_SCHEMA
+              ),
+              _JSON_SCHEMA,
+              id='json-schema-takes-precedence',
+          ),
+      ],
+  )
+  async def test_schema_is_sent_as_response_format(
+      self, config, expected_schema
+  ):
+    """An output schema is sent as a JSON response format."""
+    # Arrange.
+    api_client = _FakeApiClient(interaction=_build_non_streaming_interaction())
+    llm_request = _build_llm_request()
+    llm_request.config = config
+
+    # Act.
+    await _drain(
+        interactions_utils.generate_content_via_interactions(
+            api_client, llm_request, stream=False
+        )
+    )
+
+    # Assert.
+    assert len(api_client.create_calls) == 1
+    call = api_client.create_calls[0]
+    assert call['response_format'] == {
+        'type': 'text',
+        'mime_type': 'application/json',
+        'schema_': expected_schema,
+    }
+    assert call['response_mime_type'] == 'application/json'
+
+  async def test_no_schema_sends_neither_key(self):
+    """A request without an output schema is unchanged."""
+    # Arrange.
+    api_client = _FakeApiClient(interaction=_build_non_streaming_interaction())
+
+    # Act.
+    await _drain(
+        interactions_utils.generate_content_via_interactions(
+            api_client, _build_llm_request(), stream=False
+        )
+    )
+
+    # Assert.
+    assert len(api_client.create_calls) == 1
+    assert 'response_format' not in api_client.create_calls[0]
+    assert 'response_mime_type' not in api_client.create_calls[0]
+
+  async def test_schema_is_sent_when_streaming(self):
+    """Streaming requests carry the response format too."""
+    # Arrange.
+    api_client = _FakeApiClient(_build_simple_text_stream())
+    llm_request = _build_llm_request()
+    llm_request.set_output_schema(_Verdict)
+
+    # Act.
+    await _drain(
+        interactions_utils.generate_content_via_interactions(
+            api_client, llm_request, stream=True
+        )
+    )
+
+    # Assert.
+    assert len(api_client.create_calls) == 1
+    assert 'response_format' in api_client.create_calls[0]
+
+  @staticmethod
+  async def _create_kwargs_for_agent(tools: list[Callable[..., object]]):
+    """Runs one turn of an output_schema agent and returns the create kwargs."""
+    now = datetime.now(timezone.utc).isoformat()
+    client = MagicMock(spec=Client)
+    client.vertexai = False
+    client.aio.interactions.create = AsyncMock(
+        return_value=Interaction(
+            id='int_1',
+            status='completed',
+            created=now,
+            updated=now,
+            steps=[
+                ModelOutputStep(
+                    type='model_output',
+                    content=[
+                        TextContent(
+                            type='text', text='{"ok": true, "reason": "fine"}'
+                        )
+                    ],
+                )
+            ],
+        )
+    )
+    runner = InMemoryRunner(
+        agent=LlmAgent(
+            name='judge',
+            model=Gemini(
+                model='gemini-3-flash-preview',
+                use_interactions_api=True,
+                client=client,
+            ),
+            output_schema=_Verdict,
+            tools=tools,
+        ),
+        app_name='judge_app',
+    )
+    session = await runner.session_service.create_session(
+        app_name='judge_app', user_id='user'
+    )
+    async for _ in runner.run_async(
+        user_id='user',
+        session_id=session.id,
+        new_message=types.Content(role='user', parts=[types.Part(text='hi')]),
+    ):
+      pass
+    return client.aio.interactions.create.call_args.kwargs
+
+  async def test_agent_output_schema_reaches_the_request(self, env_variables):
+    """An LlmAgent's output_schema reaches the interactions request."""
+    del env_variables  # Runs the test on both the Gemini API and Vertex AI.
+
+    call = await self._create_kwargs_for_agent(tools=[])
+
+    assert call['response_format']['schema_'] == _Verdict.model_json_schema()
+    assert call['response_mime_type'] == 'application/json'
+
+  @pytest.mark.parametrize('env_variables', ['VERTEX'], indirect=True)
+  async def test_agent_with_tools_sends_schema_with_tools_on_vertex(
+      self, env_variables
+  ):
+    """On Vertex AI, a schema agent with tools sends both to the model.
+
+    Gemini on Vertex AI accepts an output schema alongside function tools, so
+    the agent gets no set_model_response tool and relies on the schema alone.
+    """
+    del env_variables  # Only selects Vertex AI.
+
+    def lookup(query: str) -> str:
+      """Looks something up."""
+      return query
+
+    call = await self._create_kwargs_for_agent(tools=[lookup])
+
+    assert [tool['name'] for tool in call['tools']] == ['lookup']
+    assert call['response_format']['schema_'] == _Verdict.model_json_schema()
 
 
 def _build_stream_with_environment() -> list[object]:
