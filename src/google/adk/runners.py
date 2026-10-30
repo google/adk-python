@@ -925,12 +925,17 @@ class Runner:
     an already answered invocation fail. Raw events remain persisted and a
     later turn can re-evaluate compaction against its newer snapshot.
     """
+    # is True rather than truthiness: mocked contexts return a truthy Mock.
+    if invocation_context.is_aborted is True:  # pylint: disable=g-bool-id-comparison
+      return
     config = invocation_context.events_compaction_config
     if not config:
       return
 
     from .apps.compaction import _run_compaction_for_sliding_window_config
 
+    raw_signal = getattr(invocation_context, '_abort_signal', None)
+    abort_signal = raw_signal if isinstance(raw_signal, asyncio.Event) else None
     session = invocation_context.session
     logger.debug('Running event compactor.')
     try:
@@ -940,9 +945,14 @@ class Runner:
               session=session,
               session_service=self.session_service,
               agent=self.agent,
+              abort_signal=abort_signal,
           )
       ) as compaction_events:
         async for compaction_event in compaction_events:
+          # is True rather than truthiness: mocked contexts return a truthy
+          # Mock.
+          if invocation_context.is_aborted is True:  # pylint: disable=g-bool-id-comparison
+            return
           await self.session_service.append_event(
               session=session, event=compaction_event
           )
