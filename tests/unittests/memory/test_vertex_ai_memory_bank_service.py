@@ -144,32 +144,36 @@ CREDENTIAL_EXCHANGE_EVENTS = [
 
 THOUGHT_TEXT = 'the user sounds anxious, keep the reply short'
 
-THOUGHT_EVENTS = [
-    Event(
-        id='901',
-        invocation_id='900',
-        author='agent',
-        timestamp=45678,
-        content=types.Content(
-            role='model',
-            parts=[
-                types.Part(text=THOUGHT_TEXT, thought=True),
-                types.Part(text='Here is the answer.'),
-            ],
-        ),
-    ),
-    # Thought-only event, should be ignored
-    Event(
-        id='902',
-        invocation_id='900',
-        author='agent',
-        timestamp=45679,
-        content=types.Content(
-            role='model',
-            parts=[types.Part(text=THOUGHT_TEXT, thought=True)],
-        ),
-    ),
-]
+
+def _thought_events() -> list[Event]:
+  """Returns new events so a test cannot affect another through them."""
+  return [
+      Event(
+          id='901',
+          invocation_id='900',
+          author='agent',
+          timestamp=45678,
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(text=THOUGHT_TEXT, thought=True),
+                  types.Part(text='Here is the answer.'),
+              ],
+          ),
+      ),
+      # Thought-only event, should be ignored
+      Event(
+          id='902',
+          invocation_id='900',
+          author='agent',
+          timestamp=45679,
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text=THOUGHT_TEXT, thought=True)],
+          ),
+      ),
+  ]
+
 
 MOCK_SESSION_WITH_EMPTY_EVENTS = Session(
     app_name=MOCK_APP_NAME,
@@ -621,7 +625,7 @@ async def test_add_session_to_memory_skips_thought_parts(
       user_id=MOCK_USER_ID,
       id='333',
       last_update_time=22333,
-      events=THOUGHT_EVENTS,
+      events=_thought_events(),
   )
 
   await memory_service.add_session_to_memory(session)
@@ -639,8 +643,27 @@ async def test_add_session_to_memory_skips_thought_parts(
       'Here is the answer.'
   ]
   assert THOUGHT_TEXT not in str(call_kwargs)
-  # The session's own events are left unchanged.
-  assert len(THOUGHT_EVENTS[0].content.parts) == 2
+  assert session.events == _thought_events()
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_via_ingest_with_only_thoughts_sends_no_events(
+    mock_agentplatform_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=_thought_events()[1:],
+  )
+
+  # Allow the fire-and-forget task to complete.
+  await asyncio.sleep(0)
+
+  call_kwargs = (
+      mock_agentplatform_client.memory_banks.ingest_events.call_args.kwargs
+  )
+  assert 'direct_contents_source' not in call_kwargs
 
 
 @pytest.mark.asyncio
@@ -648,10 +671,11 @@ async def test_add_events_to_memory_via_generate_skips_thought_parts(
     mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
+  events = _thought_events()
   await memory_service.add_events_to_memory(
       app_name=MOCK_APP_NAME,
       user_id=MOCK_USER_ID,
-      events=THOUGHT_EVENTS,
+      events=events,
       custom_metadata={'revision_ttl': '3600s'},
   )
 
@@ -664,6 +688,7 @@ async def test_add_events_to_memory_via_generate_skips_thought_parts(
       'Here is the answer.'
   ]
   assert THOUGHT_TEXT not in str(call_kwargs)
+  assert events == _thought_events()
 
 
 @pytest.mark.asyncio
@@ -674,7 +699,7 @@ async def test_add_events_to_memory_via_generate_with_only_thoughts_skips_rpc(
   await memory_service.add_events_to_memory(
       app_name=MOCK_APP_NAME,
       user_id=MOCK_USER_ID,
-      events=[THOUGHT_EVENTS[1]],
+      events=_thought_events()[1:],
       custom_metadata={'revision_ttl': '3600s'},
   )
 
