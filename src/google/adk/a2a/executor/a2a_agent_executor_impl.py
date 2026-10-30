@@ -29,6 +29,7 @@ from a2a.types import TaskStatusUpdateEvent
 from typing_extensions import override
 
 from .. import _compat
+from ...agents.llm.task._finish_task_tool import is_nested_branch_finish_task
 from ...runners import Runner
 from ...sessions import base_session_service
 from ...utils.context_utils import Aclosing
@@ -193,6 +194,9 @@ class _A2aAgentExecutor(AgentExecutor):
     )
     async with Aclosing(runner.run_async(**vars(run_request))) as agen:
       async for adk_event in agen:
+        # A task-hop finish_task (branch has a run id) is not this task.
+        if is_nested_branch_finish_task(adk_event):
+          continue
         # Handle error scenarios
         if adk_event and (adk_event.error_code or adk_event.error_message):
           error_event = create_error_status_event(

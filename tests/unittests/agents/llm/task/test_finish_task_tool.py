@@ -21,6 +21,9 @@ from unittest import mock
 
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from google.adk.agents.llm.task._finish_task_tool import FinishTaskTool
+from google.adk.agents.llm.task._finish_task_tool import is_nested_branch_finish_task
+from google.adk.events.event import Event
+from google.genai import types
 from pydantic import BaseModel
 import pytest
 
@@ -361,3 +364,29 @@ class TestFinishTaskToolAllSchemaTypes:
     assert 'SampleOutputSchema' in schema['$defs']
     # The nested result schema should not contain $defs
     assert '$defs' not in schema['properties']['result']
+
+
+def test_nested_branch_finish_task_requires_a_run_id():
+  def ev(branch, *, text=False):
+    part = (
+        types.Part(text='hi')
+        if text
+        else types.Part(
+            function_response=types.FunctionResponse(
+                id='fc',
+                name='finish_task',
+                response={'result': 'Task completed.'},
+            )
+        )
+    )
+    return Event(
+        author='a',
+        invocation_id='i',
+        branch=branch,
+        content=types.Content(role='user', parts=[part]),
+    )
+
+  assert not is_nested_branch_finish_task(ev(None))
+  assert not is_nested_branch_finish_task(ev('par.c'))
+  assert not is_nested_branch_finish_task(ev('inner@fc', text=True))
+  assert is_nested_branch_finish_task(ev('inner@fc'))

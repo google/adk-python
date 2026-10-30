@@ -25,6 +25,7 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError
 from typing_extensions import override
 
+from ....events._branch_path import _BranchPath
 from ....events.event import Event
 from ....tools.base_tool import BaseTool
 from ....utils._schema_utils import schema_to_json_schema
@@ -204,6 +205,25 @@ no accompanying text output."""
     del validated_output
 
     return FINISH_TASK_SUCCESS_RESULT
+
+
+def is_nested_branch_finish_task(event: Event) -> bool:
+  """True when finish_task came from a task hop, not a parallel child.
+
+  Task delegation stamps ``name@run_id`` (AgentTool via override_branch,
+  run_node via use_sub_branch). ParallelAgent stamps ``parent.child``
+  with no run id, and that child's finish_task still belongs to the
+  served task. An unset branch is the served root.
+  """
+  if not event.branch:
+    return False
+  if not _BranchPath.from_string(event.branch).run_ids:
+    return False
+  if is_finish_task_terminal_fr(event):
+    return True
+  return any(
+      call.name == FINISH_TASK_TOOL_NAME for call in event.get_function_calls()
+  )
 
 
 def is_finish_task_terminal_fr(event: Event) -> bool:
