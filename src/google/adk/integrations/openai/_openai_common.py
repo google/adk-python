@@ -16,7 +16,9 @@
 
 Home for parsing, mapping, and client-construction logic that the Chat
 Completions wrapper (``_openai_llm.py``) and the Responses wrapper
-(``_openai_responses_llm.py``) share. The Responses model keeps its own
+(``_openai_responses_llm.py``) share. The Decisions classifier
+(``_openai_decisions_classifier.py``) also builds its client with
+``build_api_key``. The Responses model keeps its own
 status-based ``_map_finish_reason`` (it maps a Responses API *status*, not a
 finish-reason string), so that mapper is not shared here.
 """

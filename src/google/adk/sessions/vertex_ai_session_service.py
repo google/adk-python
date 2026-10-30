@@ -43,6 +43,7 @@ from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
 from .session import Session
+from .state import State
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -213,6 +214,14 @@ class VertexAiSessionService(BaseSessionService):
       )
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
+    # temp: keys live for one invocation and are never stored, so they are
+    # dropped here just as append_event trims them from every state delta.
+    if state:
+      state = {
+          key: value
+          for key, value in state.items()
+          if not key.startswith(State.TEMP_PREFIX)
+      }
     config: dict[str, Any] = {'session_state': state} if state else {}
     if session_id:
       session_id = _extract_short_session_id(
