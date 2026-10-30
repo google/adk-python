@@ -1903,6 +1903,54 @@ async def test_append_event_complete(session_service):
   )
 
 
+@pytest.mark.asyncio
+async def test_append_event_does_not_retain_caller_state(session_service):
+  """A completed append preserves the applied state delta.
+
+  Mutating the caller's state delta after append_event returns must not
+  change what the service returns later: storage keeps the caller's snapshot
+  at append time, not live references into the caller's values.
+  """
+  session = await session_service.create_session(app_name='a', user_id='u')
+  event = Event(
+      author='assistant',
+      content=types.Content(
+          role='model', parts=[types.Part(text='original answer')]
+      ),
+      actions=EventActions(state_delta={'cart': {'items': ['coffee']}}),
+  )
+  await session_service.append_event(session=session, event=event)
+  event.actions.state_delta['cart']['items'].append('tea')
+
+  stored = await session_service.get_session(
+      app_name='a', user_id='u', session_id=session.id
+  )
+  assert stored.state['cart'] == {'items': ['coffee']}
+
+
+@pytest.mark.asyncio
+async def test_append_event_does_not_retain_caller_event(session_service):
+  """A completed append preserves the stored event content.
+
+  Mutating the caller's event after append_event returns must not change
+  what the service returns later.
+  """
+  session = await session_service.create_session(app_name='a', user_id='u')
+  event = Event(
+      author='assistant',
+      content=types.Content(
+          role='model', parts=[types.Part(text='original answer')]
+      ),
+  )
+  await session_service.append_event(session=session, event=event)
+  event.content.parts[0].text = 'changed after append'
+
+  stored = await session_service.get_session(
+      app_name='a', user_id='u', session_id=session.id
+  )
+  assert stored.events[-1].content.parts[0].text == 'original answer'
+
+
 # pylint: disable=redefined-outer-name
 @pytest.mark.asyncio
 async def test_append_event_with_requested_tool_confirmations(session_service):
@@ -3633,6 +3681,49 @@ async def test_in_memory_get_session_events_share_nothing_with_storage():
   assert _mutable_object_ids(fetched.events[0]).isdisjoint(
       _mutable_object_ids(stored_event)
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('light_copy', [False, True])
+async def test_in_memory_append_event_state_uses_configured_copy_depth(
+    light_copy,
+):
+  """A completed append copies the caller's state delta to the configured depth.
+
+  Light copy exists to skip the recursive copy, so under it state values stay
+  shared with the caller; without it they are deep-copied. The stored event
+  itself stays aliased to the caller's event in both modes: events may hold
+  values that cannot be copied, and append must not pay copy costs.
+  """
+  override_feature_enabled(
+      FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, light_copy
+  )
+  try:
+    service = InMemorySessionService()
+    session = await service.create_session(
+        app_name='my_app', user_id='u1', session_id='s1'
+    )
+    event = Event(
+        author='agent',
+        content=types.Content(
+            role='model', parts=[types.Part(text='original')]
+        ),
+        actions=EventActions(state_delta={'cart': {'items': ['coffee']}}),
+    )
+    await service.append_event(session, event)
+    event.actions.state_delta['cart']['items'].append('tea')
+
+    stored = service.sessions['my_app']['u1']['s1']
+    assert stored.events[0] is event
+    assert (stored.state['cart'] is event.actions.state_delta['cart']) == (
+        light_copy
+    )
+    if not light_copy:
+      assert stored.state['cart'] == {'items': ['coffee']}
+  finally:
+    override_feature_enabled(
+        FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, False
+    )
 
 
 @pytest.mark.asyncio
