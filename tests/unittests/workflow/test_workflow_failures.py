@@ -1426,12 +1426,10 @@ async def test_fail_fast_preserves_completed_siblings(
   original_handle_completion = Workflow._handle_completion
   handle_completion_calls = []
 
-  def spy_handle_completion(
-      self, loop_state, node_name, node_obj, child_ctx, ctx
-  ):
+  def spy_handle_completion(self, loop_state, node_name, child_ctx, ctx):
     handle_completion_calls.append(node_name)
     return original_handle_completion(
-        self, loop_state, node_name, node_obj, child_ctx, ctx
+        self, loop_state, node_name, child_ctx, ctx
     )
 
   app = App(name=request.function.__name__, root_agent=wf)
@@ -1448,9 +1446,8 @@ async def test_fail_fast_preserves_completed_siblings(
   assert node_success_completed is True
 
   # Under the bug, succeeding_node's completion handler was skipped.
-  # With the fix, succeeding_node's completion is handled.
-  assert 'failing_node' not in handle_completion_calls
-  assert 'succeeding_node' in handle_completion_calls
+  # With the fix, succeeding_node's completion is handled after failing_node.
+  assert handle_completion_calls == ['failing_node', 'succeeding_node']
 
 
 @pytest.mark.asyncio
