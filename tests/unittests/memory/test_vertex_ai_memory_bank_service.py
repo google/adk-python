@@ -142,6 +142,35 @@ CREDENTIAL_EXCHANGE_EVENTS = [
     ),
 ]
 
+THOUGHT_TEXT = 'the user sounds anxious, keep the reply short'
+
+THOUGHT_EVENTS = [
+    Event(
+        id='901',
+        invocation_id='900',
+        author='agent',
+        timestamp=45678,
+        content=types.Content(
+            role='model',
+            parts=[
+                types.Part(text=THOUGHT_TEXT, thought=True),
+                types.Part(text='Here is the answer.'),
+            ],
+        ),
+    ),
+    # Thought-only event, should be ignored
+    Event(
+        id='902',
+        invocation_id='900',
+        author='agent',
+        timestamp=45679,
+        content=types.Content(
+            role='model',
+            parts=[types.Part(text=THOUGHT_TEXT, thought=True)],
+        ),
+    ),
+]
+
 MOCK_SESSION_WITH_EMPTY_EVENTS = Session(
     app_name=MOCK_APP_NAME,
     user_id=MOCK_USER_ID,
@@ -580,6 +609,76 @@ async def test_add_events_to_memory_via_generate_skips_credential_events(
   assert len(source.events) == 1
   assert source.events[0].content.parts[0].text == 'test_content'
   assert CREDENTIAL_TOKEN not in str(call_kwargs)
+
+
+@pytest.mark.asyncio
+async def test_add_session_to_memory_skips_thought_parts(
+    mock_agentplatform_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id='333',
+      last_update_time=22333,
+      events=THOUGHT_EVENTS,
+  )
+
+  await memory_service.add_session_to_memory(session)
+
+  # Allow the fire-and-forget task to complete.
+  await asyncio.sleep(0)
+
+  call_kwargs = (
+      mock_agentplatform_client.memory_banks.ingest_events.call_args.kwargs
+  )
+  source = call_kwargs['direct_contents_source']
+  assert [event.event_id for event in source.events] == ['901']
+  assert source.events[0].content.role == 'model'
+  assert [part.text for part in source.events[0].content.parts] == [
+      'Here is the answer.'
+  ]
+  assert THOUGHT_TEXT not in str(call_kwargs)
+  # The session's own events are left unchanged.
+  assert len(THOUGHT_EVENTS[0].content.parts) == 2
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_via_generate_skips_thought_parts(
+    mock_agentplatform_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=THOUGHT_EVENTS,
+      custom_metadata={'revision_ttl': '3600s'},
+  )
+
+  call_kwargs = (
+      mock_agentplatform_client.memory_banks.memories.generate.call_args.kwargs
+  )
+  source = call_kwargs['direct_contents_source']
+  assert len(source.events) == 1
+  assert [part.text for part in source.events[0].content.parts] == [
+      'Here is the answer.'
+  ]
+  assert THOUGHT_TEXT not in str(call_kwargs)
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_via_generate_with_only_thoughts_skips_rpc(
+    mock_agentplatform_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      events=[THOUGHT_EVENTS[1]],
+      custom_metadata={'revision_ttl': '3600s'},
+  )
+
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
 
 
 @pytest.mark.asyncio
