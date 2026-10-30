@@ -48,6 +48,7 @@ from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...dependencies._mcp import StdioServerParameters
 from ...dependencies._mcp import Tool as McpBaseTool
+from ...dependencies._mcp import types as mcp_types
 from ...utils.env_utils import is_env_enabled
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
@@ -512,14 +513,30 @@ class McpToolset(BaseToolset):
     mcp_tools = self._read_tool_list_cache(cache_key)
 
     if mcp_tools is None:
-      # Fetch available tools from the MCP server
-      tools_response: ListToolsResult = await self._execute_with_session(
-          lambda session: session.list_tools(),
+      # Fetch all pages with one session; MCP cursors can be session-scoped.
+      async def fetch_all_tools(session: _ClientSession) -> List[McpBaseTool]:
+        response: ListToolsResult = await session.list_tools()
+        tools = list(response.tools)
+        seen_cursors: set[str] = set()
+
+        while response.next_cursor is not None:
+          cursor = response.next_cursor
+          if cursor in seen_cursors:
+            raise ValueError("MCP tools/list returned a repeated cursor")
+          seen_cursors.add(cursor)
+          response = await session.list_tools(
+              params=mcp_types.PaginatedRequestParams(cursor=cursor)
+          )
+          tools.extend(response.tools)
+
+        return tools
+
+      mcp_tools = await self._execute_with_session(
+          fetch_all_tools,
           "Failed to get tools from MCP server",
           readonly_context,
           headers=headers,
       )
-      mcp_tools = tools_response.tools
       self._write_tool_list_cache(cache_key, mcp_tools)
 
     # Apply filtering based on context and tool_filter. This runs on every call

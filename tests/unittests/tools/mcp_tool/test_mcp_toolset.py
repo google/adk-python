@@ -76,8 +76,9 @@ class MockMCPTool:
 class MockListToolsResult:
   """Mock ListToolsResult for testing."""
 
-  def __init__(self, tools):
+  def __init__(self, tools, next_cursor=None):
     self.tools = tools
+    self.next_cursor = next_cursor
 
 
 class TestMcpToolset:
@@ -385,6 +386,66 @@ class TestMcpToolset:
     assert tools[3].name == "load_mcp_resource"
 
   @pytest.mark.asyncio
+  async def test_get_tools_includes_tools_from_all_pages(self):
+    """Tools discovered on later MCP pages are available to the agent."""
+    self.mock_session.list_tools = AsyncMock(
+        side_effect=[
+            MockListToolsResult(
+                [MockMCPTool("zulu")], next_cursor="second-page"
+            ),
+            MockListToolsResult([MockMCPTool("alpha")]),
+        ]
+    )
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert [tool.name for tool in tools] == ["alpha", "zulu"]
+    assert self.mock_session.list_tools.await_count == 2
+    assert self.mock_session.list_tools.await_args_list[0].kwargs == {}
+    assert (
+        self.mock_session.list_tools.await_args_list[1].kwargs["params"].cursor
+        == "second-page"
+    )
+    self.mock_session_manager.create_session.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_get_tools_uses_empty_string_cursor(self):
+    """An empty cursor is valid and does not end a paginated listing."""
+    self.mock_session.list_tools = AsyncMock(
+        side_effect=[
+            MockListToolsResult([MockMCPTool("first")], next_cursor=""),
+            MockListToolsResult([MockMCPTool("second")]),
+        ]
+    )
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert [tool.name for tool in tools] == ["first", "second"]
+    assert self.mock_session.list_tools.await_count == 2
+    assert (
+        self.mock_session.list_tools.await_args_list[1].kwargs["params"].cursor
+        == ""
+    )
+
+  @pytest.mark.asyncio
+  async def test_get_tools_fails_on_repeated_pagination_cursor(self):
+    """A server reusing its cursor must not cause an infinite listing."""
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(
+            [MockMCPTool("first")], next_cursor="stuck"
+        )
+    )
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    with pytest.raises(ConnectionError, match="repeated cursor"):
+      await toolset.get_tools()
+
+  @pytest.mark.asyncio
   async def test_get_tools_returns_sorted_by_name(self):
     """Test that get_tools returns tools sorted by name for cache stability."""
     # Mock tools from MCP server in non-alphabetical order.
@@ -686,6 +747,7 @@ class TestMcpToolset:
     mock_tool2.description = "tool 2 desc"
     list_tools_result = MagicMock()
     list_tools_result.tools = [mock_tool1, mock_tool2]
+    list_tools_result.next_cursor = None
     mock_session.list_tools = AsyncMock(return_value=list_tools_result)
     mock_session_manager.create_session = AsyncMock(return_value=mock_session)
 
@@ -1321,6 +1383,45 @@ class TestMcpToolsetToolListCache:
     assert self.mock_session.list_tools.await_count == 1
     assert [tool.name for tool in first] == ["tool1", "tool2"]
     assert [tool.name for tool in second] == ["tool1", "tool2"]
+
+  @pytest.mark.asyncio
+  async def test_paginated_tool_list_is_cached_only_when_complete(self):
+    """Cache hits return every page's tools without another server request."""
+    self.mock_session.list_tools = AsyncMock(
+        side_effect=[
+            MockListToolsResult([MockMCPTool("first")], next_cursor="page-two"),
+            MockListToolsResult([MockMCPTool("second")]),
+        ]
+    )
+    toolset = self._toolset(tool_list_cache_ttl_seconds=60)
+
+    first = await toolset.get_tools()
+    cached = await toolset.get_tools()
+
+    assert [tool.name for tool in first] == ["first", "second"]
+    assert [tool.name for tool in cached] == ["first", "second"]
+    assert self.mock_session.list_tools.await_count == 2
+
+  @pytest.mark.asyncio
+  async def test_failed_pagination_does_not_cache_partial_tools(self):
+    """An incomplete listing is never cached as the full tool list."""
+    first_page = MockListToolsResult(
+        [MockMCPTool("first")], next_cursor="page-two"
+    )
+    self.mock_session.list_tools = AsyncMock(
+        side_effect=[
+            first_page,
+            RuntimeError("page-two failure"),
+            first_page,
+            RuntimeError("page-two failure"),
+        ]
+    )
+    toolset = self._toolset(tool_list_cache_ttl_seconds=60)
+
+    with pytest.raises(ConnectionError, match="page-two failure"):
+      await toolset.get_tools()
+
+    assert not toolset._tool_list_cache
 
   @pytest.mark.asyncio
   async def test_expired_entry_is_refetched(self):
