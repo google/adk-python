@@ -21,6 +21,7 @@ from typing import AsyncGenerator
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from ....events._rewind_events import _apply_rewinds
 from ....events.event import Event
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..core._utils import as_llm_agent
@@ -49,9 +50,11 @@ def _find_previous_interaction_state(
 ) -> tuple[Optional[str], Optional[str]]:
   """Find the most recent (interaction_id, environment_id) for ``agent_name``.
 
-  Scans ``events`` in reverse, skipping events outside ``current_branch``, and
-  returns the ids from the first event authored by this agent that carries an
-  interaction_id.
+  Scans ``events`` in reverse, skipping rewound events and events outside
+  ``current_branch``, and returns the ids from the first event authored by this
+  agent that carries an interaction_id. Rewound turns must be skipped because
+  chaining onto their interaction would bring them back into the server-side
+  history that the next request continues from.
   """
   logger.debug(
       'Finding previous_interaction_id: agent=%s, branch=%s, num_events=%d',
@@ -59,7 +62,7 @@ def _find_previous_interaction_state(
       current_branch,
       len(events),
   )
-  for event in reversed(events):
+  for event in reversed(_apply_rewinds(events)):
     if not _is_event_in_branch(current_branch, event):
       logger.debug(
           'Skipping event not in branch: author=%s, branch=%s, current=%s',
