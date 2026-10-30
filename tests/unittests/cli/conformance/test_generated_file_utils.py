@@ -57,9 +57,30 @@ def test_load_test_case_parses_spec_and_applies_declared_defaults(tmp_path):
   assert spec.agent == 'dice_agent'
   # Omitted field falls back to its documented empty default.
   assert spec.initial_state == {}
+  assert spec.replay_tool_responses == {}
   assert [m.text for m in spec.user_messages] == ['roll a die', 'roll again']
   assert spec.user_messages[0].state_delta is None
   assert spec.user_messages[1].state_delta == {'rolls': 1}
+
+
+def test_load_test_case_reads_recorded_tool_selection(tmp_path):
+  """A per-agent tool selection can be declared in spec.yaml."""
+  _write_spec(
+      tmp_path,
+      """\
+      description: replay notifications
+      agent: app
+      replay_tool_responses:
+        agent_a:
+          - send_notice
+      user_messages:
+        - text: notify
+      """,
+  )
+
+  spec = load_test_case(tmp_path)
+
+  assert spec.replay_tool_responses == {'agent_a': ['send_notice']}
 
 
 def test_load_test_case_rejects_unknown_spec_field(tmp_path):

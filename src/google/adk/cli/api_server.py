@@ -2312,6 +2312,31 @@ class ApiServer:
       else:
         _is_visual_builder.set(False)
 
+    def _require_replay_plugin_for_recorded_responses(
+        runner: Runner, state_delta: Optional[dict[str, Any]]
+    ) -> None:
+      """Reject recorded tool replay before a run if its plugin is absent."""
+      config = (state_delta or {}).get("_adk_replay_config")
+      if not isinstance(config, dict) or not config.get(
+          "replay_tool_responses"
+      ):
+        return
+
+      from .plugins.replay_plugin import ReplayPlugin
+
+      if not any(
+          isinstance(plugin, ReplayPlugin)
+          for plugin in runner.plugin_manager.plugins
+      ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Recorded tool responses require ReplayPlugin. Start the"
+                " server with --extra_plugins"
+                " google.adk.cli.plugins.replay_plugin.ReplayPlugin."
+            ),
+        )
+
     @app.post(
         "/run", response_model=list[Event], response_model_exclude_none=True
     )
@@ -2325,6 +2350,7 @@ class ApiServer:
       req.app_name = app_name
       self.current_app_name_ref.value = req.app_name
       runner = await self.get_runner_async(req.app_name)
+      _require_replay_plugin_for_recorded_responses(runner, req.state_delta)
       _set_telemetry_context_if_needed(runner)
       run_config = None
       if (
@@ -2423,6 +2449,7 @@ class ApiServer:
       self.current_app_name_ref.value = req.app_name
       stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
       runner = await self.get_runner_async(req.app_name)
+      _require_replay_plugin_for_recorded_responses(runner, req.state_delta)
       _set_telemetry_context_if_needed(runner)
 
       # Build the run config before the response starts. Constructing it

@@ -225,6 +225,59 @@ async def test_run_agent():
     assert events[1].invocation_id == "test_invocation_2"
 
 
+@pytest.mark.parametrize("streaming_mode", [False, True])
+async def test_replay_tool_selection_is_sent_to_server(streaming_mode):
+  """Replay selection reaches the server in the per-turn state delta."""
+  client = AdkWebServerClient()
+  sent_requests = []
+
+  class EmptyStreamResponse:
+
+    def raise_for_status(self):
+      pass
+
+    async def aiter_lines(self):
+      if False:
+        yield "data:"
+
+    async def __aenter__(self):
+      return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+      pass
+
+  def mock_stream(*_args, **kwargs):
+    sent_requests.append(kwargs["json"])
+    return EmptyStreamResponse()
+
+  with patch("httpx.AsyncClient") as mock_client_class:
+    mock_client = AsyncMock()
+    mock_client.stream = mock_stream
+    mock_client_class.return_value = mock_client
+    request = RunAgentRequest(
+        app_name="app",
+        user_id="user",
+        session_id="session",
+        streaming=streaming_mode,
+    )
+
+    async for _ in client.run_agent(
+        request,
+        mode="replay",
+        test_case_dir="case",
+        user_message_index=0,
+        replay_tool_responses={"agent_a": ["send_notice"]},
+    ):
+      pass
+
+  assert sent_requests[0]["stateDelta"]["_adk_replay_config"] == {
+      "dir": "case",
+      "user_message_index": 0,
+      "streaming_mode": "sse" if streaming_mode else "none",
+      "replay_tool_responses": {"agent_a": ["send_notice"]},
+  }
+
+
 @pytest.mark.asyncio
 async def test_run_agent_raises_on_streamed_error():
   client = AdkWebServerClient()
