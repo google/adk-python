@@ -25,6 +25,7 @@ from a2a.server.events.event_queue import EventQueue
 from a2a.types import Artifact
 from a2a.types import Message
 from a2a.types import TaskArtifactUpdateEvent
+from a2a.types import TaskStatusUpdateEvent
 from google.adk.platform import uuid as platform_uuid
 from google.adk.runners import Runner
 from google.adk.sessions.session import Session
@@ -41,6 +42,8 @@ from .config import A2aAgentExecutorConfig
 from .executor_context import ExecutorContext
 from .task_result_aggregator import TaskResultAggregator
 from .utils import _enqueue_canceled_task_event
+from .utils import _ErrorRecoveryTracker
+from .utils import _is_error_event
 from .utils import _require_request_context
 from .utils import _require_user_id
 from .utils import execute_after_agent_interceptors
@@ -227,10 +230,16 @@ class A2aAgentExecutor(AgentExecutor):
     )
 
     task_result_aggregator = TaskResultAggregator()
+    error_tracker = _ErrorRecoveryTracker()
+    # A failure that a converter or interceptor reports for an event that is not
+    # an ADK error event cannot be recovered from.
+    has_unrecoverable_failure = False
     last_adk_event = None
     async with Aclosing(runner.run_async(**vars(run_request))) as agen:
       async for adk_event in agen:
         last_adk_event = adk_event
+        error_tracker.observe(adk_event)
+        is_error_event = _is_error_event(adk_event)
         for a2a_event in self._config.event_converter(
             adk_event,
             invocation_context,
@@ -245,8 +254,23 @@ class A2aAgentExecutor(AgentExecutor):
               self._config.execute_interceptors,
           )
           for e in a2a_events:
+            if (
+                not is_error_event
+                and isinstance(e, TaskStatusUpdateEvent)
+                and e.status.state == _compat.TS_FAILED
+            ):
+              has_unrecoverable_failure = True
             task_result_aggregator.process_event(e)
             await event_queue.enqueue_event(e)
+
+    # An error the run recovered from (e.g. a failed sub-agent whose parent
+    # went on to answer) does not fail the task.
+    if (
+        task_result_aggregator.task_state == _compat.TS_FAILED
+        and error_tracker.unresolved_error is None
+        and not has_unrecoverable_failure
+    ):
+      task_result_aggregator._clear_failure()  # pylint: disable=protected-access
 
     # Build metadata for final event to preserve invocation_id and event_id.
     final_metadata = {
