@@ -80,12 +80,22 @@ def gemini_to_json_schema(gemini_schema: Schema) -> Dict[str, Any]:
 
   json_schema_dict: Dict[str, Any] = {}
 
-  # Map Type
+  # Omitted/unspecified types impose no JSON Schema type constraint. In
+  # particular, anyOf-only schemas must not also be restricted to null.
+  # Vertex function declarations mark a union as OBJECT plus anyOf; that OBJECT
+  # is a placeholder, so the anyOf branches carry the type.
   gemini_type = getattr(gemini_schema, "type", None)
-  if gemini_type and gemini_type != Type.TYPE_UNSPECIFIED:
+  any_of_list = getattr(gemini_schema, "any_of", None)
+  is_union_placeholder = gemini_type == Type.OBJECT and any(
+      sub_schema.type not in (None, Type.TYPE_UNSPECIFIED, Type.OBJECT)
+      for sub_schema in any_of_list or []
+  )
+  if (
+      gemini_type
+      and gemini_type != Type.TYPE_UNSPECIFIED
+      and not is_union_placeholder
+  ):
     json_schema_dict["type"] = gemini_type.lower()
-  else:
-    json_schema_dict["type"] = "null"
 
   # Map Nullable
   if getattr(gemini_schema, "nullable", None) == True:
@@ -164,7 +174,6 @@ def gemini_to_json_schema(gemini_schema: Schema) -> Dict[str, Any]:
         json_schema_dict[json_key] = value
 
   # Map anyOf (Recursive call for subschemas)
-  any_of_list = getattr(gemini_schema, "any_of", None)
   if any_of_list is not None:
     json_schema_dict["anyOf"] = [
         gemini_to_json_schema(sub_schema) for sub_schema in any_of_list
