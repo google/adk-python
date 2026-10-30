@@ -88,6 +88,38 @@ class DynamicNodeRun:
   is_static: bool = False
   """Whether this run was scheduled as a static graph node."""
 
+  def record_outcome(
+      self,
+      child_ctx: Context,
+      node: BaseNode,
+      interrupt_ids: set[str],
+  ) -> None:
+    """Record the outcome of ``child_ctx`` onto this run and ``interrupt_ids``."""
+    state = self.state
+    self.route = child_ctx.route
+    self.branch = child_ctx.branch
+    if child_ctx.error:
+      state.status = NodeStatus.FAILED
+    elif child_ctx.interrupt_ids:
+      state.status = NodeStatus.WAITING
+      state.interrupts = list(child_ctx.interrupt_ids)
+      interrupt_ids.update(child_ctx.interrupt_ids)
+    elif child_ctx.actions.transfer_to_agent:
+      state.status = NodeStatus.COMPLETED
+      self.output = child_ctx.output
+      self.transfer_to_agent = child_ctx.actions.transfer_to_agent
+    elif (
+        node.wait_for_output
+        and child_ctx.output is None
+        and child_ctx.route is None
+    ):
+      state.status = NodeStatus.WAITING
+    else:
+      state.status = NodeStatus.COMPLETED
+      if state.resume_inputs:
+        state.resume_inputs.clear()
+      self.output = child_ctx.output
+
 
 @dataclass(kw_only=True)
 class DynamicNodeState:
@@ -515,7 +547,6 @@ class DynamicNodeScheduler:
 
     if not result.should_run:
       if result.interrupts:
-        self._state.interrupt_ids.update(result.interrupts)
         logger.debug(
             'node %s schedule: Unresolved interrupts remain.', node_path
         )
@@ -523,10 +554,6 @@ class DynamicNodeScheduler:
         logger.debug(
             'node %s schedule: Fast-forwarding completed execution.', node_path
         )
-        # Sync output and transfer decisions with the current run state.
-        run.output = result.output
-        run.route = result.route
-        run.transfer_to_agent = result.transfer_to_agent
 
       if run.is_static:
         ancestor_path = (
@@ -565,11 +592,15 @@ class DynamicNodeScheduler:
               or scheduled_branch
           ),
       )
-
       # Chronological sequence barrier wait for replayed dynamic nodes
       parent_path = curr_parent_ctx.node_path if curr_parent_ctx else ''
       key = f'{curr_name}@{curr_run_id}'
       await self._replay_manager.wait_sequence(parent_path, key)
+
+      # Static graph runs stay RUNNING until Workflow._handle_completion records
+      # their outcome in deterministic loop order.
+      if not run.is_static:
+        run.record_outcome(mock_ctx, curr_node, self._state.interrupt_ids)
 
       return mock_ctx, True
 
@@ -716,37 +747,9 @@ class DynamicNodeScheduler:
       # The finished task holds the child Context, which holds this scheduler.
       if run.task is task:
         run.task = None
-    self._record_result(run, child_ctx, node)
+    if not run.is_static:
+      run.record_outcome(child_ctx, node, self._state.interrupt_ids)
     return child_ctx
-
-  def _record_result(
-      self,
-      run: DynamicNodeRun,
-      child_ctx: Context,
-      node: BaseNode,
-  ) -> None:
-    """Update dynamic node state after execution."""
-    state = run.state
-    run.route = child_ctx.route
-    run.branch = child_ctx.branch
-    if child_ctx.error:
-      state.status = NodeStatus.FAILED
-    elif child_ctx.interrupt_ids:
-      state.status = NodeStatus.WAITING
-      state.interrupts = list(child_ctx.interrupt_ids)
-      self._state.interrupt_ids.update(child_ctx.interrupt_ids)
-    elif child_ctx.actions.transfer_to_agent:
-      state.status = NodeStatus.COMPLETED
-      run.transfer_to_agent = child_ctx.actions.transfer_to_agent
-    elif (
-        node.wait_for_output
-        and child_ctx.output is None
-        and child_ctx.route is None
-    ):
-      state.status = NodeStatus.WAITING
-    else:
-      state.status = NodeStatus.COMPLETED
-      run.output = child_ctx.output
 
 
 async def run_node_internal(
