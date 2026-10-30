@@ -798,13 +798,13 @@ class FunctionNode(BaseNode):
         args_to_call = {
             k: v for k, v in args_to_call.items() if k in valid_params
         }
-    return bool(
-        await _invoke_callable(
-            self.require_confirmation,
-            args_to_call,
-            unwrapped=pred_spec.unwrapped_func,
-        )
+    result = await _invoke_callable(
+        self.require_confirmation,
+        args_to_call,
+        unwrapped=pred_spec.unwrapped_func,
     )
+    # An omitted return must not silently bypass the confirmation gate.
+    return True if result is None else bool(result)
 
   @override
   async def _run_impl(

@@ -21,7 +21,6 @@ import re
 from types import TracebackType
 from typing import Any
 from typing import Callable
-from typing import cast
 from typing import Iterable
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -417,12 +416,14 @@ class FunctionTool(BaseTool):
           preprocessed_args, tool_context
       )
       with _use_sync_callable_context(tool_context):
-        return cast(
-            bool,
-            await self._invoke_callable(
-                self._require_confirmation, args_to_call
-            ),
+        result = await self._invoke_callable(
+            self._require_confirmation, args_to_call
         )
+      # typing.cast is erased at runtime. A callable that returns None (e.g. an
+      # unhandled branch) must not skip the confirmation gate.
+      if isinstance(result, bool):
+        return result
+      return True
     return bool(self._require_confirmation)
 
   def _is_invocation_type_error(

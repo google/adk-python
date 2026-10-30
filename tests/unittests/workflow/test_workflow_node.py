@@ -38,7 +38,6 @@ from google.adk.workflow import START
 from google.adk.workflow._node import Node
 from google.adk.workflow._node import node
 from google.adk.workflow._parallel_worker import _ParallelWorker as ParallelWorker
-from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow._tool_node import _ToolNode as ToolNode
 from google.adk.workflow._workflow import Workflow
 from google.genai import types
@@ -584,7 +583,8 @@ async def test_node_require_confirmation_workflow_execution(
 
 
 @pytest.mark.parametrize(
-    "target_path,should_pause", [("/dev/tmp", False), ("/prod/db", True)]
+    "target_path,should_pause",
+    [("/dev/tmp", False), ("/prod/db", True), ("/home/x", True)],
 )
 @pytest.mark.asyncio
 async def test_node_require_confirmation_callable_predicate(
@@ -603,8 +603,10 @@ async def test_node_require_confirmation_callable_predicate(
   def setup_state(ctx: Context):
     ctx.state["path"] = target_path
 
-  def check_path(path: str) -> str:
+  def check_path(path: str) -> str | None:
     predicate_calls.append(path)
+    if path == "/home/x":
+      return None
     return path if path.startswith("/prod") else ""
 
   @node(require_confirmation=check_path)
