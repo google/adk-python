@@ -14,6 +14,7 @@
 
 import asyncio
 import base64
+from contextlib import asynccontextmanager
 from io import StringIO
 import itertools
 import pickle
@@ -25,6 +26,7 @@ from unittest.mock import Mock
 from unittest.mock import patch
 import warnings
 
+import anyio
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlows
@@ -37,6 +39,10 @@ from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_tool import AuthConfig
+from google.adk.dependencies._mcp import Context as McpContext
+from google.adk.dependencies._mcp import FastMCP
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.load_mcp_resource_tool import LoadMcpResourceTool
 from google.adk.tools.mcp_tool import mcp_toolset as mcp_toolset_module
 from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
@@ -50,7 +56,9 @@ from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolsetConfig
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_configs import ToolArgsConfig
+from google.adk.tools.tool_context import ToolContext
 from mcp import StdioServerParameters
+from mcp.shared.memory import create_client_server_memory_streams
 from mcp.types import BlobResourceContents
 from mcp.types import ListResourcesResult
 from mcp.types import ReadResourceResult
@@ -58,6 +66,7 @@ from mcp.types import Resource
 from mcp.types import TextResourceContents
 import pytest
 
+from ._in_memory_session import _lowlevel_server
 from ._sdk_compat import make_mcp_error
 
 
@@ -1072,6 +1081,81 @@ class TestMcpToolset:
     assert toolset._elicitation_callback is None
     assert toolset._mcp_session_manager._elicitation_callback is None
     # pylint: enable=protected-access
+
+  @pytest.mark.parametrize("transport", ["stdio", "sse", "streamable_http"])
+  @pytest.mark.parametrize("with_handler", [False, True])
+  @pytest.mark.parametrize("graceful_errors", [False, True])
+  async def test_server_notifications_reach_message_handler(
+      self, monkeypatch, transport, with_handler, graceful_errors
+  ):
+    """The public toolset delivers server notifications without private hooks."""
+    monkeypatch.setenv("GOOGLE_API_USE_CLIENT_CERTIFICATE", "false")
+    server = FastMCP("notifications")
+    received = []
+    notification_received = asyncio.Event()
+
+    @server.tool()
+    async def notify(ctx: McpContext) -> str:
+      await ctx.session.send_tool_list_changed()
+      return "sent"
+
+    async def message_handler(message):
+      received.append(message)
+      notification_received.set()
+
+    @asynccontextmanager
+    async def memory_client(*args, **kwargs):
+      async with create_client_server_memory_streams() as (client, peer):
+        lowlevel = _lowlevel_server(server)
+        async with anyio.create_task_group() as task_group:
+          task_group.start_soon(
+              lambda: lowlevel.run(
+                  *peer,
+                  lowlevel.create_initialization_options(),
+                  raise_exceptions=True,
+              )
+          )
+          try:
+            yield client
+          finally:
+            task_group.cancel_scope.cancel()
+
+    connection_params = {
+        "stdio": StdioConnectionParams(server_params=self.mock_stdio_params),
+        "sse": SseConnectionParams(url="http://mcp.test/sse"),
+        "streamable_http": StreamableHTTPConnectionParams(
+            url="http://mcp.test/mcp"
+        ),
+    }[transport]
+    client_name = {
+        "stdio": "stdio_client",
+        "sse": "sse_client",
+        "streamable_http": "streamable_http_client",
+    }[transport]
+    monkeypatch.setattr(
+        f"google.adk.tools.mcp_tool.mcp_session_manager.{client_name}",
+        memory_client,
+    )
+    options = {"message_handler": message_handler} if with_handler else {}
+    toolset = McpToolset(connection_params=connection_params, **options)
+
+    with temporary_feature_override(
+        FeatureName._MCP_GRACEFUL_ERROR_HANDLING, graceful_errors
+    ):
+      try:
+        tools = await toolset.get_tools()
+        result = await tools[0].run_async(
+            args={}, tool_context=ToolContext(invocation_context=Mock())
+        )
+        if with_handler:
+          await asyncio.wait_for(notification_received.wait(), timeout=5)
+      finally:
+        await toolset.close()
+
+    assert result["content"][0]["text"] == "sent"
+    assert [
+        getattr(message, "root", message).method for message in received
+    ] == (["notifications/tools/list_changed"] if with_handler else [])
 
   @pytest.mark.asyncio
   async def test_get_auth_headers_includes_additional_headers(self):

@@ -82,6 +82,7 @@ from ...dependencies._mcp import create_mcp_http_client as _create_mcp_http_clie
 from ...dependencies._mcp import ElicitationFnT
 from ...dependencies._mcp import IS_MCP_SDK_V2
 from ...dependencies._mcp import McpError
+from ...dependencies._mcp import MessageHandlerFnT
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...dependencies._mcp import sse_client
@@ -783,6 +784,7 @@ class MCPSessionManager:
       sampling_callback: SamplingFnT | None = None,
       sampling_capabilities: SamplingCapability | None = None,
       elicitation_callback: ElicitationFnT | None = None,
+      message_handler: MessageHandlerFnT | None = None,
   ) -> None:
     """Initializes the MCP session manager.
 
@@ -798,10 +800,13 @@ class MCPSessionManager:
         elicitation_callback: Optional callback to handle elicitation requests
           from the MCP server (``elicitation/create``), including URL-mode
           elicitations used for out-of-band flows such as auth challenges.
+        message_handler: Optional async callback for incoming MCP messages,
+          including server notifications.
     """
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
     self._elicitation_callback = elicitation_callback
+    self._message_handler = message_handler
     self._connection_params: (
         StdioConnectionParams
         | SseConnectionParams
@@ -1507,6 +1512,7 @@ class MCPSessionManager:
             sampling_callback=self._sampling_callback,
             sampling_capabilities=self._sampling_capabilities,
             elicitation_callback=self._elicitation_callback,
+            message_handler=self._message_handler,
         )
 
         if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
