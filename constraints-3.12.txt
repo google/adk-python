@@ -369,6 +369,7 @@ frozenlist==1.8.0
 fsspec==2026.6.0
     # via
     #   -c constraints-3.12.txt.stable.tmp
+    #   google-adk (pyproject.toml)
     #   huggingface-hub
     #   llama-index-core
 furo==2025.12.19
