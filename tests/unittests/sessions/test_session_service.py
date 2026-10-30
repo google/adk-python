@@ -4099,6 +4099,69 @@ def test_delete_session_sync_unknown_session_is_a_noop():
 
 
 @pytest.mark.asyncio
+async def test_delete_session_prunes_the_emptied_index_entries():
+  """Deleting a user's last session takes its index entries with it."""
+  service = InMemorySessionService()
+  app_name = 'my_app'
+  for index in range(10):
+    await service.create_session(
+        app_name=app_name, user_id=f'user_{index}', session_id='s1'
+    )
+
+  for index in range(10):
+    await service.delete_session(
+        app_name=app_name, user_id=f'user_{index}', session_id='s1'
+    )
+
+  assert service.sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_delete_session_keeps_the_users_other_sessions_indexed():
+  """Pruning stops at the entries that still hold a session."""
+  service = InMemorySessionService()
+  app_name = 'my_app'
+  await service.create_session(app_name=app_name, user_id='u1', session_id='s1')
+  await service.create_session(app_name=app_name, user_id='u1', session_id='s2')
+  await service.create_session(app_name=app_name, user_id='u2', session_id='s1')
+
+  await service.delete_session(app_name=app_name, user_id='u1', session_id='s1')
+
+  assert set(service.sessions[app_name]) == {'u1', 'u2'}
+  assert set(service.sessions[app_name]['u1']) == {'s2'}
+
+  await service.delete_session(app_name=app_name, user_id='u1', session_id='s2')
+
+  assert set(service.sessions[app_name]) == {'u2'}
+
+
+@pytest.mark.asyncio
+async def test_delete_session_keeps_scoped_state_after_pruning_the_index():
+  """Pruning the session index leaves app- and user-scoped state alone."""
+  service = InMemorySessionService()
+  app_name = 'my_app'
+  await service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={'app:theme': 'dark', 'user:name': 'alice', 'count': 1},
+  )
+
+  await service.delete_session(app_name=app_name, user_id='u1', session_id='s1')
+
+  assert service.sessions == {}
+  assert await service.get_user_state(app_name=app_name, user_id='u1') == {
+      'name': 'alice'
+  }
+  recreated = await service.create_session(
+      app_name=app_name, user_id='u1', session_id='s2'
+  )
+  assert recreated.state['app:theme'] == 'dark'
+  assert recreated.state['user:name'] == 'alice'
+  assert 'count' not in recreated.state
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_sync_strips_events_and_merges_scoped_state():
   """Listed sessions carry merged app/user state but never their events."""
   service = InMemorySessionService()

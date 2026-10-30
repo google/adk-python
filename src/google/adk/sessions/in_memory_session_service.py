@@ -317,10 +317,26 @@ class InMemorySessionService(BaseSessionService):
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     session_id = session_id.strip() if session_id else session_id
-    if session_id not in self.sessions.get(app_name, {}).get(user_id, {}):
+    sessions_by_user = self.sessions.get(app_name)
+    if not sessions_by_user:
       return
+    user_sessions = sessions_by_user.get(user_id)
+    if not user_sessions:
+      return
+    if session_id not in user_sessions:
+      return
+    del user_sessions[session_id]
 
-    self.sessions[app_name][user_id].pop(session_id)
+    # A deleted session must not leave its index entries behind. A long-lived
+    # service that creates a session per user and then deletes it, as a test
+    # suite or a request-scoped helper does, would otherwise keep one empty
+    # dict per user for the life of the process. Only the session index is
+    # pruned: user and app state are stored apart from it and outlive their
+    # sessions by design.
+    if not user_sessions:
+      del sessions_by_user[user_id]
+      if not sessions_by_user:
+        del self.sessions[app_name]
 
   @override
   async def get_user_state(
