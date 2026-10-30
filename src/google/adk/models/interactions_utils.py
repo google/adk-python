@@ -417,12 +417,16 @@ def _convert_part_to_interaction_content(
     )
   elif part.function_response is not None:
 
-    # genai.types.FunctionResponse specifies that
-    # an error response should be inside an error key
+    # genai.types.FunctionResponse specifies that an error response should be
+    # inside an error key. A failed MCP CallToolResult reports it with
+    # `isError` instead, spelled `is_error` in dumps made with MCP SDK 2.x
+    # field names.
     func_resp: object = part.function_response.response
-    is_error = False
-    if isinstance(func_resp, dict) and 'error' in func_resp:
-      is_error = True
+    is_error = isinstance(func_resp, dict) and bool(
+        'error' in func_resp
+        or func_resp.get('isError')
+        or func_resp.get('is_error')
+    )
 
     # Pass the function response through to the interactions API.
     # Dict and list values are passed directly — the Interactions API handles
