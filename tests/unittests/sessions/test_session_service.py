@@ -1496,6 +1496,36 @@ async def test_create_session_with_existing_id_raises_error(session_service):
 
 
 @pytest.mark.asyncio
+async def test_rejected_duplicate_create_session_leaves_state_unchanged(
+    session_service,
+):
+  """A rejected duplicate create leaves app:, user: and session state as-is."""
+  app_name = 'my_app'
+  user_id = 'test_user'
+  session_id = 'existing_session'
+  state = {'app:tier': 'free', 'user:theme': 'light', 'draft': 'v1'}
+  await session_service.create_session(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      state=state,
+  )
+
+  with pytest.raises(AlreadyExistsError):
+    await session_service.create_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        state={'app:tier': 'pro', 'user:theme': 'dark', 'draft': 'v2'},
+    )
+
+  session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  )
+  assert session.state == state
+
+
+@pytest.mark.asyncio
 async def test_create_session_with_padded_duplicate_id_raises_error():
   """Tests that InMemorySessionService checks the duplicate id after
   stripping it, so a whitespace-padded id maps to the same session as its

@@ -213,12 +213,13 @@ def test_bigquery_agent_analytics_plugin_fails_on_import_naming_its_extra():
 @pytest.mark.parametrize(
     "module_name",
     [
+        "google.adk.integrations.openai._openai_decisions_classifier",
         "google.adk.integrations.openai._openai_llm",
         "google.adk.integrations.openai._openai_responses_llm",
     ],
 )
-def test_openai_models_fail_on_import_naming_their_extra(module_name):
-  """Verify that importing the OpenAI models without openai names the extra."""
+def test_openai_modules_fail_on_import_naming_their_extra(module_name):
+  """Verify that importing an OpenAI module without openai names the extra."""
   with mock.patch.dict("sys.modules", {"openai": None}):
     sys.modules.pop(module_name, None)
     with pytest.raises(ImportError) as exc_info:
