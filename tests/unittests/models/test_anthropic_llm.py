@@ -807,6 +807,82 @@ async def test_anthropic_llm_generate_content_async(
       assert responses[0].content.parts[0].text == "Hello, how can I help you?"
 
 
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_appends_user_when_history_ends_on_assistant(
+    generate_content_response, generate_llm_response
+):
+  """AnthropicLlm must end every request on a user turn (Fixes #7861).
+
+  A LoopAgent's second iteration can present [user, assistant]. Claude 4.6+
+  rejects a trailing assistant message as unsupported prefill.
+  """
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[
+          Content(role="user", parts=[Part.from_text(text="Write a haiku")]),
+          Content(
+              role="model",
+              parts=[Part.from_text(text="An old silent pond")],
+          ),
+      ],
+  )
+  with mock.patch.object(llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.messages.create.return_value = mock_coro()
+      responses = [
+          resp
+          async for resp in llm.generate_content_async(llm_request, stream=False)
+      ]
+  assert len(responses) == 1
+  kwargs = mock_client.messages.create.call_args.kwargs
+  roles = [m["role"] for m in kwargs["messages"]]
+  assert roles == ["user", "assistant", "user"]
+  last_blocks = kwargs["messages"][-1]["content"]
+  assert last_blocks[0]["type"] == "text"
+  assert "Continue processing previous requests" in last_blocks[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_keeps_single_user_when_already_trailing(
+    generate_content_response, generate_llm_response
+):
+  """Do not append a second user turn when history already ends on user."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[
+          Content(role="user", parts=[Part.from_text(text="Write a haiku")]),
+      ],
+  )
+  with mock.patch.object(llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.messages.create.return_value = mock_coro()
+      _ = [
+          resp
+          async for resp in llm.generate_content_async(llm_request, stream=False)
+      ]
+  kwargs = mock_client.messages.create.call_args.kwargs
+  roles = [m["role"] for m in kwargs["messages"]]
+  assert roles == ["user"]
+
+
 @pytest.mark.asyncio
 async def test_generate_content_async_collects_declarations_from_all_tools(
     generate_content_response,
