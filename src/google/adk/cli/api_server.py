@@ -509,6 +509,21 @@ def _with_abort_signal_kwarg(
   return kwargs
 
 
+def _matches_streamed_error_event(
+    exc: BaseException,
+    active_error_events: Mapping[str, Event],
+) -> bool:
+  """Returns True if exc matches an unrecovered streamed error Event."""
+  status = getattr(exc, "status", None)
+  expected_code = status if isinstance(status, str) else type(exc).__name__
+  expected_message = str(exc)
+  return any(
+      event.error_code == expected_code
+      and event.error_message == expected_message
+      for event in active_error_events.values()
+  )
+
+
 async def _monitor_client_disconnect(
     request: Request,
     session_id: str,
@@ -2466,6 +2481,8 @@ class ApiServer:
       async def event_generator() -> AsyncIterator[str]:
         is_closing = False
         original_exc: Optional[BaseException] = None
+        producer_exc: Optional[BaseException] = None
+        active_error_events: dict[str, Event] = {}
         abort_signal = asyncio.Event()
         event_queue: asyncio.Queue[Optional[Event]] = asyncio.Queue()
         next_step_event = asyncio.Event()
@@ -2479,7 +2496,7 @@ class ApiServer:
         )
 
         async def _produce_events() -> None:
-          nonlocal is_closing, original_exc
+          nonlocal is_closing, original_exc, producer_exc
           run_async_kwargs = _with_abort_signal_kwarg(
               runner,
               {
@@ -2507,6 +2524,7 @@ class ApiServer:
                   abort_signal.set()
                 raise
               except Exception as e:
+                producer_exc = e
                 original_exc = e
                 raise
           finally:
@@ -2571,6 +2589,16 @@ class ApiServer:
                     "Generated event in agent run streaming: %s", sse_event
                 )
                 yield f"data: {sse_event}\n\n"
+              if not is_closing and not event.partial:
+                node_key = (
+                    event.node_info.path if event.node_info else ""
+                ) or event.author
+                if event.finish_reason is None and (
+                    event.error_code or event.error_message
+                ):
+                  active_error_events[node_key] = event
+                else:
+                  active_error_events.pop(node_key, None)
               next_step_event.set()
           except (GeneratorExit, asyncio.CancelledError) as e:
             is_closing = True
@@ -2598,6 +2626,12 @@ class ApiServer:
             if is_closing:
               raise original_exc from e
             logger.exception("Error in event_generator: %s", original_exc)
+            # Node execution already streams a structured error Event before
+            # re-raising; omit the fallback frame so SSE clients see Events.
+            if original_exc is producer_exc and _matches_streamed_error_event(
+                original_exc, active_error_events
+            ):
+              return
             error_details = {
                 "error_type": type(original_exc).__name__,
                 "error_message": str(original_exc),

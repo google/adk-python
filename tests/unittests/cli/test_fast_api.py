@@ -62,6 +62,8 @@ from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+from google.adk.models.base_llm import BaseLlm
+from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
 from google.adk.runners import Runner
@@ -69,6 +71,10 @@ from google.adk.sessions.base_session_service import ListSessionsResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.tool_confirmation import ToolConfirmation
+from google.adk.workflow import FunctionNode
+from google.adk.workflow import RetryConfig
+from google.adk.workflow import START
+from google.adk.workflow import Workflow
 from google.api_core.exceptions import GoogleAPICallError
 from google.api_core.exceptions import InvalidArgument
 from google.genai import types
@@ -4681,6 +4687,225 @@ def test_agent_run_sse_yields_error_object_on_exception(
     assert error_event["error"] == "ValueError: boom"
     assert "stacktrace" in error_event["error_details"]
     assert "ValueError: boom" in error_event["error_details"]["stacktrace"]
+
+
+class _StringStatusToolError(RuntimeError):
+  status = "RESOURCE_EXHAUSTED"
+
+
+class _IntStatusToolError(RuntimeError):
+  status = 502
+
+
+def _create_sse_client_and_payload(
+    loaded_target: Any,
+) -> tuple[TestClient, dict[str, Any]]:
+  """Creates a TestClient and /run_sse payload for loaded_target."""
+
+  class _StaticAgentLoader:
+
+    def load_agent(self, app_name: str) -> Any:
+      del app_name
+      return loaded_target
+
+    def list_agents(self) -> list[str]:
+      return ["test_app"]
+
+    def list_agents_detailed(self) -> list[dict[str, Any]]:
+      return []
+
+  client = _create_test_client(
+      InMemorySessionService(),
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      _StaticAgentLoader(),
+      InMemoryEvalSetsManager(),
+      MagicMock(),
+  )
+  session_resp = client.post(
+      "/apps/test_app/users/test_user/sessions",
+      json={"session_id": "test_session"},
+  )
+  assert session_resp.status_code == 200
+  payload = {
+      "app_name": "test_app",
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Start"}]},
+      "streaming": True,
+  }
+  return client, payload
+
+
+@pytest.mark.parametrize(
+    ("exc_factory", "expected_code", "expected_message"),
+    [
+        (
+            lambda: RuntimeError("tool failed on purpose"),
+            "RuntimeError",
+            "tool failed on purpose",
+        ),
+        (
+            lambda: _StringStatusToolError("quota exceeded"),
+            "RESOURCE_EXHAUSTED",
+            "quota exceeded",
+        ),
+        (
+            lambda: _IntStatusToolError("bad gateway"),
+            "_IntStatusToolError",
+            "bad gateway",
+        ),
+    ],
+)
+def test_agent_run_sse_omits_duplicate_error_frame_after_error_event(
+    monkeypatch,
+    exc_factory,
+    expected_code,
+    expected_message,
+):
+  """/run_sse omits the fallback frame after streaming an error Event."""
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+
+  class _ToolCallingLlm(BaseLlm):
+    model: str = "fake-tool-calling-llm"
+
+    async def generate_content_async(self, llm_request, stream=False):
+      del llm_request, stream
+      yield LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part.from_function_call(
+                      name="failing_tool", args={"query": "hello"}
+                  )
+              ],
+          )
+      )
+
+  def failing_tool(query: str) -> str:
+    """Always fails to exercise unhandled tool exceptions."""
+    del query
+    raise exc_factory()
+
+  agent = LlmAgent(
+      name="tools_agent",
+      model=_ToolCallingLlm(),
+      tools=[failing_tool],
+  )
+  client, payload = _create_sse_client_and_payload(agent)
+
+  response = client.post("/run_sse", json=payload)
+
+  assert response.status_code == 200
+  sse_events = [
+      json.loads(line.removeprefix("data: "))
+      for line in response.text.splitlines()
+      if line.startswith("data: ")
+  ]
+  assert all("error_details" not in frame for frame in sse_events)
+  assert all("error" not in frame for frame in sse_events)
+  validated_events = [Event.model_validate(frame) for frame in sse_events]
+  error_events = [e for e in validated_events if e.error_code is not None]
+  assert len(error_events) == 1
+  assert error_events[0].author == "tools_agent"
+  assert error_events[0].error_code == expected_code
+  assert error_events[0].error_message == expected_message
+
+
+def test_agent_run_sse_omits_duplicate_error_frame_in_parallel_workflow(
+    monkeypatch,
+):
+  """/run_sse tracks error Events per node across parallel branches."""
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+  failing_ran = asyncio.Event()
+
+  async def failing_step() -> str:
+    failing_ran.set()
+    raise RuntimeError("parallel branch failed")
+
+  async def sibling_step() -> str:
+    await failing_ran.wait()
+    return "sibling completed"
+
+  def join_step(failing_step: str, sibling_step: str) -> str:
+    return f"{failing_step}:{sibling_step}"
+
+  failing_node = FunctionNode(name="failing_step", func=failing_step)
+  sibling_node = FunctionNode(name="sibling_step", func=sibling_step)
+  join_node = FunctionNode(name="join_step", func=join_step)
+  workflow = Workflow(
+      name="parallel_wf",
+      edges=[
+          (START, failing_node),
+          (START, sibling_node),
+          (failing_node, join_node),
+          (sibling_node, join_node),
+      ],
+  )
+  client, payload = _create_sse_client_and_payload(workflow)
+
+  response = client.post("/run_sse", json=payload)
+
+  assert response.status_code == 200
+  sse_events = [
+      json.loads(line.removeprefix("data: "))
+      for line in response.text.splitlines()
+      if line.startswith("data: ")
+  ]
+  assert all("error_details" not in frame for frame in sse_events)
+  validated_events = [Event.model_validate(frame) for frame in sse_events]
+  node_paths = [
+      e.node_info.path if e.node_info else "" for e in validated_events
+  ]
+  assert node_paths.index("parallel_wf@1/failing_step@1") < node_paths.index(
+      "parallel_wf@1/sibling_step@1"
+  )
+
+
+def test_agent_run_sse_emits_error_frame_after_recovered_retry(monkeypatch):
+  """/run_sse emits the fallback frame when a retried node already recovered."""
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+  attempts = 0
+  same_error_msg = (
+      "Error in plugin 'post_run' during 'after_run_callback' callback: boom"
+  )
+
+  def flaky_step() -> str:
+    nonlocal attempts
+    attempts += 1
+    if attempts == 1:
+      raise RuntimeError(same_error_msg)
+    return "recovered"
+
+  class _FailingAfterRunPlugin(BasePlugin):
+
+    async def after_run_callback(self, *, invocation_context):
+      del invocation_context
+      raise ValueError("boom")
+
+  flaky_node = FunctionNode(
+      name="flaky_step",
+      func=flaky_step,
+      retry_config=RetryConfig(max_attempts=2, initial_delay=0.0),
+  )
+  workflow = Workflow(name="retry_wf", edges=[(START, flaky_node)])
+  loaded_app = App(
+      name="test_app",
+      root_agent=workflow,
+      plugins=[_FailingAfterRunPlugin(name="post_run")],
+  )
+  client, payload = _create_sse_client_and_payload(loaded_app)
+
+  response = client.post("/run_sse", json=payload)
+
+  assert response.status_code == 200
+  sse_events = [
+      json.loads(line.removeprefix("data: "))
+      for line in response.text.splitlines()
+      if line.startswith("data: ")
+  ]
+  assert sse_events[-1]["error"] == f"RuntimeError: {same_error_msg}"
+  assert "error_details" in sse_events[-1]
 
 
 async def test_agent_run_sse_disconnect_with_cleanup_exception(
