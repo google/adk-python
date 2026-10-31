@@ -22,7 +22,7 @@ from typing import Final
 from google.genai import types
 
 from ..utils import model_name_utils
-from ..utils.content_utils import _filter_media_parts
+from ..utils.content_utils import _filter_media_history
 from ..utils.context_utils import Aclosing
 from ..utils.variant_utils import GoogleLLMVariant
 from .base_llm_connection import BaseLlmConnection
@@ -86,11 +86,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     # 1. Agent transfer to a new agent
     # 2. Establishing a new live connection with previous ADK session history
 
-    contents = [
-        filtered
-        for content in history
-        if (filtered := _filter_media_parts(content)) is not None
-    ]
+    contents = _filter_media_history(history)
 
     if contents:
       logger.debug('Sending history to live connection: %s', contents)
