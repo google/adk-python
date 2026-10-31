@@ -382,6 +382,112 @@ class TestConvertPartToInteractionContent:
         'condition': 'sunny',
     }
 
+  @pytest.mark.parametrize(
+      ('mime_type', 'content_type'),
+      [
+          ('image/png', 'image'),
+          ('audio/wav', 'audio'),
+          ('video/mp4', 'video'),
+          ('application/pdf', 'document'),
+      ],
+  )
+  def test_function_response_with_media(
+      self, monkeypatch, mime_type, content_type
+  ):
+    """Media a tool attached to its response is sent after its JSON."""
+    monkeypatch.setattr(
+        interactions_utils,
+        '_FUNCTION_RESULT_MEDIA_TYPES',
+        frozenset({'image', 'audio', 'video', 'document'}),
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='render_chart',
+            response={'metric': 'latency'},
+            parts=[
+                types.FunctionResponsePart.from_bytes(
+                    data=b'media-bytes', mime_type=mime_type
+                )
+            ],
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='render_chart',
+        call_id='call_123',
+        result=[
+            {'type': 'text', 'text': '{"metric": "latency"}'},
+            {
+                'type': content_type,
+                'data': base64.b64encode(b'media-bytes').decode(),
+                'mime_type': mime_type,
+            },
+        ],
+        is_error=False,
+    )
+
+  def test_function_response_media_the_client_cannot_send_is_dropped(
+      self, monkeypatch, caplog
+  ):
+    """Media the installed google-genai cannot send is dropped with a warning."""
+    monkeypatch.setattr(
+        interactions_utils, '_FUNCTION_RESULT_MEDIA_TYPES', frozenset({'image'})
+    )
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_123',
+            name='record_audio',
+            response={'duration': 3},
+            parts=[
+                types.FunctionResponsePart.from_bytes(
+                    data=b'wav-bytes', mime_type='audio/wav'
+                )
+            ],
+        )
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result == interactions.FunctionResultStepParam(
+        type='function_result',
+        name='record_audio',
+        call_id='call_123',
+        result={'duration': 3},
+        is_error=False,
+    )
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert warnings == [
+        'Dropping tool result media of type audio/wav, which the installed'
+        ' google-genai cannot send in a function result; google-genai 2.33'
+        ' and later can.'
+    ]
+
+  def test_function_response_media_types_are_the_ones_the_client_declares(
+      self,
+  ):
+    """Media goes out as the content types the installed client declares."""
+    declared = {
+        typing.get_args(typing.get_type_hints(content)['type'])[0]
+        for content in typing.get_args(
+            interactions.FunctionResultSubcontentParam.__value__
+        )
+    }
+    assert interactions_utils._FUNCTION_RESULT_MEDIA_TYPES == declared & {
+        'image',
+        'audio',
+        'video',
+        'document',
+    }
+
   def test_function_response_simple(self):
     """Test converting a function response Part with simple response."""
     part = types.Part(
