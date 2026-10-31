@@ -30,6 +30,7 @@ from pydantic import SerializeAsAny
 from pydantic.json_schema import SkipJsonSchema
 from typing_extensions import TypeAlias
 
+from ..agents.llm_agent import LlmAgent
 from ..telemetry._token_usage import CACHE_READ_INPUT_TOKENS_MEANING
 from ..telemetry._token_usage import CANDIDATE_OUTPUT_TOKENS_MEANING
 from ..telemetry._token_usage import INPUT_TOKENS_MEANING
@@ -111,7 +112,7 @@ class JudgeModelOptions(EvalBaseModel):
   """Options for an eval metric's judge model."""
 
   judge_model: str = Field(
-      default="gemini-2.5-flash",
+      default=LlmAgent.DEFAULT_MODEL,
       description=(
           "The judge model to use for evaluation. It can be a model name."
       ),

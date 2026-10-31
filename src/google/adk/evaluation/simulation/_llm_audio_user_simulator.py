@@ -38,6 +38,7 @@ from typing_extensions import Literal
 from typing_extensions import override
 
 from .. import _audio_utils
+from ...agents.llm_agent import LlmAgent
 from ...events.event import Event
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
@@ -76,7 +77,7 @@ class LlmAudioUserSimulatorConfig(BaseUserSimulatorConfig):
   # --- Text-generation LLM fields ---
 
   model: str = Field(
-      default="gemini-2.5-flash",
+      default=LlmAgent.DEFAULT_MODEL,
       description="The model to use for user simulation text generation.",
   )
 

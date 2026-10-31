@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
@@ -549,3 +550,8 @@ async def test_evaluate_invocations_cancelled_sample(mock_llm_as_judge, mocker):
 def test_judge_model_options_invalid_parallelism_limit(invalid_limit):
   with pytest.raises(pydantic.ValidationError):
     JudgeModelOptions(parallelism_limit=invalid_limit)
+
+
+def test_judge_model_options_default_model_follows_llm_agent_default():
+  """The default judge model tracks LlmAgent.DEFAULT_MODEL."""
+  assert JudgeModelOptions().judge_model == LlmAgent.DEFAULT_MODEL
