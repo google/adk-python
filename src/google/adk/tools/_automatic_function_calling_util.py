@@ -437,26 +437,40 @@ def from_function_with_options(
       name=func_name,
       description=_get_legacy_callable_doc(func),
   )
+  # A parameter is required when it has no default value in the callable's
+  # signature. This must be derived from the signature rather than from the
+  # generated Schema: `nullable` only means "may be null", not "may be
+  # omitted", so an `Optional[T]` parameter without a default (e.g.
+  # `def f(x: str | None)`) is still required. The Schema loses this
+  # distinction because both "no default" and an explicit `= None` default
+  # leave `default` unset.
+  required_fields = [
+      name
+      for name, param in inspect.signature(func).parameters.items()
+      if param.default is inspect.Parameter.empty
+      and param.kind
+      in (
+          inspect.Parameter.POSITIONAL_OR_KEYWORD,
+          inspect.Parameter.KEYWORD_ONLY,
+          inspect.Parameter.POSITIONAL_ONLY,
+      )
+  ]
   if parameters_properties:
     declaration.parameters = types.Schema(
         type='OBJECT',
         properties=parameters_properties,
     )
-    declaration.parameters.required = (
-        _function_parameter_parse_util._get_required_fields(
-            declaration.parameters
-        )
-    )
+    declaration.parameters.required = [
+        name for name in required_fields if name in parameters_properties
+    ]
   elif parameters_json_schema:
     declaration.parameters = types.Schema(
         type='OBJECT',
         properties=parameters_json_schema,
     )
-    declaration.parameters.required = (
-        _function_parameter_parse_util._get_required_fields(
-            declaration.parameters
-        )
-    )
+    declaration.parameters.required = [
+        name for name in required_fields if name in parameters_json_schema
+    ]
 
   if variant == GoogleLLMVariant.GEMINI_API:
     return declaration
