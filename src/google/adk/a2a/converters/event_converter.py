@@ -33,6 +33,7 @@ from .. import _compat
 from ...agents.invocation_context import InvocationContext
 from ...events._internal_metadata import public_metadata
 from ...events.event import Event
+from ...utils._function_call_names import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ...utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..experimental import a2a_experimental
 from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
@@ -537,11 +538,13 @@ def _create_status_update_event(
   """
   status = _compat.make_task_status(_compat.TS_WORKING, message=message)
 
-  def is_euc_call(p: Any) -> bool:
+  def is_auth_required_call(p: Any) -> bool:
     m = _compat.part_metadata(p)
     if not m:
       return False
     data = _compat.data_part_dict(p) if _compat.is_data_part(p) else {}
+    # Credential exchange and human tool confirmation are both authorization
+    # pauses (A2A spec 7.6). A clarifying question stays input_required.
     return (
         m.get(_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY))
         == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
@@ -549,7 +552,11 @@ def _create_status_update_event(
             _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
         )
         is True
-        and data.get("name") == REQUEST_EUC_FUNCTION_CALL_NAME
+        and data.get("name")
+        in (
+            REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+            REQUEST_EUC_FUNCTION_CALL_NAME,
+        )
     )
 
   def is_long_running_call(p: Any) -> bool:
@@ -565,7 +572,7 @@ def _create_status_update_event(
         is True
     )
 
-  if any(is_euc_call(part) for part in message.parts):
+  if any(is_auth_required_call(part) for part in message.parts):
     status.state = _compat.TS_AUTH_REQUIRED
   elif any(is_long_running_call(part) for part in message.parts):
     status.state = _compat.TS_INPUT_REQUIRED
