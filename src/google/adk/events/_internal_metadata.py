@@ -40,6 +40,9 @@ session files, CLI output and A2A messages.
 RESTORED_EVENT_KEY = INTERNAL_METADATA_PREFIX + "restored_event"
 """Set on events that ADK restored into a session from outside it."""
 
+LIVE_USAGE_KEY = INTERNAL_METADATA_PREFIX + "live_usage"
+"""Identifies a raw usage snapshot from one upstream Live connection."""
+
 
 def _is_internal_key(key: Any) -> bool:
   return isinstance(key, str) and key.startswith(INTERNAL_METADATA_PREFIX)

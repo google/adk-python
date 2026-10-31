@@ -18,9 +18,11 @@ import logging
 from typing import AsyncGenerator
 from typing import cast
 from typing import Final
+import uuid
 
 from google.genai import types
 
+from ..events._internal_metadata import LIVE_USAGE_KEY
 from ..utils import model_name_utils
 from ..utils.content_utils import _filter_media_history
 from ..utils.context_utils import Aclosing
@@ -55,6 +57,8 @@ class GeminiLlmConnection(BaseLlmConnection):
     self._output_transcription_text: str = ''
     self._api_backend = api_backend
     self._model_version = model_version
+    self._usage_connection_id = str(uuid.uuid4())
+    self._usage_sequence = 0
     self._is_gemini_3_x_live = model_name_utils._is_gemini_3_x_live(
         model_version
     )
@@ -336,12 +340,19 @@ class GeminiLlmConnection(BaseLlmConnection):
         live_session_id = self._gemini_session.session_id
         if message.usage_metadata:
           # Remap live token usage to GenerateContentResponse usage metadata.
+          self._usage_sequence += 1
           yield LlmResponse(
               usage_metadata=self._to_generate_content_usage_metadata(
                   message.usage_metadata
               ),
               model_version=self._model_version,
               live_session_id=live_session_id,
+              custom_metadata={
+                  LIVE_USAGE_KEY: {
+                      'connection_id': self._usage_connection_id,
+                      'sequence': self._usage_sequence,
+                  }
+              },
           )
         if message.server_content:
           content = message.server_content.model_turn
