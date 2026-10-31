@@ -37,6 +37,7 @@ from google.adk.integrations.openai._openai_responses_llm import _function_decla
 from google.adk.integrations.openai._openai_responses_llm import _inline_data_part_to_response_content
 from google.adk.integrations.openai._openai_responses_llm import _loads_json_object
 from google.adk.integrations.openai._openai_responses_llm import _response_to_llm_response
+from google.adk.integrations.openai._openai_responses_llm import _serialize_json_value
 from google.adk.integrations.openai._openai_responses_llm import _serialize_system_instruction
 from google.adk.integrations.openai._openai_responses_llm import _tool_choice
 from google.adk.integrations.openai._openai_responses_llm import AzureOpenAIResponsesLlm
@@ -367,6 +368,24 @@ def test_content_mapping_sanitizes_function_call_ids_per_request():
   assert items[1]['call_id'] == 'call_adk_fallback_0'
   assert items[2]['call_id'] == 'call_adk_fallback_1'
   assert items[3]['call_id'] == 'call_adk_fallback_2'
+
+
+def test_serialize_json_value_unwraps_bare_result_wrapper():
+  """ADK's {"result": value} wrapper for non-dict returns is unwrapped."""
+  assert _serialize_json_value({'result': 'ok'}) == 'ok'
+  assert _serialize_json_value({'result': {'a': 1}}) == '{"a": 1}'
+
+
+def test_serialize_json_value_keeps_extra_keys_beside_result():
+  """A tool dict that includes result plus other fields is kept intact."""
+  import json
+
+  payload = {
+      'result': 'found 2 contracts',
+      'contracts': ['NDA-12', 'MSA-7'],
+      'next_page_token': 'abc',
+  }
+  assert json.loads(_serialize_json_value(payload)) == payload
 
 
 def test_function_response_serializes_mcp_content_as_text():
