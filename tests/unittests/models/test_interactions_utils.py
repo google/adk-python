@@ -38,6 +38,7 @@ from google.genai import Client
 from google.genai import interactions
 from google.genai import types
 from google.genai.interactions import CodeExecutionResultStep
+from google.genai.interactions import Error
 from google.genai.interactions import FunctionCallStep
 from google.genai.interactions import FunctionResultStep
 from google.genai.interactions import ImageContent
@@ -1396,8 +1397,8 @@ class TestConvertInteractionToLlmResponse:
         created=datetime.now(timezone.utc).isoformat(),
         updated=datetime.now(timezone.utc).isoformat(),
         steps=[],
+        errors=[Error(code='INVALID_REQUEST', message='Bad request')],
     )
-    interaction.error = MagicMock(code='INVALID_REQUEST', message='Bad request')
 
     result = interactions_utils.convert_interaction_to_llm_response(interaction)
 
@@ -2679,6 +2680,29 @@ class TestConvertInteractionEventToLlmResponse:
     assert result.error_code == 'UNKNOWN_ERROR'
     assert result.interaction_id == 'int_failed'
 
+  def test_completed_event_failed_partial_interaction_reports_errors(self):
+    """A failed lifecycle event reports the errors its interaction carries."""
+    event = InteractionCompletedEvent(
+        event_type='interaction.completed',
+        interaction=InteractionSseEventInteraction(
+            id='int_failed',
+            status='failed',
+            steps=[],
+            errors=[
+                {'code': 'RESOURCE_EXHAUSTED', 'message': 'Quota exceeded'}
+            ],
+        ),
+    )
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event,
+        state=interactions_utils._StreamState(),
+        interaction_id='int_failed',
+    )
+    assert result is not None
+    assert result.error_code == 'RESOURCE_EXHAUSTED'
+    assert result.error_message == 'Quota exceeded'
+    assert result.interaction_id == 'int_failed'
+
   def test_function_call_streaming_flow(self):
     """Test the complete streaming flow for function calls (Start, Delta, Stop)."""
     # 1. StepStart
@@ -3940,6 +3964,18 @@ class TestBuildInteractionsResponseLog:
     assert 'Outputs:\n(none)' in log
     assert 'Usage:\n(none)' in log
     assert 'Error:\n(none)' in log
+
+  def test_failed_interaction_logs_its_error(self):
+    """A failed response logs the error the interaction records."""
+    interaction = Interaction(
+        id='interaction_1',
+        status='failed',
+        errors=[Error(code='INVALID_REQUEST', message='Bad request')],
+    )
+
+    log = interactions_utils.build_interactions_response_log(interaction)
+
+    assert 'Error:\nINVALID_REQUEST: Bad request' in log
 
   def test_function_call_step_logs_name_and_arguments(self):
     """A tool call is the part of a response a reader most needs to see."""
