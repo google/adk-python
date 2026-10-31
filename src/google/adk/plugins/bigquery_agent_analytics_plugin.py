@@ -100,6 +100,8 @@ except ImportError as e:
 
 from ..agents.base_agent import BaseAgent
 from ..agents.callback_context import CallbackContext
+from ..events._internal_metadata import LIVE_USAGE_KEY
+from ..events._internal_metadata import public_metadata
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..platform.thread import create_thread
@@ -5133,6 +5135,42 @@ _NODE_IDENTITY_VIEW_COLUMNS = (
 # common columns in the view SELECT.
 _EVENT_VIEW_DEFS: dict[str, list[str]] = {
     "USER_MESSAGE_RECEIVED": [],
+    "LIVE_USAGE": [
+        (
+            "CAST(JSON_VALUE(content, '$.usage.prompt') AS INT64) AS"
+            " usage_prompt_tokens"
+        ),
+        (
+            "CAST(JSON_VALUE(content, '$.usage.completion') AS INT64) AS"
+            " usage_completion_tokens"
+        ),
+        (
+            "CAST(JSON_VALUE(content, '$.usage.total') AS INT64) AS"
+            " usage_total_tokens"
+        ),
+        "JSON_VALUE(attributes, '$.model_version') AS model_version",
+        "JSON_QUERY(attributes, '$.usage_metadata') AS usage_metadata",
+        (
+            "JSON_VALUE(attributes, '$.usage_metadata.traffic_type') AS"
+            " traffic_type"
+        ),
+        "JSON_VALUE(attributes, '$.live_usage.connection_id') AS connection_id",
+        (
+            "CAST(JSON_VALUE(attributes, '$.live_usage.sequence') AS INT64) AS"
+            " sequence"
+        ),
+        (
+            "JSON_VALUE(attributes, '$.live_usage.live_session_id') AS"
+            " live_session_id"
+        ),
+        (
+            "ROW_NUMBER() OVER (PARTITION BY"
+            " JSON_VALUE(attributes, '$.live_usage.connection_id')"
+            " ORDER BY CAST(JSON_VALUE(attributes, '$.live_usage.sequence')"
+            " AS INT64) DESC, timestamp DESC, event_id DESC) = 1"
+            " AS is_latest_for_connection"
+        ),
+    ],
     "LLM_REQUEST": [
         "JSON_VALUE(attributes, '$.model') AS model",
         "content AS request_content",
@@ -9179,7 +9217,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if not meta:
       return False
     captured = {
-        k: v for k, v in meta.items() if self._custom_metadata_allowed(k)
+        k: v
+        for k, v in (public_metadata(meta) or {}).items()
+        if self._custom_metadata_allowed(k)
     }
     if not captured:
       return False
@@ -9591,6 +9631,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         user_message: The message content received from the user.
     """
     callback_ctx = CallbackContext(invocation_context)
+
     TraceManager.ensure_invocation_span(callback_ctx)
     await self._log_event(
         "USER_MESSAGE_RECEIVED",
@@ -9691,13 +9732,45 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """
     callback_ctx = CallbackContext(invocation_context)
 
+    live_usage = (getattr(event, "custom_metadata", None) or {}).get(
+        LIVE_USAGE_KEY
+    )
+    if isinstance(live_usage, dict) and event.usage_metadata is not None:
+      usage = event.usage_metadata
+      await self._log_event(
+          "LIVE_USAGE",
+          callback_ctx,
+          raw_content={
+              "usage": {
+                  "prompt": usage.prompt_token_count,
+                  "completion": usage.candidates_token_count,
+                  "total": usage.total_token_count,
+              }
+          },
+          event_data=EventData(
+              source_event=event,
+              model_version=event.model_version,
+              usage_metadata=usage,
+              extra_attributes={
+                  "live_usage": {
+                      "connection_id": live_usage.get("connection_id"),
+                      "sequence": live_usage.get("sequence"),
+                      "live_session_id": event.live_session_id,
+                  }
+              },
+          ),
+      )
+
     # A later before_model callback may short-circuit the model call. ADK
     # intentionally skips every after_model callback in that case, so the
     # llm_request span pushed by this plugin has no matching callback to pop
     # it. The synthesized response is a non-partial event; close only that
     # expected top span at this boundary. Streaming chunks stay attached to
     # their live llm_request span until the final response callback.
-    if getattr(event, "partial", None) is not True:
+    if (
+        not isinstance(live_usage, dict)
+        and getattr(event, "partial", None) is not True
+    ):
       TraceManager.pop_span(expected_kind="llm_request")
 
     if self._workflow_observations_enabled():
@@ -10420,6 +10493,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         callback_context: The callback context.
         llm_response: The LLM response object.
     """
+    if (
+        isinstance(llm_response, LlmResponse)
+        and llm_response.usage_metadata is not None
+        and LIVE_USAGE_KEY in (llm_response.custom_metadata or {})
+    ):
+      # CFC also calls this hook for live events; on_event owns their usage.
+      return
     is_partial = getattr(llm_response, "partial", None) is True
     content_dict: dict[str, object] = {}
     is_truncated = False

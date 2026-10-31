@@ -23,6 +23,37 @@ import pytest
 MODEL_VERSION = 'gemini-2.5-pro'
 
 
+@pytest.mark.parametrize('backend', list(GoogleLLMVariant))
+async def test_live_usage_identifies_each_connection_and_orders_snapshots(
+    backend,
+):
+  """Usage snapshots remain ordered across receives and resumed session IDs."""
+  session = mock.AsyncMock()
+  session.session_id = 'resumed-session'
+
+  async def receive():
+    yield types.LiveServerMessage(
+        usage_metadata=types.UsageMetadata(total_token_count=12)
+    )
+
+  session.receive = mock.Mock(side_effect=receive)
+  connection = GeminiLlmConnection(session, api_backend=backend)
+  first = [response async for response in connection.receive()]
+  second = [response async for response in connection.receive()]
+  reconnected = GeminiLlmConnection(session, api_backend=backend)
+  third = [response async for response in reconnected.receive()]
+
+  first_key = first[0].custom_metadata['__adk_internal_live_usage']
+  second_key = second[0].custom_metadata['__adk_internal_live_usage']
+  third_key = third[0].custom_metadata['__adk_internal_live_usage']
+  assert first_key['sequence'] == 1
+  assert second_key == {**first_key, 'sequence': 2}
+  assert third_key['sequence'] == 1
+  assert third_key['connection_id'] != first_key['connection_id']
+  assert first[0].live_session_id == third[0].live_session_id
+  assert first[0].usage_metadata.total_token_count == 12
+
+
 @pytest.fixture
 def mock_gemini_session():
   """Mock Gemini session for testing."""
