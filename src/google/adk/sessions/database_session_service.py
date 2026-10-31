@@ -765,7 +765,7 @@ class DatabaseSessionService(BaseSessionService):
             .filter(schema.StorageEvent.user_id == user_id)
         )
 
-        if config and config.after_timestamp:
+        if config and config.after_timestamp is not None:
           after_dt = datetime.fromtimestamp(
               config.after_timestamp, tz=timezone.utc
           )

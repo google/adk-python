@@ -2583,6 +2583,30 @@ async def test_partial_events_are_not_persisted(session_service):
   assert len(session_got.events) == 0
 
 
+@pytest.mark.asyncio
+async def test_get_session_after_timestamp_zero_filters_negative_events(
+    session_service,
+):
+  """after_timestamp=0 is a valid filter, not 'unset' (epoch is not None)."""
+  app_name = 'my_app'
+  user_id = 'user'
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+  await session_service.append_event(
+      session, Event(author='user', timestamp=-1.0)
+  )
+  await session_service.append_event(
+      session, Event(author='user', timestamp=1.0)
+  )
+
+  config = GetSessionConfig(after_timestamp=0)
+  session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id, config=config
+  )
+  assert [event.timestamp for event in session.events] == [1.0]
+
+
 # ---------------------------------------------------------------------------
 # Rollback tests – verify _rollback_on_exception_session explicitly rolls back
 # on errors
