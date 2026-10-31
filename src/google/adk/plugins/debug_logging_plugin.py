@@ -249,6 +249,7 @@ class DebugLoggingPlugin(BasePlugin):
   - Function responses with results
   - Events yielded from the runner, with the path, output and failure of the
     workflow node that emitted them
+  - The error that ended a failed invocation
   - Session state at the end of each invocation
 
   A tool call gets a `tool_error` entry when the tool raises, and also when
@@ -593,6 +594,26 @@ class DebugLoggingPlugin(BasePlugin):
   async def after_run_callback(
       self, *, invocation_context: InvocationContext
   ) -> None:
+    """Finalize and write debug data to file."""
+    self._write_invocation(invocation_context)
+
+  @override
+  async def on_run_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Log the run error, then finalize and write debug data to file."""
+    self._add_entry(
+        invocation_context.invocation_id,
+        "invocation_error",
+        error_type=type(error).__name__,
+        error_message=str(error),
+    )
+    self._write_invocation(invocation_context)
+
+  def _write_invocation(self, invocation_context: InvocationContext) -> None:
     """Finalize and write debug data to file."""
     invocation_id = invocation_context.invocation_id
 
