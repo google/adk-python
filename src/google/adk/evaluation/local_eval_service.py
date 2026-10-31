@@ -401,6 +401,15 @@ class LocalEvalService(BaseEvalService):
             f" {len(expected_invocations)} conversations in eval case."
         )
 
+    # Rubrics are added to copies, so the caller's inferences can be scored
+    # again.
+    actual_invocations = [
+        invocation.model_copy(deep=True) for invocation in actual_invocations
+    ]
+    inference_result = inference_result.model_copy(
+        update={"inferences": actual_invocations}
+    )
+
     # Pre-creating the EvalMetricResults entries for each invocation.
     for idx, actual in enumerate(actual_invocations):
       eval_metric_result_per_invocation.append(
