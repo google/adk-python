@@ -206,15 +206,20 @@ async def _collect_eval_results(
     inference_results: list[InferenceResult],
     eval_service: BaseEvalService,
     eval_metrics: list[EvalMetric],
+    *,
+    parallelism: int | None = None,
 ) -> list[EvalCaseResult]:
   """Simple utility methods to collect eval results from an eval service.
 
   The method is intentionally kept private to prevent general usage.
   """
   eval_results = []
+  evaluate_config = EvaluateConfig(eval_metrics=eval_metrics)
+  if parallelism is not None:
+    evaluate_config.parallelism = parallelism
   evaluate_request = EvaluateRequest(
       inference_results=inference_results,
-      evaluate_config=EvaluateConfig(eval_metrics=eval_metrics),
+      evaluate_config=evaluate_config,
   )
   async with Aclosing(
       eval_service.evaluate(evaluate_request=evaluate_request)
