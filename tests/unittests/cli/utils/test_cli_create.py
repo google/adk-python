@@ -50,6 +50,19 @@ def _mute_click(monkeypatch: pytest.MonkeyPatch) -> None:
   monkeypatch.setattr(click, "secho", lambda *a, **k: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_gcloud(monkeypatch: pytest.MonkeyPatch) -> None:
+  """Fail any test that would run the developer's real gcloud CLI."""
+  real_run = subprocess.run
+
+  def run(cmd: Any, *args: Any, **kwargs: Any) -> Any:
+    if cmd and cmd[0] == "gcloud":
+      raise AssertionError(f"Test ran the real gcloud CLI: {cmd}")
+    return real_run(cmd, *args, **kwargs)
+
+  monkeypatch.setattr(subprocess, "run", run)
+
+
 @pytest.fixture()
 def agent_folder(tmp_path: Path) -> Path:
   """Return a temporary path that will hold generated agent sources."""
@@ -520,6 +533,7 @@ def test_handle_login_with_google_option_2(
 ) -> None:
   """User selects 2, goes through express sign up."""
   monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(_onboarding, "get_gcp_project_from_gcloud", lambda: "")
   monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
   monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
   monkeypatch.setattr(gcp_utils, "check_express_eligibility", lambda: True)
@@ -594,6 +608,7 @@ def test_handle_login_with_google_option_3(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   """User selects 3, aborts."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
   monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
   monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
   monkeypatch.setattr(click, "prompt", lambda *a, **k: "3")
