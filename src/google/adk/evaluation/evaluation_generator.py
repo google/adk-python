@@ -1055,7 +1055,10 @@ class EvaluationGenerator:
               final_response = event.content
               final_event = event
 
-          should_add_event = event.grounding_metadata is not None
+          should_add_event = (
+              event.grounding_metadata is not None
+              or event.usage_metadata is not None
+          )
           for p in event.content.parts:
             if (
                 p.function_call
@@ -1067,12 +1070,61 @@ class EvaluationGenerator:
               break
           if should_add_event:
             events_to_add.append(event)
-        elif event.grounding_metadata is not None:
+        elif (
+            event.grounding_metadata is not None
+            or event.usage_metadata is not None
+        ):
           events_to_add.append(event)
 
-      invocation_events = []
-      for e in events_to_add:
-        invocation_events.append(
+      # Pair each standalone usage report with a model event before building
+      # any `InvocationEvent`, so every record is constructed once with its
+      # final usage. Merging keeps the tokens without the report counting as
+      # a second model call. Nothing in the payload identifies the originating
+      # call, so the nearest unclaimed compatible event wins, earlier events
+      # first. Totals and call counts are exact; which event carries a report
+      # is best effort (e.g. `GeminiLlmConnection.receive` yields a message's
+      # usage before its content, so it can land on an earlier call).
+      # TODO: Index by author, model and Live session if long invocations
+      # make this quadratic search expensive.
+      merged_usage: dict[int, types.GenerateContentResponseUsageMetadata] = {}
+      merged_report_indices: set[int] = set()
+      for index, event in enumerate(events_to_add):
+        if (
+            (event.content and event.content.parts)
+            or event.grounding_metadata is not None
+            or event.usage_metadata is None
+        ):
+          continue
+        target_index = next(
+            (
+                candidate_index
+                for candidate_index in (
+                    *range(index - 1, -1, -1),
+                    *range(index + 1, len(events_to_add)),
+                )
+                if candidate_index not in merged_usage
+                and events_to_add[candidate_index].usage_metadata is None
+                and events_to_add[candidate_index].model_version is not None
+                and events_to_add[candidate_index].author == event.author
+                and events_to_add[candidate_index].live_session_id
+                == event.live_session_id
+                and (
+                    event.model_version is None
+                    or events_to_add[candidate_index].model_version
+                    == event.model_version
+                )
+            ),
+            None,
+        )
+        if target_index is not None:
+          merged_usage[target_index] = event.usage_metadata
+          merged_report_indices.add(index)
+
+      merged_events = []
+      for index, e in enumerate(events_to_add):
+        if index in merged_report_indices:
+          continue
+        merged_events.append(
             InvocationEvent(
                 author=e.author,
                 # The final response's text is already on
@@ -1085,7 +1137,7 @@ class EvaluationGenerator:
                     else None
                 ),
                 grounding_metadata=e.grounding_metadata,
-                usage_metadata=e.usage_metadata,
+                usage_metadata=merged_usage.get(index, e.usage_metadata),
                 model_version=e.model_version,
             )
         )
@@ -1095,7 +1147,7 @@ class EvaluationGenerator:
               user_content=user_content,
               final_response=final_response,
               intermediate_data=InvocationEvents(
-                  invocation_events=invocation_events
+                  invocation_events=merged_events
               ),
               creation_timestamp=invocation_timestamp,
               duration=(durations_per_invocation or {}).get(invocation_id),
