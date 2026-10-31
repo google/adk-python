@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import uuid
 
 from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
@@ -458,6 +459,97 @@ tool_outputs:
     "name": "tool1",
     "response": {
       "result": "tool1 response 2"
+    }
+  }
+]
+    """
+    assert context.strip() == expected_context.strip()
+
+  def test_create_context_for_step_with_non_json_tool_values(
+      self, hallucinations_metric, create_context_data
+  ):
+    """Tests that UUIDs and non-ASCII text in tool values appear as JSON."""
+    app_details, _, invocation = create_context_data
+    events = [
+        InvocationEvent(
+            author="root",
+            content=genai_types.Content(
+                parts=[
+                    genai_types.Part(
+                        function_call=genai_types.FunctionCall(
+                            id="1", name="tool1", args={"city": "東京"}
+                        )
+                    )
+                ]
+            ),
+        ),
+        InvocationEvent(
+            author="root",
+            content=genai_types.Content(
+                parts=[
+                    genai_types.Part(
+                        function_response=genai_types.FunctionResponse(
+                            id="1",
+                            name="tool1",
+                            response={
+                                "forecast": "晴れ",
+                                "report_id": uuid.UUID(
+                                    "12345678-1234-5678-1234-567812345678"
+                                ),
+                            },
+                        )
+                    )
+                ]
+            ),
+        ),
+    ]
+    context = hallucinations_metric._create_context_for_step(
+        app_details, invocation, events
+    )
+    expected_context = R"""Developer instructions:
+root:
+Root agent instructions.
+
+User prompt:
+User query.
+
+Tool definitions:
+{
+  "tool_declarations": {
+    "root": [
+      {
+        "function_declarations": [
+          {
+            "name": "tool1"
+          }
+        ]
+      }
+    ]
+  }
+}
+
+Grounding metadata:
+No grounding metadata was provided.
+
+tool_calls:
+[
+  {
+    "id": "1",
+    "args": {
+      "city": "東京"
+    },
+    "name": "tool1"
+  }
+]
+
+tool_outputs:
+[
+  {
+    "id": "1",
+    "name": "tool1",
+    "response": {
+      "forecast": "晴れ",
+      "report_id": "12345678-1234-5678-1234-567812345678"
     }
   }
 ]
