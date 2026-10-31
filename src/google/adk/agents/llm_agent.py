@@ -17,6 +17,7 @@ from __future__ import annotations
 import abc
 import asyncio
 from collections.abc import Iterator
+from collections.abc import Mapping
 import inspect
 import logging
 import sys
@@ -39,6 +40,7 @@ from pydantic import field_validator
 from pydantic import model_validator
 from pydantic import PrivateAttr
 from typing_extensions import override
+from typing_extensions import Self
 from typing_extensions import TypeAlias
 
 from ..code_executors.base_code_executor import BaseCodeExecutor
@@ -1344,6 +1346,22 @@ class LlmAgent(BaseAgent, abc.ABC):
           stacklevel=3,
       )
 
+    self._add_mode_tools()
+
+  @override
+  def clone(self, update: Mapping[str, Any] | None = None) -> Self:
+    cloned_agent = super().clone(update)
+    # The tools added by _add_mode_tools wrap this agent and its sub-agents,
+    # and model_copy does not run model_post_init again, so the clone would
+    # keep delegating to this agent's sub-agents. Rebuild them for the clone.
+    cloned_agent.tools = [
+        tool for tool in cloned_agent.tools if not _is_mode_tool(tool)
+    ]
+    cloned_agent._add_mode_tools()
+    return cloned_agent
+
+  def _add_mode_tools(self) -> None:
+    """Adds the tools implied by this agent's mode and its sub-agents' modes."""
     if self.mode == _AgentMode.TASK:
       from .llm.task._finish_task_tool import FinishTaskTool
 
@@ -1368,6 +1386,17 @@ class LlmAgent(BaseAgent, abc.ABC):
           self.tools.append(_SingleTurnAgentTool(sub_agent))
         elif mode == _AgentMode.TASK:
           self.tools.append(_TaskAgentTool(sub_agent))
+
+
+def _is_mode_tool(tool: ToolUnion) -> bool:
+  """Returns whether the tool is one that _add_mode_tools adds."""
+  from ..tools.agent_tool import _SingleTurnAgentTool
+  from ..tools.agent_tool import _TaskAgentTool
+  from .llm.task._finish_task_tool import FinishTaskTool
+
+  return isinstance(
+      tool, (FinishTaskTool, _SingleTurnAgentTool, _TaskAgentTool)
+  )
 
 
 Agent: TypeAlias = LlmAgent
