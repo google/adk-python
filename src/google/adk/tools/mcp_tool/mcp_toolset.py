@@ -48,6 +48,9 @@ from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...dependencies._mcp import StdioServerParameters
 from ...dependencies._mcp import Tool as McpBaseTool
+from ...flows.llm_flows.context._fencing import fence_server_instructions
+from ...flows.llm_flows.context._fencing import SERVER_INSTRUCTIONS_PREAMBLE
+from ...models.llm_request import LlmRequest
 from ...utils.env_utils import is_env_enabled
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
@@ -55,6 +58,7 @@ from ..base_toolset import ToolPredicate
 from ..load_mcp_resource_tool import LoadMcpResourceTool
 from ..tool_configs import BaseToolConfig
 from ..tool_configs import ToolArgsConfig
+from ..tool_context import ToolContext
 from .mcp_session_manager import _http_debug_var
 from .mcp_session_manager import _is_session_terminated_error
 from .mcp_session_manager import MCPSessionManager
@@ -107,6 +111,11 @@ T = TypeVar("T")
 # value per request cannot grow the cache without bound while entries are
 # still unexpired.
 _MAX_TOOL_LIST_CACHE_ENTRIES = 64
+
+
+async def _noop_session_call(session: _ClientSession) -> None:
+  """Opens (or reuses) a session without issuing any request on it."""
+  del session
 
 
 @dataclasses.dataclass
@@ -177,6 +186,7 @@ class McpToolset(BaseToolset):
       elicitation_callback: ElicitationFnT | None = None,
       credential_key: str | None = None,
       propagate_grounding_metadata: bool = False,
+      include_instructions: bool = False,
   ) -> None:
     """Initializes the McpToolset.
 
@@ -232,6 +242,12 @@ class McpToolset(BaseToolset):
       propagate_grounding_metadata: If True, each listed tool copies
         ``meta.adk_grounding_metadata`` from the MCP result into
         ``temp:_adk_grounding_metadata``. Default False.
+      include_instructions: If True, the ``instructions`` text the MCP server
+        sends in its handshake is appended to the agent's system instruction
+        on every model request, fenced as untrusted server-supplied data. Off
+        by default because the text comes from the server, not the developer.
+        To place the text yourself instead, leave this False and call
+        ``get_instructions()``.
     """
 
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
@@ -286,6 +302,7 @@ class McpToolset(BaseToolset):
         else None
     )
     self._use_mcp_resources = use_mcp_resources
+    self._include_instructions = include_instructions
 
   def _get_auth_headers(
       self, readonly_context: Optional[ReadonlyContext] = None
@@ -565,6 +582,82 @@ class McpToolset(BaseToolset):
 
     return tools
 
+  async def get_instructions(
+      self, readonly_context: Optional[ReadonlyContext] = None
+  ) -> Optional[str]:
+    """Returns the ``instructions`` the MCP server sent in its handshake.
+
+    MCP servers may describe how their tools are meant to be used in the
+    ``instructions`` field of the ``initialize`` result. This returns that text
+    verbatim so callers can decide where it goes; ``include_instructions=True``
+    appends it to the system instruction automatically.
+
+    Args:
+      readonly_context: Context used to provide headers for the MCP session.
+
+    Returns:
+      The server's instructions, or None if it sent none.
+    """
+    headers = await self._build_headers(readonly_context)
+    # Bringing the session up is what captures the instructions; a no-op call
+    # reuses the pooled session when one already exists for these headers.
+    await self._execute_with_session(
+        _noop_session_call,
+        "Failed to connect to MCP server for instructions",
+        readonly_context,
+        headers=headers,
+    )
+    return self._mcp_session_manager.get_session_instructions(
+        headers if headers else None
+    )
+
+  @override
+  async def process_llm_request(
+      self, *, tool_context: ToolContext, llm_request: LlmRequest
+  ) -> None:
+    await super().process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+    if not self._include_instructions:
+      return
+
+    if (
+        llm_request.config
+        and llm_request.config.system_instruction is not None
+        and not isinstance(llm_request.config.system_instruction, str)
+    ):
+      logger.error(
+          "Cannot append MCP server instructions: system_instruction must be"
+          " a str or None, got %s; skipping for this request.",
+          type(llm_request.config.system_instruction).__name__,
+      )
+      return
+
+    try:
+      instructions = await self.get_instructions(tool_context)
+    except Exception as e:  # pylint: disable=broad-exception-caught
+      # The tools themselves surface connection failures; an unreachable
+      # server should not also fail the request here.
+      logger.warning("Failed to fetch MCP server instructions: %s", e)
+      return
+    if not instructions:
+      return
+
+    fenced = fence_server_instructions(instructions)
+    current_instruction = (
+        llm_request.config.system_instruction
+        if llm_request.config
+        and isinstance(llm_request.config.system_instruction, str)
+        else ""
+    )
+    to_append = []
+    if SERVER_INSTRUCTIONS_PREAMBLE not in current_instruction:
+      to_append.append(SERVER_INSTRUCTIONS_PREAMBLE)
+    if fenced not in current_instruction:
+      to_append.append(fenced)
+    if to_append:
+      llm_request.append_instructions(to_append)
+
   async def read_resource(
       self, name: str, readonly_context: Optional[ReadonlyContext] = None
   ) -> Any:
@@ -691,6 +784,7 @@ class McpToolset(BaseToolset):
         auth_credential=mcp_toolset_config.auth_credential,
         credential_key=mcp_toolset_config.credential_key,
         use_mcp_resources=mcp_toolset_config.use_mcp_resources,
+        include_instructions=mcp_toolset_config.include_instructions,
     )
 
   def __getstate__(self) -> dict[str, Any]:
@@ -749,6 +843,8 @@ class McpToolsetConfig(BaseToolConfig):
   credential_key: str | None = None
 
   use_mcp_resources: bool = False
+
+  include_instructions: bool = False
 
   @model_validator(mode="after")
   def _check_only_one_params_field(self) -> McpToolsetConfig:

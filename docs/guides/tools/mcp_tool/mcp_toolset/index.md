@@ -172,6 +172,16 @@ loads a resource, ADK adds its contents to the next request only and does not
 store them in the session, so the model loads the resource again when it needs
 it in a later turn.
 
+Set `include_instructions=True` when the server sends guidance on how to use its
+tools in the `instructions` field of its handshake, and you want the model to
+see it. ADK appends that text to the agent's system instruction on every model
+call, enclosed in markers that tell the model it came from the server and is
+data to read rather than instructions to follow. The option is off by default
+because the text comes from the server, not from you. To place the text yourself,
+for example inside your own instruction template, leave the option off and call
+`await toolset.get_instructions()`, which returns the raw text or `None` when
+the server sent none.
+
 ### Cache the tool list
 
 By default, the toolset asks the server for its tool list in every invocation.
