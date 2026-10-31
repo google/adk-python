@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from typing import Awaitable
@@ -25,6 +26,7 @@ from a2a.server.events.event_queue import EventQueue
 from a2a.types import Artifact
 from a2a.types import Message
 from a2a.types import TaskArtifactUpdateEvent
+from a2a.types import TaskStatusUpdateEvent
 from google.adk.platform import uuid as platform_uuid
 from google.adk.runners import Runner
 from google.adk.sessions.session import Session
@@ -228,25 +230,47 @@ class A2aAgentExecutor(AgentExecutor):
 
     task_result_aggregator = TaskResultAggregator()
     last_adk_event = None
-    async with Aclosing(runner.run_async(**vars(run_request))) as agen:
-      async for adk_event in agen:
-        last_adk_event = adk_event
-        for a2a_event in self._config.event_converter(
-            adk_event,
-            invocation_context,
-            task_id,
-            context_id,
-            self._config.gen_ai_part_converter,
-        ):
-          a2a_events = await execute_after_event_interceptors(
-              a2a_event,
-              executor_context,
+    pending_text_event: TaskStatusUpdateEvent | None = None
+    try:
+      async with Aclosing(runner.run_async(**vars(run_request))) as agen:
+        async for adk_event in agen:
+          last_adk_event = adk_event
+          for a2a_event in self._config.event_converter(
               adk_event,
-              self._config.execute_interceptors,
-          )
-          for e in a2a_events:
-            task_result_aggregator.process_event(e)
-            await event_queue.enqueue_event(e)
+              invocation_context,
+              task_id,
+              context_id,
+              self._config.gen_ai_part_converter,
+          ):
+            a2a_events = await execute_after_event_interceptors(
+                a2a_event,
+                executor_context,
+                adk_event,
+                self._config.execute_interceptors,
+            )
+            for e in a2a_events:
+              if pending_text_event is not None:
+                previous_event = pending_text_event
+                pending_text_event = None
+                await event_queue.enqueue_event(previous_event)
+              task_result_aggregator.process_event(e)
+              # The last complete text becomes the final artifact. Keep earlier
+              # messages in order without publishing that answer twice.
+              if (
+                  isinstance(e, TaskStatusUpdateEvent)
+                  and task_result_aggregator.task_state == _compat.TS_WORKING
+                  and not adk_event.partial
+                  and (message := _compat.normalize_message(e.status.message))
+                  and message.parts
+                  and all(_compat.is_text_part(part) for part in message.parts)
+              ):
+                pending_text_event = e
+              else:
+                await event_queue.enqueue_event(e)
+    except (Exception, asyncio.CancelledError):
+      if pending_text_event is not None:
+        await event_queue.enqueue_event(pending_text_event)
+      raise
 
     # Build metadata for final event to preserve invocation_id and event_id.
     final_metadata = {
@@ -263,6 +287,8 @@ class A2aAgentExecutor(AgentExecutor):
         val = getattr(last_adk_event, attr, None)
         if val is not None:
           final_metadata[_get_adk_metadata_key(key)] = val
+    if pending_text_event is not None:
+      final_metadata.update(_compat.meta_to_dict(pending_text_event.metadata))
 
     # publish the task result event - this is final
     if (
@@ -272,6 +298,11 @@ class A2aAgentExecutor(AgentExecutor):
     ):
       # if task is still working properly, publish the artifact update event as
       # the final result according to a2a protocol.
+      message_metadata = {}
+      if pending_text_event is not None:
+        message_metadata = _compat.meta_to_dict(
+            pending_text_event.status.message.metadata
+        )
       await event_queue.enqueue_event(
           TaskArtifactUpdateEvent(
               task_id=task_id,
@@ -280,6 +311,7 @@ class A2aAgentExecutor(AgentExecutor):
               artifact=Artifact(
                   artifact_id=platform_uuid.new_uuid(),
                   parts=task_result_aggregator.task_status_message.parts,
+                  metadata=message_metadata,
               ),
               metadata=final_metadata,
           )
