@@ -175,6 +175,57 @@ def test_first_span_is_parentless_when_header_is_rejected():
   assert _SUPPORT_ID_ATTRIBUTE not in spans[_CHILD_SPAN].attributes
 
 
+def test_standard_w3c_traceparent_is_used_as_parent_when_ae_header_absent():
+  """Without Agent Engine, a well-formed W3C traceparent joins the caller trace."""
+  spans = _record_spans(
+      get_propagated_context(
+          _request(**{_TRACEPARENT_HEADER: _WELL_FORMED_TRACEPARENT})
+      )
+  )
+
+  assert spans[_TOP_SPAN].parent.span_id == int(_REMOTE_SPAN_ID_HEX, 16)
+  assert spans[_TOP_SPAN].context.trace_id == int(_TRACE_ID_HEX, 16)
+
+
+def test_standard_w3c_baggage_is_extracted_without_clobbering_internal_keys():
+  """W3C baggage entries are visible; internal keys stay under our control."""
+  ctx = get_propagated_context(
+      _request(**{
+          _TRACEPARENT_HEADER: _WELL_FORMED_TRACEPARENT,
+          "baggage": "tenant_id=acme,google_traceparent=attacker,traceparent=attacker",
+      })
+  )
+
+  assert baggage.get_baggage("tenant_id", context=ctx) == "acme"
+  assert (
+      baggage.get_all(context=ctx)["google_traceparent"]
+      == _WELL_FORMED_TRACEPARENT
+  )
+  assert (
+      baggage.get_all(context=ctx)[_TRACEPARENT_HEADER]
+      == _WELL_FORMED_TRACEPARENT
+  )
+
+
+def test_ae_header_still_wins_over_standard_traceparent_for_parent():
+  """Agent Engine parent takes precedence when both headers are present."""
+  other_trace = (
+      f"00-11111111111111111111111111111111-{_REMOTE_SPAN_ID_HEX}-01"
+  )
+  spans = _record_spans(
+      get_propagated_context(
+          _request(**{
+              _AE_TRACEPARENT_HEADER: _WELL_FORMED_TRACEPARENT,
+              _TRACEPARENT_HEADER: other_trace,
+          })
+      )
+  )
+
+  assert spans[_TOP_SPAN].parent.span_id == int(_REMOTE_SPAN_ID_HEX, 16)
+  assert spans[_TOP_SPAN].context.trace_id == int(_TRACE_ID_HEX, 16)
+  assert spans[_TOP_SPAN].attributes[_SUPPORT_ID_ATTRIBUTE] == other_trace
+
+
 class _SpyReader:
   """Records the order of hook/submit calls made by the middleware."""
 
