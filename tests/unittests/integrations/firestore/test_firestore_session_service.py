@@ -1495,3 +1495,41 @@ async def test_get_user_state_rejects_path_breaking_identity(
 
   with pytest.raises(ValueError):
     await service.get_user_state(app_name=app_name, user_id=user_id)
+
+
+@pytest.mark.parametrize(
+    ("value", "is_reserved"),
+    [
+        ("__", False),  # too short to match __.*__
+        ("___", False),
+        ("____", True),
+        ("__x__", True),
+        ("__alice", False),
+        ("alice__", False),
+    ],
+)
+def test_validate_identity_component_matches_firestore_reserved_pattern(
+    value, is_reserved
+):
+  """Only ids fully matching Firestore's reserved __.*__ pattern are rejected."""
+  if is_reserved:
+    with pytest.raises(ValueError):
+      FirestoreSessionService._validate_identity_component("user_id", value)
+  else:
+    FirestoreSessionService._validate_identity_component("user_id", value)
+
+
+@pytest.mark.parametrize("short_underscore_id", ["__", "___"])
+@pytest.mark.asyncio
+async def test_create_session_accepts_short_underscore_identity(
+    mock_firestore_client, short_underscore_id
+):
+  """Ids like "__" are valid Firestore document ids and must not be rejected."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    session = await service.create_session(
+        app_name="test_app", user_id=short_underscore_id
+    )
+
+  assert session.user_id == short_underscore_id
