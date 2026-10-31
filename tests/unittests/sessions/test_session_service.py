@@ -4099,6 +4099,18 @@ def test_delete_session_sync_unknown_session_is_a_noop():
 
 
 @pytest.mark.asyncio
+async def test_delete_session_removes_empty_parent_maps():
+  service = InMemorySessionService()
+  session = await service.create_session(app_name='app', user_id='user')
+
+  await service.delete_session(
+      app_name='app', user_id='user', session_id=session.id
+  )
+
+  assert service.sessions == {}
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_sync_strips_events_and_merges_scoped_state():
   """Listed sessions carry merged app/user state but never their events."""
   service = InMemorySessionService()

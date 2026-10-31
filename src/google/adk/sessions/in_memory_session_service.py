@@ -321,6 +321,10 @@ class InMemorySessionService(BaseSessionService):
       return
 
     self.sessions[app_name][user_id].pop(session_id)
+    if not self.sessions[app_name][user_id]:
+      self.sessions[app_name].pop(user_id)
+    if not self.sessions[app_name]:
+      self.sessions.pop(app_name)
 
   @override
   async def get_user_state(
