@@ -108,10 +108,28 @@ def test_get_active_events_rewind_target_not_found():
   )
 
   events = [event_a, rewind_event]
+  # Target missing from the list (unknown id or truncated window): drop
+  # every earlier event so rewound turns cannot leak into a prompt.
+  assert get_active_events(events) == []
+
+
+def test_get_active_events_rewind_target_outside_window():
+  """num_recent_events can omit the rewind target; later turns must still drop."""
+  event_b = _make_event("inv-2", "user")
+  event_b_ok = _make_event("inv-2", "agent")
+  rewind_event = _make_event(
+      "inv-rewind", "user", rewind_before_invocation_id="inv-1"
+  )
+  event_c = _make_event("inv-3", "user")
+  event_c_ok = _make_event("inv-3", "agent")
+
+  # Window starts at inv-2; inv-1 (the rewind target) is not loaded.
+  events = [event_b, event_b_ok, rewind_event, event_c, event_c_ok]
   result = get_active_events(events)
 
-  assert len(result) == 1
-  assert result[0] is event_a
+  assert len(result) == 2
+  assert result[0] is event_c
+  assert result[1] is event_c_ok
 
 
 def test_get_active_events_preserves_chronological_order():
