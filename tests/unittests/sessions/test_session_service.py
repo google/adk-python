@@ -1570,6 +1570,22 @@ async def test_create_session_with_blank_id_generates_one():
 
 
 @pytest.mark.asyncio
+async def test_create_session_with_empty_id_generates_one(session_service):
+  """An empty session id is treated the same as no id at all.
+
+  A session stored under an empty id is unaddressable through the HTTP API and
+  collides with every other empty-id creation for the same (app, user) pair, so
+  it must be replaced by a generated id like the other backends do.
+  """
+  session = await session_service.create_session(
+      app_name='my_app', user_id='test_user', session_id=''
+  )
+
+  assert session.id
+  assert session.id.strip()
+
+
+@pytest.mark.asyncio
 async def test_get_session_finds_session_by_id_passed_to_create(
     session_service,
 ):

@@ -655,8 +655,8 @@ class DatabaseSessionService(BaseSessionService):
     # 4. Build the session object with generated id
     # 5. Return the session
     await self.prepare_tables()
-    has_user_provided_id = session_id is not None
-    if session_id is None:
+    has_user_provided_id = bool(session_id)
+    if not session_id:
       session_id = platform_uuid.new_uuid()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
