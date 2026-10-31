@@ -923,18 +923,19 @@ def rebind_client_factory_httpx(factory: Any, httpx_client: Any) -> Any:
 
   new_factory = copy.copy(factory)
   new_factory._config = config
+  # a2a-sdk 1.3 dropped ``ClientFactory._httpx_client``; it now reads the
+  # client from ``_config`` when it builds a transport, so the version header
+  # has to be stamped on the rebound client whether that attribute exists.
   if hasattr(new_factory, "_httpx_client"):
     new_factory._httpx_client = httpx_client
-    if hasattr(httpx_client, "headers"):
-      try:
-        from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
-        from a2a.utils.constants import VERSION_HEADER
+  if IS_A2A_V1 and hasattr(httpx_client, "headers"):
+    try:
+      from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
+      from a2a.utils.constants import VERSION_HEADER
 
-        httpx_client.headers.setdefault(
-            VERSION_HEADER, PROTOCOL_VERSION_CURRENT
-        )
-      except ImportError:
-        pass
+      httpx_client.headers.setdefault(VERSION_HEADER, PROTOCOL_VERSION_CURRENT)
+    except ImportError:
+      pass
   if hasattr(new_factory, "_registry") and new_factory._registry is not None:
     new_factory._registry = copy.copy(factory._registry)
   if hasattr(new_factory, "_register_defaults"):

@@ -360,6 +360,24 @@ async def test_rebind_client_factory_httpx_defaults_protocol_bindings():
 
 
 @pytest.mark.asyncio
+async def test_rebind_client_factory_httpx_sets_version_header_on_new_client():
+  if not _compat.IS_A2A_V1:
+    pytest.skip('the A2A-Version header is 1.x only')
+  from a2a.utils.constants import PROTOCOL_VERSION_CURRENT
+  from a2a.utils.constants import VERSION_HEADER
+
+  new_client = httpx.AsyncClient()
+  factory = ClientFactory(ClientConfig(httpx_client=None))
+  rebound = _compat.rebind_client_factory_httpx(factory, new_client)
+
+  try:
+    assert rebound._config.httpx_client is new_client
+    assert new_client.headers[VERSION_HEADER] == PROTOCOL_VERSION_CURRENT
+  finally:
+    await new_client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_rebind_client_factory_httpx_preserves_protocol_bindings():
   old_client, new_client = httpx.AsyncClient(), httpx.AsyncClient()
   if _compat.IS_A2A_V1:
