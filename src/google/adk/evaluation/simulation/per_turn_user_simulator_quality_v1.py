@@ -279,7 +279,10 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     num_valid = 0.0
     num_evaluated = 0
     for result in per_invocation_results:
-      if result.eval_status == EvalStatus.PASSED and result.score is not None:
+      if result.score is None or result.eval_status == EvalStatus.NOT_EVALUATED:
+        continue
+
+      if result.eval_status == EvalStatus.PASSED:
         num_valid += result.score
 
       num_evaluated += 1
