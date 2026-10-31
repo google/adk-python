@@ -821,6 +821,51 @@ async def test_evaluate_single_inference_result(
 
 
 @pytest.mark.asyncio
+async def test_evaluate_single_inference_result_can_score_inferences_again(
+    eval_service, mock_eval_sets_manager
+):
+  """Rubrics go on copies, so the same inferences can be scored twice."""
+  rubric = Rubric(
+      rubric_id="r1", rubric_content=RubricContent(text_property="p1")
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="test user content.")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="test final response.")]
+      ),
+  )
+  inference_result = InferenceResult(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case_id="case1",
+      inferences=[invocation.model_copy(deep=True)],
+      session_id="session1",
+  )
+  eval_metric = EvalMetric(metric_name="fake_metric", threshold=0.5)
+  evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
+  mock_eval_sets_manager.get_eval_case.return_value = EvalCase(
+      eval_id="case1",
+      conversation=[invocation.model_copy(deep=True)],
+      rubrics=[rubric],
+  )
+
+  _, first = await eval_service._evaluate_single_inference_result(
+      inference_result=inference_result, evaluate_config=evaluate_config
+  )
+  _, second = await eval_service._evaluate_single_inference_result(
+      inference_result=inference_result, evaluate_config=evaluate_config
+  )
+
+  assert inference_result.inferences == [invocation]
+  for result in (first, second):
+    actual = result.eval_metric_result_per_invocation[0].actual_invocation
+    assert result.final_eval_status == EvalStatus.PASSED
+    assert actual == invocation.model_copy(update={"rubrics": [rubric]})
+
+
+@pytest.mark.asyncio
 async def test_evaluate_informational_metric_preserves_per_invocation_scores(
     eval_service, mock_eval_sets_manager, mocker
 ):
