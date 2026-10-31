@@ -23,7 +23,9 @@ from google.adk.agents.context import Context
 from google.adk.events.event import Event
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.adk.workflow import BaseNode
+from google.adk.workflow import node
 from google.adk.workflow import START
 from google.adk.workflow._workflow import Workflow
 from google.genai import types
@@ -112,3 +114,108 @@ async def test_raw_bytes_output():
 
   assert len(b.received_inputs) == 1
   assert isinstance(b.received_inputs[0], bytes)
+
+
+def _produce_bytes() -> bytes:
+  return b"\x00\x01"
+
+
+def _produce_url_safe_bytes() -> bytes:
+  return b"\xfb\xff\xfe"
+
+
+async def _stream_bytes() -> AsyncGenerator[bytes, None]:
+  yield b"\x00\x01"
+
+
+def _produce_optional_bytes() -> bytes | None:
+  return b"\x00\x01"
+
+
+class _BytesSchemaNode(BaseNode):
+  """Yields raw bytes and declares them through ``output_schema``."""
+
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Any, None]:
+    yield b"\x00\x01"
+
+
+def _produce_str() -> str:
+  return "test"
+
+
+def _produce_non_ascii_text() -> bytes:
+  return "\u00e9"  # type: ignore[return-value]  # A mislabeled producer.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("produce", "expected"),
+    [
+        (_produce_bytes, b"\x00\x01"),
+        (_produce_url_safe_bytes, b"\xfb\xff\xfe"),
+        (_stream_bytes, b"\x00\x01"),
+        (_produce_optional_bytes, b"\x00\x01"),
+        (
+            _BytesSchemaNode(name="produce", output_schema=bytes),
+            b"\x00\x01",
+        ),
+        (_produce_str, b"test"),
+        (_produce_non_ascii_text, "\u00e9".encode()),
+    ],
+)
+async def test_output_survives_persisted_session_resume(
+    tmp_path, produce, expected
+):
+  """A node finished before a pause hands the resumed node its fresh value."""
+  received = []
+
+  def consume(node_input: bytes):
+    received.append(node_input)
+
+  wf = Workflow(
+      name="wf",
+      edges=[(START, produce, node(consume, require_confirmation=True))],
+  )
+  ss = SqliteSessionService(str(tmp_path / "sessions.db"))
+  runner = Runner(app_name="test", node=wf, session_service=ss)
+  session = await ss.create_session(app_name="test", user_id="u")
+
+  async def send(part: types.Part) -> list[types.FunctionCall]:
+    calls = []
+    async for event in runner.run_async(
+        user_id="u",
+        session_id=session.id,
+        new_message=types.Content(parts=[part], role="user"),
+    ):
+      calls.extend(event.get_function_calls())
+    return calls
+
+  calls = await send(types.Part(text="go"))
+  await send(
+      types.Part(
+          function_response=types.FunctionResponse(
+              id=calls[-1].id,
+              name=calls[-1].name,
+              response={"confirmed": True},
+          )
+      )
+  )
+
+  assert received == [expected]
+
+
+@pytest.mark.asyncio
+async def test_text_to_bytes_param_is_utf8_encoded():
+  """Fresh text is UTF-8 encoded for a bytes parameter, even if it is base64."""
+  received = []
+
+  def consume(node_input: bytes):
+    received.append(node_input)
+
+  wf = Workflow(name="wf", edges=[(START, consume)])
+
+  await _run_workflow(wf, message="test")
+
+  assert received == [b"test"]
