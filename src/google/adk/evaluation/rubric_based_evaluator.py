@@ -468,6 +468,23 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
             " provided to the metric."
         )
 
+    # Like a partial parse, a rubric left without a verdict (never answered,
+    # or answered under an id and text that match no rubric) would drop out of
+    # the average and inflate the score, so the sample is not scored at all.
+    answered_rubric_ids = {s.rubric_id for s in rubric_scores}
+    missing_rubric_ids = [
+        r.rubric_id
+        for r in self.get_effective_rubrics_list()
+        if r.rubric_id not in answered_rubric_ids
+    ]
+    if rubric_responses and missing_rubric_ids:
+      logger.warning(
+          "Auto-rater response has no verdict for rubric(s) %s; this sample"
+          " will not be scored.",
+          missing_rubric_ids,
+      )
+      return AutoRaterScore(rubric_scores=[])
+
     aggregated_score = get_average_rubric_score(rubric_scores)
     return AutoRaterScore(score=aggregated_score, rubric_scores=rubric_scores)
 
