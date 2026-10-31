@@ -1034,10 +1034,20 @@ class MCPSessionManager:
       }
 
     if additional_headers:
-      base_headers.update({
+      overrides = {
           key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
           for key, value in additional_headers.items()
-      })
+      }
+      # Header names are case-insensitive. Drop a base header that an override
+      # names in any casing, or both are sent and a server reading the first
+      # one sees the connection's static value instead of the request's.
+      override_names = {key.lower() for key in overrides}
+      base_headers = {
+          key: value
+          for key, value in base_headers.items()
+          if key.lower() not in override_names
+      }
+      base_headers.update(overrides)
 
     return merge_tracking_headers(base_headers)
 
