@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 from collections.abc import Awaitable
 import inspect
+import json
 import logging
 from typing import Any
 from typing import Callable
@@ -89,6 +90,15 @@ _RESERVED_TOOL_NAMES = frozenset({
 })
 
 _UNSET = object()
+
+# Serialized ceiling for an MCP output schema sent to Gemini as
+# FunctionDeclaration.response_json_schema. Gemini declares no ceiling for the
+# field, so keep parity with the 1024-character bound that
+# _append_response_schema_to_description applies to the same schema on the
+# OpenAI-compatible path (models/lite_llm.py). Servers generate outputSchema
+# mechanically; Google Cloud's MCP servers serialize proto-derived schemas to
+# over 70,000 characters and Gemini expands each $ref when tokenizing.
+_MAX_RESPONSE_JSON_SCHEMA_LENGTH = 1024
 
 
 def _merge_auth_and_provider_headers(
@@ -398,6 +408,7 @@ class McpTool(BaseAuthenticatedTool):
     self._header_provider = header_provider
     self._progress_callback = progress_callback
     self.propagate_grounding_metadata = propagate_grounding_metadata
+    self._logged_output_schema_drop = False
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
@@ -426,6 +437,24 @@ class McpTool(BaseAuthenticatedTool):
       output_schema = _read_field(
           self._mcp_tool, "outputSchema", "output_schema"
       )
+      # Measure the server's schema before fencing so the plain and fenced
+      # declarations make the same decision.
+      if output_schema:
+        serialized_length = len(
+            json.dumps(output_schema, separators=(",", ":"), ensure_ascii=False)
+        )
+        if serialized_length > _MAX_RESPONSE_JSON_SCHEMA_LENGTH:
+          if not self._logged_output_schema_drop:
+            self._logged_output_schema_drop = True
+            logger.warning(
+                "Dropping output_schema for MCP tool %s: serialized length %d"
+                " exceeds %d characters; sending it as response_json_schema"
+                " can push the request past the model's input token limit.",
+                self.name,
+                serialized_length,
+                _MAX_RESPONSE_JSON_SCHEMA_LENGTH,
+            )
+          output_schema = None
       output_schema = (
           fence_schema_descriptions(output_schema)
           if fenced and output_schema is not None
