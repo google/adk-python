@@ -164,6 +164,33 @@ async def test_builtin_code_executor_image_artifact_creation(mock_datetime):
 
 
 @pytest.mark.asyncio
+async def test_builtin_code_executor_emits_no_event_without_images():
+  """Test BuiltInCodeExecutor emits no event when there is no image to save."""
+  code_executor = BuiltInCodeExecutor()
+  agent = Agent(name='test_agent', code_executor=code_executor)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  invocation_context.artifact_service = MagicMock()
+  invocation_context.artifact_service.save_artifact = AsyncMock(
+      return_value='v1'
+  )
+  llm_response = LlmResponse(
+      content=types.Content(parts=[types.Part(text='The answer is 42.')])
+  )
+
+  events = []
+  async for event in response_processor.run_async(
+      invocation_context, llm_response
+  ):
+    events.append(event)
+
+  assert events == []
+  invocation_context.artifact_service.save_artifact.assert_not_called()
+  assert llm_response.content.parts == [types.Part(text='The answer is 42.')]
+
+
+@pytest.mark.asyncio
 @patch('google.adk.flows.llm_flows.extensions._code_execution.logger')
 async def test_logs_executed_code(mock_logger):
   """Test that the response processor logs the code it executes."""
