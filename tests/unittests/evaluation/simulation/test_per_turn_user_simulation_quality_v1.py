@@ -20,6 +20,7 @@ from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalStatus
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
 from google.adk.evaluation.eval_metrics import LlmBackedUserSimulatorCriterion
+from google.adk.evaluation.evaluator import EvaluationResult
 from google.adk.evaluation.evaluator import PerInvocationResult
 from google.adk.evaluation.llm_as_judge import AutoRaterScore
 from google.adk.evaluation.llm_as_judge_utils import Label
@@ -625,6 +626,52 @@ def test_aggregate_conversation_results_all_failures_produces_failure():
   aggregation = evaluator._aggregate_conversation_results(results)
   assert aggregation.overall_score == 0.0
   assert aggregation.overall_eval_status == EvalStatus.FAILED
+
+
+def test_aggregate_conversation_results_skips_not_evaluated_turns():
+  """Turns that were not evaluated are left out of the overall score."""
+  evaluator = _create_test_evaluator()
+  results = [
+      PerInvocationResult(
+          actual_invocation=_create_test_invocation("1"),
+          score=1.0,
+          eval_status=EvalStatus.PASSED,
+      ),
+      PerInvocationResult(
+          actual_invocation=_create_test_invocation("2"),
+          score=None,
+          eval_status=EvalStatus.NOT_EVALUATED,
+      ),
+  ]
+  aggregation = evaluator._aggregate_conversation_results(results)
+  assert aggregation == EvaluationResult(
+      overall_score=1.0,
+      overall_eval_status=EvalStatus.PASSED,
+      per_invocation_results=results,
+  )
+
+
+def test_aggregate_conversation_results_none_evaluated_produces_not_evaluated():
+  """A conversation with no evaluated turns is not evaluated."""
+  evaluator = _create_test_evaluator()
+  results = [
+      PerInvocationResult(
+          actual_invocation=_create_test_invocation("1"),
+          score=None,
+          eval_status=EvalStatus.NOT_EVALUATED,
+      ),
+      PerInvocationResult(
+          actual_invocation=_create_test_invocation("2"),
+          score=1.0,
+          eval_status=EvalStatus.NOT_EVALUATED,
+      ),
+  ]
+  aggregation = evaluator._aggregate_conversation_results(results)
+  assert aggregation == EvaluationResult(
+      overall_score=None,
+      overall_eval_status=EvalStatus.NOT_EVALUATED,
+      per_invocation_results=results,
+  )
 
 
 def test_aggregate_conversation_percentage_below_threshold_produces_failure():
