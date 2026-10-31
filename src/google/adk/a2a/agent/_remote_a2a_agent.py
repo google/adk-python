@@ -33,6 +33,7 @@ from a2a.client.client_factory import ClientFactory as A2AClientFactory
 from a2a.types import AgentCard
 from a2a.types import Message as A2AMessage
 from a2a.types import Part as A2APart
+from a2a.types import Task as A2ATask
 from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
@@ -1636,6 +1637,46 @@ class RemoteA2aAgent(BaseAgent):
       return task_id if isinstance(task_id, str) else None
     return None
 
+  def _without_surfaced_artifacts(
+      self, task: A2ATask, ctx: InvocationContext
+  ) -> A2ATask:
+    """Returns ``task`` without the artifacts this agent already converted.
+
+    A non-streaming response is the whole task, and a task's artifacts
+    accumulate over its life, so a task resumed after ``input-required`` brings
+    back every earlier turn's output. Each event this agent yields records the
+    raw task as it was then, so what was already converted is read from those
+    snapshots. They are recorded after the after-request hooks run, so a hook
+    cannot alter them, and an event that a converter or hook suppressed records
+    nothing, so its artifacts are converted when they come again.
+    """
+    if not getattr(task, "artifacts", None):
+      return task
+    seen: dict[str, list[Any]] = {}
+    for event in ctx.session.events:
+      metadata = event.custom_metadata or {}
+      if (
+          event.author != self.name
+          or metadata.get(A2A_METADATA_PREFIX + "task_id") != task.id
+      ):
+        continue
+      response = metadata.get(A2A_METADATA_PREFIX + "response")
+      if not isinstance(response, dict):
+        continue
+      for artifact in response.get("artifacts") or []:
+        if not isinstance(artifact, dict):
+          continue
+        # The recorded snapshot is the wire form: camelCase on both versions.
+        # Later snapshots win, so a replaced artifact is compared to what was
+        # received last.
+        artifact_id = artifact.get("artifactId") or artifact.get("artifact_id")
+        parts = artifact.get("parts")
+        if artifact_id and isinstance(parts, list):
+          seen[artifact_id] = parts
+    if not seen:
+      return task
+    return _compat.task_without_seen_artifact_parts(task, seen)
+
   def _has_default_response_persistence(self) -> bool:
     """Whether recorded responses can safely determine task continuation.
 
@@ -1692,7 +1733,10 @@ class RemoteA2aAgent(BaseAgent):
           # response for a non-streaming task, which is the full task state.
           # We process this to get the initial message.
           event = convert_a2a_task_to_event(
-              task, self.name, ctx, self._a2a_part_converter
+              self._without_surfaced_artifacts(task, ctx),
+              self.name,
+              ctx,
+              self._a2a_part_converter,
           )
           if not event:
             if _is_failed_status(getattr(task, "status", None)):
@@ -1882,8 +1926,19 @@ class RemoteA2aAgent(BaseAgent):
         if update is None:
           # This is the initial response for a streaming task or the complete
           # response for a non-streaming task.
+          # A custom task converter gets the whole task, as it always has, and
+          # decides for itself what a resumed task's earlier artifacts mean.
+          default_task_converter = (
+              self._config.a2a_task_converter
+              is A2aRemoteAgentConfig.model_fields["a2a_task_converter"].default
+          )
           event = self._config.a2a_task_converter(
-              task, self.name, ctx, self._config.a2a_part_converter
+              self._without_surfaced_artifacts(task, ctx)
+              if default_task_converter
+              else task,
+              self.name,
+              ctx,
+              self._config.a2a_part_converter,
           )
           if not event:
             if _is_failed_status(getattr(task, "status", None)):
