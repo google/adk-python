@@ -468,6 +468,7 @@ class RestApiTool(BaseTool):
 
     path_params: Dict[str, Any] = {}
     query_params: Dict[str, Any] = {}
+    spread_query_keys: set[str] = set()
     header_params: dict[str, str] = {}
     cookie_params: dict[str, str] = {}
 
@@ -510,7 +511,19 @@ class RestApiTool(BaseTool):
         )
       elif param_location == "query":
         if v is not None:
-          query_params[original_k] = v
+          serialized = _serialize_query_param(param_obj, v)
+          other_query_names = {
+              p.original_name
+              for p in parameters
+              if p.param_location == "query" and p is not param_obj
+          }
+          for k, item in serialized.items():
+            if k == original_k:
+              query_params[k] = item
+              spread_query_keys.discard(k)
+            elif k not in other_query_names:
+              query_params[k] = item
+              spread_query_keys.add(k)
       elif param_location == "header":
         if v is not None:
           header_params[original_k] = _to_param_string(v)
@@ -546,9 +559,9 @@ class RestApiTool(BaseTool):
     for part in (parsed_url.query, parsed_url.fragment):
       if part:
         for key, values in parse_qs(part).items():
-          query_params.setdefault(
-              key, values[0] if len(values) == 1 else values
-          )
+          if key not in query_params or key in spread_query_keys:
+            query_params[key] = values[0] if len(values) == 1 else values
+            spread_query_keys.discard(key)
     # URL without query and fragment
     url = urlunparse(parsed_url._replace(query="", fragment=""))
 
@@ -834,6 +847,57 @@ class RestApiTool(BaseTool):
         f' endpoint="{self.endpoint}", operation="{self.operation}",'
         f' auth_scheme="{self.auth_scheme}")'
     )
+
+
+def _serialize_query_param(
+    param: ApiParameter, value: object
+) -> dict[str, object]:
+  """Applies a query parameter's OpenAPI `style` and `explode` to its value.
+
+  httpx already repeats the key for a list, which is the default (style=form,
+  explode=true) for arrays, but it sends a dict as its Python repr. Objects are
+  therefore expanded as the spec describes, and non-exploded or delimited
+  arrays are joined. When an exploded object parameter declares `properties`
+  without `additionalProperties`, undeclared keys are dropped so a tool call
+  cannot inject arbitrary top-level query parameters.
+
+  Args:
+    param: The query parameter, carrying the spec's `style` and `explode`.
+    value: The value the model supplied for it.
+
+  Returns:
+    The query entries to send, keyed by query parameter name.
+  """
+  name = param.original_name
+  style = param.style or "form"
+  explode = param.explode if param.explode is not None else style == "form"
+  if isinstance(value, dict):
+    value = {k: item for k, item in value.items() if item is not None}
+    if not value:
+      return {}
+    if style == "deepObject":
+      return {f"{name}[{key}]": item for key, item in value.items()}
+    if explode:
+      schema = param._openapi_schema
+      if schema.properties is not None and not schema.additionalProperties:
+        return {
+            key: item for key, item in value.items() if key in schema.properties
+        }
+      return dict(value)
+    return {
+        name: ",".join(
+            f"{key},{_to_param_string(item)}" for key, item in value.items()
+        )
+    }
+  if isinstance(value, list):
+    value = [item for item in value if item is not None]
+    if not value:
+      return {}
+    if not explode:
+      separator = {"spaceDelimited": " ", "pipeDelimited": "|"}.get(style, ",")
+      return {name: separator.join(_to_param_string(item) for item in value)}
+    return {name: value}
+  return {name: value}
 
 
 @dataclass(frozen=True)

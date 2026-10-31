@@ -56,7 +56,26 @@ def _wrap_async(func: Callable[..., Any]) -> Callable[..., Any]:
 
 
 class BigQueryToolset(BaseToolset):
-  """BigQuery Toolset contains tools for interacting with BigQuery data and metadata."""
+  """Toolset with tools for interacting with BigQuery data and metadata.
+
+  To equip your agent with curated instructions for BigQuery AI/ML functions
+  (``"bigquery-ai-ml"``) or Graph Query Language (GQL) / SQL/PGQ queries
+  (``"bigquery-graph"``) alongside these tools, pair ``BigQueryToolset`` with
+  :func:`get_bigquery_skill` and ``SkillToolset``:
+
+    from google.adk.integrations.bigquery import BigQueryToolset
+    from google.adk.integrations.bigquery import get_bigquery_skill
+    from google.adk.tools.skill_toolset import SkillToolset
+
+    bigquery_toolset = BigQueryToolset(...)
+    skill_toolset = SkillToolset(
+        skills=[
+            get_bigquery_skill("bigquery-ai-ml"),
+            get_bigquery_skill("bigquery-graph"),
+        ]
+    )
+    agent = LlmAgent(tools=[bigquery_toolset, skill_toolset])
+  """
 
   def __init__(
       self,

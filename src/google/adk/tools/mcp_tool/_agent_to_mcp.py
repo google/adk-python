@@ -64,8 +64,11 @@ def _part_to_content(part: types.Part) -> Optional[mcp_types.ContentBlock]:
 
   Returns:
     The matching MCP content block (text, image, audio, or embedded resource),
-    or None for a part with no renderable content (e.g. a function call).
+    or None for a part with no renderable content (e.g. a function call) and
+    for the model's thoughts, which are not part of its answer.
   """
+  if part.thought:
+    return None
   if part.text:
     return mcp_types.TextContent(type="text", text=part.text)
   blob = part.inline_data
@@ -264,7 +267,9 @@ async def _run_agent(
         if block is not None:
           final_content.append(block)
     elif ctx is not None:
-      text = "".join(part.text or "" for part in event.content.parts)
+      text = "".join(
+          part.text or "" for part in event.content.parts if not part.thought
+      )
       if text:
         await ctx.report_progress(progress=0.0, message=text)
   return final_content

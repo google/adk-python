@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from collections.abc import Collection
 from collections.abc import Mapping
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
@@ -37,6 +38,7 @@ from google.genai import types
 from typing_extensions import override
 
 from . import _utils
+from ..events._rewind_events import _apply_rewinds
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
@@ -299,11 +301,17 @@ class SqliteMemoryService(BaseMemoryService):
 
   @override
   async def add_session_to_memory(self, session: Session) -> None:
-    await self.add_events_to_memory(
+    """Stores live events and deletes those a rewind took back."""
+    live_events = _apply_rewinds(session.events)
+    live_ids = {event.id for event in live_events}
+    await self._write_events_to_memory(
         app_name=session.app_name,
         user_id=session.user_id,
-        events=session.events,
+        events=live_events,
         session_id=session.id,
+        rewound_event_ids={
+            event.id for event in session.events if event.id not in live_ids
+        },
     )
 
   @override
@@ -317,6 +325,22 @@ class SqliteMemoryService(BaseMemoryService):
       custom_metadata: Mapping[str, object] | None = None,
   ) -> None:
     _ = custom_metadata
+    await self._write_events_to_memory(
+        app_name=app_name,
+        user_id=user_id,
+        events=events,
+        session_id=session_id,
+    )
+
+  async def _write_events_to_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      events: Sequence[Event],
+      session_id: str | None = None,
+      rewound_event_ids: Collection[str] = (),
+  ) -> None:
     scoped_session_id = session_id or _UNKNOWN_SESSION_ID
 
     events_to_insert: list[tuple[str, str, str, str, str, float, str, str]] = []
@@ -355,10 +379,20 @@ class SqliteMemoryService(BaseMemoryService):
           search_text,
       ))
 
-    if not events_to_insert:
+    if not events_to_insert and not rewound_event_ids:
       return
 
     async with self._get_db_connection() as db:
+      await db.executemany(
+          """
+          DELETE FROM memory_events
+          WHERE app_name = ? AND user_id = ? AND session_id = ? AND event_id = ?
+          """,
+          [
+              (app_name, user_id, scoped_session_id, event_id)
+              for event_id in rewound_event_ids
+          ],
+      )
       for row_data in events_to_insert:
         await db.execute(
             """

@@ -50,7 +50,11 @@ def _iter_artifact_dirs(root: Path) -> list[Path]:
   for dirpath, dirnames, _ in os.walk(root):
     current = Path(dirpath)
     if (current / _VERSIONS_DIRNAME).exists():
-      artifact_dirs.append(current)
+      # A save rejected or killed before its first version was published
+      # leaves a versions directory with no published version; there is no
+      # artifact there to list.
+      if _list_versions_on_disk(current):
+        artifact_dirs.append(current)
       # An artifact directory doubles as the parent of anything nested under
       # it ("doc" and "doc/nested"), so keep walking, skipping only the
       # stored versions of this artifact.

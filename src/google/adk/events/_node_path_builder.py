@@ -17,6 +17,36 @@
 from __future__ import annotations
 
 
+def parent_node_path(path: str) -> str:
+  """Returns the parent of a node path string, as `_NodePathBuilder` does.
+
+  Args:
+    path: A node path such as 'wf@1/node@2'.
+
+  Returns:
+    The parent path, or '' for a top-level or empty path.
+  """
+  parent, separator, _ = path.rpartition('/')
+  return parent if separator else ''
+
+
+def join_node_path(
+    parent_path: str | None, node_name: str, run_id: str | None = None
+) -> str:
+  """Appends a child segment to a node path, as `_NodePathBuilder` does.
+
+  Args:
+    parent_path: The parent node path, empty for a top-level node.
+    node_name: The child node's name.
+    run_id: The child node's run id, if it has one.
+
+  Returns:
+    The child's node path, such as 'wf@1/node@2'.
+  """
+  segment = f'{node_name}@{run_id}' if run_id else node_name
+  return f'{parent_path}/{segment}' if parent_path else segment
+
+
 class _NodePathBuilder:
   """Represents a path to a node in a hierarchical workflow.
 

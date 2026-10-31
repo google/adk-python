@@ -311,6 +311,90 @@ async def test_save_load_delete(service_type, artifact_service_factory):
 @pytest.mark.parametrize("filename", ["report.txt", "user:report.txt"])
 @pytest.mark.parametrize("existing", [False, True])
 @pytest.mark.parametrize(
+    "invalid_artifact",
+    [
+        types.Part(),
+        types.Part.from_uri(
+            file_uri="gs://bucket/report.txt", mime_type="text/plain"
+        ),
+    ],
+)
+async def test_file_rejected_save_preserves_artifact_catalog(
+    tmp_path: Path,
+    filename: str,
+    existing: bool,
+    invalid_artifact: types.Part,
+) -> None:
+  """A rejected save must not leave a listed artifact that cannot be loaded.
+
+  Setup: Start with either no artifact or one valid version in each scope.
+  Act: Reject content FileArtifactService cannot store, then retry.
+  Assert: The rejected save leaves the catalog and versions unchanged, and
+    the retry gets the next version.
+  """
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  previous = types.Part.from_text(text="previous")
+  if existing:
+    await artifact_service.save_artifact(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=filename,
+        artifact=previous,
+    )
+
+  with pytest.raises(InputValidationError, match="inline_data or text"):
+    await artifact_service.save_artifact(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=filename,
+        artifact=invalid_artifact,
+    )
+
+  assert await artifact_service.list_artifact_keys(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  ) == ([filename] if existing else [])
+  assert await artifact_service.list_versions(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  ) == ([0] if existing else [])
+  assert await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  ) == (previous if existing else None)
+  replacement = types.Part.from_text(text="replacement")
+  assert await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      artifact=replacement,
+  ) == (1 if existing else 0)
+  assert await artifact_service.list_artifact_keys(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  ) == [filename]
+  assert (
+      await artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=filename,
+      )
+      == replacement
+  )
+
+
+@pytest.mark.parametrize("filename", ["report.txt", "user:report.txt"])
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(
     "invalid_artifact, error_message",
     [
         (types.Part(), "Not supported artifact type"),

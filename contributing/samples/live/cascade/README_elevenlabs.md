@@ -114,8 +114,9 @@ Implementation notes:
 
 Text deltas from the reasoner are buffered and segmented into sentences using a
 regex heuristic (terminal punctuation `[.!?…]` followed by optional
-quotes/brackets and whitespace or newlines, falling back to a word boundary
-after 240 characters). It streams each complete sentence through
+quotes/brackets and whitespace, CJK `[。！？]` followed by optional closing
+quotes/brackets, or newlines, falling back to a word boundary or character
+limit after 240 characters). It streams each complete sentence through
 `text_to_speech.stream()` with `output_format='pcm_24000'` — raw 16-bit
 little-endian PCM, so the bytes are forwarded to the client with no transcode.
 Every `AudioChunk` carries `mime_type='audio/pcm;rate=24000'` so the client plays
@@ -146,19 +147,19 @@ Docs: [stream speech](https://elevenlabs.io/docs/api-reference/text-to-speech/st
 
 - **Sentence splitting uses a simple regex.** `ElevenLabsTTS` splits text after
   `.`, `!`, `?`, or `…` (followed by optional quotes or brackets and then
-  whitespace), and at line breaks. If no sentence end appears within 240
-  characters, it splits at the last space before that limit.
+  whitespace), after `。`, `！`, or `？` (followed by optional closing quotes or
+  brackets once the next character arrives), and at line breaks. If no sentence
+  end appears within 240 characters, it splits at the last space before that
+  limit, or at 240 characters when there is no space.
 
   - *Abbreviations:* Text such as `Dr. Smith` or `Google Inc.` is split at the
     period. To avoid this, `agent.py` tells the model to write abbreviations as
     words (for example, "Doctor"). It also tells the model to end every
     sentence with punctuation, so each sentence is spoken as soon as it is
     complete instead of waiting for the 240-character limit.
-  - *Other languages:* The regex works for languages that separate words with
-    spaces and use Latin punctuation. It does not recognize punctuation such as
-    the CJK `。` or the Hindi `।`. Hindi text is still split at the last space
-    before the 240-character limit. Chinese and Japanese text has no spaces, so
-    the whole reply is buffered and spoken only after the model finishes.
+  - *Other languages:* Punctuation such as the Hindi `।` is not recognized
+    (Hindi text is still split at the last space before the 240-character
+    limit).
   - *Production use:* Replace the regex with a sentence-boundary library such
     as `pysbd`, `blingfire`, or `PyICU` (Unicode UAX #29).
 

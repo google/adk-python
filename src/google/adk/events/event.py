@@ -33,6 +33,15 @@ from .event_actions import EventActions
 
 _CONVENIENCE_KWARGS = frozenset({'message', 'state', 'route', 'node_path'})
 
+TOOL_DISPLAY_NAMES_METADATA_KEY = 'adk:tool_display_names'
+"""``Event.custom_metadata`` key mapping called tool names to display titles.
+
+Populated on finalized model response events when one or more called tools
+declare a non-empty ``BaseTool.title``. Its value is a ``dict[str, str]`` of
+``{function_call_name: title}``. Read it via this constant rather than the
+string literal.
+"""
+
 
 class NodeInfo(BaseModel):
   """Workflow node metadata attached to an Event."""
@@ -91,6 +100,10 @@ class Event(LlmResponse):
 
   It is used to store the content of the conversation, as well as the actions
   taken by the agents like function calls, etc.
+
+  When a function-call event invokes tools that declare a non-empty
+  ``BaseTool.title``, ``custom_metadata[TOOL_DISPLAY_NAMES_METADATA_KEY]``
+  carries ``{function_call_name: title}``.
   """
 
   model_config = ConfigDict(

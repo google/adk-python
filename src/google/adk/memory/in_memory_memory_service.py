@@ -24,6 +24,7 @@ import unicodedata
 from typing_extensions import override
 
 from . import _utils
+from ..events._rewind_events import _apply_rewinds
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
@@ -106,7 +107,7 @@ class InMemoryMemoryService(BaseMemoryService):
       self._session_events[user_key] = self._session_events.get(user_key, {})
       self._session_events[user_key][session.id] = [
           event.model_copy(deep=True)
-          for event in session.events
+          for event in _apply_rewinds(session.events)
           if event.content
           and event.content.parts
           and event.id not in deleted_ids
