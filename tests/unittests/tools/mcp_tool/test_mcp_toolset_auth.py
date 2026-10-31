@@ -15,21 +15,32 @@
 """Tests for MCPToolset authentication functionality."""
 
 import base64
+from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from fastapi.openapi.models import APIKey as APIKeyScheme
 from fastapi.openapi.models import APIKeyIn
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlows
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_tool import AuthConfig
+from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
+from google.adk.flows.llm_flows.tools._toolset_auth import resolve_toolset_auth
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.tools.tool_context import ToolContext
 from mcp import StdioServerParameters
+from mcp import types as mcp_types
 import pytest
 
 
@@ -296,3 +307,88 @@ class TestMcpToolsetGetAuthHeaders:
     mock_readonly_context.get_credential.assert_called_once_with(
         toolset_with_oauth2._auth_config.credential_key
     )
+
+
+@pytest.mark.asyncio
+async def test_tools_use_the_toolset_custom_credential_key():
+  """Tools load the credential saved under the toolset's credential_key."""
+  scheme = OAuth2(
+      flows=OAuthFlows(
+          authorizationCode=OAuthFlowAuthorizationCode(
+              authorizationUrl="https://example.com/auth",
+              tokenUrl="https://example.com/token",
+              scopes={"read": "Read access"},
+          )
+      )
+  )
+  raw = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(client_id="client", client_secret="secret"),
+  )
+  toolset = McpToolset(
+      connection_params=StreamableHTTPConnectionParams(
+          url="https://mcp.example.com/mcp"
+      ),
+      auth_scheme=scheme,
+      auth_credential=raw,
+      credential_key="my_key",
+  )
+
+  credential_service = InMemoryCredentialService()
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name="app", user_id="u")
+  agent = LlmAgent(name="agent", model="gemini-2.5-flash", tools=[toolset])
+  invocation_context = InvocationContext(
+      session_service=session_service,
+      credential_service=credential_service,
+      invocation_id="inv",
+      agent=agent,
+      session=session,
+  )
+  saved = AuthConfig(
+      auth_scheme=scheme, raw_auth_credential=raw, credential_key="my_key"
+  )
+  saved.exchanged_auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id="client",
+          client_secret="secret",
+          access_token="saved-token",
+          expires_at=4102444800,
+      ),
+  )
+  await credential_service.save_credential(
+      saved, ToolContext(invocation_context)
+  )
+  assert [
+      e async for e in resolve_toolset_auth(invocation_context, agent)
+  ] == []
+
+  listed = mcp_types.ListToolsResult(
+      tools=[mcp_types.Tool(name="lookup", inputSchema={"type": "object"})]
+  )
+  with patch.object(
+      toolset, "_execute_with_session", AsyncMock(return_value=listed)
+  ):
+    [tool] = await toolset.get_tools()
+  assert tool._auth_config.credential_key == "my_key"
+
+  session_stub = MagicMock()
+  session_stub.call_tool = AsyncMock(
+      return_value=mcp_types.CallToolResult(content=[])
+  )
+  with patch.object(
+      tool._mcp_session_manager,
+      "create_session",
+      AsyncMock(return_value=session_stub),
+  ) as create_session:
+    await tool.run_async(
+        args={},
+        tool_context=ToolContext(invocation_context, function_call_id="fc"),
+    )
+
+  assert create_session.await_args is not None
+  assert (
+      create_session.await_args.kwargs["headers"]["Authorization"]
+      == "Bearer saved-token"
+  )

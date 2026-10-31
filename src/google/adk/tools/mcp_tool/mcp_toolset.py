@@ -541,6 +541,9 @@ class McpToolset(BaseToolset):
           mcp_session_manager=self._mcp_session_manager,
           auth_scheme=self._auth_scheme,
           auth_credential=self._auth_credential,
+          credential_key=(
+              self._auth_config.credential_key if self._auth_config else None
+          ),
           require_confirmation=self._require_confirmation,
           header_provider=self._header_provider,
           progress_callback=self._progress_callback
