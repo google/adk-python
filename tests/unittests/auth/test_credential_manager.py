@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import time
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -1179,6 +1180,127 @@ class TestCredentialManager:
 
     assert result == mock_credential
     assert was_refreshed is False
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "auth_scheme, auth_type",
+      [
+          (
+              OAuth2(
+                  flows=OAuthFlows(
+                      clientCredentials=OAuthFlowClientCredentials(
+                          tokenUrl="https://example.com/token",
+                          scopes={},
+                      )
+                  )
+              ),
+              AuthCredentialTypes.OAUTH2,
+          ),
+          (
+              OpenIdConnectWithConfig(
+                  authorization_endpoint="https://example.com/auth",
+                  token_endpoint="https://example.com/token",
+                  grant_types_supported=["client_credentials"],
+              ),
+              AuthCredentialTypes.OPEN_ID_CONNECT,
+          ),
+      ],
+      ids=["oauth2", "oidc"],
+  )
+  async def test_get_auth_credential_refetches_expired_client_credentials_token(
+      self, auth_scheme, auth_type
+  ):
+    """Client credentials tokens have no refresh token, so fetch a new one."""
+    raw_credential = AuthCredential(
+        auth_type=auth_type,
+        oauth2=OAuth2Auth(
+            client_id="mock_client_id",
+            client_secret="mock_client_secret",
+        ),
+    )
+    stored_credential = raw_credential.model_copy(deep=True)
+    stored_credential.oauth2.access_token = "expired_token"
+    stored_credential.oauth2.expires_at = int(time.time()) - 60
+    manager = CredentialManager(
+        AuthConfig(auth_scheme=auth_scheme, raw_auth_credential=raw_credential)
+    )
+    manager._load_existing_credential = AsyncMock(
+        return_value=stored_credential
+    )
+    manager._save_credential = AsyncMock()
+    context = Mock()
+
+    mock_client = Mock()
+    mock_client.fetch_token.return_value = {
+        "access_token": "new_token",
+        "expires_at": int(time.time()) + 3600,
+    }
+    # There is no refresh token to send.
+    mock_client.refresh_token.side_effect = AssertionError(
+        "refresh_token() called without a refresh token"
+    )
+    with patch.object(
+        oauth2_credential_util, "OAuth2Session", return_value=mock_client
+    ):
+      result = await manager.get_auth_credential(context)
+
+    assert result.oauth2.access_token == "new_token"
+    mock_client.fetch_token.assert_called_once()
+    manager._save_credential.assert_awaited_once_with(context, result)
+    # The shared tool config is not mutated.
+    assert raw_credential.oauth2.access_token is None
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_refreshes_client_credentials_token_with_refresh_token(
+      self,
+  ):
+    """A client credentials token that has a refresh token is refreshed."""
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            clientCredentials=OAuthFlowClientCredentials(
+                tokenUrl="https://example.com/token",
+                scopes={},
+            )
+        )
+    )
+    raw_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="mock_client_id",
+            client_secret="mock_client_secret",
+        ),
+    )
+    stored_credential = raw_credential.model_copy(deep=True)
+    stored_credential.oauth2.access_token = "expired_token"
+    stored_credential.oauth2.refresh_token = "refresh_token"
+    stored_credential.oauth2.expires_at = int(time.time()) - 60
+    manager = CredentialManager(
+        AuthConfig(auth_scheme=auth_scheme, raw_auth_credential=raw_credential)
+    )
+    manager._load_existing_credential = AsyncMock(
+        return_value=stored_credential
+    )
+    manager._save_credential = AsyncMock()
+    context = Mock()
+
+    mock_client = Mock()
+    mock_client.refresh_token.return_value = {
+        "access_token": "refreshed_token",
+        "refresh_token": "refresh_token",
+        "expires_at": int(time.time()) + 3600,
+    }
+    with patch.object(
+        oauth2_credential_util, "OAuth2Session", return_value=mock_client
+    ):
+      result = await manager.get_auth_credential(context)
+
+    assert result.oauth2.access_token == "refreshed_token"
+    mock_client.refresh_token.assert_called_once()
+    assert (
+        mock_client.refresh_token.call_args.kwargs["refresh_token"]
+        == "refresh_token"
+    )
+    mock_client.fetch_token.assert_not_called()
 
   @pytest.mark.asyncio
   async def test_is_credential_ready_api_key(self):
