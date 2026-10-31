@@ -31,7 +31,7 @@ _APP_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(
     r'^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,62}$'
 )
 
-_DEFAULT_PYTHON_VERSION: Final[str] = '3.11'
+_DEFAULT_PYTHON_VERSION: Final[str] = '3.12'
 
 _PYTHON_VERSION_PATTERN: Final[re.Pattern[str]] = re.compile(
     r'^3\.(1[1-9]|[2-9][0-9])(\.[0-9]+)?$'
@@ -250,7 +250,7 @@ def _render_dockerfile(
     express_mode_option: `--express_mode` or an empty string.
     extra_packages_copy: Extra `COPY`/`ENV` instructions, or an empty string.
     extra_env_vars: Extra `ENV` lines, or an empty string.
-    python_version: The Python version for the base image (default: '3.11').
+    python_version: The Python version for the base image (default: '3.12').
 
   Returns:
     The Dockerfile contents.
