@@ -188,6 +188,15 @@ class FunctionTool(BaseTool):
     # Detect context parameter by type annotation, fallback to 'tool_context' name
     self._context_param_name = self._spec.context_param_name or "tool_context"
     self._ignore_params = [self._context_param_name, "input_stream"]
+    # A functools.partial keeps the arguments it binds by keyword in its
+    # signature, as parameters with defaults. The caller fixed them, so the
+    # model neither sees them nor overrides them.
+    self._partial_keywords = (
+        frozenset(func.keywords)
+        if isinstance(func, functools.partial)
+        else frozenset()
+    )
+    self._ignore_params.extend(sorted(self._partial_keywords))
     self._require_confirmation = require_confirmation
     self._type_adapter_cache: dict[Any, pydantic.TypeAdapter[Any]] = {}
     self._generator_node_cache: (
@@ -377,7 +386,9 @@ class FunctionTool(BaseTool):
       tool_context: ToolContext,
   ) -> dict[str, Any]:
     """Prepare args for function invocation (injects context and filters)."""
-    args_to_call = args.copy()
+    args_to_call = {
+        k: v for k, v in args.items() if k not in self._partial_keywords
+    }
     if not self._spec.has_signature:
       logger.warning(
           "Could not introspect signature for tool '%s'; skipping"
