@@ -123,6 +123,9 @@ if typing.TYPE_CHECKING:
   from opentelemetry.util.types import AttributeValue
   # watchdog types Observer as a factory, so type checkers see its base class.
   from watchdog.observers.api import BaseObserver as Observer
+
+  from ..evaluation.eval_set_results_manager import EvalSetResultsManager
+  from ..evaluation.eval_sets_manager import EvalSetsManager
 else:
   from watchdog.observers import Observer
 
