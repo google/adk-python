@@ -102,7 +102,7 @@ def _row_to_event(
         logger.warning(f"Failed to decode JSON for event {row.get('id')}")
         return None
     elif isinstance(val, dict):
-      return val  # for postgres JSONB
+      return val  # for postgres JSON
     else:
       return None
 
