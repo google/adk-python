@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import datetime
+
 from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
 from google.adk.evaluation.eval_case import Invocation
@@ -249,6 +251,56 @@ class TestDialogueAssembly:
     assert "get_balance" in evaluator._formatted_dialogue
     assert '"account_id": "123"' in evaluator._formatted_dialogue
     assert '"balance": 100' in evaluator._formatted_dialogue
+
+  @pytest.mark.asyncio
+  async def test_intermediate_events_with_non_json_tool_values(self, evaluator):
+    """Tests that dates and non-ASCII text in tool values appear as JSON."""
+    tool_call_part = genai_types.Part(
+        function_call=genai_types.FunctionCall(
+            name="get_weather",
+            args={"city": "東京", "date": datetime.date(2026, 10, 30)},
+        )
+    )
+    tool_response_part = genai_types.Part(
+        function_response=genai_types.FunctionResponse(
+            name="get_weather",
+            response={
+                "forecast": "晴れ",
+                "updated_at": datetime.datetime(2026, 10, 30, 9, 0),
+            },
+        )
+    )
+    intermediate_data = InvocationEvents(
+        invocation_events=[
+            InvocationEvent(
+                author="weather_agent",
+                content=genai_types.Content(parts=[tool_call_part]),
+            ),
+            InvocationEvent(
+                author="weather_agent",
+                content=genai_types.Content(parts=[tool_response_part]),
+            ),
+        ]
+    )
+    invocations = [
+        _make_invocation(
+            user_text="What is the weather in Tokyo?",
+            agent_text="It is sunny.",
+            invocation_id="weather_agent",
+            rubrics=_RUBRICS,
+            intermediate_data=intermediate_data,
+        ),
+    ]
+    evaluator._assemble_dialogue_history(invocations)
+
+    assert evaluator._formatted_dialogue == (
+        "USER TURN 1: What is the weather in Tokyo?\n"
+        "AGENT (weather_agent) TURN 1 (tool call):"
+        ' get_weather({"city": "東京", "date": "2026-10-30"})\n'
+        "AGENT (weather_agent) TURN 1 (tool output): get_weather ->"
+        ' {"forecast": "晴れ", "updated_at": "2026-10-30T09:00:00"}\n'
+        "AGENT (weather_agent) TURN 1: It is sunny."
+    )
 
   @pytest.mark.asyncio
   async def test_app_details_instructions_and_tools(self, evaluator):
