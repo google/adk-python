@@ -53,6 +53,7 @@ from google.genai.interactions import CodeExecutionResultStepParam
 from google.genai.interactions import ContentParam
 from google.genai.interactions import DocumentContentParam
 from google.genai.interactions import DocumentDelta
+from google.genai.interactions import Error
 from google.genai.interactions import ErrorEvent
 from google.genai.interactions import FunctionCallStep
 from google.genai.interactions import FunctionCallStepParam
@@ -830,12 +831,13 @@ def convert_interaction_to_llm_response(
   from .llm_response import LlmResponse
 
   # Check for errors. Lifecycle SSE events carry a partial interaction
-  # (InteractionSseEventInteraction) that has no 'error' attribute.
+  # (InteractionSseEventInteraction) that keeps undeclared 'errors' as dicts.
   if interaction.status == 'failed':
     error_msg = 'Unknown error'
     error_code = 'UNKNOWN_ERROR'
-    error = getattr(interaction, 'error', None)
-    if error:
+    errors = getattr(interaction, 'errors', None)
+    if errors:
+      error = Error.model_validate(errors[0])
       error_msg = error.message or error_msg
       error_code = error.code or error_code
     return LlmResponse(
@@ -1599,11 +1601,10 @@ def build_interactions_response_log(interaction: Interaction) -> str:
 
   # Extract error if present
   error_str = '(none)'
-  if hasattr(interaction, 'error') and interaction.error:
-    error = interaction.error
-    error_code = getattr(error, 'code', 'unknown')
-    error_message = getattr(error, 'message', 'unknown')
-    error_str = f'{error_code}: {error_message}'
+  errors = getattr(interaction, 'errors', None)
+  if errors:
+    error = Error.model_validate(errors[0])
+    error_str = f'{error.code or "unknown"}: {error.message or "unknown"}'
 
   return f"""
 Interactions API Response:
