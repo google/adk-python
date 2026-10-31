@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 
@@ -23,6 +24,14 @@ def enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
   """Recursively transforms a JSON schema for strict structured outputs."""
   if not isinstance(schema, dict):
     return
+  ref, defs = schema.get('$ref'), schema.get('$defs')
+  if isinstance(ref, str) and isinstance(defs, dict):
+    # A root $ref beside $defs (pydantic's form for a recursive model) is
+    # inlined, so the root is an object and the $defs it points to are kept.
+    target = defs.get(ref.removeprefix('#/$defs/'))
+    if isinstance(target, dict):
+      del schema['$ref']
+      schema.update(copy.deepcopy(target))
   if '$ref' in schema:
     for key in list(schema.keys()):
       if key != '$ref':

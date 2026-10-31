@@ -3783,6 +3783,15 @@ def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
   if not isinstance(schema, dict):
     return
 
+  # A root $ref beside $defs (Pydantic's form for a recursive model) is
+  # inlined, so the root is an object and the $defs it points to are kept.
+  ref, defs = schema.get("$ref"), schema.get("$defs")
+  if isinstance(ref, str) and isinstance(defs, dict):
+    target = defs.get(ref.removeprefix("#/$defs/"))
+    if isinstance(target, dict):
+      del schema["$ref"]
+      schema.update(copy.deepcopy(target))
+
   # Strip sibling keywords from $ref nodes (OpenAI rejects them).
   if "$ref" in schema:
     for key in list(schema.keys()):
