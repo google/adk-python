@@ -107,14 +107,14 @@ class LangchainTool(FunctionTool):
     self._return_direct = getattr(tool, 'return_direct', False)
 
     # Set name: priority is 1) explicitly provided name, 2) tool's name, 3) default
-    if name is not None:
+    if name:
       self.name = name
     elif hasattr(tool, 'name') and tool.name:
       self.name = tool.name
     # else: keep default from FunctionTool
 
     # Set description: similar priority
-    if description is not None:
+    if description:
       self.description = description
     elif hasattr(tool, 'description') and tool.description:
       self.description = tool.description
