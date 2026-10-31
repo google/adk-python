@@ -342,9 +342,9 @@ def prepare_llm_agent_input(
   """Prepares the input for running LlmAgent as a node.
 
   For ``single_turn`` mode, append a user-role event with the input
-  directly to session.events (legacy behavior). When resuming with
-  ``resume_inputs``, skip appending to avoid injecting duplicate synthetic
-  user events that shadow user function responses.
+  directly to session.events (legacy behavior). On resume, restore the input
+  before this node run's existing events, leaving the user function response
+  at the tail so confirmation handling can still consume it.
 
   For ``task`` mode, the input is the parent's task-delegation FC
   args.  Those are NOT appended here — the content-builder
@@ -361,13 +361,9 @@ def prepare_llm_agent_input(
   # Skip injection if:
   # 1. No input was provided.
   # 2. Agent is not single_turn (task mode handles its own leading turn).
-  # 3. Resuming from pause/interrupt (e.g. HITL confirmation): node is re-run
-  #    with resume_inputs; injecting synthetic user input would shadow the
-  #    user's FunctionResponse on the branch tail and cause infinite loops.
   if (
       node_input is None
       or _effective_llm_agent_mode(agent) != AgentMode.SINGLE_TURN
-      or bool(ctx.resume_inputs)
   ):
     return None
   agent_input = to_user_content(node_input)
@@ -383,6 +379,14 @@ def prepare_llm_agent_input(
   branch = ctx._invocation_context.branch
   if branch:
     user_event.branch = branch
+  if ctx.resume_inputs:
+    # The synthetic input is not persisted. Restore it before this run's
+    # history rather than after the confirmation response used to resume it.
+    for index, event in enumerate(ctx.session.events):
+      if node_path and event.node_info.path == node_path:
+        ctx.session.events.insert(index, user_event)
+        return user_event
+    return None
   ctx.session.events.append(user_event)
   return user_event
 
