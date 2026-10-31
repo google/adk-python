@@ -28,8 +28,18 @@ from unittest.mock import patch
 
 import anyio
 from fastapi.testclient import TestClient
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.apps.app import App
 from google.adk.cli import dev_server
 from google.adk.cli.fast_api import get_fast_api_app
+from google.adk.tools.base_toolset import BaseToolset
+from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.workflow import START
+from google.adk.workflow import Workflow
+from mcp.types import ListToolsResult
+from mcp.types import Tool
 import pytest
 
 _LIFECYCLE_TEST_TIMEOUT_SECONDS = 10
@@ -111,6 +121,307 @@ def test_list_tests_empty(test_client):
   response = test_client.get("/dev/apps/test_app/tests")
   assert response.status_code == 200
   assert response.json() == []
+
+
+@pytest.fixture
+def mcp_graph_session(monkeypatch):
+  """Replace only the MCP transport; filtering and prefixing stay real."""
+  session = AsyncMock()
+  session.list_tools.return_value = ListToolsResult(
+      tools=[
+          Tool(name="add", inputSchema={"type": "object"}),
+          Tool(name="greet", inputSchema={"type": "object"}),
+      ]
+  )
+  monkeypatch.setattr(
+      MCPSessionManager, "create_session", AsyncMock(return_value=session)
+  )
+  return session
+
+
+@pytest.mark.parametrize("prefix", [None, "demo"])
+@pytest.mark.parametrize(
+    "tool_filter,expected_names",
+    [
+        (None, ["add", "greet"]),
+        (["add"], ["add"]),
+        (lambda tool, context: tool.name == "greet", ["greet"]),
+    ],
+)
+def test_graph_image_expands_filtered_prefixed_mcp_tools(
+    test_client,
+    monkeypatch,
+    mcp_graph_session,
+    prefix,
+    tool_filter,
+    expected_names,
+):
+  """The Dev UI graph shows the same names the agent can call."""
+  toolset = McpToolset(
+      connection_params=StreamableHTTPConnectionParams(
+          url="http://127.0.0.1:1/mcp"
+      ),
+      tool_filter=tool_filter,
+      tool_name_prefix=prefix,
+  )
+  agent = LlmAgent(name="root", tools=[toolset])
+  runner = MagicMock(app=App(name="demo", root_agent=agent))
+  monkeypatch.setattr(
+      dev_server.DevServer, "get_runner_async", AsyncMock(return_value=runner)
+  )
+
+  response = test_client.get("/dev/apps/demo/build_graph_image")
+
+  assert response.status_code == 200
+  dot = response.json()[""]["dotSrc"]
+  assert 'root -> "root/toolset_0"' in dot
+  for name in expected_names:
+    exposed_name = f"{prefix}_{name}" if prefix else name
+    assert f'"root/toolset_0" -> {exposed_name}' in dot
+  for name in {"add", "greet"} - set(expected_names):
+    exposed_name = f"{prefix}_{name}" if prefix else name
+    assert f"-> {exposed_name} " not in dot
+  assert agent.tools == [toolset]
+
+
+@pytest.mark.parametrize("first_server_down", [False, True])
+def test_build_graph_keeps_multiple_toolsets_separate(
+    test_client, monkeypatch, mcp_graph_session, first_server_down
+):
+  """Toolsets of the same class remain separate and fail independently."""
+  if first_server_down:
+    mcp_graph_session.list_tools.side_effect = [
+        ConnectionError("server down"),
+        ConnectionError("server down"),
+        mcp_graph_session.list_tools.return_value,
+    ]
+  toolsets = [
+      McpToolset(
+          connection_params=StreamableHTTPConnectionParams(
+              url="http://127.0.0.1:1/mcp"
+          ),
+          tool_filter=[name],
+          tool_name_prefix=prefix,
+          require_confirmation=confirm,
+      )
+      for name, prefix, confirm in [
+          ("add", "math", False),
+          ("greet", "hello", True),
+      ]
+  ]
+  runner = MagicMock(
+      app=App(name="demo", root_agent=LlmAgent(name="root", tools=toolsets))
+  )
+  monkeypatch.setattr(
+      dev_server.DevServer, "get_runner_async", AsyncMock(return_value=runner)
+  )
+
+  response = test_client.get("/dev/apps/demo/build_graph")
+
+  assert response.status_code == 200
+  assert response.json()["root_agent"]["tools"] == [
+      {
+          "name": "McpToolset",
+          "id": "root/toolset_0",
+          "type": "toolset",
+          "children": (
+              []
+              if first_server_down
+              else [{"name": "math_add", "type": "tool"}]
+          ),
+      },
+      {
+          "name": "McpToolset",
+          "id": "root/toolset_1",
+          "type": "toolset",
+          "children": [{"name": "hello_greet", "type": "tool"}],
+      },
+  ]
+
+
+def test_graph_image_separates_same_named_tools_from_different_toolsets(
+    test_client, monkeypatch, mcp_graph_session
+):
+  """Two unprefixed toolsets that both expose add and greet stay distinct."""
+  toolsets = [
+      McpToolset(
+          connection_params=StreamableHTTPConnectionParams(
+              url="http://127.0.0.1:1/mcp"
+          )
+      )
+      for _ in range(2)
+  ]
+  runner = MagicMock(
+      app=App(name="demo", root_agent=LlmAgent(name="root", tools=toolsets))
+  )
+  monkeypatch.setattr(
+      dev_server.DevServer, "get_runner_async", AsyncMock(return_value=runner)
+  )
+
+  response = test_client.get("/dev/apps/demo/build_graph_image")
+
+  assert response.status_code == 200
+  dot = response.json()[""]["dotSrc"]
+  assert 'root -> "root/toolset_0"' in dot
+  assert 'root -> "root/toolset_1"' in dot
+  assert '"root/toolset_0" -> add' in dot
+  assert '"root/toolset_0" -> greet' in dot
+  assert '"root/toolset_1" -> "root/toolset_1/add"' in dot
+  assert '"root/toolset_1" -> "root/toolset_1/greet"' in dot
+  assert dot.count(" add>") == 2
+  assert dot.count(" greet>") == 2
+
+
+@pytest.mark.parametrize("server_down", [False, True])
+def test_graph_image_keeps_other_tools_when_mcp_listing_is_empty(
+    test_client, monkeypatch, mcp_graph_session, server_down
+):
+  """Empty or failed MCP listings leave a placeholder and local tools."""
+
+  def local_echo(text: str) -> str:
+    return text
+
+  if server_down:
+    mcp_graph_session.list_tools.side_effect = ConnectionError("server down")
+  else:
+    mcp_graph_session.list_tools.return_value = ListToolsResult(tools=[])
+  toolset = McpToolset(
+      connection_params=StreamableHTTPConnectionParams(
+          url="http://127.0.0.1:1/mcp"
+      )
+  )
+  runner = MagicMock(
+      app=App(
+          name="demo",
+          root_agent=LlmAgent(name="root", tools=[toolset, local_echo]),
+      )
+  )
+  monkeypatch.setattr(
+      dev_server.DevServer, "get_runner_async", AsyncMock(return_value=runner)
+  )
+
+  response = test_client.get("/dev/apps/demo/build_graph_image")
+
+  assert response.status_code == 200
+  dot = response.json()[""]["dotSrc"]
+  assert 'root -> "root/toolset_0"' in dot
+  assert "root -> local_echo" in dot
+  assert "-> add " not in dot
+  assert "-> greet " not in dot
+
+
+@pytest.mark.parametrize("node", [None, "worker"])
+def test_graph_image_expands_toolsets_inside_workflows(
+    test_client, monkeypatch, mcp_graph_session, node
+):
+  """Workflow nodes and node-level graph requests retain their toolsets."""
+  worker = LlmAgent(
+      name="worker",
+      tools=[
+          McpToolset(
+              connection_params=StreamableHTTPConnectionParams(
+                  url="http://127.0.0.1:1/mcp"
+              )
+          )
+      ],
+  )
+  root = Workflow(name="pipeline", edges=[(START, worker)])
+  runner = MagicMock(app=App(name="demo", root_agent=root))
+  monkeypatch.setattr(
+      dev_server.DevServer, "get_runner_async", AsyncMock(return_value=runner)
+  )
+
+  response = test_client.get(
+      "/dev/apps/demo/build_graph_image", params={"node": node} if node else {}
+  )
+
+  assert response.status_code == 200
+  dot = response.json()[node or ""]["dotSrc"]
+  assert 'worker -> "worker/toolset_0"' in dot
+  assert '"worker/toolset_0" -> add' in dot
+  assert '"worker/toolset_0" -> greet' in dot
+  assert '"worker/toolset_0" -> __END__' not in dot
+
+
+@pytest.mark.parametrize(
+    "path", ["/dev/apps/demo/build_graph", "/dev/apps/demo/build_graph_image"]
+)
+def test_graph_requests_do_not_initialize_non_mcp_toolsets(
+    test_client, monkeypatch, mcp_graph_session, path
+):
+  """Viewing the graph must not start a sandbox, browser or similar."""
+
+  class SandboxToolset(BaseToolset):
+    """Stands in for toolsets that start a sandbox or browser in get_tools."""
+
+    def __init__(self):
+      super().__init__()
+      self.get_tools_calls = 0
+
+    async def get_tools(self, readonly_context=None):
+      self.get_tools_calls += 1
+      return []
+
+  sandbox_toolset = SandboxToolset()
+  mcp_toolset = McpToolset(
+      connection_params=StreamableHTTPConnectionParams(
+          url="http://127.0.0.1:1/mcp"
+      )
+  )
+  runner = MagicMock(
+      app=App(
+          name="demo",
+          root_agent=LlmAgent(
+              name="root", tools=[mcp_toolset, sandbox_toolset]
+          ),
+      )
+  )
+  monkeypatch.setattr(
+      dev_server.DevServer, "get_runner_async", AsyncMock(return_value=runner)
+  )
+
+  response = test_client.get(path)
+
+  assert response.status_code == 200
+  assert sandbox_toolset.get_tools_calls == 0
+  mcp_graph_session.list_tools.assert_awaited_once()
+  if path.endswith("_image"):
+    dot = response.json()[""]["dotSrc"]
+    assert 'root -> "root/toolset_0"' in dot
+    assert '"root/toolset_0" -> add' in dot
+    assert "root -> SandboxToolset" in dot
+  else:
+    tools = response.json()["root_agent"]["tools"]
+    assert tools[0]["children"] == [
+        {"name": "add", "type": "tool"},
+        {"name": "greet", "type": "tool"},
+    ]
+    assert tools[1] == {"name": "SandboxToolset", "type": "tool"}
+
+
+def test_graph_requests_reuse_toolset_discovery(
+    test_client, monkeypatch, mcp_graph_session
+):
+  """Repeated graph requests reuse the toolset's existing listing cache."""
+  toolset = McpToolset(
+      connection_params=StreamableHTTPConnectionParams(
+          url="http://127.0.0.1:1/mcp"
+      )
+  )
+  runner = MagicMock(
+      app=App(name="demo", root_agent=LlmAgent(name="root", tools=[toolset]))
+  )
+  monkeypatch.setattr(
+      dev_server.DevServer, "get_runner_async", AsyncMock(return_value=runner)
+  )
+
+  responses = [
+      test_client.get("/dev/apps/demo/build_graph_image") for _ in range(2)
+  ]
+
+  assert all(response.status_code == 200 for response in responses)
+  assert responses[0].json() == responses[1].json()
+  mcp_graph_session.list_tools.assert_awaited_once()
 
 
 def test_create_test(test_client, tmp_path):

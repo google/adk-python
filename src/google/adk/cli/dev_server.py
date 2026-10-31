@@ -103,6 +103,7 @@ from .api_server import ApiServer
 NESTED_APP_SEPARATOR = "."
 from .utils import common
 from .utils import evals
+from .utils.graph_serialization import resolve_toolsets
 from .utils.graph_serialization import serialize_app_info
 from .utils.graph_visualization import plot_workflow_graph
 from .utils.state import create_empty_state
@@ -1019,7 +1020,8 @@ class DevServer(ApiServer):
             except Exception as e:
               print(f"Error reading README.md: {e}")
 
-        return serialize_app_info(runner.app, readme_content)
+        toolset_tools = await resolve_toolsets(runner.app.root_agent)
+        return serialize_app_info(runner.app, readme_content, toolset_tools)
 
     @app.get("/dev/apps/{app_name}/build_graph_image")
     async def get_app_info_image(
@@ -1032,7 +1034,8 @@ class DevServer(ApiServer):
             status_code=404, detail=f"App not found: {app_name}"
         )
 
-      app_info = serialize_app_info(runner.app)
+      toolset_tools = await resolve_toolsets(runner.app.root_agent)
+      app_info = serialize_app_info(runner.app, toolset_tools=toolset_tools)
 
       # Navigate to specific level if node is provided
       if node:
