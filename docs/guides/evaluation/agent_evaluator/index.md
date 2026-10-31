@@ -207,11 +207,17 @@ replaces with `eval_set` and `eval_config`.
 | `output_file` | `str \| None` | `None` | Write per-invocation results to this path as CSV. |
 | `app_name` | `str \| None` | `None` | App name used when persisting results. |
 | `eval_set_results_manager` | `EvalSetResultsManager \| None` | `None` | Persists results as `*.evalset_result.json`. |
+| `parallelism` | `int \| None` | `None` | Maximum number of eval cases run in parallel during inference and scoring. |
 
 `num_runs` exists because a single run of a live model is noisy. Averaging over
 two runs is the default; the ADK integration tests use four for cases known to
 vary. Raising it is the first thing to try when a test is flaky rather than
 wrong, and the cost is linear in model calls.
+
+`parallelism` caps how many eval cases `LocalEvalService` runs concurrently
+during inference and metric scoring. It overrides `parallelism` in the eval
+config when given, and when neither sets one `LocalEvalService` defaults to `4`.
+Passing a value below `1` raises `ValueError`.
 
 `agent_name` selects a sub-agent by name from the loaded root agent's tree, so
 you can score one specialist in isolation. A name that does not match anything
