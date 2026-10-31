@@ -47,6 +47,7 @@ from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
 from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
+from google.adk.events._internal_metadata import USER_MESSAGE_GROUP_KEY
 from google.adk.events.event import Event
 from google.adk.events.event import EventActions
 from google.adk.events.event import NodeInfo
@@ -55,6 +56,7 @@ from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.base_session_service import GetSessionConfig
+from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.agent_tool import AgentTool
@@ -3982,12 +3984,121 @@ async def test_append_user_event_leaves_root_context_branch_alone():
       "_stamp_event_branch_context",
       lambda ic, event: setattr(event, "branch", "coordinator@1.tool@2"),
   ):
-    event = await runner._append_user_event(
+    events = await runner._append_user_events(
         ic, types.Content(parts=[types.Part.from_text(text="hi")])
     )
 
-  assert event.branch == "coordinator@1.tool@2"
+  assert events[0].branch == "coordinator@1.tool@2"
   assert ic.branch is None
+
+
+@pytest.mark.parametrize(
+    "contexts",
+    [
+        [("a@1", None), ("b@1", None), ("a@1", None)],
+        [("a@1", "task_a"), ("b@1", "task_b")],
+        [("a@1", "task_a"), ("a@1", "task_b")],
+        [("a@1", None), ("a@1", None)],
+        [("a@1", "task_a")],
+    ],
+)
+@pytest.mark.parametrize("backend", ["memory", "database"])
+async def test_user_responses_keep_call_context_and_apply_state_once(
+    contexts, backend
+):
+  """Persist every response in its call's context, with one state update."""
+  session_service = (
+      InMemorySessionService()
+      if backend == "memory"
+      else DatabaseSessionService("sqlite+aiosqlite:///:memory:")
+  )
+  agent = LlmAgent(name="agent")
+  runner = Runner(
+      app_name="test_app", agent=agent, session_service=session_service
+  )
+  session = await session_service.create_session(
+      app_name="test_app", user_id="user"
+  )
+  for index, (branch, scope) in enumerate(contexts):
+    await session_service.append_event(
+        session,
+        Event(
+            invocation_id="inv",
+            author="agent",
+            branch=branch,
+            isolation_scope=scope,
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(
+                        function_call=types.FunctionCall(
+                            id=f"call-{index}", name="act", args={}
+                        )
+                    )
+                ],
+            ),
+        ),
+    )
+  content = types.Content(
+      role="user",
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=f"call-{index}", name="act", response={"result": index}
+              )
+          )
+          for index in range(len(contexts))
+      ],
+  )
+  original_content = content.model_copy(deep=True)
+  ic = InvocationContext(
+      session_service=session_service,
+      session=session,
+      agent=agent,
+      invocation_id="inv",
+      run_config=RunConfig(custom_metadata={"trace": "test"}),
+  )
+
+  events = await runner._append_user_events(
+      ic, content, state_delta={"counter": 7}
+  )
+
+  assert len(events) == len(set(contexts))
+  assert len({event.id for event in events}) == len(events)
+  assert [event.actions.state_delta for event in events] == [{"counter": 7}] + [
+      {}
+  ] * (len(events) - 1)
+  assert session.state["counter"] == 7
+  assert content == original_content
+  for event in events:
+    assert event.invocation_id == "inv"
+    assert event.custom_metadata["trace"] == "test"
+    if len(events) > 1:
+      assert event.custom_metadata[USER_MESSAGE_GROUP_KEY] == events[0].id
+    else:
+      assert USER_MESSAGE_GROUP_KEY not in event.custom_metadata
+    expected_indices = [
+        index
+        for index, context in enumerate(contexts)
+        if context == (event.branch, event.isolation_scope)
+    ]
+    assert [response.id for response in event.get_function_responses()] == [
+        f"call-{index}" for index in expected_indices
+    ]
+  assert ic.branch is None
+  stored_session = await session_service.get_session(
+      app_name="test_app", user_id="user", session_id=session.id
+  )
+  stored_responses = [
+      event for event in stored_session.events if event.author == "user"
+  ]
+  assert {event.id: event.custom_metadata for event in stored_responses} == {
+      event.id: event.custom_metadata for event in events
+  }
+  assert stored_session.state["counter"] == 7
+  await runner.close()
+  if backend == "database":
+    await session_service.close()
 
 
 @pytest.mark.asyncio

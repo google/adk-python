@@ -182,7 +182,7 @@ async def run_node_async(
               ic.user_content = new_message
               node_input = new_message
 
-          user_event = await runner._append_user_event(  # pylint: disable=protected-access
+          user_events = await runner._append_user_events(  # pylint: disable=protected-access
               ic, new_message, state_delta=state_delta
           )
           if (
@@ -197,8 +197,9 @@ async def run_node_async(
               runner._restore_branch_from_history(  # pylint: disable=protected-access
                   ic, node, root=runner.agent, invocation_id=ic.invocation_id
               )
-          if yield_user_message and user_event:
-            yield user_event
+          if yield_user_message:
+            for user_event in user_events:
+              yield user_event
         elif state_delta:
           # Resuming without a new message: there is no user message event to
           # carry the delta, so append it as a content-less event instead of
