@@ -203,6 +203,10 @@ no accompanying text output."""
     # set event.output on the task agent's run.
     del validated_output
 
+    # The task is done, so the response is final: the agent's flow stops here
+    # instead of calling the model again, and the agent finishes normally,
+    # running its after_agent_callback and plugin after callbacks.
+    tool_context.actions.skip_summarization = True
     return FINISH_TASK_SUCCESS_RESULT
 
 

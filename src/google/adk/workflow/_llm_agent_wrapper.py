@@ -541,6 +541,7 @@ async def run_llm_agent_as_node(
     had_task_fc = False
     transferred = False
     pending_fc_args: dict[str, Any] | None = None
+    finished = False
     run_method = (
         effective_agent.run_live(ic)
         if is_live
@@ -548,6 +549,11 @@ async def run_llm_agent_as_node(
     )
     async with aclosing(run_method) as run_iter:
       async for event in run_iter:
+        if finished:
+          # Let the agent run to its end so its after_agent_callback and
+          # plugin after callbacks run; closing it early would skip them.
+          yield event
+          continue
         task_fcs = _extract_task_delegation_fcs(event, tools_dict)
         if is_task_mode:
           finish_fc = _extract_finish_task_fc(event)
@@ -572,7 +578,11 @@ async def run_llm_agent_as_node(
             if output_key and event.output is not None:
               ctx.actions.state_delta[output_key] = event.output
             yield event
-            return
+            if is_live:
+              # A live session does not end on its own; close it here.
+              return
+            finished = True
+            continue
 
         yield event
         if task_fcs:
@@ -617,7 +627,7 @@ async def run_llm_agent_as_node(
             )
           transferred = True
           break
-    if not had_task_fc or transferred:
+    if finished or not had_task_fc or transferred:
       # LLM finished without delegating (or transferred away);
       # nothing more for this wrapper to do.
       return
