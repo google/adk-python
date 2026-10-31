@@ -51,6 +51,7 @@ except ImportError:
 from ...agents.base_agent import BaseAgent
 from ...agents.invocation_context import InvocationContext
 from ...agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
+from ...agents.llm.task._finish_task_tool import FINISH_TASK_DEFAULT_WRAPPER_KEY
 from ...agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from ...agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from ...agents.llm.task._finish_task_tool import get_output_wrapper_key
@@ -2124,16 +2125,38 @@ class RemoteA2aAgent(BaseAgent):
                   event.output = args
               else:
                 # A custom A2A server may signal completion with the response
-                # alone and never send the matching call, so there is nothing
-                # to read an output from. The task still finished: leaving the
-                # output unset would read as "still running" and strand the
-                # delegation, so the parent never gets its turn back.
-                event.output = {}
-                logger.warning(
-                    "Could not find finish_task arguments for isolation scope"
-                    " '%s'. Completing the task with an empty output.",
-                    ctx.isolation_scope,
-                )
+                # alone (as the mode docstring describes) and never send the
+                # matching call. Prefer the remote's final non-thought text
+                # over {} so the parent still receives the answer (#7746).
+                text_chunks = [
+                    part.text
+                    for part in (
+                        (event.content.parts or []) if event.content else []
+                    )
+                    if part.text
+                    and not part.thought
+                    and not part.function_call
+                    and not part.function_response
+                ]
+                if text_chunks:
+                  text_out = "".join(text_chunks)
+                  wrapper_key = get_output_wrapper_key(self.output_schema)
+                  if wrapper_key:
+                    event.output = text_out
+                  else:
+                    event.output = {
+                        FINISH_TASK_DEFAULT_WRAPPER_KEY: text_out
+                    }
+                else:
+                  # The task still finished: leaving the output unset would
+                  # read as "still running" and strand the delegation.
+                  event.output = {}
+                  logger.warning(
+                      "Could not find finish_task arguments for isolation"
+                      " scope '%s'. Completing the task with an empty"
+                      " output.",
+                      ctx.isolation_scope,
+                  )
               # Yield the semantic output event so the parent runner can capture
               # the final task output and record the tool response in history.
               yield event
