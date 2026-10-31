@@ -38,6 +38,7 @@ import httpx
 import tenacity
 from typing_extensions import override
 
+from ..integrations.openai._openai_common import is_reasoning_model as _is_reasoning_model
 from ..utils import _json_utils
 from ..utils import streaming_utils
 from ..utils._event_loop_cache import PerLoopCachedProperty
@@ -739,7 +740,12 @@ class CompletionsHTTPClient:
     if config.top_p is not None:
       payload['top_p'] = config.top_p
     if config.max_output_tokens is not None:
-      payload['max_tokens'] = config.max_output_tokens
+      token_limit_key = (
+          'max_completion_tokens'
+          if _is_reasoning_model(payload['model'])
+          else 'max_tokens'
+      )
+      payload[token_limit_key] = config.max_output_tokens
     if config.stop_sequences:
       payload['stop'] = config.stop_sequences
     if config.frequency_penalty is not None:
