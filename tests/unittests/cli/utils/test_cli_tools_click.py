@@ -38,6 +38,7 @@ from google.adk.agents.run_config import StreamingMode
 from google.adk.cli import cli_tools_click
 from google.adk.cli.deployers import DeployerFactory
 from google.adk.cli.utils import gcp_utils
+from google.adk.evaluation.base_eval_service import EvaluateConfig
 from google.adk.evaluation.base_eval_service import InferenceConfig
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
@@ -2492,9 +2493,9 @@ def _fake_inference_and_scoring(
     return []
 
   async def _fake_collect_eval_results(
-      inference_results, eval_service, eval_metrics
+      inference_results, eval_service, eval_metrics, *, parallelism=None
   ):
-    del inference_results, eval_service, eval_metrics
+    del inference_results, eval_service, eval_metrics, parallelism
     return eval_results
 
   monkeypatch.setattr(
@@ -2921,6 +2922,174 @@ def test_cli_eval_fails_before_inference_when_a_custom_method_cannot_load(
   assert result.exit_code != 0
   assert "Could not import custom method 'median_of_runs'" in result.output
   assert not inference_configs
+
+
+def _fake_eval_service_configs(
+    monkeypatch: pytest.MonkeyPatch, eval_results: list[EvalCaseResult]
+) -> tuple[list[InferenceConfig], list[EvaluateConfig]]:
+  """Records the configs `LocalEvalService` receives for each phase."""
+  inference_configs: list[InferenceConfig] = []
+  evaluate_configs: list[EvaluateConfig] = []
+
+  async def _fake_perform_inference(self, inference_request):
+    del self
+    inference_configs.append(inference_request.inference_config)
+    return
+    yield  # pragma: no cover
+
+  async def _fake_evaluate(self, evaluate_request):
+    del self
+    evaluate_configs.append(evaluate_request.evaluate_config)
+    for eval_result in eval_results:
+      yield eval_result
+
+  monkeypatch.setattr(
+      "google.adk.evaluation.local_eval_service.LocalEvalService"
+      ".perform_inference",
+      _fake_perform_inference,
+  )
+  monkeypatch.setattr(
+      "google.adk.evaluation.local_eval_service.LocalEvalService.evaluate",
+      _fake_evaluate,
+  )
+  return inference_configs, evaluate_configs
+
+
+def test_cli_eval_reads_parallelism_from_eval_config(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """`parallelism` in the eval config reaches both inference and scoring."""
+  eval_set_id = "test_eval_set_config_parallelism"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_config_parallelism", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "parallelism": 8,
+      })
+  )
+  inference_configs, evaluate_configs = _fake_eval_service_configs(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert [c.parallelism for c in inference_configs] == [8]
+  assert [c.parallelism for c in evaluate_configs] == [8]
+
+
+def test_cli_eval_parallelism_flag_overrides_eval_config(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """`--parallelism` takes precedence over `parallelism` in the eval config."""
+  eval_set_id = "test_eval_set_flag_parallelism"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_flag_parallelism", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "parallelism": 8,
+      })
+  )
+  inference_configs, evaluate_configs = _fake_eval_service_configs(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+          "--parallelism",
+          "2",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert [c.parallelism for c in inference_configs] == [2]
+  assert [c.parallelism for c in evaluate_configs] == [2]
+
+
+def test_cli_eval_with_parallelism_in_live_mode(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  """`--parallelism` also reaches the eval service when the agent runs live."""
+  eval_set_id = "test_eval_set_live_parallelism"
+  agent_path = _make_agent_with_eval_set(
+      tmp_path, "test_app_live_parallelism", eval_set_id
+  )
+  config_path = tmp_path / "eval_config.json"
+  config_path.write_text(
+      json.dumps({
+          "criteria": {"response_match_score": 0.8},
+          "live_model_config": {"timeout_seconds": 30},
+      })
+  )
+  inference_configs, evaluate_configs = _fake_eval_service_configs(
+      monkeypatch,
+      [_run_result(eval_set_id=eval_set_id, score=1.0, repetition_index=0)],
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--config_file_path",
+          str(config_path),
+          "--parallelism",
+          "6",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert [(c.use_live, c.parallelism) for c in inference_configs] == [(True, 6)]
+  assert [c.parallelism for c in evaluate_configs] == [6]
+
+
+@pytest.mark.parametrize("parallelism", ["0", "-1"])
+def test_cli_eval_rejects_parallelism_below_one(
+    parallelism: str,
+    tmp_path: Path,
+):
+  """`--parallelism` below 1 is rejected by Click before running."""
+  agent_path = tmp_path / "test_app_invalid_parallelism"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["eval", str(agent_path), "some_eval_set", "--parallelism", parallelism],
+  )
+
+  assert result.exit_code != 0
+  assert "Invalid value for '--parallelism'" in result.output
 
 
 def test_cli_create_eval_set(tmp_path: Path):
