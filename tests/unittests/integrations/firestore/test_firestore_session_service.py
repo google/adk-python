@@ -1376,6 +1376,34 @@ async def test_create_session_rejects_path_breaking_session_id(
       )
 
 
+@pytest.mark.parametrize(
+    "ok_id",
+    [
+        "__",  # valid Firestore doc id; prefix/suffix overlap
+        "___",
+        "user__",
+        "__user",
+        "_x_",
+    ],
+)
+def test_validate_identity_allows_non_reserved_underscore_ids(ok_id):
+  """Only full __.*__ matches are reserved; "__" and "___" must pass."""
+  FirestoreSessionService._validate_identity_component("user_id", ok_id)
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "____",
+        "__x__",
+        "__reserved__",
+    ],
+)
+def test_validate_identity_rejects_firestore_reserved_pattern(bad_id):
+  with pytest.raises(ValueError, match="Firestore-reserved"):
+    FirestoreSessionService._validate_identity_component("user_id", bad_id)
+
+
 @pytest.mark.asyncio
 async def test_get_session_rejects_path_breaking_identity(
     mock_firestore_client,
