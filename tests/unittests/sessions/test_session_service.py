@@ -2570,17 +2570,21 @@ async def test_partial_events_are_not_persisted(session_service):
   session = await session_service.create_session(
       app_name=app_name, user_id=user_id
   )
+  original_last_update_time = session.last_update_time
   event = Event(author='user', partial=True)
   returned = await session_service.append_event(session, event)
 
   assert returned is event
   # Check in-memory session
   assert len(session.events) == 0
+  # Partial events must not advance last_update_time.
+  assert session.last_update_time == original_last_update_time
   # Check persisted session
   session_got = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id
   )
   assert len(session_got.events) == 0
+  assert session_got.last_update_time == original_last_update_time
 
 
 # ---------------------------------------------------------------------------

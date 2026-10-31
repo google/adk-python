@@ -354,6 +354,10 @@ class RedisSessionService(BaseSessionService):
     if not await client.exists(key):
       raise SessionNotFoundError(f"Session {session.id} not found.")
     event = await super().append_event(session, event)
+    # Partial events are not persisted: they neither advance last_update_time
+    # nor touch storage, matching every other session service backend.
+    if event.partial:
+      return event
     # Stamp the session with the event's own timestamp, matching
     # InMemorySessionService, SqliteSessionService and DatabaseSessionService.
     # The wall clock is wrong here: an event records when it was produced, which
