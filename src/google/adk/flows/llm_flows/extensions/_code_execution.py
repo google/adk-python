@@ -383,12 +383,13 @@ async def _run_post_processor(
         part.inline_data = None
         part.text = f'Saved as artifact: {file_name}. '
 
-    yield Event(
-        invocation_id=invocation_context.invocation_id,
-        author=agent.name,
-        branch=invocation_context.branch,
-        actions=event_actions,
-    )
+    if event_actions.artifact_delta:
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=agent.name,
+          branch=invocation_context.branch,
+          actions=event_actions,
+      )
     return
 
   code_executor_context = CodeExecutorContext(invocation_context.session.state)
