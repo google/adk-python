@@ -71,3 +71,23 @@ def test_get_tools_by_agent_name():
   tools = app_details.get_tools_by_agent_name()
   expected_tools = {'agent1': [tool1], 'agent2': []}
   assert tools == expected_tools
+
+
+def test_tool_declarations_survive_json_round_trip():
+  """Tools loaded back from JSON are genai Tools, not dicts."""
+  tool1 = genai_types.Tool(
+      function_declarations=[genai_types.FunctionDeclaration(name='tool1_func')]
+  )
+  agent_details = {
+      'agent1': AgentDetails(name='agent1', tool_declarations=[tool1]),
+      'agent2': AgentDetails(name='agent2', tool_declarations=[]),
+  }
+  app_details = AppDetails(
+      agent_details=agent_details,
+  )
+
+  restored = AppDetails.model_validate_json(app_details.model_dump_json())
+
+  tools = restored.get_tools_by_agent_name()
+  expected_tools = {'agent1': [tool1], 'agent2': []}
+  assert tools == expected_tools
