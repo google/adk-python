@@ -18,6 +18,8 @@ from typing import Any
 
 from google.genai import types as genai_types
 from pydantic import Field
+from pydantic import field_validator
+from pydantic import ValidationError
 
 from .common import EvalBaseModel
 
@@ -40,6 +42,22 @@ class AgentDetails(EvalBaseModel):
   At runtime, this contains elements of type genai_types.ToolListUnion.
   We use list[Any] for Pydantic schema generation compatibility.
   """
+
+  @field_validator("tool_declarations", mode="before")
+  @classmethod
+  def _restore_tools_from_json(cls, tools: Any) -> Any:
+    """Turns tools that were serialized to JSON back into genai Tools."""
+    if not isinstance(tools, list):
+      return tools
+    restored = []
+    for tool in tools:
+      if isinstance(tool, dict):
+        try:
+          tool = genai_types.Tool.model_validate(tool)
+        except ValidationError:
+          pass  # Not a serialized genai Tool, so keep it as it is.
+      restored.append(tool)
+    return restored
 
 
 class AppDetails(EvalBaseModel):
