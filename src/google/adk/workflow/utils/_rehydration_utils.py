@@ -16,10 +16,13 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from dataclasses import field
 import json
 import logging
+from types import UnionType
+import typing
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -141,6 +144,29 @@ def _extract_schema_from_event(event: Event, interrupt_id: str) -> Any | None:
   return None
 
 
+def _is_bytes_hint(hint: object) -> bool:
+  """Returns whether the hint is ``bytes`` or ``Optional[bytes]``."""
+  if typing.get_origin(hint) in (typing.Union, UnionType):
+    non_none = [a for a in typing.get_args(hint) if a is not type(None)]
+    hint = non_none[0] if len(non_none) == 1 else None
+  return hint is bytes
+
+
+def _declares_bytes_output(node: BaseNode) -> bool:
+  """Returns whether the node declares its output as ``bytes``."""
+  from .._function_node import _GENERATOR_ORIGINS
+  from .._function_node import FunctionNode
+
+  if _is_bytes_hint(node.output_schema):
+    return True
+  if not isinstance(node, FunctionNode):
+    return False
+  return_hint = node._type_hints.get('return')
+  if typing.get_origin(return_hint) in _GENERATOR_ORIGINS:
+    return_hint = next(iter(typing.get_args(return_hint)), None)
+  return _is_bytes_hint(return_hint)
+
+
 def _process_rehydrated_output(node: BaseNode, output: object) -> object:
   """Process rehydrated output from event.content using the node's output schema.
 
@@ -150,6 +176,12 @@ def _process_rehydrated_output(node: BaseNode, output: object) -> object:
   configured.
   """
   if not isinstance(output, types.Content):
+    # Persisted sessions store bytes in Event.output as URL-safe base64 text.
+    if isinstance(output, str) and _declares_bytes_output(node):
+      try:
+        return base64.b64decode(output, altchars=b'-_', validate=True)
+      except ValueError:
+        return output
     return output
 
   from google.adk.utils.content_utils import extract_text_from_content
