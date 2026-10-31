@@ -17,7 +17,9 @@ import base64
 import json
 import os
 import re
+import sys
 import threading
+import time
 from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -1580,6 +1582,184 @@ def test_part_to_message_block_rejects_unsupported_image_mime_type():
 
   with pytest.raises(ValueError, match="Unsupported Anthropic image MIME"):
     part_to_message_block(part)
+
+
+def test_part_to_message_block_with_gcs_pdf_document():
+  """A gs:// PDF file part downloads the object and sends it inline."""
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  blob = MagicMock(size=len(pdf_data))
+  blob.download_as_bytes.return_value = pdf_data
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = blob
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    result = part_to_message_block(
+        Part(
+            file_data=types.FileData(
+                file_uri="gs://my-bucket/reports/q4.pdf",
+                mime_type="application/pdf",
+            )
+        )
+    )
+
+  assert result["type"] == "document"
+  assert result["source"]["type"] == "base64"
+  assert result["source"]["media_type"] == "application/pdf"
+  assert result["source"]["data"] == base64.b64encode(pdf_data).decode()
+  client.bucket.assert_called_once_with("my-bucket")
+  client.bucket.return_value.get_blob.assert_called_once_with("reports/q4.pdf")
+
+
+def test_part_to_message_block_rejects_oversized_gcs_file():
+  """A 25 MB object base64-encodes past 32 MB, so the 24 MB raw cap rejects it."""
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = MagicMock(
+      size=25 * 1024 * 1024
+  )
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    with pytest.raises(ValueError, match="too large"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://my-bucket/big.pdf",
+                  mime_type="application/pdf",
+              )
+          )
+      )
+
+
+def test_part_to_message_block_rejects_unsupported_gcs_file_type():
+  """A gs:// object Claude cannot carry inline still raises NotImplementedError."""
+  client = MagicMock()
+  client.bucket.return_value.get_blob.return_value = MagicMock(size=10)
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    with pytest.raises(NotImplementedError, match="Not supported yet"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://my-bucket/clip.mp4",
+                  mime_type="video/mp4",
+              )
+          )
+      )
+
+
+def test_part_to_message_block_missing_gcs_dependency(monkeypatch):
+  """Without google-cloud-storage, the error names the extra to install."""
+  # None in sys.modules makes the import itself raise ImportError.
+  monkeypatch.setitem(sys.modules, "google.cloud", None)
+  monkeypatch.setitem(sys.modules, "google.cloud.storage", None)
+
+  with pytest.raises(ImportError, match=r"google-adk\[gcp\]"):
+    part_to_message_block(
+        Part(
+            file_data=types.FileData(
+                file_uri="gs://my-bucket/reports/q4.pdf",
+                mime_type="application/pdf",
+            )
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_gcs_download_does_not_block_loop(
+    generate_content_response, generate_llm_response
+):
+  """A slow gs:// download runs off the event loop."""
+  slow_blob = MagicMock(size=10)
+
+  def slow_download():
+    time.sleep(0.3)
+    return b"%PDF-1.4"
+
+  slow_blob.download_as_bytes.side_effect = slow_download
+  storage_client = MagicMock()
+  storage_client.bucket.return_value.get_blob.return_value = slow_blob
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[
+          Content(
+              role="user",
+              parts=[
+                  Part(
+                      file_data=types.FileData(
+                          file_uri="gs://my-bucket/q4.pdf",
+                          mime_type="application/pdf",
+                      )
+                  )
+              ],
+          )
+      ],
+  )
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  stalls = []
+
+  async def heartbeat():
+    last = time.monotonic()
+    while True:
+      await asyncio.sleep(0.01)
+      now = time.monotonic()
+      stalls.append(now - last)
+      last = now
+
+  async def mock_coro():
+    return generate_content_response
+
+  with mock.patch.object(llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+      mock_client.messages.create.return_value = mock_coro()
+      with mock.patch(
+          "google.cloud.storage.Client", return_value=storage_client
+      ):
+        beat = asyncio.create_task(heartbeat())
+        async for _ in llm.generate_content_async(request, stream=False):
+          pass
+        beat.cancel()
+
+  sent = mock_client.messages.create.call_args.kwargs["messages"]
+  assert (
+      sent[0]["content"][0]["source"]["data"]
+      == base64.b64encode(b"%PDF-1.4").decode()
+  )
+  # A blocked loop never lets the heartbeat run, or runs it once, late.
+  assert stalls
+  assert max(stalls) < 0.15
+
+
+def test_part_to_message_block_rejects_unsupported_gcs_image_before_download():
+  """image/tiff fails fast; the object is never downloaded."""
+  client = MagicMock()
+
+  with mock.patch("google.cloud.storage.Client", return_value=client):
+    with pytest.raises(ValueError, match="Unsupported Anthropic image MIME"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://my-bucket/scan.tiff", mime_type="image/tiff"
+              )
+          )
+      )
+
+  client.bucket.assert_not_called()
+
+
+def test_part_to_message_block_rejects_gcs_uri_without_object():
+  """A gs:// URI with no object path raises a ValueError that names it."""
+  with mock.patch("google.cloud.storage.Client", return_value=MagicMock()):
+    with pytest.raises(ValueError, match="gs://bucket-only"):
+      part_to_message_block(
+          Part(
+              file_data=types.FileData(
+                  file_uri="gs://bucket-only", mime_type="application/pdf"
+              )
+          )
+      )
 
 
 content_to_message_param_test_cases = [

@@ -53,6 +53,7 @@ from typing_extensions import override
 from . import _prompt_cache
 from ..utils import _json_utils
 from ..utils import streaming_utils
+from ..utils._dependency import missing_extra
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._schema_utils import lowercase_schema_types
 from ..utils._schema_utils import schema_to_json_schema
@@ -75,6 +76,83 @@ _ImageMediaType: TypeAlias = Literal[
     "image/webp",
 ]
 _ANTHROPIC_IMAGE_MEDIA_TYPES = frozenset[str](get_args(_ImageMediaType))
+
+# Anthropic caps the request body at 32 MB and the body carries the file as
+# base64, which is 4/3 the size of the raw bytes. A 24 MB raw cap keeps the
+# encoded file under 32 MB.
+_MAX_FILE_DATA_SIZE = 24 * 1024 * 1024
+
+
+def _download_gcs_uri(uri: str) -> bytes:
+  """Downloads the object a gs:// file_data URI points at.
+
+  Claude accepts only inline base64 sources, so the bytes travel in the
+  request itself. The size cap applies to the raw bytes: base64 grows the
+  request body by 4/3, so 24 MB raw stays under Anthropic's 32 MB limit.
+  Blocks on network I/O; call it through asyncio.to_thread from async code.
+  Raises ValueError when the URI has no object path or the object exceeds
+  the cap.
+  """
+  try:
+    from google.cloud import storage  # pylint: disable=g-import-not-at-top
+  except ImportError as e:
+    raise missing_extra("google-cloud-storage", "gcp") from e
+  bucket_name, _, object_name = uri.removeprefix("gs://").partition("/")
+  if not bucket_name or not object_name:
+    raise ValueError(f"gs:// URI must name a bucket and an object: {uri}")
+  client = storage.Client()
+  blob = client.bucket(bucket_name).get_blob(object_name)
+  if blob is None:
+    raise ValueError(f"gs:// object not found: {uri}")
+  size = blob.size
+  if size is not None and size > _MAX_FILE_DATA_SIZE:
+    raise ValueError(
+        f"gs:// object too large for Claude: {uri} is {size} bytes, but"
+        f" the cap is {_MAX_FILE_DATA_SIZE} bytes (24 MB raw, 32 MB as"
+        " base64)."
+    )
+  data = blob.download_as_bytes()
+  if len(data) > _MAX_FILE_DATA_SIZE:
+    raise ValueError(
+        f"gs:// object too large for Claude: {uri} is {len(data)} bytes, but"
+        f" the cap is {_MAX_FILE_DATA_SIZE} bytes (24 MB raw, 32 MB as"
+        " base64)."
+    )
+  return data
+
+
+def _gcs_file_kind(part: types.Part) -> Literal["pdf", "image"] | None:
+  """Returns the kind of a gs:// file_data part Claude can take, else None.
+
+  Raises ValueError for an unsupported image subtype, before any download.
+  """
+  file_data = part.file_data
+  if not file_data or not (file_data.file_uri or "").startswith("gs://"):
+    return None
+  mime_type = file_data.mime_type or ""
+  if mime_type.split(";", 1)[0].strip() == "application/pdf":
+    return "pdf"
+  if mime_type.startswith("image/"):
+    _normalize_image_media_type(mime_type)
+    return "image"
+  return None
+
+
+async def _download_gcs_parts(
+    contents: Iterable[types.Content],
+) -> dict[str, bytes]:
+  """Downloads every distinct gs:// file_data object off the event loop."""
+  uris = {
+      part.file_data.file_uri: None
+      for content in contents
+      for part in content.parts or []
+      if _gcs_file_kind(part)
+  }
+  data = await asyncio.gather(
+      *(asyncio.to_thread(_download_gcs_uri, uri) for uri in uris)
+  )
+  return dict(zip(uris, data))
+
 
 _MessageBlockParam: TypeAlias = Union[
     anthropic_types.TextBlockParam,
@@ -598,6 +676,7 @@ class _ToolUseIdSanitizer:
 def _part_to_message_block(
     part: types.Part,
     sanitizer: _ToolUseIdSanitizer,
+    downloads: dict[str, bytes] | None = None,
 ) -> _MessageBlockParam:
   if part.thought and part.text:
     signature = ""
@@ -739,6 +818,38 @@ def _part_to_message_block(
         type="document",
         source=pdf_source,
     )
+  elif part.file_data:
+    # Claude rejects URL sources upstream, so gs:// objects are downloaded
+    # and sent inline as base64 (issue #2466). Any other URI scheme stays
+    # unsupported.
+    kind = _gcs_file_kind(part)
+    if kind is None:
+      raise NotImplementedError(f"Not supported yet: {part}")
+    uri = part.file_data.file_uri
+    # generate_content_async downloads off the event loop and passes the
+    # bytes in; direct callers of the public helpers download inline.
+    raw = downloads[uri] if downloads and uri in downloads else None
+    data = base64.b64encode(
+        raw if raw is not None else _download_gcs_uri(uri)
+    ).decode()
+    is_pdf = kind == "pdf"
+    if is_pdf:
+      return anthropic_types.DocumentBlockParam(
+          type="document",
+          source=anthropic_types.Base64PDFSourceParam(
+              type="base64",
+              media_type="application/pdf",
+              data=data,
+          ),
+      )
+    return anthropic_types.ImageBlockParam(
+        type="image",
+        source=anthropic_types.Base64ImageSourceParam(
+            type="base64",
+            media_type=_normalize_image_media_type(part.file_data.mime_type),
+            data=data,
+        ),
+    )
   elif part.executable_code:
     return anthropic_types.TextBlockParam(
         type="text",
@@ -758,6 +869,7 @@ def _part_to_message_block(
 def _content_to_message_param(
     content: types.Content,
     sanitizer: _ToolUseIdSanitizer,
+    downloads: dict[str, bytes] | None = None,
 ) -> anthropic_types.MessageParam:
   message_block = []
   had_empty_text = False
@@ -787,7 +899,7 @@ def _content_to_message_param(
       had_empty_text = True
       continue
 
-    message_block.append(_part_to_message_block(part, sanitizer))
+    message_block.append(_part_to_message_block(part, sanitizer, downloads))
 
   # Anthropic rejects empty text blocks, but dropping a turn whose only part
   # was empty text causes problems: e.g. code execution with no output produces
@@ -1323,6 +1435,7 @@ class AnthropicLlm(BaseLlm):
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
     sanitizer = _ToolUseIdSanitizer()
+    downloads = await _download_gcs_parts(llm_request.contents or [])
     # A turn whose parts are all dropped above leaves no blocks behind, and
     # Anthropic rejects a message with empty content. Sending one re-wedges the
     # session exactly as the NotImplementedError did: the offending part stays
@@ -1330,7 +1443,7 @@ class AnthropicLlm(BaseLlm):
     messages = [
         message
         for message in (
-            _content_to_message_param(content, sanitizer)
+            _content_to_message_param(content, sanitizer, downloads)
             for content in llm_request.contents or []
         )
         if message["content"]
