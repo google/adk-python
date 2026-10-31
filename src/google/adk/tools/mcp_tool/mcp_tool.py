@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 from collections.abc import Awaitable
 import inspect
+import json
 import logging
 from typing import Any
 from typing import Callable
@@ -89,6 +90,32 @@ _RESERVED_TOOL_NAMES = frozenset({
 })
 
 _UNSET = object()
+
+# MCP defines `outputSchema` "for validation of structured results" on the
+# client, but the Gemini path forwards it to the model inside
+# `FunctionDeclaration.response_json_schema`. Gemini prices a schema as if
+# every `$ref` were inlined, so server-generated schemas (proto-derived ones
+# reach hundreds of thousands of characters) can push a single declaration
+# past the model's input limit. Mirror the LiteLLM path, which only sends an
+# output schema when it fits within `_MAX_TOOL_DESCRIPTION_LENGTH`: drop the
+# ones that exceed the same budget here.
+_MAX_RESPONSE_JSON_SCHEMA_LENGTH = 1024
+
+
+def _response_schema_serialized_size(output_schema: Any) -> int | None:
+  """Returns the JSON size of an MCP output schema.
+
+  Args:
+    output_schema: The schema read from the MCP tool definition.
+
+  Returns:
+    The serialized length in characters, or None when the value cannot be
+    serialized for measurement.
+  """
+  try:
+    return len(json.dumps(output_schema))
+  except (TypeError, ValueError):
+    return None
 
 
 def _merge_auth_and_provider_headers(
@@ -431,6 +458,21 @@ class McpTool(BaseAuthenticatedTool):
           if fenced and output_schema is not None
           else output_schema
       )
+      if output_schema is not None:
+        serialized_size = _response_schema_serialized_size(output_schema)
+        if (
+            serialized_size is not None
+            and serialized_size > _MAX_RESPONSE_JSON_SCHEMA_LENGTH
+        ):
+          logger.warning(
+              "Omitting the output schema of MCP tool %r from its function"
+              " declaration: %d serialized characters exceeds the"
+              " %d-character budget for response schemas sent to the model.",
+              self.name,
+              serialized_size,
+              _MAX_RESPONSE_JSON_SCHEMA_LENGTH,
+          )
+          output_schema = None
       function_decl = FunctionDeclaration(
           name=self.name,
           description=description,
