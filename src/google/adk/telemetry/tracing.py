@@ -1537,7 +1537,15 @@ def _agent_model_name(agent: BaseAgent | BaseNode) -> str | None:
   if not isinstance(agent, LlmAgent):
     return None
 
-  model = agent.model if agent.model != "" else agent._default_model
+  # Resolved like LlmAgent.canonical_model, without building the model.
+  model = agent.model
+  ancestor = agent.parent_agent
+  while model == "" and ancestor is not None:
+    if isinstance(ancestor, LlmAgent):
+      model = ancestor.model
+    ancestor = ancestor.parent_agent
+  if model == "":
+    model = agent._default_model
   return model if isinstance(model, str) else model.model
 
 
