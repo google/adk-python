@@ -608,6 +608,22 @@ class DynamicNodeScheduler:
       # Rerun!
       run.state.resume_inputs = result.resume_inputs or {}
       logger.debug('node %s schedule: Rerunning execution.', node_path)
+      recovered = run.recovered_state
+      if (
+          recovered is not None
+          and recovered.interrupt_ids
+          and recovered.output is None
+          and recovered.route is None
+          and not recovered.finished_after_resume
+      ):
+        # This run's place in the replay order came from its interrupt, not a
+        # result, and the rerun produces its result live. Release that place
+        # now so replayed siblings recorded after the interrupt do not wait
+        # for the whole rerun and time out behind a slow one.
+        parent_path = curr_parent_ctx.node_path if curr_parent_ctx else ''
+        await self._replay_manager.advance_sequence(
+            parent_path, f'{curr_name}@{curr_run_id}'
+        )
       actual_isolation_scope = (
           run.recovered_state.isolation_scope
           if (run.recovered_state and run.recovered_state.isolation_scope)
