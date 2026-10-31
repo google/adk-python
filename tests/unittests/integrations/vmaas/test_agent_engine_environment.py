@@ -20,7 +20,12 @@ local bash.
 """
 
 import asyncio
+import atexit
+import os
+import shutil
 import subprocess
+import sys
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -33,6 +38,41 @@ import pytest
 
 _ENGINE = "projects/p/locations/us-central1/reasoningEngines/1"
 _TEMPLATE = f"{_ENGINE}/sandboxEnvironmentTemplates/7"
+
+# The sandbox is Linux, and the environment's file commands use GNU coreutils
+# options (`stat -c`, `base64 -d FILE`, `dd iflag=fullblock`, `mv -T`,
+# `chmod --reference`). Elsewhere the fake shell resolves these to the GNU
+# tools installed with a `g` prefix (e.g. Homebrew `coreutils` on macOS).
+_GNU_TOOLS = ("base64", "chmod", "dd", "mv", "stat")
+
+
+def _gnu_tools_available():
+  return sys.platform.startswith("linux") or all(
+      shutil.which(f"g{tool}") for tool in _GNU_TOOLS
+  )
+
+
+def _make_bash_env():
+  """Returns the environment for the fake shell, or None to inherit."""
+  if sys.platform.startswith("linux") or not _gnu_tools_available():
+    return None
+  links = tempfile.mkdtemp(prefix="adk-gnu-coreutils-")
+  atexit.register(shutil.rmtree, links, ignore_errors=True)
+  for tool in _GNU_TOOLS:
+    os.symlink(shutil.which(f"g{tool}"), os.path.join(links, tool))
+  return {**os.environ, "PATH": links + os.pathsep + os.environ["PATH"]}
+
+
+_BASH_ENV = _make_bash_env()
+
+
+requires_gnu_coreutils = pytest.mark.skipif(
+    not _gnu_tools_available(),
+    reason=(
+        "needs GNU coreutils (the sandbox is Linux); on macOS install them"
+        " with `brew install coreutils`"
+    ),
+)
 
 
 class _FakeSandboxes:
@@ -79,7 +119,11 @@ class _FakeSandboxes:
     if self.states[name] != "STATE_RUNNING":
       raise ServerError(503, {"error": {"code": 503, "status": "UNAVAILABLE"}})
     process = subprocess.run(
-        ["bash", "-c", command], capture_output=True, text=True, check=False
+        ["bash", "-c", command],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_BASH_ENV,
     )
     return {
         "stdout": process.stdout,
@@ -426,6 +470,7 @@ async def test_execute_before_initialize_raises():
     await environment.execute("echo hi")
 
 
+@requires_gnu_coreutils
 async def test_written_file_is_read_back(tmp_path):
   """Bytes written to a file, in a new directory, are read back unchanged."""
   environment = await _make_environment()
@@ -464,6 +509,7 @@ async def test_reading_directory_raises(tmp_path):
     await environment.read_file(tmp_path)
 
 
+@requires_gnu_coreutils
 async def test_empty_file_is_read(tmp_path):
   """Reading an empty file returns no bytes."""
   environment = await _make_environment()
@@ -473,6 +519,7 @@ async def test_empty_file_is_read(tmp_path):
   assert await environment.read_file(path) == b""
 
 
+@requires_gnu_coreutils
 async def test_file_of_one_slice_is_read_in_one_command(tmp_path):
   """A file of exactly one slice, 1 MiB, is read with a single command."""
   client = _make_client()
@@ -487,6 +534,7 @@ async def test_file_of_one_slice_is_read_in_one_command(tmp_path):
   assert len(client.sandboxes.commands) == 1
 
 
+@requires_gnu_coreutils
 async def test_large_binary_file_is_read_in_slices(tmp_path):
   """A 3.5 MiB binary file is read back unchanged, one 1 MiB slice at a time.
 
@@ -526,6 +574,7 @@ async def test_large_file_removed_during_read_raises(tmp_path, monkeypatch):
     await environment.read_file(path)
 
 
+@requires_gnu_coreutils
 async def test_symlink_to_large_file_is_read_in_slices(tmp_path, monkeypatch):
   """A symlink to a file larger than one slice is read in slices."""
   monkeypatch.setattr(_agent_engine_environment, "_READ_CHUNK_BYTES", 4)
@@ -543,6 +592,7 @@ async def test_symlink_to_large_file_is_read_in_slices(tmp_path, monkeypatch):
   assert len(client.sandboxes.commands) == 4
 
 
+@requires_gnu_coreutils
 async def test_large_file_truncated_during_read_raises(tmp_path, monkeypatch):
   """A large file that shrinks between slices raises OSError."""
   monkeypatch.setattr(_agent_engine_environment, "_READ_CHUNK_BYTES", 4)
@@ -587,7 +637,12 @@ async def test_empty_file_is_written(tmp_path):
 
 @pytest.mark.parametrize(
     ("size", "expected_commands"),
-    [(12, 1), (13, 3), (24, 3), (25, 4)],
+    [
+        (12, 1),
+        pytest.param(13, 3, marks=requires_gnu_coreutils),
+        pytest.param(24, 3, marks=requires_gnu_coreutils),
+        pytest.param(25, 4, marks=requires_gnu_coreutils),
+    ],
     ids=[
         "exactly_one_chunk",
         "one_chunk_plus_one",
@@ -616,6 +671,7 @@ async def test_write_is_split_at_chunk_boundaries(
   assert sorted(tmp_path.iterdir()) == [path]
 
 
+@requires_gnu_coreutils
 async def test_large_binary_file_round_trips(tmp_path):
   """A 1 MiB binary file is written in chunks and read back unchanged."""
   client = _make_client()
@@ -663,6 +719,7 @@ async def test_failed_chunked_write_keeps_old_file_and_removes_temp_files(
   assert sorted(tmp_path.iterdir()) == [path]
 
 
+@requires_gnu_coreutils
 async def test_chunked_write_replaces_existing_file(tmp_path, monkeypatch):
   """A chunked write replaces an existing, longer file in full."""
   monkeypatch.setattr(_agent_engine_environment, "_WRITE_CHUNK_BYTES", 16)
@@ -676,6 +733,7 @@ async def test_chunked_write_replaces_existing_file(tmp_path, monkeypatch):
   assert sorted(tmp_path.iterdir()) == [path]
 
 
+@requires_gnu_coreutils
 async def test_chunked_write_keeps_existing_file_mode(tmp_path, monkeypatch):
   """A chunked write over an executable file keeps it executable."""
   monkeypatch.setattr(_agent_engine_environment, "_WRITE_CHUNK_BYTES", 16)
@@ -705,6 +763,7 @@ async def test_chunked_write_to_existing_directory_raises(
   assert sorted(tmp_path.iterdir()) == [directory]
 
 
+@requires_gnu_coreutils
 async def test_chunked_write_with_long_multibyte_filename(
     tmp_path, monkeypatch
 ):
