@@ -18,7 +18,9 @@ import json
 import os
 import re
 import threading
+from typing import Annotated
 from typing import Any
+from typing import Literal
 from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -46,6 +48,7 @@ from google.genai.types import Content
 from google.genai.types import Part
 import httpx
 from pydantic import BaseModel
+from pydantic import Field
 import pytest
 
 
@@ -5263,3 +5266,52 @@ async def test_tool_config_none_mode_is_kept_with_thinking():
   )
 
   assert kwargs["tool_choice"] == {"type": "none"}
+
+
+@pytest.mark.parametrize("schema_kind", ["literal", "annotated"])
+@pytest.mark.parametrize("with_response_schema", [False, True])
+async def test_output_schema_json_schema_fallback(
+    schema_kind, with_response_schema
+):
+  """Typing aliases reach Claude as tool schemas, with response_schema preferred."""
+  schema = (
+      Literal["a", "b"]
+      if schema_kind == "literal"
+      else Annotated[_Person, Field(description="A person")]
+  )
+  request = LlmRequest(
+      contents=[Content(role="user", parts=[Part.from_text(text="Who?")])],
+  )
+  request.set_output_schema(schema)
+  if with_response_schema:
+    request.config.response_schema = _Person
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_tool_use_message({"name": "Ada", "age": 36})
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    async for _ in llm.generate_content_async(request):
+      pass
+
+  input_schema = mock_client.messages.create.call_args.kwargs["tools"][0][
+      "input_schema"
+  ]
+  if with_response_schema:
+    assert input_schema == _Person.model_json_schema()
+  elif schema_kind == "literal":
+    assert input_schema == {
+        "type": "object",
+        "properties": {"response": {"type": "string", "enum": ["a", "b"]}},
+        "required": ["response"],
+    }
+  else:
+    assert input_schema == {
+        "type": "object",
+        "properties": {
+            "response": {"$ref": "#/$defs/_Person", "description": "A person"}
+        },
+        "required": ["response"],
+        "$defs": {"_Person": _Person.model_json_schema()},
+    }

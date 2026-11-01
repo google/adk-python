@@ -1362,14 +1362,13 @@ class AnthropicLlm(BaseLlm):
     # A requested schema rides along as a tool, since forcing a call on a
     # request that already declares tools would cut that turn short.
     output_schema_tool: Optional[_OutputSchemaTool] = None
-    if (
-        llm_request.config
-        and llm_request.config.response_schema
-        and not function_declarations
-    ):
-      output_schema_tool = _OutputSchemaTool.for_schema(
-          llm_request.config.response_schema
-      )
+    response_schema = None
+    if llm_request.config:
+      response_schema = llm_request.config.response_schema
+      if response_schema is None:
+        response_schema = llm_request.config.response_json_schema
+    if response_schema and not function_declarations:
+      output_schema_tool = _OutputSchemaTool.for_schema(response_schema)
       tools = [output_schema_tool.param]
       tool_choice = output_schema_tool.choice(
           thinking_enabled=_thinking_is_enabled(thinking)
