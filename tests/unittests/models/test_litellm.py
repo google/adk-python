@@ -80,6 +80,7 @@ from google.adk.models.lite_llm import UsageMetadataChunk
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
+from jsonschema import Draft202012Validator
 import litellm
 from litellm import ChatCompletionAssistantMessage
 from litellm import ChatCompletionMessageToolCall
@@ -327,6 +328,54 @@ def test_to_litellm_response_format_handles_model_dump_object():
 
   assert formatted["type"] == "json_object"
   assert formatted["response_schema"] == schema_obj.model_dump()
+
+
+def test_nullable_object_response_schema_keeps_strict_validation():
+  """Nullable objects retain strict object constraints in the non-null branch."""
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          "details": types.Schema(
+              type=types.Type.OBJECT,
+              nullable=True,
+              properties={"name": types.Schema(type=types.Type.STRING)},
+          )
+      },
+  )
+
+  formatted = _to_litellm_response_format(schema, model="gpt-4o-mini")
+
+  validator = Draft202012Validator(formatted["json_schema"]["schema"])
+  assert validator.is_valid({"details": None})
+  assert validator.is_valid({"details": {"name": "Paris"}})
+  assert not validator.is_valid({"details": {}})
+  assert not validator.is_valid({"details": {"name": "Paris", "extra": 1}})
+  assert schema.properties["details"].nullable is True
+
+
+@pytest.mark.parametrize("use_json_schema", [False, True])
+def test_tool_parameters_preserve_nullable_values(use_json_schema):
+  """Both declaration formats advertise null as a valid tool argument."""
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={"city": types.Schema(type=types.Type.STRING, nullable=True)},
+      required=["city"],
+  )
+  declaration = types.FunctionDeclaration(name="weather")
+  if use_json_schema:
+    declaration.parameters_json_schema = schema.model_dump(
+        by_alias=True, exclude_none=True, mode="json"
+    )
+  else:
+    declaration.parameters = schema
+
+  tool = _function_declaration_to_tool_param(declaration)
+
+  validator = Draft202012Validator(tool["function"]["parameters"])
+  assert validator.is_valid({"city": None})
+  assert validator.is_valid({"city": "Paris"})
+  assert not validator.is_valid({"city": 7})
+  assert schema.properties["city"].nullable is True
 
 
 def test_to_litellm_response_format_handles_genai_schema_instance():

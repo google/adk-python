@@ -30,8 +30,13 @@ from typing import Any
 from typing import cast
 from typing import get_args
 from typing import get_origin
+from typing import Iterator
 from typing import Optional
 from typing import Union
+from urllib.parse import quote
+from urllib.parse import unquote
+from urllib.parse import urldefrag
+from urllib.parse import urljoin
 
 from google.genai import types
 from pydantic import BaseModel
@@ -133,35 +138,31 @@ def schema_to_json_schema(schema: SchemaType) -> dict[str, Any]:
   return TypeAdapter(schema).json_schema()
 
 
-def lowercase_schema_types(value: object) -> None:
-  """Lowercases the JSON Schema ``type`` strings in a schema, in place.
+_SCHEMA_METADATA_KEYS = frozenset({
+    "$defs",
+    "definitions",
+    "defs",
+    "$id",
+    "$schema",
+    "$anchor",
+    "$dynamicAnchor",
+    "$comment",
+    "title",
+    "description",
+    "default",
+    "examples",
+    "example",
+    "deprecated",
+    "readOnly",
+    "writeOnly",
+})
 
-  ``types.Schema`` serializes its type as the uppercase enum name (``STRING``),
-  while JSON Schema and the model providers that consume it expect ``string``.
-  A type may also be a list of names, as in ``["STRING", "NULL"]``. Nested
-  subschemas are reached through the schema keywords only, so a ``type`` key
-  inside a ``default`` or ``example`` value is left untouched.
 
-  Args:
-    value: A JSON Schema dict, or a list of them. Mutated in place.
-  """
-  if isinstance(value, list):
-    for item in value:
-      lowercase_schema_types(item)
-    return
-
-  if not isinstance(value, dict):
-    return
-
-  schema_type = value.get("type")
-  if isinstance(schema_type, str):
-    value["type"] = schema_type.lower()
-  elif isinstance(schema_type, list):
-    value["type"] = [
-        item.lower() if isinstance(item, str) else item for item in schema_type
-    ]
-
-  for dict_key in (
+def _schema_children(
+    schema: dict[str, Any],
+) -> Iterator[tuple[tuple[str, ...], Any]]:
+  """Yields schema locations, excluding annotation and instance data."""
+  for key in (
       "$defs",
       "definitions",
       "defs",
@@ -169,12 +170,11 @@ def lowercase_schema_types(value: object) -> None:
       "patternProperties",
       "properties",
   ):
-    child_dict = value.get(dict_key)
-    if isinstance(child_dict, dict):
-      for child_value in child_dict.values():
-        lowercase_schema_types(child_value)
-
-  for single_key in (
+    children = schema.get(key)
+    if isinstance(children, dict):
+      for name, child in children.items():
+        yield (key, str(name)), child
+  for key in (
       "additionalItems",
       "additionalProperties",
       "additional_properties",
@@ -188,11 +188,13 @@ def lowercase_schema_types(value: object) -> None:
       "unevaluatedItems",
       "unevaluatedProperties",
   ):
-    child_value = value.get(single_key)
-    if isinstance(child_value, (dict, list)):
-      lowercase_schema_types(child_value)
-
-  for list_key in (
+    child = schema.get(key)
+    if isinstance(child, dict):
+      yield (key,), child
+    elif isinstance(child, list):
+      for index, item in enumerate(child):
+        yield (key, str(index)), item
+  for key in (
       "allOf",
       "all_of",
       "anyOf",
@@ -201,9 +203,118 @@ def lowercase_schema_types(value: object) -> None:
       "one_of",
       "prefixItems",
   ):
-    child_list = value.get(list_key)
-    if isinstance(child_list, list):
-      lowercase_schema_types(child_list)
+    children = schema.get(key)
+    if isinstance(children, list):
+      for index, child in enumerate(children):
+        yield (key, str(index)), child
+
+
+def _resolve_schema_uri(base: str, reference: str) -> str:
+  # urljoin does not retain opaque resource identifiers such as urn:example
+  # when joining a fragment-only reference.
+  if reference.startswith("#"):
+    return urldefrag(base)[0] + reference
+  return urljoin(base, reference)
+
+
+def lowercase_schema_types(value: object) -> None:
+  """Normalizes GenAI type names and nullability for JSON Schema, in place.
+
+  ``types.Schema`` serializes its type as the uppercase enum name (``STRING``),
+  while JSON Schema and the model providers that consume it expect ``string``.
+  A type may also be a list of names, as in ``["STRING", "NULL"]``. Nested
+  subschemas are reached through the schema keywords only, so a ``type`` key
+  inside a ``default`` or ``example`` value is left untouched.
+
+  GenAI's ``nullable`` keyword is not a JSON Schema constraint. A nullable
+  schema becomes a union of the original constraints and null. Definitions
+  and identifiers stay at their original location, and JSON Pointer
+  references into the moved constraints are rewritten to their new location.
+
+  Args:
+    value: A JSON Schema dict, or a list of them. Mutated in place.
+  """
+  locations: dict[tuple[str, tuple[str, ...]], tuple[str, ...]] = {}
+  references: list[tuple[dict[str, Any], str, str, str]] = []
+
+  def visit(
+      node: Any, scopes: list[tuple[str, tuple[str, ...], tuple[str, ...]]]
+  ) -> None:
+    for uri, old_path, new_path in scopes:
+      locations[uri, old_path] = new_path
+    if isinstance(node, list):
+      for index, item in enumerate(node):
+        visit(
+            item,
+            [
+                (uri, old + (str(index),), new + (str(index),))
+                for uri, old, new in scopes
+            ],
+        )
+      return
+    if not isinstance(node, dict):
+      return
+
+    schema_id = node.get("$id")
+    if isinstance(schema_id, str) and not urldefrag(schema_id)[1]:
+      uri = _resolve_schema_uri(scopes[-1][0], schema_id)
+      scopes = scopes + [(uri, (), ())]
+      locations[uri, ()] = ()
+
+    children = list(_schema_children(node))
+    schema_type = node.get("type")
+    if isinstance(schema_type, str):
+      node["type"] = schema_type.lower()
+    elif isinstance(schema_type, list):
+      node["type"] = [
+          item.lower() if isinstance(item, str) else item
+          for item in schema_type
+      ]
+
+    nullable = node.pop("nullable", False) is True
+    constraints = node
+    if nullable:
+      constraints = {
+          key: node.pop(key)
+          for key in tuple(node)
+          if key not in _SCHEMA_METADATA_KEYS
+      }
+      if constraints:
+        node["anyOf"] = [constraints, {"type": "null"}]
+    for keyword in ("$ref", "$dynamicRef"):
+      reference = constraints.get(keyword)
+      if isinstance(reference, str):
+        references.append((constraints, keyword, scopes[-1][0], reference))
+    for path, child in children:
+      new_path = (
+          ("anyOf", "0") + path
+          if nullable and path[0] not in _SCHEMA_METADATA_KEYS
+          else path
+      )
+      visit(
+          child, [(uri, old + path, new + new_path) for uri, old, new in scopes]
+      )
+
+  visit(value, [("", (), ())])
+  for node, keyword, base, reference in references:
+    uri, fragment = urldefrag(_resolve_schema_uri(base, reference))
+    pointer = unquote(fragment)
+    if not pointer.startswith("/"):
+      continue
+    old_path = tuple(
+        part.replace("~1", "/").replace("~0", "~")
+        for part in pointer[1:].split("/")
+    )
+    new_path = locations.get((uri, old_path))
+    if new_path is not None and new_path != old_path:
+      pointer = "/" + "/".join(
+          part.replace("~", "~0").replace("/", "~1") for part in new_path
+      )
+      node[keyword] = (
+          reference.split("#", 1)[0]
+          + "#"
+          + quote(pointer, safe="/~!$&'()*+,;=:@")
+      )
 
 
 # Anchored, linear-time removal of an optional leading language tag

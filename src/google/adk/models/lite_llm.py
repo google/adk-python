@@ -3306,7 +3306,6 @@ def _function_declaration_to_tool_param(
 
   if function_declaration.parameters_json_schema:
     parameters = copy.deepcopy(function_declaration.parameters_json_schema)
-    lowercase_schema_types(parameters)
   elif function_declaration.parameters:
     parameters = _schema_to_dict(function_declaration.parameters)
     if "type" not in parameters:
@@ -3318,6 +3317,8 @@ def _function_declaration_to_tool_param(
         "type": "object",
         "properties": {},
     }
+
+  lowercase_schema_types(parameters)
 
   tool_params: dict[str, Any] = {
       "type": "function",
