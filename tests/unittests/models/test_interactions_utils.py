@@ -18,6 +18,7 @@ import asyncio
 import base64
 from collections.abc import AsyncGenerator
 from collections.abc import Callable
+import copy
 from datetime import datetime
 from datetime import timezone
 import json
@@ -3581,6 +3582,37 @@ _JSON_SCHEMA = {
     'required': ['answer'],
 }
 
+_UPPERCASE_SCHEMA_DICT = {
+    'type': 'OBJECT',
+    'properties': {
+        'tags': {'type': 'ARRAY', 'items': {'type': 'STRING'}},
+    },
+}
+
+
+def _list_of_answers_schema(nullable: bool | None) -> types.Schema:
+  return types.Schema(
+      type=types.Type.ARRAY,
+      items=types.Schema(
+          type=types.Type.OBJECT,
+          properties={
+              'answer': types.Schema(type=types.Type.STRING, nullable=nullable)
+          },
+          required=['answer'],
+      ),
+  )
+
+
+def _list_of_answers_json_schema(answer_type: str | list[str]) -> dict:
+  return {
+      'type': 'array',
+      'items': {
+          'type': 'object',
+          'properties': {'answer': {'type': answer_type}},
+          'required': ['answer'],
+      },
+  }
+
 
 class TestOutputSchema:
   """Tests for sending an output schema on the interactions create call."""
@@ -3637,6 +3669,32 @@ class TestOutputSchema:
               _JSON_SCHEMA,
               id='json-schema-takes-precedence',
           ),
+          pytest.param(
+              types.GenerateContentConfig(
+                  response_schema=_UPPERCASE_SCHEMA_DICT
+              ),
+              {
+                  'type': 'object',
+                  'properties': {
+                      'tags': {'type': 'array', 'items': {'type': 'string'}},
+                  },
+              },
+              id='uppercase-schema-dict',
+          ),
+          pytest.param(
+              types.GenerateContentConfig(
+                  response_schema=_list_of_answers_schema(nullable=False)
+              ),
+              _list_of_answers_json_schema('string'),
+              id='genai-schema-not-nullable',
+          ),
+          pytest.param(
+              types.GenerateContentConfig(
+                  response_schema=_list_of_answers_schema(nullable=True)
+              ),
+              _list_of_answers_json_schema(['null', 'string']),
+              id='genai-schema-nullable',
+          ),
       ],
   )
   async def test_schema_is_sent_as_response_format(
@@ -3664,6 +3722,24 @@ class TestOutputSchema:
         'schema_': expected_schema,
     }
     assert call['response_mime_type'] == 'application/json'
+
+  async def test_schema_dict_is_not_modified(self):
+    """Converting a schema dict leaves the caller's dict unchanged."""
+    # Arrange.
+    api_client = _FakeApiClient(interaction=_build_non_streaming_interaction())
+    llm_request = _build_llm_request()
+    schema = copy.deepcopy(_UPPERCASE_SCHEMA_DICT)
+    llm_request.config = types.GenerateContentConfig(response_schema=schema)
+
+    # Act.
+    await _drain(
+        interactions_utils.generate_content_via_interactions(
+            api_client, llm_request, stream=False
+        )
+    )
+
+    # Assert.
+    assert llm_request.config.response_schema == _UPPERCASE_SCHEMA_DICT
 
   async def test_no_schema_sends_neither_key(self):
     """A request without an output schema is unchanged."""

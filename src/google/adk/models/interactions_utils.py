@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import dataclasses
 import json
 import logging
@@ -117,6 +118,7 @@ else:
   from google.genai.interactions import Interaction
 
 from ..utils._google_client_headers import merge_tracking_headers
+from ..utils._schema_utils import lowercase_schema_types
 from ..utils._schema_utils import schema_to_json_schema
 from ._service_tier import ServiceTier
 from .llm_request import LlmRequest
@@ -1429,6 +1431,27 @@ def build_generation_config(
   return generation_config
 
 
+def _without_false_nullable(schema: types.Schema) -> types.Schema:
+  """Return a copy of the schema with every ``nullable=False`` unset.
+
+  ``Schema.json_schema`` adds ``null`` to a field's types for any ``nullable``
+  value, false included, while an unset ``nullable`` keeps the field non-null.
+  """
+  update: dict[str, Any] = {}
+  if schema.nullable is False:
+    update['nullable'] = None
+  if schema.items is not None:
+    update['items'] = _without_false_nullable(schema.items)
+  if schema.any_of is not None:
+    update['any_of'] = [_without_false_nullable(s) for s in schema.any_of]
+  if schema.properties is not None:
+    update['properties'] = {
+        name: _without_false_nullable(s)
+        for name, s in schema.properties.items()
+    }
+  return schema.model_copy(update=update)
+
+
 def _build_response_format(
     config: types.GenerateContentConfig,
 ) -> TextResponseFormatParam | None:
@@ -1452,11 +1475,14 @@ def _build_response_format(
     return None
 
   if isinstance(schema, types.Schema):
-    json_schema = schema.json_schema.model_dump(
+    json_schema = _without_false_nullable(schema).json_schema.model_dump(
         by_alias=True, exclude_none=True, mode='json'
     )
   else:
-    json_schema = schema_to_json_schema(schema)
+    # A schema dict may use the uppercase type names of ``types.Schema``,
+    # which JSON Schema doesn't accept.
+    json_schema = copy.deepcopy(schema_to_json_schema(schema))
+    lowercase_schema_types(json_schema)
   return {
       'type': 'text',
       'mime_type': 'application/json',
