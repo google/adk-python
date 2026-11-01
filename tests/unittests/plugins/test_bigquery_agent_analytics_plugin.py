@@ -160,6 +160,117 @@ async def test_usage_serialization_does_not_warn_with_sensitive_values(
   assert usage["prompt_tokens_details"][0]["modality"] == "AUDIO"
 
 
+@pytest.mark.parametrize("route", ["unary", "live_event", "live_model"])
+@pytest.mark.parametrize("failure", ["serializer", "override", "unsupported"])
+async def test_usage_serialization_failure_preserves_private_token_counts(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    caplog,
+    route,
+    failure,
+):
+  """Unsupported usage stays private without losing the valid token counts."""
+  secret = "synthetic_usage_serializer_value"
+  override_calls = []
+
+  class FailingUsage(types.GenerateContentResponseUsageMetadata):
+
+    @field_serializer("prompt_tokens_details")
+    def serialize_details(self, value):
+      raise ValueError(secret)
+
+  class OverriddenUsage(types.GenerateContentResponseUsageMetadata):
+
+    def model_dump(self, **kwargs):
+      override_calls.append(True)
+      raise ValueError(secret)
+
+  usage = live_usage_event.usage_metadata
+  if failure == "serializer":
+    usage = FailingUsage(**usage.model_dump())
+  elif failure == "override":
+    usage = OverriddenUsage(**usage.model_dump())
+  else:
+    usage.prompt_tokens_details[0].token_count = object()
+  live_usage_event.usage_metadata = usage
+  if route == "unary":
+    live_usage_event.custom_metadata = None
+
+  with (
+      caplog.at_level(logging.WARNING),
+      warnings.catch_warnings(record=True) as emitted,
+  ):
+    warnings.simplefilter("always")
+    if route == "live_event":
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=live_usage_event
+      )
+    else:
+      await bq_plugin_inst.after_model_callback(
+          callback_context=CallbackContext(invocation_context),
+          llm_response=live_usage_event,
+      )
+    await bq_plugin_inst.flush()
+
+  assert secret not in caplog.text
+  assert not override_calls
+  assert not any(secret in str(item.message) for item in emitted)
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert len(rows) == 1
+  assert rows[0]["event_type"] == (
+      "LLM_RESPONSE" if route == "unary" else "LIVE_USAGE"
+  )
+  assert json.loads(rows[0]["content"])["usage"] == {
+      "prompt": 10,
+      "completion": 5,
+      "total": 15,
+  }
+  assert json.loads(rows[0]["attributes"])["usage_metadata"] == (
+      "[UNPARSEABLE_JSON_BLOB]"
+  )
+  assert rows[0]["is_truncated"] is True
+  assert secret not in json.dumps(rows, default=str)
+
+
+@pytest.mark.parametrize(
+    "target", ["next_agent", {"access_token": "synthetic_action_warning_value"}]
+)
+async def test_live_usage_actions_preserve_private_transfer_handling(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    caplog,
+    target,
+):
+  """Transfers still run after Live usage without exposing malformed actions."""
+  secret = "synthetic_action_warning_value"
+  live_usage_event.actions.transfer_to_agent = target
+  with (
+      caplog.at_level(logging.WARNING),
+      warnings.catch_warnings(record=True) as emitted,
+  ):
+    warnings.simplefilter("always")
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=live_usage_event
+    )
+    await bq_plugin_inst.flush()
+
+  assert secret not in caplog.text
+  assert not any(secret in str(item.message) for item in emitted)
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE", "AGENT_TRANSFER"]
+  assert secret not in json.dumps(rows, default=str)
+  transfer = json.loads(rows[1]["content"])
+  assert transfer["from_agent"] == live_usage_event.author
+  if isinstance(target, str):
+    assert transfer["to_agent"] == target
+
+
 async def test_live_usage_records_raw_counts_and_modality_details(
     bq_plugin_inst,
     invocation_context,

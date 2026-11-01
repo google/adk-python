@@ -5119,6 +5119,22 @@ def _project_schema(
   return [f for f in schema if f.name not in denied]
 
 
+def _serialize_usage_metadata(usage: Any) -> tuple[Any, bool]:
+  """Serializes usage without exposing values through serializer diagnostics."""
+  if not isinstance(usage, BaseModel):
+    return usage, False
+  try:
+    # Match the sanitizer's policy: overrides may ignore warning suppression.
+    if getattr(usage.model_dump, "__func__", None) is not BaseModel.model_dump:
+      return "[UNSUPPORTED_OBJECT]", True
+    return (
+        usage.model_dump(mode="json", exclude_none=True, warnings=False),
+        False,
+    )
+  except Exception:
+    return "[UNSUPPORTED_OBJECT]", True
+
+
 def _live_usage_marker(metadata: Any) -> dict[str, Any] | None:
   """Returns valid connection identity, or lets legacy usage logging handle it."""
   marker = metadata.get(LIVE_USAGE_KEY) if isinstance(metadata, dict) else None
@@ -9858,6 +9874,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         return
     admitted = False
     try:
+      serialized_usage, usage_lost = _serialize_usage_metadata(usage)
       admitted = await self._log_event(
           "LIVE_USAGE",
           callback_context,
@@ -9868,13 +9885,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
                   "total": usage.total_token_count,
               }
           },
+          is_truncated=usage_lost,
           event_data=EventData(
               source_event=response if isinstance(response, Event) else None,
               custom_metadata=response.custom_metadata,
               model_version=response.model_version,
-              usage_metadata=usage.model_dump(
-                  mode="json", exclude_none=True, warnings=False
-              ),
+              usage_metadata=serialized_usage,
               cache_metadata=getattr(response, "cache_metadata", None),
               extra_attributes={
                   "live_usage": {
@@ -9954,7 +9970,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           and event.error_code is None
           and not event.actions.state_delta
           and not event.actions.model_dump(
-              exclude={"state_delta"}, exclude_defaults=True, exclude_none=True
+              exclude={"state_delta"},
+              exclude_defaults=True,
+              exclude_none=True,
+              warnings=False,
           )
           and getattr(event, "output", None) is None
           and not event.long_running_tool_ids
@@ -10744,6 +10763,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         is_truncated = True
 
     usage_metadata = None if separate_usage else llm_response.usage_metadata
+    serialized_usage, usage_lost = _serialize_usage_metadata(usage_metadata)
+    is_truncated = is_truncated or usage_lost
     if usage_metadata:
       usage = usage_metadata
       usage_dict = {}
@@ -10844,13 +10865,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             latency_ms=duration,
             time_to_first_token_ms=tfft,
             model_version=llm_response.model_version,
-            usage_metadata=(
-                usage_metadata.model_dump(
-                    mode="json", exclude_none=True, warnings=False
-                )
-                if isinstance(usage_metadata, BaseModel)
-                else usage_metadata
-            ),
+            usage_metadata=serialized_usage,
             cache_metadata=cache_metadata,
             finish_reason=(
                 getattr(finish_reason, "name", str(finish_reason))
