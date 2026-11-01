@@ -44,6 +44,40 @@ def dummy_tool():
   pass
 
 
+@pytest.mark.parametrize("field", ["model_version", "live_session_id"])
+@pytest.mark.parametrize(
+    "mode, expected",
+    [("unset", "original"), ("clear", None), ("replace", "replacement")],
+)
+@pytest.mark.parametrize("plugin_callback", [False, True])
+async def test_after_model_respects_explicit_identity_fields(
+    field, mode, expected, plugin_callback
+):
+  """Only omitted model identity fields inherit the original value."""
+  original = LlmResponse(model_version="original", live_session_id="original")
+  replacement = LlmResponse(**({} if mode == "unset" else {field: expected}))
+  saved = replacement.model_dump()
+  callback = AsyncMock(return_value=replacement)
+  agent = Agent(
+      name="agent", after_model_callback=None if plugin_callback else callback
+  )
+  plugins = []
+  if plugin_callback:
+    plugin = BasePlugin(name="replace")
+    plugin.after_model_callback = callback
+    plugins.append(plugin)
+  context = await testing_utils.create_invocation_context(
+      agent=agent, plugins=plugins
+  )
+
+  result = await _model_response_finalizer.handle_after_model_callback(
+      context, original, Event(author=agent.name)
+  )
+
+  assert getattr(result, field) == expected
+  assert replacement.model_dump() == saved
+
+
 # --- Tests for finalize_model_response_event ---
 
 

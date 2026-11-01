@@ -9872,7 +9872,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
               source_event=response if isinstance(response, Event) else None,
               custom_metadata=response.custom_metadata,
               model_version=response.model_version,
-              usage_metadata=usage.model_dump(mode="json", exclude_none=True),
+              usage_metadata=usage.model_dump(
+                  mode="json", exclude_none=True, warnings=False
+              ),
               cache_metadata=getattr(response, "cache_metadata", None),
               extra_attributes={
                   "live_usage": {
@@ -10843,7 +10845,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             time_to_first_token_ms=tfft,
             model_version=llm_response.model_version,
             usage_metadata=(
-                usage_metadata.model_dump(mode="json", exclude_none=True)
+                usage_metadata.model_dump(
+                    mode="json", exclude_none=True, warnings=False
+                )
                 if isinstance(usage_metadata, BaseModel)
                 else usage_metadata
             ),

@@ -122,6 +122,44 @@ def live_usage_event():
   )
 
 
+@pytest.mark.parametrize("route", ["unary", "live_event", "live_model"])
+async def test_usage_serialization_does_not_warn_with_sensitive_values(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    route,
+):
+  """Malformed usage values stay redacted in rows and never appear in warnings."""
+  secret = "synthetic_usage_warning_value"
+  live_usage_event.usage_metadata.prompt_tokens_details[0].token_count = {
+      "access_token": secret,
+  }
+  if route == "unary":
+    live_usage_event.custom_metadata = None
+  with warnings.catch_warnings(record=True) as emitted:
+    warnings.simplefilter("always")
+    if route == "live_event":
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=live_usage_event
+      )
+    else:
+      await bq_plugin_inst.after_model_callback(
+          callback_context=CallbackContext(invocation_context),
+          llm_response=live_usage_event,
+      )
+    await bq_plugin_inst.flush()
+
+  assert not any(secret in str(item.message) for item in emitted)
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert len(rows) == 1
+  assert secret not in json.dumps(rows, default=str)
+  usage = json.loads(rows[0]["attributes"])["usage_metadata"]
+  assert usage["traffic_type"] == "ON_DEMAND"
+  assert usage["prompt_tokens_details"][0]["modality"] == "AUDIO"
+
+
 async def test_live_usage_records_raw_counts_and_modality_details(
     bq_plugin_inst,
     invocation_context,

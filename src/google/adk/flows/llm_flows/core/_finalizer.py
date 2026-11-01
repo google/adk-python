@@ -287,7 +287,7 @@ def _inherit_unset_model_fields(
     updates['usage_metadata'] = original.usage_metadata
   for field in ('model_version', 'live_session_id'):
     if (
-        getattr(replacement, field) is None
+        field not in replacement.model_fields_set
         and getattr(original, field) is not None
     ):
       updates[field] = getattr(original, field)
