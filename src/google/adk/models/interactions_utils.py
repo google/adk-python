@@ -83,6 +83,7 @@ from google.genai.interactions import TextAnnotationDelta
 from google.genai.interactions import TextContent
 from google.genai.interactions import TextContentParam
 from google.genai.interactions import TextDelta
+from google.genai.interactions import ThinkingLevel
 from google.genai.interactions import ThoughtSignatureDelta
 from google.genai.interactions import ThoughtStep
 from google.genai.interactions import ThoughtStepParam
@@ -182,8 +183,8 @@ _UNSUPPORTED_SAMPLING_PARAMS = (
     'frequency_penalty',
 )
 
-# Sampling knobs already reported as dropped, so each warning below is emitted
-# once per process instead of once per model turn.
+# Sampling knobs and thinking settings already reported as dropped, so each
+# warning below is emitted once per process instead of once per model turn.
 _WARNED_SAMPLING_PARAMS: set[str] = set()
 
 
@@ -749,17 +750,24 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
         )
     ]
   elif isinstance(step, ThoughtStep):
+    # The summary (sent when thinking_summaries is "auto") becomes thought
+    # text, as _handle_thought_summary makes it when streaming.
+    parts = [
+        types.Part(text=content.text, thought=True)
+        for content in step.summary or []
+        if isinstance(content, TextContent) and content.text
+    ]
     # Gemini 3 rejects the follow-up unless this signature is echoed back.
     # Keep it on a part of its own: a part that also carries text is
     # re-encoded as a text step, which drops the signature.
     if step.signature:
-      return [
+      parts.append(
           types.Part(
               thought=True,
               thought_signature=base64.b64decode(step.signature),
           )
-      ]
-    return []
+      )
+    return parts
   elif isinstance(step, CodeExecutionResultStep):
     return [
         types.Part(
@@ -1380,9 +1388,9 @@ def build_generation_config(
   """Build generation config dict for interactions API.
 
   Only the parameters that reach the interactions API are carried over. A
-  sampling parameter that would be discarded before the request is sent is
-  logged as ignored, once per parameter per process, naming whether the client
-  or the API is the one that cannot carry it.
+  sampling or thinking parameter that would be discarded before the request is
+  sent is logged as ignored, once per parameter per process, naming whether the
+  client or the API is the one that cannot carry it.
 
   Args:
     config: The GenerateContentConfig to extract parameters from.
@@ -1403,6 +1411,15 @@ def build_generation_config(
       # Not a literal key: which of these the TypedDict declares depends on
       # the installed google-genai.
       generation_config[name] = value  # type: ignore[literal-required]
+  thinking = config.thinking_config
+  level = thinking.thinking_level if thinking else None
+  if level and level != types.ThinkingLevel.THINKING_LEVEL_UNSPECIFIED:
+    generation_config['thinking_level'] = cast(ThinkingLevel, level.lower())
+  include_thoughts = thinking.include_thoughts if thinking else None
+  if include_thoughts is not None:
+    generation_config['thinking_summaries'] = (
+        'auto' if include_thoughts else 'none'
+    )
 
   undeclared = _unwarned_params_set_on(config, _UNDECLARED_SAMPLING_PARAMS)
   if undeclared:
@@ -1423,6 +1440,16 @@ def build_generation_config(
         ' with its own defaults instead. Unset them, or turn off'
         ' use_interactions_api to have them applied.',
         ', '.join(unsupported),
+    )
+
+  budget = thinking.thinking_budget if thinking else None
+  if budget is not None and 'thinking_budget' not in _WARNED_SAMPLING_PARAMS:
+    _WARNED_SAMPLING_PARAMS.add('thinking_budget')
+    logger.warning(
+        'The interactions API has no equivalent for thinking_budget, so the'
+        ' model thinks at thinking_level, or at its default level if none is'
+        ' set. Set thinking_level instead, or turn off use_interactions_api'
+        ' to have the budget applied.'
     )
   return generation_config
 

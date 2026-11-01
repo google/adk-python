@@ -1239,7 +1239,7 @@ class TestConvertInteractionOutputToParts:
     }
 
   def test_thought_output_summary_is_not_carried_onto_the_part(self):
-    """The signature part stays text-free.
+    """The summary gets its own part, and the signature part stays text-free.
 
     A part that also carries text converts back to a text step, which has no
     signature field, so the signature would be dropped on the next request.
@@ -1252,7 +1252,51 @@ class TestConvertInteractionOutputToParts:
 
     result = interactions_utils._convert_interaction_step_to_parts(output)
 
-    assert result[0].text is None
+    assert result == [
+        types.Part(text='Let me think...', thought=True),
+        types.Part(thought=True, thought_signature=b'sig-bytes'),
+    ]
+
+  def test_thought_output_summary_without_signature_becomes_thought_text(self):
+    """Each text summary becomes thought text, as a streamed summary does."""
+    output = ThoughtStep(
+        type='thought',
+        summary=[
+            TextContent(type='text', text='First.'),
+            TextContent(type='text', text=''),
+            TextContent(type='text', text='Second.'),
+        ],
+    )
+
+    result = interactions_utils._convert_interaction_step_to_parts(output)
+
+    assert result == [
+        types.Part(text='First.', thought=True),
+        types.Part(text='Second.', thought=True),
+    ]
+
+  def test_unary_and_streamed_thoughts_produce_the_same_parts(self):
+    """A summarized thought converts to the parts a stream of it builds."""
+    signature = base64.b64encode(b'sig-bytes').decode('utf-8')
+    state = interactions_utils._StreamState()
+    for delta in (
+        {'type': 'thought_summary', 'content': {'type': 'text', 'text': 'Hm.'}},
+        {'type': 'thought_signature', 'signature': signature},
+    ):
+      interactions_utils.convert_interaction_event_to_llm_response(
+          StepDelta(event_type='step.delta', index=0, delta=delta),
+          state,
+          interaction_id='int_1',
+      )
+    output = ThoughtStep(
+        type='thought',
+        signature=signature,
+        summary=[TextContent(type='text', text='Hm.')],
+    )
+
+    result = interactions_utils._convert_interaction_step_to_parts(output)
+
+    assert result == state.parts
 
   def test_no_type_attribute(self):
     """Test handling output without type attribute."""
@@ -1531,6 +1575,39 @@ class TestBuildGenerationConfig:
     result = interactions_utils.build_generation_config(config)
     assert result == {}
 
+  @pytest.mark.parametrize(
+      ('level', 'expected'),
+      [
+          (types.ThinkingLevel.HIGH, {'thinking_level': 'high'}),
+          (types.ThinkingLevel.THINKING_LEVEL_UNSPECIFIED, {}),
+      ],
+  )
+  def test_thinking_level(self, level, expected):
+    """A thinking level is sent in lowercase; an unspecified one is not."""
+    config = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_level=level)
+    )
+
+    assert interactions_utils.build_generation_config(config) == expected
+
+  @pytest.mark.parametrize(
+      ('include_thoughts', 'expected'),
+      [
+          (True, {'thinking_summaries': 'auto'}),
+          (False, {'thinking_summaries': 'none'}),
+          (None, {}),
+      ],
+  )
+  def test_include_thoughts_is_sent_as_thinking_summaries(
+      self, include_thoughts, expected
+  ):
+    """Thought summaries are asked for or turned off; unset keeps the default."""
+    config = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(include_thoughts=include_thoughts)
+    )
+
+    assert interactions_utils.build_generation_config(config) == expected
+
   def test_every_key_is_a_real_generation_config_field(self):
     """Against the installed client, exactly its declared keys are sent.
 
@@ -1546,13 +1623,20 @@ class TestBuildGenerationConfig:
         presence_penalty=0.5,
         frequency_penalty=0.3,
         seed=7,
+        thinking_config=types.ThinkingConfig(
+            thinking_level=types.ThinkingLevel.LOW, include_thoughts=True
+        ),
     )
     result = interactions_utils.build_generation_config(config)
     supported = set(typing.get_type_hints(interactions.GenerationConfigParam))
     sampling = {'temperature', 'top_p', 'top_k'}
-    assert set(result) == {'max_output_tokens', 'stop_sequences', 'seed'} | (
-        sampling & supported
-    )
+    assert set(result) == {
+        'max_output_tokens',
+        'stop_sequences',
+        'seed',
+        'thinking_level',
+        'thinking_summaries',
+    } | (sampling & supported)
     assert set(result) <= supported
 
   def test_dropped_parameters_are_the_ones_the_request_cannot_carry(self):
@@ -1638,6 +1722,43 @@ class TestBuildGenerationConfig:
     """Test that a config the API can honor logs nothing."""
     config = types.GenerateContentConfig(
         max_output_tokens=100, stop_sequences=['END'], seed=7
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+  @pytest.mark.parametrize('budget', [0, 1024, -1])
+  def test_thinking_budget_is_dropped_with_a_warning_once(self, caplog, budget):
+    """A budget, even 0 (no thinking) or -1 (dynamic), has no API field."""
+    config = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_budget=budget)
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      first = interactions_utils.build_generation_config(config)
+      interactions_utils.build_generation_config(config)
+
+    assert first == {}
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert 'thinking_budget' in warnings[0]
+    assert 'thinking_level' in warnings[0]
+    assert 'use_interactions_api' in warnings[0]
+
+  def test_thinking_level_alone_does_not_warn(self, caplog):
+    """A level reaches the API, so it is not reported as dropped."""
+    config = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(
+            thinking_level=types.ThinkingLevel.LOW
+        )
     )
 
     with caplog.at_level(
