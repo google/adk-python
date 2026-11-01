@@ -308,6 +308,39 @@ async def test_save_load_delete(service_type, artifact_service_factory):
   )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_save_load_preserves_crlf_and_cr_line_endings(
+    service_type, artifact_service_factory
+):
+  """Tests that text payloads round-trip unchanged on every backend."""
+  artifact_service = artifact_service_factory(service_type)
+  text = "id,name\r\n1,a\r\n2,b\rc\n"
+
+  await artifact_service.save_artifact(
+      app_name="test_app",
+      user_id="test_user",
+      session_id="session_id",
+      filename="data.csv",
+      artifact=types.Part(text=text),
+  )
+  loaded = await artifact_service.load_artifact(
+      app_name="test_app",
+      user_id="test_user",
+      session_id="session_id",
+      filename="data.csv",
+  )
+
+  assert loaded.text == text
+
+
 @pytest.mark.parametrize("filename", ["report.txt", "user:report.txt"])
 @pytest.mark.parametrize("existing", [False, True])
 @pytest.mark.parametrize(

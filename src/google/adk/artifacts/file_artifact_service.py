@@ -87,6 +87,10 @@ def _read_bytes_if_present(path: Path) -> Optional[bytes]:
 def _read_text_if_present(path: Path) -> Optional[str]:
   """Reads a UTF-8 text payload from disk.
 
+  The payload is decoded from raw bytes: text-mode reads rewrite "\\r\\n" and
+  "\\r" to "\\n", which would silently alter artifacts whose line endings
+  matter (CSV, patches, Windows-authored text).
+
   Args:
     path: Location of the payload.
 
@@ -94,7 +98,7 @@ def _read_text_if_present(path: Path) -> Optional[str]:
     The decoded file contents, or None if it is not a readable file.
   """
   try:
-    return path.read_text(encoding="utf-8")
+    return path.read_bytes().decode("utf-8")
   except FileNotFoundError:
     return None
   except (OSError, UnicodeDecodeError) as exc:
@@ -564,7 +568,10 @@ class FileArtifactService(BaseArtifactService):
         )
         display_name = artifact.inline_data.display_name
       elif artifact.text is not None:
-        content_path.write_text(artifact.text, encoding="utf-8")
+        # Written as bytes so the payload is stored exactly as given:
+        # text-mode writes translate "\\n" to os.linesep, which rewrites
+        # artifacts saved on Windows and read back elsewhere.
+        content_path.write_bytes(artifact.text.encode("utf-8"))
         mime_type = None
       else:
         raise InputValidationError(
