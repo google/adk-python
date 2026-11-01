@@ -16,6 +16,8 @@
 
 import asyncio
 import logging
+from typing import Annotated
+from typing import Literal
 from typing import Optional
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -25,7 +27,11 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
+from google.adk.utils._schema_utils import schema_to_json_schema
 from google.genai import types
+from google.genai.models import _GenerateContentConfig_to_mldev
+from pydantic import BaseModel
+from pydantic import Field
 import pytest
 
 
@@ -933,3 +939,54 @@ def test_insert_transient_user_content_goes_before_trailing_user_turns():
       'follow-up part 1',
       'follow-up part 2',
   ]
+
+
+@pytest.mark.parametrize(
+    'schema',
+    [
+        Literal['yes', 'no'],
+        Annotated[BaseModel, Field(title='Answer')],
+        Annotated[int, Field(gt=0)],
+    ],
+)
+@pytest.mark.parametrize('argument', ['output_schema', 'base_model'])
+def test_set_output_schema_sends_typing_alias_as_json_schema(schema, argument):
+  """Typing aliases use the JSON schema path supported by GenAI."""
+  request = LlmRequest()
+  request.config.response_schema = str
+
+  request.set_output_schema(**{argument: schema})
+
+  converted = _GenerateContentConfig_to_mldev(None, request.config)
+  assert converted['responseJsonSchema'] == schema_to_json_schema(schema)
+  assert 'responseSchema' not in converted
+  assert request.config.response_schema is None
+  assert request.config.response_json_schema == schema_to_json_schema(schema)
+  assert request.config.response_mime_type == 'application/json'
+  assert request.model_dump()['config']['response_json_schema'] == (
+      schema_to_json_schema(schema)
+  )
+
+
+@pytest.mark.parametrize(
+    'schema',
+    [
+        BaseModel,
+        list[BaseModel],
+        list[str],
+        dict[str, int],
+        int,
+        int | str,
+        {'type': 'string'},
+        types.Schema(type=types.Type.STRING),
+    ],
+)
+def test_set_output_schema_keeps_other_schema_types(schema):
+  """Existing schema inputs continue to use response_schema unchanged."""
+  request = LlmRequest()
+
+  request.set_output_schema(schema)
+
+  assert request.config.response_schema is schema
+  assert request.config.response_json_schema is None
+  assert request.config.response_mime_type == 'application/json'
