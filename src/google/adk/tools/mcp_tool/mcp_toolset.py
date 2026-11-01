@@ -49,6 +49,7 @@ from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...dependencies._mcp import StdioServerParameters
 from ...dependencies._mcp import Tool as McpBaseTool
+from ...dependencies._mcp import types as mcp_types
 from ...utils.env_utils import is_env_enabled
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
@@ -66,6 +67,7 @@ from .mcp_session_manager import StreamableHTTPConnectionParams
 # MCPTool stays imported so existing mcp_toolset.MCPTool callers still resolve.
 from .mcp_tool import _dump_mcp_model
 from .mcp_tool import _merge_auth_and_provider_headers
+from .mcp_tool import _read_field
 from .mcp_tool import _RESERVED_TOOL_NAMES
 from .mcp_tool import MCPTool  # pylint: disable=unused-import  # noqa: F401
 from .mcp_tool import McpTool
@@ -116,6 +118,36 @@ class _CachedToolList:
 
   tools: List[McpBaseTool]
   expires_at: float
+
+
+# Hard ceiling on resources/list pages, so a server that keeps returning new
+# cursors cannot keep a listing going forever.
+_MAX_RESOURCE_LIST_PAGES = 100
+
+
+async def _list_all_resources(
+    session: _ClientSession,
+) -> list[mcp_types.Resource]:
+  """Returns the resources from every resources/list page."""
+  result: ListResourcesResult = await session.list_resources()
+  resources = list(result.resources)
+  seen_cursors: set[str] = set()
+  cursor = _read_field(result, "nextCursor", "next_cursor")
+  while cursor is not None:
+    if cursor in seen_cursors:
+      raise ValueError("MCP server repeated a resources/list cursor.")
+    seen_cursors.add(cursor)
+    if len(seen_cursors) == _MAX_RESOURCE_LIST_PAGES:
+      raise ValueError(
+          "MCP server paginated resources/list past"
+          f" {_MAX_RESOURCE_LIST_PAGES} pages."
+      )
+    result = await session.list_resources(
+        params=mcp_types.PaginatedRequestParams(cursor=cursor)
+    )
+    resources.extend(result.resources)
+    cursor = _read_field(result, "nextCursor", "next_cursor")
+  return resources
 
 
 class McpToolset(BaseToolset):
@@ -600,23 +632,23 @@ class McpToolset(BaseToolset):
       self, readonly_context: Optional[ReadonlyContext] = None
   ) -> list[str]:
     """Returns a list of resource names available on the MCP server."""
-    result: ListResourcesResult = await self._execute_with_session(
-        lambda session: session.list_resources(),
+    resources = await self._execute_with_session(
+        _list_all_resources,
         "Failed to list resources from MCP server",
         readonly_context,
     )
-    return [resource.name for resource in result.resources]
+    return [resource.name for resource in resources]
 
   async def get_resource_info(
       self, name: str, readonly_context: Optional[ReadonlyContext] = None
   ) -> dict[str, Any]:
     """Returns metadata about a specific resource (name, MIME type, etc.)."""
-    result: ListResourcesResult = await self._execute_with_session(
-        lambda session: session.list_resources(),
+    resources = await self._execute_with_session(
+        _list_all_resources,
         "Failed to list resources from MCP server",
         readonly_context,
     )
-    for resource in result.resources:
+    for resource in resources:
       if resource.name == name:
         # `Resource` carries `mimeType`, which 2.x renames. A plain dump would
         # hand the caller a different key on each major, the way the tool
