@@ -24,6 +24,7 @@ from typing_extensions import override
 
 from ....agents.invocation_context import InvocationContext
 from ....agents.readonly_context import ReadonlyContext
+from ....events._internal_metadata import USER_MESSAGE_GROUP_KEY
 from ....events.event import Event
 from ....models.llm_request import LlmRequest
 from ....tools.base_tool import BaseTool
@@ -273,8 +274,7 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     if not events:
       return
 
-    # Step 1: Find the last user-authored event and parse confirmation
-    # responses from it.
+    # Step 1: Find the last user message and parse its confirmation responses.
     confirmations_by_fc_id: dict[str, ToolConfirmation] = {}
     has_non_confirmation_response = False
     for k in range(len(events) - 1, -1, -1):
@@ -282,6 +282,22 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
       if not event.author or event.author != "user":
         continue
       responses = event.get_function_responses()
+      message_group = (event.custom_metadata or {}).get(USER_MESSAGE_GROUP_KEY)
+      if message_group:
+        # Runner may persist one message as several branch-scoped events.
+        # An ancestor can see more than one, so keep all responses from that
+        # message together without consuming responses from earlier turns.
+        responses = [
+            response
+            for grouped_event in events[: k + 1]
+            if grouped_event.author == "user"
+            and grouped_event.invocation_id == event.invocation_id
+            and (grouped_event.custom_metadata or {}).get(
+                USER_MESSAGE_GROUP_KEY
+            )
+            == message_group
+            for response in grouped_event.get_function_responses()
+        ]
       if not responses:
         return
 
