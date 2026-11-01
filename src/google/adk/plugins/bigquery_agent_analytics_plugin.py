@@ -5182,6 +5182,56 @@ def _serialize_usage_metadata(usage: Any) -> tuple[Any, bool]:
     return "[UNSUPPORTED_OBJECT]", True
 
 
+def _usage_token_counts(usage: Any) -> tuple[dict[str, Any], bool]:
+  """Reads stored model counts without invoking user attribute accessors."""
+  counts: dict[str, Any] = {}
+  lost = False
+  try:
+    stored = (
+        object.__getattribute__(usage, "__dict__")
+        if isinstance(usage, BaseModel)
+        else None
+    )
+    if stored is not None and type(stored) is not dict:
+      return counts, True
+  except Exception:
+    return counts, True
+  for source, target in (
+      ("prompt_token_count", "prompt"),
+      ("candidates_token_count", "completion"),
+      ("total_token_count", "total"),
+      ("cached_content_token_count", "cached"),
+  ):
+    try:
+      if stored is not None:
+        if source in stored:
+          counts[target] = stored[source]
+      else:
+        counts[target] = getattr(usage, source)
+    except AttributeError:
+      pass
+    except Exception:
+      lost = True
+  return counts, lost
+
+
+def _has_non_state_actions(actions: Any) -> bool:
+  """Conservatively detects actions without executing their payloads or factories."""
+  try:
+    for name, field in type(actions).model_fields.items():
+      if name == "state_delta":
+        continue
+      value = getattr(actions, name, None)
+      if value is None:
+        continue
+      if field.default_factory is dict and type(value) is dict and not value:
+        continue
+      return True
+    return False
+  except Exception:
+    return True
+
+
 def _live_usage_marker(metadata: Any) -> dict[str, Any] | None:
   """Returns valid connection identity, or lets legacy usage logging handle it."""
   marker = metadata.get(LIVE_USAGE_KEY) if isinstance(metadata, dict) else None
@@ -9970,17 +10020,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     admitted = False
     try:
       serialized_usage, usage_lost = _serialize_usage_metadata(usage)
+      counts, counts_lost = _usage_token_counts(usage)
+      counts.pop("cached", None)
       admitted = await self._log_event(
           "LIVE_USAGE",
           callback_context,
-          raw_content={
-              "usage": {
-                  "prompt": usage.prompt_token_count,
-                  "completion": usage.candidates_token_count,
-                  "total": usage.total_token_count,
-              }
-          },
-          is_truncated=usage_lost,
+          raw_content={"usage": counts},
+          is_truncated=usage_lost or counts_lost,
           admission_result=reservation,
           event_data=EventData(
               source_event=response if isinstance(response, Event) else None,
@@ -10050,14 +10096,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           event.content is None
           and event.error_code is None
           and not event.actions.state_delta
-          # Presence checks must not run user serializers before sanitization.
-          and not any(
-              getattr(event.actions, name, None) is not None
-              and getattr(event.actions, name, None)
-              != field.get_default(call_default_factory=True)
-              for name, field in type(event.actions).model_fields.items()
-              if name != "state_delta"
-          )
+          and not _has_non_state_actions(event.actions)
           and getattr(event, "output", None) is None
           and not event.long_running_tool_ids
           and not (
@@ -10847,18 +10886,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     usage_metadata = None if separate_usage else llm_response.usage_metadata
     serialized_usage, usage_lost = _serialize_usage_metadata(usage_metadata)
-    is_truncated = is_truncated or usage_lost
-    if usage_metadata:
-      usage = usage_metadata
-      usage_dict = {}
-      if hasattr(usage, "prompt_token_count"):
-        usage_dict["prompt"] = usage.prompt_token_count
-      if hasattr(usage, "candidates_token_count"):
-        usage_dict["completion"] = usage.candidates_token_count
-      if hasattr(usage, "total_token_count"):
-        usage_dict["total"] = usage.total_token_count
-      if usage_dict:
-        content_dict["usage"] = usage_dict
+    usage_dict, counts_lost = _usage_token_counts(llm_response.usage_metadata)
+    cached_count = usage_dict.pop("cached", None)
+    is_truncated = is_truncated or usage_lost or counts_lost
+    if not separate_usage and usage_dict:
+      content_dict["usage"] = usage_dict
 
     if content_dict:
       content_str = content_dict
@@ -10921,16 +10953,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # Token counts carry no source, so when ADK caching is configured the
       # cache_metadata presence wins the "explicit" label even if some of the
       # cached tokens came from provider-side implicit caching.
-      cached = bool(
-          llm_response.usage_metadata
-          and (
-              getattr(
-                  llm_response.usage_metadata, "cached_content_token_count", 0
-              )
-              or 0
-          )
-          > 0
-      )
+      cached = isinstance(cached_count, (int, float)) and cached_count > 0
       if not cached:
         cache_type = "none"
       elif cache_metadata is not None:

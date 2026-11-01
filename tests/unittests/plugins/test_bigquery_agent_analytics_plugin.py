@@ -339,6 +339,118 @@ async def test_live_usage_action_serializers_cannot_leak_or_hide_transfers(
     assert not calls
 
 
+@pytest.mark.parametrize("route", ["unary", "live_event", "live_model"])
+async def test_usage_field_access_stays_private(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    caplog,
+    route,
+):
+  secret = "synthetic_token_attribute_secret"
+
+  class PrivateUsage(types.GenerateContentResponseUsageMetadata):
+
+    def model_dump(self, **kwargs):
+      raise ValueError(secret)
+
+    def __getattribute__(self, name):
+      if name in {
+          "prompt_token_count",
+          "candidates_token_count",
+          "total_token_count",
+          "cached_content_token_count",
+      }:
+        raise ValueError(secret)
+      return super().__getattribute__(name)
+
+  live_usage_event.usage_metadata = PrivateUsage(
+      prompt_token_count=10,
+      candidates_token_count=5,
+      total_token_count=15,
+      cached_content_token_count=2,
+  )
+  if route == "unary":
+    live_usage_event.custom_metadata = None
+  with (
+      caplog.at_level(logging.WARNING),
+      warnings.catch_warnings(record=True) as emitted,
+  ):
+    warnings.simplefilter("always")
+    if route == "live_event":
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=live_usage_event
+      )
+    else:
+      await bq_plugin_inst.after_model_callback(
+          callback_context=CallbackContext(invocation_context),
+          llm_response=live_usage_event,
+      )
+    await bq_plugin_inst.flush()
+  assert secret not in caplog.text
+  assert not any(secret in str(item.message) for item in emitted)
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert len(rows) == 1
+  assert json.loads(rows[0]["content"])["usage"] == {
+      "prompt": 10,
+      "completion": 5,
+      "total": 15,
+  }
+  assert rows[0]["is_truncated"] is True
+  assert secret not in json.dumps(rows, default=str)
+
+
+@pytest.mark.parametrize("kind", ["array", "factory", "checkpoint"])
+async def test_live_action_presence_does_not_execute_payloads(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    caplog,
+    kind,
+):
+  secret = "synthetic_action_factory_secret"
+  calls = []
+
+  def destination():
+    calls.append(True)
+    if len(calls) > 1:
+      raise ValueError(secret)
+    return "next_agent"
+
+  class FactoryActions(event_actions_lib.EventActions):
+    transfer_to_agent: str = Field(default_factory=destination)
+
+  if kind == "array":
+    import numpy as np
+
+    live_usage_event.actions.set_model_response = np.array([1, 2])
+    live_usage_event.long_running_tool_ids = {"pending_tool"}
+    expected = "TOOL_PAUSED"
+  elif kind == "factory":
+    live_usage_event.actions = FactoryActions()
+    expected = "AGENT_TRANSFER"
+  else:
+    live_usage_event.actions.agent_state = {}
+    expected = "AGENT_STATE_CHECKPOINT"
+  with caplog.at_level(logging.WARNING):
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=live_usage_event
+    )
+    await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE", expected]
+  assert secret not in caplog.text
+  assert "BigQuery analytics plugin error" not in caplog.text
+  assert secret not in json.dumps(rows, default=str)
+  if kind == "factory":
+    assert calls == [True]
+    assert json.loads(rows[1]["content"])["to_agent"] == "next_agent"
+
+
 async def test_live_usage_records_raw_counts_and_modality_details(
     bq_plugin_inst,
     invocation_context,
