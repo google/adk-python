@@ -10953,7 +10953,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # Token counts carry no source, so when ADK caching is configured the
       # cache_metadata presence wins the "explicit" label even if some of the
       # cached tokens came from provider-side implicit caching.
-      cached = isinstance(cached_count, (int, float)) and cached_count > 0
+      cached = False
+      try:
+        cached = isinstance(cached_count, (int, float)) and bool(
+            cached_count > 0
+        )
+      except Exception:
+        is_truncated = True
       if not cached:
         cache_type = "none"
       elif cache_metadata is not None:

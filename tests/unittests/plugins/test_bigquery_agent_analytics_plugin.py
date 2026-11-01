@@ -451,6 +451,100 @@ async def test_live_action_presence_does_not_execute_payloads(
     assert json.loads(rows[1]["content"])["to_agent"] == "next_agent"
 
 
+@pytest.mark.parametrize("live", [False, True])
+@pytest.mark.parametrize("failure", ["comparison", "truth"])
+async def test_cached_comparison_stays_private(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    caplog,
+    live,
+    failure,
+):
+  """Cache classification failures cannot disclose values or discard content."""
+  secret = "synthetic_cached_comparison_secret"
+
+  class FailingTruth:
+
+    def __bool__(self):
+      raise ValueError(secret)
+
+  class FailingComparison(int):
+
+    def __gt__(self, other):
+      if failure == "comparison":
+        raise ValueError(secret)
+      return FailingTruth()
+
+  live_usage_event.usage_metadata = live_usage_event.usage_metadata.model_copy(
+      update={"cached_content_token_count": FailingComparison(2)}
+  )
+  live_usage_event.content = types.Content(
+      role="model", parts=[types.Part(text="kept")]
+  )
+  if not live:
+    live_usage_event.custom_metadata = None
+  with (
+      caplog.at_level(logging.WARNING),
+      warnings.catch_warnings(record=True) as emitted,
+  ):
+    warnings.simplefilter("always")
+    await bq_plugin_inst.after_model_callback(
+        callback_context=CallbackContext(invocation_context),
+        llm_response=live_usage_event,
+    )
+    await bq_plugin_inst.flush()
+  assert secret not in caplog.text
+  assert not any(secret in str(item.message) for item in emitted)
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == (
+      ["LIVE_USAGE", "LLM_RESPONSE"] if live else ["LLM_RESPONSE"]
+  )
+  assert json.loads(rows[0]["content"])["usage"] == {
+      "prompt": 10,
+      "completion": 5,
+      "total": 15,
+  }
+  response = rows[-1]
+  assert "kept" in json.loads(response["content"])["response"]
+  assert response["is_truncated"] is True
+  assert json.loads(response["attributes"])["cache_type"] == "none"
+  assert secret not in json.dumps(rows, default=str)
+
+
+@pytest.mark.parametrize("analytics_first", [False, True])
+async def test_native_live_registration_order_preserves_replacement_contract(
+    bq_plugin_inst, invocation_context, live_usage_event, analytics_first
+):
+  """The documented analytics-first order captures usage before early exit."""
+  replacement = live_usage_event.model_copy()
+
+  class ReplacingPlugin(bigquery_agent_analytics_plugin.BasePlugin):
+
+    async def on_event_callback(self, *, invocation_context, event):
+      return replacement
+
+  replacing = ReplacingPlugin(name="replacement")
+  plugins = (
+      [bq_plugin_inst, replacing]
+      if analytics_first
+      else [replacing, bq_plugin_inst]
+  )
+  manager = plugin_manager_lib.PluginManager(plugins=plugins)
+  with mock.patch.object(
+      bq_plugin_inst, "_log_event", return_value=True
+  ) as log_event:
+    result = await manager.run_on_event_callback(
+        invocation_context=invocation_context, event=live_usage_event
+    )
+  assert result == replacement
+  assert log_event.await_count == int(analytics_first)
+  if analytics_first:
+    assert log_event.await_args.args[0] == "LIVE_USAGE"
+
+
 async def test_live_usage_records_raw_counts_and_modality_details(
     bq_plugin_inst,
     invocation_context,
