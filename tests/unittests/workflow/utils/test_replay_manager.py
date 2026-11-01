@@ -16,10 +16,12 @@
 
 import asyncio
 from typing import Any
+from unittest import mock
 from unittest.mock import MagicMock
 
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events._node_path_builder import _NodePathBuilder
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.event_actions import EventActions
@@ -153,6 +155,28 @@ def test_build_event_index_groups_events_by_parent_and_transitive_ancestors():
   assert e_a in mgr._transitive_events_by_parent["wf@1"]
   assert e_a not in mgr._transitive_events_by_parent.get("wf@1/child_a@1", [])
   assert e_user in mgr._transitive_events_by_parent["wf@1"]
+
+
+def test_build_event_index_parses_no_paths_for_plain_events() -> None:
+  """Indexing events files them by path without building path objects."""
+  events = [
+      Event(
+          author="node",
+          node_info=NodeInfo(path=f"wf@1/a@{i}/b@1"),
+          invocation_id="inv-1",
+      )
+      for i in range(5)
+  ]
+  mgr = ReplayManager()
+
+  with mock.patch.object(
+      _NodePathBuilder, "from_string", wraps=_NodePathBuilder.from_string
+  ) as from_string:
+    mgr._build_event_index(events)
+
+  from_string.assert_not_called()
+  assert mgr._transitive_events_by_parent["wf@1"] == events
+  assert mgr._events_by_parent["wf@1/a@3"] == [events[3]]
 
 
 def test_build_event_index_matches_branch_run_ids_not_substrings():

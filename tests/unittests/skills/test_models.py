@@ -107,6 +107,16 @@ def test_name_underscore_rejected_by_default():
     models.Frontmatter(name="my_skill", description="desc")
 
 
+@pytest.mark.parametrize("snake_case_enabled", [False, True])
+@pytest.mark.parametrize("name", ["my-skill\n", "my-skill\r\n", "my_skill\n"])
+def test_name_trailing_newline_rejected(name: str, snake_case_enabled: bool):
+  with temporary_feature_override(
+      FeatureName.SNAKE_CASE_SKILL_NAME, snake_case_enabled
+  ):
+    with pytest.raises(ValidationError, match="lowercase kebab-case"):
+      models.Frontmatter(name=name, description="desc")
+
+
 def test_name_valid_underscore_preserved_with_flag():
   with temporary_feature_override(FeatureName.SNAKE_CASE_SKILL_NAME, True):
     fm = models.Frontmatter(name="my_skill", description="desc")

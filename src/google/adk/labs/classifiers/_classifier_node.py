@@ -41,6 +41,7 @@ from ._types import Binary
 from ._types import BinaryAnswer
 from ._types import Choice
 from ._types import ChoiceAnswer
+from ._types import RefusalAnswer
 
 if TYPE_CHECKING:
   from ...agents.context import Context
@@ -95,6 +96,11 @@ class ClassifierNode(BaseNode):
     return {True, False}
 
   def _route_for(self, answer: Answer) -> RouteValue:
+    if isinstance(answer, RefusalAnswer):
+      raise WorkflowDataError(
+          f'Classifier for node "{self.name}" declined to answer, so the node'
+          ' has no route to take.'
+      )
     if isinstance(self.question, Choice) and isinstance(answer, ChoiceAnswer):
       if answer.choice not in self.question.criteria:
         raise WorkflowDataError(

@@ -19,8 +19,8 @@ internal build resolves the same module path to a sibling file naming the copy
 vendored there, which carries a different distribution name. Every MCP import
 in ADK goes through this module so that difference lives in one place.
 
-The pin admits both 1.x and 2.x, so this module also spans them. Fourteen of
-the seventeen names below sit at the same path in both. The three that moved
+The pin admits both 1.x and 2.x, so this module also spans them. Most names
+below sit at the same path in both. The three that moved
 are resolved here, once, rather than at seventeen call sites:
 
   * `McpError` was renamed `MCPError`
@@ -46,6 +46,7 @@ from mcp import SamplingCapability as SamplingCapability
 from mcp import StdioServerParameters as StdioServerParameters
 from mcp import types as types
 from mcp.client.session import ElicitationFnT as ElicitationFnT
+from mcp.client.session import MessageHandlerFnT as MessageHandlerFnT
 from mcp.client.session import SamplingFnT as SamplingFnT
 from mcp.client.sse import sse_client as sse_client
 from mcp.client.stdio import stdio_client as stdio_client
@@ -99,6 +100,7 @@ __all__ = [
     "ListResourcesResult",
     "ListToolsResult",
     "McpError",
+    "MessageHandlerFnT",
     "SamplingCapability",
     "SamplingFnT",
     "ServerSession",

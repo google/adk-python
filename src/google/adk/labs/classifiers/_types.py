@@ -134,12 +134,24 @@ class ScoreAnswer(BaseModel):
   """The provider's confidence in the answer, from 0 to 1, when it reports one."""
 
 
+class RefusalAnswer(BaseModel):
+  """Takes the place of an answer the model declined to give.
+
+  A provider can refuse one question and still answer the others in the same
+  call, so a refusal is reported per question rather than failing the call.
+  """
+
+  model_config = ConfigDict(extra='forbid')
+
+  type: Literal['refusal'] = 'refusal'
+
+
 Question: TypeAlias = Annotated[
     Union[Choice, Binary, Score], Field(discriminator='type')
 ]
 
 Answer: TypeAlias = Annotated[
-    Union[ChoiceAnswer, BinaryAnswer, ScoreAnswer],
+    Union[ChoiceAnswer, BinaryAnswer, ScoreAnswer, RefusalAnswer],
     Field(discriminator='type'),
 ]
 
@@ -150,7 +162,8 @@ class ClassifierResponse(BaseModel):
   model_config = ConfigDict(extra='forbid')
 
   answers: dict[str, Answer]
-  """Maps each question name to its answer."""
+  """Maps each question name to its answer, or to a :class:`RefusalAnswer` if
+  the model declined to answer it."""
 
   model_version: str | None = None
   """The model version that produced the answers, when the provider reports it."""

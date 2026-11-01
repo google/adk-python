@@ -27,7 +27,9 @@ from unittest import mock
 import uuid
 import weakref
 
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context import Context
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
@@ -35,6 +37,7 @@ from google.adk.events.request_input import RequestInput
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import START
 from google.adk.workflow._join_node import JoinNode
@@ -46,6 +49,8 @@ from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
 import pytest
+
+from .. import testing_utils
 
 # ---------------------------------------------------------------------------
 # Shared helper nodes (used by multiple tests)
@@ -939,6 +944,40 @@ async def test_wait_for_output_completes_after_all():
   assert first_two == {'NodeA', 'NodeB'}
   assert by_node[2] == ('Gate', 'gate_open')
   assert by_node[3] == ('Downstream', 'done')
+
+
+@pytest.mark.asyncio
+async def test_wait_for_output_terminal_rerun_into_waiting_clears_output():
+  """A wait_for_output terminal node rerun into WAITING ends with no output."""
+  gate_runs = 0
+
+  class _FirstOnlyGateNode(BaseNode):
+    wait_for_output: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      del ctx, node_input
+      nonlocal gate_runs
+      gate_runs += 1
+      if gate_runs == 1:
+        yield Event(output='first_only')
+
+  gate = _FirstOnlyGateNode(name='gate')
+  inner = Workflow(
+      name='inner',
+      edges=[
+          (START, _OutputNode(name='a', value='A'), gate),
+          (START, _OutputNode(name='b', value='B'), gate),
+      ],
+  )
+  capture = _InputCapturingNode(name='capture')
+  outer = Workflow(name='outer', edges=[(START, inner, capture)])
+
+  await _run_workflow(outer)
+
+  assert gate_runs == 2
+  assert capture.received_inputs == [None]
 
 
 # 25. test_run_async_with_implicit_graph_chain
@@ -2675,12 +2714,10 @@ async def test_workflow_error_drains_completed_sibling_nodes():
 
   original_handle_completion = Workflow._handle_completion
 
-  def spy_handle_completion(
-      self, loop_state, node_name, node_obj, child_ctx, ctx
-  ):
+  def spy_handle_completion(self, loop_state, node_name, child_ctx, ctx):
     handle_completion_calls.append(node_name)
     return original_handle_completion(
-        self, loop_state, node_name, node_obj, child_ctx, ctx
+        self, loop_state, node_name, child_ctx, ctx
     )
 
   events: list[Event] = []
@@ -2696,8 +2733,7 @@ async def test_workflow_error_drains_completed_sibling_nodes():
         events.append(event)
 
   assert succeeding_completed is True
-  assert 'failing_node' not in handle_completion_calls
-  assert 'succeeding_node' in handle_completion_calls
+  assert handle_completion_calls == ['failing_node', 'succeeding_node']
   outputs = [e.output for e in events if e.output is not None]
   assert 'sibling_output' in outputs
 
@@ -2847,3 +2883,233 @@ def test_workflow_iter_static_children_empty_when_no_graph():
   """Workflow._iter_static_children yields nothing when the workflow has no graph."""
   wf = Workflow(name='empty_wf')
   assert list(wf._iter_static_children()) == []
+
+
+@pytest.mark.asyncio
+async def test_workflow_resume_task_on_replay_barrier_allows_siblings():
+  """A waiting task agent on the replay barrier stays RUNNING until ready."""
+  # Arrange
+  node_b_interrupted = asyncio.Event()
+
+  class _NodeA(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield Event(output='a_done')
+
+  class _NodeB(BaseNode):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      if ctx.resume_inputs and 'int_b' in ctx.resume_inputs:
+        yield Event(output=f"b_done:{ctx.resume_inputs['int_b']}")
+        return
+      yield RequestInput(interrupt_id='int_b', message='Approve node_b')
+      node_b_interrupted.set()
+
+  def ask_task():
+    return None
+
+  async def _wait_for_node_b(*, callback_context, llm_request):
+    del callback_context, llm_request
+    await node_b_interrupted.wait()
+    return None
+
+  task_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name='ask_task', args={}),
+      ]
+  )
+  node_a = _NodeA(name='node_a')
+  node_b = _NodeB(name='node_b')
+  task_agent = LlmAgent(
+      name='task_agent',
+      model=task_model,
+      tools=[LongRunningFunctionTool(func=ask_task)],
+      mode='task',
+      before_model_callback=_wait_for_node_b,
+  )
+  wf = Workflow(
+      name='replay_barrier_task_wf',
+      edges=[(START, node_a), (START, task_agent), (node_a, node_b)],
+  )
+  app = App(
+      name='test',
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  turn1_events: list[Event] = []
+  await asyncio.wait_for(
+      _drain(
+          runner.run_async(
+              user_id='u',
+              session_id=session.id,
+              new_message=types.Content(
+                  parts=[types.Part(text='go')], role='user'
+              ),
+          ),
+          turn1_events,
+      ),
+      timeout=2.0,
+  )
+  task_interrupt_ids = {
+      lro_id
+      for e in turn1_events
+      if e.long_running_tool_ids
+      for lro_id in e.long_running_tool_ids
+      if lro_id != 'int_b'
+  }
+  assert len(task_interrupt_ids) == 1
+
+  # Act: resume answering only int_b while task_agent stays unresolved behind
+  # node_b@1 on the ['node_a@1', 'node_b@1', 'task_agent@1'] sequence barrier.
+  resume_msg = types.Content(
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  name='adk_request_input',
+                  id='int_b',
+                  response={'result': 'approved'},
+              )
+          )
+      ],
+      role='user',
+  )
+  turn2_events: list[Event] = []
+  await asyncio.wait_for(
+      _drain(
+          runner.run_async(
+              user_id='u',
+              session_id=session.id,
+              invocation_id=turn1_events[0].invocation_id,
+              new_message=resume_msg,
+          ),
+          turn2_events,
+      ),
+      timeout=2.0,
+  )
+
+  # Assert
+  outputs = [e.output for e in turn2_events if e.output is not None]
+  assert 'b_done:approved' in outputs
+  checkpoints = [
+      e.actions.agent_state['nodes']
+      for e in turn2_events
+      if e.actions
+      and e.actions.agent_state
+      and 'nodes' in e.actions.agent_state
+  ]
+  assert len(checkpoints) >= 3
+  for cp in checkpoints[:-1]:
+    assert cp['task_agent']['status'] == NodeStatus.RUNNING.value
+  assert checkpoints[-1]['node_b']['status'] == NodeStatus.COMPLETED.value
+  assert checkpoints[-1]['task_agent']['status'] == NodeStatus.WAITING.value
+  assert set(checkpoints[-1]['task_agent']['interrupts']) == task_interrupt_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('nested', [False, True])
+async def test_workflow_resume_direct_sibling_transfer_preserves_inputs(
+    nested: bool,
+):
+  """A sibling transfer target under a Workflow resumes with its inputs."""
+  # Arrange
+  seen_resume_inputs: list[dict[str, Any]] = []
+
+  class _BetaAgent(BaseAgent):
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      del node_input
+      ctx.event_author = self.name
+      seen_resume_inputs.append(dict(ctx.resume_inputs or {}))
+      if ctx.resume_inputs and 'int_beta' in ctx.resume_inputs:
+        yield Event(output=f"beta_done:{ctx.resume_inputs['int_beta']}")
+        return
+      yield RequestInput(interrupt_id='int_beta', message='Approve beta')
+
+  class _Downstream(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      del ctx
+      yield Event(output=f'downstream:{node_input}')
+
+  alpha_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name='transfer_to_agent', args={'agent_name': 'beta'}
+          ),
+      ]
+  )
+  alpha = LlmAgent(name='alpha', model=alpha_model)
+  beta = _BetaAgent(name='beta')
+  coordinator = LlmAgent(
+      name='coordinator',
+      model=testing_utils.MockModel.create(responses=[]),
+      sub_agents=[alpha, beta],
+  )
+  assert coordinator.sub_agents == [alpha, beta]
+  wf = Workflow(
+      name='inner_wf',
+      edges=[(START, alpha), (alpha, _Downstream(name='downstream'))],
+  )
+  root = Workflow(name='outer_wf', edges=[(START, wf)]) if nested else wf
+  app = App(
+      name='test',
+      root_agent=root,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Act: turn 1 transfers alpha -> sibling beta directly under inner_wf and
+  # pauses on beta; turn 2 resolves int_beta and finishes downstream.
+  turn1_events = await runner.run_async(testing_utils.get_user_content('go'))
+  resume_msg = testing_utils.UserContent(
+      create_request_input_response('int_beta', {'result': 'approved'})
+  )
+  turn2_events = await runner.run_async(
+      new_message=resume_msg,
+      invocation_id=turn1_events[0].invocation_id,
+  )
+
+  # Assert
+  wf_prefix = 'outer_wf@1/inner_wf@1' if nested else 'inner_wf@1'
+  expected_beta_path = f'{wf_prefix}/beta@1'
+  expected_downstream_path = f'{wf_prefix}/downstream@1'
+  assert any(
+      e.author == 'beta'
+      and e.long_running_tool_ids == {'int_beta'}
+      and e.node_info.path == expected_beta_path
+      for e in turn1_events
+  )
+  assert not any(
+      e.node_info.path == expected_downstream_path for e in turn1_events
+  )
+  assert len(alpha_model.requests) == 1
+  assert seen_resume_inputs == [{}, {'int_beta': 'approved'}]
+  observed_turn2 = [
+      (e.author, e.node_info.path, e.output)
+      for e in turn2_events
+      if e.author == 'beta'
+      or e.node_info.path == expected_downstream_path
+      or e.actions.end_of_agent
+  ]
+  expected_turn2 = [
+      ('beta', expected_beta_path, 'beta_done:approved'),
+      ('inner_wf', expected_downstream_path, 'downstream:beta_done:approved'),
+      ('inner_wf', '', None),
+  ]
+  if nested:
+    expected_turn2.append(('outer_wf', '', None))
+  assert observed_turn2 == expected_turn2

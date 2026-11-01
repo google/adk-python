@@ -18,7 +18,6 @@ from typing import cast
 from typing import Optional
 from typing import Protocol
 
-from ...utils.feature_decorator import experimental
 from ..conversation_scenarios import ConversationScenario
 from ..eval_case import EvalCase
 from ._llm_audio_user_simulator import _LlmAudioUserSimulator
@@ -60,7 +59,6 @@ class _ScenarioUserSimulatorFactory(Protocol):
     """Creates a scenario-driven simulator from registered configuration."""
 
 
-@experimental
 class UserSimulatorProvider:
   """Provides a UserSimulator instance per EvalCase, mixing configuration data
 

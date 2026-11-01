@@ -723,6 +723,31 @@ def test_function_declaration_to_tool_param(
   )
 
 
+@pytest.mark.parametrize("keyword", ["additionalItems", "unevaluatedItems"])
+def test_tool_array_tail_schema_types_are_lowercased(keyword):
+  """Array-tail schemas use JSON Schema types without changing default data."""
+  declaration = types.FunctionDeclaration(
+      name="collect_values",
+      parameters_json_schema={
+          "type": "OBJECT",
+          "default": {"type": "USER_DATA"},
+          "properties": {
+              "values": {
+                  "type": "ARRAY",
+                  keyword: {"type": ["STRING", "NULL"]},
+              },
+          },
+      },
+  )
+
+  tool = function_declaration_to_tool_param(declaration)
+
+  assert tool["input_schema"]["properties"]["values"][keyword] == {
+      "type": ["string", "null"],
+  }
+  assert tool["input_schema"]["default"] == {"type": "USER_DATA"}
+
+
 @pytest.mark.asyncio
 async def test_generate_content_async(
     claude_llm, llm_request, generate_content_response, generate_llm_response
