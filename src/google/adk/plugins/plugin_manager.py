@@ -30,7 +30,8 @@ from google.genai import types
 
 from ..agents._callback_metadata import _callback_scope
 from ..agents._callback_metadata import CallbackType
-from ..events._internal_metadata import internal_metadata
+from ..events._internal_metadata import owned_internal_metadata
+from ..events._internal_metadata import restore_owned_metadata
 from ..models.llm_response import LlmResponse
 from .base_plugin import BasePlugin
 
@@ -332,9 +333,13 @@ class PluginManager:
     elif callback_name == "on_event_callback":
       owned_target = kwargs.get("event")
     owned_metadata = (
-        copy.deepcopy(internal_metadata(owned_target.custom_metadata))
+        copy.deepcopy(owned_internal_metadata(owned_target.custom_metadata))
         if isinstance(owned_target, LlmResponse)
         else {}
+    )
+    preserve_event_metadata = (
+        callback_name == "on_event_callback"
+        and isinstance(owned_target, LlmResponse)
     )
     with callback_scope:
       for plugin in self.plugins:
@@ -345,17 +350,30 @@ class PluginManager:
           result = await callback_method(**kwargs)
           if result is not None:
             if (
-                owned_metadata
+                (owned_metadata or preserve_event_metadata)
                 and isinstance(result, LlmResponse)
                 and result is not owned_target
             ):
               existing = result.custom_metadata
-              metadata = {
-                  **(existing if isinstance(existing, Mapping) else {}),
-                  **copy.deepcopy(owned_metadata),
-              }
-              if metadata != existing:
-                result = result.model_copy(update={"custom_metadata": metadata})
+              inherit_event_metadata = (
+                  preserve_event_metadata
+                  and "custom_metadata" not in result.model_fields_set
+              )
+              if inherit_event_metadata and isinstance(
+                  owned_target, LlmResponse
+              ):
+                existing = owned_target.custom_metadata
+              if owned_metadata or (
+                  inherit_event_metadata and isinstance(existing, Mapping)
+              ):
+                metadata = {
+                    **(existing if isinstance(existing, Mapping) else {}),
+                    **copy.deepcopy(owned_metadata),
+                }
+                if metadata != result.custom_metadata:
+                  result = result.model_copy(
+                      update={"custom_metadata": metadata}
+                  )
             # Early exit: A plugin has returned a value. We stop
             # processing further plugins and return this value immediately.
             logger.debug(
@@ -373,15 +391,8 @@ class PluginManager:
           logger.error(error_message, exc_info=True)
           raise RuntimeError(error_message) from e
         finally:
-          if owned_metadata and isinstance(owned_target, LlmResponse):
-            # Each later plugin must see the original model-owned identity.
-            existing = owned_target.custom_metadata
-            metadata = {
-                **(existing if isinstance(existing, Mapping) else {}),
-                **copy.deepcopy(owned_metadata),
-            }
-            if metadata != existing:
-              owned_target.custom_metadata = metadata
+          if isinstance(owned_target, LlmResponse):
+            restore_owned_metadata(owned_target, owned_metadata)
 
     return None
 

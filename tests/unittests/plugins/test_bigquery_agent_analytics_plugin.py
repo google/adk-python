@@ -292,6 +292,237 @@ async def test_live_usage_concurrent_callbacks_record_one_observation(
   assert [row["event_type"] for row in rows] == ["LIVE_USAGE"]
 
 
+@pytest.mark.parametrize("drop", ["setup", "parser", "queue"])
+async def test_live_usage_retries_a_dropped_first_observation(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    drop,
+):
+  """A later hook retries when the first hook could not queue its row."""
+  context = CallbackContext(invocation_context)
+  if drop == "setup":
+    with (
+        mock.patch.object(bq_plugin_inst, "_started", False),
+        mock.patch.object(
+            bq_plugin_inst, "_ensure_started", return_value="failed"
+        ),
+    ):
+      await bq_plugin_inst.after_model_callback(
+          callback_context=context, llm_response=live_usage_event
+      )
+  else:
+    await bq_plugin_inst._ensure_started()
+    if drop == "parser":
+      with mock.patch.object(bq_plugin_inst, "parser", None):
+        await bq_plugin_inst.after_model_callback(
+            callback_context=context, llm_response=live_usage_event
+        )
+    else:
+      state = await bq_plugin_inst._get_loop_state()
+      with mock.patch.object(
+          state.batch_processor._queue,
+          "put_nowait",
+          side_effect=asyncio.QueueFull,
+      ):
+        await bq_plugin_inst.after_model_callback(
+            callback_context=context, llm_response=live_usage_event
+        )
+  await bq_plugin_inst.flush()
+  assert (
+      await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+      == []
+  )
+  await bq_plugin_inst.on_event_callback(
+      invocation_context=invocation_context, event=live_usage_event
+  )
+  await bq_plugin_inst.flush()
+
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE"]
+
+
+@pytest.mark.parametrize("cross_loop", [False, True])
+async def test_batch_admission_reports_queue_full_and_recovery(
+    mock_write_client,
+    dummy_arrow_schema,
+    cross_loop,
+):
+  """Admission acknowledges the owning loop, including queue-full rejections."""
+  loop = asyncio.new_event_loop() if cross_loop else asyncio.get_running_loop()
+  thread = None
+  if cross_loop:
+    ready = threading.Event()
+    loop.call_soon(ready.set)
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    assert await asyncio.to_thread(ready.wait, 5)
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client,
+      dummy_arrow_schema,
+      DEFAULT_STREAM_NAME,
+      queue_max_size=1,
+      loop=loop,
+  )
+  try:
+    assert (
+        await processor.append({"event_type": "LIVE_USAGE", "sequence": 1})
+        is True
+    )
+    assert (
+        await processor.append({"event_type": "LIVE_USAGE", "sequence": 2})
+        is False
+    )
+    if cross_loop:
+      row = await asyncio.wrap_future(
+          asyncio.run_coroutine_threadsafe(processor._queue.get(), loop)
+      )
+      loop.call_soon_threadsafe(processor._queue.task_done)
+    else:
+      row = processor._queue.get_nowait()
+      processor._queue.task_done()
+    assert row["sequence"] == 1
+    assert (
+        await processor.append({"event_type": "LIVE_USAGE", "sequence": 2})
+        is True
+    )
+    assert processor.get_drop_stats()["queue_full"] == 1
+  finally:
+    if thread is not None:
+      loop.call_soon_threadsafe(loop.stop)
+      await asyncio.to_thread(thread.join, 5)
+      assert not thread.is_alive()
+      loop.close()
+
+
+@pytest.mark.parametrize("closed", [False, True])
+async def test_batch_admission_rejects_a_stopped_owner_loop(
+    mock_write_client,
+    dummy_arrow_schema,
+    closed,
+):
+  """A stopped owner loop cannot admit rows and must not leave callers waiting."""
+  loop = asyncio.new_event_loop()
+  if closed:
+    loop.close()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client,
+      dummy_arrow_schema,
+      DEFAULT_STREAM_NAME,
+      loop=loop,
+  )
+  try:
+    assert (
+        await asyncio.wait_for(
+            processor.append({"event_type": "LIVE_USAGE"}), 1
+        )
+        is False
+    )
+  finally:
+    if not closed:
+      loop.close()
+
+
+async def test_batch_admission_handles_owner_loop_closing_before_schedule(
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """Closing after the running check rejects admission without leaking a coroutine."""
+  loop = asyncio.new_event_loop()
+  loop.close()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client,
+      dummy_arrow_schema,
+      DEFAULT_STREAM_NAME,
+      loop=loop,
+  )
+  with mock.patch.object(loop, "is_running", return_value=True):
+    assert await processor.append({"event_type": "LIVE_USAGE"}) is False
+
+
+async def test_batch_admission_bounds_wait_for_a_stalled_owner_loop(
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """A stalled owner cannot block an agent indefinitely waiting for admission."""
+  loop = asyncio.new_event_loop()
+  entered = threading.Event()
+  release = threading.Event()
+
+  def block_owner():
+    entered.set()
+    release.wait(5)
+
+  loop.call_soon(block_owner)
+  thread = threading.Thread(target=loop.run_forever)
+  thread.start()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client,
+      dummy_arrow_schema,
+      DEFAULT_STREAM_NAME,
+      loop=loop,
+      shutdown_timeout=0.01,
+  )
+  try:
+    assert await asyncio.to_thread(entered.wait, 5)
+    assert (
+        await asyncio.wait_for(
+            processor.append({"event_type": "LIVE_USAGE"}), 1
+        )
+        is False
+    )
+  finally:
+    release.set()
+    await asyncio.wrap_future(
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.01), loop)
+    )
+    loop.call_soon_threadsafe(loop.stop)
+    await asyncio.to_thread(thread.join, 5)
+    assert not thread.is_alive()
+    loop.close()
+
+
+async def test_batch_admission_timeout_does_not_claim_an_admitted_row_was_dropped(
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """A lost acknowledgement cannot be counted as a confirmed row loss."""
+  loop = asyncio.new_event_loop()
+  ready = threading.Event()
+  loop.call_soon(ready.set)
+  thread = threading.Thread(target=loop.run_forever)
+  thread.start()
+  caller_loop = asyncio.get_running_loop()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client,
+      dummy_arrow_schema,
+      DEFAULT_STREAM_NAME,
+      loop=loop,
+      shutdown_timeout=0.01,
+  )
+  admitted = []
+
+  def delay_acknowledgement(pending):
+    admitted.append(pending.result(timeout=2))
+    return caller_loop.create_future()
+
+  try:
+    assert await asyncio.to_thread(ready.wait, 5)
+    with mock.patch.object(
+        asyncio, "wrap_future", side_effect=delay_acknowledgement
+    ):
+      assert await processor.append({"event_type": "LIVE_USAGE"}) is False
+    assert admitted == [True]
+    assert processor.get_drop_stats()["shutdown_cancelled"] == 0
+  finally:
+    loop.call_soon_threadsafe(loop.stop)
+    await asyncio.to_thread(thread.join, 5)
+    assert not thread.is_alive()
+    loop.close()
+
+
 async def test_live_usage_duplicate_history_is_bounded(
     bq_plugin_inst,
     invocation_context,
@@ -330,6 +561,10 @@ async def test_live_and_unary_usage_share_json_enum_encoding(
   usages = [json.loads(row["attributes"])["usage_metadata"] for row in rows]
   assert usages[0] == usages[1]
   assert usages[0]["traffic_type"] == types.TrafficType.ON_DEMAND.value
+  assert usages[1]["prompt_tokens_details"] == [
+      {"modality": "AUDIO", "token_count": 10}
+  ]
+  assert "tool_use_prompt_token_count" not in usages[1]
 
 
 async def test_filtered_live_usage_preserves_span_and_eval_totals(
@@ -424,6 +659,7 @@ async def test_live_usage_control_id_is_sanitized_without_truncation(
 
 
 @pytest.mark.parametrize("filtered", [False, True])
+@pytest.mark.parametrize("error", [False, True])
 async def test_live_usage_agent_completion_closes_only_its_own_spans(
     bq_plugin_inst,
     invocation_context,
@@ -431,6 +667,7 @@ async def test_live_usage_agent_completion_closes_only_its_own_spans(
     mock_write_client,
     dummy_arrow_schema,
     filtered,
+    error,
 ):
   """Usage-only terminal turns retain the agent and invocation span IDs."""
   if filtered:
@@ -449,16 +686,26 @@ async def test_live_usage_agent_completion_closes_only_its_own_spans(
     )
     assert tm.get_current_span_id() == request_span
     assert tm.get_first_token_time(request_span) is None
-    await bq_plugin_inst.after_agent_callback(
-        agent=invocation_context.agent, callback_context=context
-    )
+    if error:
+      await bq_plugin_inst.on_agent_error_callback(
+          agent=invocation_context.agent,
+          callback_context=context,
+          error=ValueError("post-model failure"),
+      )
+    else:
+      await bq_plugin_inst.after_agent_callback(
+          agent=invocation_context.agent, callback_context=context
+      )
     await bq_plugin_inst.after_run_callback(
         invocation_context=invocation_context
     )
     await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     completed = {row["event_type"]: row for row in rows}
-    assert completed["AGENT_COMPLETED"]["span_id"] == agent_span
+    assert (
+        completed["AGENT_ERROR" if error else "AGENT_COMPLETED"]["span_id"]
+        == agent_span
+    )
     assert completed["INVOCATION_COMPLETED"]["span_id"] == invocation_span
   finally:
     tm.clear_stack()
@@ -568,7 +815,7 @@ async def test_live_usage_is_not_counted_again_by_after_model(
     mock_write_client,
     dummy_arrow_schema,
 ):
-  """The CFC after-model path leaves native usage to on-event logging."""
+  """The first callback records usage and the later callback adds no duplicate."""
   await bq_plugin_inst.after_model_callback(
       callback_context=CallbackContext(invocation_context),
       llm_response=live_usage_event,
@@ -949,6 +1196,48 @@ async def test_live_usage_is_logged_once_through_runner_and_cfc_flow(
     metrics = _EvalViewSqlEvaluator(build_sql("p.d.t")).run(rows)
     assert sum(row["total_tokens"] for row in metrics) == 40
     assert sum(row["total_prompt_tokens"] for row in metrics) == 30
+
+
+@pytest.mark.parametrize("event_type", ["LIVE_USAGE", "LLM_RESPONSE"])
+@pytest.mark.parametrize(
+    "traffic_type", ["TrafficType.ON_DEMAND", "ON_DEMAND", None]
+)
+def test_usage_views_normalize_historical_and_current_traffic_type(
+    event_type, traffic_type
+):
+  """Existing enum-prefixed rows and new JSON values remain queryable together."""
+  columns = ", ".join(
+      list(bigquery_agent_analytics_plugin._VIEW_COMMON_COLUMNS)
+      + bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS[event_type]
+  )
+  sql = bigquery_agent_analytics_plugin._VIEW_SQL_TEMPLATE.format(
+      project="p",
+      dataset="d",
+      view_name="v_usage",
+      table="t",
+      columns=columns,
+      event_type=event_type,
+  )
+  row = {
+      **{
+          column: None
+          for column in bigquery_agent_analytics_plugin._VIEW_COMMON_COLUMNS
+      },
+      "event_type": event_type,
+      "content": {"usage": {"prompt": 10, "completion": 5, "total": 15}},
+      "latency_ms": {},
+      "attributes": {"usage_metadata": {"traffic_type": traffic_type}},
+  }
+
+  query = sql.split(" AS\n", 1)[1]
+  result = _EvalViewSqlEvaluator(
+      f"WITH snapshots AS ({query}) SELECT * FROM snapshots"
+  ).run([row])
+
+  assert len(result) == 1
+  assert result[0]["traffic_type"] == (
+      None if traffic_type is None else "ON_DEMAND"
+  )
 
 
 def test_live_usage_view_preserves_reports_and_numeric_sequence():

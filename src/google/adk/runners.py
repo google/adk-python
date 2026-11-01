@@ -1755,7 +1755,9 @@ class Runner:
     *   **Live Model Audio Events with File Data:** Both input and output audio
         data are aggregated into an audio file saved into artifacts. The
         reference to the file is saved in the event as `file_data`.
-    *   **Usage Metadata:** Events containing token usage.
+    *   **Usage Metadata:** Events containing token usage. These carry reserved
+        custom metadata; servers forwarding events verbatim should use
+        ``google.adk.events._internal_metadata.public_event`` at the boundary.
     *   **Transcription Events:** Both partial and non-partial transcription
         events are yielded.
     *   **Function Call and Response Events:** Always saved.

@@ -24,17 +24,27 @@ from unittest.mock import Mock
 from google.adk.agents import CallbackInfo
 from google.adk.agents import CallbackType
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.run_config import RunConfig
+from google.adk.apps.app import App
 from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
 from google.adk.events._internal_metadata import LIVE_USAGE_KEY
+from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.models.llm_response import LlmResponse
+from google.adk.plugins._tool_call_integrity_plugin import _HMAC_META_KEY
+from google.adk.plugins._tool_call_integrity_plugin import ToolCallIntegrityPlugin
 from google.adk.plugins.base_plugin import BasePlugin
 # Assume the following path to your modules
 # You might need to adjust this based on your project structure.
 from google.adk.plugins.plugin_manager import PluginCallbackName
 from google.adk.plugins.plugin_manager import PluginManager
+from google.adk.runners import Runner
+from google.genai import types
 from pydantic import ConfigDict
 import pytest
+
+from .. import testing_utils
 
 
 # A helper class to use in tests instead of mocks.
@@ -329,6 +339,195 @@ async def test_unchanged_frozen_event_passes_through_plugins(
   assert event.custom_metadata == {LIVE_USAGE_KEY: marker}
   assert plugin1.call_log == [callback_name]
   assert plugin2.call_log == [callback_name]
+
+
+@pytest.mark.parametrize("frozen", [False, True])
+@pytest.mark.parametrize("edit", ["nested", "clear", "delete"])
+@pytest.mark.parametrize("raises", [False, True])
+@pytest.mark.parametrize(
+    "callback_name,target_name,context_name",
+    [
+        ("after_model_callback", "llm_response", "callback_context"),
+        ("on_event_callback", "event", "invocation_context"),
+    ],
+)
+async def test_callbacks_restore_provenance_without_reverting_plugin_keys(
+    service,
+    plugin1,
+    plugin2,
+    callback_name,
+    target_name,
+    context_name,
+    frozen,
+    edit,
+    raises,
+):
+  """Only provenance is restored, including on frozen mutable metadata."""
+  response_type = Event if target_name == "event" else LlmResponse
+  if frozen:
+
+    class FrozenResponse(response_type):
+      model_config = ConfigDict(frozen=True)
+
+    response_type = FrozenResponse
+  marker = {"connection_id": "connection-1", "sequence": 1}
+  plugin_key = INTERNAL_METADATA_PREFIX + "plugin_owned"
+  response = response_type(
+      **(
+          {"id": "frozen-event", "author": "agent"}
+          if target_name == "event"
+          else {}
+      ),
+      custom_metadata={
+          LIVE_USAGE_KEY: dict(marker),
+          RESTORED_EVENT_KEY: True,
+          plugin_key: "old",
+      },
+  )
+  original_error = ValueError("callback failed")
+  observed = []
+
+  async def mutate(**kwargs):
+    metadata = kwargs[target_name].custom_metadata
+    if edit == "nested":
+      metadata[LIVE_USAGE_KEY]["sequence"] = 99
+      metadata[RESTORED_EVENT_KEY] = False
+    elif edit == "clear":
+      metadata.clear()
+    else:
+      del metadata[LIVE_USAGE_KEY]
+      del metadata[RESTORED_EVENT_KEY]
+    metadata[plugin_key] = "new"
+    metadata["user_tag"] = "voice"
+    if raises:
+      raise original_error
+
+  async def observe(**kwargs):
+    observed.append(copy.deepcopy(kwargs[target_name].custom_metadata))
+
+  setattr(plugin1, callback_name, mutate)
+  setattr(plugin2, callback_name, observe)
+  service.register_plugin(plugin1)
+  service.register_plugin(plugin2)
+  kwargs = {target_name: response, context_name: Mock()}
+  if raises:
+    with pytest.raises(RuntimeError, match="callback failed") as excinfo:
+      await getattr(service, f"run_{callback_name}")(**kwargs)
+    assert excinfo.value.__cause__ is original_error
+    assert observed == []
+  else:
+    await getattr(service, f"run_{callback_name}")(**kwargs)
+    assert observed == [response.custom_metadata]
+  assert response.custom_metadata == {
+      LIVE_USAGE_KEY: marker,
+      RESTORED_EVENT_KEY: True,
+      plugin_key: "new",
+      "user_tag": "voice",
+  }
+
+
+@pytest.mark.parametrize("run_metadata", [None, {"run_tag": "run"}])
+@pytest.mark.parametrize("provenance", ["none", "live", "restored", "hmac"])
+@pytest.mark.parametrize(
+    "replacement_metadata", ["unset", None, {"replacement": True}]
+)
+async def test_partial_event_replacement_preserves_metadata_contract(
+    run_metadata,
+    provenance,
+    replacement_metadata,
+):
+  """Unset metadata inherits public tags; explicitly supplied metadata replaces them."""
+  marker = {"connection_id": "connection-1", "sequence": 1}
+  reserved = {
+      "none": {},
+      "live": {LIVE_USAGE_KEY: marker},
+      "restored": {RESTORED_EVENT_KEY: True},
+      "hmac": {_HMAC_META_KEY: {"fc-1": "existing-signature"}},
+  }[provenance]
+  replacement = Event(
+      author="agent", actions=EventActions(state_delta={"seen": True})
+  )
+  if replacement_metadata != "unset":
+    replacement.custom_metadata = replacement_metadata
+  original_replacement = copy.deepcopy(replacement)
+
+  class EditAndReplace(BasePlugin):
+
+    async def on_event_callback(self, *, invocation_context, event):
+      event.custom_metadata["earlier_tag"] = "kept"
+      return replacement
+
+  agent = testing_utils.Agent(name="agent")
+  context = await testing_utils.create_invocation_context(
+      agent=agent,
+      plugins=[EditAndReplace(name="replace")],
+      run_config=RunConfig(custom_metadata=run_metadata),
+  )
+  runner = Runner(
+      app=App(name="app", root_agent=agent),
+      session_service=context.session_service,
+  )
+  event = Event(
+      author="agent",
+      custom_metadata={**reserved, "user_tag": "voice"},
+  )
+  result = await runner._process_event_with_plugin_callbacks(
+      invocation_context=context, event=event
+  )
+
+  expected = {**reserved, **(run_metadata or {})}
+  if replacement_metadata == "unset":
+    expected.update(user_tag="voice", earlier_tag="kept")
+  elif replacement_metadata is not None:
+    expected.update(replacement_metadata)
+  if not reserved and run_metadata is None and replacement_metadata is None:
+    expected = None
+  assert result.custom_metadata == expected
+  assert result.actions.state_delta == {"seen": True}
+  if provenance in {"live", "restored"} or replacement_metadata == "unset":
+    assert replacement == original_replacement
+    assert replacement.model_fields_set == original_replacement.model_fields_set
+
+
+@pytest.mark.parametrize("live_usage", [False, True])
+async def test_integrity_plugin_refresh_survives_event_callbacks(live_usage):
+  """A refreshed tool-call signature remains valid in the stored session."""
+  integrity = ToolCallIntegrityPlugin(secret_key=b"0" * 32)
+  agent = testing_utils.Agent(name="voice")
+  context = await testing_utils.create_invocation_context(
+      agent=agent, plugins=[integrity]
+  )
+  runner = Runner(
+      app=App(name="app", root_agent=agent),
+      session_service=context.session_service,
+  )
+  metadata = {_HMAC_META_KEY: {"fc-1": "v1:stale"}}
+  if live_usage:
+    metadata[LIVE_USAGE_KEY] = {"connection_id": "connection-1", "sequence": 1}
+  event = Event(
+      author="voice",
+      custom_metadata=metadata,
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="fc-1", name="lookup", args={"q": "x"}
+                  )
+              )
+          ],
+      ),
+  )
+
+  result = await runner._process_event_with_plugin_callbacks(
+      invocation_context=context, event=event
+  )
+  await context.session_service.append_event(
+      session=context.session, event=result
+  )
+  await integrity.before_run_callback(invocation_context=context)
+
+  assert result.custom_metadata[_HMAC_META_KEY]["fc-1"] != "v1:stale"
 
 
 @pytest.mark.parametrize(

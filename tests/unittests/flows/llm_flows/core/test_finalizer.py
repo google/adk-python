@@ -32,6 +32,7 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.genai import types
+from pydantic import ConfigDict
 import pytest
 
 from .... import testing_utils
@@ -482,6 +483,49 @@ async def test_after_model_canonical_callbacks_each_see_owned_metadata(edit):
   assert observed == [expected]
   assert result is None
   assert original.custom_metadata == expected
+
+
+@pytest.mark.parametrize("frozen", [False, True])
+@pytest.mark.parametrize("replacement", [False, True])
+async def test_after_model_keeps_refreshed_plugin_metadata(frozen, replacement):
+  """Canonical callbacks keep plugin stamps while restoring model provenance."""
+
+  class Response(LlmResponse):
+    model_config = ConfigDict(frozen=frozen)
+
+  marker = {"connection_id": "connection-1", "sequence": 1}
+  plugin_key = INTERNAL_METADATA_PREFIX + "plugin_owned"
+  original = Response(
+      custom_metadata={LIVE_USAGE_KEY: dict(marker), plugin_key: "old"}
+  )
+  observed = []
+  cached_metadata = {"user_tag": "cached", plugin_key: "new"}
+  cached_response = LlmResponse(custom_metadata=cached_metadata)
+
+  def edit(callback_context, llm_response):
+    if frozen:
+      llm_response.custom_metadata.clear()
+      llm_response.custom_metadata.update(cached_metadata)
+    else:
+      llm_response.custom_metadata = cached_metadata
+
+  def observe(callback_context, llm_response):
+    observed.append(copy.deepcopy(llm_response.custom_metadata))
+    return cached_response if replacement else None
+
+  agent = Agent(name="agent", after_model_callback=[edit, observe])
+  context = await testing_utils.create_invocation_context(agent=agent)
+  result = await _model_response_finalizer.handle_after_model_callback(
+      context, original, Event(author=agent.name)
+  )
+
+  expected = {LIVE_USAGE_KEY: marker, **cached_metadata}
+  assert observed == [expected]
+  assert original.custom_metadata == expected
+  assert LIVE_USAGE_KEY not in cached_metadata
+  assert cached_response.custom_metadata == cached_metadata
+  if replacement:
+    assert result.custom_metadata == expected
 
 
 @pytest.mark.parametrize("kind", ["copy", "fresh", "inplace", "nested"])

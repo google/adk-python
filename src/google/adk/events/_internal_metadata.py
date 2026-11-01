@@ -17,11 +17,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import copy
 import logging
 from typing import Any
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+  from ..models.llm_response import LlmResponse
   from ..sessions.session import Session
   from .event import Event
 
@@ -42,6 +44,9 @@ RESTORED_EVENT_KEY = INTERNAL_METADATA_PREFIX + "restored_event"
 
 LIVE_USAGE_KEY = INTERNAL_METADATA_PREFIX + "live_usage"
 """Identifies a raw usage snapshot from one upstream Live connection."""
+
+OWNED_INTERNAL_METADATA_KEYS = frozenset({RESTORED_EVENT_KEY, LIVE_USAGE_KEY})
+"""Provenance keys callbacks cannot replace; other reserved keys belong to plugins."""
 
 
 def _is_internal_key(key: Any) -> bool:
@@ -105,6 +110,35 @@ def internal_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
   if not isinstance(metadata, Mapping):
     return {}
   return {k: v for k, v in metadata.items() if _is_internal_key(k)}
+
+
+def owned_internal_metadata(
+    metadata: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+  """Returns model- and restore-owned provenance, excluding plugin stamps."""
+  return {
+      key: value
+      for key, value in internal_metadata(metadata).items()
+      if key in OWNED_INTERNAL_METADATA_KEYS
+  }
+
+
+def restore_owned_metadata(
+    response: LlmResponse, owned: Mapping[str, Any]
+) -> None:
+  """Restores captured provenance without changing callback-owned dictionaries."""
+  if not owned:
+    return
+  existing = response.custom_metadata
+  restored = copy.deepcopy(owned)
+  metadata = {**(existing if isinstance(existing, Mapping) else {}), **restored}
+  if metadata == existing:
+    return
+  if response.model_config.get("frozen") and isinstance(existing, dict):
+    # Frozen models still allow edits to their existing mutable dictionary.
+    existing.update(restored)
+  else:
+    response.custom_metadata = metadata
 
 
 def mark_restored(event: Event) -> Event:

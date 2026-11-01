@@ -2485,7 +2485,7 @@ class BigQueryLoggerConfig:
       retry_config: Retry configuration for writes.
       batch_size: Number of rows per batch.
       batch_flush_interval: Max time to wait before flushing a batch.
-      shutdown_timeout: Max time to wait for shutdown.
+      shutdown_timeout: Max time to wait for shutdown or cross-loop queue admission.
       queue_max_size: Max size of the in-memory queue. For ``queue_max_size >
         1``, ``min(max(2, queue_max_size // 100), queue_max_size - 1)`` slots
         (``0`` for ``queue_max_size <= 1``, ``1`` for ``queue_max_size == 2``,
@@ -3283,7 +3283,7 @@ class BatchProcessor:
           ``queue_max_size=10000``), and never all of them, are kept for
           ``INVOCATION_COMPLETED`` and ``INVOCATION_ERROR`` rows; other rows see
           a full queue once only those slots remain.
-        shutdown_timeout: Max time to wait for shutdown.
+        shutdown_timeout: Max wait for shutdown or cross-loop queue admission.
         exactly_once_delivery: Whether to use committed-stream offsets to
           prevent retry duplicates. Replacement streams consume stream-creation
           quota, and unrecoverable/ambiguous batches may still be dropped.
@@ -3394,7 +3394,7 @@ class BatchProcessor:
     if self._batch_processor_task is None:
       self._batch_processor_task = asyncio.create_task(self._batch_writer())
 
-  def _append_nowait(self, row: dict[str, Any]) -> None:
+  def _append_nowait(self, row: dict[str, Any]) -> bool:
     """Appends a row to the queue for batching synchronously.
 
     Must run on the processor's event loop. Rows other than
@@ -3408,7 +3408,7 @@ class BatchProcessor:
       logger.warning(
           "BigQuery batch processor is already shut down, dropping event."
       )
-      return
+      return False
 
     if (
         self._reserved_terminal_slots
@@ -3417,11 +3417,13 @@ class BatchProcessor:
         >= self._queue_max_size - self._reserved_terminal_slots
     ):
       self._record_queue_full_drop()
-      return
+      return False
     try:
       self._queue.put_nowait(row)
     except asyncio.QueueFull:
       self._record_queue_full_drop()
+      return False
+    return True
 
   def _record_queue_full_drop(self) -> None:
     """Counts and logs one row dropped for lack of queue room."""
@@ -3432,11 +3434,15 @@ class BatchProcessor:
         total,
     )
 
-  async def append(self, row: dict[str, Any]) -> None:
+  async def append(self, row: dict[str, Any]) -> bool:
     """Appends a row to the queue for batching.
 
     Args:
         row: Dictionary representing a single row.
+
+    Returns:
+        Whether queue admission was confirmed, not whether BigQuery persisted it.
+        False includes rejection and a timed-out acknowledgement.
     """
     try:
       running_loop = asyncio.get_running_loop()
@@ -3444,12 +3450,25 @@ class BatchProcessor:
       running_loop = None
 
     if self._loop is not None and self._loop is not running_loop:
-      try:
-        self._loop.call_soon_threadsafe(self._append_nowait, row)
-      except RuntimeError:
+      if not self._loop.is_running():
         self._record_drop("shutdown_cancelled", 1)
-      return
-    self._append_nowait(row)
+        return False
+      append = self.append(row)
+      try:
+        pending = asyncio.run_coroutine_threadsafe(append, self._loop)
+      except RuntimeError:
+        append.close()
+        self._record_drop("shutdown_cancelled", 1)
+        return False
+      try:
+        return await asyncio.wait_for(
+            asyncio.wrap_future(pending), timeout=self.shutdown_timeout
+        )
+      except asyncio.TimeoutError:
+        # The owner may already have queued the row before the receipt timed out.
+        logger.warning("Timed out confirming BigQuery queue admission.")
+        return False
+    return self._append_nowait(row)
 
   def get_drop_stats(self) -> dict[str, int]:
     """Returns a snapshot of dropped-row counts keyed by reason.
@@ -5002,8 +5021,10 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
               " additional event metadata. Includes enrichment fields like"
               " 'root_agent_name' (turn orchestration), 'model' (request"
               " model), 'model_version' (response version), and"
-              " 'usage_metadata' (detailed token counts). May also carry"
-              " 'otel' (best-effort ambient Cloud Trace span/trace ids) and"
+              " 'usage_metadata' (detailed token counts). Usage metadata uses"
+              " JSON enum values (ON_DEMAND, AUDIO) and omits null fields;"
+              " older rows may have enum class prefixes. May also carry 'otel'"
+              " (best-effort ambient Cloud Trace span/trace ids) and"
               " 'custom_metadata' (allowlisted event.custom_metadata keys)."
           ),
       ),
@@ -5157,6 +5178,8 @@ _NODE_IDENTITY_VIEW_COLUMNS = (
 # common columns in the view SELECT.
 # Live views expose raw reports. Counter aggregation depends on the provider;
 # keep analytic windows in caller queries so time filters can prune partitions.
+# Eval views sum per-report counts, as ADK's Live evaluator does. Cumulative
+# sources need caller-side per-connection deltas ordered by numeric sequence.
 _EVENT_VIEW_DEFS: dict[str, list[str]] = {
     "USER_MESSAGE_RECEIVED": [],
     "LIVE_USAGE": [
@@ -5220,6 +5243,7 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
         "JSON_QUERY(attributes, '$.tools') AS tools",
     ],
     "LLM_RESPONSE": [
+        # CFC token counts live in v_live_usage when LIVE_USAGE is enabled.
         "JSON_QUERY(content, '$.response') AS response",
         (
             "CAST(JSON_VALUE(content, '$.usage.prompt')"
@@ -5261,6 +5285,11 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
         ),
         "JSON_VALUE(attributes, '$.model_version') AS model_version",
         "JSON_QUERY(attributes, '$.usage_metadata') AS usage_metadata",
+        (
+            "REGEXP_REPLACE(JSON_VALUE(attributes,"
+            " '$.usage_metadata.traffic_type'), r'^TrafficType\\.', '')"
+            " AS traffic_type"
+        ),
         "JSON_QUERY(attributes, '$.cache_metadata') AS cache_metadata",
         # NULL on partial streaming rows and pre-CL rows; filter to final
         # responses before aggregating on cache_type.
@@ -6614,6 +6643,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   For native Live, register this plugin before on-event plugins that return a
   replacement event: returning an event intentionally skips later plugins.
   CFC and evaluation routes also record Live usage in after-model callbacks.
+
+  CFC Live token counts move from ``LLM_RESPONSE`` / ``v_llm_response`` to
+  ``LIVE_USAGE`` / ``v_live_usage`` when LIVE_USAGE is enabled. Token queries
+  should include both views; refresh existing eval views with
+  ``await plugin.create_eval_views()``. Usage metadata now writes JSON enum
+  values (``ON_DEMAND``, ``AUDIO``), without class prefixes or null fields,
+  for both Live and ordinary model responses. The ``traffic_type`` view column
+  normalizes historical and current enum spellings.
   """
 
   def __init__(
@@ -8032,6 +8069,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     them scans the whole table.  For large tables, materialize a
     date-filtered slice of a view into a table once and evaluate that table.
 
+    Token totals sum raw Live reports like ADK's Live evaluator. For sources
+    with cumulative counters, use per-connection deltas ordered by numeric
+    ``sequence`` in ``v_live_usage`` instead.
+
     Raises:
       ValueError: ``'content'`` is in ``payload_column_denylist``,
         ``eval_view_mode`` is unknown, or ``event_denylist`` /
@@ -9403,7 +9444,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       raw_content: Any = None,
       is_truncated: bool = False,
       event_data: Optional[EventData] = None,
-  ) -> None:
+  ) -> bool:
     """Logs an event to BigQuery.
 
     Args:
@@ -9413,16 +9454,19 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         is_truncated: Whether the content is already truncated.
         event_data: Typed container for structured fields and extra attributes.
           Defaults to ``EventData()`` when not provided.
+
+    Returns:
+        Whether admission to the batch processor's queue was confirmed.
     """
     if not self.config.enabled or self._is_shutting_down:
-      return
+      return False
     if self._event_type_filtered(event_type):
-      return
+      return False
 
     if not self._started:
       outcome = await self._ensure_started()
       if outcome == "disabled":
-        return
+        return False
       if not self._started:
         # The row is lost — record exactly ONE loss, classified by the
         # structured setup outcome: "aborted" (shutdown crossed the
@@ -9433,7 +9477,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         self._count_local_drop(
             "shutdown_race" if outcome == "aborted" else "setup_unavailable"
         )
-        return
+        return False
 
     if event_data is None:
       event_data = EventData()
@@ -9530,7 +9574,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     if not self.parser:
       logger.warning("Parser not initialized; skipping event %s.", event_type)
-      return
+      return False
 
     # When both payload columns are projected out, skip content parsing
     # entirely -- no inline summary, no parts, and (critically) no GCS offload
@@ -9672,11 +9716,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       state = await self._get_loop_state()
     except RuntimeError:
       self._count_local_drop("shutdown_race")
-      return
+      return False
     if self._is_shutting_down:
       self._count_local_drop("shutdown_race")
-      return
-    await state.batch_processor.append(row)
+      return False
+    return await state.batch_processor.append(row)
 
   # --- UPDATED CALLBACKS FOR V1 PARITY ---
 
@@ -9703,7 +9747,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         user_message: The message content received from the user.
     """
     callback_ctx = CallbackContext(invocation_context)
-
     TraceManager.ensure_invocation_span(callback_ctx)
     await self._log_event(
         "USER_MESSAGE_RECEIVED",
@@ -9771,7 +9814,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   async def _log_live_usage(
       self, callback_context: CallbackContext, response: LlmResponse
   ) -> None:
-    """Records the first observation of a report within a bounded history."""
+    """Records the first queued observation of a report within a bounded history.
+
+    Connection ID and sequence are the correlation key; source_event identifies
+    the first sighting and may differ from a later persisted replacement event.
+    """
     marker = _live_usage_marker(response.custom_metadata)
     usage = response.usage_metadata
     if (
@@ -9794,8 +9841,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       self._live_usage_seen[key] = reservation
       if len(self._live_usage_seen) > 1024:
         self._live_usage_seen.popitem(last=False)
+    admitted = False
     try:
-      await self._log_event(
+      admitted = await self._log_event(
           "LIVE_USAGE",
           callback_context,
           raw_content={
@@ -9822,11 +9870,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
               },
           ),
       )
-    except BaseException:
-      with self._loop_states_guard:
-        if self._live_usage_seen.get(key) is reservation:
-          self._live_usage_seen.pop(key)
-      raise
+    finally:
+      if not admitted:
+        with self._loop_states_guard:
+          if self._live_usage_seen.get(key) is reservation:
+            self._live_usage_seen.pop(key)
 
   @_safe_callback
   async def on_event_callback(
@@ -11151,6 +11199,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         callback_context: The callback context.
         error: The exception that escaped agent execution.
     """
+    TraceManager.pop_span(expected_kind="llm_request")
     span_id, duration = TraceManager.pop_span(expected_kind="agent")
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
 
