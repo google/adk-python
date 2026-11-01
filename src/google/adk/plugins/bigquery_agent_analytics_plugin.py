@@ -3464,6 +3464,16 @@ class BatchProcessor:
         return await asyncio.wait_for(
             asyncio.wrap_future(pending), timeout=self.shutdown_timeout
         )
+      except asyncio.CancelledError:
+        caller = asyncio.current_task()
+        if (
+            pending.cancelled()
+            and caller is not None
+            and not caller.cancelling()
+        ):
+          self._record_drop("shutdown_cancelled", 1)
+          return False
+        raise
       except asyncio.TimeoutError:
         # The owner may already have queued the row before the receipt timed out.
         logger.warning("Timed out confirming BigQuery queue admission.")
@@ -6759,7 +6769,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._generation = 0
     # Guards ownership changes of _loop_state_by_loop: unsynchronized iteration raced concurrent insertion.
     self._loop_states_guard = threading.RLock()
-    self._live_usage_seen: OrderedDict[tuple[str, int], object] = OrderedDict()
+    self._live_usage_seen: OrderedDict[
+        tuple[str, int], ConcurrentFuture[bool]
+    ] = OrderedDict()
     self._credentials = credentials
     self._custom_credentials = credentials is not None
     self.client: bigquery.Client | None = None
@@ -9832,15 +9844,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if self._init_pid and self._init_pid != os.getpid():
       self._reset_runtime_state()
     key = (str.__str__(marker["connection_id"]), marker["sequence"])
-    reservation = object()
     # Plugin instances can be shared by threads. Never hold this across I/O.
-    with self._loop_states_guard:
-      if key in self._live_usage_seen:
+    while True:
+      with self._loop_states_guard:
+        previous = self._live_usage_seen.get(key)
+        if previous is None:
+          reservation: ConcurrentFuture[bool] = ConcurrentFuture()
+          self._live_usage_seen[key] = reservation
+          break
         self._live_usage_seen.move_to_end(key)
+      # A cancelled observer must not cancel another callback's admission.
+      if await asyncio.shield(asyncio.wrap_future(previous)):
         return
-      self._live_usage_seen[key] = reservation
-      if len(self._live_usage_seen) > 1024:
-        self._live_usage_seen.popitem(last=False)
     admitted = False
     try:
       admitted = await self._log_event(
@@ -9871,10 +9886,24 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           ),
       )
     finally:
-      if not admitted:
-        with self._loop_states_guard:
+      with self._loop_states_guard:
+        if not admitted:
           if self._live_usage_seen.get(key) is reservation:
             self._live_usage_seen.pop(key)
+        reservation.set_result(bool(admitted))
+        # Keep pending admissions until their observers can receive the result.
+        while len(self._live_usage_seen) > 1024:
+          completed = next(
+              (
+                  identity
+                  for identity, result in self._live_usage_seen.items()
+                  if result.done()
+              ),
+              None,
+          )
+          if completed is None:
+            break
+          self._live_usage_seen.pop(completed)
 
   @_safe_callback
   async def on_event_callback(

@@ -292,6 +292,160 @@ async def test_live_usage_concurrent_callbacks_record_one_observation(
   assert [row["event_type"] for row in rows] == ["LIVE_USAGE"]
 
 
+@pytest.mark.parametrize("first_succeeds", [False, True])
+@pytest.mark.parametrize("cancel_waiter", [False, True])
+async def test_live_usage_waits_for_pending_admission(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    first_succeeds,
+    cancel_waiter,
+):
+  """Concurrent observers retry failed admission without cancelling its owner."""
+  entered = asyncio.Event()
+  release = asyncio.Event()
+  original = bq_plugin_inst._log_event
+  calls = 0
+
+  async def admit(*args, **kwargs):
+    nonlocal calls
+    calls += 1
+    if calls == 1:
+      entered.set()
+      await release.wait()
+      if not first_succeeds:
+        return False
+    return await original(*args, **kwargs)
+
+  with mock.patch.object(bq_plugin_inst, "_log_event", side_effect=admit):
+    owner = asyncio.create_task(
+        bq_plugin_inst.after_model_callback(
+            callback_context=CallbackContext(invocation_context),
+            llm_response=live_usage_event,
+        )
+    )
+    await entered.wait()
+    waiter = asyncio.create_task(
+        bq_plugin_inst.on_event_callback(
+            invocation_context=invocation_context, event=live_usage_event
+        )
+    )
+    await asyncio.sleep(0)
+    try:
+      assert not waiter.done()
+      if cancel_waiter:
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+          await waiter
+        waiter = asyncio.create_task(
+            bq_plugin_inst.on_event_callback(
+                invocation_context=invocation_context, event=live_usage_event
+            )
+        )
+        await asyncio.sleep(0)
+      release.set()
+      await asyncio.gather(owner, waiter)
+    finally:
+      release.set()
+      for task in (owner, waiter):
+        if not task.done():
+          task.cancel()
+      await asyncio.gather(owner, waiter, return_exceptions=True)
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert calls == (1 if first_succeeds else 2)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE"]
+
+
+@pytest.mark.parametrize("caller_cancelled", [False, True])
+async def test_owner_admission_cancellation_preserves_caller_cancellation(
+    mock_write_client,
+    dummy_arrow_schema,
+    caller_cancelled,
+):
+  """Owner cancellation is a rejected admission; caller cancellation propagates."""
+  loop = asyncio.new_event_loop()
+  pending = concurrent.futures.Future()
+  scheduled = asyncio.Event()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client, dummy_arrow_schema, DEFAULT_STREAM_NAME, loop=loop
+  )
+
+  def schedule(coroutine, target):
+    coroutine.close()
+    scheduled.set()
+    if not caller_cancelled:
+      pending.cancel()
+    return pending
+
+  try:
+    with (
+        mock.patch.object(loop, "is_running", return_value=True),
+        mock.patch.object(
+            asyncio, "run_coroutine_threadsafe", side_effect=schedule
+        ),
+    ):
+      task = asyncio.create_task(processor.append({"event_type": "LIVE_USAGE"}))
+      await scheduled.wait()
+      if caller_cancelled:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+          await task
+      else:
+        assert await task is False
+    assert processor.get_drop_stats()["shutdown_cancelled"] == (
+        0 if caller_cancelled else 1
+    )
+  finally:
+    loop.close()
+
+
+async def test_live_usage_retries_owner_cancelled_admission(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """Analytics owner cancellation stays contained and permits a later retry."""
+  loop = asyncio.new_event_loop()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client, dummy_arrow_schema, DEFAULT_STREAM_NAME, loop=loop
+  )
+
+  def cancel_admission(coroutine, target):
+    coroutine.close()
+    pending = concurrent.futures.Future()
+    pending.cancel()
+    return pending
+
+  try:
+    with (
+        mock.patch.object(
+            bq_plugin_inst,
+            "_get_loop_state",
+            return_value=SimpleNamespace(batch_processor=processor),
+        ),
+        mock.patch.object(loop, "is_running", return_value=True),
+        mock.patch.object(
+            asyncio, "run_coroutine_threadsafe", side_effect=cancel_admission
+        ),
+    ):
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=live_usage_event
+      )
+  finally:
+    loop.close()
+  await bq_plugin_inst.on_event_callback(
+      invocation_context=invocation_context, event=live_usage_event
+  )
+  await bq_plugin_inst.flush()
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == ["LIVE_USAGE"]
+
+
 @pytest.mark.parametrize("drop", ["setup", "parser", "queue"])
 async def test_live_usage_retries_a_dropped_first_observation(
     bq_plugin_inst,
