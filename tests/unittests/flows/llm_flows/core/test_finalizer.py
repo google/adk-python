@@ -19,10 +19,13 @@ from unittest.mock import AsyncMock
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
+from google.adk.events.event import TOOL_DISPLAY_NAMES_METADATA_KEY
 from google.adk.flows.llm_flows.core import _finalizer as _model_response_finalizer
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.genai import types
 import pytest
@@ -59,8 +62,6 @@ def test_finalize_model_response_event_merges_llm_response_fields():
 
 
 def test_finalize_model_response_event_populates_function_call_ids():
-  from google.adk.tools.function_tool import FunctionTool
-
   tool = FunctionTool(func=dummy_tool)
   fc = types.FunctionCall(name="dummy_tool", args={"x": 1})
   content = types.Content(parts=[types.Part(function_call=fc)])
@@ -79,6 +80,168 @@ def test_finalize_model_response_event_populates_function_call_ids():
   assert function_calls[0].name == "dummy_tool"
   # Client function call ID was populated
   assert function_calls[0].id is not None
+  assert finalized.custom_metadata is None
+
+
+class _TitledTool(BaseTool):
+  """Minimal BaseTool test double with an optional display title."""
+
+  def __init__(self, *, name: str, title: str | None = None):
+    super().__init__(name=name, description=f"Test tool {name}", title=title)
+
+
+def test_finalize_model_response_event_populates_tool_display_names():
+  """Called titled tools populate adk:tool_display_names metadata."""
+  prefixed_tool = _TitledTool(
+      name="kb_Internal-KB-Search",
+      title="  @Internal-KB Search  ",
+  )
+  plain_tool = FunctionTool(func=dummy_tool)
+
+  content = types.Content(
+      parts=[
+          types.Part.from_function_call(
+              name="kb_Internal-KB-Search", args={"q": "policy"}
+          ),
+          types.Part.from_function_call(name="dummy_tool", args={}),
+      ]
+  )
+  llm_response = LlmResponse(content=content)
+  llm_request = LlmRequest(
+      tools_dict={
+          "kb_Internal-KB-Search": prefixed_tool,
+          "dummy_tool": plain_tool,
+      }
+  )
+  event = Event(id="e-3", invocation_id="inv-1", author="model_agent")
+
+  finalized = _model_response_finalizer.finalize_model_response_event(
+      llm_request=llm_request,
+      llm_response=llm_response,
+      model_response_event=event,
+  )
+
+  assert TOOL_DISPLAY_NAMES_METADATA_KEY == "adk:tool_display_names"
+  assert finalized.custom_metadata == {
+      TOOL_DISPLAY_NAMES_METADATA_KEY: {
+          "kb_Internal-KB-Search": "@Internal-KB Search",
+      }
+  }
+
+
+def test_finalize_merges_tool_display_names_without_mutating_inputs():
+  """Real tool titles override response entries without mutating input dicts."""
+  titled_tool = _TitledTool(
+      name="Internal-KB-Search",
+      title="@Internal-KB Search",
+  )
+  base_metadata = {"run_label": "prod"}
+  response_metadata = {
+      "trace_id": "abc",
+      TOOL_DISPLAY_NAMES_METADATA_KEY: {
+          "prepopulated_tool": "Prepopulated Title",
+          "Internal-KB-Search": "Spoofed Response Title",
+      },
+  }
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part.from_function_call(
+                  name="Internal-KB-Search", args={"q": "travel policy"}
+              )
+          ]
+      ),
+      custom_metadata=response_metadata,
+  )
+  llm_request = LlmRequest(tools_dict={"Internal-KB-Search": titled_tool})
+  event = Event(
+      id="e-4",
+      invocation_id="inv-1",
+      author="model_agent",
+      custom_metadata=base_metadata,
+  )
+
+  finalized = _model_response_finalizer.finalize_model_response_event(
+      llm_request=llm_request,
+      llm_response=llm_response,
+      model_response_event=event,
+  )
+
+  assert finalized.custom_metadata == {
+      "trace_id": "abc",
+      TOOL_DISPLAY_NAMES_METADATA_KEY: {
+          "prepopulated_tool": "Prepopulated Title",
+          "Internal-KB-Search": "@Internal-KB Search",
+      },
+  }
+  assert base_metadata == {"run_label": "prod"}
+  assert response_metadata == {
+      "trace_id": "abc",
+      TOOL_DISPLAY_NAMES_METADATA_KEY: {
+          "prepopulated_tool": "Prepopulated Title",
+          "Internal-KB-Search": "Spoofed Response Title",
+      },
+  }
+
+
+def test_finalize_ignores_mocked_tools_without_str_title():
+  """Mocked BaseTool instances do not inject mock titles."""
+  mocked_tool = mock.MagicMock(spec=BaseTool)
+  mocked_tool.is_long_running = False
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part.from_function_call(name="mocked_tool", args={}),
+          ]
+      )
+  )
+  llm_request = LlmRequest(tools_dict={"mocked_tool": mocked_tool})
+  event = Event(id="e-5", invocation_id="inv-1", author="model_agent")
+
+  finalized = _model_response_finalizer.finalize_model_response_event(
+      llm_request=llm_request,
+      llm_response=llm_response,
+      model_response_event=event,
+  )
+
+  assert finalized.custom_metadata is None
+  assert finalized.model_dump(mode="json")["custom_metadata"] is None
+
+
+def test_finalize_overwrites_non_mapping_existing_tool_display_names():
+  """Non-mapping existing adk:tool_display_names entries are replaced safely."""
+  titled_tool = _TitledTool(
+      name="Internal-KB-Search",
+      title="@Internal-KB Search",
+  )
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part.from_function_call(
+                  name="Internal-KB-Search", args={"q": "policy"}
+              )
+          ]
+      ),
+      custom_metadata={
+          "trace_id": "abc",
+          TOOL_DISPLAY_NAMES_METADATA_KEY: "invalid-non-dict",
+      },
+  )
+  llm_request = LlmRequest(tools_dict={"Internal-KB-Search": titled_tool})
+  event = Event(id="e-6", invocation_id="inv-1", author="model_agent")
+
+  finalized = _model_response_finalizer.finalize_model_response_event(
+      llm_request=llm_request,
+      llm_response=llm_response,
+      model_response_event=event,
+  )
+
+  assert finalized.custom_metadata == {
+      "trace_id": "abc",
+      TOOL_DISPLAY_NAMES_METADATA_KEY: {
+          "Internal-KB-Search": "@Internal-KB Search",
+      },
+  }
 
 
 # --- Tests for handle_before_model_callback ---

@@ -50,7 +50,7 @@ non_blocking_tool.behavior = types.Behavior.NON_BLOCKING
 
 
 root_agent = Agent(
-    model="gemini-live-2.5-flash-native-audio",
+    model="gemini-3.8-live",
     name="non_blocking_tool_agent",
     description=(
         "Agent demonstrating non-blocking tool execution in ADK Live mode."

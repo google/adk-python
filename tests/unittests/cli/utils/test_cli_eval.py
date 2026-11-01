@@ -86,6 +86,7 @@ def test_parse_and_get_evals_to_run_parses_eval_set_and_selectors(
 
 def test_get_eval_sets_manager_local(monkeypatch):
   mock_local_manager = mock.MagicMock()
+  monkeypatch.delenv("ADK_EVAL_STORAGE_URI", raising=False)
   monkeypatch.setattr(
       "google.adk.evaluation.local_eval_sets_manager.LocalEvalSetsManager",
       lambda *a, **k: mock_local_manager,
@@ -100,7 +101,8 @@ def test_get_eval_sets_manager_gcs(monkeypatch):
   mock_gcs_manager = mock.MagicMock()
   mock_create_gcs = mock.MagicMock()
   mock_create_gcs.return_value = SimpleNamespace(
-      eval_sets_manager=mock_gcs_manager
+      eval_sets_manager=mock_gcs_manager,
+      eval_set_results_manager=mock.MagicMock(),
   )
   monkeypatch.setattr(
       "google.adk.cli.utils.evals.create_gcs_eval_managers_from_uri",
@@ -113,6 +115,157 @@ def test_get_eval_sets_manager_gcs(monkeypatch):
   )
   assert manager == mock_gcs_manager
   mock_create_gcs.assert_called_once_with("gs://bucket")
+
+
+def test_get_eval_sets_manager_file_uri(monkeypatch, tmp_path):
+  """file:// eval storage uses a local manager rooted at that directory."""
+  captured = {}
+
+  def fake_local_manager(*, agents_dir):
+    captured["agents_dir"] = agents_dir
+    return mock.MagicMock(name="local-manager")
+
+  monkeypatch.setattr(
+      "google.adk.evaluation.local_eval_sets_manager.LocalEvalSetsManager",
+      fake_local_manager,
+  )
+  from google.adk.cli.cli_eval import get_eval_sets_manager
+
+  storage_dir = tmp_path / "evals"
+  manager = get_eval_sets_manager(
+      eval_storage_uri=storage_dir.as_uri(), agents_dir="some/dir"
+  )
+
+  assert captured["agents_dir"] == str(storage_dir)
+  assert storage_dir.is_dir()
+  assert manager is not None
+
+
+def test_get_eval_sets_manager_explicit_uri_beats_env(monkeypatch, tmp_path):
+  """An explicit gs:// URI is used even when ADK_EVAL_STORAGE_URI is set."""
+  mock_gcs_manager = mock.MagicMock()
+  mock_create_gcs = mock.MagicMock()
+  mock_create_gcs.return_value = SimpleNamespace(
+      eval_sets_manager=mock_gcs_manager,
+      eval_set_results_manager=mock.MagicMock(),
+  )
+  monkeypatch.setenv("ADK_EVAL_STORAGE_URI", (tmp_path / "from_env").as_uri())
+  monkeypatch.setattr(
+      "google.adk.cli.utils.evals.create_gcs_eval_managers_from_uri",
+      mock_create_gcs,
+  )
+  from google.adk.cli.cli_eval import get_eval_sets_manager
+
+  manager = get_eval_sets_manager(
+      eval_storage_uri="gs://bucket", agents_dir="some/dir"
+  )
+
+  assert manager == mock_gcs_manager
+  mock_create_gcs.assert_called_once_with("gs://bucket")
+
+
+def test_get_eval_sets_manager_eval_storage_uri_env(monkeypatch):
+  """ADK_EVAL_STORAGE_URI selects GCS when no explicit URI is passed."""
+  mock_gcs_manager = mock.MagicMock()
+  mock_create_gcs = mock.MagicMock()
+  mock_create_gcs.return_value = SimpleNamespace(
+      eval_sets_manager=mock_gcs_manager,
+      eval_set_results_manager=mock.MagicMock(),
+  )
+  monkeypatch.setenv("ADK_EVAL_STORAGE_URI", "gs://from-env")
+  monkeypatch.setattr(
+      "google.adk.cli.utils.evals.create_gcs_eval_managers_from_uri",
+      mock_create_gcs,
+  )
+  from google.adk.cli.cli_eval import get_eval_sets_manager
+
+  manager = get_eval_sets_manager(eval_storage_uri=None, agents_dir="some/dir")
+
+  assert manager == mock_gcs_manager
+  mock_create_gcs.assert_called_once_with("gs://from-env")
+
+
+def test_get_eval_sets_manager_invalid_uri_raises_value_error():
+  """Invalid storage URIs raise ValueError from get_eval_sets_manager."""
+  from google.adk.cli.cli_eval import get_eval_sets_manager
+
+  with pytest.raises(ValueError, match="Unsupported evals storage URI"):
+    get_eval_sets_manager(eval_storage_uri="s3://bucket", agents_dir="some/dir")
+
+
+def test_cli_create_eval_set_invalid_storage_uri_raises_click_exception(
+    tmp_path,
+):
+  """adk eval_set create wraps bad storage URIs in ClickException."""
+  from click.testing import CliRunner
+  from google.adk.cli import cli_tools_click
+
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.cli_create_eval_set,
+      [str(agent_dir), "set_1", "--eval_storage_uri", "s3://bucket"],
+  )
+
+  assert result.exit_code == 1
+  assert "Unsupported evals storage URI: s3://bucket" in result.output
+
+
+def test_cli_add_eval_case_invalid_storage_uri_raises_click_exception(
+    tmp_path,
+):
+  """adk eval_set add_eval_case wraps bad storage URIs in ClickException."""
+  from click.testing import CliRunner
+  from google.adk.cli import cli_tools_click
+
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  scenarios_file = tmp_path / "scenarios.json"
+  scenarios_file.write_text("{}", encoding="utf-8")
+  session_input_file = tmp_path / "session_input.json"
+  session_input_file.write_text("{}", encoding="utf-8")
+
+  result = CliRunner().invoke(
+      cli_tools_click.cli_add_eval_case,
+      [
+          str(agent_dir),
+          "set_1",
+          "--scenarios_file",
+          str(scenarios_file),
+          "--session_input_file",
+          str(session_input_file),
+          "--eval_storage_uri",
+          "s3://bucket",
+      ],
+  )
+
+  assert result.exit_code == 1
+  assert "Unsupported evals storage URI: s3://bucket" in result.output
+  assert "Failed to add eval case(s):" not in result.output
+
+
+def test_cli_eval_invalid_storage_uri_raises_click_exception(
+    monkeypatch, tmp_path
+):
+  """adk eval wraps bad storage URIs in ClickException."""
+  from click.testing import CliRunner
+  from google.adk.cli import cli_tools_click
+
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  monkeypatch.setattr(
+      "google.adk.cli.cli_eval.get_app_or_root_agent",
+      mock.AsyncMock(return_value=(None, BaseAgent(name="root_agent"))),
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.cli_eval,
+      [str(agent_dir), "--eval_storage_uri", "s3://bucket"],
+  )
+
+  assert result.exit_code == 1
+  assert "Unsupported evals storage URI: s3://bucket" in result.output
 
 
 @pytest.mark.asyncio

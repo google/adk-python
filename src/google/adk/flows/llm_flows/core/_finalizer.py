@@ -16,11 +16,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from collections.abc import Sequence
 import contextlib
 from typing import Any
 from typing import AsyncGenerator
 from typing import Iterator
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from opentelemetry import trace
 
@@ -30,6 +33,7 @@ from ....agents.callback_context import CallbackContext
 from ....agents.invocation_context import InvocationContext
 from ....agents.readonly_context import ReadonlyContext
 from ....events.event import Event
+from ....events.event import TOOL_DISPLAY_NAMES_METADATA_KEY
 from ....models.llm_request import LlmRequest
 from ....models.llm_response import LlmResponse
 from ....telemetry import _instrumentation
@@ -39,6 +43,26 @@ from ....utils._callback_pipeline import _stop_on_truthy
 from ....utils._runner_utils import _stream_in_caller_scope
 from ....utils.context_utils import Aclosing
 from ._utils import as_llm_agent as _as_llm_agent
+
+if TYPE_CHECKING:
+  from google.genai import types
+
+  from ....tools.base_tool import BaseTool
+
+
+def _collect_tool_display_names(
+    function_calls: Sequence[types.FunctionCall],
+    tools_dict: Mapping[str, BaseTool],
+) -> dict[str, str]:
+  """Collects display titles for called tools that declare a non-empty title."""
+  return {
+      fc.name: title
+      for fc in function_calls
+      if fc.name
+      and (tool := tools_dict.get(fc.name)) is not None
+      and isinstance(raw_title := tool.title, str)
+      and (title := raw_title.strip())
+  }
 
 
 @contextlib.contextmanager
@@ -99,6 +123,22 @@ def finalize_model_response_event(
               function_calls, llm_request.tools_dict
           )
       )
+      if tool_display_names := _collect_tool_display_names(
+          function_calls, llm_request.tools_dict
+      ):
+        raw_metadata = finalized_event.custom_metadata
+        custom_metadata: dict[str, Any] = (
+            dict(raw_metadata) if isinstance(raw_metadata, Mapping) else {}
+        )
+        raw_existing = custom_metadata.get(TOOL_DISPLAY_NAMES_METADATA_KEY)
+        existing_names = (
+            dict(raw_existing) if isinstance(raw_existing, Mapping) else {}
+        )
+        custom_metadata[TOOL_DISPLAY_NAMES_METADATA_KEY] = {
+            **existing_names,
+            **tool_display_names,
+        }
+        finalized_event.custom_metadata = custom_metadata
 
   return finalized_event
 

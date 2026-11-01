@@ -7295,5 +7295,67 @@ async def test_cfc_is_supported_on_endpoint_id_when_check_disabled(monkeypatch):
   assert invocation_context.run_config.support_cfc
 
 
+@pytest.mark.asyncio
+async def test_run_async_post_invocation_compaction_aborts_inflight():
+  """Aborting while post-invocation compaction runs cancels summarization."""
+  from google.adk.apps import app as app_lib  # pylint: disable=g-import-not-at-top
+  from google.adk.apps import base_events_summarizer  # pylint: disable=g-import-not-at-top
+
+  started, cancelled, abort_signal = (
+      asyncio.Event(),
+      asyncio.Event(),
+      asyncio.Event(),
+  )
+
+  async def _slow(*, events):
+    del events
+    started.set()
+    try:
+      await asyncio.sleep(10)
+    except asyncio.CancelledError:
+      cancelled.set()
+      raise
+
+  summarizer = mock.create_autospec(
+      base_events_summarizer.BaseEventsSummarizer, instance=True
+  )
+  summarizer.maybe_summarize_events = AsyncMock(side_effect=_slow)
+  runner = Runner(
+      app=App(
+          name=TEST_APP_ID,
+          root_agent=MockAgent(name="agent"),
+          events_compaction_config=app_lib.EventsCompactionConfig(
+              compaction_interval=1, overlap_size=0, summarizer=summarizer
+          ),
+      ),
+      session_service=InMemorySessionService(),
+      auto_create_session=True,
+  )
+
+  async def _consume():
+    async with aclosing(
+        runner.run_async(
+            user_id=TEST_USER_ID,
+            session_id="s",
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="Hi")]
+            ),
+            abort_signal=abort_signal,
+        )
+    ) as agen:
+      return [e async for e in agen]
+
+  task = asyncio.create_task(_consume())
+  await started.wait()
+  abort_signal.set()
+  events = await asyncio.wait_for(task, timeout=0.5)
+  assert len(events) == 1
+  assert cancelled.is_set()
+  session = await runner.session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id="s"
+  )
+  assert not [e for e in session.events if e.actions.compaction]
+
+
 if __name__ == "__main__":
   pytest.main([__file__])

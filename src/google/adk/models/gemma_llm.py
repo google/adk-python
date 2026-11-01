@@ -35,6 +35,7 @@ from pydantic import AliasChoices
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic import ValidationError
+from pydantic_core import to_jsonable_python
 from typing_extensions import override
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -286,7 +287,7 @@ def _convert_content_parts_for_gemma(
       has_function_response_part = True
       response_text = (
           f'Invoking tool `{func_response.name}` produced:'
-          f' `{json.dumps(func_response.response)}`.'
+          f' `{_function_response_to_json(func_response.response)}`.'
       )
       new_parts.append(Part.from_text(text=response_text))
     elif func_call := part.function_call:
@@ -297,6 +298,43 @@ def _convert_content_parts_for_gemma(
     else:
       new_parts.append(part)
   return new_parts, has_function_response_part, has_function_call_part
+
+
+def _function_response_to_json(response: dict[str, Any] | None) -> str:
+  """Serializes a function response payload as the JSON text Gemma 3 reads.
+
+  The payload holds whatever the tool returned, which can include values the
+  json module cannot encode, such as datetimes, bytes or Pydantic models. They
+  are converted the way a Gemini request carries a function response: Pydantic
+  model fields that are None are dropped (None values in dicts and lists stay
+  null), field names are kept rather than aliased, and bytes are
+  base64-encoded. Unlike a Gemini request, which raises on them, values
+  Pydantic cannot serialize fall back to their str(). Non-ASCII text is kept as
+  is, so the model reads the characters rather than escape sequences, unless
+  the payload holds a lone surrogate, which UTF-8 cannot encode.
+
+  Args:
+    response: The payload of the function response.
+
+  Returns:
+    The payload as a JSON string.
+  """
+  try:
+    jsonable = to_jsonable_python(
+        response,
+        by_alias=False,
+        exclude_none=True,
+        bytes_mode='base64',
+        serialize_unknown=True,
+    )
+  except ValueError:  # Lone-surrogate keys and deep nesting; json.dumps copes.
+    return json.dumps(response, default=str)
+  text = json.dumps(jsonable, ensure_ascii=False)
+  try:
+    text.encode('utf-8')
+  except UnicodeEncodeError:  # Lone surrogates; escape to ASCII as before.
+    return json.dumps(jsonable)
+  return text
 
 
 def _build_gemma_function_system_instruction(

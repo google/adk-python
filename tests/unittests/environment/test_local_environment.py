@@ -81,6 +81,46 @@ class TestReadFileWriteFile:
     assert data == b"first\r\nsecond\r\n"
 
   @pytest.mark.asyncio
+  async def test_unencodable_text_does_not_truncate_existing_file(
+      self, env: LocalEnvironment
+  ):
+    """An encoding error leaves existing file bytes intact."""
+    original = b"keep these bytes\n"
+    await env.write_file("existing.txt", original)
+
+    with pytest.raises(UnicodeEncodeError):
+      await env.write_file("existing.txt", "replacement \ud800")
+
+    assert await env.read_file("existing.txt") == original
+
+    with pytest.raises(UnicodeEncodeError):
+      await env.write_file(Path("new_dir/file.txt"), "replacement \ud800")
+
+    assert not (env.working_dir / "new_dir").exists()
+
+  @pytest.mark.asyncio
+  async def test_invalid_content_does_not_truncate_existing_file(
+      self, env: LocalEnvironment
+  ):
+    """An invalid content type leaves existing file bytes intact."""
+    original = b"keep these bytes\n"
+    await env.write_file("existing.txt", original)
+
+    with pytest.raises(
+        TypeError, match="content must be str or bytes, got int"
+    ):
+      await env.write_file("existing.txt", 123)
+
+    assert await env.read_file("existing.txt") == original
+
+    with pytest.raises(
+        TypeError, match="content must be str or bytes, got int"
+    ):
+      await env.write_file(Path("new_dir/file.txt"), 123)
+
+    assert not (env.working_dir / "new_dir").exists()
+
+  @pytest.mark.asyncio
   async def test_write_creates_parent_dirs(self, env: LocalEnvironment):
     """Parent directories are created automatically."""
     await env.write_file(Path("sub/dir/file.txt"), "nested")
@@ -125,6 +165,31 @@ class TestReadFileWriteFile:
     """Reading a missing file raises FileNotFoundError."""
     with pytest.raises(FileNotFoundError):
       await env.read_file(Path("does_not_exist.txt"))
+
+  @pytest.mark.asyncio
+  async def test_read_file_stream_yields_read_file_bytes_in_chunks(
+      self, env: LocalEnvironment, monkeypatch: pytest.MonkeyPatch
+  ):
+    """read_file_stream yields read_file's bytes without a whole-file read."""
+    await env.write_file("big.txt", b"line\n" * 30_000)
+    expected = await env.read_file("big.txt")
+
+    def _fail_sync_read(path: Path) -> bytes:
+      raise AssertionError(f"_sync_read should not be called: {path}")
+
+    monkeypatch.setattr(env, "_sync_read", _fail_sync_read)
+
+    chunks = [chunk async for chunk in env.read_file_stream("big.txt")]
+
+    assert b"".join(chunks) == expected
+    assert len(chunks) > 1
+
+  @pytest.mark.asyncio
+  async def test_read_file_stream_missing_raises(self, env: LocalEnvironment):
+    """Streaming a missing file raises FileNotFoundError."""
+    with pytest.raises(FileNotFoundError):
+      async for _ in env.read_file_stream("does_not_exist.txt"):
+        pass
 
 
 class TestExecuteTimeout:

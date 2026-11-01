@@ -820,6 +820,83 @@ def test_custom_schema(env_variables):
   assert mock_model.requests[1].config.response_mime_type == 'application/json'
 
 
+@mark.parametrize('skip_summarization', [False, True])
+def test_invalid_input_schema_args_return_error_to_model(skip_summarization):
+  class TripInput(BaseModel):
+    city: str
+    days: int
+
+  tool_agent_model = testing_utils.MockModel.create(responses=['unused'])
+  tool_agent = Agent(
+      name='tool_agent', model=tool_agent_model, input_schema=TripInput
+  )
+  root_model = testing_utils.MockModel.create(
+      responses=[
+          Part.from_function_call(name='tool_agent', args={'city': 'Paris'}),
+          'retrying',
+      ]
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=root_model,
+      tools=[
+          AgentTool(agent=tool_agent, skip_summarization=skip_summarization)
+      ],
+  )
+
+  events = testing_utils.InMemoryRunner(root_agent).run('plan a trip')
+
+  function_responses = []
+  for event in events:
+    function_responses.extend(event.get_function_responses())
+  assert len(function_responses) == 1
+  error = function_responses[0].response['error']
+  assert error.startswith(
+      'Invoking `tool_agent()` failed due to argument validation errors:'
+  )
+  assert 'days' in error
+  assert testing_utils.simplify_events(events)[-1] == (
+      'root_agent',
+      'retrying',
+  )
+  assert not tool_agent_model.requests
+
+
+@mark.asyncio
+async def test_single_turn_tool_invalid_input_schema_args_return_error_to_model():
+  from google.adk.tools.agent_tool import _SingleTurnAgentTool
+
+  class TripInput(BaseModel):
+    city: str
+    days: int
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=testing_utils.MockModel.create(responses=['unused']),
+      input_schema=TripInput,
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  invocation_context = InvocationContext(
+      invocation_id='invocation_id',
+      agent=tool_agent,
+      session=session,
+      session_service=session_service,
+  )
+
+  result = await _SingleTurnAgentTool(tool_agent).run_async(
+      args={'city': 'Paris'},
+      tool_context=ToolContext(invocation_context=invocation_context),
+  )
+
+  assert result['error'].startswith(
+      'Invoking `tool_agent()` failed due to argument validation errors:'
+  )
+  assert 'days' in result['error']
+
+
 @mark.parametrize(
     'env_variables',
     [
@@ -2800,7 +2877,8 @@ async def test_agent_tool_skips_post_invocation_compaction_on_last_call():
 
   Setup: the caller's app sets token_threshold=100 with summarizer=None and
     wraps a SequentialAgent whose LlmAgent sub-agent stays below the threshold
-    on its first call (20 tokens) and crosses it on its final call (200 tokens).
+    after its first call (20 tokens plus a ~45-token tool call and response)
+    and crosses it on its final call (200 tokens).
   Act: run the root agent, which calls the wrapped SequentialAgent tool once.
   Assert: the nested run finishes without running post-invocation compaction,
     which would raise ValueError on SequentialAgent with summarizer=None or
@@ -2808,8 +2886,8 @@ async def test_agent_tool_skips_post_invocation_compaction_on_last_call():
   """
 
   def read_large_file() -> str:
-    """Returns a large file body."""
-    return 'lorem ipsum dolor sit amet ' * 80
+    """Returns a file body small enough to keep the first call under 100."""
+    return 'lorem ipsum dolor sit amet ' * 5
 
   read_call = Part.from_function_call(name='read_large_file', args={})
   tool_agent_model = testing_utils.MockModel.create(
@@ -3102,7 +3180,18 @@ async def test_agent_tool_skips_post_compaction_on_empty_nested_run(
     use_custom_summarizer: bool,
     wrap_in_sequential: bool,
 ):
-  """A nested run yielding no events skips post-invocation compaction."""
+  """A nested run yielding no events skips post-invocation compaction.
+
+  Setup: the caller's app sets token_threshold=100, and the root agent calls
+    the wrapped agent with a ~135-token request, which is all the nested
+    session holds, so post-invocation compaction would summarize it. The
+    nested run ends before the wrapped agent calls its model.
+  Act: run the root agent, which calls the agent tool once.
+  Assert: only the caller compacts, once, before its second model call: the
+    request it sent counts toward its own threshold too. The nested session is
+    never summarized, by a custom summarizer or by a default one built from
+    the wrapped agent's model.
+  """
 
   def stop_before_agent(callback_context):
     callback_context._invocation_context.end_invocation = True
@@ -3128,18 +3217,25 @@ async def test_agent_tool_skips_post_compaction_on_empty_nested_run(
       name=wrapped_agent.name,
       args={'request': 'lorem ipsum dolor sit amet ' * 20},
   )
+  # Without a custom summarizer, the caller's default one uses its own model.
+  root_responses = (
+      [nested_call, 'root answer']
+      if use_custom_summarizer
+      else [nested_call, 'CALLER SUMMARY', 'root answer']
+  )
+  root_agent_model = testing_utils.MockModel.create(
+      responses=root_responses,
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=10
+      ),
+  )
   root_agent = Agent(
       name='root_agent',
-      model=testing_utils.MockModel.create(
-          responses=[nested_call, 'root answer'],
-          usage_metadata=types.GenerateContentResponseUsageMetadata(
-              prompt_token_count=10
-          ),
-      ),
+      model=root_agent_model,
       tools=[AgentTool(agent=wrapped_agent)],
   )
   summarizer_model = testing_utils.MockModel.create(
-      responses=['NESTED SUMMARY'] * 5
+      responses=['CALLER SUMMARY'] * 5
   )
   app = App(
       name='parent_app',
@@ -3160,4 +3256,9 @@ async def test_agent_tool_skips_post_compaction_on_empty_nested_run(
 
   assert events[-1].content.parts[0].text == 'root answer'
   assert len(tool_agent_model.requests) == 0
-  assert len(summarizer_model.requests) == 0
+  assert len(summarizer_model.requests) == (1 if use_custom_summarizer else 0)
+  assert len(root_agent_model.requests) == len(root_responses)
+  compactions = [
+      event for event in runner.session.events if event.actions.compaction
+  ]
+  assert len(compactions) == 1

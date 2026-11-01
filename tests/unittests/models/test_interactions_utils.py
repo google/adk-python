@@ -23,11 +23,18 @@ from datetime import timezone
 import json
 import logging
 import typing
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
+from google.adk.agents._streaming_mode import StreamingMode
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.run_config import RunConfig
 from google.adk.models import interactions_utils
+from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.runners import InMemoryRunner
+from google.genai import Client
 from google.genai import interactions
 from google.genai import types
 from google.genai.interactions import CodeExecutionResultStep
@@ -37,6 +44,7 @@ from google.genai.interactions import ImageContent
 from google.genai.interactions import Interaction
 from google.genai.interactions import InteractionCompletedEvent
 from google.genai.interactions import InteractionCreatedEvent
+from google.genai.interactions import InteractionSSEEvent
 from google.genai.interactions import InteractionSseEventInteraction
 from google.genai.interactions import ModelOutputStep
 from google.genai.interactions import StepDelta
@@ -406,6 +414,43 @@ class TestConvertPartToInteractionContent:
         result={'error': 'something went wrong'},
         is_error=True,
     )
+
+  @pytest.mark.parametrize('error_key', ['isError', 'is_error'])
+  def test_function_response_failed_mcp_result_is_error(self, error_key):
+    """A failed MCP CallToolResult reports the error with isError/is_error."""
+    mcp_result = {
+        'content': [{'type': 'text', 'text': 'Permission denied: /etc/shadow'}],
+        error_key: True,
+    }
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            name='read_file', id='call_123', response=mcp_result
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result['is_error'] is True
+    assert result['result'] == mcp_result
+
+  @pytest.mark.parametrize('error_key', ['isError', 'is_error'])
+  def test_function_response_successful_mcp_result_is_not_error(
+      self, error_key
+  ):
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            name='read_file',
+            id='call_123',
+            response={
+                'content': [{'type': 'text', 'text': 'ok'}],
+                error_key: False,
+            },
+        )
+    )
+
+    result = interactions_utils._convert_part_to_interaction_content(part)
+
+    assert result['is_error'] is False
 
   def test_function_response_dict_not_double_serialized(self):
     """Regression test: avoid double-serializing bash tool outputs.
@@ -1911,8 +1956,15 @@ class TestConvertInteractionEventToLlmResponse:
     assert result is None
     assert state.parts == []
 
-  def test_thought_signature_delta_attaches_to_last_thought(self):
-    """thought_signature mutates the last thought part and emits no event."""
+  def test_thought_signature_delta_after_a_summary_gets_its_own_part(
+      self,
+  ) -> None:
+    """The signature follows the summary on a text-free part of its own.
+
+    A part that also carries text is re-encoded as a text step, which has no
+    signature field, so a signature written onto the summary part would be
+    dropped on the next request.
+    """
     state = interactions_utils._StreamState()
     interactions_utils.convert_interaction_event_to_llm_response(
         StepDelta(
@@ -1936,8 +1988,14 @@ class TestConvertInteractionEventToLlmResponse:
         state,
         interaction_id='int_ts',
     )
+
     assert result is None
-    assert state.parts[-1].thought_signature == b'sig-bytes'
+    assert len(state.parts) == 2
+    assert state.parts[0].text == 'reasoning'
+    assert state.parts[0].thought_signature is None
+    assert state.parts[1].thought is True
+    assert state.parts[1].text is None
+    assert state.parts[1].thought_signature == b'sig-bytes'
 
   def test_thought_signature_delta_alone_becomes_its_own_part(self):
     """A signature with no preceding thought summary still reaches the stream.
@@ -2011,6 +2069,67 @@ class TestConvertInteractionEventToLlmResponse:
 
     assert result is None
     assert state.parts == []
+
+  def test_thought_signature_deltas_of_two_thought_steps_are_both_kept(
+      self,
+  ) -> None:
+    """Each thought step keeps its own signature, in step order.
+
+    The non-streaming conversion gives every thought step a part of its own,
+    so a later step's signature must not overwrite an earlier one's.
+    """
+    state = interactions_utils._StreamState()
+    events: list[InteractionSSEEvent] = [
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'thought_signature',
+                'signature': base64.b64encode(b'first-sig').decode('utf-8'),
+            },
+        ),
+        StepStart(
+            event_type='step.start',
+            index=1,
+            step=FunctionCallStep(
+                type='function_call',
+                id='call_1',
+                name='get_weather',
+                arguments={},
+            ),
+        ),
+        StepStop(event_type='step.stop', index=1),
+        StepDelta(
+            event_type='step.delta',
+            index=2,
+            delta={
+                'type': 'thought_signature',
+                'signature': base64.b64encode(b'second-sig').decode('utf-8'),
+            },
+        ),
+        StepStart(
+            event_type='step.start',
+            index=3,
+            step=FunctionCallStep(
+                type='function_call',
+                id='call_2',
+                name='get_time',
+                arguments={},
+            ),
+        ),
+        StepStop(event_type='step.stop', index=3),
+    ]
+    for event in events:
+      interactions_utils.convert_interaction_event_to_llm_response(
+          event, state, interaction_id='int_ts'
+      )
+
+    assert [part.thought_signature for part in state.parts] == [
+        b'first-sig',
+        None,
+        b'second-sig',
+        None,
+    ]
 
   def test_audio_delta_with_data(self):
     """audio delta becomes an inline_data part via the shared media handler."""
@@ -2929,6 +3048,193 @@ class TestConvertInteractionEventToLlmResponse:
         in caplog.text
     )
     assert state.parts[0].function_call.args == {'city': 'Paris'}
+
+
+class TestThoughtSignatureRoundTrip:
+  """A tool-calling turn's thought signature reaches the request that follows.
+
+  With thought summaries on, the summary streams ahead of the signature. Kept
+  on the summary part, the signature is lost on the ``previous_interaction_id``
+  path: the summary is echoed back as ``model_output`` text and the signature
+  is dropped. A stateless Gemini 3 request carrying the tool result without
+  the signature is rejected.
+  """
+
+  _SIGNATURE = base64.b64encode(b'sig-bytes').decode('utf-8')
+  _SUMMARY = 'I should check the weather.'
+
+  def _streamed_events(self) -> list[InteractionSSEEvent]:
+    return [
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'thought_summary',
+                'content': {'type': 'text', 'text': self._SUMMARY},
+            },
+        ),
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'thought_signature', 'signature': self._SIGNATURE},
+        ),
+        StepStart(
+            event_type='step.start',
+            index=1,
+            step=FunctionCallStep(
+                type='function_call',
+                id='call_1',
+                name='get_weather',
+                arguments={},
+            ),
+        ),
+        StepDelta(
+            event_type='step.delta',
+            index=1,
+            delta={'type': 'arguments_delta', 'arguments': '{"city": "Tokyo"}'},
+        ),
+        StepStop(event_type='step.stop', index=1),
+        InteractionCompletedEvent(
+            event_type='interaction.completed',
+            interaction=InteractionSseEventInteraction(
+                id='int_1', status='requires_action', steps=[]
+            ),
+        ),
+    ]
+
+  def _streamed_turn(self) -> types.Content:
+    state = interactions_utils._StreamState()
+    responses = [
+        interactions_utils.convert_interaction_event_to_llm_response(
+            event, state, interaction_id='int_1'
+        )
+        for event in self._streamed_events()
+    ]
+    final_response = responses[-1]
+    assert final_response is not None
+    assert final_response.content is not None
+    return final_response.content
+
+  def _unary_turn(self) -> types.Content:
+    now = datetime.now(timezone.utc).isoformat()
+    interaction = Interaction(
+        id='int_1',
+        created=now,
+        updated=now,
+        status='requires_action',
+        steps=[
+            ThoughtStep(
+                type='thought',
+                signature=self._SIGNATURE,
+                summary=[TextContent(type='text', text=self._SUMMARY)],
+            ),
+            FunctionCallStep(
+                type='function_call',
+                id='call_1',
+                name='get_weather',
+                arguments={'city': 'Tokyo'},
+            ),
+        ],
+    )
+    response = interactions_utils.convert_interaction_to_llm_response(
+        interaction
+    )
+    assert response.content is not None
+    return response.content
+
+  @pytest.mark.parametrize('streamed', [True, False], ids=['streamed', 'unary'])
+  def test_signature_is_sent_back_with_the_tool_result(
+      self, streamed: bool
+  ) -> None:
+    """The follow-up request echoes the signature and not the summary."""
+    model_turn = self._streamed_turn() if streamed else self._unary_turn()
+    contents = [
+        types.Content(role='user', parts=[types.Part(text='Weather?')]),
+        model_turn,
+        types.Content(
+            role='user',
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id='call_1',
+                        name='get_weather',
+                        response={'weather': 'sunny'},
+                    )
+                )
+            ],
+        ),
+    ]
+
+    steps = interactions_utils._convert_contents_to_steps(
+        interactions_utils._get_latest_user_contents(contents)
+    )
+
+    assert [step['type'] for step in steps] == ['thought', 'function_result']
+    assert steps[0] == {'type': 'thought', 'signature': self._SIGNATURE}
+
+  async def test_runner_sends_the_streamed_signature_back(self) -> None:
+    """An agent streaming over the interactions API echoes the signature."""
+    client = MagicMock(spec=Client)
+    client.vertexai = False
+    client.aio.interactions.create = AsyncMock(
+        side_effect=[
+            _MockAsyncIterator([*self._streamed_events()]),
+            _MockAsyncIterator([
+                StepDelta(
+                    event_type='step.delta',
+                    index=0,
+                    delta={'type': 'text', 'text': 'It is sunny.'},
+                ),
+                InteractionCompletedEvent(
+                    event_type='interaction.completed',
+                    interaction=InteractionSseEventInteraction(
+                        id='int_2', status='completed', steps=[]
+                    ),
+                ),
+            ]),
+        ]
+    )
+
+    def get_weather(city: str) -> dict[str, str]:
+      """Returns the weather in a city."""
+      del city
+      return {'weather': 'sunny'}
+
+    runner = InMemoryRunner(
+        agent=LlmAgent(
+            name='weather_agent',
+            model=Gemini(
+                model='gemini-3-flash-preview',
+                use_interactions_api=True,
+                client=client,
+            ),
+            tools=[get_weather],
+        ),
+        app_name='weather_app',
+    )
+    session = await runner.session_service.create_session(
+        app_name='weather_app', user_id='user'
+    )
+    async for _ in runner.run_async(
+        user_id='user',
+        session_id=session.id,
+        new_message=types.Content(
+            role='user', parts=[types.Part(text='Weather in Tokyo?')]
+        ),
+        run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+    ):
+      pass
+
+    follow_up = client.aio.interactions.create.call_args_list[1].kwargs
+    assert follow_up['previous_interaction_id'] == 'int_1'
+    assert [step['type'] for step in follow_up['input']] == [
+        'thought',
+        'function_result',
+    ]
+    assert follow_up['input'][0] == {
+        'type': 'thought',
+        'signature': self._SIGNATURE,
+    }
 
 
 @pytest.mark.parametrize(

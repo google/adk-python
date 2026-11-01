@@ -97,6 +97,7 @@ from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
 from ._dev_deploy import register_dev_deploy_endpoints
 from .api_server import _is_local_client
+from .api_server import _reject_foreign_origin
 from .api_server import ApiServer
 
 NESTED_APP_SEPARATOR = "."
@@ -143,8 +144,10 @@ def _require_local_agent_builder_client(request: FastAPIRequest) -> None:
 
   Raises:
     HTTPException: 403, if the caller is not on the loopback interface and
-      ``ADK_ALLOW_REMOTE_AGENT_BUILDER`` is not set.
+      ``ADK_ALLOW_REMOTE_AGENT_BUILDER`` is not set, or if a browser sent it
+      from a foreign origin.
   """
+  _reject_foreign_origin()
   if _is_local_client(request.scope):
     return
   if (

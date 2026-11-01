@@ -30,7 +30,6 @@ from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
-from ..utils.feature_decorator import experimental
 from ._retry_options_utils import add_default_retry_options_if_not_present
 from .app_details import AppDetails
 from .eval_case import ConversationScenario
@@ -258,7 +257,6 @@ def _parse_validation_results(
   return results
 
 
-@experimental
 class HallucinationsV1Evaluator(Evaluator):
   """Evaluates whether a model response contains any false, contradictory, or unsupported claims.
 
