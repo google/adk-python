@@ -20,6 +20,8 @@ from typing import Optional
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
 from pydantic import alias_generators
+from pydantic import AliasChoices
+from pydantic import AliasPath
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -206,6 +208,19 @@ class Event(LlmResponse):
     for f in cls.model_fields.values():
       if f.alias:
         field_names.add(f.alias)
+      # A validation alias may consume an entire top-level input container.
+      validation_alias = f.validation_alias
+      if isinstance(validation_alias, str):
+        field_names.add(validation_alias)
+      elif isinstance(validation_alias, (AliasChoices, AliasPath)):
+        alias_paths = (
+            [validation_alias.path]
+            if isinstance(validation_alias, AliasPath)
+            else validation_alias.convert_to_aliases()
+        )
+        for alias_path in alias_paths:
+          if alias_path and isinstance(alias_path[0], str):
+            field_names.add(alias_path[0])
     message = None if 'message' in field_names else data.pop('message', None)
     state = None if 'state' in field_names else data.pop('state', None)
     route = None if 'route' in field_names else data.pop('route', None)
