@@ -2485,7 +2485,7 @@ class BigQueryLoggerConfig:
       retry_config: Retry configuration for writes.
       batch_size: Number of rows per batch.
       batch_flush_interval: Max time to wait before flushing a batch.
-      shutdown_timeout: Max time to wait for shutdown or cross-loop queue admission.
+      shutdown_timeout: Max wait for shutdown or unclaimed Live queue admission.
       queue_max_size: Max size of the in-memory queue. For ``queue_max_size >
         1``, ``min(max(2, queue_max_size // 100), queue_max_size - 1)`` slots
         (``0`` for ``queue_max_size <= 1``, ``1`` for ``queue_max_size == 2``,
@@ -3244,6 +3244,8 @@ _RESERVED_TERMINAL_QUEUE_SLOTS = 2
 _TERMINAL_QUEUE_EVENT_TYPES = frozenset(
     {"INVOCATION_COMPLETED", "INVOCATION_ERROR"}
 )
+_CONFIRMED_ADMISSION_EVENT_TYPES = frozenset({"LIVE_USAGE"})
+_LIVE_USAGE_HISTORY_SIZE = 1024
 
 
 class _RetryableWriteResponseError(Exception):
@@ -3283,7 +3285,7 @@ class BatchProcessor:
           ``queue_max_size=10000``), and never all of them, are kept for
           ``INVOCATION_COMPLETED`` and ``INVOCATION_ERROR`` rows; other rows see
           a full queue once only those slots remain.
-        shutdown_timeout: Max wait for shutdown or cross-loop queue admission.
+        shutdown_timeout: Max wait for shutdown or unclaimed Live queue admission.
         exactly_once_delivery: Whether to use committed-stream offsets to
           prevent retry duplicates. Replacement streams consume stream-creation
           quota, and unrecoverable/ambiguous batches may still be dropped.
@@ -3434,15 +3436,22 @@ class BatchProcessor:
         total,
     )
 
-  async def append(self, row: dict[str, Any]) -> bool:
+  async def append(
+      self,
+      row: dict[str, Any],
+      *,
+      admission_result: ConcurrentFuture[bool] | None = None,
+  ) -> bool:
     """Appends a row to the queue for batching.
 
     Args:
         row: Dictionary representing a single row.
+        admission_result: Optional Live receipt retained across caller cancellation.
 
     Returns:
-        Whether queue admission was confirmed, not whether BigQuery persisted it.
-        False includes rejection and a timed-out acknowledgement.
+        Whether the row was admitted or scheduled on the owner loop.
+        LIVE_USAGE waits for confirmed admission so its producer can deduplicate.
+        This does not confirm persistence in BigQuery.
     """
     try:
       running_loop = asyncio.get_running_loop()
@@ -3453,31 +3462,69 @@ class BatchProcessor:
       if not self._loop.is_running():
         self._record_drop("shutdown_cancelled", 1)
         return False
-      append = self.append(row)
+      if row.get("event_type") not in _CONFIRMED_ADMISSION_EVENT_TYPES:
+        try:
+          self._loop.call_soon_threadsafe(self._append_nowait, row)
+        except RuntimeError:
+          self._record_drop("shutdown_cancelled", 1)
+          return False
+        return True
+
+      admission: ConcurrentFuture[bool] = ConcurrentFuture()
+
+      if admission_result is not None:
+        if not admission_result.set_running_or_notify_cancel():
+          self._record_drop("shutdown_cancelled", 1)
+          return False
+
+        def settled(receipt: ConcurrentFuture[bool]) -> None:
+          accepted = False
+          try:
+            accepted = receipt.result()
+          except BaseException:
+            pass
+          admission_result.set_result(bool(accepted))
+
+        admission.add_done_callback(settled)
+
+      def admit() -> None:
+        # Claim before enqueueing so cancellation cannot hide an accepted row.
+        if not admission.set_running_or_notify_cancel():
+          return
+        try:
+          admission.set_result(self._append_nowait(row))
+        except BaseException as exc:
+          admission.set_exception(exc)
+
       try:
-        pending = asyncio.run_coroutine_threadsafe(append, self._loop)
+        self._loop.call_soon_threadsafe(admit)
       except RuntimeError:
-        append.close()
+        admission.cancel()
         self._record_drop("shutdown_cancelled", 1)
         return False
       try:
         return await asyncio.wait_for(
-            asyncio.wrap_future(pending), timeout=self.shutdown_timeout
+            asyncio.wrap_future(admission), timeout=self.shutdown_timeout
         )
       except asyncio.CancelledError:
+        if admission.cancel():
+          self._record_drop("shutdown_cancelled", 1)
         caller = asyncio.current_task()
         if (
-            pending.cancelled()
+            admission.cancelled()
             and caller is not None
             and not caller.cancelling()
         ):
-          self._record_drop("shutdown_cancelled", 1)
           return False
         raise
       except asyncio.TimeoutError:
-        # The owner may already have queued the row before the receipt timed out.
-        logger.warning("Timed out confirming BigQuery queue admission.")
-        return False
+        if admission.cancel():
+          self._record_drop("shutdown_cancelled", 1)
+          logger.warning("Timed out waiting for BigQuery queue admission.")
+          return False
+        # The owner claimed it; use the actual outcome rather than permitting
+        # another callback to retry an already queued report.
+        return await asyncio.wrap_future(admission)
     return self._append_nowait(row)
 
   def get_drop_stats(self) -> dict[str, int]:
@@ -8221,15 +8268,27 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       return
     t = timeout if timeout is not None else self.config.shutdown_timeout
     loop = asyncio.get_running_loop()
-    # Stable snapshot: shutdown used to iterate the live dict, so a
-    # concurrent state publication raised "dictionary changed size during
-    # iteration" and aborted cleanup.
-    with self._loop_states_guard:
-      states_snapshot = dict(self._loop_state_by_loop)
     teardown_completed = False
     teardown_error: Optional[BaseException] = None
     retained_remote_drains = 0
     try:
+      # Pending Live admissions must finish before their writers drain.
+      with self._loop_states_guard:
+        admissions = [
+            asyncio.wrap_future(result)
+            for result in self._live_usage_seen.values()
+            if not result.done()
+        ]
+      if admissions:
+        _, pending = await asyncio.wait(admissions, timeout=t)
+        if pending:
+          raise _ShutdownIncompleteError(
+              "Live usage admission did not complete; state retained for"
+              " retried close."
+          )
+      # Snapshot after admission so new writers are included in teardown.
+      with self._loop_states_guard:
+        states_snapshot = dict(self._loop_state_by_loop)
       # Correct Multi-Loop Shutdown:
       # 1. Shutdown current loop's processor directly.
       drained: list[asyncio.AbstractEventLoop] = []
@@ -9472,6 +9531,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       raw_content: Any = None,
       is_truncated: bool = False,
       event_data: Optional[EventData] = None,
+      admission_result: ConcurrentFuture[bool] | None = None,
   ) -> bool:
     """Logs an event to BigQuery.
 
@@ -9482,9 +9542,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         is_truncated: Whether the content is already truncated.
         event_data: Typed container for structured fields and extra attributes.
           Defaults to ``EventData()`` when not provided.
+        admission_result: Live receipt settled by the owning queue even if the
+          reporting caller is cancelled.
 
     Returns:
-        Whether admission to the batch processor's queue was confirmed.
+        Whether the row was admitted or scheduled on the batch processor's loop.
+        LIVE_USAGE waits for confirmed admission before suppressing duplicates.
     """
     if not self.config.enabled or self._is_shutting_down:
       return False
@@ -9748,7 +9811,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if self._is_shutting_down:
       self._count_local_drop("shutdown_race")
       return False
-    return await state.batch_processor.append(row)
+    if admission_result is None:
+      return await state.batch_processor.append(row)
+    return await state.batch_processor.append(
+        row, admission_result=admission_result
+    )
 
   # --- UPDATED CALLBACKS FOR V1 PARITY ---
 
@@ -9860,18 +9927,46 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if self._init_pid and self._init_pid != os.getpid():
       self._reset_runtime_state()
     key = (str.__str__(marker["connection_id"]), marker["sequence"])
+
+    def finished(result: ConcurrentFuture[bool]) -> None:
+      accepted = False
+      try:
+        accepted = result.result()
+      except BaseException:
+        pass
+      with self._loop_states_guard:
+        if not accepted and self._live_usage_seen.get(key) is result:
+          self._live_usage_seen.pop(key)
+        # Preserve pending reports while bounding the completed history.
+        while len(self._live_usage_seen) > _LIVE_USAGE_HISTORY_SIZE:
+          completed = next(
+              (
+                  identity
+                  for identity, outcome in self._live_usage_seen.items()
+                  if outcome.done()
+              ),
+              None,
+          )
+          if completed is None:
+            break
+          self._live_usage_seen.pop(completed)
+
     # Plugin instances can be shared by threads. Never hold this across I/O.
     while True:
       with self._loop_states_guard:
+        if self._is_shutting_down:
+          return
         previous = self._live_usage_seen.get(key)
         if previous is None:
           reservation: ConcurrentFuture[bool] = ConcurrentFuture()
           self._live_usage_seen[key] = reservation
+          reservation.add_done_callback(finished)
           break
         self._live_usage_seen.move_to_end(key)
       # A cancelled observer must not cancel another callback's admission.
       if await asyncio.shield(asyncio.wrap_future(previous)):
         return
+
     admitted = False
     try:
       serialized_usage, usage_lost = _serialize_usage_metadata(usage)
@@ -9886,6 +9981,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
               }
           },
           is_truncated=usage_lost,
+          admission_result=reservation,
           event_data=EventData(
               source_event=response if isinstance(response, Event) else None,
               custom_metadata=response.custom_metadata,
@@ -9904,24 +10000,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           ),
       )
     finally:
-      with self._loop_states_guard:
-        if not admitted:
-          if self._live_usage_seen.get(key) is reservation:
-            self._live_usage_seen.pop(key)
+      # Once append takes ownership, only the writer's receipt settles this.
+      if not reservation.running() and not reservation.done():
         reservation.set_result(bool(admitted))
-        # Keep pending admissions until their observers can receive the result.
-        while len(self._live_usage_seen) > 1024:
-          completed = next(
-              (
-                  identity
-                  for identity, result in self._live_usage_seen.items()
-                  if result.done()
-              ),
-              None,
-          )
-          if completed is None:
-            break
-          self._live_usage_seen.pop(completed)
 
   @_safe_callback
   async def on_event_callback(
@@ -9969,11 +10050,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           event.content is None
           and event.error_code is None
           and not event.actions.state_delta
-          and not event.actions.model_dump(
-              exclude={"state_delta"},
-              exclude_defaults=True,
-              exclude_none=True,
-              warnings=False,
+          # Presence checks must not run user serializers before sanitization.
+          and not any(
+              getattr(event.actions, name, None) is not None
+              and getattr(event.actions, name, None)
+              != field.get_default(call_default_factory=True)
+              for name, field in type(event.actions).model_fields.items()
+              if name != "state_delta"
           )
           and getattr(event, "output", None) is None
           and not event.long_running_tool_ids

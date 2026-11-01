@@ -271,6 +271,74 @@ async def test_live_usage_actions_preserve_private_transfer_handling(
     assert transfer["to_agent"] == target
 
 
+@pytest.mark.parametrize("failure", ["serializer", "override", "nested_state"])
+async def test_live_usage_action_serializers_cannot_leak_or_hide_transfers(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    caplog,
+    failure,
+):
+  """Action inspection preserves transfer and checkpoint rows without dumping."""
+  secret = "synthetic_action_serializer_value"
+  calls = []
+
+  class FailingActions(event_actions_lib.EventActions):
+
+    @field_serializer("transfer_to_agent")
+    def serialize_transfer(self, value):
+      calls.append(True)
+      raise ValueError(secret)
+
+  class OverriddenActions(event_actions_lib.EventActions):
+
+    def model_dump(self, **kwargs):
+      calls.append(True)
+      raise ValueError(secret)
+
+  class FailingPayload(BaseModel):
+    value: str = secret
+
+    @field_serializer("value")
+    def serialize_value(self, value):
+      calls.append(True)
+      raise ValueError(secret)
+
+  if failure == "serializer":
+    actions = FailingActions(transfer_to_agent="next_agent")
+  elif failure == "override":
+    actions = OverriddenActions(transfer_to_agent="next_agent")
+  else:
+    actions = event_actions_lib.EventActions(
+        transfer_to_agent="next_agent", agent_state={"nested": FailingPayload()}
+    )
+  live_usage_event.actions = actions
+  with (
+      caplog.at_level(logging.WARNING),
+      warnings.catch_warnings(record=True) as emitted,
+  ):
+    warnings.simplefilter("always")
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=live_usage_event
+    )
+    await bq_plugin_inst.flush()
+
+  assert secret not in caplog.text
+  assert not any(secret in str(item.message) for item in emitted)
+  rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+  assert [row["event_type"] for row in rows] == (
+      ["LIVE_USAGE", "AGENT_TRANSFER", "AGENT_STATE_CHECKPOINT"]
+      if failure == "nested_state"
+      else ["LIVE_USAGE", "AGENT_TRANSFER"]
+  )
+  assert secret not in json.dumps(rows, default=str)
+  assert json.loads(rows[1]["content"])["to_agent"] == "next_agent"
+  if failure != "nested_state":
+    assert not calls
+
+
 async def test_live_usage_records_raw_counts_and_modality_details(
     bq_plugin_inst,
     invocation_context,
@@ -522,18 +590,22 @@ async def test_owner_admission_cancellation_preserves_caller_cancellation(
       mock_write_client, dummy_arrow_schema, DEFAULT_STREAM_NAME, loop=loop
   )
 
-  def schedule(coroutine, target):
-    coroutine.close()
+  callbacks = []
+
+  def schedule(callback):
+    callbacks.append(callback)
     scheduled.set()
     if not caller_cancelled:
       pending.cancel()
-    return pending
 
   try:
     with (
         mock.patch.object(loop, "is_running", return_value=True),
+        mock.patch.object(loop, "call_soon_threadsafe", side_effect=schedule),
         mock.patch.object(
-            asyncio, "run_coroutine_threadsafe", side_effect=schedule
+            bigquery_agent_analytics_plugin,
+            "ConcurrentFuture",
+            return_value=pending,
         ),
     ):
       task = asyncio.create_task(processor.append({"event_type": "LIVE_USAGE"}))
@@ -544,9 +616,10 @@ async def test_owner_admission_cancellation_preserves_caller_cancellation(
           await task
       else:
         assert await task is False
-    assert processor.get_drop_stats()["shutdown_cancelled"] == (
-        0 if caller_cancelled else 1
-    )
+    for callback in callbacks:
+      callback()
+    assert processor._queue.empty()
+    assert processor.get_drop_stats()["shutdown_cancelled"] == 1
   finally:
     loop.close()
 
@@ -564,11 +637,8 @@ async def test_live_usage_retries_owner_cancelled_admission(
       mock_write_client, dummy_arrow_schema, DEFAULT_STREAM_NAME, loop=loop
   )
 
-  def cancel_admission(coroutine, target):
-    coroutine.close()
-    pending = concurrent.futures.Future()
-    pending.cancel()
-    return pending
+  pending = concurrent.futures.Future()
+  pending.cancel()
 
   try:
     with (
@@ -579,7 +649,14 @@ async def test_live_usage_retries_owner_cancelled_admission(
         ),
         mock.patch.object(loop, "is_running", return_value=True),
         mock.patch.object(
-            asyncio, "run_coroutine_threadsafe", side_effect=cancel_admission
+            loop,
+            "call_soon_threadsafe",
+            side_effect=lambda callback: callback(),
+        ),
+        mock.patch.object(
+            bigquery_agent_analytics_plugin,
+            "ConcurrentFuture",
+            side_effect=[concurrent.futures.Future(), pending],
         ),
     ):
       await bq_plugin_inst.on_event_callback(
@@ -776,6 +853,7 @@ async def test_batch_admission_bounds_wait_for_a_stalled_owner_loop(
         )
         is False
     )
+    assert processor.get_drop_stats()["shutdown_cancelled"] == 1
   finally:
     release.set()
     await asyncio.wrap_future(
@@ -785,6 +863,7 @@ async def test_batch_admission_bounds_wait_for_a_stalled_owner_loop(
     await asyncio.to_thread(thread.join, 5)
     assert not thread.is_alive()
     loop.close()
+  assert processor._queue.empty()
 
 
 async def test_batch_admission_timeout_does_not_claim_an_admitted_row_was_dropped(
@@ -806,24 +885,423 @@ async def test_batch_admission_timeout_does_not_claim_an_admitted_row_was_droppe
       shutdown_timeout=0.01,
   )
   admitted = []
+  wrap_future = asyncio.wrap_future
 
   def delay_acknowledgement(pending):
     admitted.append(pending.result(timeout=2))
-    return caller_loop.create_future()
+    if len(admitted) == 1:
+      return caller_loop.create_future()
+    return wrap_future(pending)
 
   try:
     assert await asyncio.to_thread(ready.wait, 5)
     with mock.patch.object(
         asyncio, "wrap_future", side_effect=delay_acknowledgement
     ):
-      assert await processor.append({"event_type": "LIVE_USAGE"}) is False
-    assert admitted == [True]
+      assert await processor.append({"event_type": "LIVE_USAGE"}) is True
+    assert all(admitted)
+    assert processor._queue.qsize() == 1
     assert processor.get_drop_stats()["shutdown_cancelled"] == 0
   finally:
     loop.call_soon_threadsafe(loop.stop)
     await asyncio.to_thread(thread.join, 5)
     assert not thread.is_alive()
     loop.close()
+
+
+async def test_batch_admission_waits_for_an_already_claimed_row(
+    mock_write_client, dummy_arrow_schema
+):
+  """A deadline after the owner claims admission still returns its true outcome."""
+  loop = asyncio.new_event_loop()
+  ready = threading.Event()
+  entered = threading.Event()
+  release = threading.Event()
+  loop.call_soon(ready.set)
+  thread = threading.Thread(target=loop.run_forever)
+  thread.start()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client,
+      dummy_arrow_schema,
+      DEFAULT_STREAM_NAME,
+      loop=loop,
+      shutdown_timeout=0.01,
+  )
+  append_nowait = processor._append_nowait
+
+  def blocked_append(row):
+    entered.set()
+    release.wait(5)
+    return append_nowait(row)
+
+  task = None
+  try:
+    assert await asyncio.to_thread(ready.wait, 5)
+    with mock.patch.object(
+        processor, "_append_nowait", side_effect=blocked_append
+    ):
+      task = asyncio.create_task(processor.append({"event_type": "LIVE_USAGE"}))
+      assert await asyncio.to_thread(entered.wait, 5)
+      await asyncio.sleep(0.05)
+      assert not task.done()
+      release.set()
+      assert await task is True
+    assert processor._queue.qsize() == 1
+    assert processor.get_drop_stats()["shutdown_cancelled"] == 0
+  finally:
+    release.set()
+    if task is not None and not task.done():
+      task.cancel()
+      await asyncio.gather(task, return_exceptions=True)
+    await asyncio.wrap_future(
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop)
+    )
+    loop.call_soon_threadsafe(loop.stop)
+    await asyncio.to_thread(thread.join, 5)
+    assert not thread.is_alive()
+    loop.close()
+
+
+@pytest.mark.parametrize(
+    "event_type", ["LLM_REQUEST", "TOOL_STARTING", "INVOCATION_COMPLETED"]
+)
+async def test_other_events_do_not_wait_for_background_admission(
+    mock_write_client, dummy_arrow_schema, event_type
+):
+  """Ordinary events return while the background owner is still blocked."""
+  loop = asyncio.new_event_loop()
+  entered = threading.Event()
+  release = threading.Event()
+
+  def block_owner():
+    entered.set()
+    release.wait(5)
+
+  loop.call_soon(block_owner)
+  thread = threading.Thread(target=loop.run_forever)
+  thread.start()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client, dummy_arrow_schema, DEFAULT_STREAM_NAME, loop=loop
+  )
+  task = None
+  try:
+    assert await asyncio.to_thread(entered.wait, 5)
+    task = asyncio.create_task(processor.append({"event_type": event_type}))
+    await asyncio.sleep(0)
+    assert task.done()
+    assert await task is True
+    assert processor._queue.empty()
+    release.set()
+    await asyncio.wrap_future(
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop)
+    )
+    assert processor._queue.qsize() == 1
+  finally:
+    if task is not None and not task.done():
+      task.cancel()
+      await asyncio.gather(task, return_exceptions=True)
+    release.set()
+    await asyncio.wrap_future(
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.01), loop)
+    )
+    loop.call_soon_threadsafe(loop.stop)
+    await asyncio.to_thread(thread.join, 5)
+    assert not thread.is_alive()
+    loop.close()
+
+
+async def test_live_usage_history_keeps_pending_reports(
+    bq_plugin_inst, invocation_context, live_usage_event
+):
+  """Eviction of completed reports must not permit a pending duplicate."""
+  entered = asyncio.Event()
+  release = asyncio.Event()
+  sequences = []
+
+  async def log_event(*args, **kwargs):
+    sequence = kwargs["event_data"].extra_attributes["live_usage"]["sequence"]
+    sequences.append(sequence)
+    if sequence == 1:
+      entered.set()
+      await release.wait()
+    return True
+
+  context = CallbackContext(invocation_context)
+  owner = None
+  waiter = None
+  try:
+    with mock.patch.object(bq_plugin_inst, "_log_event", side_effect=log_event):
+      owner = asyncio.create_task(
+          bq_plugin_inst.after_model_callback(
+              callback_context=context, llm_response=live_usage_event
+          )
+      )
+      await entered.wait()
+      for sequence in range(
+          2, bigquery_agent_analytics_plugin._LIVE_USAGE_HISTORY_SIZE + 2
+      ):
+        event = live_usage_event.model_copy(deep=True)
+        event.custom_metadata[LIVE_USAGE_KEY]["sequence"] = sequence
+        await bq_plugin_inst.after_model_callback(
+            callback_context=context, llm_response=event
+        )
+      waiter = asyncio.create_task(
+          bq_plugin_inst.on_event_callback(
+              invocation_context=invocation_context, event=live_usage_event
+          )
+      )
+      await asyncio.sleep(0)
+      assert not waiter.done()
+      release.set()
+      await asyncio.gather(owner, waiter)
+    assert sequences.count(1) == 1
+  finally:
+    release.set()
+    for task in (owner, waiter):
+      if task is not None and not task.done():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize(
+    "first_result", ["before_enqueue", "after_enqueue", "rejected"]
+)
+async def test_cancelled_live_producer_keeps_its_actual_admission(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+    first_result,
+):
+  """Cancelling the reporting caller must not turn an accepted row into a retry."""
+  loop = asyncio.new_event_loop()
+  ready = threading.Event()
+  entered = threading.Event()
+  release = threading.Event()
+  loop.call_soon(ready.set)
+  thread = threading.Thread(target=loop.run_forever)
+  thread.start()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client, dummy_arrow_schema, DEFAULT_STREAM_NAME, loop=loop
+  )
+  append_nowait = processor._append_nowait
+  calls = 0
+
+  def blocked_append(row):
+    nonlocal calls
+    calls += 1
+    if calls != 1:
+      return append_nowait(row)
+    accepted = append_nowait(row) if first_result == "after_enqueue" else None
+    entered.set()
+    release.wait(5)
+    if first_result == "rejected":
+      with mock.patch.object(
+          processor._queue, "put_nowait", side_effect=asyncio.QueueFull
+      ):
+        return append_nowait(row)
+    return accepted if accepted is not None else append_nowait(row)
+
+  owner = None
+  waiter = None
+  caller_loop = asyncio.get_running_loop()
+  try:
+    assert await caller_loop.run_in_executor(None, ready.wait, 5)
+    with (
+        mock.patch.object(
+            processor, "_append_nowait", side_effect=blocked_append
+        ),
+        mock.patch.object(
+            bq_plugin_inst,
+            "_get_loop_state",
+            return_value=SimpleNamespace(batch_processor=processor),
+        ),
+    ):
+      owner = asyncio.create_task(
+          bq_plugin_inst.after_model_callback(
+              callback_context=CallbackContext(invocation_context),
+              llm_response=live_usage_event,
+          )
+      )
+      assert await caller_loop.run_in_executor(None, entered.wait, 5)
+      waiter = asyncio.create_task(
+          bq_plugin_inst.on_event_callback(
+              invocation_context=invocation_context, event=live_usage_event
+          )
+      )
+      await asyncio.sleep(0)
+      owner.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(owner, 1)
+      assert not waiter.done()
+      release.set()
+      await waiter
+    assert processor._queue.qsize() == 1
+    assert calls == (2 if first_result == "rejected" else 1)
+    assert processor.get_drop_stats()["shutdown_cancelled"] == 0
+    assert processor.get_drop_stats()["queue_full"] == (
+        first_result == "rejected"
+    )
+  finally:
+    release.set()
+    for task in (owner, waiter):
+      if task is not None and not task.done():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    await asyncio.wrap_future(
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.01), loop)
+    )
+    loop.call_soon_threadsafe(loop.stop)
+    await caller_loop.run_in_executor(None, thread.join, 5)
+    assert not thread.is_alive()
+    loop.close()
+
+
+async def test_live_admission_survives_reporting_loop_close(
+    bq_plugin_inst,
+    invocation_context,
+    live_usage_event,
+    mock_write_client,
+    dummy_arrow_schema,
+):
+  """A confirmed report stays deduplicated after its reporting loop closes."""
+  loop = asyncio.new_event_loop()
+  ready = threading.Event()
+  entered = threading.Event()
+  release = threading.Event()
+  loop.call_soon(ready.set)
+  thread = threading.Thread(target=loop.run_forever)
+  thread.start()
+  processor = bigquery_agent_analytics_plugin.BatchProcessor(
+      mock_write_client, dummy_arrow_schema, DEFAULT_STREAM_NAME, loop=loop
+  )
+  append_nowait = processor._append_nowait
+  calls = 0
+
+  def blocked_append(row):
+    nonlocal calls
+    calls += 1
+    accepted = append_nowait(row)
+    if calls == 1:
+      entered.set()
+      release.wait(5)
+    return accepted
+
+  async def report_and_cancel():
+    report = asyncio.create_task(
+        bq_plugin_inst.after_model_callback(
+            callback_context=CallbackContext(invocation_context),
+            llm_response=live_usage_event,
+        )
+    )
+    try:
+      assert await asyncio.get_running_loop().run_in_executor(
+          None, entered.wait, 5
+      )
+      report.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await report
+    finally:
+      if not report.done():
+        report.cancel()
+        await asyncio.gather(report, return_exceptions=True)
+
+  caller_loop = asyncio.get_running_loop()
+  waiter = None
+  try:
+    assert await caller_loop.run_in_executor(None, ready.wait, 5)
+    with (
+        mock.patch.object(
+            processor, "_append_nowait", side_effect=blocked_append
+        ),
+        mock.patch.object(
+            bq_plugin_inst,
+            "_get_loop_state",
+            return_value=SimpleNamespace(batch_processor=processor),
+        ),
+    ):
+      # asyncio.run closes this separate reporting loop before admission finishes.
+      await caller_loop.run_in_executor(None, asyncio.run, report_and_cancel())
+      waiter = asyncio.create_task(
+          bq_plugin_inst.on_event_callback(
+              invocation_context=invocation_context, event=live_usage_event
+          )
+      )
+      await asyncio.sleep(0)
+      assert not waiter.done()
+      release.set()
+      await waiter
+    assert calls == 1
+    assert processor._queue.qsize() == 1
+    assert processor.get_drop_stats()["shutdown_cancelled"] == 0
+  finally:
+    release.set()
+    if waiter is not None and not waiter.done():
+      waiter.cancel()
+      await asyncio.gather(waiter, return_exceptions=True)
+    await asyncio.wrap_future(
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.01), loop)
+    )
+    loop.call_soon_threadsafe(loop.stop)
+    await caller_loop.run_in_executor(None, thread.join, 5)
+    assert not thread.is_alive()
+    loop.close()
+
+
+@pytest.mark.parametrize("outcome", ["complete", "timeout", "cancel"])
+async def test_shutdown_retains_pending_live_admission_until_settled(
+    bq_plugin_inst, invocation_context, live_usage_event, outcome
+):
+  """Closing cannot forget a pending receipt or cancel another observer's wait."""
+  entered = asyncio.Event()
+  release = asyncio.Event()
+
+  async def admit(*args, **kwargs):
+    receipt = kwargs["admission_result"]
+    receipt.set_running_or_notify_cancel()
+    entered.set()
+    await release.wait()
+    receipt.set_result(True)
+    return True
+
+  owner = None
+  closing = None
+  try:
+    with mock.patch.object(bq_plugin_inst, "_log_event", side_effect=admit):
+      owner = asyncio.create_task(
+          bq_plugin_inst.after_model_callback(
+              callback_context=CallbackContext(invocation_context),
+              llm_response=live_usage_event,
+          )
+      )
+      await entered.wait()
+      closing = asyncio.create_task(
+          bq_plugin_inst.shutdown(timeout=0.01 if outcome == "timeout" else 1)
+      )
+      await asyncio.sleep(0)
+      assert not closing.done()
+      if outcome == "timeout":
+        with pytest.raises(
+            bigquery_agent_analytics_plugin._ShutdownIncompleteError
+        ):
+          await closing
+      elif outcome == "cancel":
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+          await closing
+      release.set()
+      await owner
+      if outcome == "complete":
+        await closing
+    await bq_plugin_inst.shutdown()
+    assert not bq_plugin_inst._is_shutting_down
+  finally:
+    release.set()
+    for task in (owner, closing):
+      if task is not None and not task.done():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 async def test_live_usage_duplicate_history_is_bounded(
@@ -833,13 +1311,14 @@ async def test_live_usage_duplicate_history_is_bounded(
 ):
   """Recent duplicates are suppressed without retaining every past report."""
   with mock.patch.object(bq_plugin_inst, "_log_event") as log_event:
-    for sequence in [*range(1, 1026), 1025, 1]:
+    size = bigquery_agent_analytics_plugin._LIVE_USAGE_HISTORY_SIZE
+    for sequence in [*range(1, size + 2), size + 1, 1]:
       live_usage_event.custom_metadata[LIVE_USAGE_KEY]["sequence"] = sequence
       await bq_plugin_inst.after_model_callback(
           callback_context=CallbackContext(invocation_context),
           llm_response=live_usage_event,
       )
-  assert log_event.await_count == 1026
+  assert log_event.await_count == size + 2
 
 
 async def test_live_and_unary_usage_share_json_enum_encoding(
