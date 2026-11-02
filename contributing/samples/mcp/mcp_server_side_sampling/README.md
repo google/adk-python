@@ -36,7 +36,7 @@ Clone the project and navigate to the directory. Make sure your `OPENAI_API_KEY`
 Install the required Python libraries:
 
 ```bash
-pip install fastmcp openai litellm
+pip install fastmcp "google-adk[extensions]"
 ```
 
 ### 3. Run the Example

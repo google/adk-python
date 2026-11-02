@@ -28,6 +28,7 @@ from google.auth.credentials import Credentials
 from google.genai import types
 from typing_extensions import override
 
+from ..events._rewind_events import _apply_rewinds
 from ..utils._event_loop_cache import per_loop_value
 from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_memory_service import BaseMemoryService
@@ -244,7 +245,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
     await self._add_events_to_memory_from_events(
         app_name=session.app_name,
         user_id=session.user_id,
-        events_to_process=session.events,
+        events_to_process=_apply_rewinds(session.events),
     )
 
   @override
@@ -350,6 +351,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
     # generation_trigger_config.
     if _should_use_generate_memories(custom_metadata):
       from ..dependencies._agentplatform import agentplatform
+      from ..utils._dependency import require_agentplatform_attributes
 
       direct_events = []
       for event in events_to_process:
@@ -358,11 +360,16 @@ class VertexAiMemoryBankService(BaseMemoryService):
         if event.content:
           direct_events.append(
               agentplatform.types.GenerateMemoriesRequestDirectContentsSourceEvent(
-                  content=event.content
+                  content=_without_thoughts(event.content)
               )
           )
       if direct_events:
         api_client = self._get_api_client()
+        require_agentplatform_attributes(
+            agentplatform.types,
+            ('GenerateMemoriesConfig',),
+            'VertexAiMemoryBankService.add_events_to_memory (generate path)',
+        )
         config = _build_generate_memories_config(custom_metadata)
         operation = await _memories_api(api_client).generate(
             name='reasoningEngines/' + self._agent_engine_id,
@@ -424,7 +431,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
           )
         direct_events.append(
             agentplatform.types.IngestionDirectContentsSourceEvent(
-                content=event.content,
+                content=_without_thoughts(event.content),
                 event_id=event.id,
                 event_time=event_time,
             )
@@ -486,8 +493,16 @@ class VertexAiMemoryBankService(BaseMemoryService):
       custom_metadata: Mapping[str, object] | None = None,
   ) -> None:
     """Adds direct memory items without server-side extraction."""
+    from ..dependencies._agentplatform import agentplatform
+    from ..utils._dependency import require_agentplatform_attributes
+
     normalized_memories = _normalize_memories_for_create(memories)
     api_client = self._get_api_client()
+    require_agentplatform_attributes(
+        agentplatform.types,
+        ('MemoryConfig',),
+        'VertexAiMemoryBankService.add_memory',
+    )
     for index, memory in enumerate(normalized_memories):
       memory_fact = _memory_entry_to_fact(memory, index=index)
       memory_metadata = _merge_custom_metadata_for_memory(
@@ -521,12 +536,20 @@ class VertexAiMemoryBankService(BaseMemoryService):
       custom_metadata: Mapping[str, object] | None = None,
   ) -> None:
     """Adds memories via generate API with direct_memories_source."""
+    from ..dependencies._agentplatform import agentplatform
+    from ..utils._dependency import require_agentplatform_attributes
+
     normalized_memories = _normalize_memories_for_create(memories)
     memory_texts = [
         _memory_entry_to_fact(m, index=i)
         for i, m in enumerate(normalized_memories)
     ]
     api_client = self._get_api_client()
+    require_agentplatform_attributes(
+        agentplatform.types,
+        ('GenerateMemoriesConfig',),
+        'VertexAiMemoryBankService.add_memory (consolidation path)',
+    )
     config = _build_generate_memories_config(custom_metadata)
     for memory_batch in _iter_memory_batches(memory_texts):
       operation = await _memories_api(api_client).generate(
@@ -709,7 +732,23 @@ def _should_filter_out_event(event: Event) -> bool:
   # Deferred: a module-level import would load the agent and flow stack too.
   from ..flows.llm_flows.context._contents import _is_auth_event
 
-  return _is_empty_content(event.content) or _is_auth_event(event)
+  content = _without_thoughts(event.content)
+  return _is_empty_content(content) or _is_auth_event(event)
+
+
+def _without_thoughts(content: types.Content | None) -> types.Content | None:
+  """Returns the content without the model's thought parts.
+
+  Thoughts are the model's reasoning, not part of the conversation, so they
+  are kept out of the events that memories are generated from.
+  """
+  if not content or not content.parts:
+    return content
+  if not any(part.thought for part in content.parts):
+    return content
+  return content.model_copy(
+      update={'parts': [part for part in content.parts if not part.thought]}
+  )
 
 
 def _is_empty_content(content: types.Content | None) -> bool:
@@ -1110,11 +1149,12 @@ def _from_vertex_metadata(
 
 def _from_vertex_metadata_value(value: object) -> object:
   """Converts one Vertex MemoryMetadataValue back to a plain Python value."""
-  getter = (
-      value.get
-      if isinstance(value, Mapping)
-      else lambda k: getattr(value, k, None)
-  )
+
+  def getter(key: str) -> object:
+    if isinstance(value, Mapping):
+      return value.get(key)
+    return getattr(value, key, None)
+
   for key in _VERTEX_METADATA_KEYS:
     if (val := getter(key)) is not None:
       return val

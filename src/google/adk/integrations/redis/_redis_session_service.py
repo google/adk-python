@@ -25,6 +25,7 @@ import time
 from typing import Any
 from typing import cast
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from ...errors.already_exists_error import AlreadyExistsError
 from ...errors.session_not_found_error import SessionNotFoundError
@@ -38,10 +39,13 @@ from ...sessions.session import Session
 from ...sessions.state import State
 from ._config import RedisSessionServiceConfig
 
-try:
+if TYPE_CHECKING:
   import redis.asyncio as redis_asyncio
-except ImportError:
-  redis_asyncio = None
+else:
+  try:
+    import redis.asyncio as redis_asyncio
+  except ImportError:
+    redis_asyncio = None
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -170,6 +174,31 @@ class RedisSessionService(BaseSessionService):
     app_key = self._app_state_key(app_name)
     user_key = self._user_state_key(app_name, user_id)
 
+    now = time.time()
+    # Save ONLY session-scoped state to Redis storage
+    storage_session = Session(
+        id=sid,
+        app_name=app_name,
+        user_id=user_id,
+        state=session_state,
+        events=[],
+        last_update_time=now,
+    )
+
+    # Claim the session key before touching app or user state. Those are
+    # shared with every other session, so a create rejected as a duplicate
+    # must leave them exactly as it found them.
+    created = await client.set(
+        key,
+        storage_session.model_dump_json(),
+        nx=True,
+        ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
+    )
+    if not created:
+      raise AlreadyExistsError(
+          f"Session {sid} already exists for user {user_id} in app {app_name}."
+      )
+
     app_raw, user_raw = await asyncio.gather(
         client.get(app_key),
         client.get(user_key),
@@ -191,28 +220,6 @@ class RedisSessionService(BaseSessionService):
           user_key,
           json.dumps(current_user),
           ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
-      )
-
-    now = time.time()
-    # Save ONLY session-scoped state to Redis storage
-    storage_session = Session(
-        id=sid,
-        app_name=app_name,
-        user_id=user_id,
-        state=session_state,
-        events=[],
-        last_update_time=now,
-    )
-
-    created = await client.set(
-        key,
-        storage_session.model_dump_json(),
-        nx=True,
-        ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
-    )
-    if not created:
-      raise AlreadyExistsError(
-          f"Session {sid} already exists for user {user_id} in app {app_name}."
       )
 
     # Return session with dynamically merged state (including app/user/temp state)

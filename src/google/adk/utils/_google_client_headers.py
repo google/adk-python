@@ -62,19 +62,20 @@ def merge_tracking_headers(
   Returns:
     A dictionary of HTTP headers with tracking headers merged.
   """
-  new_headers = (headers or {}).copy()
-  for key, tracking_header_value in get_tracking_headers(
-      framework_label=framework_label
-  ).items():
-    custom_value = new_headers.get(key, None)
-    if not custom_value:
-      new_headers[key] = tracking_header_value
-      continue
-
+  tracking_headers = get_tracking_headers(framework_label=framework_label)
+  new_headers = {
+      key: value
+      for key, value in (headers or {}).items()
+      if key.lower() not in tracking_headers
+  }
+  for key, tracking_header_value in tracking_headers.items():
     # Merge tracking headers with existing headers and avoid duplicates.
     value_parts = tracking_header_value.split(" ")
-    for custom_value_part in custom_value.split(" "):
-      if custom_value_part not in value_parts:
-        value_parts.append(custom_value_part)
+    for header_key, custom_value in (headers or {}).items():
+      if header_key.lower() != key or not custom_value:
+        continue
+      for custom_value_part in custom_value.split(" "):
+        if custom_value_part not in value_parts:
+          value_parts.append(custom_value_part)
     new_headers[key] = " ".join(value_parts)
   return new_headers

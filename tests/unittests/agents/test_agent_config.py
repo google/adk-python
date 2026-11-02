@@ -35,8 +35,10 @@ from google.adk.agents.llm_agent_config import LlmAgentConfig
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.cli.built_in_agents.utils import load_agent_config_schema
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+import jsonschema
 from pydantic import BaseModel
 from pydantic import ValidationError
 import pytest
@@ -1730,3 +1732,123 @@ def test_from_config_lets_an_inline_node_reach_a_from_config_override(
 
   assert ran
   assert wf.graph.edges[0].to_node.name == "built_by_override"
+
+
+@pytest.mark.parametrize(
+    "config_dict",
+    [
+        {
+            "name": "root_agent",
+            "model": "gemini-2.5-flash",
+            "instruction": "Help the user.",
+        },
+        {
+            "agent_class": "LlmAgent",
+            "name": "root_agent",
+            "model": "gemini-2.5-flash",
+            "instruction": "Help the user.",
+        },
+        {
+            "agent_class": "google.adk.agents.LlmAgent",
+            "name": "root_agent",
+            "model": "gemini-2.5-flash",
+            "instruction": "Help the user.",
+        },
+        {
+            "agent_class": "Agent",
+            "name": "root_agent",
+            "model": "gemini-2.5-flash",
+            "instruction": "Help the user.",
+        },
+        {
+            "agent_class": "SequentialAgent",
+            "name": "seq_agent",
+            "sub_agents": [{"config_path": "child.yaml"}],
+        },
+        {
+            "agent_class": "ParallelAgent",
+            "name": "par_agent",
+            "sub_agents": [{"config_path": "child.yaml"}],
+        },
+        {
+            "agent_class": "LoopAgent",
+            "name": "loop_agent",
+            "max_iterations": 3,
+            "sub_agents": [{"config_path": "child.yaml"}],
+        },
+        {
+            "agent_class": "mylib.agents.CustomAgent",
+            "name": "custom_agent",
+            "custom_field": "value",
+        },
+        {
+            "name": "live_audio_agent",
+            "model": "gemini-2.5-flash",
+            "instruction": "Help the user.",
+            "generate_content_config": {
+                "response_modalities": ["AUDIO"],
+                "max_output_tokens": 256,
+                "speech_config": {
+                    "voice_config": {
+                        "prebuilt_voice_config": {"voice_name": "Puck"}
+                    }
+                },
+            },
+        },
+        {
+            "name": "camel_case_gen_config_agent",
+            "model": "gemini-2.5-flash",
+            "instruction": "Help the user.",
+            "generate_content_config": {
+                "responseModalities": ["TEXT"],
+                "maxOutputTokens": 256,
+            },
+        },
+    ],
+)
+def test_shipped_agent_config_json_validates_valid_configs(
+    config_dict: dict[str, Any],
+):
+  schema = load_agent_config_schema(raw_format=False)
+  assert isinstance(schema, dict)
+  jsonschema.validate(config_dict, schema)
+
+
+@pytest.mark.parametrize(
+    "invalid_config_dict",
+    [
+        {
+            "name": "root_agent",
+            "model": "gemini-2.5-flash",
+            "instruction": "Help the user.",
+            "unknown_top_level_field": "invalid",
+        },
+        {
+            "agent_class": "google.adk.agents.Agent",
+            "name": "root_agent",
+            "model": "gemini-2.5-flash",
+            "instruction": "Help the user.",
+            "unknown_top_level_field": "invalid",
+        },
+        {
+            "agent_class": "SequentialAgent",
+            "name": "seq_agent",
+            "instruction": "not allowed on SequentialAgent",
+        },
+        {
+            "name": "root_agent",
+            "model": "gemini-2.5-flash",
+            "instruction": "Help the user.",
+            "generate_content_config": {
+                "unknown_generation_field": 123,
+            },
+        },
+    ],
+)
+def test_shipped_agent_config_json_rejects_invalid_configs(
+    invalid_config_dict: dict[str, Any],
+):
+  schema = load_agent_config_schema(raw_format=False)
+  assert isinstance(schema, dict)
+  with pytest.raises(jsonschema.ValidationError):
+    jsonschema.validate(invalid_config_dict, schema)

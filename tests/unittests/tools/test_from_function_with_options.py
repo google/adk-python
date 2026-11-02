@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from collections.abc import Sequence
+import datetime
 from typing import Any
 from typing import AsyncGenerator
 from typing import Dict
@@ -458,6 +459,114 @@ def test_schema_sanitization_for_complex_union_type():
       nullable=True,
       additional_properties=types.Schema(type=types.Type.STRING),
   )
+
+
+@pytest.mark.parametrize('shape', ['model', 'list', 'mapping', 'optional'])
+def test_vertex_fallback_resolves_nested_model_references(shape):
+  """Nested models keep their fields when another parameter needs fallback."""
+
+  class Address(pydantic.BaseModel):
+    city: str
+    email: str = pydantic.Field(json_schema_extra={'format': 'email'})
+    label: str = 'home'
+
+  class Person(pydantic.BaseModel):
+    address: Address
+
+  parameter_type = {
+      'model': Person,
+      'list': list[Person],
+      'mapping': dict[str, Person],
+      'optional': Person | None,
+  }[shape]
+
+  def schedule(person: parameter_type, when: datetime.datetime, notify=True):
+    return 'ok'
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      schedule, GoogleLLMVariant.VERTEX_AI
+  )
+
+  person_schema = declaration.parameters.properties['person']
+  if shape == 'list':
+    assert person_schema.type == types.Type.ARRAY
+    person_schema = person_schema.items
+  elif shape == 'mapping':
+    assert person_schema.type == types.Type.OBJECT
+    person_schema = types.Schema.model_validate(
+        person_schema.additional_properties
+    )
+  elif shape == 'optional':
+    assert person_schema.any_of[1].type == types.Type.NULL
+    person_schema = person_schema.any_of[0]
+  assert person_schema.type == types.Type.OBJECT
+  address_schema = person_schema.properties['address']
+  assert address_schema.properties['city'].type == types.Type.STRING
+  assert address_schema.properties['email'].format == 'email'
+  assert address_schema.properties['label'].default == 'home'
+  assert set(address_schema.required) == {'city', 'email'}
+  assert declaration.parameters.properties['when'].format == 'date-time'
+  assert declaration.parameters.properties['notify'].default is True
+  assert set(declaration.parameters.required) == {'person', 'when'}
+
+
+@pytest.mark.parametrize('shape', ['model', 'list', 'mapping', 'optional'])
+def test_gemini_fallback_resolves_nested_model_references(shape):
+  """GEMINI_API fallback inlines nested models instead of leaving refs."""
+
+  class Address(pydantic.BaseModel):
+    city: str
+
+  class Person(pydantic.BaseModel):
+    address: Address
+
+  parameter_type = {
+      'model': Person,
+      'list': list[Person],
+      'mapping': dict[str, Person],
+      'optional': Person | None,
+  }[shape]
+
+  def schedule(person: parameter_type, when: datetime.datetime):
+    return 'ok'
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      schedule, GoogleLLMVariant.GEMINI_API
+  )
+
+  person_schema = declaration.parameters.properties['person']
+  assert person_schema.defs is None
+  if shape == 'mapping':
+    # The sanitizer drops additionalProperties, so nothing nested is left.
+    return
+  if shape == 'list':
+    person_schema = person_schema.items
+  elif shape == 'optional':
+    person_schema = person_schema.any_of[0]
+  address_schema = person_schema.properties['address']
+  assert address_schema.ref is None
+  assert address_schema.properties['city'].type == types.Type.STRING
+
+
+def test_vertex_response_fallback_resolves_nested_model_references():
+  """The VERTEX_AI response schema fallback inlines nested models."""
+
+  class Address(pydantic.BaseModel):
+    city: str
+
+  class Person(pydantic.BaseModel):
+    address: Address
+
+  def list_people(query: str) -> Sequence[Person]:
+    return []
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      list_people, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.response.type == types.Type.ARRAY
+  address_schema = declaration.response.items.properties['address']
+  assert address_schema.properties['city'].type == types.Type.STRING
 
 
 def test_format_preservation_for_vertex_fallback():

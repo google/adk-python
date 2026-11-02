@@ -40,9 +40,13 @@ from google.adk.auth.auth_credential import _redact_credential_secrets
 from google.adk.cli import api_server as api_server_module
 from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli import service_registry as service_registry_module
+from google.adk.cli.api_server import RewindSessionRequest
 from google.adk.cli.api_server import RunAgentRequest
 from google.adk.cli.fast_api import get_fast_api_app
+from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.cli.utils.base_agent_loader import _AgentLoadError
+from google.adk.errors import InvocationNotFoundError
+from google.adk.errors import StaleSessionError
 from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.errors.not_found_error import NotFoundError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
@@ -621,6 +625,54 @@ def test_no_auth_warning_on_non_loopback_bind(
   assert warned is expect_warning
 
 
+def test_get_fast_api_app_creates_file_eval_storage_dir(tmp_path, monkeypatch):
+  """file:// eval_storage_uri creates that directory for local eval managers."""
+  monkeypatch.delenv("ADK_EVAL_STORAGE_URI", raising=False)
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  storage_dir = tmp_path / "adk_evals"
+
+  with (
+      patch.object(
+          fast_api_module, "LocalEvalSetsManager", autospec=True
+      ) as mock_sets_cls,
+      patch.object(
+          fast_api_module, "LocalEvalSetResultsManager", autospec=True
+      ) as mock_results_cls,
+  ):
+    get_fast_api_app(
+        agents_dir=str(agents_dir),
+        web=False,
+        eval_storage_uri=storage_dir.as_uri(),
+    )
+
+  assert storage_dir.is_dir()
+  mock_sets_cls.assert_called_once_with(agents_dir=str(storage_dir))
+  mock_results_cls.assert_called_once_with(agents_dir=str(storage_dir))
+
+
+def test_get_fast_api_app_honors_eval_storage_uri_env(tmp_path, monkeypatch):
+  """ADK_EVAL_STORAGE_URI is used when eval_storage_uri is omitted."""
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  storage_dir = tmp_path / "from_env"
+  monkeypatch.setenv("ADK_EVAL_STORAGE_URI", storage_dir.as_uri())
+
+  with (
+      patch.object(
+          fast_api_module, "LocalEvalSetsManager", autospec=True
+      ) as mock_sets_cls,
+      patch.object(
+          fast_api_module, "LocalEvalSetResultsManager", autospec=True
+      ) as mock_results_cls,
+  ):
+    get_fast_api_app(agents_dir=str(agents_dir), web=False)
+
+  assert storage_dir.is_dir()
+  mock_sets_cls.assert_called_once_with(agents_dir=str(storage_dir))
+  mock_results_cls.assert_called_once_with(agents_dir=str(storage_dir))
+
+
 def test_agent_with_bigquery_analytics_plugin(
     tmp_path,
     mock_session_service,
@@ -942,6 +994,7 @@ def test_app(
 
 @pytest.fixture
 def builder_test_app(
+    request,
     tmp_path,
     mock_session_service,
     mock_artifact_service,
@@ -1004,7 +1057,7 @@ def builder_test_app(
         session_service_uri="",
         artifact_service_uri="",
         memory_service_uri="",
-        allow_origins=None,
+        allow_origins=getattr(request, "param", None),
         a2a=False,
         host="127.0.0.1",
         bind_host="127.0.0.1",
@@ -2351,6 +2404,723 @@ def test_patch_session_not_found(test_app, test_session_info):
   logger.info("Patch session not found test passed")
 
 
+def test_rewind_session(test_app, create_test_session, monkeypatch):
+  """Test rewinding a session to before a given invocation."""
+  info = create_test_session
+  captured: dict[str, Any] = {}
+
+  async def rewind_async_capture(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      rewind_before_invocation_id: str,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del self, run_config
+    captured["user_id"] = user_id
+    captured["session_id"] = session_id
+    captured["rewind_before_invocation_id"] = rewind_before_invocation_id
+
+  monkeypatch.setattr(Runner, "rewind_async", rewind_async_capture)
+
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}/rewind"
+  )
+  response = test_app.post(
+      url, json={"rewind_before_invocation_id": "some-invocation-id"}
+  )
+
+  assert response.status_code == 200
+  assert captured["user_id"] == info["user_id"]
+  assert captured["session_id"] == info["session_id"]
+  assert captured["rewind_before_invocation_id"] == "some-invocation-id"
+  data = response.json()
+  assert data["id"] == info["session_id"]
+
+
+def test_rewind_session_invocation_not_found(
+    test_app, create_test_session, monkeypatch
+):
+  """Test rewinding to an unknown invocation ID returns 404."""
+  info = create_test_session
+
+  async def rewind_async_raise(self, **kwargs):
+    del self, kwargs
+    raise InvocationNotFoundError(
+        "Invocation ID not found: missing-invocation-id"
+    )
+
+  monkeypatch.setattr(Runner, "rewind_async", rewind_async_raise)
+
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}/rewind"
+  )
+  response = test_app.post(
+      url, json={"rewind_before_invocation_id": "missing-invocation-id"}
+  )
+
+  assert response.status_code == 404
+  assert "missing-invocation-id" in response.json()["detail"]
+
+
+def test_rewind_session_stale_session_returns_409(
+    test_app, create_test_session, monkeypatch
+):
+  """Test rewinding a stale session returns 409."""
+  info = create_test_session
+
+  async def rewind_async_raise(self, **kwargs):
+    del self, kwargs
+    raise StaleSessionError("The session has been modified in storage")
+
+  monkeypatch.setattr(Runner, "rewind_async", rewind_async_raise)
+
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}/rewind"
+  )
+  response = test_app.post(
+      url, json={"rewind_before_invocation_id": "some-invocation-id"}
+  )
+
+  assert response.status_code == 409
+  assert "modified in storage" in response.json()["detail"]
+
+
+def test_rewind_session_unexpected_value_error_propagates(
+    test_app, create_test_session, monkeypatch
+):
+  """Test unexpected ValueError in rewind_async is not turned into a 404."""
+  info = create_test_session
+
+  async def rewind_async_raise(self, **kwargs):
+    del self, kwargs
+    raise ValueError("unexpected failure")
+
+  monkeypatch.setattr(Runner, "rewind_async", rewind_async_raise)
+
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}/rewind"
+  )
+  with pytest.raises(ValueError, match="unexpected failure"):
+    test_app.post(
+        url, json={"rewind_before_invocation_id": "some-invocation-id"}
+    )
+
+
+def test_rewind_session_not_found(test_app, test_session_info):
+  """Test rewinding a nonexistent session returns 404."""
+  info = test_session_info
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      "/sessions/nonexistent/rewind"
+  )
+  response = test_app.post(
+      url, json={"rewind_before_invocation_id": "some-invocation-id"}
+  )
+
+  assert response.status_code == 404
+  assert "Session not found" in response.json()["detail"]
+
+
+def test_rewind_session_not_found_with_auto_create_session(
+    test_app_auto_session, test_session_info, mock_session_service
+):
+  """Test rewinding a nonexistent session does not auto-create a session."""
+  info = test_session_info
+  session_id = "nonexistent_session"
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{session_id}/rewind"
+  )
+  response = test_app_auto_session.post(
+      url, json={"rewind_before_invocation_id": "some-invocation-id"}
+  )
+
+  assert response.status_code == 404
+  assert "Session not found" in response.json()["detail"]
+  assert (
+      mock_session_service.get_session_sync(
+          app_name=info["app_name"],
+          user_id=info["user_id"],
+          session_id=session_id,
+      )
+      is None
+  )
+
+
+async def test_rewind_session_redacts_oauth2_client_secret(
+    test_app, test_session_info, mock_session_service, oauth2_auth_config_dict
+):
+  """Test rewinding a session redacts OAuth2 credential secrets."""
+  session = await mock_session_service.create_session(
+      app_name=test_session_info["app_name"],
+      user_id=test_session_info["user_id"],
+      session_id=test_session_info["session_id"],
+      state={},
+  )
+  event = Event(
+      author="agent",
+      invocation_id="invocation_id",
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name="adk_request_credential",
+                      id="adk-req-cred-id",
+                      args={
+                          "functionCallId": "adk-original-fc-id",
+                          "authConfig": oauth2_auth_config_dict,
+                      },
+                  )
+              )
+          ],
+      ),
+      actions=EventActions(
+          requested_auth_configs={"adk-original-fc-id": oauth2_auth_config_dict}
+      ),
+  )
+  await mock_session_service.append_event(session=session, event=event)
+
+  url = (
+      f"/apps/{test_session_info['app_name']}/users/"
+      f"{test_session_info['user_id']}/sessions/"
+      f"{test_session_info['session_id']}/rewind"
+  )
+  response = test_app.post(
+      url, json={"rewind_before_invocation_id": "invocation_id"}
+  )
+  assert response.status_code == 200
+  assert "should-never-reach-the-client" not in response.text
+  assert "pkce-verifier-should-not-leak-either" not in response.text
+
+  data = response.json()
+  assert data["id"] == test_session_info["session_id"]
+  matching_events = [
+      e
+      for e in data["events"]
+      if e.get("content")
+      and e["content"].get("parts")
+      and e["content"]["parts"][0].get("functionCall", {}).get("name")
+      == "adk_request_credential"
+  ]
+  assert len(matching_events) == 1
+  args = matching_events[0]["content"]["parts"][0]["functionCall"]["args"]
+  raw_oauth2 = args["authConfig"]["rawAuthCredential"]["oauth2"]
+  exchanged_oauth2 = args["authConfig"]["exchangedAuthCredential"]["oauth2"]
+  assert "clientSecret" not in raw_oauth2
+  assert "clientSecret" not in exchanged_oauth2
+  assert "codeVerifier" not in exchanged_oauth2
+  assert raw_oauth2["clientId"] == "public-client-id"
+  action_auth = matching_events[0]["actions"]["requestedAuthConfigs"][
+      "adk-original-fc-id"
+  ]
+  assert "clientSecret" not in action_auth["rawAuthCredential"]["oauth2"]
+
+
+async def _seed_session_turns_for_rewind(mock_session_service, info):
+  """Append two user/agent turns so rewind has a target invocation."""
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.Content(
+              role="user", parts=[types.Part.from_text(text="first")]
+          ),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="agent",
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="reply-1")]
+          ),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.Content(
+              role="user", parts=[types.Part.from_text(text="second")]
+          ),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="agent",
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="reply-2")]
+          ),
+      ),
+  ]
+  for event in events:
+    await mock_session_service.append_event(session=session, event=event)
+  return session
+
+
+async def test_rewind_aborts_active_run_sse(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Rewinding a session while /run_sse is active aborts the live run first."""
+  info = create_test_session
+  await _seed_session_turns_for_rewind(mock_session_service, info)
+  captured_contexts = []
+  tool_in_flight = asyncio.Event()
+
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+
+  class SlowToolAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(self, invocation_context):
+      captured_contexts.append(invocation_context)
+      fc = types.Part.from_function_call(name="slow_tool", args={"q": "test"})
+      fc.function_call.id = "call_sse_rewind"
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[fc]),
+      )
+      tool_in_flight.set()
+      await invocation_context._abort_signal.wait()
+
+  slow_agent = SlowToolAgent("slow_tool_agent")
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: slow_agent
+  )
+
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  app = client.app
+  run_sse_handler = None
+  rewind_handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      run_sse_handler = route.endpoint
+    elif (
+        route.path
+        == "/apps/{app_name}/users/{user_id}/sessions/{session_id}/rewind"
+    ):
+      rewind_handler = route.endpoint
+  assert run_sse_handler is not None
+  assert rewind_handler is not None
+
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
+      streaming=True,
+  )
+
+  async def receive():
+    await asyncio.Event().wait()
+
+  sent_chunks: list[str] = []
+
+  async def send(message):
+    if message.get("type") == "http.response.body" and message.get("body"):
+      sent_chunks.append(message["body"].decode("utf-8"))
+
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+  response = await run_sse_handler(req, request)
+
+  sse_task = asyncio.create_task(
+      response(
+          scope,
+          receive,
+          send,
+      )
+  )
+  await tool_in_flight.wait()
+
+  rewind_result = await rewind_handler(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      req=RewindSessionRequest(rewind_before_invocation_id="inv2"),
+  )
+  await sse_task
+
+  assert len(captured_contexts) == 1
+  assert captured_contexts[0].is_aborted is True
+  assert "StaleSessionError" not in "".join(sent_chunks)
+  rewind_data = json.loads(rewind_result.body)
+  events = rewind_data.get("events", [])
+  assert (events[-1].get("actions") or {}).get(
+      "rewindBeforeInvocationId"
+  ) == "inv2"
+  assert any(event.get("errorCode") == "INVOCATION_ABORTED" for event in events)
+
+
+async def test_rewind_aborts_active_run(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Rewinding a session while /run is active aborts the live run first."""
+  info = create_test_session
+  await _seed_session_turns_for_rewind(mock_session_service, info)
+  captured_contexts = []
+  tool_in_flight = asyncio.Event()
+
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+
+  class SlowToolAgent(BaseAgent):
+
+    async def _run_async_impl(self, invocation_context):
+      captured_contexts.append(invocation_context)
+      fc = types.Part.from_function_call(name="slow_tool", args={"q": "test"})
+      fc.function_call.id = "call_run_rewind"
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[fc]),
+      )
+      tool_in_flight.set()
+      try:
+        await asyncio.wait_for(
+            invocation_context._abort_signal.wait(), timeout=1.0
+        )
+      except asyncio.TimeoutError:
+        pass
+      if not invocation_context.is_aborted:
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part.from_text(text="DONE.")]
+            ),
+        )
+
+  slow_agent = SlowToolAgent(name="slow_tool_agent", sub_agents=[])
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: slow_agent
+  )
+
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  app = client.app
+  run_handler = None
+  rewind_handler = None
+  for route in app.routes:
+    if route.path == "/run":
+      run_handler = route.endpoint
+    elif (
+        route.path
+        == "/apps/{app_name}/users/{user_id}/sessions/{session_id}/rewind"
+    ):
+      rewind_handler = route.endpoint
+  assert run_handler is not None
+  assert rewind_handler is not None
+
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
+      streaming=False,
+  )
+
+  async def receive():
+    await asyncio.Event().wait()
+
+  request = starlette.requests.Request(
+      {
+          "type": "http",
+          "method": "POST",
+          "path": "/run",
+          "headers": [],
+          "asgi": {"spec_version": "2.1"},
+      },
+      receive=receive,
+  )
+
+  run_task = asyncio.create_task(run_handler(req, request))
+  await tool_in_flight.wait()
+
+  rewind_result = await rewind_handler(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      req=RewindSessionRequest(rewind_before_invocation_id="inv2"),
+  )
+  run_response = await run_task
+
+  assert run_response.status_code == 200
+  assert len(captured_contexts) == 1
+  assert captured_contexts[0].is_aborted is True
+  run_events = json.loads(run_response.body)
+  assert any(
+      event.get("errorCode") == "INVOCATION_ABORTED" for event in run_events
+  )
+  rewind_data = json.loads(rewind_result.body)
+  events = rewind_data.get("events", [])
+  assert (events[-1].get("actions") or {}).get(
+      "rewindBeforeInvocationId"
+  ) == "inv2"
+  assert any(event.get("errorCode") == "INVOCATION_ABORTED" for event in events)
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  assert session.events[-1].actions.rewind_before_invocation_id == "inv2"
+
+
+async def test_invalid_rewind_does_not_abort_active_run_sse(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Invalid /rewind requests do not abort an active /run_sse run."""
+  info = create_test_session
+  await _seed_session_turns_for_rewind(mock_session_service, info)
+  captured_contexts = []
+  tool_in_flight = asyncio.Event()
+
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+
+  class SlowToolAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(self, invocation_context):
+      captured_contexts.append(invocation_context)
+      fc = types.Part.from_function_call(name="slow_tool", args={"q": "test"})
+      fc.function_call.id = "call_sse_invalid"
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[fc]),
+      )
+      tool_in_flight.set()
+      await invocation_context._abort_signal.wait()
+
+  slow_agent = SlowToolAgent("slow_tool_agent")
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: slow_agent
+  )
+
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  app = client.app
+  run_sse_handler = None
+  rewind_handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      run_sse_handler = route.endpoint
+    elif (
+        route.path
+        == "/apps/{app_name}/users/{user_id}/sessions/{session_id}/rewind"
+    ):
+      rewind_handler = route.endpoint
+  assert run_sse_handler is not None
+  assert rewind_handler is not None
+
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
+      streaming=True,
+  )
+
+  async def receive():
+    await asyncio.Event().wait()
+
+  async def send(message):
+    del message
+
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+  response = await run_sse_handler(req, request)
+
+  sse_task = asyncio.create_task(
+      response(
+          scope,
+          receive,
+          send,
+      )
+  )
+  await tool_in_flight.wait()
+
+  try:
+    with pytest.raises(HTTPException) as rewind_exc:
+      await rewind_handler(
+          app_name=info["app_name"],
+          user_id=info["user_id"],
+          session_id=info["session_id"],
+          req=RewindSessionRequest(rewind_before_invocation_id="missing-inv"),
+      )
+    assert rewind_exc.value.status_code == 404
+    assert captured_contexts[0].is_aborted is False
+  finally:
+    await rewind_handler(
+        app_name=info["app_name"],
+        user_id=info["user_id"],
+        session_id=info["session_id"],
+        req=RewindSessionRequest(rewind_before_invocation_id="inv2"),
+    )
+    await sse_task
+
+
+async def test_rewind_abort_timeout_returns_409(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Timing out waiting for a live run to abort returns 409."""
+  info = create_test_session
+  await _seed_session_turns_for_rewind(mock_session_service, info)
+  tool_in_flight = asyncio.Event()
+  release_stuck_run = asyncio.Event()
+
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+  monkeypatch.setattr(
+      api_server_module.ApiServer._abort_live_session_runs,
+      "__defaults__",
+      (0.01,),
+  )
+
+  class StuckToolAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(self, invocation_context):
+      fc = types.Part.from_function_call(name="stuck_tool", args={"q": "test"})
+      fc.function_call.id = "call_sse_stuck"
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[fc]),
+      )
+      tool_in_flight.set()
+      await release_stuck_run.wait()
+
+  stuck_agent = StuckToolAgent("stuck_tool_agent")
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: stuck_agent
+  )
+
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  app = client.app
+  run_sse_handler = None
+  rewind_handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      run_sse_handler = route.endpoint
+    elif (
+        route.path
+        == "/apps/{app_name}/users/{user_id}/sessions/{session_id}/rewind"
+    ):
+      rewind_handler = route.endpoint
+  assert run_sse_handler is not None
+  assert rewind_handler is not None
+
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Run stuck tool"}]},
+      streaming=True,
+  )
+
+  async def receive():
+    await asyncio.Event().wait()
+
+  async def send(message):
+    del message
+
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+  response = await run_sse_handler(req, request)
+
+  sse_task = asyncio.create_task(
+      response(
+          scope,
+          receive,
+          send,
+      )
+  )
+  await tool_in_flight.wait()
+
+  try:
+    with pytest.raises(HTTPException) as rewind_exc:
+      await rewind_handler(
+          app_name=info["app_name"],
+          user_id=info["user_id"],
+          session_id=info["session_id"],
+          req=RewindSessionRequest(rewind_before_invocation_id="inv2"),
+      )
+    assert rewind_exc.value.status_code == 409
+    assert "Timed out waiting for live runs to abort" in rewind_exc.value.detail
+
+    session_during_stuck = await mock_session_service.get_session(
+        app_name=info["app_name"],
+        user_id=info["user_id"],
+        session_id=info["session_id"],
+    )
+    assert not any(
+        event.actions.rewind_before_invocation_id is not None
+        for event in session_during_stuck.events
+    )
+  finally:
+    release_stuck_run.set()
+    await sse_task
+
+
 def test_agent_run(test_app, create_test_session):
   """Test running an agent with a message."""
   info = create_test_session
@@ -2641,6 +3411,47 @@ def test_agent_run_sse_passes_max_llm_calls(
   assert response.status_code == 200
   assert captured["run_config"] is not None
   assert captured["run_config"].max_llm_calls == 37
+
+
+async def test_agent_run_sse_session_check_loads_no_events(
+    test_app, create_test_session, mock_session_service, monkeypatch
+):
+  """The /run_sse existence check does not load the session's events."""
+  info = create_test_session
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  for i in range(50):
+    await mock_session_service.append_event(
+        session,
+        Event(
+            author="user",
+            content=types.Content(role="user", parts=[types.Part(text=f"{i}")]),
+        ),
+    )
+
+  loaded_event_counts = []
+  original_get_session = mock_session_service.get_session
+
+  async def counting_get_session(**kwargs):
+    result = await original_get_session(**kwargs)
+    loaded_event_counts.append(len(result.events) if result else None)
+    return result
+
+  monkeypatch.setattr(mock_session_service, "get_session", counting_get_session)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+  }
+  response = test_app.post("/run_sse", json=payload)
+
+  assert response.status_code == 200
+  assert loaded_event_counts == [0]
 
 
 def test_agent_run_sse_splits_artifact_delta(
@@ -3926,8 +4737,16 @@ async def test_agent_run_sse_disconnect_with_cleanup_exception(
       streaming=True,
   )
 
+  async def receive():
+    await asyncio.Event().wait()
+
+  request = starlette.requests.Request(
+      {"type": "http", "method": "POST", "path": "/run_sse", "headers": []},
+      receive=receive,
+  )
+
   # Call handler
-  response = await handler(req)
+  response = await handler(req, request)
   assert response.status_code == 200
 
   # Iterate generator and close it early
@@ -3999,8 +4818,16 @@ async def test_agent_run_sse_disconnect_with_cleanup_exception_and_cancellation(
       streaming=True,
   )
 
+  async def receive():
+    await asyncio.Event().wait()
+
+  request = starlette.requests.Request(
+      {"type": "http", "method": "POST", "path": "/run_sse", "headers": []},
+      receive=receive,
+  )
+
   # Call handler
-  response = await handler(req)
+  response = await handler(req, request)
   assert response.status_code == 200
 
   # Iterate generator
@@ -4116,9 +4943,6 @@ async def test_agent_run_sse_disconnect_seals_dangling_function_call(
       streaming=True,
   )
 
-  response = await handler(req)
-  assert response.status_code == 200
-
   sent_chunks: list[str] = []
 
   async def receive():
@@ -4129,8 +4953,14 @@ async def test_agent_run_sse_disconnect_seals_dangling_function_call(
     if message["type"] == "http.response.body" and message.get("body"):
       sent_chunks.append(message["body"].decode("utf-8"))
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+
+  response = await handler(req, request)
+  assert response.status_code == 200
+
   await response(
-      {"type": "http", "asgi": {"spec_version": "2.1"}},
+      scope,
       receive,
       send,
   )
@@ -4153,6 +4983,105 @@ async def test_agent_run_sse_disconnect_seals_dangling_function_call(
   frs = abort_events[0].get_function_responses()
   assert len(frs) == 1
   assert frs[0].id == "call_sse_1"
+  assert frs[0].name == "slow_tool"
+
+
+async def test_agent_run_sse_disconnect_aborts_under_asgi_2_4(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test /run_sse disconnect aborts under ASGI 2.4 when send() no-ops."""
+  info = create_test_session
+  captured_contexts = []
+  tool_in_flight = asyncio.Event()
+  after_run_flag = asyncio.Event()
+
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+  loaded_app = _slow_tool_app(
+      info,
+      captured_contexts,
+      tool_in_flight,
+      after_run_flag,
+      call_id="call_sse_asgi_24",
+  )
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: loaded_app
+  )
+
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  app = client.app
+  handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      handler = route.endpoint
+      break
+  assert handler is not None
+
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
+      streaming=True,
+  )
+
+  sent_chunks: list[str] = []
+
+  async def receive():
+    await tool_in_flight.wait()
+    return {"type": "http.disconnect"}
+
+  async def send(message):
+    if tool_in_flight.is_set():
+      return
+    if message["type"] == "http.response.body" and message.get("body"):
+      sent_chunks.append(message["body"].decode("utf-8"))
+
+  scope = {
+      "type": "http",
+      "asgi": {"spec_version": "2.4"},
+      "method": "POST",
+      "path": "/run_sse",
+      "headers": [],
+  }
+  request = starlette.requests.Request(scope, receive=receive)
+
+  response = await handler(req, request)
+  assert response.status_code == 200
+
+  await asyncio.wait_for(
+      response(scope, receive, send),
+      timeout=2.0,
+  )
+
+  assert any("slow_tool" in chunk for chunk in sent_chunks)
+  assert len(captured_contexts) == 1
+  assert captured_contexts[0].is_aborted
+  assert after_run_flag.is_set()
+
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  abort_events = [
+      e for e in session.events if e.error_code == "INVOCATION_ABORTED"
+  ]
+  assert len(abort_events) == 1
+  frs = abort_events[0].get_function_responses()
+  assert len(frs) == 1
+  assert frs[0].id == "call_sse_asgi_24"
   assert frs[0].name == "slow_tool"
 
 
@@ -4197,9 +5126,6 @@ async def test_agent_run_sse_consumer_exception_surfaces_error_event(
   monkeypatch.setattr(Event, "model_dump", _failing_model_dump_json)
   monkeypatch.setattr(Event, "model_dump_json", _failing_model_dump_json)
 
-  response = await handler(req)
-  assert response.status_code == 200
-
   sent_chunks: list[str] = []
 
   async def receive():
@@ -4210,8 +5136,14 @@ async def test_agent_run_sse_consumer_exception_surfaces_error_event(
     if message["type"] == "http.response.body" and message.get("body"):
       sent_chunks.append(message["body"].decode("utf-8"))
 
+  scope = {"type": "http", "asgi": {"spec_version": "2.1"}}
+  request = starlette.requests.Request(scope, receive=receive)
+
+  response = await handler(req, request)
+  assert response.status_code == 200
+
   await response(
-      {"type": "http", "asgi": {"spec_version": "2.1"}},
+      scope,
       receive,
       send,
   )
@@ -5099,6 +6031,156 @@ def test_builder_get_allows_request_without_origin(builder_test_client):
   assert not response.text
 
 
+@pytest.mark.parametrize(
+    "builder_test_app", [["*"], ["regex:https://.*"]], indirect=True
+)
+def test_builder_save_rejects_origin_allowed_only_by_wildcard(
+    builder_test_client, tmp_path
+):
+  """A wildcard opens CORS to every site, but not agent file writes."""
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save",
+      headers={"origin": "https://evil.example"},
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: pwned\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 403
+  assert "own origin" in response.json()["detail"]
+  assert not (tmp_path / "app" / "root_agent.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    "builder_test_app", [["*", "https://ide.example"]], indirect=True
+)
+@pytest.mark.parametrize("origin", [_LOOPBACK_BASE_URL, "https://ide.example"])
+def test_builder_save_allows_own_or_literally_listed_origin(
+    builder_test_client, tmp_path, origin
+):
+  """The dev UI and an origin the developer named still reach the builder."""
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save",
+      headers={"origin": origin},
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 200
+  assert (tmp_path / "app" / "root_agent.yaml").is_file()
+
+
+@pytest.mark.parametrize(
+    "method, path, body",
+    [
+        ("GET", "/apps/__internal_assistant/app-info", None),
+        (
+            "POST",
+            "/run",
+            {
+                "app_name": "__internal_assistant",
+                "user_id": "u",
+                "session_id": "s",
+                "new_message": {"role": "user", "parts": [{"text": "hi"}]},
+            },
+        ),
+    ],
+)
+def test_special_agent_rejects_origin_allowed_only_by_wildcard(
+    method,
+    path,
+    body,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Internal agents write code, so a wildcard does not open them to sites."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=["*"],
+      bind_host="127.0.0.1",
+  )
+  headers = {"host": "127.0.0.1:8000", "origin": "https://evil.example"}
+
+  response = client.request(method, path, json=body, headers=headers)
+
+  assert response.status_code == 403
+  assert "own origin" in response.json()["detail"]
+
+
+def test_special_agent_allows_own_origin_with_wildcard(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """The dev UI keeps the builder assistant when allow_origins has '*'."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=["*"],
+      bind_host="127.0.0.1",
+  )
+
+  response = client.get(
+      "/apps/__internal_assistant/app-info",
+      headers={"host": "127.0.0.1:8000", "origin": _LOOPBACK_BASE_URL},
+  )
+
+  assert response.status_code == 400
+  assert response.json()["detail"] == "Root agent is not an LlmAgent"
+
+
+def test_special_agent_allows_proxied_origin_without_allow_origins(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Without a wildcard, the forwarded-host same-origin check still applies."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=None,
+      bind_host="127.0.0.1",
+  )
+
+  response = client.get(
+      "/apps/__internal_assistant/app-info",
+      headers={
+          "host": "127.0.0.1:8000",
+          "x-forwarded-host": "localhost:9000",
+          "origin": "http://localhost:9000",
+      },
+  )
+
+  assert response.status_code == 400
+  assert response.json()["detail"] == "Root agent is not an LlmAgent"
+
+
 def test_builder_save_rejects_remote_client(
     remote_builder_test_client, tmp_path
 ):
@@ -5705,6 +6787,7 @@ def test_setup_gcp_telemetry_requests_cloud_platform_scope(monkeypatch):
   """
   from google.adk.cli.api_server import _setup_gcp_telemetry
   from google.adk.telemetry.google_cloud import _CLOUD_PLATFORM_SCOPE
+  from google.adk.telemetry.setup import OTelHooks
 
   auth_default = MagicMock(return_value=("creds", "project-id"))
   monkeypatch.setattr("google.auth.default", auth_default)
@@ -5717,7 +6800,7 @@ def test_setup_gcp_telemetry_requests_cloud_platform_scope(monkeypatch):
       lambda project_id: MagicMock(),
   )
   monkeypatch.setattr(
-      "google.adk.telemetry.setup.maybe_set_otel_providers",
+      "google.adk.cli.api_server.maybe_set_otel_providers",
       lambda **kwargs: None,
   )
   monkeypatch.setattr(
@@ -5725,7 +6808,7 @@ def test_setup_gcp_telemetry_requests_cloud_platform_scope(monkeypatch):
       lambda: None,
   )
 
-  _setup_gcp_telemetry()
+  _setup_gcp_telemetry(OTelHooks())
 
   auth_default.assert_called_once_with(scopes=[_CLOUD_PLATFORM_SCOPE])
 
@@ -6918,7 +8001,7 @@ def _readable_span(name, *, trace_id, span_id=1, attributes=None):
 
 
 def test_api_server_span_exporter_records_only_llm_and_tool_spans():
-  """Only call_llm / send_data / execute_tool* spans are kept, by event id."""
+  """Only LLM, send_data and execute_tool* spans are kept, by event id."""
   from google.adk.cli.api_server import ApiServerSpanExporter
   from opentelemetry.sdk.trace.export import SpanExportResult
 
@@ -6945,6 +8028,12 @@ def test_api_server_span_exporter_records_only_llm_and_tool_spans():
           attributes={"gcp.vertex.agent.event_id": "tool-event"},
       ),
       _readable_span(
+          "generate_content gemini-2.5-flash",
+          trace_id=15,
+          span_id=5,
+          attributes={"gcp.vertex.agent.event_id": "inference-event"},
+      ),
+      _readable_span(
           "invocation",
           trace_id=14,
           span_id=4,
@@ -6954,7 +8043,12 @@ def test_api_server_span_exporter_records_only_llm_and_tool_spans():
 
   assert exporter.export(spans) == SpanExportResult.SUCCESS
 
-  assert sorted(trace_dict) == ["data-event", "llm-event", "tool-event"]
+  assert sorted(trace_dict) == [
+      "data-event",
+      "inference-event",
+      "llm-event",
+      "tool-event",
+  ]
   # The exporter augments the span attributes with its trace/span identifiers,
   # which is what the /debug/trace endpoint hands back to the UI.
   assert trace_dict["llm-event"]["trace_id"] == 11
@@ -7074,6 +8168,7 @@ def test_setup_telemetry_guards_add_span_processor_on_non_sdk_provider(
   from unittest.mock import MagicMock
 
   from google.adk.cli.api_server import _setup_telemetry
+  from google.adk.telemetry.setup import OTelHooks
   from opentelemetry import trace
 
   non_sdk_provider = MagicMock(spec=trace.TracerProvider)
@@ -7081,7 +8176,10 @@ def test_setup_telemetry_guards_add_span_processor_on_non_sdk_provider(
   monkeypatch.setattr(trace, "get_tracer_provider", lambda: non_sdk_provider)
 
   exporter = MagicMock()
-  _setup_telemetry(otel_to_cloud=False, internal_exporters=[exporter])
+  _setup_telemetry(
+      otel_to_cloud=False,
+      internal_processors=OTelHooks(span_processors=[exporter]),
+  )
 
 
 def test_setup_telemetry_adds_span_processors_when_supported(monkeypatch):
@@ -7089,13 +8187,17 @@ def test_setup_telemetry_adds_span_processors_when_supported(monkeypatch):
   from unittest.mock import MagicMock
 
   from google.adk.cli.api_server import _setup_telemetry
+  from google.adk.telemetry.setup import OTelHooks
   from opentelemetry import trace
 
   provider = MagicMock()
   monkeypatch.setattr(trace, "get_tracer_provider", lambda: provider)
 
   exporter = MagicMock()
-  _setup_telemetry(otel_to_cloud=False, internal_exporters=[exporter])
+  _setup_telemetry(
+      otel_to_cloud=False,
+      internal_processors=OTelHooks(span_processors=[exporter]),
+  )
   provider.add_span_processor.assert_called_once_with(exporter)
 
 
@@ -7220,8 +8322,13 @@ def _installed_internal_exporters(
         mock_eval_set_results_manager,
         web=web,
     )
-  processors = mock_setup_telemetry.call_args.kwargs["internal_exporters"]
-  return [type(processor.span_exporter).__name__ for processor in processors]
+  hooks = mock_setup_telemetry.call_args.kwargs["internal_processors"]
+  if hooks is None:
+    return []
+  return [
+      type(processor.span_exporter).__name__
+      for processor in hooks.span_processors
+  ]
 
 
 def test_span_buffers_not_filled_when_web_disabled(
@@ -7267,7 +8374,7 @@ def test_span_buffers_filled_when_web_enabled(
   ) == ["ApiServerSpanExporter", "InMemoryExporter"]
 
 
-def test_app_info_rejects_special_agent_only_in_api_server_mode(
+def test_app_info_serves_special_agent_only_on_loopback_dev_server(
     mock_session_service,
     mock_artifact_service,
     mock_memory_service,
@@ -7275,7 +8382,7 @@ def test_app_info_rejects_special_agent_only_in_api_server_mode(
     mock_eval_sets_manager,
     mock_eval_set_results_manager,
 ):
-  """Internal `__` apps reach the dev server, but not the api server."""
+  """Internal `__` apps reach a loopback dev server, but not the api server."""
   api_only_client = _create_test_client(
       mock_session_service,
       mock_artifact_service,
@@ -7309,6 +8416,65 @@ def test_app_info_rejects_special_agent_only_in_api_server_mode(
   assert allowed.json()["detail"] == "Root agent is not an LlmAgent"
 
 
+@pytest.mark.parametrize("bind_host", ["0.0.0.0", None])
+def test_dev_server_rejects_special_agent_unless_bound_to_loopback(
+    bind_host,
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """A dev server on a network address, or an unknown one, refuses `__` apps."""
+  agent_loader = AgentLoader(str(tmp_path))
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      agent_loader=agent_loader,
+      bind_host=bind_host,
+  )
+
+  response = client.get("/apps/__internal_assistant/app-info")
+
+  assert response.status_code == 403
+  assert "loopback" in response.json()["detail"]
+  # Eval runs load the app without a runner, so the loader must refuse it too.
+  with pytest.raises(PermissionError):
+    agent_loader.load_agent("__adk_agent_builder_assistant")
+
+
+def test_api_server_fallback_rejects_special_agent_even_on_loopback(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Packages that ship without dev_server.py get an ApiServer, which is closed."""
+  with patch.dict(sys.modules, {"google.adk.cli.dev_server": None}):
+    client = _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        bind_host="127.0.0.1",
+    )
+
+  response = client.get("/apps/__internal_assistant/app-info")
+
+  assert response.status_code == 403
+  assert "internal special agents" in response.json()["detail"]
+
+
 def test_dev_endpoint_rejects_app_name_that_is_not_an_identifier(
     builder_test_client,
 ):
@@ -7324,6 +8490,106 @@ def test_dev_endpoint_rejects_app_name_that_is_not_an_identifier(
     rejected = builder_test_client.get(f"/dev/apps/{bad_name}/tests")
     assert rejected.status_code == 400, bad_name
     assert "must be valid" in rejected.json()["detail"]
+
+
+def _create_builder_session(client, payload=None):
+  response = client.post(
+      "/apps/test_app/users/test_user/sessions", json=payload or {}
+  )
+  assert response.status_code == 200, response.text
+  return response.json()
+
+
+def test_dev_create_session_seeds_state_from_initial_state_file(
+    builder_test_client, tmp_path
+):
+  (tmp_path / "test_app").mkdir()
+  (tmp_path / "test_app" / "initial_state.json").write_text(
+      json.dumps({"city": "New York", "time": "10:30"}), encoding="utf-8"
+  )
+
+  session = _create_builder_session(builder_test_client)
+
+  assert session["state"] == {"city": "New York", "time": "10:30"}
+
+
+def test_dev_create_session_client_state_overrides_initial_state_file(
+    builder_test_client, tmp_path
+):
+  (tmp_path / "test_app").mkdir()
+  (tmp_path / "test_app" / "initial_state.json").write_text(
+      json.dumps({"city": "New York", "time": "10:30"}), encoding="utf-8"
+  )
+
+  session = _create_builder_session(
+      builder_test_client, {"state": {"city": "Paris", "mood": "calm"}}
+  )
+
+  assert session["state"] == {
+      "city": "Paris",
+      "time": "10:30",
+      "mood": "calm",
+  }
+
+
+def test_dev_create_session_without_initial_state_file_is_unchanged(
+    builder_test_client, tmp_path
+):
+  (tmp_path / "test_app").mkdir()
+
+  session = _create_builder_session(builder_test_client, {"state": {"a": 1}})
+
+  assert session["state"] == {"a": 1}
+
+
+@pytest.mark.parametrize("content", ["{not json", "[1, 2]", '"text"'])
+def test_dev_create_session_ignores_invalid_initial_state_file(
+    builder_test_client, tmp_path, content
+):
+  (tmp_path / "test_app").mkdir()
+  (tmp_path / "test_app" / "initial_state.json").write_text(
+      content, encoding="utf-8"
+  )
+
+  session = _create_builder_session(builder_test_client, {"state": {"a": 1}})
+
+  assert session["state"] == {"a": 1}
+
+
+def test_api_server_create_session_ignores_initial_state_file(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    test_session_info,
+    tmp_path,
+):
+  """Only the dev server reads initial_state.json."""
+  (tmp_path / test_session_info["app_name"]).mkdir()
+  (tmp_path / test_session_info["app_name"] / "initial_state.json").write_text(
+      json.dumps({"city": "New York"}), encoding="utf-8"
+  )
+  api_only_client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+      web=False,
+  )
+
+  response = api_only_client.post(
+      f"/apps/{test_session_info['app_name']}/users/"
+      f"{test_session_info['user_id']}/sessions",
+      json={},
+  )
+
+  assert response.status_code == 200
+  assert "city" not in response.json().get("state", {})
 
 
 #################################################
@@ -7388,10 +8654,6 @@ def test_add_session_to_eval_set_builds_eval_case_from_session(
   ] == ["what is 2+2?"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="add-session maps ValueError, but the managers raise NotFoundError",
-)
 def test_add_session_to_eval_set_unknown_eval_set_is_a_client_error(
     test_app, create_test_session
 ):
@@ -7407,7 +8669,7 @@ def test_add_session_to_eval_set_unknown_eval_set_is_a_client_error(
       },
   )
 
-  assert 400 <= response.status_code < 500
+  assert response.status_code == 404
 
 
 def test_get_eval_result_returns_saved_eval_set_result(
@@ -7507,6 +8769,47 @@ def test_agent_run_sse_deferred_without_streaming_is_allowed(
   response = test_app.post("/run_sse", json=payload)
 
   assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("url_prefix", "request_prefix", "mount_prefix"),
+    [
+        (None, "", None),
+        ("/adk", "", None),
+        ("/adk", "/adk", None),
+        ("/adk", "/adk", "/adk"),
+        ("/nested/adk", "", None),
+        ("/dev", "", None),
+        ("https://example.com/adk", "", None),
+    ],
+)
+def test_dev_ui_static_files_with_url_prefix(
+    tmp_path, url_prefix, request_prefix, mount_prefix
+):
+  """Static mounts support both stripped and retained proxy prefixes."""
+  app = get_fast_api_app(
+      agents_dir=str(tmp_path), web=True, url_prefix=url_prefix
+  )
+  server = Starlette(routes=[Mount(mount_prefix, app)]) if mount_prefix else app
+  client = TestClient(server)
+
+  index = client.get(request_prefix + "/dev-ui/")
+  assert index.status_code == 200
+  assert "text/html" in index.headers["content-type"]
+  favicon = client.get(request_prefix + "/dev-ui/adk_favicon.svg")
+  assert favicon.status_code == 200
+  assert "image/svg+xml" in favicon.headers["content-type"]
+  assert client.get(request_prefix + "/dev-ui/missing.js").status_code == 404
+  assert client.get(request_prefix + "/list-apps").status_code == 200
+  config = client.get(
+      request_prefix + "/dev-ui/assets/config/runtime-config.json"
+  )
+  assert config.status_code == 200
+  assert config.json()["backendUrl"] == (url_prefix or "")
+  docs = client.get(request_prefix + "/docs")
+  assert docs.status_code == 200
+  assert (app.root_path + "/openapi.json") in docs.text
+  assert client.get(request_prefix + "/openapi.json").status_code == 200
 
 
 def test_runtime_config_endpoint_shadows_static_file(tmp_path):

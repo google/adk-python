@@ -48,6 +48,7 @@ openapi_toolset = OpenAPIToolset(
     spec_str_type="yaml",
     auth_scheme=auth_scheme,
     auth_credential=auth_credential,
+    allow_private_network_access=True,
 )
 
 from google.adk.agents import LlmAgent

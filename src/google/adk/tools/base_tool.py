@@ -61,6 +61,9 @@ class BaseTool(ABC):
   """The name of the tool."""
   description: str
   """The description of the tool."""
+  title: Optional[str] = None
+  """Optional human-readable display title; consumers fall back to ``name``
+  when unset."""
 
   is_long_running: bool = False
   """Whether the tool is a long running operation, which typically returns a
@@ -128,6 +131,7 @@ class BaseTool(ABC):
       *,
       name: str,
       description: str,
+      title: Optional[str] = None,
       is_long_running: bool = False,
       custom_metadata: Optional[dict[str, Any]] = None,
       behavior: Optional[types.Behavior] = None,
@@ -135,6 +139,8 @@ class BaseTool(ABC):
   ):
     self.name = name
     self.description = description
+    if title is not None:
+      self.title = title
     self.is_long_running = is_long_running
     self._defers_response = False
     self.custom_metadata = custom_metadata

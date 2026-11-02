@@ -33,6 +33,7 @@ import pydantic
 
 from ..tools.tool_context import ToolContext
 from ..utils.variant_utils import GoogleLLMVariant
+from ._gemini_schema_util import _dereference_schema
 
 _py_builtin_type_to_schema_type = {
     str: types.Type.STRING,
@@ -198,6 +199,7 @@ def _generate_json_schema_for_parameter(
         config=pydantic.ConfigDict(arbitrary_types_allowed=True),
     )
   json_schema_dict = param_schema_adapter.json_schema()
+  json_schema_dict = _dereference_schema(json_schema_dict)
   json_schema_dict = _add_unevaluated_items_to_fixed_len_tuple_schema(
       json_schema_dict
   )

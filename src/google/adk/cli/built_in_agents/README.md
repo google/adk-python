@@ -32,7 +32,7 @@ agent = AgentBuilderAssistant.create_agent(
 
 ### 📝 **Advanced YAML Configuration**
 - Generates AgentConfig schema-compliant YAML files
-- Supports all agent types: LlmAgent, SequentialAgent, ParallelAgent, LoopAgent
+- Supports `LlmAgent` and legacy agent types in YAML (`SequentialAgent`, `ParallelAgent`, `LoopAgent`). **These legacy agent classes are deprecated** in favor of [`Workflow`](https://github.com/google/adk-python/blob/main/docs/guides/workflow/workflow/index.md), which this assistant does not generate yet; for new designs, prefer Workflow graphs and samples under [`contributing/samples/workflows/`](https://github.com/google/adk-python/tree/main/contributing/samples/workflows).
 - Built-in validation with detailed error reporting
 
 ### 🛠️ **Multi-File Management**

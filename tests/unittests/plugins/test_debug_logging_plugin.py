@@ -25,23 +25,30 @@ from unittest.mock import Mock
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event import Event
+from google.adk.events.event import NodeInfo
 from google.adk.events.event_actions import EventActions
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.plugins import ToolResultClassification
 from google.adk.plugins.debug_logging_plugin import DebugLoggingPlugin
+from google.adk.plugins.reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
 from google.adk.sessions.session import Session
 from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 from pydantic import BaseModel
 import pytest
 import yaml
+
+from .. import testing_utils
 
 _SENTINEL_ACCESS_TOKEN = "sentinel-access-token-4f7a21"
 _SENTINEL_REFRESH_TOKEN = "sentinel-refresh-token-91cc03"
@@ -1055,3 +1062,573 @@ class TestDebugLoggingPluginSystemInstructionConfig:
     llm_entries = [e for e in state.entries if e.entry_type == "llm_request"]
     assert "system_instruction" not in llm_entries[0].data.get("config", {})
     assert llm_entries[0].data["config"]["system_instruction_length"] == 28
+
+
+def _tool(name: str) -> BaseTool:
+  tool = Mock(spec=BaseTool)
+  tool.name = name
+  return tool
+
+
+def _node_event(
+    *, message_as_output: Optional[bool] = None, **fields: Any
+) -> Event:
+  """Returns an event of the workflow node at path `wf@1/step@2`."""
+  return Event(
+      author="step",
+      node_info=NodeInfo(
+          path="wf@1/step@2", message_as_output=message_as_output
+      ),
+      **fields,
+  )
+
+
+def _entries(plugin: DebugLoggingPlugin, entry_type: str) -> list[Any]:
+  """Returns the data of the recorded entries of one type, in order."""
+  state = plugin._invocation_states["test-invocation-id"]
+  return [e.data for e in state.entries if e.entry_type == entry_type]
+
+
+async def _retry_answer(
+    tool: BaseTool, tool_context: ToolContext, error: Exception
+) -> dict[str, Any]:
+  """Returns ReflectAndRetryToolPlugin's real answer to a raised error."""
+  return await ReflectAndRetryToolPlugin(max_retries=3).on_tool_error_callback(
+      tool=tool, tool_args={}, tool_context=tool_context, error=error
+  )
+
+
+# The dump of an MCP CallToolResult that reports a failure.
+_MCP_ERROR_RESULT = {
+    "content": [{"type": "text", "text": "permission denied"}],
+    "isError": True,
+}
+
+
+def _classify_status_field(*, tool, tool_args, tool_context, result):
+  """Classifies a result whose `status` is `ERROR` as a tool error."""
+  del tool, tool_args, tool_context  # Unused.
+  if isinstance(result, dict) and result.get("status") == "ERROR":
+    return ToolResultClassification(
+        status="ERROR", error_message=result.get("reason")
+    )
+  return None
+
+
+class _RecordingOkClassifier:
+  """Classifies every result as a completed call, recording each one."""
+
+  def __init__(self):
+    self.results = []
+
+  def __call__(self, *, tool, tool_args, tool_context, result):
+    del tool, tool_args, tool_context  # Unused.
+    self.results.append(result)
+    return ToolResultClassification(status="OK")
+
+
+def _failing_classifier(*, tool, tool_args, tool_context, result):
+  del tool, tool_args, tool_context  # Unused.
+  raise RuntimeError(f"cannot classify {result!r}")
+
+
+async def _async_classifier(*, tool, tool_args, tool_context, result):
+  del tool, tool_args, tool_context, result  # Unused.
+  return None
+
+
+def _classifier_without_result(*, tool, tool_args, tool_context):
+  del tool, tool_args, tool_context  # Unused.
+  return None
+
+
+class TestDebugLoggingPluginModelTermination:
+  """Tests for the termination fields of LLM response entries."""
+
+  async def test_final_response_records_finish_reason(
+      self, debug_output_file, mock_invocation_context, mock_callback_context
+  ):
+    plugin = DebugLoggingPlugin(output_path=str(debug_output_file))
+    await plugin.before_run_callback(invocation_context=mock_invocation_context)
+
+    await plugin.after_model_callback(
+        callback_context=mock_callback_context,
+        llm_response=LlmResponse(
+            content=types.Content(role="model", parts=[types.Part(text="hi")]),
+            finish_reason=types.FinishReason.STOP,
+        ),
+    )
+
+    [response] = _entries(plugin, "llm_response")
+    assert response["finish_reason"] == str(types.FinishReason.STOP)
+
+  async def test_streamed_chunk_leaves_termination_to_final_response(
+      self, debug_output_file, mock_invocation_context, mock_callback_context
+  ):
+    """A stream's error and finish reason are recorded once, at its end.
+
+    The final response of a stream carries the same values as the chunk, so
+    recording them on the chunk too would record one termination twice.
+    """
+    plugin = DebugLoggingPlugin(output_path=str(debug_output_file))
+    await plugin.before_run_callback(invocation_context=mock_invocation_context)
+    chunk = LlmResponse(
+        content=types.Content(role="model", parts=[types.Part(text="par")]),
+        partial=True,
+        error_code="MAX_TOKENS",
+        error_message="cut off",
+        finish_reason=types.FinishReason.MAX_TOKENS,
+    )
+    final = chunk.model_copy(update={"partial": False})
+
+    for llm_response in (chunk, final):
+      await plugin.after_model_callback(
+          callback_context=mock_callback_context, llm_response=llm_response
+      )
+
+    chunk_data, final_data = _entries(plugin, "llm_response")
+    assert chunk_data["partial"] is True
+    assert not {"error_code", "error_message", "finish_reason"} & set(
+        chunk_data
+    )
+    assert final_data["error_code"] == "MAX_TOKENS"
+    assert final_data["error_message"] == "cut off"
+    assert final_data["finish_reason"] == str(types.FinishReason.MAX_TOKENS)
+
+
+class TestDebugLoggingPluginNodeFields:
+  """Tests for the workflow node fields of event entries."""
+
+  async def _record_event(
+      self, debug_output_file, mock_invocation_context, event: Event
+  ) -> dict[str, Any]:
+    """Records one event and returns the data of its entry."""
+    plugin = DebugLoggingPlugin(output_path=str(debug_output_file))
+    await plugin.before_run_callback(invocation_context=mock_invocation_context)
+    await plugin.on_event_callback(
+        invocation_context=mock_invocation_context, event=event
+    )
+    [event_data] = _entries(plugin, "event")
+    return event_data
+
+  async def test_records_node_path_and_output(
+      self, debug_output_file, mock_invocation_context
+  ):
+    data = await self._record_event(
+        debug_output_file,
+        mock_invocation_context,
+        _node_event(output={"answer": 42}),
+    )
+
+    assert data["node_path"] == "wf@1/step@2"
+    assert data["node_output"] == {"answer": 42}
+    assert "node_error" not in data
+
+  async def test_skips_output_its_message_carries(
+      self, debug_output_file, mock_invocation_context
+  ):
+    data = await self._record_event(
+        debug_output_file,
+        mock_invocation_context,
+        _node_event(
+            content=types.Content(parts=[types.Part(text="the answer")]),
+            output="the answer",
+            message_as_output=True,
+        ),
+    )
+
+    assert data["node_path"] == "wf@1/step@2"
+    assert "node_output" not in data
+
+  async def test_records_node_error_beside_its_output(
+      self, debug_output_file, mock_invocation_context
+  ):
+    data = await self._record_event(
+        debug_output_file,
+        mock_invocation_context,
+        _node_event(
+            error_code="ValueError",
+            error_message="invalid input",
+            output={"processed": 3},
+        ),
+    )
+
+    assert data["node_error"] == {
+        "error_code": "ValueError",
+        "error_message": "invalid input",
+    }
+    assert data["node_output"] == {"processed": 3}
+
+  async def test_partial_event_records_only_node_path(
+      self, debug_output_file, mock_invocation_context
+  ):
+    data = await self._record_event(
+        debug_output_file,
+        mock_invocation_context,
+        _node_event(
+            partial=True,
+            output={"processed": 3},
+            error_code="ValueError",
+            error_message="invalid input",
+        ),
+    )
+
+    assert data["node_path"] == "wf@1/step@2"
+    assert "node_output" not in data
+    assert "node_error" not in data
+
+  @pytest.mark.parametrize(
+      "error_code",
+      ["MAX_TOKENS", "SAFETY", "MODEL_ARMOR", types.FinishReason.MAX_TOKENS],
+  )
+  async def test_model_termination_is_not_a_node_error(
+      self, debug_output_file, mock_invocation_context, error_code
+  ):
+    data = await self._record_event(
+        debug_output_file,
+        mock_invocation_context,
+        _node_event(error_code=error_code, error_message="model stopped"),
+    )
+
+    assert data["node_path"] == "wf@1/step@2"
+    assert "node_error" not in data
+
+  async def test_event_outside_a_workflow_has_no_node_fields(
+      self, debug_output_file, mock_invocation_context
+  ):
+    data = await self._record_event(
+        debug_output_file,
+        mock_invocation_context,
+        Event(
+            author="agent",
+            output={"processed": 3},
+            error_code="ValueError",
+            error_message="invalid input",
+        ),
+    )
+
+    assert not {"node_path", "node_output", "node_error"} & set(data)
+
+  async def test_node_output_credential_is_redacted(
+      self, debug_output_file, mock_invocation_context
+  ):
+    plugin = DebugLoggingPlugin(output_path=str(debug_output_file))
+    await plugin.before_run_callback(invocation_context=mock_invocation_context)
+    await plugin.on_event_callback(
+        invocation_context=mock_invocation_context,
+        event=_node_event(
+            output=_CredentialCarrier(label="db", payload=_oauth_credential())
+        ),
+    )
+    await plugin.after_run_callback(invocation_context=mock_invocation_context)
+
+    text = debug_output_file.read_text()
+    assert _SENTINEL_ACCESS_TOKEN not in text
+    [document] = yaml.safe_load_all(text)
+    [event_entry] = [
+        e for e in document["entries"] if e["entry_type"] == "event"
+    ]
+    assert event_entry["data"]["node_output"]["label"] == "db"
+    assert event_entry["data"]["node_output"]["payload"] == "[REDACTED]"
+
+
+class TestDebugLoggingPluginToolResultErrors:
+  """Tests for tool results that report a failure without raising."""
+
+  async def test_result_with_error_keys_is_a_tool_response(
+      self, debug_output_file, mock_invocation_context, mock_tool_context
+  ):
+    """A result that merely has error-like keys is the tool's data."""
+    plugin = DebugLoggingPlugin(output_path=str(debug_output_file))
+    await plugin.before_run_callback(invocation_context=mock_invocation_context)
+
+    await plugin.after_tool_callback(
+        tool=_tool("lookup"),
+        tool_args={},
+        tool_context=mock_tool_context,
+        result={"error": "none", "error_details": "none"},
+    )
+
+    assert len(_entries(plugin, "tool_response")) == 1
+    assert not _entries(plugin, "tool_error")
+
+  async def test_retry_answer_is_recorded_as_tool_error(
+      self, debug_output_file, mock_invocation_context, mock_tool_context
+  ):
+    plugin = DebugLoggingPlugin(output_path=str(debug_output_file))
+    await plugin.before_run_callback(invocation_context=mock_invocation_context)
+    tool = _tool("lookup")
+    answer = await _retry_answer(
+        tool, mock_tool_context, RuntimeError("quota exceeded")
+    )
+
+    await plugin.after_tool_callback(
+        tool=tool,
+        tool_args={"q": "x"},
+        tool_context=mock_tool_context,
+        result=answer,
+    )
+
+    [tool_error] = _entries(plugin, "tool_error")
+    assert tool_error["tool_name"] == "lookup"
+    assert tool_error["function_call_id"] == "test-function-call-id"
+    assert tool_error["args"] == {"q": "x"}
+    assert tool_error["error_message"] == "quota exceeded"
+    assert tool_error["result"]["response_type"] == (
+        "ERROR_HANDLED_BY_REFLECT_AND_RETRY_PLUGIN"
+    )
+    assert not _entries(plugin, "tool_response")
+
+  async def test_mcp_error_result_is_recorded_as_tool_error(
+      self, debug_output_file, mock_invocation_context, mock_tool_context
+  ):
+    plugin = DebugLoggingPlugin(output_path=str(debug_output_file))
+    await plugin.before_run_callback(invocation_context=mock_invocation_context)
+
+    await plugin.after_tool_callback(
+        tool=_tool("mcp_tool"),
+        tool_args={},
+        tool_context=mock_tool_context,
+        result=_MCP_ERROR_RESULT,
+    )
+
+    [tool_error] = _entries(plugin, "tool_error")
+    assert tool_error["error_message"] == (
+        "Tool returned an MCP result with isError=true."
+    )
+    assert tool_error["result"] == _MCP_ERROR_RESULT
+    assert not _entries(plugin, "tool_response")
+
+  async def test_classified_error_is_recorded_as_tool_error(
+      self, debug_output_file, mock_invocation_context, mock_tool_context
+  ):
+    plugin = DebugLoggingPlugin(
+        output_path=str(debug_output_file),
+        tool_result_classifier=_classify_status_field,
+    )
+    await plugin.before_run_callback(invocation_context=mock_invocation_context)
+
+    await plugin.after_tool_callback(
+        tool=_tool("app_tool"),
+        tool_args={},
+        tool_context=mock_tool_context,
+        result={"status": "ERROR", "reason": "row not found"},
+    )
+
+    [tool_error] = _entries(plugin, "tool_error")
+    assert tool_error["error_message"] == "row not found"
+    assert not _entries(plugin, "tool_response")
+
+  async def test_classifier_ok_verdict_overrides_mcp_rule(
+      self, debug_output_file, mock_invocation_context, mock_tool_context
+  ):
+    classifier = _RecordingOkClassifier()
+    plugin = DebugLoggingPlugin(
+        output_path=str(debug_output_file), tool_result_classifier=classifier
+    )
+    await plugin.before_run_callback(invocation_context=mock_invocation_context)
+
+    await plugin.after_tool_callback(
+        tool=_tool("mcp_tool"),
+        tool_args={},
+        tool_context=mock_tool_context,
+        result=_MCP_ERROR_RESULT,
+    )
+
+    assert classifier.results == [_MCP_ERROR_RESULT]
+    assert len(_entries(plugin, "tool_response")) == 1
+    assert not _entries(plugin, "tool_error")
+
+  async def test_classifier_cannot_hide_retry_answer(
+      self, debug_output_file, mock_invocation_context, mock_tool_context
+  ):
+    """A retry answer stands for a raised error; no classifier sees it."""
+    classifier = _RecordingOkClassifier()
+    plugin = DebugLoggingPlugin(
+        output_path=str(debug_output_file), tool_result_classifier=classifier
+    )
+    await plugin.before_run_callback(invocation_context=mock_invocation_context)
+    tool = _tool("lookup")
+    answer = await _retry_answer(
+        tool, mock_tool_context, RuntimeError("quota exceeded")
+    )
+
+    await plugin.after_tool_callback(
+        tool=tool, tool_args={}, tool_context=mock_tool_context, result=answer
+    )
+
+    assert classifier.results == []
+    [tool_error] = _entries(plugin, "tool_error")
+    assert tool_error["error_message"] == "quota exceeded"
+    assert not _entries(plugin, "tool_response")
+
+  async def test_failing_classifier_falls_back_to_built_in_rule(
+      self,
+      debug_output_file,
+      mock_invocation_context,
+      mock_tool_context,
+      caplog,
+  ):
+    """The warning names only the tool, so the result stays out of the log."""
+    plugin = DebugLoggingPlugin(
+        output_path=str(debug_output_file),
+        tool_result_classifier=_failing_classifier,
+    )
+    await plugin.before_run_callback(invocation_context=mock_invocation_context)
+
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
+      await plugin.after_tool_callback(
+          tool=_tool("app_tool"),
+          tool_args={},
+          tool_context=mock_tool_context,
+          result={**_MCP_ERROR_RESULT, "secret": "sentinel-result-7c1d"},
+      )
+
+    [tool_error] = _entries(plugin, "tool_error")
+    assert tool_error["error_message"] == (
+        "Tool returned an MCP result with isError=true."
+    )
+    assert (
+        "tool_result_classifier failed or returned an unusable verdict for"
+        " tool app_tool"
+        in caplog.text
+    )
+    assert "sentinel-result-7c1d" not in caplog.text
+
+  @pytest.mark.parametrize(
+      "classifier",
+      ["not callable", _async_classifier, _classifier_without_result],
+      ids=["not_callable", "async", "missing_result_keyword"],
+  )
+  def test_init_rejects_unusable_classifier(self, classifier):
+    with pytest.raises(ValueError, match="tool_result_classifier"):
+      DebugLoggingPlugin(tool_result_classifier=classifier)
+
+  async def test_answer_to_a_recorded_tool_error_is_not_recorded_again(
+      self, debug_output_file, mock_invocation_context, mock_tool_context
+  ):
+    """A later plugin's answer to the error reaches after_tool_callback."""
+    plugin = DebugLoggingPlugin(output_path=str(debug_output_file))
+    await plugin.before_run_callback(invocation_context=mock_invocation_context)
+    tool = _tool("lookup")
+    error = RuntimeError("quota exceeded")
+
+    await plugin.on_tool_error_callback(
+        tool=tool, tool_args={}, tool_context=mock_tool_context, error=error
+    )
+    answer = await _retry_answer(tool, mock_tool_context, error)
+    await plugin.after_tool_callback(
+        tool=tool, tool_args={}, tool_context=mock_tool_context, result=answer
+    )
+
+    [tool_error] = _entries(plugin, "tool_error")
+    assert tool_error["error_type"] == "RuntimeError"
+    assert tool_error["error_message"] == "quota exceeded"
+    assert not _entries(plugin, "tool_response")
+
+  async def test_recorded_tool_error_does_not_skip_another_call(
+      self, debug_output_file, mock_invocation_context, mock_tool_context
+  ):
+    plugin = DebugLoggingPlugin(output_path=str(debug_output_file))
+    await plugin.before_run_callback(invocation_context=mock_invocation_context)
+    tool = _tool("lookup")
+    other_call = Mock(spec=ToolContext)
+    other_call.invocation_id = mock_invocation_context.invocation_id
+    other_call.agent_name = "test-agent"
+    other_call.function_call_id = "other-function-call-id"
+
+    await plugin.on_tool_error_callback(
+        tool=tool,
+        tool_args={},
+        tool_context=mock_tool_context,
+        error=RuntimeError("boom"),
+    )
+    await plugin.after_tool_callback(
+        tool=tool, tool_args={}, tool_context=other_call, result={"rows": 1}
+    )
+
+    [tool_response] = _entries(plugin, "tool_response")
+    assert tool_response["function_call_id"] == "other-function-call-id"
+
+  async def test_plugin_registered_after_the_answering_plugin_records_it(
+      self, tmp_path, mock_invocation_context, mock_tool_context
+  ):
+    """Each plugin instance skips only the error it recorded itself.
+
+    Registered as first, ReflectAndRetryToolPlugin, second: the retry plugin
+    answers the error before second's on_tool_error_callback runs, so the
+    answer is the only record of the error that second gets.
+    """
+    first = DebugLoggingPlugin(output_path=str(tmp_path / "first.yaml"))
+    second = DebugLoggingPlugin(output_path=str(tmp_path / "second.yaml"))
+    for debug_plugin in (first, second):
+      await debug_plugin.before_run_callback(
+          invocation_context=mock_invocation_context
+      )
+    tool = _tool("lookup")
+    error = RuntimeError("quota exceeded")
+
+    await first.on_tool_error_callback(
+        tool=tool, tool_args={}, tool_context=mock_tool_context, error=error
+    )
+    answer = await _retry_answer(tool, mock_tool_context, error)
+    for debug_plugin in (first, second):
+      await debug_plugin.after_tool_callback(
+          tool=tool,
+          tool_args={},
+          tool_context=mock_tool_context,
+          result=answer,
+      )
+
+    for debug_plugin in (first, second):
+      [tool_error] = _entries(debug_plugin, "tool_error")
+      assert tool_error["error_message"] == "quota exceeded"
+      assert not _entries(debug_plugin, "tool_response")
+
+  @pytest.mark.parametrize(
+      "debug_first", [False, True], ids=["retry_first", "debug_first"]
+  )
+  async def test_raised_error_answered_by_retry_plugin_is_recorded_once(
+      self, debug_output_file, debug_first
+  ):
+    """Either plugin order writes one tool_error and no tool_response."""
+
+    def raising_tool() -> str:
+      raise RuntimeError("quota exceeded")
+
+    debug_plugin = DebugLoggingPlugin(output_path=str(debug_output_file))
+    retry_plugin = ReflectAndRetryToolPlugin(max_retries=3)
+    agent = LlmAgent(
+        name="agent",
+        model=testing_utils.MockModel.create(
+            responses=[
+                types.Part.from_function_call(name="raising_tool", args={}),
+                "done",
+            ]
+        ),
+        tools=[FunctionTool(raising_tool)],
+    )
+    runner = testing_utils.InMemoryRunner(
+        app=testing_utils.App(
+            name="test_app",
+            root_agent=agent,
+            plugins=(
+                [debug_plugin, retry_plugin]
+                if debug_first
+                else [retry_plugin, debug_plugin]
+            ),
+        )
+    )
+
+    await runner.run_async(testing_utils.UserContent("go"))
+
+    with open(debug_output_file, "r") as f:
+      [document] = yaml.safe_load_all(f)
+    entry_types = [e["entry_type"] for e in document["entries"]]
+    tool_errors = [
+        e["data"]
+        for e in document["entries"]
+        if e["entry_type"] == "tool_error"
+    ]
+    assert [e["error_message"] for e in tool_errors] == ["quota exceeded"]
+    assert "tool_response" not in entry_types

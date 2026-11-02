@@ -286,6 +286,78 @@ class TestDialogueAssembly:
     assert "Transfer money between accounts." in evaluator._formatted_tools
 
   @pytest.mark.asyncio
+  async def test_app_details_with_built_in_tool(self, evaluator):
+    """Tests that built-in tools are named alongside function tools."""
+    app_details = AppDetails(
+        agent_details={
+            "search_agent": AgentDetails(
+                name="search_agent",
+                instructions="You answer questions using search.",
+                tool_declarations=[
+                    genai_types.Tool(google_search=genai_types.GoogleSearch()),
+                    genai_types.Tool(
+                        function_declarations=[
+                            genai_types.FunctionDeclaration(
+                                name="get_weather",
+                                description="Get the weather for a city.",
+                            )
+                        ]
+                    ),
+                ],
+            )
+        },
+    )
+    invocations = [
+        _make_invocation(
+            user_text="What is the weather in Paris?",
+            agent_text="It is sunny.",
+            invocation_id="search_agent",
+            rubrics=_RUBRICS,
+            app_details=app_details,
+        ),
+    ]
+    evaluator._assemble_dialogue_history(invocations)
+
+    assert "- google_search (built-in)" in evaluator._formatted_tools
+    assert "get_weather" in evaluator._formatted_tools
+    assert "Get the weather for a city." in evaluator._formatted_tools
+
+  @pytest.mark.asyncio
+  async def test_app_details_shared_built_in_tool_listed_per_agent(
+      self, evaluator
+  ):
+    """Tests that agents sharing a built-in tool each list it."""
+    app_details = AppDetails(
+        agent_details={
+            agent_id: AgentDetails(
+                name=agent_id,
+                instructions="You answer questions using search.",
+                tool_declarations=[
+                    genai_types.Tool(google_search=genai_types.GoogleSearch())
+                ],
+            )
+            for agent_id in ("agent_a", "agent_b")
+        },
+    )
+    invocations = [
+        _make_invocation(
+            user_text="What is the weather in Paris?",
+            agent_text="It is sunny.",
+            invocation_id="inv1",
+            rubrics=_RUBRICS,
+            app_details=app_details,
+        ),
+    ]
+    evaluator._assemble_dialogue_history(invocations)
+
+    assert evaluator._formatted_tools == (
+        "Agent: agent_a\n"
+        "- google_search (built-in)\n"
+        "Agent: agent_b\n"
+        "- google_search (built-in)"
+    )
+
+  @pytest.mark.asyncio
   async def test_invocation_without_user_content(self, evaluator):
     """Tests that invocations with no user text parts are handled gracefully."""
     invocations = [

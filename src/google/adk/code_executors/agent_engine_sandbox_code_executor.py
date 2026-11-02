@@ -281,10 +281,15 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
       An API client for the given project and location.
     """
     from ..dependencies._agentplatform import agentplatform
+    from ..utils._dependency import require_agentplatform_attributes
 
-    return agentplatform.Client(
+    client = agentplatform.Client(
         project=self._project_id, location=self._location
     )
+    require_agentplatform_attributes(
+        client, ('runtimes', 'sandboxes'), 'AgentEngineSandboxCodeExecutor'
+    )
+    return client
 
   def _get_project_id_and_location_from_resource_name(
       self, resource_name: str, pattern: str

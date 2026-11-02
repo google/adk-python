@@ -30,6 +30,153 @@ import google.oauth2.service_account
 
 class TestEventarcClient(unittest.IsolatedAsyncioTestCase):
 
+  def test_impersonated_credentials_are_keyed_by_source_principal(self):
+    def make_sa(email):
+      return google.oauth2.service_account.Credentials(
+          signer=mock.Mock(),
+          service_account_email=email,
+          token_uri="https://oauth2.mtls.googleapis.com/token",
+      )
+
+    def impersonate(
+        source,
+        *,
+        target_scopes=None,
+        delegates=None,
+        subject=None,
+    ):
+      return google.auth.impersonated_credentials.Credentials(
+          source_credentials=source,
+          target_principal="target@test.com",
+          target_scopes=target_scopes or [],
+          delegates=delegates,
+          subject=subject,
+      )
+
+    authorized = impersonate(make_sa("authorized@test.com"))
+    same_source = impersonate(make_sa("authorized@test.com"))
+    variants = (
+        ("source", impersonate(make_sa("unauthorized@test.com"))),
+        (
+            "source_subject",
+            impersonate(
+                make_sa("authorized@test.com").with_subject("user@test.com")
+            ),
+        ),
+        (
+            "target_scopes",
+            impersonate(
+                make_sa("authorized@test.com"),
+                target_scopes=[
+                    "https://www.googleapis.com/auth/cloud-platform"
+                ],
+            ),
+        ),
+        (
+            "delegates",
+            impersonate(
+                make_sa("authorized@test.com"),
+                delegates=["delegate@test.com"],
+            ),
+        ),
+        (
+            "subject",
+            impersonate(
+                make_sa("authorized@test.com"),
+                subject="user@test.com",
+            ),
+        ),
+    )
+
+    self.assertEqual(
+        client._get_credential_id(authorized),
+        client._get_credential_id(same_source),
+    )
+    for label, variant in variants:
+      with self.subTest(variant=label):
+        self.assertNotEqual(
+            client._get_credential_id(authorized),
+            client._get_credential_id(variant),
+        )
+        self.assertNotEqual(
+            client._get_cache_key(authorized, "ua", "project"),
+            client._get_cache_key(variant, "ua", "project"),
+        )
+
+  def test_external_account_credentials_cache_key_isolation(self):
+    def make_wif(
+        *,
+        audience="aud1",
+        credential_source=None,
+        subject_token_supplier=None,
+        impersonated_sa="target@test.com",
+        scopes=None,
+    ):
+      impersonation_url = (
+          "https://iamcredentials.googleapis.com/v1/projects/-/"
+          f"serviceAccounts/{impersonated_sa}:generateAccessToken"
+          if impersonated_sa
+          else None
+      )
+      return google.auth.identity_pool.Credentials(
+          audience=audience,
+          subject_token_type="urn:ietf:params:oauth:token-type:jwt",
+          credential_source=(
+              {"file": "path1"}
+              if credential_source is None and subject_token_supplier is None
+              else credential_source
+          ),
+          subject_token_supplier=subject_token_supplier,
+          service_account_impersonation_url=impersonation_url,
+          scopes=scopes,
+      )
+
+    direct_sa = google.oauth2.service_account.Credentials(
+        signer=mock.Mock(),
+        service_account_email="target@test.com",
+        token_uri="https://oauth2.mtls.googleapis.com/token",
+    )
+    supplier1 = lambda context: "token"
+    supplier2 = lambda context: "token"
+    wif_authorized = make_wif()
+    wif_same = make_wif()
+    wif_variants = (
+        ("wif_audience", make_wif(audience="aud2")),
+        ("wif_source", make_wif(credential_source={"file": "path2"})),
+        ("wif_supplier", make_wif(subject_token_supplier=supplier1)),
+        ("wif_target_sa", make_wif(impersonated_sa="other@test.com")),
+        ("wif_no_impersonation", make_wif(impersonated_sa=None)),
+        (
+            "wif_scopes",
+            make_wif(scopes=["https://www.googleapis.com/auth/cloud-platform"]),
+        ),
+        ("wif_vs_direct_sa", direct_sa),
+    )
+
+    self.assertEqual(
+        client._get_credential_id(wif_authorized),
+        client._get_credential_id(wif_same),
+    )
+    self.assertNotEqual(
+        client._get_credential_id(make_wif(subject_token_supplier=supplier1)),
+        client._get_credential_id(make_wif(subject_token_supplier=supplier2)),
+    )
+    for label, variant in wif_variants:
+      with self.subTest(variant=label):
+        self.assertNotEqual(
+            client._get_credential_id(wif_authorized),
+            client._get_credential_id(variant),
+        )
+        self.assertNotEqual(
+            client._get_cache_key(wif_authorized, "ua", "project"),
+            client._get_cache_key(variant, "ua", "project"),
+        )
+    self.assertTrue(
+        client._get_credential_id(wif_authorized).startswith(
+            "ExternalAccount:aud1:"
+        )
+    )
+
   def test_get_credential_id(self):
     # Service Account
     sa_creds = google.oauth2.service_account.Credentials(
@@ -37,15 +184,35 @@ class TestEventarcClient(unittest.IsolatedAsyncioTestCase):
         service_account_email="test@test.com",
         token_uri="https://oauth2.mtls.googleapis.com/token",
     )
-    self.assertEqual(client._get_credential_id(sa_creds), "test@test.com")
+    self.assertEqual(
+        client._get_credential_id(sa_creds), "test@test.com:():None"
+    )
+    for label, variant in (
+        (
+            "scopes",
+            sa_creds.with_scopes(
+                ["https://www.googleapis.com/auth/cloud-platform"]
+            ),
+        ),
+        ("subject", sa_creds.with_subject("user@test.com")),
+    ):
+      with self.subTest(sa_variant=label):
+        self.assertNotEqual(
+            client._get_credential_id(sa_creds),
+            client._get_credential_id(variant),
+        )
 
-    # Impersonated (Uses service_account_email under the hood in google-auth)
+    # Impersonated (the identity includes the source principal)
     imp_creds = google.auth.impersonated_credentials.Credentials(
-        source_credentials=mock.Mock(),
+        source_credentials=sa_creds,
         target_principal="imp@test.com",
         target_scopes=[],
     )
-    self.assertEqual(client._get_credential_id(imp_creds), "imp@test.com")
+    self.assertEqual(
+        client._get_credential_id(imp_creds),
+        "Impersonated:imp@test.com:test@test.com:"
+        "('https://www.googleapis.com/auth/iam',):None:():():None",
+    )
 
     # Compute Engine (ADC)
     gce_creds = google.auth.compute_engine.credentials.Credentials()

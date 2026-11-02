@@ -22,9 +22,11 @@ from ...agents.context import Context
 from ...events._branch_path import _BranchPath
 from ...events._interrupts import is_interrupt_event
 from ...events._node_path_builder import _NodePathBuilder
+from ...events._node_path_builder import parent_node_path
 from ...events._rewind_events import _apply_rewinds
 from ...events.event import Event
 from ._rehydration_utils import _ChildScanState
+from ._rehydration_utils import _event_has_result
 from ._rehydration_utils import _reconstruct_node_states
 from ._rehydration_utils import is_terminal_event
 from ._replay_sequence_barrier import ReplaySequenceBarrier
@@ -140,8 +142,7 @@ class ReplayManager:
       if not path:
         continue
 
-      path_builder = _NodePathBuilder.from_string(path)
-      parent_path = str(path_builder.parent) if path_builder.parent else ""
+      parent_path = parent_node_path(path)
 
       self._add_event_to_index(parent_path, event)
 
@@ -196,11 +197,9 @@ class ReplayManager:
       return []
 
     session_events = self._ensure_index(ctx)
-    path_builder = _NodePathBuilder.from_string(node_path)
-    parent_builder = path_builder.parent
-    if not parent_builder or not str(parent_builder):
+    parent_path = parent_node_path(node_path)
+    if not parent_path:
       return session_events
-    parent_path = str(parent_builder)
 
     node_events = self._transitive_events_by_parent.get(parent_path, [])
     if not node_events:
@@ -234,12 +233,10 @@ class ReplayManager:
 
     # Propagate event up through all ancestor paths so parent and grandparent nodes
     # can query all sub-tree events in O(1) via _transitive_events_by_parent.
-    curr: _NodePathBuilder | None = (
-        _NodePathBuilder.from_string(parent_path) if parent_path else None
-    )
-    while curr is not None and str(curr):
-      self._transitive_events_by_parent.setdefault(str(curr), []).append(event)
-      curr = curr.parent
+    curr = parent_path
+    while curr:
+      self._transitive_events_by_parent.setdefault(curr, []).append(event)
+      curr = parent_node_path(curr)
 
     self._transitive_events_by_parent.setdefault("", []).append(event)
 
@@ -292,6 +289,18 @@ class ReplayManager:
       segment: str = child_path.leaf_segment
 
       if is_terminal_event(event):
+        has_result = _event_has_result(event)
+        # An error with no result means the child did not complete: on resume
+        # it runs again rather than being replayed, so it holds no place in
+        # the replay order. A later attempt that succeeds places it there.
+        if (
+            event.error_code is not None
+            and not has_result
+            and not is_interrupt_event(event)
+        ):
+          if segment in sequence and segment not in completed:
+            sequence.remove(segment)
+          continue
         # Ignore re-emitted echoes for already completed children.
         if segment in completed:
           continue
@@ -299,16 +308,7 @@ class ReplayManager:
           sequence.remove(segment)
         sequence.append(segment)
         # Only non-interrupt terminal outcomes mark the child completed.
-        if not is_interrupt_event(event) and (
-            event.output is not None
-            or (
-                event.node_info
-                and event.node_info.message_as_output
-                and event.content is not None
-            )
-            or (event.actions and event.actions.route is not None)
-            or event.error_code is not None
-        ):
+        if not is_interrupt_event(event) and has_result:
           completed.add(segment)
 
     return sequence

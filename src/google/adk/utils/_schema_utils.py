@@ -20,12 +20,14 @@ Please do not rely on the implementation details.
 
 from __future__ import annotations
 
+from enum import Enum
 import inspect
 import json
 import logging
 import re
 from types import UnionType
 from typing import Any
+from typing import cast
 from typing import get_args
 from typing import get_origin
 from typing import Optional
@@ -113,7 +115,8 @@ def get_list_inner_type(schema: SchemaType) -> Optional[type[BaseModel]]:
   inner_type = args[0]
   if get_origin(inner_type) is Annotated:
     inner_type = get_args(inner_type)[0]
-  return inner_type
+  # is_list_of_basemodel verified inner_type is a BaseModel subclass.
+  return cast(type[BaseModel], inner_type)
 
 
 def schema_to_json_schema(schema: SchemaType) -> dict[str, Any]:
@@ -172,6 +175,7 @@ def lowercase_schema_types(value: object) -> None:
         lowercase_schema_types(child_value)
 
   for single_key in (
+      "additionalItems",
       "additionalProperties",
       "additional_properties",
       "contains",
@@ -181,6 +185,7 @@ def lowercase_schema_types(value: object) -> None:
       "not",
       "propertyNames",
       "then",
+      "unevaluatedItems",
       "unevaluatedProperties",
   ):
     child_value = value.get(single_key)
@@ -249,23 +254,33 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
 
   if is_basemodel_schema(schema):
     # For regular BaseModel, use model_validate_json
-    return schema.model_validate_json(json_text).model_dump(exclude_none=True)
+    if get_origin(schema) is Annotated:
+      schema = get_args(schema)[0]
+    # is_basemodel_schema verified schema is now a BaseModel subclass.
+    model = cast(type[BaseModel], schema)
+    return model.model_validate_json(json_text).model_dump(exclude_none=True)
   elif is_list_of_basemodel(schema):
     # For list[BaseModel], use TypeAdapter to validate
-    type_adapter = TypeAdapter(schema)
-    validated: list[Any] = type_adapter.validate_json(json_text)
+    type_adapter: TypeAdapter[list[BaseModel]] = TypeAdapter(schema)
+    validated = type_adapter.validate_json(json_text)
     return [item.model_dump(exclude_none=True) for item in validated]
   else:
     # For other schema types (list[str], dict, Schema, etc.),
     return _json_utils.safe_json_loads(json_text, context="schema value")
 
 
+def _strip_annotated(tp: Any) -> Any:
+  """Returns the underlying type of an ``Annotated`` type, else ``tp``."""
+  return get_args(tp)[0] if get_origin(tp) is Annotated else tp
+
+
 def annotation_expects_str(annotated_type: Any) -> bool:
   """Returns True if the annotation expects ``str`` rather than JSON data."""
+  annotated_type = _strip_annotated(annotated_type)
   if annotated_type is str:
     return True
   if get_origin(annotated_type) in (Union, UnionType):
-    args = get_args(annotated_type)
+    args = [_strip_annotated(a) for a in get_args(annotated_type)]
     return any(annotation_expects_str(a) for a in args) and all(
         annotation_expects_str(a)
         or a is type(None)
@@ -277,6 +292,7 @@ def annotation_expects_str(annotated_type: Any) -> bool:
 
 def annotation_accepts_content(annotated_type: Any) -> bool:
   """Returns True if the annotation accepts ``types.Content`` as-is."""
+  annotated_type = _strip_annotated(annotated_type)
   if annotated_type in (Any, object, types.Content):
     return True
   if isinstance(annotated_type, type) and issubclass(
@@ -298,7 +314,7 @@ def _unwrap_content_payload(
   if not fan_out_list and annotation_expects_str(annotation):
     return extract_text_from_content(content)
   if not (
-      fan_out_list and annotation in (Any, object)
+      fan_out_list and _strip_annotated(annotation) in (Any, object)
   ) and annotation_accepts_content(annotation):
     return content
   if fan_out_list and (
@@ -380,6 +396,27 @@ def validate_node_data(
   return _validate_python_object(data)
 
 
+def _find_enum_member(enum_type: type[Enum], value: object) -> Enum | None:
+  """Returns the member of enum_type that value stands for, or None."""
+  try:
+    # Looking up a member returns the member itself.
+    return enum_type(value)
+  except (ValueError, TypeError):
+    pass
+  # Without json_schema_for_func_decl the declaration renders non-str values
+  # with json.dumps, so the model sends that back.
+  if isinstance(value, str):
+    for candidate in enum_type:
+      if isinstance(candidate.value, str):
+        continue
+      try:
+        if json.dumps(candidate.value) == value:
+          return candidate
+      except TypeError:
+        continue
+  return None
+
+
 def preprocess_args(
     args: dict[str, Any],
     signature: inspect.Signature | None,
@@ -388,7 +425,9 @@ def preprocess_args(
   """Preprocess and convert incoming argument dictionary before invocation.
 
   Converts dictionary values to Pydantic model instances where the function
-  signature expects a BaseModel subclass or Optional[BaseModel].
+  signature expects a BaseModel subclass, an Optional or list of one, raw
+  values to the member where it expects an Enum, Optional[Enum] or
+  list[Enum], and integral floats to int where it expects int or list[int].
 
   Args:
     args: The incoming argument dictionary to preprocess.
@@ -397,7 +436,8 @@ def preprocess_args(
     type_hints: Optional cached type hints dictionary for the callable.
 
   Returns:
-    A copy of args with applicable values converted to Pydantic model instances.
+    A copy of args with applicable values converted to Pydantic model
+    instances, Enum members or ints.
   """
   converted_args = args.copy()
   if signature is None:
@@ -449,6 +489,24 @@ def preprocess_args(
               )
             continue
 
+        # The declaration lists the enum's values, so the model sends a value
+        # back. Look up the member so the function gets the Enum it declared.
+        if inspect.isclass(target_type) and issubclass(target_type, Enum):
+          value = args[param_name]
+          if value is not None and not isinstance(value, target_type):
+            member = _find_enum_member(target_type, value)
+            if member is None:
+              logger.warning(
+                  "Argument '%s' is not a value of enum %s: %r; passing it"
+                  " through unchanged.",
+                  param_name,
+                  target_type.__name__,
+                  value,
+              )
+            else:
+              converted_args[param_name] = member
+          continue
+
         # Some session stores persist call args as a proto `Struct`, whose
         # only number type is double, so an int comes back as a float.
         if target_type is int and type(args[param_name]) is float:
@@ -492,6 +550,39 @@ def preprocess_args(
           converted_args[param_name] = coerced_items
           continue
 
+        # The declaration lists an enum's values, so each element of a
+        # list[Enum] argument comes back as a value. Look up the members so
+        # the function gets the Enums it declared.
+        item_types = (
+            get_args(target_type) if get_origin(target_type) is list else ()
+        )
+        if (
+            len(item_types) == 1
+            and inspect.isclass(item_types[0])
+            and issubclass(item_types[0], Enum)
+            and isinstance(args[param_name], list)
+        ):
+          enum_type = item_types[0]
+          converted_items = []
+          unknown_items = []
+          for item in args[param_name]:
+            member = _find_enum_member(enum_type, item)
+            if member is None:
+              unknown_items.append(item)
+              converted_items.append(item)
+            else:
+              converted_items.append(member)
+          if unknown_items:
+            logger.warning(
+                "Argument '%s' is typed list[%s] but contains values that are"
+                " not members: %r; passing them through unchanged.",
+                param_name,
+                enum_type.__name__,
+                unknown_items,
+            )
+          converted_args[param_name] = converted_items
+          continue
+
         if inspect.isclass(target_type) and issubclass(target_type, BaseModel):
           if args[param_name] is None:
             continue
@@ -515,7 +606,7 @@ def preprocess_args(
         ):
           item_type = get_list_inner_type(target_type)
           if item_type is not None:
-            converted_list = []
+            converted_list: list[object] = []
             for item in args[param_name]:
               if isinstance(item, dict):
                 try:

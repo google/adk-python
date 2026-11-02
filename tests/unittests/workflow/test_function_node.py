@@ -45,6 +45,8 @@ from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import ConfigDict
+from pydantic import field_validator
 import pytest
 
 from .. import testing_utils
@@ -2402,3 +2404,218 @@ async def test_sync_generator_closes_on_no_runner_path() -> None:
   assert not closed
   await agen.aclose()
   assert closed
+
+
+@pytest.mark.asyncio
+async def test_fallback_node_input_coerced_once() -> None:
+  """Fallback node_input parameter is coerced once during binding."""
+  validations = 0
+
+  class _CountingModel(BaseModel):
+    model_config = ConfigDict(revalidate_instances='always')
+    x: int
+
+    @field_validator('x')
+    @classmethod
+    def _count(cls, v: int) -> int:
+      nonlocal validations
+      validations += 1
+      return v
+
+  def process(node_input: _CountingModel) -> int:
+    return node_input.x
+
+  node = FunctionNode(func=process, parameter_binding='node_input')
+  node.input_schema = _CountingModel
+  ctx = mock.MagicMock(spec=Context)
+
+  events = [event async for event in node.run(ctx=ctx, node_input={'x': 25})]
+
+  assert [e.output for e in events] == [25]
+  # Validated once by BaseNode._validate_input_data and once by
+  # _resolve_parameters (not a second time in the has_param branch).
+  assert validations == 2
+
+
+@pytest.mark.asyncio
+async def test_node_input_binding_coerces_parameters_once() -> None:
+  """Running a node_input FunctionNode coerces parameters only once."""
+  validations = 0
+
+  class _CountingModel(BaseModel):
+    model_config = ConfigDict(revalidate_instances='always')
+    x: int
+
+    @field_validator('x')
+    @classmethod
+    def _count(cls, v: int) -> int:
+      nonlocal validations
+      validations += 1
+      return v
+
+  def compute(item: _CountingModel, count: int = 10) -> str:
+    return f'{item.x}:{count}'
+
+  item = _CountingModel(x=7)
+  validations = 0
+  node = FunctionNode(func=compute, parameter_binding='node_input')
+
+  def produce() -> dict[str, Any]:
+    return {'item': item, 'count': 5}
+
+  agent = Workflow(
+      name='test_node_input_binding_coerces_once',
+      edges=[(START, produce), (produce, node)],
+  )
+
+  events, _, _ = await run_workflow(agent)
+
+  assert [e.output for e in get_output_events(events)] == [
+      {'item': item, 'count': 5},
+      '7:5',
+  ]
+  assert validations == 1
+
+
+@pytest.mark.asyncio
+async def test_function_node_with_type_checking_context_and_unresolved_hint() -> (
+    None
+):
+  """FunctionNode resolves Context and sibling hints when a parameter is TYPE_CHECKING-only."""
+  import types as py_types
+
+  isolated_globals = {
+      '__builtins__': __builtins__,
+      '_OutputModel': _OutputModel,
+  }
+  fn = py_types.FunctionType(
+      (
+          lambda ctx, item, helper='fallback': (
+              f'{item.name}:{item.value}:{helper}'
+          )
+      ).__code__,
+      isolated_globals,
+      name='step_with_unresolved',
+      argdefs=('fallback',),
+  )
+  fn.__annotations__ = {
+      'ctx': 'Context',
+      'item': '_OutputModel',
+      'helper': 'UnresolvedHelper | str',
+      'return': 'str',
+  }
+
+  node = FunctionNode(func=fn, parameter_binding='node_input')
+
+  def produce() -> dict[str, Any]:
+    return {'item': {'name': 'ok', 'value': 9}, 'helper': 'custom'}
+
+  agent = Workflow(
+      name='wf_unresolved_hint',
+      edges=[(START, produce), (produce, node)],
+  )
+  events, _, _ = await run_workflow(agent)
+  assert [e.output for e in get_output_events(events)] == [
+      {'item': {'name': 'ok', 'value': 9}, 'helper': 'custom'},
+      'ok:9:custom',
+  ]
+
+
+@pytest.mark.asyncio
+async def test_function_node_coerce_param_skips_arbitrary_non_pydantic_type(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """FunctionNode logs warnings and passes through arbitrary types TypeAdapter cannot build."""
+  import logging
+
+  class _ArbitraryCustomObj:
+
+    def __init__(self, val: int):
+      self.val = val
+
+  custom = _ArbitraryCustomObj(42)
+
+  def produce() -> dict[str, Any]:
+    return {'obj': custom}
+
+  def consume(obj: _ArbitraryCustomObj) -> int:
+    return obj.val
+
+  with caplog.at_level(
+      logging.WARNING, logger='google_adk.google.adk.workflow._function_node'
+  ):
+    node = FunctionNode(func=consume, parameter_binding='node_input')
+    agent = Workflow(
+        name='wf_arbitrary_type',
+        edges=[(START, produce), (produce, node)],
+    )
+    events_first, _, _ = await run_workflow(agent)
+    events_second, _, _ = await run_workflow(agent)
+
+  assert [e.output for e in get_output_events(events_first)] == [
+      {'obj': custom},
+      42,
+  ]
+  assert [e.output for e in get_output_events(events_second)] == [
+      {'obj': custom},
+      42,
+  ]
+  coercion_warnings = [
+      record
+      for record in caplog.records
+      if "Skipping coercion for parameter 'obj' of FunctionNode 'consume'"
+      in record.getMessage()
+  ]
+  assert len(coercion_warnings) == 1
+  assert any(
+      "Skipping input schema inference for FunctionNode 'consume'"
+      in record.getMessage()
+      for record in caplog.records
+  )
+
+
+@pytest.mark.asyncio
+async def test_function_node_coerce_param_skips_incomplete_pydantic_model(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  """FunctionNode logs a warning once and skips coercion when a BaseModel has an unresolved forward ref."""
+  import logging
+
+  class _IncompleteModel(BaseModel):
+    x: int
+    missing: '_UnresolvedForwardRefType | None' = None  # noqa: F821
+
+  raw_payload = {'x': 7}
+
+  def produce() -> dict[str, Any]:
+    return {'payload': raw_payload}
+
+  def consume(payload: _IncompleteModel) -> int:
+    return payload['x']  # type: ignore[index]
+
+  with caplog.at_level(
+      logging.WARNING, logger='google_adk.google.adk.workflow._function_node'
+  ):
+    node = FunctionNode(func=consume, parameter_binding='node_input')
+    agent = Workflow(
+        name='wf_incomplete_model',
+        edges=[(START, produce), (produce, node)],
+    )
+    events_first, _, _ = await run_workflow(agent)
+    events_second, _, _ = await run_workflow(agent)
+
+  assert [e.output for e in get_output_events(events_first)] == [
+      {'payload': raw_payload},
+      7,
+  ]
+  assert [e.output for e in get_output_events(events_second)] == [
+      {'payload': raw_payload},
+      7,
+  ]
+  coercion_warnings = [
+      record
+      for record in caplog.records
+      if "Skipping coercion for parameter 'payload' of FunctionNode 'consume'"
+      in record.getMessage()
+  ]
+  assert len(coercion_warnings) == 1

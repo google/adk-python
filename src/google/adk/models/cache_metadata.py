@@ -33,7 +33,9 @@ class CacheMetadata(BaseModel):
      contents_count are set for prefix matching
 
   Token counts (cached and total) are available in the LlmResponse.usage_metadata
-  and should be accessed from there to avoid duplication.
+  and should be accessed from there to avoid duplication. Cache-creation (write)
+  token counts, when reported by the provider, are available on
+  LlmResponse.cache_creation_token_count.
 
   Attributes:
       cache_name: The full resource name of the cached content (e.g.,

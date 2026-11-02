@@ -19,6 +19,8 @@ from google.adk.tools.environment_simulation.environment_simulation_config impor
 from google.adk.tools.environment_simulation.environment_simulation_config import InjectionConfig
 from google.adk.tools.environment_simulation.environment_simulation_config import MockStrategy
 from google.adk.tools.environment_simulation.environment_simulation_config import ToolSimulationConfig
+from google.adk.tools.tool_args_matcher import SemanticArgMatcher
+from google.adk.tools.tool_args_matcher import ToolArgsMatcher
 from pydantic import ValidationError
 import pytest
 
@@ -35,12 +37,13 @@ class TestInjectionConfig:
     with pytest.raises(ValidationError, match="but not both, and not neither"):
       InjectionConfig()
 
-  def test_both_error_and_response_raises(self):
+  @pytest.mark.parametrize("response", [{}, {"status": "ok"}])
+  def test_both_error_and_response_raises(self, response):
     """The two are mutually exclusive: a call cannot both fail and succeed."""
     with pytest.raises(ValidationError, match="but not both, and not neither"):
       InjectionConfig(
           injected_error=_injected_error(),
-          injected_response={"status": "ok"},
+          injected_response=response,
       )
 
   def test_only_error_is_accepted(self):
@@ -49,11 +52,43 @@ class TestInjectionConfig:
     assert config.injected_error.injected_http_error_code == 404
     assert config.injected_response is None
 
-  def test_only_response_is_accepted(self):
+  @pytest.mark.parametrize("response", [{}, {"status": "ok"}])
+  def test_only_response_is_accepted(self, response):
+    config = InjectionConfig(injected_response=response)
+
+    assert config.injected_response == response
+    assert config.injected_error is None
+
+
+class TestInjectionConfigArgsMatcher:
+  """Tests for InjectionConfig.args_matcher."""
+
+  def test_args_matcher_defaults_to_none(self):
     config = InjectionConfig(injected_response={"status": "ok"})
 
-    assert config.injected_response == {"status": "ok"}
-    assert config.injected_error is None
+    assert config.args_matcher is None
+
+  def test_args_matcher_loads_from_dict(self):
+    """A JSON-style config builds the matchers named by type."""
+    config = InjectionConfig.model_validate({
+        "match_args": {"query": "employees in NYC", "limit": 10},
+        "args_matcher": {
+            "per_arg_matchers": {"query": {"type": "semantic"}},
+        },
+        "injected_response": {"status": "ok"},
+    })
+
+    assert config.args_matcher == ToolArgsMatcher(
+        per_arg_matchers={"query": SemanticArgMatcher()}
+    )
+
+  def test_args_matcher_without_match_args_raises(self):
+    """A matcher with nothing to compare against is a config mistake."""
+    with pytest.raises(ValidationError, match="args_matcher requires"):
+      InjectionConfig(
+          args_matcher=ToolArgsMatcher(),
+          injected_response={"status": "ok"},
+      )
 
 
 class TestToolSimulationConfig:

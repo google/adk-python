@@ -353,6 +353,8 @@ def _merge_lists(native: list[Json], otel: list[Json]) -> list[Merged]:
 
   Elements only one side has stay put, as a divergence missing on the other,
   so an extra span or an extra metric point shifts nothing after it.
+  Elements that differ are never paired: the instrumentor folds every agent's
+  calls into one metric point, which is no counterpart of either ADK point.
   """
   opcodes = SequenceMatcher(
       a=[json_key(_identity(element)) for element in native],
@@ -360,11 +362,12 @@ def _merge_lists(native: list[Json], otel: list[Json]) -> list[Merged]:
       autojunk=False,
   ).get_opcodes()
   merged: list[Merged] = []
-  for _, i1, i2, j1, j2 in opcodes:
-    paired = min(i2 - i1, j2 - j1)
-    merged += [_merge(native[i1 + n], otel[j1 + n]) for n in range(paired)]
-    merged += [_merge(element, MISSING) for element in native[i1 + paired : i2]]
-    merged += [_merge(MISSING, element) for element in otel[j1 + paired : j2]]
+  for tag, i1, i2, j1, j2 in opcodes:
+    if tag == "equal":
+      merged += map(_merge, native[i1:i2], otel[j1:j2])
+      continue
+    merged += [_merge(element, MISSING) for element in native[i1:i2]]
+    merged += [_merge(MISSING, element) for element in otel[j1:j2]]
   return merged
 
 

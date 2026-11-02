@@ -15,7 +15,10 @@
 from __future__ import annotations
 
 import asyncio
+from unittest import mock
 
+from google.adk.agents import CallbackType
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.run_config import RunConfig
@@ -671,3 +674,173 @@ async def test_concurrent_callbacks_keep_separate_spans(spans):
   assert callback_spans[0].parent.span_id == callback_spans[1].parent.span_id
   assert seen['first'][0] == seen['first'][1]
   assert seen['first'][0] != seen['second']
+
+
+@pytest.mark.asyncio
+async def test_run_callbacks_scopes_callback_context_with_callback_type():
+  """_run_callbacks scopes callback_context with the provided callback_type."""
+  mock_invocation_context = mock.MagicMock()
+  mock_invocation_context.session.state = {}
+  mock_invocation_context._state_schema = None
+  callback_context = CallbackContext(mock_invocation_context)
+  observed_type = None
+
+  def callback(callback_context: CallbackContext) -> str:
+    nonlocal observed_type
+    if callback_context.callback_info is not None:
+      observed_type = callback_context.callback_info.type
+    return 'ok'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      callback_context=callback_context,
+      callback_type=CallbackType.BEFORE_AGENT,
+  )
+
+  assert result == 'ok'
+  assert observed_type == CallbackType.BEFORE_AGENT
+  assert callback_context.callback_info is None
+
+
+@pytest.mark.asyncio
+async def test_run_callbacks_scopes_tool_context_with_callback_type():
+  """_run_callbacks scopes tool_context with the provided callback_type."""
+  mock_invocation_context = mock.MagicMock()
+  mock_invocation_context.session.state = {}
+  mock_invocation_context._state_schema = None
+  tool_context = CallbackContext(mock_invocation_context)
+  observed_type = None
+
+  def callback(tool: str, args: dict, tool_context: CallbackContext) -> str:
+    nonlocal observed_type
+    if tool_context.callback_info is not None:
+      observed_type = tool_context.callback_info.type
+    return 'tool_ok'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      tool='my_tool',
+      args={},
+      tool_context=tool_context,
+      callback_type=CallbackType.BEFORE_TOOL,
+  )
+
+  assert result == 'tool_ok'
+  assert observed_type == CallbackType.BEFORE_TOOL
+  assert tool_context.callback_info is None
+
+
+@pytest.mark.asyncio
+async def test_run_callbacks_without_callback_type_leaves_callback_info_none():
+  """_run_callbacks without a callback_type does not set callback_info."""
+  mock_invocation_context = mock.MagicMock()
+  mock_invocation_context.session.state = {}
+  mock_invocation_context._state_schema = None
+  callback_context = CallbackContext(mock_invocation_context)
+  observed_info = 'unset'
+
+  def callback(callback_context: CallbackContext) -> str:
+    nonlocal observed_info
+    observed_info = callback_context.callback_info
+    return 'ok'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      callback_context=callback_context,
+  )
+
+  assert result == 'ok'
+  assert observed_info is None
+  assert callback_context.callback_info is None
+
+
+@pytest.mark.asyncio
+async def test_run_callbacks_forwards_positional_args_with_callback_type():
+  """Positional callback arguments are not consumed by callback_type."""
+  mock_invocation_context = mock.MagicMock()
+  mock_invocation_context.session.state = {}
+  mock_invocation_context._state_schema = None
+  callback_context = CallbackContext(mock_invocation_context)
+  observed_type = None
+
+  def callback(prefix: str, *, callback_context: CallbackContext) -> str:
+    nonlocal observed_type
+    if callback_context.callback_info is not None:
+      observed_type = callback_context.callback_info.type
+    return f'{prefix}-ok'
+
+  result_no_type = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      'item',
+      callback_context=callback_context,
+  )
+  assert result_no_type == 'item-ok'
+  assert observed_type is None
+
+  result_with_type = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      'item',
+      callback_context=callback_context,
+      callback_type=CallbackType.BEFORE_AGENT,
+  )
+  assert result_with_type == 'item-ok'
+  assert observed_type == CallbackType.BEFORE_AGENT
+  assert callback_context.callback_info is None
+
+
+@pytest.mark.parametrize('context_kwarg', ['callback_context', 'tool_context'])
+@pytest.mark.parametrize('raises', [False, True])
+async def test_tracing_preserves_callback_metadata_and_restores_it(
+    spans, context_kwarg, raises
+):
+  """The callback keeps its scoped metadata while running in a child span."""
+  service = InMemorySessionService()
+  session = await service.create_session(app_name='app', user_id='user')
+  context = Context(
+      InvocationContext(
+          invocation_id='invocation',
+          session=session,
+          session_service=service,
+          run_config=RunConfig(),
+      )
+  )
+  observed = []
+
+  async def callback(**kwargs):
+    observed.append((context.callback_info.type, trace.get_current_span().name))
+    await asyncio.sleep(0)
+    assert context.callback_info.type == CallbackType.BEFORE_AGENT
+    if raises:
+      raise ValueError('callback failed')
+    return 'ok'
+
+  arguments = {context_kwarg: context}
+  if raises:
+    with pytest.raises(ValueError, match='callback failed'):
+      await _run_callbacks(
+          [callback],
+          _stop_on_truthy,
+          callback_type=CallbackType.BEFORE_AGENT,
+          **arguments,
+      )
+  else:
+    assert (
+        await _run_callbacks(
+            [callback],
+            _stop_on_truthy,
+            callback_type=CallbackType.BEFORE_AGENT,
+            **arguments,
+        )
+        == 'ok'
+    )
+
+  assert context.callback_info is None
+  assert observed == [
+      (CallbackType.BEFORE_AGENT, f'execute_callback {callback.__qualname__}')
+  ]
+  assert len(spans.get_finished_spans()) == 1

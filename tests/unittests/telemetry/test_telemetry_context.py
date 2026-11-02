@@ -53,6 +53,8 @@ _ENV_ADMIN_LOCK = ADK_TELEMETRY_IGNORE_RUN_CONFIG
 _ENV_ADK_EXPERIMENTAL_TELEMETRY = 'ADK_EXPERIMENTAL_TELEMETRY'
 _ENV_ADK_EXPERIMENTAL_FEATURES = 'ADK_EXPERIMENTAL_TELEMETRY_FEATURES'
 
+_ENV_SCHEMA_VERSION = 'ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN'
+
 _ALL_TELEMETRY_ENV_VARS = (
     _ENV_EXPERIMENTAL,
     _ENV_CAPTURE,
@@ -60,6 +62,7 @@ _ALL_TELEMETRY_ENV_VARS = (
     _ENV_ADMIN_LOCK,
     _ENV_ADK_EXPERIMENTAL_TELEMETRY,
     _ENV_ADK_EXPERIMENTAL_FEATURES,
+    _ENV_SCHEMA_VERSION,
 )
 
 
@@ -306,7 +309,7 @@ def test_resolution_properties_are_static_once_constructed(
   one still is what keeps a single run whole: an ``os.environ`` change part way
   through cannot leave half its telemetry gated one way and half the other.
   """
-  _set_env(monkeypatch)
+  _set_env(monkeypatch, **{_ENV_SCHEMA_VERSION: '1'})
   cfg = TelemetryConfig()  # all fields unset => pure env-fallback.
   assert cfg.should_use_experimental_genai_semconv is False
   monkeypatch.setenv(_ENV_EXPERIMENTAL, 'gen_ai_latest_experimental')
@@ -342,7 +345,39 @@ def test_should_use_experimental_genai_semconv_resolution(
     expected: bool,
 ):
   """Per-request opt_in wins; otherwise the env CSV opt-in token decides."""
-  _set_env(monkeypatch, **{_ENV_EXPERIMENTAL: env_value})
+  _set_env(
+      monkeypatch,
+      **{_ENV_EXPERIMENTAL: env_value, _ENV_SCHEMA_VERSION: '1'},
+  )
+  cfg = TelemetryConfig(genai_semconv_stability_opt_in=opt_in)
+  assert cfg.should_use_experimental_genai_semconv is expected
+
+
+@pytest.mark.parametrize(
+    'opt_in,env_value,expected',
+    [
+        # The semconv-aligned schema emits the experimental semconv with
+        # nothing opting in: the stable one is what it drops.
+        (None, None, True),
+        (None, 'gen_ai_latest_experimental', True),
+        (None, 'http_latest', True),
+        # A per-request field still outranks the schema's default, which is
+        # the only way back to the stable semconv short of pinning the schema.
+        ('stable', None, False),
+        ('experimental', None, True),
+    ],
+)
+def test_should_use_experimental_genai_semconv_defaults_on_under_schema_v2(
+    monkeypatch: pytest.MonkeyPatch,
+    opt_in: Optional[str],
+    env_value: Optional[str],
+    expected: bool,
+):
+  """Under the semconv-aligned schema the env var can only opt further in."""
+  _set_env(
+      monkeypatch,
+      **{_ENV_EXPERIMENTAL: env_value, _ENV_SCHEMA_VERSION: '2'},
+  )
   cfg = TelemetryConfig(genai_semconv_stability_opt_in=opt_in)
   assert cfg.should_use_experimental_genai_semconv is expected
 
@@ -621,7 +656,7 @@ def test_admin_lock_disables_all_resolution_properties(
   (empty) env defaults across all properties. The legacy span knob still
   defaults to on (its env default), matching pre-CL behavior.
   """
-  _set_env(monkeypatch, **{_ENV_ADMIN_LOCK: '1'})
+  _set_env(monkeypatch, **{_ENV_ADMIN_LOCK: '1', _ENV_SCHEMA_VERSION: '1'})
   cfg = TelemetryConfig(
       genai_semconv_stability_opt_in='experimental',
       capture_message_content=ContentCapturingMode.SPAN_AND_EVENT,
@@ -1004,7 +1039,9 @@ def test_admin_lock_value_parsing(
   ignored and the (empty) env fallback wins; when unlocked, the cfg wins.
   Asserts across all six decision functions to pin the shared parsing.
   """
-  _set_env(monkeypatch, **{_ENV_ADMIN_LOCK: lock_value})
+  _set_env(
+      monkeypatch, **{_ENV_ADMIN_LOCK: lock_value, _ENV_SCHEMA_VERSION: '1'}
+  )
   cfg = TelemetryConfig(
       genai_semconv_stability_opt_in='experimental',
       capture_message_content=ContentCapturingMode.EVENT_ONLY,
@@ -1343,6 +1380,7 @@ async def test_runner_invocation_with_admin_lock_ignores_per_request_telemetry(
   """
   del span_exporter  # Wired up by fixture; not directly asserted on.
   monkeypatch.setenv(_ENV_ADMIN_LOCK, '1')
+  monkeypatch.setenv(_ENV_SCHEMA_VERSION, '1')
   monkeypatch.delenv(_ENV_EXPERIMENTAL, raising=False)
   runner = _make_test_runner()
   session = await runner.runner.session_service.create_session(
@@ -1417,6 +1455,7 @@ async def test_runner_invocation_with_capture_false_elides_legacy_span_attrs(
   """
   del log_collector  # Kept to match otel_logger wiring; not asserted on.
   monkeypatch.setenv(_ENV_ADK_SPAN_CAPTURE, 'true')
+  monkeypatch.setenv(_ENV_SCHEMA_VERSION, '1')
   runner = _make_test_runner()
   session = await runner.runner.session_service.create_session(
       app_name=runner.app_name, user_id='test_user'
@@ -1473,6 +1512,7 @@ async def test_runner_invocation_with_admin_lock_ignores_span_capture_override(
   """
   del log_collector
   monkeypatch.setenv(_ENV_ADMIN_LOCK, '1')
+  monkeypatch.setenv(_ENV_SCHEMA_VERSION, '1')
   monkeypatch.setenv(_ENV_ADK_SPAN_CAPTURE, 'false')
   runner = _make_test_runner()
   session = await runner.runner.session_service.create_session(
@@ -1510,7 +1550,6 @@ async def test_runner_invocation_with_admin_lock_ignores_span_capture_override(
 # The functional matrix only ever opts in by env var, so it catches neither.
 # ---------------------------------------------------------------------------
 
-_ENV_SCHEMA_VERSION = 'ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN'
 
 # Recorded whenever a workflow scope opts in, even at a count of zero, so its
 # presence reflects the resolved config alone and not what the model reported.

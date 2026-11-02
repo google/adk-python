@@ -29,9 +29,11 @@ from typing import TypeVar
 
 from opentelemetry import trace
 import opentelemetry.context as context_api
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from typing_extensions import assert_never
 
 from . import _adk_attributes
+from . import _genai_instrumentor
 from . import _hallucination
 from . import _metrics
 from . import _token_usage
@@ -60,6 +62,7 @@ _AGENT_INVOCATION_SCOPE_KEY = context_api.create_key("agent_invocation_scope")
 _TOOL_EXECUTION_TELEMETRY_KEY = context_api.create_key(
     "tool_execution_telemetry"
 )
+_INFERENCE_SCOPE_KEY = context_api.create_key("adk_inference_scope")
 _WORKFLOW_SCOPE_KEY = context_api.create_key("adk_workflow_scope")
 _BUSY_INTERVALS_KEY = context_api.create_key("adk_busy_intervals")
 
@@ -99,6 +102,7 @@ def _recording_span(span: trace.Span) -> Iterator[trace.Span]:
   except Exception as exc:  # pylint: disable=broad-except
     if span.is_recording():
       span.record_exception(exc)
+      span.set_attribute(ERROR_TYPE, tracing.resolve_error_type(exc))
       span.set_status(
           trace.Status(trace.StatusCode.ERROR, f"{type(exc).__name__}: {exc}")
       )
@@ -249,6 +253,19 @@ class _WorkflowScope(_Accumulator):
   """The enclosing scope, None on the root. Its presence is what
   `gen_ai.workflow.nested` reports."""
 
+  compaction_count: int = 0
+  """Conversation compactions counted against this scope. Per workflow rather
+  than per agent because the runner compacts again once every agent has
+  finished, against the whole session, with no agent left to attribute it to."""
+
+  otel_context: context_api.Context = dataclasses.field(
+      default_factory=context_api.Context
+  )
+  """The context the workflow runs under, carrying its span and this scope.
+
+  Published by `node_tracing._use_invoke_workflow_span` rather than attached, so
+  the runner can hand the scope it opened to its root workflow."""
+
   def self_and_enclosing(self) -> Iterator[_WorkflowScope]:
     """Yields this scope, then each one enclosing it, outermost last.
 
@@ -368,49 +385,54 @@ def record_invocation(
     entrypoint_node: BaseNode | None,
     conversation_id: str,
     run_config: RunConfig | None = None,
-) -> Iterator[context_api.Context]:
+) -> Iterator[tuple[context_api.Context, _WorkflowScope | None]]:
   """Top-level invocation span for a runner invocation.
 
   Schema v1 emits the legacy ``invocation`` span. Schema v2 replaces it with an
   entrypoint ``invoke_workflow {entrypoint}`` span (entrypoint = root agent or
   root node name), which omits the ``gen_ai.workflow.nested`` attribute, and a
-  ``gen_ai.invoke_workflow.duration`` metric -- unless the entrypoint is itself
-  a workflow, in which case its own node span is the entrypoint
-  ``invoke_workflow`` span and we avoid double-emitting it here.
+  ``gen_ai.invoke_workflow.duration`` metric. A workflow entrypoint gets that
+  span in v1 too, under ``invocation``. Its root node runs inside the span
+  rather than opening one of its own, so the span also covers the runner's
+  post-invocation work.
 
   Args:
     entrypoint_node: The runner's root agent/node.
-    conversation_id: Session/conversation id (stamped on the v2 span).
+    conversation_id: Session/conversation id (stamped on the entrypoint span).
     run_config: The run's config, whose telemetry settings carry the
       experimental opt-in the span's token scope is gated on.
 
   Yields:
-    The context the invocation runs under, carrying the span when there is one.
-    It is handed back by value rather than attached: pass it to
-    `stream_in_scope` to drive the invocation's events under it (b/485899016).
+    The context the invocation runs under, carrying its spans, and a workflow
+    entrypoint's scope for its root node to run in (see
+    `node_tracing.TelemetryContext._entrypoint_scope`); None for any other
+    entrypoint. The context is handed back by value rather than attached: pass
+    it to `stream_in_scope` to drive the invocation's events under it
+    (b/485899016).
   """
-  if resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED:
-    parent_context = context_api.get_current()
-    span = tracing.tracer.start_span("invocation", context=parent_context)
-    with _recording_span(span):
-      yield trace.set_span_in_context(span, parent_context)
-    return
-
   from . import node_tracing
   from ..workflow._workflow import Workflow
 
-  if isinstance(entrypoint_node, Workflow):
-    # The workflow's own node span is the entrypoint `invoke_workflow` span.
-    yield context_api.get_current()
-    return
-
-  entrypoint_name = entrypoint_node.name if entrypoint_node else ""
-  with node_tracing._use_invoke_workflow_span(
-      entrypoint_name,
-      conversation_id,
-      telemetry_config=run_config.telemetry if run_config else None,
-  ) as (_, workflow_context):
-    yield workflow_context
+  legacy = resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED
+  entrypoint_workflow = isinstance(entrypoint_node, Workflow)
+  otel_context = context_api.get_current()
+  with contextlib.ExitStack() as spans:
+    if legacy:
+      span = tracing.tracer.start_span("invocation", context=otel_context)
+      spans.enter_context(_recording_span(span))
+      otel_context = trace.set_span_in_context(span, otel_context)
+    if not legacy or entrypoint_workflow:
+      _, otel_context = spans.enter_context(
+          node_tracing._use_invoke_workflow_span(  # pylint: disable=protected-access
+              entrypoint_node.name if entrypoint_node else "",
+              conversation_id,
+              otel_context=otel_context,
+              telemetry_config=run_config.telemetry if run_config else None,
+          )
+      )
+    yield otel_context, (
+        _workflow_scope(otel_context) if entrypoint_workflow else None
+    )
 
 
 @dataclasses.dataclass
@@ -495,6 +517,13 @@ def record_response_source(
     invocation_context: InvocationContext,
 ) -> None:
   """Names the callback that produced the response recorded on ``span``."""
+  if (
+      source in ("before_model_callback", "on_model_error_callback")
+      and resolve_schema_version() >= SCHEMA_VERSION_SEMCONV_ALIGNED
+  ):
+    # Schema v2 has no `call_llm` span: `span` is the agent span, which covers
+    # every model call of the turn, so it cannot name one call's callback.
+    return
   _set_response_source(
       tracing._telemetry_config_from_invocation_context(invocation_context),
       span,
@@ -529,7 +558,17 @@ class ToolScope:
 class InferenceScope:
   """What one model call collects while its inference span is open."""
 
+  llm_request: LlmRequest
+  user_id: str
   span: tracing.GenerateContentSpan | trace.Span | None = None
+  streamed_request: LlmRequest | None = None
+  """The request whose response chunks are timed. None when the call does not
+  stream, or when ADK leaves its inference telemetry to another library."""
+  span_started_ns: int = 0
+  """When the inference span started, in `time.time_ns` nanoseconds. For a span
+  that records no start time (sampled out, or no tracer provider), when it
+  opened."""
+  _last_chunk_received_ns: int | None = None
   _llm_responses: list[LlmResponse] = dataclasses.field(default_factory=list)
   _inference_span_ended: bool = False
 
@@ -541,11 +580,19 @@ class InferenceScope:
       self, invocation_context: InvocationContext, response: LlmResponse
   ) -> None:
     self._llm_responses.append(response)
-    # Anything after the span ended (a second complete response for the same
-    # call) can no longer be recorded on it, but still counts for the metrics.
+    # Anything after the span ended (a second complete response) is neither
+    # traced nor timed, but still counts for the metrics.
     if self._inference_span_ended:
       return
 
+    # A stream's aggregate (`partial=False`) is assembled by ADK rather than
+    # waited for, so only the chunks are timed.
+    if response.partial is not False:
+      self._record_chunk_timing(response)
+    # A `partial` chunk is not traced: its aggregator yields the whole answer
+    # after it, with `partial=False`.
+    if response.partial:
+      return
     tracing.trace_inference_result(invocation_context, self.span, response)
     # The inference ends at the response that says why generation stopped. End
     # the span there, before the response is handed back to the caller, so what
@@ -563,6 +610,60 @@ class InferenceScope:
     ):
       exit_stack.close()
       self._inference_span_ended = True
+
+  def _record_chunk_timing(self, response: LlmResponse) -> None:
+    """Records the wait for ``response``, if it is a chunk being timed.
+
+    Args:
+      response: The response that arrived.
+    """
+    if self.streamed_request is None:
+      return
+    # On the span's clock, so the first chunk is timed from the span's start,
+    # like the operation duration is.
+    received_ns = time.time_ns()
+    if self._last_chunk_received_ns is None:
+      is_first_chunk = True
+      wait_ns = received_ns - self.span_started_ns
+    else:
+      is_first_chunk = False
+      wait_ns = received_ns - self._last_chunk_received_ns
+    self._last_chunk_received_ns = received_ns
+    wait_s = wait_ns / 1e9
+
+    try:
+      _metrics.record_client_inference_chunk(
+          llm_request=self.streamed_request,
+          response=response,
+          elapsed_s=wait_s,
+          first_chunk=is_first_chunk,
+      )
+    except Exception:  # pylint: disable=broad-exception-caught
+      logger.exception("Failed to record chunk timing")
+
+
+def _is_sse_request(invocation_context: InvocationContext) -> bool:
+  """Whether the model call is an SSE streaming request.
+
+  A live call (`support_cfc`) is excluded: it is one long exchange rather than
+  a request, so there is no request to time its first chunk from.
+
+  Args:
+    invocation_context: The invocation the model call belongs to.
+
+  Returns:
+    True when the call streams over SSE, as `call_llm_async` decides it.
+  """
+  from ..agents._streaming_mode import StreamingMode
+
+  # Callers drive agents with their own lightweight context objects, which may
+  # carry no run config.
+  run_config = getattr(invocation_context, "run_config", None)
+  return (
+      run_config is not None
+      and run_config.streaming_mode == StreamingMode.SSE
+      and not run_config.support_cfc
+  )
 
 
 def _record_agent_metrics(
@@ -639,12 +740,27 @@ def _flush_workflow_metrics(scope: _WorkflowScope) -> None:
       count=scope.skill_load_count,
       nested=nested,
   )
+  _metrics.record_invoke_workflow_compactions(
+      scope.telemetry_config,
+      root_agent_name=scope.root_agent_name,
+      workflow_name=scope.workflow_name,
+      count=scope.compaction_count,
+      nested=nested,
+  )
 
 
 def _agent_invocation_scope() -> _AgentInvocationScope | None:
   """Returns the agent invocation's scope."""
   value = context_api.get_value(_AGENT_INVOCATION_SCOPE_KEY)
   return value if isinstance(value, _AgentInvocationScope) else None
+
+
+def inference_scope(
+    otel_context: context_api.Context | None = None,
+) -> InferenceScope | None:
+  """Returns the InferenceScope published on ``otel_context`` (default: current)."""
+  value = context_api.get_value(_INFERENCE_SCOPE_KEY, context=otel_context)
+  return value if isinstance(value, InferenceScope) else None
 
 
 def _workflow_scope(
@@ -719,6 +835,15 @@ def _accumulate_skill_load(workflow_scope: _WorkflowScope | None) -> None:
   """
   for scope in _accumulating_scopes(workflow_scope):
     scope.skill_load_count += 1
+
+
+def count_compaction() -> None:
+  """Counts one conversation compaction against every workflow it ran inside."""
+  scope = _workflow_scope()
+  if scope is None:
+    return
+  for enclosing in scope.self_and_enclosing():
+    enclosing.compaction_count += 1
 
 
 def _active_tool_execution_tel_ctx() -> ToolScope | None:
@@ -987,7 +1112,16 @@ async def record_inference_telemetry(
   """Unified async context manager for consolidated inference metrics."""
   start_time = time.monotonic()
   workflow_scope = _workflow_scope()
-  tel_ctx = InferenceScope()
+  tel_ctx = InferenceScope(
+      llm_request=llm_request,
+      user_id=invocation_context.session.user_id,
+  )
+  # Current until the caller finishes consuming the call, so log records
+  # emitted during it can find it. Held across the caller's yields, so the
+  # caller runs in its own context (`_stream_in_caller_scope`).
+  token = context_api.attach(
+      context_api.set_value(_INFERENCE_SCOPE_KEY, tel_ctx)
+  )
   try:
     async with tracing.use_inference_span(
         llm_request,
@@ -995,9 +1129,22 @@ async def record_inference_telemetry(
         model_response_event,
     ) as gc_span:
       tel_ctx.span = gc_span
+      if gc_span is not None and _is_sse_request(invocation_context):
+        tel_ctx.streamed_request = llm_request
+      span_start_ns = None
+      if gc_span is not None:
+        span_start_ns = getattr(gc_span.span, "start_time", None)
+      if isinstance(span_start_ns, int):
+        tel_ctx.span_started_ns = span_start_ns
+      else:
+        # A span that is not recorded has no start time.
+        tel_ctx.span_started_ns = time.time_ns()
       yield tel_ctx
   finally:
+    context_api.detach(token)
     inference_error = sys.exc_info()[1]
+    # Only a real error counts; a closed stream or cancelled task is not one.
+    error = inference_error if isinstance(inference_error, Exception) else None
     _accumulate_inference_call(workflow_scope)
     usage = _token_usage.TokenUsage.from_llm_responses(tel_ctx.llm_responses)
     if usage is not None:
@@ -1005,23 +1152,34 @@ async def record_inference_telemetry(
     agent = invocation_context.agent
     elapsed_s = _metrics.get_elapsed_s(tel_ctx.span, start_time)
     try:
-      if agent is not None and tracing._should_emit_native_telemetry(agent):
+      if agent is not None and isinstance(
+          tel_ctx.span, tracing.GenerateContentSpan
+      ):
         _metrics.record_client_operation_duration(
             agent_name=agent.name,
             elapsed_s=elapsed_s,
             llm_request=llm_request,
             responses=tel_ctx.llm_responses,
-            error=(
-                inference_error
-                if isinstance(inference_error, Exception)
-                else None
-            ),
+            error=error,
         )
         _metrics.record_client_token_usage(
             agent_name=agent.name,
             llm_request=llm_request,
             responses=tel_ctx.llm_responses,
         )
+      if agent is not None:
+        # ADK bypasses the instrumentor when it records the inference itself.
+        emit_inference_tokens = isinstance(
+            tel_ctx.span, tracing.GenerateContentSpan
+        ) or _genai_instrumentor.should_emit_inference_token_metrics(
+            tracing._agent_model_name(agent)
+        )
+        if emit_inference_tokens:
+          _metrics.record_inference_token_usage(
+              llm_request=llm_request,
+              responses=tel_ctx.llm_responses,
+              error=error,
+          )
     except Exception:  # pylint: disable=broad-exception-caught
       logger.exception(
           "Failed to record inference metrics for agent %s",

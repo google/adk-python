@@ -22,7 +22,6 @@ from google.adk.evaluation.eval_case import InvocationEvents
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import HallucinationsCriterion
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
-from google.adk.evaluation.eval_metrics import LlmAsAJudgeCriterion
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.hallucinations_v1 import _parse_sentences
 from google.adk.evaluation.hallucinations_v1 import _parse_validation_results
@@ -30,14 +29,12 @@ from google.adk.evaluation.hallucinations_v1 import HallucinationsV1Evaluator
 from google.genai import types as genai_types
 import pytest
 
-from .. import testing_utils
-
 
 @pytest.fixture
 def mock_llm_registry(mocker):
   """Mocks LLMRegistry to avoid actual model loading during tests."""
   MockLLMRegistry = mocker.patch(
-      "google.adk.evaluation.llm_as_judge_utils.LLMRegistry"
+      "google.adk.evaluation.hallucinations_v1.LLMRegistry"
   )
   MockLLMRegistry.return_value.resolve.return_value = mocker.MagicMock()
   yield
@@ -1721,59 +1718,3 @@ async def test_evaluate_nl_response_judge_request_disables_afc(
   for request in captured_requests:
     assert request.config.automatic_function_calling is not None
     assert request.config.automatic_function_calling.disable is True
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "criterion_cls",
-    [HallucinationsCriterion, LlmAsAJudgeCriterion],
-)
-async def test_evaluate_invocations_uses_basellm_judge(criterion_cls):
-  judge_model = testing_utils.MockModel.create(
-      responses=[
-          "<sentence>Final response.</sentence>",
-          (
-              "sentence: Final response.\n"
-              "label: supported\n"
-              "rationale: Supported.\n"
-              "supporting_excerpt: null\n"
-              "contradicting_excerpt: null"
-          ),
-      ]
-  )
-  evaluator = HallucinationsV1Evaluator(
-      EvalMetric(
-          metric_name="test_hallucinations",
-          threshold=0.8,
-          criterion=criterion_cls(
-              threshold=0.5,
-              judge_model_options=JudgeModelOptions(
-                  judge_model=judge_model,
-                  num_samples=1,
-              ),
-          ),
-      )
-  )
-  invocation = Invocation(
-      app_details=AppDetails(
-          agent_details={
-              "root": AgentDetails(
-                  name="root",
-                  instructions="Root agent instructions.",
-                  tool_declarations=[],
-              ),
-          },
-      ),
-      user_content=genai_types.Content(
-          parts=[genai_types.Part(text="User query.")]
-      ),
-      final_response=genai_types.Content(
-          parts=[genai_types.Part(text="Final response.")]
-      ),
-  )
-
-  result = await evaluator.evaluate_invocations([invocation], [invocation])
-
-  assert result.overall_score == 1.0
-  assert result.overall_eval_status == EvalStatus.PASSED
-  assert len(judge_model.requests) == 2

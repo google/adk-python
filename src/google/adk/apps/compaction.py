@@ -14,11 +14,15 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import aclosing
 import json
 import logging
+import math
 from typing import AsyncGenerator
 
 from google.genai import types
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.trace import Status
 from opentelemetry.trace import StatusCode
 
@@ -28,8 +32,10 @@ from ..events.event_actions import EventActions
 from ..events.event_actions import EventCompaction
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..telemetry import _instrumentation
 from ..telemetry.tracing import _build_compaction_attributes
 from ..telemetry.tracing import _build_compaction_result_attributes
+from ..telemetry.tracing import resolve_error_type
 from ..telemetry.tracing import tracer
 from ..utils._function_call_names import CLIENT_FUNCTION_CALL_NAMES as _CLIENT_FUNCTION_CALL_NAMES
 from ..workflow import BaseNode
@@ -114,10 +120,36 @@ async def _summarize_events_with_trace(
     events: list[Event],
     events_to_compact: list[Event],
     trigger: str,
+    abort_signal: asyncio.Event | None = None,
 ) -> Event | None:
   """Summarizes events within a trace span labeled for compaction."""
-  if config.summarizer is None:
+  if config.summarizer is None or (
+      abort_signal is not None and abort_signal.is_set()
+  ):
     return None
+
+  async def _maybe_summarize_with_abort() -> Event | None:
+    assert config.summarizer is not None
+    if abort_signal is None:
+      return await config.summarizer.maybe_summarize_events(
+          events=events_to_compact
+      )
+    summarize_task = asyncio.create_task(
+        config.summarizer.maybe_summarize_events(events=events_to_compact)
+    )
+    abort_task = asyncio.create_task(abort_signal.wait())
+    try:
+      await asyncio.wait(
+          {summarize_task, abort_task}, return_when=asyncio.FIRST_COMPLETED
+      )
+      if abort_signal.is_set():
+        return None
+      return await summarize_task
+    finally:
+      for task in (abort_task, summarize_task):
+        if not task.done():
+          task.cancel()
+      await asyncio.gather(abort_task, summarize_task, return_exceptions=True)
 
   attributes = _build_compaction_attributes(
       session_id=session.id,
@@ -133,15 +165,14 @@ async def _summarize_events_with_trace(
   with tracer.start_as_current_span(f'compact_events {trigger}') as span:
     span.set_attributes(attributes)
     try:
-      compaction_event = await config.summarizer.maybe_summarize_events(
-          events=events_to_compact
-      )
+      compaction_event = await _maybe_summarize_with_abort()
     except Exception as e:  # pylint: disable=broad-exception-caught
       # The full history is still usable, so a failure must not end the turn.
       # Nothing unwinds past the span, so without an explicit status it would
       # be recorded as a successful compaction.
       span.record_exception(e)
       span.set_status(Status(StatusCode.ERROR, type(e).__name__))
+      span.set_attribute(ERROR_TYPE, resolve_error_type(e))
       logger.warning(
           'Event compaction failed; continuing with the uncompacted history.',
           exc_info=True,
@@ -149,6 +180,7 @@ async def _summarize_events_with_trace(
       return None
     span.set_attributes(_build_compaction_result_attributes(compaction_event))
     if compaction_event is not None:
+      _instrumentation.count_compaction()
       chars_saved = _prompt_chars_saved(
           events=events, compaction_event=compaction_event
       )
@@ -196,53 +228,46 @@ def _count_chars_in_content(content: types.Content | None) -> int:
   return total_chars
 
 
-def _valid_compactions(
+def _get_compaction_ranges(
     events: list[Event],
-) -> list[tuple[int, float, float, Event]]:
-  """Returns compaction events with fully-defined compaction ranges."""
-  compactions: list[tuple[int, float, float, Event]] = []
-  for i, event in enumerate(events):
-    if not event.actions.compaction:
-      continue
-    compaction = event.actions.compaction
-    if (
-        compaction.start_timestamp is None
-        or compaction.end_timestamp is None
-        or compaction.compacted_content is None
-    ):
-      continue
-    compactions.append((
-        i,
-        compaction.start_timestamp,
-        compaction.end_timestamp,
-        event,
-    ))
-  return compactions
+) -> list[tuple[int, float, float]]:
+  """Return surviving (event index, start, end) ranges in event order.
 
+  A containing range supersedes its contained ranges; identical ranges keep
+  the latest event. Sorting by start, descending end and descending index puts
+  every possible containing range first, so one maximum end suffices.
 
-def _is_compaction_subsumed(
-    *,
-    start_timestamp: float,
-    end_timestamp: float,
-    event_index: int,
-    compactions: list[tuple[int, float, float, Event]],
-) -> bool:
-  """Returns True if a compaction range is fully contained by another.
+  Args:
+    events: Events whose valid compaction ranges should be considered.
 
-  If two compactions have identical ranges, the earlier event is treated as
-  subsumed by the later event.
+  Returns:
+    Non-subsumed ranges, preserving their original event order.
   """
-  for other_index, other_start, other_end, _ in compactions:
-    if other_index == event_index:
+  ranges: list[tuple[int, float, float]] = []
+  comparable: list[tuple[int, float, float]] = []
+  retained: set[int] = set()
+  for index, event in enumerate(events):
+    compaction = event.actions.compaction if event.actions else None
+    if compaction is None or compaction.compacted_content is None:
       continue
-    if other_start <= start_timestamp and other_end >= end_timestamp:
-      if (
-          other_start < start_timestamp
-          or other_end > end_timestamp
-          or other_index > event_index
-      ):
-        return True
-  return False
+    start, end = compaction.start_timestamp, compaction.end_timestamp
+    if start is None or end is None:
+      continue
+    item = (index, start, end)
+    ranges.append(item)
+    if math.isnan(start) or math.isnan(end):
+      # NaN bounds neither contain another range nor are contained by one.
+      retained.add(index)
+    else:
+      comparable.append(item)
+
+  comparable.sort(key=lambda item: (item[1], -item[2], -item[0]))
+  max_end: float | None = None
+  for index, _, end in comparable:
+    if max_end is None or end > max_end:
+      retained.add(index)
+      max_end = end
+  return [item for item in ranges if item[0] in retained]
 
 
 def _estimate_prompt_token_count(
@@ -250,6 +275,7 @@ def _estimate_prompt_token_count(
     events: list[Event],
     current_branch: str | None,
     agent_name: str,
+    isolation_scope: str | None = None,
 ) -> int | None:
   """Returns an approximate prompt token count from session events.
 
@@ -264,6 +290,7 @@ def _estimate_prompt_token_count(
       current_branch=current_branch,
       events=events,
       agent_name=agent_name,
+      isolation_scope=isolation_scope,
   )
   total_chars = 0
   for content in effective_contents:
@@ -276,13 +303,57 @@ def _estimate_prompt_token_count(
   return total_chars // 4
 
 
+def _earlier_calls_answered_by(events: list[Event], start: int) -> list[Event]:
+  """Returns the calls before `start` that `events[start:]` responds to.
+
+  Contents assembly drops a function response whose call it cannot see, so
+  estimating `events[start:]` alone would miss a long-running tool's result.
+  Each returned event keeps only the answered calls, so the other calls it
+  made are not mistaken for unanswered ones.
+
+  Args:
+    events: The session events.
+    start: Index of the first event of the tail.
+
+  Returns:
+    Copies of the earlier events that made those calls, in order.
+  """
+  unmatched_ids: set[str] = set()
+  for event in events[start:]:
+    unmatched_ids |= _event_function_response_ids(event)
+  for event in events[start:]:
+    unmatched_ids -= _event_function_call_ids(event)
+  if not unmatched_ids:
+    return []
+
+  calls: list[Event] = []
+  for event in events[:start]:
+    if not event.content or not event.content.parts:
+      continue
+    parts = [
+        part
+        for part in event.content.parts
+        if part.function_call and part.function_call.id in unmatched_ids
+    ]
+    if parts:
+      content = event.content.model_copy(update={'parts': parts})
+      calls.append(event.model_copy(update={'content': content}))
+  return calls
+
+
 def _latest_prompt_token_count(
     events: list[Event],
     *,
     current_branch: str | None = None,
     agent_name: str = '',
+    isolation_scope: str | None = None,
 ) -> int | None:
-  """Returns the most recently observed prompt token count, if available.
+  """Returns the latest prompt token count, plus an estimate for what it misses.
+
+  A model response reports the size of the prompt that produced it, so the
+  count misses that response and everything appended after it, such as the
+  tool responses it asked for. Those events are estimated and added, so a burst
+  of large tool responses triggers compaction before the next request.
 
   When `agent_name` is given, only counts recorded by that agent are
   considered. A count belongs to whichever agent made the model call, so
@@ -290,7 +361,10 @@ def _latest_prompt_token_count(
   turn ends in a small sub-agent otherwise measures that sub-agent forever and
   never reaches its threshold.
   """
-  for event in reversed(events):
+  for index in range(len(events) - 1, -1, -1):
+    event = events[index]
+    if event.isolation_scope != isolation_scope:
+      continue
     if event.actions and event.actions.compaction:
       # Counts at or before a summarization describe a prompt it replaced.
       break
@@ -299,31 +373,27 @@ def _latest_prompt_token_count(
         and event.usage_metadata.prompt_token_count is not None
         and (not agent_name or event.author == agent_name)
     ):
-      return event.usage_metadata.prompt_token_count
+      unmeasured_token_count = _estimate_prompt_token_count(
+          events=_earlier_calls_answered_by(events, index) + events[index:],
+          current_branch=current_branch,
+          agent_name=agent_name,
+          isolation_scope=isolation_scope,
+      )
+      return event.usage_metadata.prompt_token_count + (
+          unmeasured_token_count or 0
+      )
   return _estimate_prompt_token_count(
       events=events,
       current_branch=current_branch,
       agent_name=agent_name,
+      isolation_scope=isolation_scope,
   )
 
 
 def _latest_compaction_event(events: list[Event]) -> Event | None:
   """Returns the latest non-subsumed compaction event by stream order."""
-  compactions = _valid_compactions(events)
-  latest_event = None
-  latest_index = -1
-  for event_index, start_ts, end_ts, event in compactions:
-    if _is_compaction_subsumed(
-        start_timestamp=start_ts,
-        end_timestamp=end_ts,
-        event_index=event_index,
-        compactions=compactions,
-    ):
-      continue
-    if event_index > latest_index:
-      latest_index = event_index
-      latest_event = event
-  return latest_event
+  ranges = _get_compaction_ranges(events)
+  return events[ranges[-1][0]] if ranges else None
 
 
 def _latest_compaction_end_timestamp(events: list[Event]) -> float:
@@ -484,6 +554,7 @@ def _events_to_compact_for_token_threshold(
         author='model',
         content=latest_compaction_event.actions.compaction.compacted_content,
         branch=latest_compaction_event.branch,
+        isolation_scope=latest_compaction_event.isolation_scope,
         invocation_id=Event.new_id(),
     )
     return [seed_event] + events_to_compact
@@ -678,8 +749,12 @@ async def _run_compaction_for_token_threshold_config(
     agent: BaseNode,
     agent_name: str = '',
     current_branch: str | None = None,
+    isolation_scope: str | None = None,
+    abort_signal: asyncio.Event | None = None,
 ) -> bool:
   """Runs token-threshold compaction for a provided compaction config."""
+  if abort_signal is not None and abort_signal.is_set():
+    return False
   if not _has_token_threshold_config(config):
     return False
   if config is None:
@@ -691,13 +766,16 @@ async def _run_compaction_for_token_threshold_config(
   # Drop rewound invocations so the summary covers only live events, consistent
   # with prompt building and sliding-window compaction (all route through
   # _apply_rewinds); otherwise rewound content would leak back into future
-  # prompts via the compaction summary.
-  events = _apply_rewinds(session.events)
+  # prompts via the compaction summary. Also filter by isolation_scope so
+  # isolated task/sub-agent events never leak into or out of another scope.
+  rewound_events = _apply_rewinds(session.events)
+  events = [e for e in rewound_events if e.isolation_scope == isolation_scope]
 
   prompt_token_count = _latest_prompt_token_count(
-      events,
+      rewound_events,
       current_branch=current_branch,
       agent_name=agent_name,
+      isolation_scope=isolation_scope,
   )
   if prompt_token_count is None or prompt_token_count < config.token_threshold:
     return False
@@ -724,38 +802,48 @@ async def _run_compaction_for_token_threshold_config(
       events=events,
       events_to_compact=events_to_compact,
       trigger='token_threshold',
+      abort_signal=abort_signal,
   )
-  if compaction_event:
+  if compaction_event and not (
+      abort_signal is not None and abort_signal.is_set()
+  ):
+    compaction_event.isolation_scope = isolation_scope
     await session_service.append_event(session=session, event=compaction_event)
     logger.debug('Token-threshold event compactor finished.')
     return True
   return False
 
 
-async def _run_compaction_for_token_threshold(
-    app: App, session: Session, session_service: BaseSessionService
-):
-  """Runs post-invocation compaction based on a token threshold.
-
-  If triggered, this compacts older raw events and keeps the last
-  `event_retention_size` raw events un-compacted.
-  """
-  if app.root_agent is None:
-    return None
-  return await _run_compaction_for_token_threshold_config(
-      config=app.events_compaction_config,
-      session=session,
-      session_service=session_service,
-      agent=app.root_agent,
-      agent_name='',
-      current_branch=None,
-  )
-
-
 async def _run_compaction_for_sliding_window(
     app: App,
     session: Session,
     session_service: BaseSessionService,
+    *,
+    abort_signal: asyncio.Event | None = None,
+) -> AsyncGenerator[Event, None]:
+  """Runs sliding-window compaction with the app's compaction config."""
+  if app.root_agent is None:
+    return
+  async with aclosing(
+      _run_compaction_for_sliding_window_config(
+          config=app.events_compaction_config,
+          session=session,
+          session_service=session_service,
+          agent=app.root_agent,
+          abort_signal=abort_signal,
+      )
+  ) as compaction_events:
+    async for compaction_event in compaction_events:
+      yield compaction_event
+
+
+async def _run_compaction_for_sliding_window_config(
+    *,
+    config: EventsCompactionConfig | None,
+    session: Session,
+    session_service: BaseSessionService,
+    agent: BaseNode,
+    abort_signal: asyncio.Event | None = None,
 ) -> AsyncGenerator[Event, None]:
   """Runs sliding-window compaction over the session's events.
 
@@ -777,32 +865,43 @@ async def _run_compaction_for_sliding_window(
   produces a summary, this returns without a sliding-window summary.
 
   Args:
-    app: The application instance.
+    config: The compaction config to apply. None means no compaction.
     session: The session containing events to compact.
     session_service: The session service, used by the token-threshold path,
       which appends its own event directly.
+    agent: The root agent, whose model builds the summarizer when the config has
+      none.
+    abort_signal: Optional signal that cancels in-flight summarization.
 
   Yields:
     The sliding-window compaction event, if one is produced. The caller (the
     runner loop) is responsible for appending it to the session, so that
     persistence of this event stays at the runtime's synchronization point.
   """
+  if abort_signal is not None and abort_signal.is_set():
+    return
   # Drop rewound invocations first so the summary covers only live events. This
   # keeps the compactor consistent with prompt building (the contents processor
   # also applies rewinds); otherwise rewound content would leak back into future
-  # prompts via the compaction summary.
-  events = _apply_rewinds(session.events)
+  # prompts via the compaction summary. Also exclude isolated task/sub-agent
+  # events so their private turns do not leak into the root session summary.
+  events = [
+      e for e in _apply_rewinds(session.events) if e.isolation_scope is None
+  ]
   if not events:
     return
 
-  config = app.events_compaction_config
   if config is None:
     return
 
   # Prefer token-threshold compaction if configured and triggered.
   if _has_token_threshold_config(config):
-    token_compacted = await _run_compaction_for_token_threshold(
-        app, session, session_service
+    token_compacted = await _run_compaction_for_token_threshold_config(
+        config=config,
+        session=session,
+        session_service=session_service,
+        agent=agent,
+        abort_signal=abort_signal,
     )
     if token_compacted:
       return
@@ -821,7 +920,7 @@ async def _run_compaction_for_sliding_window(
       break
 
   # Get unique invocation IDs and their latest timestamps.
-  invocation_latest_timestamps = {}
+  invocation_latest_timestamps: dict[str, float] = {}
   for event in events:
     # Only consider non-compaction events for unique invocation IDs.
     if event.invocation_id and not event.actions.compaction:
@@ -889,9 +988,7 @@ async def _run_compaction_for_sliding_window(
   ):
     return
 
-  if app.root_agent is None:
-    return
-  _ensure_compaction_summarizer(config=config, agent=app.root_agent)
+  _ensure_compaction_summarizer(config=config, agent=agent)
   if config.summarizer is None:
     return
 
@@ -901,6 +998,7 @@ async def _run_compaction_for_sliding_window(
       events=events,
       events_to_compact=events_to_compact,
       trigger='sliding_window',
+      abort_signal=abort_signal,
   )
   logger.debug('Event compactor finished.')
   if compaction_event:

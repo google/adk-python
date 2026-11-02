@@ -21,14 +21,12 @@ from typing import Optional
 
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_schemes import AuthScheme
-from google.adk.utils.feature_decorator import experimental
 
 
 class CredentialRefresherError(Exception):
   """Base exception for credential refresh errors."""
 
 
-@experimental
 class BaseCredentialRefresher(abc.ABC):
   """Base interface for credential refreshers.
 

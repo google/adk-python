@@ -16,27 +16,53 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from collections.abc import Sequence
 import contextlib
 from typing import Any
 from typing import AsyncGenerator
 from typing import Iterator
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from opentelemetry import trace
 
 from .. import functions
+from ....agents._callback_metadata import CallbackType
 from ....agents.callback_context import CallbackContext
 from ....agents.invocation_context import InvocationContext
 from ....agents.readonly_context import ReadonlyContext
 from ....events.event import Event
+from ....events.event import TOOL_DISPLAY_NAMES_METADATA_KEY
 from ....models.llm_request import LlmRequest
 from ....models.llm_response import LlmResponse
 from ....telemetry import _instrumentation
 from ....utils._callback_pipeline import _run_callbacks
 from ....utils._callback_pipeline import _stop_on_non_none
 from ....utils._callback_pipeline import _stop_on_truthy
+from ....utils._runner_utils import _stream_in_caller_scope
 from ....utils.context_utils import Aclosing
 from ._utils import as_llm_agent as _as_llm_agent
+
+if TYPE_CHECKING:
+  from google.genai import types
+
+  from ....tools.base_tool import BaseTool
+
+
+def _collect_tool_display_names(
+    function_calls: Sequence[types.FunctionCall],
+    tools_dict: Mapping[str, BaseTool],
+) -> dict[str, str]:
+  """Collects display titles for called tools that declare a non-empty title."""
+  return {
+      fc.name: title
+      for fc in function_calls
+      if fc.name
+      and (tool := tools_dict.get(fc.name)) is not None
+      and isinstance(raw_title := tool.title, str)
+      and (title := raw_title.strip())
+  }
 
 
 @contextlib.contextmanager
@@ -97,6 +123,22 @@ def finalize_model_response_event(
               function_calls, llm_request.tools_dict
           )
       )
+      if tool_display_names := _collect_tool_display_names(
+          function_calls, llm_request.tools_dict
+      ):
+        raw_metadata = finalized_event.custom_metadata
+        custom_metadata: dict[str, Any] = (
+            dict(raw_metadata) if isinstance(raw_metadata, Mapping) else {}
+        )
+        raw_existing = custom_metadata.get(TOOL_DISPLAY_NAMES_METADATA_KEY)
+        existing_names = (
+            dict(raw_existing) if isinstance(raw_existing, Mapping) else {}
+        )
+        custom_metadata[TOOL_DISPLAY_NAMES_METADATA_KEY] = {
+            **existing_names,
+            **tool_display_names,
+        }
+        finalized_event.custom_metadata = custom_metadata
 
   return finalized_event
 
@@ -184,6 +226,7 @@ async def handle_before_model_callback(
         _stop_on_truthy,
         callback_context=callback_context,
         llm_request=llm_request,
+        callback_type=CallbackType.BEFORE_MODEL,
     )
     if callback_response:
       return callback_response
@@ -309,6 +352,7 @@ async def handle_after_model_callback(
         _stop_on_truthy,
         callback_context=callback_context,
         llm_response=llm_response,
+        callback_type=CallbackType.AFTER_MODEL,
     )
     if callback_response:
       return _inherit_unset_model_fields(
@@ -377,9 +421,10 @@ async def run_and_handle_error(
         callback_context=callback_context,
         llm_request=llm_request,
         error=error,
+        callback_type=CallbackType.ON_MODEL_ERROR,
     )
 
-  try:
+  async def _record_responses() -> AsyncGenerator[LlmResponse, None]:
     async with _instrumentation.record_inference_telemetry(
         llm_request,
         invocation_context,
@@ -390,6 +435,17 @@ async def run_and_handle_error(
           async for llm_response in timed:
             tel_ctx.record_llm_response(invocation_context, llm_response)
             yield llm_response
+
+  try:
+    # The inference scope stays current across yields, but only in the
+    # generator's own context, so it never leaks into the consumer.
+    # `_stream_in_caller_scope` closes `responses` in that context first.
+    async with (
+        Aclosing(_record_responses()) as responses,
+        Aclosing(_stream_in_caller_scope(responses)) as agen,
+    ):
+      async for llm_response in agen:
+        yield llm_response
   except Exception as model_error:
     with _model_callback_context(
         invocation_context, model_response_event

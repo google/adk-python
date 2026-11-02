@@ -23,8 +23,6 @@ from pydantic import RootModel
 from pydantic import Tag
 from typing_extensions import deprecated
 
-from ..features import experimental
-from ..features import FeatureName
 from .base_agent_config import BaseAgentConfig
 from .llm_agent_config import LlmAgentConfig
 from .loop_agent_config import LoopAgentConfig
@@ -74,6 +72,5 @@ ConfigsUnion = Annotated[
     "Config is now loaded via reflection so the separate config class is no "
     "longer needed."
 )
-@experimental(FeatureName.AGENT_CONFIG)
 class AgentConfig(RootModel[ConfigsUnion]):
   """The config for the YAML schema to create an agent."""

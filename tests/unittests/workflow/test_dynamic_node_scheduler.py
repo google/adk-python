@@ -23,12 +23,14 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.event_actions import EventActions
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.adk.workflow import START
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeRun
@@ -1136,6 +1138,41 @@ async def test_dynamic_node_state_maintains_independent_run_counters():
   assert state.run_counters['branch_2'] == {'child': 1}
 
 
+def test_dynamic_node_state_reserve_run_ids_records_every_ancestor():
+  """reserve_run_ids records the run id of each segment under its parent."""
+  state = DynamicNodeState()
+
+  state.reserve_run_ids('a@1/b@3/c@2')
+
+  assert state.run_counters == {
+      '': {'a': 1},
+      'a@1': {'b': 3},
+      'a@1/b@3': {'c': 2},
+  }
+  assert state.next_run_id('a') == '2'
+  assert state.next_run_id('b', parent_path='a@1') == '4'
+  assert state.next_run_id('c', parent_path='a@1/b@3') == '3'
+
+
+def test_dynamic_node_state_reserve_run_ids_never_lowers_a_counter():
+  """reserve_run_ids keeps a counter that is already higher."""
+  state = DynamicNodeState()
+  state.run_counters = {'': {'a': 5}, 'a@1': {'b': 1}}
+
+  state.reserve_run_ids('a@1/b@3')
+
+  assert state.run_counters == {'': {'a': 5}, 'a@1': {'b': 3}}
+
+
+def test_dynamic_node_state_reserve_run_ids_skips_non_numeric_run_ids():
+  """reserve_run_ids skips a segment whose run id is not a number."""
+  state = DynamicNodeState()
+
+  state.reserve_run_ids('a@1/b@run-x/c@2')
+
+  assert state.run_counters == {'': {'a': 1}, 'a@1/b@run-x': {'c': 2}}
+
+
 @pytest.mark.asyncio
 async def test_static_and_dynamic_node_sharing_a_name_do_not_collide():
   """A static graph node and a dynamic node of the same name get distinct run IDs.
@@ -1615,3 +1652,68 @@ async def test_run_node_internal_child_node_defaults_to_single_turn_mode():
   built_node = ctx._run_node_standalone.call_args.args[0]
   assert built_node.mode == 'single_turn'
   assert agent.mode is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('output', 'route', 'transfer_to_agent'),
+    [
+        ('routed_val', None, None),
+        (None, 'branch_a', None),
+        (None, None, 'agent_b'),
+    ],
+)
+async def test_same_turn_replayed_run_preserves_route_and_branch(
+    output: str | None,
+    route: str | None,
+    transfer_to_agent: str | None,
+):
+  """A dynamic run replayed in the same turn preserves its output, route, branch, and transfer."""
+  ic = InvocationContext(
+      invocation_id='inv-1',
+      session=Session(id='s', app_name='app', user_id='u'),
+      session_service=InMemorySessionService(),
+  )
+  ctx = Context(ic, node_path='wf/parent')
+  scheduler = DynamicNodeScheduler(state=DynamicNodeState())
+  node = BaseNode(name='router')
+
+  child_ctx = Context(
+      ic.model_copy(update={'branch': 'wf.router'}),
+      parent_ctx=ctx,
+      node=node,
+      run_id='r-1',
+      event_actions=EventActions(transfer_to_agent=transfer_to_agent),
+  )
+  child_ctx.output = output
+  child_ctx.route = route
+  ctx._run_node_standalone = AsyncMock(return_value=child_ctx)
+
+  first_ctx = await scheduler._execute_step(
+      ctx,
+      node,
+      'input',
+      node_name='router',
+      run_id='r-1',
+  )
+  assert first_ctx is child_ctx
+
+  replayed_ctx = await scheduler._execute_step(
+      ctx,
+      node,
+      'input',
+      node_name='router',
+      run_id='r-1',
+  )
+  ctx._run_node_standalone.assert_awaited_once()
+  assert (
+      replayed_ctx.output,
+      replayed_ctx.route,
+      replayed_ctx.branch,
+      replayed_ctx.actions.transfer_to_agent,
+  ) == (
+      child_ctx.output,
+      child_ctx.route,
+      child_ctx.branch,
+      child_ctx.actions.transfer_to_agent,
+  )

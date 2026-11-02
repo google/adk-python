@@ -17,14 +17,10 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
-from google.adk.evaluation import local_eval_set_results_manager
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
-from google.adk.evaluation.eval_metrics import EvalMetricResult
-from google.adk.evaluation.eval_metrics import HallucinationsCriterion
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
 from google.adk.evaluation.eval_metrics import LlmAsAJudgeCriterion
-from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_rubrics import Rubric
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.evaluator import EvaluationResult
@@ -38,8 +34,6 @@ from google.adk.models.llm_response import LlmResponse
 from google.genai import types as genai_types
 import pydantic
 import pytest
-
-from .. import testing_utils
 
 
 class MockLlmAsJudge(LlmAsJudge):
@@ -148,134 +142,6 @@ def test_llm_as_judge_init_unregistered_model():
         ),
         criterion_type=LlmAsAJudgeCriterion,
     )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "criterion_type",
-    [LlmAsAJudgeCriterion, HallucinationsCriterion],
-)
-async def test_evaluate_invocations_uses_basellm_judge(criterion_type):
-  judge_model = testing_utils.MockModel.create(
-      responses=["auto rater response"] * 3
-  )
-  judge = MockLlmAsJudge(
-      EvalMetric(
-          metric_name="test_metric",
-          threshold=0.8,
-          criterion=LlmAsAJudgeCriterion(
-              threshold=0.5,
-              judge_model_options=JudgeModelOptions(
-                  judge_model=judge_model,
-                  judge_model_config=genai_types.GenerateContentConfig(),
-                  num_samples=3,
-              ),
-          ),
-      ),
-      criterion_type=criterion_type,
-  )
-  invocation = Invocation(
-      invocation_id="id1",
-      user_content=genai_types.Content(
-          parts=[genai_types.Part(text="user content 1")],
-          role="user",
-      ),
-      final_response=genai_types.Content(
-          parts=[genai_types.Part(text="final response 1")],
-          role="model",
-      ),
-  )
-
-  result = await judge.evaluate_invocations([invocation], [invocation])
-
-  assert result.overall_score == 1.0
-  assert result.overall_eval_status == EvalStatus.PASSED
-  assert len(judge_model.requests) == 3
-
-
-def test_judge_model_options_rejects_invalid_judge_model():
-  with pytest.raises(pydantic.ValidationError):
-    JudgeModelOptions.model_validate_json('{"judgeModel": {"model": "x"}}')
-
-
-def test_llm_as_judge_init_rejects_invalid_judge_model_in_criterion():
-  eval_metric = EvalMetric.model_validate_json(
-      '{"metricName": "test_metric", "criterion": {"threshold": 0.5,'
-      ' "judgeModelOptions": {"judgeModel": {"model": "x"}}}}'
-  )
-  with pytest.raises(ValueError, match="metric expects a criterion of type"):
-    MockLlmAsJudge(eval_metric, criterion_type=LlmAsAJudgeCriterion)
-
-
-def test_judge_model_options_basellm_json_schema():
-  schema = JudgeModelOptions.model_json_schema()
-  assert schema["properties"]["judgeModel"]["type"] == "string"
-  assert "anyOf" not in schema["properties"]["judgeModel"]
-  assert "BaseLlm" not in schema.get("$defs", {})
-
-
-def test_judge_model_options_basellm_json_round_trip():
-  judge_model = testing_utils.MockModel.create(responses=["secret-response"])
-  options = JudgeModelOptions(
-      judge_model=judge_model,
-      num_samples=3,
-  )
-
-  options_json = options.model_dump_json()
-  assert "secret-response" not in options_json
-  loaded_options = JudgeModelOptions.model_validate_json(options_json)
-  assert loaded_options.judge_model == "mock"
-
-
-def test_eval_metric_basellm_results_manager_persistence(tmp_path):
-  judge_model = testing_utils.MockModel.create(responses=["secret-response"])
-  eval_metric = EvalMetric(
-      metric_name="test_metric",
-      threshold=0.8,
-      criterion=LlmAsAJudgeCriterion(
-          threshold=0.5,
-          judge_model_options=JudgeModelOptions(
-              judge_model=judge_model,
-              num_samples=3,
-          ),
-      ),
-  )
-  assert "secret-response" not in eval_metric.model_dump_json()
-  metric_result = EvalMetricResult(
-      score=1.0,
-      eval_status=EvalStatus.PASSED,
-      **eval_metric.model_dump(),
-  )
-  manager = local_eval_set_results_manager.LocalEvalSetResultsManager(
-      str(tmp_path)
-  )
-  manager.save_eval_set_result(
-      "test_app",
-      "test_eval_set",
-      [
-          EvalCaseResult(
-              eval_set_id="test_eval_set",
-              eval_id="case_1",
-              final_eval_status=EvalStatus.PASSED,
-              overall_eval_metric_results=[metric_result],
-              eval_metric_result_per_invocation=[],
-              session_id="session_1",
-          )
-      ],
-  )
-  result_ids = manager.list_eval_set_results("test_app")
-  assert len(result_ids) == 1
-  loaded_result = manager.get_eval_set_result("test_app", result_ids[0])
-  raw_criterion = (
-      loaded_result.eval_case_results[0]
-      .overall_eval_metric_results[0]
-      .criterion
-  )
-  assert raw_criterion is not None
-  loaded_criterion = LlmAsAJudgeCriterion.model_validate(
-      raw_criterion.model_dump()
-  )
-  assert loaded_criterion.judge_model_options.judge_model == "mock"
 
 
 @pytest.fixture

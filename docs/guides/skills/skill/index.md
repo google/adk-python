@@ -89,8 +89,9 @@ The loader is strict about the frontmatter, and every rule below raises rather
 than warns, so a mistake shows up as a `ValueError` at load time instead of as
 odd behavior later:
 
-*   The file must start with `---`, and a second `---` must close the
-    frontmatter. Anything else raises `ValueError`.
+*   The file must start with a `---` line, and the next line that is only
+    `---` closes the frontmatter, so a `---` inside a value does not. Anything
+    else raises `ValueError`.
 *   The frontmatter must parse as a YAML mapping.
 *   `name` and `description` are both required.
 *   `name` must be lowercase kebab-case, meaning `a-z`, `0-9`, and single

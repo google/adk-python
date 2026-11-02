@@ -18,8 +18,10 @@ from __future__ import annotations
 
 from unittest import mock
 
+from google.adk.artifacts.base_artifact_service import BaseArtifactService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.errors import InvocationNotFoundError
+from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.errors.not_found_error import NotFoundError
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -54,6 +56,52 @@ async def test_compute_state_delta_reverts_state_to_rewind_point():
   assert delta["count"] == 1
   assert delta["new_key"] is None
   assert "app:stay" not in delta
+
+
+async def test_compute_state_delta_leaves_state_without_events_untouched() -> (
+    None
+):
+  """Keys that no undone event wrote are left out of the rewind delta."""
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      state={"tenant_id": "t1", "k1": "v1", "k2": "v2"},
+      events=[
+          Event(
+              invocation_id="inv1",
+              actions=EventActions(state_delta={"k1": "v1"}),
+          ),
+          Event(
+              invocation_id="inv2",
+              actions=EventActions(state_delta={"k2": "v2"}),
+          ),
+      ],
+  )
+
+  delta = await _rewind_utils.compute_state_delta_for_rewind(session, 1)
+
+  assert delta == {"k2": None}
+
+
+async def test_compute_state_delta_clears_overwritten_initial_key() -> None:
+  """An initial key an undone event overwrote is cleared, not restored."""
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      state={"mode": "b"},
+      events=[
+          Event(
+              invocation_id="inv1",
+              actions=EventActions(state_delta={"mode": "b"}),
+          ),
+      ],
+  )
+
+  delta = await _rewind_utils.compute_state_delta_for_rewind(session, 0)
+
+  assert delta == {"mode": None}
 
 
 async def test_compute_state_delta_for_rewind_ignores_temp_keys():
@@ -116,6 +164,56 @@ async def test_compute_artifact_delta_records_version_returned_by_service():
   )
 
   assert delta == {"report.txt": 7}
+
+
+async def test_compute_artifact_delta_requires_app_name():
+  """Rewinding an artifact with no app name anywhere raises InputValidationError."""
+  session = Session(
+      id="s1",
+      app_name="",
+      user_id="u1",
+      events=[
+          Event(invocation_id="inv1"),
+          Event(
+              invocation_id="inv2",
+              actions=EventActions(artifact_delta={"f.txt": 0}),
+          ),
+      ],
+  )
+
+  artifact_service = mock.create_autospec(BaseArtifactService, instance=True)
+
+  with pytest.raises(InputValidationError, match="app_name"):
+    await _rewind_utils.compute_artifact_delta_for_rewind(
+        session, 1, artifact_service=artifact_service
+    )
+  artifact_service.save_artifact.assert_not_called()
+
+
+async def test_compute_artifact_delta_falls_back_to_the_session_app_name():
+  """An omitted app_name is taken from the session the artifacts belong to."""
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      events=[
+          Event(invocation_id="inv1"),
+          Event(
+              invocation_id="inv2",
+              actions=EventActions(artifact_delta={"f.txt": 0}),
+          ),
+      ],
+  )
+
+  artifact_service = mock.create_autospec(BaseArtifactService, instance=True)
+  artifact_service.save_artifact.return_value = 1
+
+  delta = await _rewind_utils.compute_artifact_delta_for_rewind(
+      session, 1, artifact_service=artifact_service
+  )
+
+  assert delta == {"f.txt": 1}
+  assert artifact_service.save_artifact.await_args.kwargs["app_name"] == "app"
 
 
 async def test_rewind_session_raises_when_invocation_not_found():

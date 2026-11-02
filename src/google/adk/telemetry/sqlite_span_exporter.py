@@ -30,6 +30,7 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter
 from opentelemetry.sdk.trace.export import SpanExportResult
 from opentelemetry.trace import SpanContext
+from opentelemetry.trace import SpanKind
 from opentelemetry.trace import TraceFlags
 from opentelemetry.trace import TraceState
 from opentelemetry.util.types import AttributeValue
@@ -58,6 +59,15 @@ _CREATE_TRACE_INDEX = """
 CREATE INDEX IF NOT EXISTS spans_trace_id_idx ON spans(trace_id);
 """
 
+# Ordered schema migrations: entry 0 creates the original schema and each later
+# entry upgrades the one before it. `PRAGMA user_version` records how many have
+# been applied, so opening a database runs only the ones it lacks. Append new
+# entries; never edit one that has shipped.
+_MIGRATIONS: tuple[tuple[str, ...], ...] = (
+    (_CREATE_SPANS_TABLE, _CREATE_SESSION_INDEX, _CREATE_TRACE_INDEX),
+    ("ALTER TABLE spans ADD COLUMN kind TEXT NOT NULL DEFAULT 'INTERNAL'",),
+)
+
 _INSERT_SPAN = """
 INSERT OR REPLACE INTO spans (
   span_id,
@@ -68,11 +78,35 @@ INSERT OR REPLACE INTO spans (
   end_time_unix_nano,
   session_id,
   invocation_id,
-  attributes_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+  attributes_json,
+  kind
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 """
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
+
+
+def _apply_migrations(
+    conn: sqlite3.Connection, migrations: Sequence[Sequence[str]]
+) -> None:
+  """Applies the entries of `migrations` the database has not run yet."""
+  # Checked outside any transaction first, so opening a current database never
+  # waits on another connection's write lock.
+  if conn.execute("PRAGMA user_version").fetchone()[0] >= len(migrations):
+    return
+  with conn:
+    # CPython opens no transaction for DDL, so begin one explicitly. It
+    # takes the write lock before the version is read, so two processes
+    # opening the same file cannot both apply a migration.
+    conn.execute("BEGIN IMMEDIATE")
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= len(migrations):
+      return
+    for statements in migrations[version:]:
+      for statement in statements:
+        conn.execute(statement)
+    # PRAGMA takes no bind parameters; the value is an int length.
+    conn.execute(f"PRAGMA user_version = {len(migrations)}")
 
 
 class SqliteSpanExporter(SpanExporter):
@@ -80,6 +114,9 @@ class SqliteSpanExporter(SpanExporter):
 
   This is intended for local development (e.g. `adk web`) to allow reloading
   traces for older sessions after process restart.
+
+  Span kinds survive export and reload. Existing databases are upgraded in
+  place; spans saved before kind persistence retain the INTERNAL default.
   """
 
   def __init__(self, *, db_path: str):
@@ -100,11 +137,7 @@ class SqliteSpanExporter(SpanExporter):
 
   def _ensure_schema(self) -> None:
     with self._lock:
-      conn = self._get_connection()
-      conn.execute(_CREATE_SPANS_TABLE)
-      conn.execute(_CREATE_SESSION_INDEX)
-      conn.execute(_CREATE_TRACE_INDEX)
-      conn.commit()
+      _apply_migrations(self._get_connection(), _MIGRATIONS)
 
   def _serialize_attributes(
       self, attributes: Mapping[str, AttributeValue]
@@ -167,6 +200,7 @@ class SqliteSpanExporter(SpanExporter):
               session_id,
               invocation_id,
               self._serialize_attributes(attributes),
+              span.kind.name,
           ))
         conn.executemany(_INSERT_SPAN, rows)
         conn.commit()
@@ -221,6 +255,7 @@ class SqliteSpanExporter(SpanExporter):
         name=row["name"] or "",
         context=context,
         parent=parent,
+        kind=SpanKind[row["kind"]],
         attributes=attributes,
         start_time=row["start_time_unix_nano"],
         end_time=row["end_time_unix_nano"],

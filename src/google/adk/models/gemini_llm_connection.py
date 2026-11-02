@@ -22,7 +22,7 @@ from typing import Final
 from google.genai import types
 
 from ..utils import model_name_utils
-from ..utils.content_utils import _filter_media_parts
+from ..utils.content_utils import _filter_media_history
 from ..utils.context_utils import Aclosing
 from ..utils.variant_utils import GoogleLLMVariant
 from .base_llm_connection import BaseLlmConnection
@@ -86,11 +86,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     # 1. Agent transfer to a new agent
     # 2. Establishing a new live connection with previous ADK session history
 
-    contents = [
-        filtered
-        for content in history
-        if (filtered := _filter_media_parts(content)) is not None
-    ]
+    contents = _filter_media_history(history)
 
     if contents:
       logger.debug('Sending history to live connection: %s', contents)
@@ -141,7 +137,9 @@ class GeminiLlmConnection(BaseLlmConnection):
     """
     assert content.parts
     if all(p.function_response for p in content.parts):
-      function_responses = [p.function_response for p in content.parts]
+      function_responses = [
+          p.function_response for p in content.parts if p.function_response
+      ]
       logger.debug('Sending LLM function response: %s', function_responses)
       await self._gemini_session.send_tool_response(
           function_responses=function_responses
@@ -387,8 +385,8 @@ class GeminiLlmConnection(BaseLlmConnection):
                 or message.server_content.interrupted
                 or message.tool_call is not None
             )
-            flushed_part_ids = set()
-            accumulated_parts = []
+            flushed_part_ids: set[int] = set()
+            accumulated_parts: list[types.Part] = []
             for part in content.parts:
               if part.text:
                 current_is_thought = getattr(part, 'thought', False)
@@ -416,14 +414,16 @@ class GeminiLlmConnection(BaseLlmConnection):
             if will_flush:
               flushed_part_ids.update(id(p) for p in accumulated_parts)
               accumulated_parts = []
+            response_content = content
             if flushed_part_ids:
-              llm_response.content = types.Content(
+              response_content = types.Content(
                   role=content.role,
                   parts=[
                       p for p in content.parts if id(p) not in flushed_part_ids
                   ],
               )
-            if llm_response.content.parts:
+              llm_response.content = response_content
+            if response_content.parts:
               yield llm_response
           # Note: in some cases, tool_call may arrive before
           # generation_complete, causing transcription to appear after

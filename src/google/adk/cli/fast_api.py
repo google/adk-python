@@ -169,8 +169,10 @@ def get_fast_api_app(
     memory_service_uri: URI for the memory service. Uses local memory service if
       None.
     use_local_storage: Whether to use local storage for session and artifacts.
-    eval_storage_uri: URI for evaluation storage. If provided, uses GCS
-      managers.
+    eval_storage_uri: URI for evaluation storage. Supports ``gs://<bucket>``
+      for GCS and ``file://<path>`` for a local directory. When omitted,
+      ``ADK_EVAL_STORAGE_URI`` is used if set, and local eval files default to
+      ``agents_dir``.
     allow_origins: List of allowed origins for CORS.
     web: Whether to enable the web UI and serve its assets.
     a2a: Whether to enable Agent-to-Agent (A2A) protocol support.
@@ -182,7 +184,8 @@ def get_fast_api_app(
       value turns on DNS-rebinding protection, which rejects requests addressed
       to any other host. A non-loopback value logs a startup warning that the
       app has no authentication. Leave it None to serve the app yourself
-      without either.
+      without either. Internal agents, such as the agent builder assistant,
+      are served only when this is a loopback address.
     port: Port number for the server (defaults to 8000).
     url_prefix: Optional prefix for all URL routes.
     trace_to_cloud: Whether to export traces to Google Cloud Trace.
@@ -246,23 +249,21 @@ def get_fast_api_app(
     agents_dir = str(agents_path.parent)
 
   # Set up eval managers.
-  if eval_storage_uri:
-    from .utils import evals
+  from .utils import _eval_storage
 
-    gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
-        eval_storage_uri
-    )
-    eval_sets_manager = gcs_eval_managers.eval_sets_manager
-    eval_set_results_manager = gcs_eval_managers.eval_set_results_manager
-  else:
-    this_module = sys.modules[__name__]
-    eval_sets_manager = this_module.LocalEvalSetsManager(agents_dir=agents_dir)
-    eval_set_results_manager = this_module.LocalEvalSetResultsManager(
-        agents_dir=agents_dir
-    )
+  this_module = sys.modules[__name__]
+  eval_sets_manager, eval_set_results_manager = (
+      _eval_storage.create_eval_managers(
+          eval_storage_uri,
+          agents_dir,
+          local_eval_sets_manager_cls=this_module.LocalEvalSetsManager,
+          local_eval_set_results_manager_cls=(
+              this_module.LocalEvalSetResultsManager
+          ),
+      )
+  )
 
   # initialize Agent Loader if not passed as argument
-  this_module = sys.modules[__name__]
   if agent_loader is None:
     if web:
       agent_loader = this_module.NestedAgentLoader(original_agents_dir)
@@ -277,9 +278,10 @@ def get_fast_api_app(
   # dev server has no authentication, so they are only safe where nobody else
   # can reach it: a loopback bind, which the DNS-rebinding and Origin guards
   # also cover. An unknown bind (None) is treated as exposed.
-  agent_loader._allow_special_agents = (
+  allow_special_agents = (
       web and bind_host is not None and _is_loopback_address(bind_host)
   )
+  agent_loader._allow_special_agents = allow_special_agents
 
   # services.py lives in the folder the user passed, not the rewritten parent.
   load_services_module(original_agents_dir)
@@ -364,8 +366,11 @@ def get_fast_api_app(
   )
   # DevServer allows the built-in agents by default. Follow the loader, so a
   # refused request gets the server's 403 rather than a 500 from the loader's
-  # PermissionError.
-  adk_web_server._allow_special_agents = agent_loader._allow_special_agents
+  # PermissionError. Only ever narrows: ApiServer stays closed even if web fell
+  # back to it.
+  adk_web_server._allow_special_agents = (
+      adk_web_server._allow_special_agents and allow_special_agents
+  )
 
   # In single agent mode, use that agent as the default app.
   if is_single_agent:

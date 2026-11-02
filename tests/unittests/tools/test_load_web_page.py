@@ -355,6 +355,25 @@ def test_load_web_page_blocks_loopback_ip_urls_behind_a_proxy(monkeypatch):
   mock_send.assert_not_called()
 
 
+def test_load_web_page_blocks_a_backslash_authority_behind_a_proxy(
+    monkeypatch,
+):
+  """urllib3 would ask the proxy for 169.254.169.254, not example.com."""
+  _set_proxy_env(monkeypatch)
+  _mock_getaddrinfo(monkeypatch, '93.184.216.34')
+  mock_get = mock.Mock(
+      return_value=_create_response(
+          '<html><body><p>This page has enough words to keep.</p></body></html>'
+      )
+  )
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+
+  url = 'http://169.254.169.254\\@example.com/latest/meta-data/'
+
+  assert load_web_page(url) == f'Failed to fetch url: {url}'
+  mock_get.assert_not_called()
+
+
 def test_load_web_page_fetches_public_urls_by_pinning_the_resolved_ip(
     monkeypatch,
 ):

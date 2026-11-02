@@ -16,17 +16,12 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from typing import TYPE_CHECKING
 
 from google.auth.credentials import Credentials
 from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
 from google.cloud.spanner_v1 import param_types as spanner_param_types
 
 from . import client
-
-if TYPE_CHECKING:
-  from google.cloud import spanner
-  from google.cloud.spanner_v1.database import Database
 
 
 def list_table_names(
@@ -59,8 +54,8 @@ def list_table_names(
         ]
       }
   """
-  spanner_client: spanner.Client | None = None
-  database: Database | None = None
+  spanner_client: client._SpannerClient | None = None
+  database: client._SpannerDatabase | None = None
   try:
     spanner_client = client._get_typed_spanner_client(
         project=project_id, credentials=credentials
@@ -207,8 +202,8 @@ def get_table_schema(
   """
 
   results: dict[str, Any] = {"schema": {}, "metadata": []}
-  spanner_client: spanner.Client | None = None
-  database: Database | None = None
+  spanner_client: client._SpannerClient | None = None
+  database: client._SpannerDatabase | None = None
   try:
     spanner_client = client._get_typed_spanner_client(
         project=project_id, credentials=credentials
@@ -350,8 +345,8 @@ def list_table_indexes(
         ]
       }
   """
-  spanner_client: spanner.Client | None = None
-  database: Database | None = None
+  spanner_client: client._SpannerClient | None = None
+  database: client._SpannerDatabase | None = None
   try:
     spanner_client = client._get_typed_spanner_client(
         project=project_id, credentials=credentials
@@ -461,8 +456,8 @@ def list_table_index_columns(
         ]
       }
   """
-  spanner_client: spanner.Client | None = None
-  database: Database | None = None
+  spanner_client: client._SpannerClient | None = None
+  database: client._SpannerDatabase | None = None
   try:
     spanner_client = client._get_typed_spanner_client(
         project=project_id, credentials=credentials
@@ -544,8 +539,8 @@ def list_named_schemas(
           ]
       }
   """
-  spanner_client: spanner.Client | None = None
-  database: Database | None = None
+  spanner_client: client._SpannerClient | None = None
+  database: client._SpannerDatabase | None = None
   try:
     spanner_client = client._get_typed_spanner_client(
         project=project_id, credentials=credentials

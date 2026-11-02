@@ -186,6 +186,12 @@ def _find_unresolved_task_delegations(
   from ..events._rewind_events import _apply_rewinds
   from ..tools.agent_tool import _TaskAgentTool
 
+  # Fast path: only calls to a _TaskAgentTool are collected below, so an agent
+  # with no task tool cannot have an unresolved delegation; skip the history
+  # walk.
+  if not any(isinstance(tool, _TaskAgentTool) for tool in tools_dict.values()):
+    return []
+
   fc_by_id: dict[str, types.FunctionCall] = {}
   fr_ids: set[str] = set()
   for event in _apply_rewinds(session.events):
@@ -415,6 +421,26 @@ def process_llm_agent_output(
     event.node_info.message_as_output = True
 
 
+def _remove_event(events: list[Event], event: Event) -> None:
+  """Removes the first entry equal to `event`, as `list.remove` would.
+
+  A drop-in for list.remove that compares ids before falling back to
+  pydantic's field-by-field ==, which is the expensive part; equal events
+  always share an id, so the result is identical.
+
+  Args:
+    events: The events to remove from.
+    event: The event to remove. Nothing is removed if no entry equals it.
+  """
+  # getattr: some test doubles carry no id.
+  for i, candidate in enumerate(events):
+    if candidate is event or (
+        getattr(candidate, 'id', None) == event.id and candidate == event
+    ):
+      del events[i]
+      return
+
+
 async def run_llm_agent_as_node(
     agent: LlmAgent,
     *,
@@ -469,11 +495,8 @@ async def run_llm_agent_as_node(
           process_llm_agent_output(effective_agent, ctx, event)
           yield event
     finally:
-      if (
-          injected_input_event is not None
-          and injected_input_event in agent_ctx.session.events
-      ):
-        agent_ctx.session.events.remove(injected_input_event)
+      if injected_input_event is not None:
+        _remove_event(agent_ctx.session.events, injected_input_event)
     return
 
   # Chat and Task modes share the outer task-delegation dispatch loop.
@@ -525,9 +548,13 @@ async def run_llm_agent_as_node(
     )
     async with aclosing(run_method) as run_iter:
       async for event in run_iter:
+        task_fcs = _extract_task_delegation_fcs(event, tools_dict)
         if is_task_mode:
           finish_fc = _extract_finish_task_fc(event)
-          if finish_fc is not None:
+          # A turn that also delegates is handled as a delegation below, with
+          # finish_task's response drained as an error. Finishing here would
+          # drop the delegation and leave its call unanswered.
+          if finish_fc is not None and not task_fcs:
             # Remember the latest FC's args; wait for FinishTaskTool's FR
             # before terminating. If validation fails, the FR will NOT be
             # the success message — the LLM sees the error and retries.
@@ -548,7 +575,6 @@ async def run_llm_agent_as_node(
             return
 
         yield event
-        task_fcs = _extract_task_delegation_fcs(event, tools_dict)
         if task_fcs:
           # Mixed turns (regular tool FC + task FC) still have pending
           # regular-tool FR events in this generator. Drain them before
@@ -559,6 +585,16 @@ async def run_llm_agent_as_node(
                 _drain_pending_tool_response_events(run_iter)
             ) as drain_iter:
               async for pending_event in drain_iter:
+                for fr in pending_event.get_function_responses():
+                  if fr.name == _FINISH_TASK_FC_NAME:
+                    fr.response = {
+                        'error': (
+                            'finish_task was ignored because a task'
+                            ' delegation was sent in the same turn. Call'
+                            ' finish_task by itself once the delegated'
+                            ' result is available.'
+                        )
+                    }
                 yield pending_event
 
           for fc in task_fcs:
