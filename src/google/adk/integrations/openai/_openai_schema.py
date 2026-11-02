@@ -28,7 +28,11 @@ def enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
       if key != '$ref':
         del schema[key]
     return
-  if schema.get('type') == 'object' and 'properties' in schema:
+  schema_type = schema.get('type')
+  is_object = schema_type == 'object' or (
+      isinstance(schema_type, list) and 'object' in schema_type
+  )
+  if is_object and 'properties' in schema:
     schema['additionalProperties'] = False
     schema['required'] = sorted(schema['properties'].keys())
   for defn in schema.get('$defs', {}).values():

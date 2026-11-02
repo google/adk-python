@@ -14072,3 +14072,21 @@ class TestParseToolCallArguments:
     with caplog.at_level(logging.WARNING, logger="google_adk"):
       _parse_tool_call_arguments('{"a": 1}', function_name="test_fn")
     assert "Repaired" not in caplog.text
+
+
+def test_strict_nullable_object_type_list_requires_all_properties():
+  """Nullable objects retain strict constraints without moving properties."""
+  schema = {
+      "type": ["object", "null"],
+      "properties": {"name": {"type": ["string", "null"]}},
+  }
+
+  _enforce_strict_openai_schema(schema)
+
+  assert schema["required"] == ["name"]
+  assert schema["additionalProperties"] is False
+  validator = Draft202012Validator(schema)
+  assert validator.is_valid(None)
+  assert validator.is_valid({"name": None})
+  assert not validator.is_valid({})
+  assert not validator.is_valid({"name": "Paris", "extra": 1})

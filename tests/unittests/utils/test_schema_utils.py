@@ -539,6 +539,97 @@ class TestLowercaseSchemaTypes:
     assert validator.is_valid(valid)
     assert not validator.is_valid(invalid)
 
+  @pytest.mark.parametrize(
+      "schema, expected",
+      [
+          ({"type": "STRING"}, {"type": ["string", "null"]}),
+          ({"type": ["STRING"]}, {"type": ["string", "null"]}),
+          ({"type": ["STRING", "NULL"]}, {"type": ["string", "null"]}),
+          (
+              {"type": "STRING", "enum": ["red"]},
+              {"type": ["string", "null"], "enum": ["red", None]},
+          ),
+          (
+              {"type": "STRING", "const": "red"},
+              {"type": ["string", "null"], "enum": ["red", None]},
+          ),
+          (
+              {"type": "NULL", "const": None},
+              {"type": ["null"], "enum": [None]},
+          ),
+          (
+              {"type": "STRING", "const": "red", "enum": ["blue"]},
+              {"type": ["string", "null"], "enum": [None]},
+          ),
+          (
+              {"anyOf": [{"type": "STRING"}]},
+              {"anyOf": [{"type": "string"}, {"type": "null"}]},
+          ),
+          (
+              {"any_of": [{"type": "STRING"}]},
+              {"any_of": [{"type": "string"}, {"type": "null"}]},
+          ),
+          ({}, {}),
+      ],
+  )
+  def test_nullable_schema_keeps_keywords_in_place(self, schema, expected):
+    schema["nullable"] = True
+
+    lowercase_schema_types(schema)
+
+    assert schema == expected
+
+  @pytest.mark.parametrize(
+      "constraints, valid, invalid",
+      [
+          ({"oneOf": [{"type": "number"}, {"type": "integer"}]}, 1.5, 1),
+          ({"not": {"type": "null"}}, "hello", []),
+          ({"if": {"type": "null"}, "then": False}, "hello", []),
+          ({"allOf": [False]}, None, "hello"),
+          ({"anyOf": [{"const": "red"}]}, "red", "blue"),
+          ({"$ref": "#/$defs/Text"}, "hello", []),
+      ],
+  )
+  def test_nullable_type_with_applicators_accepts_null(
+      self, constraints, valid, invalid
+  ):
+    schema = {
+        "type": ["STRING", "NUMBER"],
+        "nullable": True,
+        "$defs": {"Text": {"type": "STRING"}},
+        **constraints,
+    }
+
+    lowercase_schema_types(schema)
+
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    assert validator.is_valid(None)
+    assert validator.is_valid(valid)
+    assert not validator.is_valid(invalid)
+
+  def test_nullable_object_preserves_property_json_pointer(self):
+    name = {"type": "STRING"}
+    schema = {
+        "type": "OBJECT",
+        "nullable": True,
+        "properties": {"name": name},
+        "$defs": {"Name": {"$ref": "#/properties/name"}},
+    }
+
+    lowercase_schema_types(schema)
+
+    assert schema["type"] == ["object", "null"]
+    assert schema["properties"]["name"] is name
+    assert schema["$defs"]["Name"]["$ref"] == "#/properties/name"
+    validator = Draft202012Validator(schema)
+    assert validator.is_valid({"name": "Paris"})
+    assert validator.is_valid(None)
+    assert not validator.is_valid({"name": 7})
+    name_validator = validator.evolve(schema=schema["$defs"]["Name"])
+    assert name_validator.is_valid("Paris")
+    assert not name_validator.is_valid(7)
+
   @pytest.mark.parametrize("nested_definition", [False, True])
   def test_nullable_ancestor_preserves_pointer_targets(self, nested_definition):
     """References into properties and descendant definitions keep resolving."""
@@ -563,9 +654,13 @@ class TestLowercaseSchemaTypes:
 
     lowercase_schema_types(schema)
 
+    assert schema["properties"]["details"]["properties"]["name"] is name_schema
+    assert schema["properties"]["copy"]["$ref"] == (
+        "#/properties/details/properties/name"
+    )
     if nested_definition:
       assert name_schema["$ref"] == (
-          "#/properties/details/anyOf/0/properties/name/$defs/Text"
+          "#/properties/details/properties/name/$defs/Text"
       )
     validator = Draft202012Validator(schema)
     assert validator.is_valid({"details": {"name": "Paris"}, "copy": "Paris"})

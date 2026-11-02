@@ -140,7 +140,14 @@ def test_nullable_objects_keep_strict_response_constraints():
 
   text_config = _response_text_config(config)
 
-  validator = Draft202012Validator(text_config['format']['schema'])
+  output_schema = text_config['format']['schema']
+  assert output_schema['required'] == ['details']
+  assert output_schema['additionalProperties'] is False
+  details = output_schema['properties']['details']
+  assert details['type'] == ['object', 'null']
+  assert details['required'] == ['name']
+  assert details['additionalProperties'] is False
+  validator = Draft202012Validator(output_schema)
   assert validator.is_valid({'details': None})
   assert validator.is_valid({'details': {'name': 'Paris'}})
   assert not validator.is_valid({'details': {}})
