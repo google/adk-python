@@ -107,7 +107,6 @@ from ..utils._telemetry_config import read_telemetry_consent
 from ..utils.agent_info import AgentInfo
 from ..utils.agent_info import get_agents_dict
 from ..utils.context_utils import Aclosing
-from ..utils.feature_decorator import experimental
 from ..version import __version__
 from .cli_eval import _LEGACY_EVAL_SESSION_ID_PREFIX
 from .cli_eval import EVAL_SESSION_ID_PREFIX
@@ -411,6 +410,45 @@ def _is_request_origin_allowed(
   return origin == request_origin
 
 
+_request_from_foreign_origin: contextvars.ContextVar[bool] = (
+    contextvars.ContextVar("request_from_foreign_origin", default=False)
+)
+
+
+def _is_foreign_origin(
+    scope: Mapping[str, Any], allowed_literal_origins: list[str]
+) -> bool:
+  """Returns True if Origin is neither the request's own nor listed literally."""
+  origin = _get_scope_header(scope, b"origin")
+  if origin is None or origin in allowed_literal_origins:
+    return False
+  # Only the real Host header: a cross-origin fetch may set X-Forwarded-Host.
+  host = _get_scope_header(scope, b"host")
+  scheme = _normalize_origin_scheme(scope.get("scheme", "http"))
+  return origin != f"{scheme}://{host}"
+
+
+def _reject_foreign_origin() -> None:
+  """Refuses a code-writing request a browser sent from a foreign origin.
+
+  ``*`` and ``regex:`` entries in ``allow_origins`` open the API to other
+  sites, but not the mutating ``/dev`` endpoints or the internal agents, which
+  write agent files.
+
+  Raises:
+    HTTPException: 403, if the current request is from a foreign origin.
+  """
+  if _request_from_foreign_origin.get():
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "This endpoint writes agent files or starts runs, so it accepts"
+            " browser requests only from this server's own origin or an"
+            " origin listed literally in allow_origins."
+        ),
+    )
+
+
 async def _send_forbidden(send: Any, reason: str) -> None:
   """Sends a plain-text 403 over the ASGI send channel."""
   response_body = f"Forbidden: {reason}".encode()
@@ -471,6 +509,33 @@ def _with_abort_signal_kwarg(
   return kwargs
 
 
+async def _monitor_client_disconnect(
+    request: Request,
+    session_id: str,
+    abort_signal: asyncio.Event,
+    task_to_cancel: asyncio.Task[Any],
+    on_disconnect: Optional[Callable[[], None]] = None,
+) -> None:
+  """Monitors the ASGI receive channel and aborts on client disconnect."""
+  try:
+    while True:
+      message = await request.receive()
+      if message.get("type") == "http.disconnect":
+        logger.warning(
+            "Client disconnected. Aborting agent run for session %s.",
+            session_id,
+        )
+        abort_signal.set()
+        if on_disconnect is not None:
+          on_disconnect()
+        task_to_cancel.cancel()
+        break
+  except asyncio.CancelledError:
+    pass
+  except Exception as e:  # pylint: disable=broad-exception-caught
+    logger.error("Exception in disconnect monitor: %s", e, exc_info=True)
+
+
 _current_session_options: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("current_session_options", default=None)
 )
@@ -515,6 +580,10 @@ class _OriginCheckMiddleware:
       receive: Any,
       send: Any,
   ) -> None:
+    _request_from_foreign_origin.set(
+        ("*" in self._allowed_origins or self._allowed_origin_regex is not None)
+        and _is_foreign_origin(scope, self._allowed_origins)
+    )
     if scope["type"] != "http":
       await self._app(scope, receive, send)
       return
@@ -1154,6 +1223,8 @@ class ApiServer:
               " loopback address."
           ),
       )
+    if app_name.startswith("__"):
+      _reject_foreign_origin()
     # Handle cleanup
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
@@ -1756,7 +1827,6 @@ class ApiServer:
       return self.agent_loader.list_agents()
 
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
-    @experimental
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
       if app_name.startswith("__") and not self._allow_special_agents:
@@ -1768,6 +1838,8 @@ class ApiServer:
                 " loopback address."
             ),
         )
+      if app_name.startswith("__"):
+        _reject_foreign_origin()
       agent_or_app = self._load_agent_or_raise(app_name)
       root_agent = self._get_root_agent(agent_or_app)
       if isinstance(root_agent, LlmAgent):
@@ -2304,25 +2376,11 @@ class ApiServer:
           )
 
       worker_task = asyncio.create_task(worker())
-
-      async def monitor() -> None:
-        try:
-          while True:
-            message = await request.receive()
-            if message.get("type") == "http.disconnect":
-              logger.warning(
-                  "Client disconnected. Aborting agent run for session %s.",
-                  req.session_id,
-              )
-              abort_signal.set()
-              worker_task.cancel()
-              break
-        except asyncio.CancelledError:
-          pass
-        except Exception as e:  # pylint: disable=broad-exception-caught
-          logger.error("Exception in disconnect monitor: %s", e, exc_info=True)
-
-      monitor_task = asyncio.create_task(monitor())
+      monitor_task = asyncio.create_task(
+          _monitor_client_disconnect(
+              request, req.session_id, abort_signal, worker_task
+          )
+      )
 
       try:
         events = await worker_task
@@ -2351,7 +2409,10 @@ class ApiServer:
           )
 
     @app.post("/run_sse")
-    async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
+    async def run_agent_sse(
+        req: RunAgentRequest,
+        request: Request,
+    ) -> StreamingResponse:
       app_name = req.app_name or self.default_app_name
       if not app_name:
         raise HTTPException(
@@ -2456,11 +2517,26 @@ class ApiServer:
             await event_queue.put(None)
 
         producer_task = asyncio.create_task(_produce_events())
+
+        def _on_sse_disconnect() -> None:
+          nonlocal is_closing
+          is_closing = True
+          next_step_event.set()
+
+        monitor_task = asyncio.create_task(
+            _monitor_client_disconnect(
+                request,
+                req.session_id,
+                abort_signal,
+                producer_task,
+                on_disconnect=_on_sse_disconnect,
+            )
+        )
         try:
           try:
             while True:
               event = await event_queue.get()
-              if event is None:
+              if event is None or is_closing:
                 break
               # ADK Web renders artifacts from `actions.artifactDelta`
               # during part processing *and* during action processing
@@ -2480,6 +2556,8 @@ class ApiServer:
                 events_to_stream = [content_event, artifact_event]
 
               for event_to_stream in events_to_stream:
+                if is_closing:
+                  break
                 sse_event = pydantic_core.to_json(
                     _redact_credential_secrets(
                         public_event(event_to_stream).model_dump(
@@ -2504,6 +2582,7 @@ class ApiServer:
             abort_signal.set()
             raise
           finally:
+            monitor_task.cancel()
             with anyio.CancelScope(shield=True):
               if not producer_task.done():
                 producer_task.cancel()
@@ -2658,29 +2737,49 @@ class ApiServer:
                 ).decode("utf-8")
             )
 
-      async def process_messages() -> None:
-        try:
-          while True:
-            data = await websocket.receive_text()
-            # Validate and send the received message to the live queue.
-            live_request_queue.send(LiveRequest.model_validate_json(data))
-        except ValidationError as ve:
-          logger.error("Validation error in process_messages: %s", ve)
+      close_code: int | None = None
+      close_reason = ""
 
-      # Run both tasks concurrently and cancel all if one fails.
+      async def process_messages() -> None:
+        nonlocal close_code, close_reason
+        while True:
+          data = await websocket.receive_text()
+          # Guarded here, not around both tasks, so a ValidationError from the
+          # runner or a tool is not reported as a bad client frame.
+          try:
+            live_request = LiveRequest.model_validate_json(data)
+          except ValidationError as e:
+            # Only pydantic's error identifiers are logged: the rejected
+            # payload and even the field names it invents are end-user content.
+            logger.warning(
+                "Invalid live request: %s",
+                ", ".join(sorted({error["type"] for error in e.errors()})),
+            )
+            close_code = 1007
+            close_reason = "Invalid live request"
+            return
+          live_request_queue.send(live_request)
+
+      # Stop when either side finishes so its sibling cannot remain blocked.
       tasks = [
           asyncio.create_task(forward_events()),
           asyncio.create_task(process_messages()),
       ]
-      done, pending = await asyncio.wait(
-          tasks, return_when=asyncio.FIRST_EXCEPTION
-      )
       try:
-        # This will re-raise any exception from the completed tasks.
-        for task in done:
-          task.result()
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        # Iterate the task list rather than the `done` set so that the outcome
+        # reported below is stable when both tasks finish in the same pass.
+        for task in tasks:
+          if task in done:
+            # This will re-raise any exception from the completed tasks.
+            task.result()
+        # The stream is over, so close cleanly instead of letting the server
+        # drop the transport, which clients cannot tell from a network failure.
+        if close_code is None:
+          close_code = 1000
       except SessionNotFoundError:
-        await websocket.close(code=1002, reason="Session not found")
+        close_code = 1002
+        close_reason = "Session not found"
       except WebSocketDisconnect:
         # Disconnection could happen when receive or send text via websocket
         logger.info("Client disconnected during live session.")
@@ -2689,10 +2788,14 @@ class ApiServer:
         traceback.print_exc()
         WEBSOCKET_INTERNAL_ERROR_CODE = 1011
         WEBSOCKET_MAX_BYTES_FOR_REASON = 123
-        await websocket.close(
-            code=WEBSOCKET_INTERNAL_ERROR_CODE,
-            reason=str(e)[:WEBSOCKET_MAX_BYTES_FOR_REASON],
-        )
+        close_code = WEBSOCKET_INTERNAL_ERROR_CODE
+        close_reason = str(e)[:WEBSOCKET_MAX_BYTES_FOR_REASON]
       finally:
-        for task in pending:
+        live_request_queue.close()
+        for task in tasks:
           task.cancel()
+        # cancel() only requests it, so returning now would strand the runner.
+        await asyncio.wait(tasks)
+      # Skipped after a disconnect, when the server may cancel this handler.
+      if close_code is not None:
+        await websocket.close(code=close_code, reason=close_reason)

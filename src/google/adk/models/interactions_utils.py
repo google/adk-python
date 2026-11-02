@@ -417,12 +417,16 @@ def _convert_part_to_interaction_content(
     )
   elif part.function_response is not None:
 
-    # genai.types.FunctionResponse specifies that
-    # an error response should be inside an error key
+    # genai.types.FunctionResponse specifies that an error response should be
+    # inside an error key. A failed MCP CallToolResult reports it with
+    # `isError` instead, spelled `is_error` in dumps made with MCP SDK 2.x
+    # field names.
     func_resp: object = part.function_response.response
-    is_error = False
-    if isinstance(func_resp, dict) and 'error' in func_resp:
-      is_error = True
+    is_error = isinstance(func_resp, dict) and bool(
+        'error' in func_resp
+        or func_resp.get('isError')
+        or func_resp.get('is_error')
+    )
 
     # Pass the function response through to the interactions API.
     # Dict and list values are passed directly — the Interactions API handles
@@ -1055,12 +1059,10 @@ def _handle_thought_signature(
   signature = delta.signature
   if not signature:
     return None
-  for part in reversed(state.parts):
-    if part.thought:
-      part.thought_signature = base64.b64decode(signature)
-      return None
-  # A signature often arrives with no preceding thought summary, leaving no
-  # part to attach it to. Keep it on its own part rather than dropping it.
+  # Keep every signature on a part of its own, as the non-streaming conversion
+  # does. On the step's thought summary part it would be re-encoded as a text
+  # step, which drops the signature, and on an earlier step's signature part it
+  # would overwrite that step's signature.
   state.parts.append(
       types.Part(thought=True, thought_signature=base64.b64decode(signature))
   )

@@ -336,6 +336,38 @@ def test_convert_auto_rater_response_to_score_missing_key():
   assert auto_rater_score == AutoRaterScore()
 
 
+@pytest.mark.parametrize(
+    "label, expected_score",
+    [
+        ("unknown", None),
+        ("true", 0.0),
+        ("invalid", 0.0),
+        ("false", 1.0),
+        ("valid", 1.0),
+        ("almost", 0.0),
+        ("partially_valid", 0.0),
+        ("partially", 0.0),
+    ],
+)
+def test_alternate_invalidity_label_maps_to_score(label, expected_score):
+  """Alternate judge labels map to inverted scores; unknowns are unscored."""
+  evaluator = _create_test_evaluator_gemini(threshold=0.8)
+  response = LlmResponse(
+      content=genai_types.Content(
+          role="model",
+          parts=[
+              genai_types.Part(
+                  text=f'{{"is_the_agent_response_invalid": "{label}"}}'
+              )
+          ],
+      )
+  )
+
+  result = evaluator.convert_auto_rater_response_to_score(response)
+
+  assert result.score == expected_score
+
+
 def test_aggregate_per_invocation_samples_none_evaluated():
   evaluator = _create_test_evaluator_gemini(threshold=0.5)
 

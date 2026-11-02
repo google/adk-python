@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import json
+from unittest import mock
 
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
@@ -248,6 +249,25 @@ def test_event_constructor_without_state():
   my_event = Event()
   assert my_event.actions is not None
   assert my_event.actions.state_delta == {}
+
+
+def test_event_constructor_reads_fields_only_for_convenience_kwargs():
+  """Only a convenience kwarg makes construction look up the model's fields."""
+  with mock.patch.object(
+      Event,
+      'model_fields',
+      new_callable=mock.PropertyMock,
+      return_value=Event.model_fields,
+  ) as model_fields:
+    Event(
+        author='agent',
+        content=types.Content(parts=[types.Part(text='hi')]),
+        actions=EventActions(state_delta={'key': 'value'}),
+    )
+    assert model_fields.call_count == 0
+
+    Event(author='agent', state={'key': 'value'})
+    assert model_fields.call_count > 0
 
 
 # --- isolation scope ---------------------------------------------------------

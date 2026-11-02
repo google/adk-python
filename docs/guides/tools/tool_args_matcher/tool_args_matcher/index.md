@@ -102,6 +102,7 @@ Each built-in matcher is selected by its `type` name in config:
 | `numeric` | Both numbers differ by at most `tolerance`. | Booleans and non-numbers never match. `tolerance` defaults to 0.0. |
 | `contains` | The expected string occurs inside the actual string. | Values that are not both strings are compared for equality. |
 | `ignore` | Always, as long as the argument is present. | Useful for IDs, timestamps, and large payloads that change between runs. |
+| `semantic` | A model judges that both values mean the same thing. | Equal values match without a model call. See [Match free text semantically](#match-free-text-semantically). |
 
 The names `exact`, `casefold`, `numeric`, `contains`, `ignore`, and `semantic`
 are reserved for matchers that ship with ADK, and `register_arg_matcher`
@@ -184,6 +185,135 @@ A matcher that calls a model or a remote service sets the class attribute
 `is_deterministic = False`. `ToolArgsMatcher` then runs it after the
 deterministic matchers, concurrently with other such matchers, and skips it
 under `short_circuit` when the outcome is already known.
+
+### Match free text semantically
+
+Free-text arguments, such as a search query, are often rephrased by the model
+from one run to the next. The `semantic` matcher asks a model whether the
+expected and actual values mean the same thing:
+
+```python
+matcher = ToolArgsMatcher.model_validate({
+    "perArgMatchers": {
+        "query": {"type": "semantic"},
+        "payload": {"type": "ignore"},
+    }
+})
+
+result = await matcher.match(
+    tool_name="search_employees",
+    expected={"query": "employees in NYC", "limit": 10, "payload": "..."},
+    actual={"query": "New York City workforce", "limit": 10, "payload": "..."},
+    short_circuit=True,
+)
+```
+
+The `semantic` matcher takes the following options:
+
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `model` | `str \| None` | Not set | The model that compares the values. When not set, Environment Simulation uses its `simulation_model`, and other callers use `gemini-2.5-flash`. |
+| `criteria` | `str \| None` | Not set | What counts as a match, in plain language. When not set, the matcher accepts rephrasings, synonyms, and differences in case or word order that keep the meaning. |
+| `generate_content_config` | `GenerateContentConfig` | Temperature 0, JSON output, and a 512-token thinking budget. | The content generation configuration for the model call. |
+| `timeout_seconds` | `float \| None` | `60.0` | How long to wait for the model. A slower call raises `TimeoutError` and is not remembered. `None` waits indefinitely. |
+
+To customize how an argument is judged, set `criteria` and `model` on the
+matcher. Setting `criteria` replaces the built-in equivalence rules when an
+argument has domain-specific rules, such as treating a city and its airport
+code as equivalent. Setting `model` pins the judge model for that argument,
+overriding both `EnvironmentSimulationConfig.simulation_model` and the default
+`gemini-2.5-flash` model. Both options can be passed in a config dictionary or
+to `SemanticArgMatcher` directly in Python:
+
+```python
+from google.adk.tools.tool_args_matcher import SemanticArgMatcher
+from google.adk.tools.tool_args_matcher import ToolArgsMatcher
+
+matcher = ToolArgsMatcher(
+    per_arg_matchers={
+        "destination": SemanticArgMatcher(
+            model="gemini-2.5-pro",
+            criteria=(
+                "Accept a city name, its metropolitan area, or the IATA"
+                " code of an airport serving that city."
+            ),
+        ),
+    }
+)
+```
+
+The model answers with a verdict, a score from 0.0 to 1.0 for how closely the
+values match, and a one-sentence reason. The verdict sets
+`ArgMatchResult.matched`, the score sets `ArgMatchResult.score`, and the reason
+sets `ArgMatchResult.reason`, so a near miss such as `"Paris"` against
+`"Paris, Texas"` can fail to match while still earning partial credit in
+`ToolArgsMatchResult.score`. If the model leaves out the score, it is 1.0 for a
+match and 0.0 otherwise; if it leaves out the verdict, the call matches when the
+score is at least 0.5. A score outside 0.0 to 1.0 is clamped.
+
+Equal values match with score 1.0 without a model call. Each matcher instance
+remembers the result for the same tool, argument, and values, so a repeated
+comparison does not call the model again. A response with neither a verdict nor
+a score counts as a mismatch and is not remembered, and an error from the model
+propagates.
+
+Give large or tabular arguments the `ignore` matcher rather than comparing them
+semantically: they make the prompt long and rarely decide whether two calls are
+the same.
+
+Environment Simulation uses `ToolArgsMatcher` through
+`InjectionConfig.args_matcher`, so a recorded injection can be replayed for a
+rephrased call. A `semantic` matcher inside `args_matcher` inherits
+`EnvironmentSimulationConfig.simulation_model` when `model` is not set, or you
+can set `model` and `criteria` on the argument matcher directly:
+
+```python
+from google.adk.tools.environment_simulation.environment_simulation_config import InjectionConfig
+
+injection = InjectionConfig.model_validate({
+    "match_args": {"query": "employees in NYC", "limit": 10},
+    "args_matcher": {
+        "per_arg_matchers": {
+            "query": {
+                "type": "semantic",
+                "model": "gemini-2.5-flash",
+                "criteria": (
+                    "Accept queries that ask for the same employee group"
+                    " and location, even when phrased differently."
+                ),
+            }
+        }
+    },
+    "injected_response": {"rows": 3},
+})
+```
+
+Injection configs are tried in order, and the first one that applies wins.
+Before any `args_matcher` comparison runs, the engine checks the configs in
+order for one whose `match_args` equal the call (honoring `allow_extra_args`),
+so a call that equals a recording replays it without a model call, even when an
+earlier config would also match semantically. The check stops at the first
+config without `match_args`: such a config applies to every call, so it keeps
+its priority over the configs after it.
+
+A rephrased call has no exact match, so the semantic judge decides. The default
+criteria accepts values that share the same intent, which lets a broader
+recording such as `"python jobs"` match a narrower call such as `"Python dev
+roles in New York City"` and shadow a later, closer recording. When recordings
+of one tool overlap in scope, set `criteria` to require the same scope:
+
+```python
+strict_query = {
+    "type": "semantic",
+    "criteria": (
+        "The values match only if they convey the exact same meaning and"
+        " scope, allowing only rephrasing, synonyms, abbreviations, or"
+        " differences in casing and word order. They do not match if one value"
+        " is broader or narrower than the other, or if either value adds,"
+        " omits, or changes any qualifier, constraint, or detail."
+    ),
+}
+```
 
 ### Give partial credit for one argument
 

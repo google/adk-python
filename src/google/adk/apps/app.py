@@ -36,7 +36,8 @@ __all__ = [
     "validate_app_name",
 ]
 
-_VALID_APP_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
+# `\Z` rather than `$`, which also matches just before a trailing newline.
+_VALID_APP_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*\Z")
 
 
 def validate_app_name(name: str) -> None:

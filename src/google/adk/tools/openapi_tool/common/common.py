@@ -25,6 +25,7 @@ from fastapi.openapi.models import Schema
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic import model_serializer
+from pydantic import SerializationInfo
 
 from ..._gemini_schema_util import _to_snake_case
 
@@ -85,6 +86,9 @@ class ApiParameter(BaseModel):
   type_value: object = Field(default=None, init_var=False)
   type_hint: str | None = Field(default=None, init_var=False)
   required: bool = False
+  # OpenAPI serialization of the value; None means the location's default.
+  style: str | None = None
+  explode: bool | None = None
 
   def model_post_init(self, _: Any) -> None:
     if not self.py_name:
@@ -116,14 +120,19 @@ class ApiParameter(BaseModel):
     return location_defaults.get(self.param_location or '', 'value')
 
   @model_serializer
-  def _serialize(self) -> dict[str, object]:
-    return {
+  def _serialize(self, info: SerializationInfo) -> dict[str, object]:
+    data: dict[str, object] = {
         'original_name': self.original_name,
         'param_location': self.param_location,
         'param_schema': self.param_schema,
         'description': self.description,
         'py_name': self.py_name,
+        'style': self.style,
+        'explode': self.explode,
     }
+    if info.exclude_none:
+      return {k: v for k, v in data.items() if v is not None}
+    return data
 
   def __str__(self) -> str:
     return f'{self.py_name}: {self.type_hint}'

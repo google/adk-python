@@ -81,6 +81,44 @@ def test_dynamic_json_serializes_to_json_text_for_non_postgresql(dynamic_json):
   assert dynamic_json.process_result_value(bound, dialect) == value
 
 
+def test_dynamic_json_keeps_non_ascii_text_unescaped_on_sqlite(dynamic_json):
+  """On SQLite, non-ASCII text is stored as-is, not as \\uXXXX escapes."""
+  dialect = _dialect("sqlite")
+  value = {"greeting": "こんにちは", "nested": ["世界"]}
+
+  bound = dynamic_json.process_bind_param(value, dialect)
+
+  assert "こんにちは" in bound
+  assert "\\u" not in bound
+  assert dynamic_json.process_result_value(bound, dialect) == value
+
+
+def test_dynamic_json_escapes_lone_surrogates_for_sqlite(dynamic_json):
+  """On SQLite, text that cannot be encoded as UTF-8 is stored escaped."""
+  dialect = _dialect("sqlite")
+  value = {"greeting": "こんにちは", "broken": "\ud800"}
+
+  bound = dynamic_json.process_bind_param(value, dialect)
+
+  assert bound.isascii()
+  assert "\\ud800" in bound
+  assert dynamic_json.process_result_value(bound, dialect) == value
+
+
+@pytest.mark.parametrize("dialect_name", ["mysql", "mssql", "oracle"])
+def test_dynamic_json_escapes_non_ascii_text_for_other_dialects(
+    dynamic_json, dialect_name
+):
+  """TEXT columns that may not be UTF-8 keep the ASCII-only escaped form."""
+  dialect = _dialect(dialect_name)
+  value = {"greeting": "こんにちは"}
+
+  bound = dynamic_json.process_bind_param(value, dialect)
+
+  assert bound == '{"greeting": "\\u3053\\u3093\\u306b\\u3061\\u306f"}'
+  assert dynamic_json.process_result_value(bound, dialect) == value
+
+
 def test_dynamic_json_passes_values_through_for_postgresql(dynamic_json):
   """JSONB accepts and returns Python objects, so no conversion happens."""
   dialect = _dialect("postgresql")

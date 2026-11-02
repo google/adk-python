@@ -84,6 +84,9 @@ from ..converters.to_adk_event import _TASK_RESPONSE_BOUNDARY_STATES
 from ..converters.to_adk_event import _warn_if_peer_metadata_has_state_delta
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
+from ..converters.utils import _is_failed_status
+from ..converters.utils import A2A_TASK_FAILED_ERROR_CODE
+from ..converters.utils import A2A_TASK_FAILED_ERROR_MESSAGE
 from ..experimental import a2a_experimental
 from ..logs.log_utils import build_a2a_request_log
 from ..logs.log_utils import build_a2a_response_log
@@ -174,6 +177,31 @@ _MAX_CARD_DESCRIPTION_CHARS = 1024
 # Marks a capped description as incomplete, so neither the model nor a reader
 # takes the cut-off text for the whole description.
 _CARD_DESCRIPTION_TRUNCATION_SUFFIX = "... [truncated]"
+
+
+def _mark_a2a_task_failed_event(
+    event: Optional[Event],
+    *,
+    author: str,
+    invocation_context: InvocationContext,
+) -> Event:
+  """Marks an event produced from a failed A2A task, creating one if needed."""
+  if event is None:
+    event = Event(
+        author=author,
+        invocation_id=invocation_context.invocation_id,
+        branch=invocation_context.branch,
+    )
+  if not event.error_code:
+    event.error_code = A2A_TASK_FAILED_ERROR_CODE
+  if not event.error_message:
+    text = "".join(
+        part.text or ""
+        for part in ((event.content.parts or []) if event.content else [])
+        if part.text
+    )
+    event.error_message = text or A2A_TASK_FAILED_ERROR_MESSAGE
+  return event
 
 
 def _payload_is_auth_config(payload: Any) -> bool:
@@ -1667,7 +1695,16 @@ class RemoteA2aAgent(BaseAgent):
               task, self.name, ctx, self._a2a_part_converter
           )
           if not event:
-            return None
+            if _is_failed_status(getattr(task, "status", None)):
+              event = _mark_a2a_task_failed_event(
+                  None, author=self.name, invocation_context=ctx
+              )
+            else:
+              return None
+          elif _is_failed_status(getattr(task, "status", None)):
+            event = _mark_a2a_task_failed_event(
+                event, author=self.name, invocation_context=ctx
+            )
           # for streaming task, we update the event with the task status.
           # We update the event as Thought updates.
           if (
@@ -1684,44 +1721,68 @@ class RemoteA2aAgent(BaseAgent):
             for part in event.content.parts or []:
               part.thought = True
           _add_mock_function_call(event, task.status.state)
-        elif (
-            isinstance(update, A2ATaskStatusUpdateEvent)
-            and (
-                _status_message := (
-                    _compat.normalize_message(update.status.message)
-                    if update.status
-                    else None
-                )
-            )
-            and getattr(_status_message, "parts", True)
-        ):
-          # This is a streaming task status update with a message.
+        elif isinstance(update, A2ATaskStatusUpdateEvent):
           # ``normalize_message`` collapses the always-present empty proto
-          # ``Message`` (1.x) to ``None`` so this branch only fires when a real
-          # message is attached, matching 0.3.x where the field is ``None``.
-          event = convert_a2a_message_to_event(
-              _status_message, self.name, ctx, self._a2a_part_converter
+          # ``Message`` (1.x) to ``None`` so status updates without a real
+          # message are handled explicitly below, matching 0.3.x.
+          _status_message = (
+              _compat.normalize_message(update.status.message)
+              if update.status
+              else None
           )
-          if not event:
-            return None
-          if event.content is not None and update.status.state in (
-              _compat.TS_SUBMITTED,
-              _compat.TS_WORKING,
+          if _status_message and not getattr(_status_message, "parts", True):
+            _status_message = None
+          failed_state = (
+              _compat.TS_FAILED
+              if _is_failed_status(getattr(update, "status", None))
+              or _is_failed_status(getattr(task, "status", None))
+              else None
+          )
+          if failed_state is not None:
+            failed_event = (
+                convert_a2a_message_to_event(
+                    _status_message,
+                    self.name,
+                    ctx,
+                    self._a2a_part_converter,
+                )
+                if _status_message
+                else None
+            )
+            event = _mark_a2a_task_failed_event(
+                failed_event, author=self.name, invocation_context=ctx
+            )
+            _add_mock_function_call(event, failed_state)
+          elif _status_message:
+            # This is a streaming task status update with a message.
+            event = convert_a2a_message_to_event(
+                _status_message, self.name, ctx, self._a2a_part_converter
+            )
+            if not event:
+              return None
+            if event.content is not None and update.status.state in (
+                _compat.TS_SUBMITTED,
+                _compat.TS_WORKING,
+            ):
+              for part in event.content.parts or []:
+                part.thought = True
+            _add_mock_function_call(event, update.status.state)
+          elif (
+              update.status
+              and update.status.state in _TASK_RESPONSE_BOUNDARY_STATES
           ):
-            for part in event.content.parts or []:
-              part.thought = True
-          _add_mock_function_call(event, update.status.state)
-        elif (
-            isinstance(update, A2ATaskStatusUpdateEvent)
-            and update.status.state in _TASK_RESPONSE_BOUNDARY_STATES
-        ):
-          # A bare pause or terminal status is still the end of an interaction.
-          # Persist it so the next user turn sees the current task state.
-          event = Event(
-              author=self.name,
-              invocation_id=ctx.invocation_id,
-              branch=ctx.branch,
-          )
+            # A bare pause or terminal status is still the end of an
+            # interaction. Persist it so the next user turn sees the current
+            # task state.
+            event = Event(
+                author=self.name,
+                invocation_id=ctx.invocation_id,
+                branch=ctx.branch,
+            )
+          else:
+            # This is a streaming status update without a message (e.g. status
+            # change). We don't emit an event for non-failed updates.
+            return None
         elif isinstance(update, A2ATaskArtifactUpdateEvent):
           # This is a streaming task artifact update.
           # Convert only the parts carried by this update. Converting the
@@ -1824,11 +1885,28 @@ class RemoteA2aAgent(BaseAgent):
           event = self._config.a2a_task_converter(
               task, self.name, ctx, self._config.a2a_part_converter
           )
+          if not event:
+            if _is_failed_status(getattr(task, "status", None)):
+              event = _mark_a2a_task_failed_event(
+                  None, author=self.name, invocation_context=ctx
+              )
+            else:
+              return None
+          elif _is_failed_status(getattr(task, "status", None)):
+            event = _mark_a2a_task_failed_event(
+                event, author=self.name, invocation_context=ctx
+            )
         elif isinstance(update, A2ATaskStatusUpdateEvent):
           # This is a streaming task status update.
           event = self._config.a2a_status_update_converter(
               update, self.name, ctx, self._config.a2a_part_converter
           )
+          if _is_failed_status(getattr(update, "status", None)) or (
+              _is_failed_status(getattr(task, "status", None))
+          ):
+            event = _mark_a2a_task_failed_event(
+                event, author=self.name, invocation_context=ctx
+            )
         elif isinstance(update, A2ATaskArtifactUpdateEvent):
           # This is a streaming task artifact update.
           event = self._config.a2a_artifact_update_converter(

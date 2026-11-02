@@ -92,6 +92,7 @@ def test_parse_request_target_accepts_http_urls(
         ('file:///etc/passwd', 'Unsupported url scheme'),
         ('http:///missing-host', 'missing a hostname'),
         ('http://example.com:99999/', 'Invalid url port'),
+        ('http://169.254.169.254\\@example.com/', 'Backslash in url authority'),
     ],
 )
 def test_parse_request_target_rejects_invalid_urls(

@@ -45,6 +45,9 @@ from .part_converter import A2A_DATA_PART_TEXT_MIME_TYPE
 from .part_converter import A2APartToGenAIPartConverter
 from .part_converter import convert_a2a_part_to_genai_part
 from .utils import _get_adk_metadata_key
+from .utils import _is_failed_status
+from .utils import A2A_TASK_FAILED_ERROR_CODE
+from .utils import A2A_TASK_FAILED_ERROR_MESSAGE
 
 # Logger
 logger = logging.getLogger("google_adk." + __name__)
@@ -207,6 +210,7 @@ def _create_event(
     custom_metadata: Any = None,
     usage_metadata: Any = None,
     error_code: Any = None,
+    error_message: Any = None,
     citation_metadata: Any = None,
     allow_empty_event: bool = False,
 ) -> Optional[Event]:
@@ -215,6 +219,7 @@ def _create_event(
   if (
       not allow_empty_event
       and not output_parts
+      and not error_code
       and event_actions == EventActions()
   ):
     return None
@@ -244,9 +249,30 @@ def _create_event(
       custom_metadata=custom_metadata,
       usage_metadata=usage_metadata,
       error_code=error_code,
+      error_message=error_message,
       citation_metadata=citation_metadata,
   )
 
+  return event
+
+
+def _extract_text_from_event(event: Event) -> str:
+  """Returns the text content of an ADK event, or an empty string."""
+  if event.content and event.content.parts:
+    return "".join(part.text or "" for part in event.content.parts if part.text)
+  return ""
+
+
+def _mark_a2a_task_failed(event: Optional[Event]) -> Optional[Event]:
+  """Marks an event produced from a failed A2A task."""
+  if event is None:
+    return None
+  if not event.error_code:
+    event.error_code = A2A_TASK_FAILED_ERROR_CODE
+  if not event.error_message:
+    event.error_message = (
+        _extract_text_from_event(event) or A2A_TASK_FAILED_ERROR_MESSAGE
+    )
   return event
 
 
@@ -567,6 +593,7 @@ def convert_a2a_task_to_event(
             _compat.TS_INPUT_REQUIRED,
             _compat.TS_AUTH_REQUIRED,
         )
+        or _is_failed_status(a2a_task.status)
         or (
             not artifact_parts
             and a2a_task.status.state in _TASK_RESPONSE_BOUNDARY_STATES
@@ -603,7 +630,7 @@ def convert_a2a_task_to_event(
     ):
       event_actions.skip_summarization = True
 
-    return _create_event(
+    event = _create_event(
         output_parts,
         invocation_context,
         author,
@@ -615,6 +642,9 @@ def convert_a2a_task_to_event(
         ),
         **metadata_fields,
     )
+    if _is_failed_status(a2a_task.status):
+      event = _mark_a2a_task_failed(event)
+    return event
 
   except Exception as e:
     logger.error("Failed to convert A2A task to event: %s", e)
@@ -654,7 +684,7 @@ def convert_a2a_message_to_event(
     )
     content_role = _a2a_role_to_content_role(getattr(a2a_message, "role", None))
     metadata_fields = _extract_all_metadata_fields(a2a_message.metadata)
-    return _create_event(
+    event = _create_event(
         output_parts,
         invocation_context,
         author,
@@ -663,6 +693,7 @@ def convert_a2a_message_to_event(
         content_role=content_role,
         **metadata_fields,
     )
+    return event
 
   except Exception as e:
     logger.error("Failed to convert A2A message to event: %s", e)
@@ -713,7 +744,7 @@ def convert_a2a_status_update_to_event(
         )
     )
 
-    return _create_event(
+    event = _create_event(
         output_parts,
         invocation_context,
         author,
@@ -725,6 +756,9 @@ def convert_a2a_status_update_to_event(
         ),
         **metadata_fields,
     )
+    if _is_failed_status(a2a_status_update.status):
+      event = _mark_a2a_task_failed(event)
+    return event
   except Exception as e:
     logger.error("Failed to convert A2A status update to event: %s", e)
     raise RuntimeError(f"Failed to convert status update: {e}") from e

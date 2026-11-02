@@ -18,9 +18,6 @@ from enum import Enum
 
 from pydantic import BaseModel
 
-from ...features import experimental
-from ...features import FeatureName
-
 
 class Capabilities(Enum):
   """Capabilities indicating what type of operations are allowed for GCS tools."""
@@ -32,7 +29,6 @@ class Capabilities(Enum):
   """Both read and write operations are allowed."""
 
 
-@experimental(FeatureName.GCS_TOOL_SETTINGS)
 class GCSToolSettings(BaseModel):
   """Settings for GCS tools."""
 

@@ -23,7 +23,6 @@ import unicodedata
 from typing_extensions import override
 
 from ..models.llm_response import LlmResponse
-from ..utils.feature_decorator import experimental
 from .common import EvalBaseModel
 from .eval_metrics import EvalMetric
 from .eval_metrics import RubricsBasedCriterion
@@ -325,7 +324,6 @@ def _normalize_text(text: object) -> str:
   return _WHITESPACE_PATTERN.sub(" ", text).strip(_DECORATION_CHARS).lower()
 
 
-@experimental
 class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
   """A base class for rubric based evaluators."""
 

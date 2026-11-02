@@ -25,7 +25,6 @@ import functools
 import hashlib
 import json
 import logging
-import os
 import sys
 import threading
 import time
@@ -83,6 +82,7 @@ from ...dependencies._mcp import create_mcp_http_client as _create_mcp_http_clie
 from ...dependencies._mcp import ElicitationFnT
 from ...dependencies._mcp import IS_MCP_SDK_V2
 from ...dependencies._mcp import McpError
+from ...dependencies._mcp import MessageHandlerFnT
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...dependencies._mcp import sse_client
@@ -100,6 +100,7 @@ except (ImportError, AttributeError):
 from ...features import FeatureName
 from ...features import is_feature_enabled
 from ...telemetry import tracing
+from ...utils import _mtls_utils
 from ...utils._google_client_headers import merge_tracking_headers
 from .session_context import SessionContext
 
@@ -783,6 +784,7 @@ class MCPSessionManager:
       sampling_callback: SamplingFnT | None = None,
       sampling_capabilities: SamplingCapability | None = None,
       elicitation_callback: ElicitationFnT | None = None,
+      message_handler: MessageHandlerFnT | None = None,
   ) -> None:
     """Initializes the MCP session manager.
 
@@ -798,10 +800,15 @@ class MCPSessionManager:
         elicitation_callback: Optional callback to handle elicitation requests
           from the MCP server (``elicitation/create``), including URL-mode
           elicitations used for out-of-band flows such as auth challenges.
+        message_handler: Optional async callback for incoming MCP messages,
+          including server notifications. On MCP SDK 1.x it runs inside the
+          session's receive loop, so it must not await requests on this
+          session; offload follow-up work with ``asyncio.create_task(...)``.
     """
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
     self._elicitation_callback = elicitation_callback
+    self._message_handler = message_handler
     self._connection_params: (
         StdioConnectionParams
         | SseConnectionParams
@@ -913,11 +920,8 @@ class MCPSessionManager:
       logger.debug('google.auth.aio not available, mTLS not configured')
       return None
 
-    use_client_cert = (
-        os.environ.get('GOOGLE_API_USE_CLIENT_CERTIFICATE', 'true').lower()
-        == 'true'
-    )
-    if not use_client_cert:
+    # configure_mtls_channel() makes the same check and does nothing without it.
+    if not await asyncio.to_thread(_mtls_utils.use_client_cert_effective):
       return None
 
     current_loop = asyncio.get_running_loop()
@@ -1510,6 +1514,7 @@ class MCPSessionManager:
             sampling_callback=self._sampling_callback,
             sampling_capabilities=self._sampling_capabilities,
             elicitation_callback=self._elicitation_callback,
+            message_handler=self._message_handler,
         )
 
         if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access

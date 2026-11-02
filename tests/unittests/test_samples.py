@@ -136,6 +136,9 @@ SKIP_LOAD = {
     "integrations/slack_agent": (
         "builds its agent inside main(), no module-level root_agent"
     ),
+    "integrations/teams_agent": (
+        "builds its agent inside main(), no module-level root_agent"
+    ),
     "adk_team/adk_documentation": (
         "package dir; its child agents are the samples"
     ),

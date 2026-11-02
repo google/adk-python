@@ -131,9 +131,11 @@ services:
 
 - The session is new, belongs to the same user as the parent's session, and
   starts with a copy of the parent's session state. ADK leaves out keys that
-  begin with `_adk`, because it uses them for its own bookkeeping. Placeholders
-  in the wrapped agent's instruction, such as `{customer_name}`, resolve against
-  that copy.
+  begin with `_adk` or `temp:_adk`, because it uses them for its own
+  bookkeeping. Placeholders in the wrapped agent's instruction, such as
+  `{customer_name}`, resolve against that copy.
+- The parent's `temp:` keys are passed to the wrapped agent's invocation too, so
+  its instruction, callbacks and tools can read them.
 - The only message in the session is the request from the parent's model. ADK
   includes none of the parent's earlier turns.
 - The wrapped agent shares the parent's artifacts. When it loads or saves an
@@ -161,9 +163,11 @@ message from the run, or an empty string.
 
 State changes travel back as well. ADK copies every change that the wrapped
 agent makes to session state into the parent's state while the wrapped agent
-runs. Setting
-`output_key` on the wrapped agent therefore stores its answer in the parent's
-session state, where later instructions and tools can read it.
+runs. Setting `output_key` on the wrapped agent therefore stores its answer in
+the parent's session state, where later instructions and tools can read it.
+`temp:` state only travels one way: the parent's `temp:` keys reach the wrapped
+agent, but `temp:` writes made inside the wrapped agent are trimmed when its
+events are recorded and are not copied back to the parent's state.
 
 ## Configuration options
 

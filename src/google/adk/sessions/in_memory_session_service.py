@@ -133,9 +133,9 @@ class InMemorySessionService(BaseSessionService):
     ):
       raise AlreadyExistsError(f'Session with id {session_id} already exists.')
     state_deltas = _session_util.extract_state_delta(state or {})
-    app_state_delta = state_deltas['app']
-    user_state_delta = state_deltas['user']
-    session_state = state_deltas['session']
+    app_state_delta = _copy_state(state_deltas['app'])
+    user_state_delta = _copy_state(state_deltas['user'])
+    session_state = _copy_state(state_deltas['session'])
     if app_state_delta:
       self.app_state.setdefault(app_name, {}).update(app_state_delta)
     if user_state_delta:

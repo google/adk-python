@@ -50,6 +50,7 @@ class FeatureName(str, Enum):
   EVENTARC_TOOL_CONFIG = "EVENTARC_TOOL_CONFIG"
   EVENTARC_TOOLSET = "EVENTARC_TOOLSET"
   FALLBACK_MODEL = "FALLBACK_MODEL"
+  FSSPEC_ARTIFACT_SERVICE = "FSSPEC_ARTIFACT_SERVICE"
   FUNCTION_TOOL_ARG_VALIDATION = "FUNCTION_TOOL_ARG_VALIDATION"
   GCS_ADMIN_TOOLSET = "GCS_ADMIN_TOOLSET"
   GCS_TOOL_SETTINGS = "GCS_TOOL_SETTINGS"
@@ -68,6 +69,7 @@ class FeatureName(str, Enum):
   # Off by default since it changes wire behavior. Enable with
   # `ADK_ENABLE_MCP_MODERN_PROTOCOL=1`. No effect on MCP SDK 1.x.
   _MCP_MODERN_PROTOCOL = "MCP_MODERN_PROTOCOL"
+  MONGODB_MEMORY_SERVICE = "MONGODB_MEMORY_SERVICE"
   MONGODB_SESSION_SERVICE = "MONGODB_SESSION_SERVICE"
   MONGODB_TOOLSET = "MONGODB_TOOLSET"
   MONGODB_TOOL_SETTINGS = "MONGODB_TOOL_SETTINGS"
@@ -80,6 +82,7 @@ class FeatureName(str, Enum):
   SPANNER_ADMIN_TOOLSET = "SPANNER_ADMIN_TOOLSET"
   SPANNER_TOOL_SETTINGS = "SPANNER_TOOL_SETTINGS"
   SPANNER_VECTOR_STORE = "SPANNER_VECTOR_STORE"
+  TEAMS = "TEAMS"
   TOOL_ARGS_MATCHER = "TOOL_ARGS_MATCHER"
   TOOL_CONFIG = "TOOL_CONFIG"
   TOOL_CONFIRMATION = "TOOL_CONFIRMATION"
@@ -140,10 +143,10 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.STABLE, default_on=True
     ),
     FeatureName.BIGTABLE_TOOL_SETTINGS: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.BIGTABLE_TOOLSET: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.CASCADE_LIVE: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
@@ -152,7 +155,7 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.COMPUTER_USE: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.DATA_AGENT_TOOL_CONFIG: FeatureConfig(
         FeatureStage.STABLE, default_on=True
@@ -164,10 +167,10 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=False
     ),
     FeatureName.DAYTONA_ENVIRONMENT: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.E2B_ENVIRONMENT: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.ELEVEN_LABS: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
@@ -176,7 +179,7 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.ENVIRONMENT_SIMULATION: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.EVENTARC_TOOL_CONFIG: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
@@ -187,17 +190,20 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.FALLBACK_MODEL: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
+    FeatureName.FSSPEC_ARTIFACT_SERVICE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
+    ),
     FeatureName.FUNCTION_TOOL_ARG_VALIDATION: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=False
     ),
     FeatureName.GCS_ADMIN_TOOLSET: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.GCS_TOOL_SETTINGS: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.GCS_TOOLSET: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.GOOGLE_CREDENTIALS_CONFIG: FeatureConfig(
         FeatureStage.STABLE, default_on=True
@@ -212,13 +218,16 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.MCP_AGENT_SERVER: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName._MCP_GRACEFUL_ERROR_HANDLING: FeatureConfig(
         FeatureStage.STABLE, default_on=True
     ),
     FeatureName._MCP_MODERN_PROTOCOL: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=False
+    ),
+    FeatureName.MONGODB_MEMORY_SERVICE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.MONGODB_SESSION_SERVICE: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
@@ -233,10 +242,10 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.STABLE, default_on=True
     ),
     FeatureName.PUBSUB_TOOL_CONFIG: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.PUBSUB_TOOLSET: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.SKILL_LIFECYCLE: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=False
@@ -245,15 +254,18 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.STABLE, default_on=True
     ),
     FeatureName.SPANNER_ADMIN_TOOLSET: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.SPANNER_TOOLSET: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.SPANNER_TOOL_SETTINGS: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.SPANNER_VECTOR_STORE: FeatureConfig(
+        FeatureStage.STABLE, default_on=True
+    ),
+    FeatureName.TEAMS: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.TOOL_ARGS_MATCHER: FeatureConfig(

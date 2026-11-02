@@ -20,12 +20,10 @@ from typing import Dict
 from typing import Optional
 
 from google.adk.auth.auth_credential import AuthCredentialTypes
-from google.adk.utils.feature_decorator import experimental
 
 from .base_credential_refresher import BaseCredentialRefresher
 
 
-@experimental
 class CredentialRefresherRegistry:
   """Registry for credential refresher instances."""
 

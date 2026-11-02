@@ -29,11 +29,15 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.telemetry import _genai_instrumentor
 from google.adk.telemetry import _instrumentation
+from google.adk.telemetry import _metrics
 from google.adk.telemetry import tracing
 from google.adk.telemetry.context import TelemetryConfig
 from google.genai import types
 from google.genai.models import AsyncModels
 from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
+from opentelemetry.instrumentation.google_genai import version as google_genai_version
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -188,3 +192,50 @@ async def test_skipping_the_instrumentor_keeps_a_wrapper_beneath_it(
         [_ADK_SCOPE],
         ["foreign"],
     )
+
+
+@pytest.mark.asyncio
+async def test_adk_records_inference_tokens_when_it_skips_the_instrumentor(
+    monkeypatch: pytest.MonkeyPatch, provider: TracerProvider
+) -> None:
+  """An instrumentor that may record the token metrics itself is skipped too."""
+  monkeypatch.setenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", "2")
+  monkeypatch.setenv("OTEL_SEMCONV_STABILITY_OPT_IN", _EXPERIMENTAL)
+  monkeypatch.setattr(google_genai_version, "__version__", "1.0b0")
+  response = _RESPONSE.model_copy(
+      update={
+          "usage_metadata": types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=10, candidates_token_count=5
+          )
+      }
+  )
+
+  async def sdk_stub_with_usage(
+      self: AsyncModels, *, model: str, contents: object, config: object = None
+  ) -> types.GenerateContentResponse:
+    del self, model, contents, config  # Unused.
+    return response
+
+  monkeypatch.setattr(AsyncModels, "generate_content", sdk_stub_with_usage)
+  metric_reader = InMemoryMetricReader()
+  meter = MeterProvider(metric_readers=[metric_reader]).get_meter(_ADK_SCOPE)
+  monkeypatch.setattr(
+      _metrics,
+      "_inference_operation_input_tokens",
+      meter.create_histogram("gen_ai.client.inference.operation.input_tokens"),
+  )
+
+  with _instrumented(monkeypatch, provider):
+    await _run_inference(
+        TelemetryConfig(genai_semconv_stability_opt_in="stable")
+    )
+
+  metrics_data = metric_reader.get_metrics_data()
+  [point] = [
+      point
+      for resource_metrics in metrics_data.resource_metrics
+      for scope_metrics in resource_metrics.scope_metrics
+      for metric in scope_metrics.metrics
+      for point in metric.data.data_points
+  ]
+  assert (point.count, point.sum) == (1, 10)

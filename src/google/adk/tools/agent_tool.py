@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 from typing import Any
@@ -25,6 +26,7 @@ from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic import model_validator
+from pydantic import ValidationError
 from typing_extensions import override
 
 from . import _automatic_function_calling_util
@@ -38,6 +40,7 @@ from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from ._forwarding_artifact_service import ForwardingArtifactService
+from ._node_tool import _arg_validation_error
 from .base_tool import BaseTool
 from .tool_configs import BaseToolConfig
 from .tool_configs import ToolArgsConfig
@@ -45,6 +48,37 @@ from .tool_context import ToolContext
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
+  from ..agents.invocation_context import InvocationContext
+  from ..apps._configs import EventsCompactionConfig
+  from ..sessions.session import Session
+
+
+def _nested_compaction_config(
+    invocation_context: Optional[InvocationContext],
+) -> Optional[EventsCompactionConfig]:
+  """Returns the caller's token-threshold compaction settings for a nested run.
+
+  Only the in-flow token-threshold trigger applies: it compacts the nested
+  history before a model call would exceed the context window, whereas
+  post-invocation compaction would summarize a session the tool is about to
+  discard. Returning a copy keeps a default summarizer initialized for the
+  wrapped agent from mutating the caller's config.
+  """
+  config = (
+      invocation_context.events_compaction_config
+      if invocation_context
+      else None
+  )
+  if (
+      config is None
+      or config.token_threshold is None
+      or config.event_retention_size is None
+  ):
+    return None
+  return config.model_copy(
+      update={'compaction_interval': None, 'overlap_size': None}
+  )
+
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -231,13 +265,14 @@ class AgentTool(BaseTool):
   ) -> Any:
     from ..runners import Runner
     from ..sessions.in_memory_session_service import InMemorySessionService
-
-    if self.skip_summarization:
-      tool_context.actions.skip_summarization = True
+    from ..sessions.state import State
 
     input_schema = _get_input_schema(self.agent)
     if input_schema:
-      input_value = input_schema.model_validate(args)
+      try:
+        input_value = input_schema.model_validate(args)
+      except ValidationError as e:
+        return _arg_validation_error(self.name, e)
       # The text must stay a bare JSON document: the node runtime re-validates
       # it against this same schema, so any prose here fails that parse.
       content = types.Content(
@@ -257,6 +292,8 @@ class AgentTool(BaseTool):
           role='user',
           parts=[types.Part.from_text(text=request_text)],
       )
+    if self.skip_summarization:
+      tool_context.actions.skip_summarization = True
     invocation_context = tool_context._invocation_context
     parent_app_name = (
         invocation_context.app_name if invocation_context else None
@@ -267,7 +304,34 @@ class AgentTool(BaseTool):
         if self.include_plugins
         else None
     )
-    runner = Runner(
+    nested_compaction_config = _nested_compaction_config(invocation_context)
+
+    class _NestedRunner(Runner):
+      """Runs only the in-flow compaction trigger on the nested session.
+
+      Post-invocation compaction is skipped because it would summarize a
+      session the tool is about to discard.
+      """
+
+      @override
+      def _new_invocation_context(
+          self,
+          session: Session,
+          **kwargs: Any,  # Forwarded unchanged to the base signature.
+      ) -> InvocationContext:
+        ctx = super()._new_invocation_context(session, **kwargs)
+        ctx.events_compaction_config = nested_compaction_config
+        return ctx
+
+      @override
+      async def _run_post_invocation_compaction(
+          self,
+          *,
+          invocation_context: InvocationContext,
+      ) -> None:
+        return
+
+    runner = _NestedRunner(
         app_name=child_app_name,
         agent=self.agent,
         artifact_service=ForwardingArtifactService(tool_context),
@@ -309,8 +373,19 @@ class AgentTool(BaseTool):
     state_dict = {
         k: v
         for k, v in tool_context.state.to_dict().items()
-        if not k.startswith('_adk')  # Filter out adk internal states
+        # Filter out adk internal states, temp-scoped ones included.
+        if not k.startswith(('_adk', f'{State.TEMP_PREFIX}_adk'))
     }
+    # create_session drops temp: keys, since they are never stored. Hand them
+    # to the nested run as a state delta instead, the way run_async applies
+    # temp: state for one invocation. Containers are shallow-copied so in-place
+    # edits in the nested run do not leak back into the caller's state, while
+    # other values such as client handles keep their identity.
+    temp_state: dict[str, Any] = {}
+    for k in list(state_dict):
+      if k.startswith(State.TEMP_PREFIX):
+        v = state_dict.pop(k)
+        temp_state[k] = copy.copy(v) if isinstance(v, (dict, list, set)) else v
     session = await runner.session_service.create_session(
         app_name=child_app_name,
         user_id=tool_context._invocation_context.user_id,
@@ -383,6 +458,7 @@ class AgentTool(BaseTool):
             user_id=session.user_id,
             session_id=session.id,
             new_message=content,
+            state_delta=temp_state or None,
             run_config=nested_run_config,
             abort_signal=abort_signal,
         )
@@ -498,6 +574,8 @@ class _SingleTurnAgentTool(AgentTool):
     if input_schema:
       try:
         node_input = input_schema.model_validate(args)
+      except ValidationError as e:
+        return _arg_validation_error(self.name, e)
       except Exception as e:
         return f'Error validating input: {e}'
     else:

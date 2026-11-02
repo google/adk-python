@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import base64
 import binascii
+import bisect
 import copy
 import importlib.util
 import json
@@ -34,6 +35,7 @@ from typing import Iterable
 from typing import List
 from typing import Literal
 from typing import Optional
+from typing import Sequence
 from typing import Tuple
 from typing import TYPE_CHECKING
 from typing import TypeAlias
@@ -2301,7 +2303,7 @@ def _extract_json_from_deepseek_args(args_text: str) -> Optional[str]:
 
 
 def _parse_deepseek_tool_calls_from_text(
-    text_block: str,
+    text_block: str, *, start_index: int = 0
 ) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
   """Parses DeepSeek proprietary inline tool-call tokens from text.
 
@@ -2383,7 +2385,7 @@ def _parse_deepseek_tool_calls_from_text(
         continue
       tool_call = _build_tool_call_from_json_dict(
           {"name": func_name, "arguments": args_json},
-          index=len(tool_calls),
+          index=start_index + len(tool_calls),
       )
       if tool_call:
         tool_calls.append(tool_call)
@@ -2392,8 +2394,534 @@ def _parse_deepseek_tool_calls_from_text(
   return tool_calls, remainder or None
 
 
+_TOOL_CALL_OPEN = "<tool_call>"
+_TOOL_CALL_CLOSE = "</tool_call>"
+# As in CommonMark, a fence opens and closes only at a line start, and a
+# backtick fence's info string cannot contain a backtick.
+_FENCE_OPEN_RE = re.compile(r" {0,3}(`{3,}(?=[^`\n]*$)|~{3,})", re.MULTILINE)
+_FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*\r?$", re.MULTILINE)
+_CALL_BLOCK_ENDS = {
+    _TOOL_CALL_OPEN: _TOOL_CALL_CLOSE,
+    _DS_TCALLS_BEGIN: _DS_TCALLS_END,
+    _DS_TCALL_BEGIN: _DS_TCALL_END,
+}
+_CALL_BLOCK_PATTERN = "|".join(re.escape(token) for token in _CALL_BLOCK_ENDS)
+_CALL_BLOCK_RE = re.compile(_CALL_BLOCK_PATTERN)
+_CODE_SCAN_RE = re.compile(rf"{_CALL_BLOCK_PATTERN}|<think>|`+|~{{3,}}")
+_INLINE_CODE_SCAN_RE = re.compile(rf"{_CALL_BLOCK_PATTERN}|`+")
+# Inline code may wrap lines but ends with its paragraph: at a blank line or a
+# fence.
+_PARAGRAPH_END_RE = re.compile(r"\n(?=[ \t]*\r?(?:\n|$)| {0,3}(?:```|~~~))")
+_CODE_INDENT_RE = re.compile(r" {4}| {0,3}\t")
+_ATX_HEADING_RE = re.compile(r" {0,3}#{1,6}(?:[ \t]|\r?$)")
+# An indented code block cannot interrupt a paragraph, so it starts at the text
+# start or after a blank line, an ATX heading or a fence line, and runs over
+# indented and blank lines.
+_INDENTED_CODE_RE = re.compile(
+    r"(?:\A|^(?:[ \t]*| {0,3}(?:#{1,6}(?:[ \t].*)?|`{3,}[ \t]*|~{3,}[ \t]*))"
+    r"\r?\n)((?: {4}| {0,3}\t).*(?:\n(?:[ \t]*\r?$|(?: {4}| {0,3}\t).*))*)",
+    re.MULTILINE,
+)
+_LEADING_CALL_PREFIX_RE = re.compile(r"(?:<\|python_tag\|>|\[TOOL_CALLS\])?\s*")
+_THINK_TAG_RE = re.compile(r"</?think>")
+_BACKTICK_RUN_RE = re.compile(r"`+")
+# A model may fence the JSON inside a `<tool_call>` tag.
+_TAG_PAYLOAD_FENCE_RE = re.compile(
+    r"(`{3,}|~{3,})[ \t]*(?:json)?[ \t]*\r?\n", re.IGNORECASE
+)
+
+
+def _skip_whitespace(text: str, pos: int) -> int:
+  while pos < len(text) and text[pos].isspace():
+    pos += 1
+  return pos
+
+
+def _decode_tool_calls(
+    text: str,
+    pos: int,
+    *,
+    start_index: int = 0,
+    indented_code: Sequence[tuple[int, int]] = (),
+) -> tuple[list[ChatCompletionMessageToolCall], int]:
+  """Decodes consecutive JSON tool calls, or arrays of them, from `pos`."""
+  tool_calls: list[ChatCompletionMessageToolCall] = []
+  while (
+      text.startswith(("{", "["), pos)
+      and _span_end_at(indented_code, pos) is None
+  ):
+    try:
+      candidate, end = _JSON_DECODER.raw_decode(text, pos)
+    except json.JSONDecodeError:
+      break
+    candidates = candidate if isinstance(candidate, list) else [candidate]
+    calls = [
+        call
+        for i, item in enumerate(candidates)
+        if (
+            call := _build_tool_call_from_json_dict(
+                item, index=start_index + len(tool_calls) + i
+            )
+        )
+    ]
+    if not calls or len(calls) != len(candidates):
+      break
+    tool_calls.extend(calls)
+    pos = _skip_whitespace(text, end)
+  return tool_calls, pos
+
+
+def _match_tool_call_tag(
+    text: str, pos: int, *, start_index: int = 0
+) -> tuple[list[ChatCompletionMessageToolCall], int] | None:
+  """Returns the calls in the `<tool_call>` block at `pos` and its end."""
+  start = _skip_whitespace(text, pos + len(_TOOL_CALL_OPEN))
+  fence = _TAG_PAYLOAD_FENCE_RE.match(text, start)
+  if fence:
+    start = _skip_whitespace(text, fence.end())
+  tool_calls, end = _decode_tool_calls(text, start, start_index=start_index)
+  if fence:
+    if not text.startswith(fence.group(1), end):
+      return None
+    end = _skip_whitespace(text, end + len(fence.group(1)))
+  if not tool_calls or not text.startswith(_TOOL_CALL_CLOSE, end):
+    return None
+  return tool_calls, end + len(_TOOL_CALL_CLOSE)
+
+
+def _call_block_end(text: str, start: int, token: str) -> int | None:
+  """Returns the end of the complete call block `token` opens at `start`."""
+  if token == _TOOL_CALL_OPEN:
+    tag = _match_tool_call_tag(text, start)
+    return tag[1] if tag else None
+  end_token = _CALL_BLOCK_ENDS[token]
+  end = text.find(end_token, start + len(token))
+  if end == -1:
+    return None
+  # A begin token with another one before its end is a lone quoted token, not
+  # the start of a block.
+  inner = start + len(token)
+  if text.find(token, inner, end) != -1 or (
+      text.find(_DS_TCALLS_BEGIN, inner, end) != -1
+  ):
+    return None
+  # As for `<tool_call>`, only a block that parses as a call is one.
+  block_end = end + len(end_token)
+  ds_calls, ds_remainder = _parse_deepseek_tool_calls_from_text(
+      text[start:block_end]
+  )
+  return block_end if ds_calls and ds_remainder is None else None
+
+
+def _find_think_close(text: str, pos: int) -> int | None:
+  """Returns the end of the `</think>` closing a block at `pos`, if any.
+
+  A `</think>` inside a call block's arguments does not close it.
+  """
+  scan_pos = pos
+  while (close := text.find("</think>", scan_pos)) != -1:
+    while call := _CALL_BLOCK_RE.search(text, scan_pos, close):
+      block_end = _call_block_end(text, call.start(), call.group())
+      scan_pos = block_end or call.end()
+      if block_end is not None and block_end > close:
+        break
+    else:
+      return close + len("</think>")
+  return None
+
+
+def _call_block_spans(text: str) -> list[tuple[int, int]]:
+  """Returns the complete `<tool_call>` and DeepSeek call blocks in `text`."""
+  spans: list[tuple[int, int]] = []
+  pos = 0
+  while call := _CALL_BLOCK_RE.search(text, pos):
+    block_end = _call_block_end(text, call.start(), call.group())
+    if block_end is not None:
+      spans.append((call.start(), block_end))
+    pos = block_end or call.end()
+  return spans
+
+
+def _indented_code_spans(
+    text: str, opaque: Sequence[tuple[int, int]]
+) -> list[tuple[int, int]]:
+  """Returns indented code blocks, reading each sorted `opaque` span as a word.
+
+  A blank line, heading or indented line inside an opaque span then cannot
+  start or extend an indented code block.
+  """
+  parts: list[str] = []
+  prev = 0
+  for start, end in opaque:
+    if end <= prev:
+      continue
+    start = max(start, prev)
+    parts.append(text[prev:start])
+    # As in `_StreamTextTracker._close_think`, a multi-line span ends the line
+    # it opens on and starts the line it closes on. A call block opening on an
+    # indented line, or a `<think>` block opening and closing on indented
+    # lines, stays one indented line, so it cannot end indented code.
+    line_start = text.rfind("\n", 0, start) + 1
+    close_line_start = text.rfind("\n", start, end) + 1
+    if "\n" in text[start:end] and (
+        not _CODE_INDENT_RE.match(text, line_start)
+        or (
+            text.startswith("<think>", start)
+            and not _CODE_INDENT_RE.match(text, close_line_start)
+        )
+    ):
+      parts.append("x\n" + "x" * (end - start - 2))
+    else:
+      parts.append("x" * (end - start))
+    prev = end
+  parts.append(text[prev:])
+  return [m.span(1) for m in _INDENTED_CODE_RE.finditer("".join(parts))]
+
+
+def _span_end_at(spans: Sequence[tuple[int, int]], pos: int) -> int | None:
+  """Returns the end of the span holding `pos` in sorted, disjoint `spans`."""
+  i = bisect.bisect_right(spans, pos, key=lambda span: span[0]) - 1
+  if i >= 0 and pos < spans[i][1]:
+    return spans[i][1]
+  return None
+
+
+def _open_inline_ticks(ticks: int, line: str) -> int:
+  """Returns the backtick run length of inline code open after `line`."""
+  for run in _BACKTICK_RUN_RE.finditer(line):
+    if ticks:
+      if len(run.group()) == ticks:
+        ticks = 0
+      continue
+    escape_start = run.start()
+    while escape_start and line[escape_start - 1] == "\\":
+      escape_start -= 1
+    ticks = len(run.group()) - (run.start() - escape_start) % 2
+  return ticks
+
+
+def _markdown_code_spans(
+    text: str,
+    *,
+    start_pos: int = 0,
+    opaque: Sequence[tuple[int, int]] | None = None,
+) -> list[tuple[int, int]]:
+  """Returns the closed Markdown code fences and spans and indented code.
+
+  A fence, backtick run or `<think>` tag that is never closed is plain text, so
+  a tool call after it still parses. A `<tool_call>` or DeepSeek block is
+  skipped whole, so a backtick inside its arguments cannot open or close code. A
+  closed `<think>` block is reasoning, so it counts as code too. Complete call
+  blocks and closed `<think>` blocks are also read as one word when finding
+  indented code, so a heading or blank line inside one cannot start it.
+
+  This is not a full CommonMark parser. Blocks start only at columns 0-3 with
+  no container prefix, so these still read as text: indented code right after
+  a setext heading underline or a thematic break, a fence or indented code
+  inside a blockquote, and a fence indented four or more spaces in a list item.
+  Scanning begins at `start_pos`, and the text before it is read as one word.
+  `opaque` is for the recursive calls: the sorted spans already known to be
+  read as one word.
+  """
+  if opaque is None:
+    prefix = [(0, start_pos)] if start_pos else []
+    call_blocks = sorted(prefix + _call_block_spans(text))
+    first_pass = _markdown_code_spans(
+        text, start_pos=start_pos, opaque=call_blocks
+    )
+    # Only now are the closed `<think>` blocks known, so scan again with them.
+    think_blocks = [
+        span for span in first_pass if text.startswith("<think>", span[0])
+    ]
+    if not think_blocks:
+      return first_pass
+    return _markdown_code_spans(
+        text,
+        start_pos=start_pos,
+        opaque=sorted(call_blocks + think_blocks),
+    )
+  indented = [
+      span for span in _indented_code_spans(text, opaque) if span[1] > start_pos
+  ]
+  spans: list[tuple[int, int]] = []
+  pos = start_pos
+  paragraph_end_pos = -1
+  think_unclosed = False
+  # Per fence character, the shortest opener already found to never close: no
+  # later opener at least that long can close either.
+  unclosed_fence_len: dict[str, int] = {}
+  while match := _CODE_SCAN_RE.search(text, pos):
+    start, run = match.start(), match.group()
+    pos = match.end()
+    end: int | None = None
+    # A `<think>` tag opens reasoning even on an indented line.
+    if run == "<think>":
+      think_close = None if think_unclosed else _find_think_close(text, pos)
+      if think_close is None:
+        think_unclosed = True
+        continue
+      spans.append((start, think_close))
+      pos = think_close
+      continue
+    block_end = _span_end_at(indented, start)
+    if block_end is not None:
+      spans.append((start, block_end))
+      pos = block_end
+      continue
+    if run in _CALL_BLOCK_ENDS:
+      pos = _call_block_end(text, start, run) or pos
+      continue
+    fence = _FENCE_OPEN_RE.match(text, text.rfind("\n", 0, start) + 1)
+    if fence and fence.start(1) == start:
+      if len(run) >= unclosed_fence_len.get(run[0], len(run) + 1):
+        continue
+      scan_pos = pos
+      while close := _FENCE_CLOSE_RE.search(text, scan_pos):
+        while call := _CALL_BLOCK_RE.search(text, scan_pos, close.start()):
+          call_end = _call_block_end(text, call.start(), call.group())
+          scan_pos = call_end or call.end()
+          if call_end is not None and call_end > close.start():
+            break
+        else:
+          if close.group(1)[0] == run[0] and len(close.group(1)) >= len(run):
+            end = close.end()
+            break
+          scan_pos = close.end()
+      if end is None:
+        unclosed_fence_len[run[0]] = len(run)
+    elif run[0] == "`":
+      escape_start = start
+      while escape_start and text[escape_start - 1] == "\\":
+        escape_start -= 1
+      if (start - escape_start) % 2:
+        # A backslash-escaped backtick is literal, as in CommonMark.
+        start, run = start + 1, run[1:]
+        if not run:
+          continue
+      # Reuse the paragraph end while still inside that paragraph, so many
+      # code spans in one paragraph do not each search to its end.
+      if pos > paragraph_end_pos:
+        paragraph_end = _PARAGRAPH_END_RE.search(text, pos)
+        paragraph_end_pos = (
+            paragraph_end.start() if paragraph_end else len(text)
+        )
+      scan_pos = pos
+      while inner := _INLINE_CODE_SCAN_RE.search(
+          text, scan_pos, paragraph_end_pos
+      ):
+        if inner.group() in _CALL_BLOCK_ENDS:
+          scan_pos = (
+              _call_block_end(text, inner.start(), inner.group()) or inner.end()
+          )
+          # A blank line or fence inside a call block does not end the
+          # paragraph.
+          if paragraph_end_pos < scan_pos:
+            paragraph_end = _PARAGRAPH_END_RE.search(text, scan_pos)
+            paragraph_end_pos = (
+                paragraph_end.start() if paragraph_end else len(text)
+            )
+        elif inner.group() == run:
+          end = inner.end()
+          break
+        else:
+          scan_pos = inner.end()
+    if end is not None:
+      spans.append((start, end))
+      pos = end
+  return spans
+
+
+def _next_fence(fence: str, line: str) -> str:
+  """Returns the Markdown fence open after `line`, given the one open before."""
+  if not fence:
+    match = _FENCE_OPEN_RE.match(line)
+    return match.group(1) if match else ""
+  close = _FENCE_CLOSE_RE.fullmatch(line)
+  if (
+      close
+      and close.group(1)[0] == fence[0]
+      and len(close.group(1)) >= len(fence)
+  ):
+    return ""
+  return fence
+
+
+class _StreamTextTracker:
+  """Tracks streamed text for prose, open Markdown code and `<think>` blocks.
+
+  This only gates the `partial=True` chunks, whose calls never run; the final
+  response re-parses the whole text. So unlike `_markdown_code_spans`, it does
+  not skip call blocks: a fence or `<think>` tag inside a call's arguments or
+  sharing a `<tool_call>` line can briefly hold back or show a partial call
+  that the final response does not.
+  """
+
+  def __init__(self) -> None:
+    self.reset()
+
+  def reset(self) -> None:
+    self.has_non_whitespace = False
+    self._fence = ""
+    self._line_parts: list[str] = []
+    self._line_head = ""
+    self._line_has_text = False
+    self._line_start_ticks = 0
+    self._paragraph_has_code_mark = False
+    self._indented_code_may_follow = True
+    self.in_think = False
+    self._think_parts: list[str] = []
+    self._think_tail = ""
+    # Line offsets of `<think>` tags read as inline code before the code
+    # span is known to close, and whether one may have opened a block.
+    self._maybe_think_offsets: list[int] = []
+    self._maybe_in_think = False
+
+  @property
+  def in_code(self) -> bool:
+    # A backtick or tilde may open inline code that a later delta closes, so
+    # the rest of its paragraph counts as code.
+    if self._fence or self._paragraph_has_code_mark:
+      return True
+    return (
+        self._indented_code_may_follow
+        and bool(self._line_head)
+        and (
+            not self._line_head.strip()
+            or bool(_CODE_INDENT_RE.match(self._line_head))
+        )
+    )
+
+  def in_think_for(self, text: str) -> bool:
+    """Returns whether `text`, fed next, may hold part of a `<think>` block."""
+    return (
+        self.in_think
+        or self._maybe_in_think
+        or bool(_THINK_TAG_RE.search(self._think_tail + text))
+    )
+
+  def completes_line(self, text: str) -> bool:
+    """Returns whether `text` ends a begun line, which can decide its code."""
+    return self._line_has_text and "\n" in text
+
+  def feed(self, text: str) -> None:
+    if text.strip():
+      self.has_non_whitespace = True
+    # Keep a tag's head so a tag split across deltas is still seen; a tag
+    # wholly inside it was handled with the previous delta.
+    window = self._think_tail + text
+    offset = len(self._think_tail)
+    pos = 0
+    for tag in _THINK_TAG_RE.finditer(window):
+      if tag.end() <= offset:
+        continue
+      tag_start = max(tag.start() - offset, pos)
+      tag_end = tag.end() - offset
+      if self.in_think:
+        self._think_parts.append(text[pos:tag_start])
+        if tag.group() == "</think>":
+          self._close_think()
+        if self.in_think:
+          self._think_parts.append(text[tag_start:tag_end])
+      else:
+        self._feed_markdown(text[pos:tag_start])
+        # As in `_markdown_code_spans`, a `<think>` tag in code is text, and
+        # Markdown inside a `<think>` block neither opens nor closes code.
+        line = "".join(self._line_parts)
+        if tag.group() == "<think>" and not self._fence:
+          if _open_inline_ticks(self._line_start_ticks, line):
+            self._maybe_think_offsets.append(
+                len(line) + min(0, tag.start() - offset)
+            )
+          else:
+            self.in_think = True
+            self._think_parts.clear()
+            self._feed_markdown("<think>")
+        if not self.in_think:
+          self._feed_markdown(text[tag_start:tag_end])
+      pos = tag_end
+    if self.in_think:
+      self._think_parts.append(text[pos:])
+    else:
+      self._feed_markdown(text[pos:])
+    self._think_tail = window[-len("</think") :]
+
+  def _close_think(self) -> None:
+    """Closes the `<think>` block unless its `</think>` may be in a call."""
+    body = "".join(self._think_parts)
+    scan_pos = 0
+    while call := _CALL_BLOCK_RE.search(body, scan_pos):
+      block_end = _call_block_end(body, call.start(), call.group())
+      if (
+          block_end is None
+          and body.find(_CALL_BLOCK_ENDS[call.group()], call.end()) == -1
+      ):
+        return
+      scan_pos = block_end or call.end()
+    self.in_think = False
+    # The block's lines are opaque text: the line it opened on ends at its
+    # first newline, and the line after its last newline starts with it. As in
+    # `_indented_code_spans`, a block opening and closing on indented lines
+    # keeps the closing line indented.
+    if "\n" not in body:
+      self._feed_markdown("</think>")
+    elif _CODE_INDENT_RE.match(
+        "".join(self._line_parts)
+    ) and _CODE_INDENT_RE.match(body, body.rfind("\n") + 1):
+      self._feed_markdown("\n    </think>")
+    else:
+      self._feed_markdown("\n</think>")
+
+  def _feed_markdown(self, text: str) -> None:
+    *lines, tail = text.split("\n")
+    for line in lines:
+      self._line_parts.append(line)
+      line = "".join(self._line_parts)
+      self._line_parts.clear()
+      self._line_head = ""
+      self._line_has_text = False
+      if self._maybe_think_offsets:
+        # Each such tag must sit in an inline code span that closes on its
+        # own line; otherwise it may open a block, so later calls wait for
+        # the end. Indentation is dropped, since the line may not be code.
+        text_start = len(line) - len(line.lstrip())
+        spans = _markdown_code_spans(line[text_start:])
+        if not all(
+            any(s < tag_pos - text_start < e for s, e in spans)
+            for tag_pos in self._maybe_think_offsets
+        ):
+          self._maybe_in_think = True
+        self._maybe_think_offsets.clear()
+      fence = _next_fence(self._fence, line)
+      if fence or self._fence or not line.strip():
+        self._paragraph_has_code_mark = False
+        self._line_start_ticks = 0
+      else:
+        if "`" in line or "~" in line:
+          self._paragraph_has_code_mark = True
+        self._line_start_ticks = _open_inline_ticks(
+            self._line_start_ticks, line
+        )
+      if fence or self._fence:
+        # Indented code may follow a closing fence line, not an opening one.
+        self._indented_code_may_follow = not fence
+      elif line.strip():
+        self._indented_code_may_follow = bool(_ATX_HEADING_RE.match(line)) or (
+            self._indented_code_may_follow and bool(_CODE_INDENT_RE.match(line))
+        )
+      else:
+        self._indented_code_may_follow = True
+      self._fence = fence
+    self._line_parts.append(tail)
+    self._line_head = (self._line_head + tail[:4])[:4]
+    self._line_has_text = self._line_has_text or bool(tail.strip())
+    if "`" in tail or "~" in tail:
+      self._paragraph_has_code_mark = True
+
+
 def _parse_tool_calls_from_text(
     text_block: str,
+    *,
+    allow_bare_json: bool = True,
 ) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
   """Extracts inline JSON tool calls from LiteLLM text responses."""
   tool_calls: list[ChatCompletionMessageToolCall] = []
@@ -2402,52 +2930,114 @@ def _parse_tool_calls_from_text(
 
   _ensure_litellm_imported()
 
-  # Try DeepSeek proprietary format first, then fall back to generic JSON.
-  ds_tool_calls, ds_remainder = _parse_deepseek_tool_calls_from_text(text_block)
-  if ds_tool_calls:
-    # If the remainder still contains content, re-parse it for
-    # additional generic inline JSON tool calls (mixed formats).
-    if ds_remainder:
-      extra_calls, extra_remainder = _parse_tool_calls_from_text(ds_remainder)
-      tool_calls = ds_tool_calls + (extra_calls or [])
-      return tool_calls, extra_remainder
-    return ds_tool_calls, None
-
-  remainder_segments = []
+  # DeepSeek and `<tool_call>` blocks may mix, so find both in one pass over the
+  # whole text: working out code spans again on text with blocks removed could
+  # pair backticks the removed blocks kept apart. The spans are only needed
+  # for a block after the opening run of calls, so they are found once, then.
+  code_spans: list[tuple[int, int]] | None = None
+  code_start = 0
+  # Bare JSON only counts in the run of calls the text opens with, after
+  # optional `<think>` blocks or a `<|python_tag|>`, `[TOOL_CALLS]` or unclosed
+  # `<tool_call>` prefix; bare JSON after prose or inside Markdown code is
+  # quoted text, not a tool call. Leading `<think>` blocks are reasoning, so no
+  # call inside them runs; one that never closes is plain text, as an unclosed
+  # fence is.
+  pos = _skip_whitespace(text_block, 0)
+  think_blocks: list[tuple[int, int]] = []
+  while text_block.startswith("<think>", pos) and (
+      think_close := _find_think_close(text_block, pos + len("<think>"))
+  ):
+    think_blocks.append((pos, think_close))
+    pos = _skip_whitespace(text_block, think_close)
+  prefix = _LEADING_CALL_PREFIX_RE.match(text_block, pos)
+  run_pos = (prefix.end() if prefix else pos) if allow_bare_json else -1
+  call_blocks = _call_block_spans(text_block) if allow_bare_json else []
+  indented_code = (
+      _indented_code_spans(text_block, sorted(think_blocks + call_blocks))
+      if allow_bare_json
+      else []
+  )
+  remainder_parts: list[str] = []
   cursor = 0
-  text_length = len(text_block)
-
-  while cursor < text_length:
-    brace_index = text_block.find("{", cursor)
-    if brace_index == -1:
-      remainder_segments.append(text_block[cursor:])
-      break
-
-    remainder_segments.append(text_block[cursor:brace_index])
-    try:
-      candidate, end = _JSON_DECODER.raw_decode(text_block, brace_index)
-    except json.JSONDecodeError:
-      remainder_segments.append(text_block[brace_index])
-      cursor = brace_index + 1
-      continue
-
-    tool_call = _build_tool_call_from_json_dict(
-        candidate, index=len(tool_calls)
+  while True:
+    if pos == run_pos:
+      json_calls, end = _decode_tool_calls(
+          text_block,
+          pos,
+          start_index=len(tool_calls),
+          indented_code=indented_code,
+      )
+      if json_calls:
+        # A backtick, `<think>` tag, blank line or indented line in the
+        # arguments is not Markdown, so work out code from after the calls,
+        # reading all before them as one word. JSON holds no heading or fence
+        # line, so its blank and indented lines only change the indented code
+        # after it when that code already runs on past it.
+        json_end = len(text_block[:end].rstrip())
+        multi_line = "\n" in text_block[pos:json_end]
+        if multi_line and _span_end_at(indented_code, end) is not None:
+          indented_code = _indented_code_spans(
+              text_block, sorted([(0, json_end)] + call_blocks)
+          )
+        if multi_line or _CODE_SCAN_RE.search(text_block, pos, json_end):
+          code_start = json_end
+        remainder_parts.append(text_block[cursor:pos])
+        tool_calls.extend(json_calls)
+        cursor = pos = run_pos = end
+        continue
+    match = _CALL_BLOCK_RE.search(
+        text_block, pos, run_pos if pos < run_pos else len(text_block)
     )
-    if tool_call:
-      tool_calls.append(tool_call)
+    if not match:
+      if pos >= run_pos:
+        break
+      pos = run_pos
+      continue
+    start, token = match.start(), match.group()
+    # A block opening the run follows only whitespace after the calls before
+    # it, so only indented code can hold it.
+    if start == run_pos:
+      span_end = _span_end_at(indented_code, start)
     else:
-      remainder_segments.append(text_block[brace_index:end])
-    cursor = end
-
-  remainder = "".join(segment for segment in remainder_segments if segment)
-  remainder = remainder.strip()
-
-  return tool_calls, remainder or None
+      if code_spans is None:
+        code_spans = _markdown_code_spans(text_block, start_pos=code_start)
+      span_end = _span_end_at(code_spans, start)
+    if span_end is not None:
+      pos = span_end
+      continue
+    found = None
+    if token == _TOOL_CALL_OPEN:
+      found = _match_tool_call_tag(
+          text_block, start, start_index=len(tool_calls)
+      )
+    elif (block_end := _call_block_end(text_block, start, token)) is not None:
+      ds_calls, _ = _parse_deepseek_tool_calls_from_text(
+          text_block[start:block_end], start_index=len(tool_calls)
+      )
+      found = (ds_calls, block_end) if ds_calls else None
+    if found is None:
+      # A `<tool_call>` opening the run that never closes (a truncated
+      # response) still opens it.
+      if token == _TOOL_CALL_OPEN and start == run_pos:
+        pos = run_pos = _skip_whitespace(text_block, match.end())
+      else:
+        pos = match.end()
+      continue
+    block_calls, end = found
+    remainder_parts.append(text_block[cursor:start])
+    tool_calls.extend(block_calls)
+    cursor = pos = end
+    if start == run_pos:
+      pos = run_pos = _skip_whitespace(text_block, end)
+  remainder_parts.append(text_block[cursor:])
+  return tool_calls, "".join(remainder_parts).strip() or None
 
 
 def _split_message_content_and_tool_calls(
     message: Message,
+    *,
+    parse_inline_tool_calls: bool = True,
+    allow_bare_json: bool = True,
 ) -> tuple[Optional[OpenAIMessageContent], list[ChatCompletionMessageToolCall]]:
   """Returns message content and tool calls, parsing inline JSON when needed."""
   existing_tool_calls = message.get("tool_calls") or []
@@ -2458,10 +3048,16 @@ def _split_message_content_and_tool_calls(
 
   # LiteLLM responses either provide structured tool_calls or inline JSON, not
   # both. When tool_calls are present we trust them and skip the fallback parser.
-  if normalized_tool_calls or not isinstance(content, str):
+  if (
+      normalized_tool_calls
+      or not isinstance(content, str)
+      or not parse_inline_tool_calls
+  ):
     return content, normalized_tool_calls
 
-  fallback_tool_calls, remainder = _parse_tool_calls_from_text(content)
+  fallback_tool_calls, remainder = _parse_tool_calls_from_text(
+      content, allow_bare_json=allow_bare_json
+  )
   if fallback_tool_calls:
     return remainder, fallback_tool_calls
 
@@ -2751,6 +3347,9 @@ def _function_declaration_to_tool_param(
 
 def _model_response_to_chunk(
     response: ModelResponse | ModelResponseStream,
+    *,
+    parse_inline_tool_calls: bool = True,
+    allow_bare_json: bool = True,
 ) -> Generator[
     Tuple[
         Optional[
@@ -2821,11 +3420,15 @@ def _model_response_to_chunk(
     reasoning_parts: List[types.Part] = []
 
     if message is not None:
-      # Both Delta and Message support dict-like .get() access
+      # Both Delta and Message support dict-like .get() access.
       (
           message_content,
           tool_calls,
-      ) = _split_message_content_and_tool_calls(message)
+      ) = _split_message_content_and_tool_calls(
+          message,
+          parse_inline_tool_calls=parse_inline_tool_calls,
+          allow_bare_json=allow_bare_json,
+      )
       reasoning_value = _extract_reasoning_value(message)
       if reasoning_value:
         reasoning_parts = _convert_reasoning_value_to_parts(reasoning_value)
@@ -3022,7 +3625,9 @@ def _message_to_generate_content_response(
     )
   if thought_parts:
     parts.extend(thought_parts)
-  message_content, tool_calls = _split_message_content_and_tool_calls(message)
+  message_content, tool_calls = _split_message_content_and_tool_calls(
+      message, parse_inline_tool_calls=not is_partial
+  )
   if isinstance(message_content, str) and message_content:
     parts.append(types.Part.from_text(text=message_content))
 
@@ -4201,6 +4806,10 @@ class LiteLlm(BaseLlm):
       # item does not get CPython's in-place unicode concat, so it would copy
       # the whole buffer on every streamed chunk.
       text_parts: list[str] = []
+      # Every delta's text, including text parsed into calls on arrival.
+      raw_text_parts: list[str] = []
+      text_tracker = _StreamTextTracker()
+      saw_structured_tool_calls = False
       reasoning_parts: List[types.Part] = []
       # Track function calls by index
       function_calls: dict[int, dict[str, Any]] = (
@@ -4243,7 +4852,9 @@ class LiteLlm(BaseLlm):
         # one. Whether the arguments parse is the only evidence left.
         tool_calls = []
         has_incomplete_tool_call_args = False
-        for index, func_data in function_calls.items():
+        # Calls parsed from text are rebuilt from the whole text below.
+        streamed_calls = function_calls if saw_structured_tool_calls else {}
+        for index, func_data in streamed_calls.items():
           if func_data["id"]:
             args = "".join(func_data["args_parts"])
             tool_call_arguments: Any = args
@@ -4308,10 +4919,29 @@ class LiteLlm(BaseLlm):
               model_version=model_version,
           )
 
+        content: str | None = "".join(text_parts)
+        if not saw_structured_tool_calls:
+          # Every call came from text, and a delta parsed alone cannot see the
+          # text around it, so parse the whole text as an unstreamed response
+          # would be: calls keep their text order and quoted calls stay text.
+          tool_calls, content = _parse_tool_calls_from_text(
+              "".join(raw_text_parts)
+          )
+          # Keep the id each call already streamed with in a partial response.
+          streamed = [
+              (fd["name"], "".join(fd["args_parts"]), fd["id"])
+              for fd in function_calls.values()
+          ]
+          for tc in tool_calls:
+            key = (tc.function.name, tc.function.arguments)
+            match = next((s for s in streamed if s[:2] == key), None)
+            if match:
+              streamed.remove(match)
+              tc.id = match[2]
         llm_response = _message_to_generate_content_response(
             ChatCompletionAssistantMessage(
                 role="assistant",
-                content="".join(text_parts),
+                content=content,
                 tool_calls=tool_calls,
             ),
             model_version=model_version,
@@ -4352,8 +4982,11 @@ class LiteLlm(BaseLlm):
         return llm_response
 
       def _reset_stream_buffers() -> None:
-        nonlocal reasoning_parts, last_finish_reason
+        nonlocal reasoning_parts, last_finish_reason, saw_structured_tool_calls
         text_parts.clear()
+        raw_text_parts.clear()
+        text_tracker.reset()
+        saw_structured_tool_calls = False
         reasoning_parts = []
         function_calls.clear()
         pending_signatures.clear()
@@ -4361,6 +4994,15 @@ class LiteLlm(BaseLlm):
         # The reason belongs to the segment just finalized; carrying it into
         # the next one would stamp the wrong reason on the next response.
         last_finish_reason = None
+
+      def _has_held_back_tool_calls() -> bool:
+        # A call in a delta held back from parsing on arrival yields no
+        # FunctionChunk, so only the whole text shows it.
+        return (
+            not function_calls
+            and not saw_structured_tool_calls
+            and bool(_parse_tool_calls_from_text("".join(raw_text_parts))[0])
+        )
 
       async for part in await self.llm_client.acompletion(**completion_args):
         if getattr(part, "model", None):
@@ -4389,7 +5031,47 @@ class LiteLlm(BaseLlm):
         finalize_tool_calls = False
         finalize_text = False
         finalize_finish_reason: str = ""
-        for chunk, finish_reason in _model_response_to_chunk(part):
+        choice = next((c for c in part_choices if not c.get("index")), None)
+        # As in _model_response_to_chunk, a ModelResponse chunk carries
+        # `message` where a stream chunk carries `delta`.
+        delta = (
+            choice.get(
+                "message" if isinstance(part, ModelResponse) else "delta"
+            )
+            if choice
+            else None
+        )
+        delta_text = (delta.get("content") if delta else None) or ""
+        if delta and (delta.get("tool_calls") or delta.get("function_call")):
+          saw_structured_tool_calls = True
+        # A backtick or tilde can open or close Markdown code, so whether a
+        # tool call in such a delta is quoted waits for the whole text, as does
+        # one inside a `<think>` block or in a delta with a `<think>` tag, and
+        # one in a delta that ends a begun line (`#` then ` Usage\n    ...`).
+        parse_inline_tool_calls = not (
+            text_tracker.in_code
+            or text_tracker.in_think
+            or (
+                isinstance(delta_text, str)
+                and (
+                    "`" in delta_text
+                    or "~" in delta_text
+                    or text_tracker.in_think_for(delta_text)
+                    or text_tracker.completes_line(delta_text)
+                )
+            )
+        )
+        allow_bare_json = not text_tracker.has_non_whitespace
+        # Feed the tracker every delta, including one parsed into calls, so a
+        # later delta is judged against all the text before it.
+        if isinstance(delta_text, str) and delta_text:
+          raw_text_parts.append(delta_text)
+          text_tracker.feed(delta_text)
+        for chunk, finish_reason in _model_response_to_chunk(
+            part,
+            parse_inline_tool_calls=parse_inline_tool_calls,
+            allow_bare_json=allow_bare_json,
+        ):
           if finish_reason:
             last_finish_reason = finish_reason
           if (
@@ -4409,12 +5091,17 @@ class LiteLlm(BaseLlm):
             else:
               pending_signatures[index] = chunk.thought_signature
           elif isinstance(chunk, FunctionChunk):
-            index = (
-                0
-                if chunk.index == 0
-                and not function_calls.get(0, {}).get("args_complete")
-                else (chunk.index or fallback_index)
-            )
+            if not saw_structured_tool_calls:
+              # Each delta numbers the calls parsed from its text from 0, and
+              # each such call is complete, so it takes the next free slot.
+              index = len(function_calls)
+            else:
+              index = (
+                  0
+                  if chunk.index == 0
+                  and not function_calls.get(0, {}).get("args_complete")
+                  else (chunk.index or fallback_index)
+              )
             if index not in function_calls:
               function_calls[index] = {
                   "name": "",
@@ -4517,11 +5204,11 @@ class LiteLlm(BaseLlm):
           # LiteLLM 1.81+ can set finish_reason="stop" on partial chunks. Only
           # finalize tool calls on an explicit tool_calls/length finish_reason,
           # or on a stop-only chunk (no content/tool deltas).
-          if function_calls and (
+          if (
               finish_reason == "tool_calls"
               or finish_reason == "length"
               or (finish_reason == "stop" and chunk is None)
-          ):
+          ) and (function_calls or _has_held_back_tool_calls()):
             finalize_tool_calls = True
             finalize_finish_reason = finish_reason
           if (text_parts or reasoning_parts) and (
@@ -4569,7 +5256,9 @@ class LiteLlm(BaseLlm):
       # filtered stream reports the same finish_reason and error_code that the
       # non-streaming path reports.
       resolved_model_version = last_model_version or effective_model
-      if function_calls and not aggregated_llm_response_with_tool_call:
+      if (
+          function_calls or _has_held_back_tool_calls()
+      ) and not aggregated_llm_response_with_tool_call:
         aggregated_llm_response_with_tool_call = _finalize_tool_call_response(
             model_version=resolved_model_version,
             finish_reason=last_finish_reason or "tool_calls",

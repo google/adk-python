@@ -26,6 +26,7 @@ from typing import Union
 from unittest import mock
 import warnings
 
+from google.adk.agents import CallbackType as AgentCallbackType
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.callback_context import CallbackContext
@@ -255,6 +256,44 @@ async def test_run_async_before_agent_callback_noop(
   assert isinstance(kwargs['callback_context'], CallbackContext)
 
   spy_run_async_impl.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_agent_callbacks_receive_current_callback_info(
+    request: pytest.FixtureRequest,
+):
+  """Agent callback lists see their callback type only while running."""
+  observations = []
+  callback_contexts = []
+
+  def first_before_callback(callback_context: CallbackContext) -> None:
+    observations.append(callback_context.callback_info.type)
+    callback_contexts.append(callback_context)
+
+  def second_before_callback(callback_context: CallbackContext) -> None:
+    observations.append(callback_context.callback_info.type)
+
+  def after_callback(callback_context: CallbackContext) -> None:
+    observations.append(callback_context.callback_info.type)
+    callback_contexts.append(callback_context)
+
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_agent',
+      before_agent_callback=[first_before_callback, second_before_callback],
+      after_agent_callback=after_callback,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+
+  _ = [event async for event in agent.run_async(parent_ctx)]
+
+  assert observations == [
+      AgentCallbackType.BEFORE_AGENT,
+      AgentCallbackType.BEFORE_AGENT,
+      AgentCallbackType.AFTER_AGENT,
+  ]
+  assert all(context.callback_info is None for context in callback_contexts)
 
 
 @pytest.mark.asyncio

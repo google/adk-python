@@ -25,11 +25,7 @@ from google.adk.tools.environment_simulation.environment_simulation_config impor
 from google.adk.tools.environment_simulation.environment_simulation_engine import EnvironmentSimulationEngine
 from google.adk.tools.environment_simulation.environment_simulation_plugin import EnvironmentSimulationPlugin
 
-from ...features import experimental
-from ...features import FeatureName
 
-
-@experimental(FeatureName.ENVIRONMENT_SIMULATION)
 class EnvironmentSimulationFactory:
   """Factory for creating EnvironmentSimulation instances."""
 

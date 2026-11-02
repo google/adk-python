@@ -114,9 +114,23 @@ def check_interception(
     # Case 2: Cross-turn unresolved interrupts remain.
     # Rerun natively with resolved inputs if the node supports rerun and some
     # progress was made; otherwise remain waiting and bubble unresolved interrupts.
+    # A node that already reran with the answered interrupts and finished chose
+    # to continue without the rest; fast-forward it so its side effects do not
+    # run again.
     if node.rerun_on_resume and recovered.resolved_ids:
-      should_run = True
-      resume_inputs = recovered.resolved_responses
+      has_result = (
+          recovered.output is not None
+          or recovered.route is not None
+          or recovered.transfer_to_agent is not None
+      )
+      if recovered.finished_after_resume and (
+          has_result or not node.wait_for_output
+      ):
+        output = _process_rehydrated_output(node, recovered.output)
+        route = recovered.route
+      else:
+        should_run = True
+        resume_inputs = recovered.resolved_responses
     else:
       interrupts = unresolved
 

@@ -68,5 +68,6 @@ class BaseClassifier(BaseModel, abc.ABC):
         the same names.
 
     Returns:
-      One answer per question, keyed by the question's name.
+      One answer per question, keyed by the question's name. A question the
+      model declined to answer gets a :class:`RefusalAnswer`.
     """
