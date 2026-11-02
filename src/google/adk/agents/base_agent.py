@@ -807,6 +807,7 @@ class BaseAgent(BaseNode, abc.ABC):
         references it makes to sibling files.
     """
     from .config_agent_utils import _AgentConfigMapper
+    from .config_agent_utils import _enforce_yaml_key_denylist  # pylint: disable=g-import-not-at-top
     from .config_agent_utils import _underlying
 
     if isinstance(config, BaseModel):
@@ -820,6 +821,8 @@ class BaseAgent(BaseNode, abc.ABC):
           'Invalid config type: expected Pydantic model or dict, got'
           f' {type(config)}'
       )
+
+    _enforce_yaml_key_denylist(data, config_abs_path)
 
     mapper = _AgentConfigMapper(config_abs_path)
     kwargs = mapper.map(data, cls)
