@@ -59,7 +59,7 @@ Each time the node runs, it does four things in order:
 3. **Picks the route.** For a `Choice`, the route is the label the classifier chose. For a `Binary`, the route is `True` when the probability of true is at or above `threshold`, and `False` otherwise.
 4. **Emits the result.** The node emits its unchanged input as its output, with the route attached. If `answer_key` is set, the full answer is also written to session state.
 
-If the node receives no input, or the classifier returns no answer, a label outside the question, or an answer of the wrong type, the node raises a `WorkflowDataError`. Failing is safer than guessing a route, because a wrong route sends the input to a node that was not meant to handle it.
+If the node receives no input, or the classifier returns no answer, a `RefusalAnswer` because the model declined to answer, a label outside the question, or an answer of the wrong type, the node raises a `WorkflowDataError`. Failing is safer than guessing a route, because a wrong route sends the input to a node that was not meant to handle it.
 
 ### Graph validation
 

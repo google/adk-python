@@ -15,15 +15,21 @@
 import base64
 import json
 from unittest.mock import AsyncMock
+from unittest.mock import call
 from unittest.mock import Mock
 from unittest.mock import patch
 
 from google.adk.models.llm_request import LlmRequest
 from google.adk.tools.load_mcp_resource_tool import LoadMcpResourceTool
+from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
+from mcp import StdioServerParameters
 from mcp.types import BlobResourceContents
+from mcp.types import ListResourcesResult
+from mcp.types import ReadResourceResult
+from mcp.types import Resource
 from mcp.types import TextResourceContents
 import pytest
 
@@ -80,6 +86,9 @@ class TestLoadMcpResourceTool:
         tool_context=self.mock_tool_context, llm_request=llm_request
     )
 
+    self.mock_mcp_toolset.list_resources.assert_called_once_with(
+        readonly_context=self.mock_tool_context
+    )
     llm_request._append_dynamic_instructions.assert_called_once()
     instructions = llm_request._append_dynamic_instructions.call_args[0][0]
     assert "res1" in instructions[0]
@@ -189,10 +198,69 @@ class TestLoadMcpResourceTool:
         tool_context=self.mock_tool_context, llm_request=llm_request
     )
 
-    self.mock_mcp_toolset.read_resource.assert_called_once_with("res1")
+    self.mock_mcp_toolset.read_resource.assert_called_once_with(
+        "res1", readonly_context=self.mock_tool_context
+    )
     assert len(llm_request.contents) == 2
     new_content = llm_request.contents[1]
     assert new_content.role == "user"
     assert len(new_content.parts) == 2
     assert "Resource res1 is:" in new_content.parts[0].text
     assert new_content.parts[1].text == "hello content"
+
+  @pytest.mark.asyncio
+  async def test_process_llm_request_sends_request_headers(self):
+    """Listing and reading resources send the toolset's request headers."""
+    expected_headers = {"Authorization": "Bearer user-token"}
+    header_provider = Mock(return_value=expected_headers)
+    toolset = McpToolset(
+        connection_params=StdioServerParameters(command="unused", args=[]),
+        header_provider=header_provider,
+    )
+    session = AsyncMock()
+    session.list_resources = AsyncMock(
+        return_value=ListResourcesResult(
+            resources=[Resource(name="res1", uri="file:///res1")]
+        )
+    )
+    session.read_resource = AsyncMock(
+        return_value=ReadResourceResult(
+            contents=[
+                TextResourceContents(
+                    uri="file:///res1", mimeType="text/plain", text="hello"
+                )
+            ]
+        )
+    )
+    session_manager = Mock(spec=MCPSessionManager)
+    session_manager.create_session = AsyncMock(return_value=session)
+    toolset._mcp_session_manager = session_manager
+    tool = LoadMcpResourceTool(mcp_toolset=toolset)
+    llm_request = LlmRequest(
+        model="dummy",
+        contents=[
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            name="load_mcp_resource",
+                            response={"resource_names": ["res1"]},
+                        )
+                    )
+                ],
+            )
+        ],
+    )
+
+    await tool.process_llm_request(
+        tool_context=self.mock_tool_context, llm_request=llm_request
+    )
+
+    assert header_provider.call_args_list == [call(self.mock_tool_context)] * 3
+    assert session_manager.create_session.call_args_list
+    assert all(
+        c == call(headers=expected_headers)
+        for c in session_manager.create_session.call_args_list
+    )
+    assert llm_request.contents[-1].parts[1].text == "hello"

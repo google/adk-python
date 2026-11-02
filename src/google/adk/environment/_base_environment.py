@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
+from collections.abc import AsyncGenerator
 import dataclasses
 from pathlib import Path
 
@@ -50,7 +51,7 @@ class BaseEnvironment(ABC):
   Lifecycle:
     1. Construct the environment (``__init__``).
     2. Call ``initialize()`` before first use.
-    3. Use ``execute``, ``read_file``, ``write_file``.
+    3. Use ``execute``, ``read_file``, ``read_file_stream``, ``write_file``.
     4. Call ``close()`` when done.
   """
 
@@ -117,6 +118,22 @@ class BaseEnvironment(ABC):
     Raises:
       FileNotFoundError: If the file does not exist.
     """
+
+  async def read_file_stream(self, path: Path) -> AsyncGenerator[bytes, None]:
+    """Yields the same bytes read_file(path) returns, in chunks.
+
+    The default yields the whole file at once; override it to stream.
+
+    Args:
+      path: Absolute or working-dir-relative path to the file.
+
+    Yields:
+      Consecutive chunks of the raw file contents.
+
+    Raises:
+      FileNotFoundError: If the file does not exist.
+    """
+    yield await self.read_file(path)
 
   @abstractmethod
   async def write_file(self, path: Path, content: str | bytes) -> None:

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from collections.abc import Sequence
 import json
 import logging
 from typing import Any
@@ -156,7 +157,7 @@ Returns:
 
 
 def _convert_a2a_parts_to_adk_parts(
-    a2a_parts: List[A2APart],
+    a2a_parts: Sequence[A2APart],
     part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
 ) -> tuple[List[genai_types.Part], set[str]]:
   """Converts a list of A2A parts to a list of ADK parts."""

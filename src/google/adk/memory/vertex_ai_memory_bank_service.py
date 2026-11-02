@@ -360,7 +360,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
         if event.content:
           direct_events.append(
               agentplatform.types.GenerateMemoriesRequestDirectContentsSourceEvent(
-                  content=event.content
+                  content=_without_thoughts(event.content)
               )
           )
       if direct_events:
@@ -431,7 +431,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
           )
         direct_events.append(
             agentplatform.types.IngestionDirectContentsSourceEvent(
-                content=event.content,
+                content=_without_thoughts(event.content),
                 event_id=event.id,
                 event_time=event_time,
             )
@@ -732,7 +732,23 @@ def _should_filter_out_event(event: Event) -> bool:
   # Deferred: a module-level import would load the agent and flow stack too.
   from ..flows.llm_flows.context._contents import _is_auth_event
 
-  return _is_empty_content(event.content) or _is_auth_event(event)
+  content = _without_thoughts(event.content)
+  return _is_empty_content(content) or _is_auth_event(event)
+
+
+def _without_thoughts(content: types.Content | None) -> types.Content | None:
+  """Returns the content without the model's thought parts.
+
+  Thoughts are the model's reasoning, not part of the conversation, so they
+  are kept out of the events that memories are generated from.
+  """
+  if not content or not content.parts:
+    return content
+  if not any(part.thought for part in content.parts):
+    return content
+  return content.model_copy(
+      update={'parts': [part for part in content.parts if not part.thought]}
+  )
 
 
 def _is_empty_content(content: types.Content | None) -> bool:

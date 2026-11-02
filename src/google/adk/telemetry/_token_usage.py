@@ -105,9 +105,14 @@ class TokenUsage:
   `candidate_output_tokens` are subsets of `output_tokens`. `prompt_input` plus
   `tool_input` is the whole of `input_tokens`, as `candidate_output` plus
   `reasoning_output` is of `output_tokens`; the other two are overlapping
-  subsets. `cache_creation_input_tokens` and `system_instruction_tokens` reach
-  spans only, and `prompt_input_tokens` and `candidate_output_tokens` reach ADK
-  eval's breakdown only; no metric reads any of the four.
+  subsets. `system_instruction_tokens` reaches spans only, and
+  `cache_write_input_tokens` spans and the schema v2 cache_write metric only.
+  `prompt_input_tokens` and `candidate_output_tokens` reach ADK eval's breakdown
+  only; no metric reads either.
+
+  The `*_details` lists are Gemini's per-modality breakdown of the bucket they
+  name, which the schema v2 metrics split by. They describe one call only;
+  `add` leaves them alone.
   """
 
   input_tokens: int | None = None
@@ -117,8 +122,11 @@ class TokenUsage:
   tool_input_tokens: int | None = None
   prompt_input_tokens: int | None = None
   candidate_output_tokens: int | None = None
-  cache_creation_input_tokens: int | None = None
+  cache_write_input_tokens: int | None = None
   system_instruction_tokens: int | None = None
+  input_tokens_details: list[types.ModalityTokenCount] | None = None
+  output_tokens_details: list[types.ModalityTokenCount] | None = None
+  cache_read_input_tokens_details: list[types.ModalityTokenCount] | None = None
 
   @classmethod
   def from_usage_metadata(
@@ -137,6 +145,9 @@ class TokenUsage:
     tool_tokens = usage_metadata.tool_use_prompt_token_count
     candidates_tokens = usage_metadata.candidates_token_count
     thoughts_tokens = usage_metadata.thoughts_token_count
+    input_details = (usage_metadata.prompt_tokens_details or []) + (
+        usage_metadata.tool_use_prompt_tokens_details or []
+    )
     return cls(
         input_tokens=(
             None
@@ -154,12 +165,15 @@ class TokenUsage:
         prompt_input_tokens=prompt_tokens,
         candidate_output_tokens=candidates_tokens,
         # Absent from Gemini's type; the Anthropic paths set them by hand.
-        cache_creation_input_tokens=getattr(
+        cache_write_input_tokens=getattr(
             usage_metadata, 'cache_creation_input_tokens', None
         ),
         system_instruction_tokens=getattr(
             usage_metadata, 'system_instruction_tokens', None
         ),
+        input_tokens_details=input_details,
+        output_tokens_details=usage_metadata.candidates_tokens_details,
+        cache_read_input_tokens_details=usage_metadata.cache_tokens_details,
     )
 
   @classmethod
@@ -215,8 +229,8 @@ class TokenUsage:
     self.candidate_output_tokens = _merge(
         self.candidate_output_tokens, usage.candidate_output_tokens
     )
-    self.cache_creation_input_tokens = _merge(
-        self.cache_creation_input_tokens, usage.cache_creation_input_tokens
+    self.cache_write_input_tokens = _merge(
+        self.cache_write_input_tokens, usage.cache_write_input_tokens
     )
     self.system_instruction_tokens = _merge(
         self.system_instruction_tokens, usage.system_instruction_tokens
@@ -231,9 +245,9 @@ class TokenUsage:
       attrs[GEN_AI_USAGE_OUTPUT_TOKENS] = self.output_tokens
     if self.cache_read_input_tokens is not None:
       attrs[GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS] = self.cache_read_input_tokens
-    if self.cache_creation_input_tokens is not None:
+    if self.cache_write_input_tokens is not None:
       attrs[GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS] = (
-          self.cache_creation_input_tokens
+          self.cache_write_input_tokens
       )
     if self.reasoning_output_tokens is not None:
       attrs[GEN_AI_USAGE_REASONING_OUTPUT_TOKENS] = self.reasoning_output_tokens

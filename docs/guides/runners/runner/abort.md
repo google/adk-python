@@ -172,6 +172,11 @@ When an agent execution is cancelled while awaiting tool execution, the precedin
 
 The runner automatically detects unclosed function calls upon cancellation and appends synthetic function responses containing an error message explaining that the invocation was aborted by the client. For invocations cancelled without pending tool calls, the runner records an abort event authored by the root agent. In both cases, the runner appends these synthetic events to session history and yields them to the caller's event stream, so the model sees that the call was aborted on the next turn, no call is left open in history, and client consumers observe the terminal abort event.
 
+Cancelling the consuming task directly seals open non-long-running tool calls
+the same way without an `abort_signal`, whereas closing the generator early
+(`aclose()` or `break`) deliberately does not seal so paused long-running calls
+stay resumable.
+
 ## Limitations
 
 The cancellation mechanism has the following boundaries:

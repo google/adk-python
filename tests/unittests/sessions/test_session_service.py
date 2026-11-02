@@ -1496,6 +1496,36 @@ async def test_create_session_with_existing_id_raises_error(session_service):
 
 
 @pytest.mark.asyncio
+async def test_rejected_duplicate_create_session_leaves_state_unchanged(
+    session_service,
+):
+  """A rejected duplicate create leaves app:, user: and session state as-is."""
+  app_name = 'my_app'
+  user_id = 'test_user'
+  session_id = 'existing_session'
+  state = {'app:tier': 'free', 'user:theme': 'light', 'draft': 'v1'}
+  await session_service.create_session(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      state=state,
+  )
+
+  with pytest.raises(AlreadyExistsError):
+    await session_service.create_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        state={'app:tier': 'pro', 'user:theme': 'dark', 'draft': 'v2'},
+    )
+
+  session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  )
+  assert session.state == state
+
+
+@pytest.mark.asyncio
 async def test_create_session_with_padded_duplicate_id_raises_error():
   """Tests that InMemorySessionService checks the duplicate id after
   stripping it, so a whitespace-padded id maps to the same session as its
@@ -2357,6 +2387,94 @@ async def test_append_event_concurrent_stale_sessions_reject_stale_writer():
       assert event_values & {f'v{i}-1', f'v{i}-2'}
       assert None in event_values
     assert len(session_final.events) == iteration_count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state_prefix', ['app:', 'user:'])
+async def test_append_event_concurrent_shared_state_writes_all_land_on_sqlite_file(
+    tmp_path, state_prefix
+):
+  async with DatabaseSessionService(
+      f'sqlite+aiosqlite:///{tmp_path / "sessions.db"}'
+  ) as session_service:
+    sessions = [
+        await session_service.create_session(app_name='my_app', user_id='user')
+        for _ in range(5)
+    ]
+
+    await asyncio.gather(*(
+        session_service.append_event(
+            session,
+            Event(
+                invocation_id=f'inv{i}',
+                author='user',
+                actions=EventActions(state_delta={f'{state_prefix}k{i}': i}),
+            ),
+        )
+        for i, session in enumerate(sessions)
+    ))
+
+    session_final = await session_service.get_session(
+        app_name='my_app', user_id='user', session_id=sessions[0].id
+    )
+  assert {
+      key: value
+      for key, value in session_final.state.items()
+      if key.startswith(state_prefix)
+  } == {f'{state_prefix}k{i}': i for i in range(5)}
+
+
+@pytest.mark.asyncio
+async def test_append_event_rejects_stale_writer_from_another_service_on_sqlite_file(
+    tmp_path,
+):
+  db_url = f'sqlite+aiosqlite:///{tmp_path / "sessions.db"}'
+  async with (
+      DatabaseSessionService(db_url) as service_1,
+      DatabaseSessionService(db_url) as service_2,
+  ):
+    session = await service_1.create_session(app_name='my_app', user_id='user')
+    session_1 = await service_1.get_session(
+        app_name='my_app', user_id='user', session_id=session.id
+    )
+    session_2 = await service_2.get_session(
+        app_name='my_app', user_id='user', session_id=session.id
+    )
+
+    results = await asyncio.gather(
+        service_1.append_event(
+            session_1, Event(invocation_id='inv1', author='user')
+        ),
+        service_2.append_event(
+            session_2, Event(invocation_id='inv2', author='user')
+        ),
+        return_exceptions=True,
+    )
+  errors = [result for result in results if isinstance(result, Exception)]
+  assert len(errors) == 1
+  assert isinstance(errors[0], StaleSessionError)
+
+
+@pytest.mark.asyncio
+async def test_get_session_reads_while_another_connection_holds_write_lock_on_sqlite_file(
+    tmp_path,
+):
+  db_path = tmp_path / 'sessions.db'
+  async with DatabaseSessionService(
+      f'sqlite+aiosqlite:///{db_path}', connect_args={'timeout': 0.5}
+  ) as session_service:
+    session = await session_service.create_session(
+        app_name='my_app', user_id='user'
+    )
+    writer = sqlite3.connect(db_path, isolation_level=None)
+    try:
+      writer.execute('BEGIN IMMEDIATE')
+      session_read = await session_service.get_session(
+          app_name='my_app', user_id='user', session_id=session.id
+      )
+    finally:
+      writer.close()
+  assert session_read.id == session.id
 
 
 @pytest.mark.asyncio

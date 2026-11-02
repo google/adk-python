@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import inspect
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -31,15 +32,26 @@ from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutorConfig
 from google.adk.a2a.executor.config import ExecuteInterceptor
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
+from google.adk.models.base_llm import BaseLlm
+from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import RunConfig
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
-from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
 import pytest
 
-from tests.unittests import testing_utils
+
+class _StubLlm(BaseLlm):
+  """Minimal deterministic LLM stub for real Runner tests."""
+
+  model: str = "stub-llm"
+  responses: list[Part] = []
+
+  async def generate_content_async(self, llm_request, stream=False):
+    del llm_request, stream
+    part = self.responses.pop(0) if self.responses else Part(text="done")
+    yield LlmResponse(content=Content(role="model", parts=[part]))
 
 
 def _get_meta_val(metadata, key):
@@ -1470,7 +1482,7 @@ class TestA2aAgentExecutor:
     session_service = InMemorySessionService()
     agent = LlmAgent(
         name="task_agent",
-        model=testing_utils.MockModel.create(
+        model=_StubLlm(
             responses=[
                 Part.from_function_call(
                     name="finish_task",
@@ -1524,3 +1536,143 @@ class TestA2aAgentExecutor:
     else:
       assert part_dict.name == "finish_task"
       assert part_dict.response == {"result": "Task completed."}
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("force_new_version", [False, True])
+  @pytest.mark.parametrize(
+      "cancel_mode", ["same", "tapped", "separate", "transport"]
+  )
+  async def test_cancel_and_transport_abort_stop_tool_and_seal_session(
+      self, force_new_version: bool, cancel_mode: str
+  ) -> None:
+    """Test active cancel() and transport cancel stop tools and seal session."""
+    tool_started, tool_cancelled = asyncio.Event(), asyncio.Event()
+
+    async def slow_tool() -> str:
+      tool_started.set()
+      try:
+        await asyncio.sleep(60)
+      except asyncio.CancelledError:
+        tool_cancelled.set()
+        raise
+      return "done"
+
+    session_service = InMemorySessionService()
+    runner = Runner(
+        app_name="test-app",
+        agent=LlmAgent(
+            name="cancel_agent",
+            model=_StubLlm(
+                responses=[Part.from_function_call(name="slow_tool", args={})]
+            ),
+            tools=[slow_tool],
+        ),
+        session_service=session_service,
+    )
+    executor = A2aAgentExecutor(
+        runner=runner, force_new_version=force_new_version
+    )
+    self.mock_context.call_context = None
+    self.mock_context.metadata = None
+    self.mock_context.message.role = _compat.ROLE_USER
+    self.mock_event_queue.enqueue_event = AsyncMock()
+    is_tapped = cancel_mode == "tapped"
+    exec_queue = EventQueue() if is_tapped else self.mock_event_queue
+
+    exec_task = asyncio.create_task(
+        executor.execute(self.mock_context, exec_queue)
+    )
+    await asyncio.wait_for(tool_started.wait(), timeout=5.0)
+
+    if cancel_mode == "transport":
+      exec_task.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await exec_task
+    elif cancel_mode == "tapped":
+      tap_res = exec_queue.tap()
+      cancel_queue = await tap_res if inspect.isawaitable(tap_res) else tap_res
+      await executor.cancel(self.mock_context, cancel_queue)
+      await exec_task
+      tapped_calls = []
+      while not cancel_queue.queue.empty():
+        item = cancel_queue.queue.get_nowait()
+        tapped_calls.append(((item,),))
+      cancel_finals = _final_events(tapped_calls)
+      assert len(cancel_finals) == 1
+      assert cancel_finals[0].status.state == _compat.TS_CANCELED
+    else:
+      cancel_queue = (
+          self.mock_event_queue
+          if cancel_mode == "same"
+          else Mock(spec=EventQueue, enqueue_event=AsyncMock())
+      )
+      await executor.cancel(self.mock_context, cancel_queue)
+      await exec_task
+      exec_finals = _final_events(
+          self.mock_event_queue.enqueue_event.call_args_list
+      )
+      assert len(exec_finals) == 1
+      assert exec_finals[0].status.state == _compat.TS_CANCELED
+      if cancel_mode == "separate":
+        cancel_finals = _final_events(cancel_queue.enqueue_event.call_args_list)
+        assert len(cancel_finals) == 1
+        assert cancel_finals[0].status.state == _compat.TS_CANCELED
+
+    assert tool_cancelled.is_set()
+    session = await session_service.get_session(
+        app_name="test-app",
+        user_id="A2A_USER_test-context-id",
+        session_id="test-context-id",
+    )
+    assert session is not None
+    assert session.events[-1].error_code == "INVOCATION_ABORTED"
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("force_new_version", [False, True])
+  @pytest.mark.parametrize(
+      ("error_code", "expected_state"),
+      [
+          ("INVOCATION_ABORTED", _compat.TS_CANCELED),
+          ("INTERNAL_ERROR", _compat.TS_FAILED),
+      ],
+  )
+  async def test_invocation_aborted_event_maps_to_canceled(
+      self, force_new_version: bool, error_code: str, expected_state: object
+  ) -> None:
+    """Test Event(error_code='INVOCATION_ABORTED') resolves to TS_CANCELED."""
+    runner = Runner(
+        app_name="test-app",
+        agent=LlmAgent(name="abort_agent", model=_StubLlm()),
+        session_service=InMemorySessionService(),
+    )
+
+    async def fixed_sig_run_async(
+        user_id,
+        session_id,
+        new_message,
+        invocation_id=None,
+        state_delta=None,
+        run_config=None,
+    ):
+      del user_id, session_id, new_message
+      del invocation_id, state_delta, run_config
+      yield Event(
+          invocation_id="inv-abort", author="abort_agent", error_code=error_code
+      )
+
+    object.__setattr__(runner, "run_async", fixed_sig_run_async)
+    executor = A2aAgentExecutor(
+        runner=runner, force_new_version=force_new_version
+    )
+    self.mock_context.call_context = self.mock_context.metadata = None
+    self.mock_context.message.role = _compat.ROLE_USER
+    self.mock_event_queue.enqueue_event = AsyncMock()
+    await executor.execute(self.mock_context, self.mock_event_queue)
+    finals = _final_events(self.mock_event_queue.enqueue_event.call_args_list)
+    assert [e.status.state for e in finals] == [expected_state]
+    idle_queue = Mock(spec=EventQueue, enqueue_event=AsyncMock())
+    await executor.cancel(self.mock_context, idle_queue)
+    assert [
+        e.status.state
+        for e in _final_events(idle_queue.enqueue_event.call_args_list)
+    ] == [_compat.TS_CANCELED]
