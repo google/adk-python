@@ -139,6 +139,45 @@ class RedisSessionService(BaseSessionService):
         and not k.startswith(State.TEMP_PREFIX)
     }
 
+  async def _apply_scoped_state_delta(
+      self, client: Any, key: str, delta: dict[str, Any]
+  ) -> dict[str, Any]:
+    """Merges an app or user state delta into the state stored at `key`.
+
+    Every session of an app, or of a user, writes the same key. The read and
+    the write therefore run in one watched transaction, retried when another
+    writer changes the key in between: merging into a copy read earlier would
+    overwrite the keys that writer added.
+
+    Args:
+      client: The Redis client.
+      key: The app- or user-state key.
+      delta: The unprefixed keys to merge in. When empty, nothing is written.
+
+    Returns:
+      The state stored at `key` once the delta is applied.
+    """
+    if not delta:
+      raw = await client.get(key)
+      return cast(dict[str, Any], json.loads(raw)) if raw else {}
+
+    merged: dict[str, Any] = {}
+
+    async def merge(pipe: Any) -> None:
+      nonlocal merged
+      raw = await pipe.get(key)
+      merged = json.loads(raw) if raw else {}
+      merged.update(delta)
+      pipe.multi()
+      pipe.set(
+          key,
+          json.dumps(merged),
+          ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
+      )
+
+    await client.transaction(merge, key)
+    return merged
+
   async def create_session(
       self,
       *,
@@ -199,28 +238,10 @@ class RedisSessionService(BaseSessionService):
           f"Session {sid} already exists for user {user_id} in app {app_name}."
       )
 
-    app_raw, user_raw = await asyncio.gather(
-        client.get(app_key),
-        client.get(user_key),
+    current_app, current_user = await asyncio.gather(
+        self._apply_scoped_state_delta(client, app_key, app_state_delta),
+        self._apply_scoped_state_delta(client, user_key, user_state_delta),
     )
-    current_app = json.loads(app_raw) if app_raw else {}
-    current_user = json.loads(user_raw) if user_raw else {}
-
-    if app_state_delta:
-      current_app.update(app_state_delta)
-      await client.set(
-          app_key,
-          json.dumps(current_app),
-          ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
-      )
-
-    if user_state_delta:
-      current_user.update(user_state_delta)
-      await client.set(
-          user_key,
-          json.dumps(current_user),
-          ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
-      )
 
     # Return session with dynamically merged state (including app/user/temp state)
     merged_state = self._merge_state(current_app, current_user, session_state)

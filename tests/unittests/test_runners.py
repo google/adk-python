@@ -57,6 +57,7 @@ from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.base_session_service import GetSessionConfig
+from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.agent_tool import AgentTool
@@ -789,6 +790,68 @@ async def test_run_async_applies_state_delta_when_resuming_without_new_message_l
       if e.actions and e.actions.state_delta and not e.content
   ][0]
   assert delta_event.branch is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_runs_in_different_sessions_keep_every_scoped_delta(
+    tmp_path: Path,
+):
+  """Turns running at once in sibling sessions all persist their scoped state.
+
+  Setup: a runner on a SQLite-backed DatabaseSessionService, and four sessions
+    of one user, as from four browser tabs.
+  Act: every session runs a turn at once, each passing its own user: and app:
+    key in state_delta.
+  Assert: the user's state and the app's state hold every turn's key.
+  """
+  session_count = 4
+  agent = LlmAgent(
+      name="test_agent",
+      model=testing_utils.MockModel.create(responses=["ok"] * session_count),
+  )
+  session_service = DatabaseSessionService(
+      f"sqlite+aiosqlite:///{tmp_path / 'sessions.db'}"
+  )
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+
+  async def run_turn(tab: int) -> None:
+    async with aclosing(
+        runner.run_async(
+            user_id=TEST_USER_ID,
+            session_id=f"tab{tab}",
+            new_message=types.UserContent(f"hello from tab {tab}"),
+            state_delta={
+                f"user:tab{tab}_theme": "dark",
+                f"app:tab{tab}_opened": True,
+            },
+        )
+    ) as agen:
+      async for _ in agen:
+        pass
+
+  async with session_service:
+    for tab in range(session_count):
+      await session_service.create_session(
+          app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=f"tab{tab}"
+      )
+
+    await asyncio.gather(*(run_turn(tab) for tab in range(session_count)))
+
+    user_state = await session_service.get_user_state(
+        app_name=TEST_APP_ID, user_id=TEST_USER_ID
+    )
+    new_session = await session_service.create_session(
+        app_name=TEST_APP_ID, user_id="another_user"
+    )
+
+  assert user_state == {
+      f"tab{tab}_theme": "dark" for tab in range(session_count)
+  }
+  assert new_session.state == {
+      f"app:tab{tab}_opened": True for tab in range(session_count)
+  }
 
 
 @pytest.mark.asyncio
