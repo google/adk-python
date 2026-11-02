@@ -1793,6 +1793,42 @@ async def test_chunk_timing_is_left_to_the_genai_instrumentor(
   assert not telemetry.points(_TIME_PER_OUTPUT_CHUNK)
 
 
+@pytest.mark.asyncio
+async def test_stream_cut_short_before_its_aggregate_records_its_chunks(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """Chunks wait for the aggregate; without one they are all there is."""
+  monkeypatch.setenv(
+      "OTEL_SEMCONV_STABILITY_OPT_IN", "gen_ai_latest_experimental"
+  )
+  ctx = await _invocation_context(_agent())
+  model_response_event = mock.MagicMock()
+  model_response_event.id = "event-1"
+
+  with pytest.raises(RuntimeError):
+    async with _instrumentation.record_inference_telemetry(
+        LlmRequest(model="some-model"), ctx, model_response_event
+    ) as tel_ctx:
+      for text in ("text ", "response"):
+        tel_ctx.record_llm_response(
+            ctx,
+            _llm_response(
+                content=types.Content(
+                    role="model", parts=[types.Part(text=text)]
+                ),
+                partial=True,
+                finish_reason=None,
+            ),
+        )
+      raise RuntimeError("stream interrupted")
+
+  messages = tel_ctx.span.operation_details_attributes["gen_ai.output.messages"]
+  assert [part["content"] for part in messages[0]["parts"]] == [
+      "text ",
+      "response",
+  ]
+
+
 # --- record_invocation -----------------------------------------------------
 
 

@@ -611,6 +611,16 @@ class InferenceScope:
       exit_stack.close()
       self._inference_span_ended = True
 
+  def _record_unfinished_stream(
+      self, invocation_context: InvocationContext
+  ) -> None:
+    """Records the chunks of a stream cut short before its aggregate."""
+    if self._inference_span_ended:
+      return
+    for response in self._llm_responses:
+      if response.partial:
+        tracing.trace_inference_result(invocation_context, self.span, response)
+
   def _record_chunk_timing(self, response: LlmResponse) -> None:
     """Records the wait for ``response``, if it is a chunk being timed.
 
@@ -1139,7 +1149,10 @@ async def record_inference_telemetry(
       else:
         # A span that is not recorded has no start time.
         tel_ctx.span_started_ns = time.time_ns()
-      yield tel_ctx
+      try:
+        yield tel_ctx
+      finally:
+        tel_ctx._record_unfinished_stream(invocation_context)  # pylint: disable=protected-access
   finally:
     context_api.detach(token)
     inference_error = sys.exc_info()[1]
