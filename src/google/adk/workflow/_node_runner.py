@@ -492,7 +492,6 @@ class NodeRunner:
   async def _flush_output_and_deltas(self, ctx: Context) -> None:
     """Emit deferred output and/or unflushed state/artifact deltas."""
     from ..events.event import Event
-    from ..events.event_actions import EventActions
 
     state_delta = ctx.actions.state_delta
     artifact_delta = ctx.actions.artifact_delta
@@ -514,13 +513,7 @@ class NodeRunner:
         output=ctx._output_value if has_deferred_output else None,
         route=ctx._route_value if has_unflushed_route else None,
     )
-    if has_deltas:
-      event.actions = EventActions(
-          state_delta=dict(state_delta),
-          artifact_delta=dict(artifact_delta),
-      )
-      state_delta.clear()
-      artifact_delta.clear()
+    self._flush_deltas(event, ctx)
 
     self._enrich_event(event, ctx)
     await ctx._invocation_context._enqueue_event(event)

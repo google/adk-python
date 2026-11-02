@@ -20,6 +20,8 @@ and that resume state (prior_output, prior_interrupt_ids) is carried
 forward correctly.
 """
 
+from collections.abc import AsyncGenerator
+from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -273,6 +275,41 @@ async def test_ctx_route_set_directly():
   ).run()
 
   assert child_ctx.route == 'branch_a'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('with_state', [False, True])
+@pytest.mark.parametrize('with_artifact', [False, True])
+async def test_deferred_route_is_emitted_with_pending_deltas(
+    with_state: bool, with_artifact: bool
+) -> None:
+  """A final event keeps its route alongside state and artifact updates."""
+
+  class _Node(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Event, None]:
+      ctx.output = 'result'
+      ctx.route = 'branch_a'
+      if with_state:
+        ctx.state['visited'] = True
+      if with_artifact:
+        ctx.actions.artifact_delta['report.txt'] = 1
+      return
+      yield
+
+  parent_ctx, events = _make_ctx()
+  await NodeRunner(node=_Node(name='router'), parent_ctx=parent_ctx).run()
+
+  assert len(events) == 1
+  event = events[0]
+  assert event.output == 'result'
+  assert event.actions.route == 'branch_a'
+  assert event.actions.state_delta == ({'visited': True} if with_state else {})
+  assert event.actions.artifact_delta == (
+      {'report.txt': 1} if with_artifact else {}
+  )
 
 
 # --- ctx.interrupt_ids ---
