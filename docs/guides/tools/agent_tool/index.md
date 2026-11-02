@@ -142,8 +142,9 @@ services:
   artifact, it reads from or writes to the parent's session.
 - The credential service is the parent's, so a tool that needs a user
   credential finds the one the parent already obtained.
-- The memory service is new and empty, so memory tools such as `load_memory`
-  find nothing inside the wrapped agent.
+- The memory service is the parent's, so memory tools such as `load_memory` see
+  what the app has stored, and what the wrapped agent saves goes to that same
+  store. ADK creates an empty one only when the parent has none.
 - The parent's plugins run for the wrapped agent too, unless you set
   `include_plugins=False`.
 
