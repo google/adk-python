@@ -451,6 +451,77 @@ async def test_sqlite_session_service_memory_rolls_back_failed_operation() -> (
 
 
 @pytest.mark.asyncio
+async def test_sqlite_session_service_rejects_concurrent_stale_writer(
+    tmp_path: Path,
+) -> None:
+  """Only one of two concurrent appends from copies of a session commits."""
+  service = SqliteSessionService(str(tmp_path / 'sessions.db'))
+  session = await service.create_session(app_name='app', user_id='user')
+  session_1 = await service.get_session(
+      app_name='app', user_id='user', session_id=session.id
+  )
+  session_2 = await service.get_session(
+      app_name='app', user_id='user', session_id=session.id
+  )
+
+  results = await asyncio.gather(
+      service.append_event(
+          session_1, Event(invocation_id='inv1', author='user')
+      ),
+      service.append_event(
+          session_2, Event(invocation_id='inv2', author='user')
+      ),
+      return_exceptions=True,
+  )
+
+  errors = [result for result in results if isinstance(result, Exception)]
+  assert len(errors) == 1
+  assert isinstance(errors[0], StaleSessionError)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_stale_append_releases_reused_connection() -> None:
+  """A rejected append leaves no open transaction on a reused connection."""
+
+  class _ReusedConnectionService(SqliteSessionService):
+
+    @asynccontextmanager
+    async def _get_db_connection(self):
+      if self._memory_conn is None:
+        async with super()._get_db_connection():
+          pass
+      yield self._memory_conn
+
+  service = _ReusedConnectionService(db_path=':memory:')
+  try:
+    session = await service.create_session(app_name='app', user_id='user')
+    stale_session = await service.get_session(
+        app_name='app', user_id='user', session_id=session.id
+    )
+    await service.append_event(
+        session, Event(invocation_id='inv1', author='user')
+    )
+
+    with pytest.raises(StaleSessionError):
+      await service.append_event(
+          stale_session, Event(invocation_id='inv2', author='user')
+      )
+    assert not service._memory_conn.in_transaction
+
+    duplicate = Event(id='dup', invocation_id='inv3', author='user')
+    await service.append_event(session, duplicate)
+    with pytest.raises(sqlite3.IntegrityError):
+      await service.append_event(session, duplicate)
+    assert not service._memory_conn.in_transaction
+
+    await service.append_event(
+        session, Event(invocation_id='inv4', author='user')
+    )
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
 async def test_get_empty_session(session_service):
   assert not await session_service.get_session(
       app_name='my_app', user_id='test_user', session_id='123'
