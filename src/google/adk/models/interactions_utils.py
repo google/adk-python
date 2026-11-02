@@ -109,6 +109,7 @@ if TYPE_CHECKING:
   from google.genai.interactions import FunctionResultStepResultUnionParam
   from google.genai.interactions import ImageContentMimeType
   from google.genai.interactions import InteractionSseEventInteraction
+  from google.genai.interactions import ThinkingLevel
   from google.genai.interactions import VideoContentMimeType
 
   from ..tools._remote_mcp_server import RemoteMcpServer
@@ -1400,6 +1401,10 @@ def build_generation_config(
       # Not a literal key: which of these the TypedDict declares depends on
       # the installed google-genai.
       generation_config[name] = value  # type: ignore[literal-required]
+  thinking = config.thinking_config
+  level = thinking.thinking_level if thinking else None
+  if level and level != types.ThinkingLevel.THINKING_LEVEL_UNSPECIFIED:
+    generation_config['thinking_level'] = cast('ThinkingLevel', level.lower())
 
   undeclared = _unwarned_params_set_on(config, _UNDECLARED_SAMPLING_PARAMS)
   if undeclared:

@@ -1596,6 +1596,21 @@ class TestBuildGenerationConfig:
     result = interactions_utils.build_generation_config(config)
     assert result == {}
 
+  @pytest.mark.parametrize(
+      ('level', 'expected'),
+      [
+          (types.ThinkingLevel.HIGH, {'thinking_level': 'high'}),
+          (types.ThinkingLevel.THINKING_LEVEL_UNSPECIFIED, {}),
+      ],
+  )
+  def test_thinking_level(self, level, expected):
+    """A thinking level is sent in lowercase; an unspecified one is not."""
+    config = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_level=level)
+    )
+
+    assert interactions_utils.build_generation_config(config) == expected
+
   def test_every_key_is_a_real_generation_config_field(self):
     """Against the installed client, exactly its declared keys are sent.
 
@@ -1611,13 +1626,19 @@ class TestBuildGenerationConfig:
         presence_penalty=0.5,
         frequency_penalty=0.3,
         seed=7,
+        thinking_config=types.ThinkingConfig(
+            thinking_level=types.ThinkingLevel.LOW
+        ),
     )
     result = interactions_utils.build_generation_config(config)
     supported = set(typing.get_type_hints(interactions.GenerationConfigParam))
     sampling = {'temperature', 'top_p', 'top_k'}
-    assert set(result) == {'max_output_tokens', 'stop_sequences', 'seed'} | (
-        sampling & supported
-    )
+    assert set(result) == {
+        'max_output_tokens',
+        'stop_sequences',
+        'seed',
+        'thinking_level',
+    } | (sampling & supported)
     assert set(result) <= supported
 
   def test_dropped_parameters_are_the_ones_the_request_cannot_carry(self):
