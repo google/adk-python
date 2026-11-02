@@ -153,6 +153,21 @@ _SCHEMA_METADATA_KEYS = frozenset({
 })
 
 
+def _json_schema_equal(left: object, right: object) -> bool:
+  """Compares JSON values, keeping booleans distinct from numbers."""
+  if isinstance(left, bool) or isinstance(right, bool):
+    return type(left) is type(right) and left == right
+  if isinstance(left, list) and isinstance(right, list):
+    return len(left) == len(right) and all(
+        _json_schema_equal(a, b) for a, b in zip(left, right)
+    )
+  if isinstance(left, dict) and isinstance(right, dict):
+    return left.keys() == right.keys() and all(
+        _json_schema_equal(left[key], right[key]) for key in left
+    )
+  return left == right
+
+
 def lowercase_schema_types(value: object) -> None:
   """Normalizes GenAI type names and nullability for JSON Schema, in place.
 
@@ -245,19 +260,26 @@ def lowercase_schema_types(value: object) -> None:
     if "const" in value:
       constant = value.pop("const")
       value["enum"] = (
-          [constant] if "enum" not in value or constant in value["enum"] else []
+          [constant]
+          if "enum" not in value
+          or any(_json_schema_equal(constant, item) for item in value["enum"])
+          else []
       )
-    if "enum" in value and None not in value["enum"]:
+    if "enum" in value and not any(
+        _json_schema_equal(None, item) for item in value["enum"]
+    ):
       value["enum"].append(None)
     if "type" in value:
       return
     for key in ("anyOf", "any_of"):
       if key in value:
         value[key].append({"type": "null"})
-        return
+    # Untyped type-specific keywords already accept null. Keep their children
+    # at the original paths so JSON Pointer references continue to resolve.
+    return
 
-  # Rare untyped constrained schemas (and null-rejecting applicators above)
-  # still need a union. Metadata and definitions stay at the original node.
+  # Null-rejecting applicators need a union. Metadata and definitions stay at
+  # the original node.
   constraints = {
       key: value.pop(key)
       for key in tuple(value)

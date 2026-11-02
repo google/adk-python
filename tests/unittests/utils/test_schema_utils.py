@@ -540,6 +540,76 @@ class TestLowercaseSchemaTypes:
     assert not validator.is_valid(invalid)
 
   @pytest.mark.parametrize(
+      "constant, enum, valid, invalid",
+      [
+          (0, [False], None, 0),
+          (False, [0.0], None, False),
+          ([0], [[False]], None, [0]),
+          ({"n": 0}, [{"n": False}], None, {"n": 0}),
+          (1, [1.0], 1, False),
+          ([1], [[1.0]], [1], [False]),
+          ({"n": 1}, [{"n": 1.0}], {"n": 1}, {"n": False}),
+      ],
+  )
+  def test_nullable_const_enum_uses_json_equality(
+      self, constant, enum, valid, invalid
+  ):
+    schema = {"const": constant, "enum": enum, "nullable": True}
+
+    lowercase_schema_types(schema)
+
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    assert validator.is_valid(None)
+    assert validator.is_valid(valid)
+    assert not validator.is_valid(invalid)
+
+  @pytest.mark.parametrize(
+      "valid, invalid",
+      [({"n": "x"}, {"n": 5}), (2, 1)],
+  )
+  def test_untyped_nullable_preserves_type_specific_constraints(
+      self, valid, invalid
+  ):
+    schema = {
+        "nullable": True,
+        "properties": {"n": {"type": "STRING"}},
+        "minimum": 2,
+    }
+
+    lowercase_schema_types(schema)
+
+    assert schema == {
+        "properties": {"n": {"type": "string"}},
+        "minimum": 2,
+    }
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    assert validator.is_valid(None)
+    assert validator.is_valid(valid)
+    assert not validator.is_valid(invalid)
+
+  def test_untyped_nullable_preserves_descendant_json_pointer(self):
+    schema = {
+        "type": "OBJECT",
+        "properties": {
+            "u": {
+                "nullable": True,
+                "properties": {"n": {"type": "STRING"}},
+            },
+            "r": {"$ref": "#/properties/u/properties/n"},
+        },
+    }
+
+    lowercase_schema_types(schema)
+
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    assert validator.is_valid({"r": "x"})
+    assert validator.is_valid({"u": None, "r": "x"})
+    assert not validator.is_valid({"r": 5})
+
+  @pytest.mark.parametrize(
       "schema, expected",
       [
           ({"type": "STRING"}, {"type": ["string", "null"]}),
