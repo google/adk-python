@@ -449,13 +449,21 @@ class ContainerCodeExecutor(BaseCodeExecutor):
       return []
     tar_buffer = io.BytesIO(tar_bytes)
     output_files = []
+    total_output_bytes = 0
 
     with tarfile.open(fileobj=tar_buffer, mode='r') as tar:
       for member in tar.getmembers():
-        if member.isfile():
+        if member.isfile() or member.islnk():
           file_obj = tar.extractfile(member)
           if file_obj:
             content = file_obj.read()
+            # Hard links repeat file contents without growing the TAR archive.
+            total_output_bytes += len(content)
+            if total_output_bytes > _MAX_OUTPUT_ARCHIVE_BYTES:
+              raise RuntimeError(
+                  f'Output files in {self.output_dir} exceed'
+                  f' {_MAX_OUTPUT_ARCHIVE_BYTES} bytes after resolving links.'
+              )
             # The archive's top-level entry is output_dir itself.
             file_name = member.name.partition('/')[2]
             if file_name.startswith('user:'):

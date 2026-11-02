@@ -697,6 +697,87 @@ def test_execute_code_with_output_files(mock_docker):
 
 
 @mock.patch('google.adk.code_executors.container_code_executor.docker')
+def test_execute_code_with_hardlinked_output_files(mock_docker):
+  """Hard-linked output files retain both names and contents."""
+  client = _mock_docker_client()
+  container = client.containers.run.return_value
+  mock_docker.from_env.return_value = client
+  executor = ContainerCodeExecutor(image='test-image:latest')
+
+  content = b'shared file content'
+  tar_buffer = io.BytesIO()
+
+  with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
+    original = tarfile.TarInfo(name='outputs/original.txt')
+    original.size = len(content)
+    tar.addfile(original, io.BytesIO(content))
+
+    linked = tarfile.TarInfo(name='outputs/linked.txt')
+    linked.type = tarfile.LNKTYPE
+    linked.linkname = 'outputs/original.txt'
+    tar.addfile(linked)
+
+    symlink = tarfile.TarInfo(name='outputs/symlink.txt')
+    symlink.type = tarfile.SYMTYPE
+    symlink.linkname = 'original.txt'
+    tar.addfile(symlink)
+
+  container.get_archive.return_value = (
+      [tar_buffer.getvalue()],
+      mock.MagicMock(),
+  )
+
+  context = mock.MagicMock(spec=InvocationContext)
+  result = executor.execute_code(
+      context,
+      CodeExecutionInput(code='print("test")'),
+  )
+
+  assert result.output_files == [
+      File(
+          name='original.txt',
+          content=content,
+          mime_type='text/plain',
+      ),
+      File(
+          name='linked.txt',
+          content=content,
+          mime_type='text/plain',
+      ),
+  ]
+
+
+@mock.patch.object(container_code_executor, '_MAX_OUTPUT_ARCHIVE_BYTES', 16_384)
+@mock.patch('google.adk.code_executors.container_code_executor.docker')
+def test_execute_code_limits_hardlink_expansion(mock_docker):
+  """Hard links cannot bypass the output size budget with duplicate data."""
+  client = _mock_docker_client()
+  container = client.containers.run.return_value
+  mock_docker.from_env.return_value = client
+  executor = ContainerCodeExecutor(image='test-image:latest')
+
+  content = b'x' * 4096
+  tar_buffer = io.BytesIO()
+  with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
+    original = tarfile.TarInfo(name='outputs/original.bin')
+    original.size = len(content)
+    tar.addfile(original, io.BytesIO(content))
+    for index in range(5):
+      linked = tarfile.TarInfo(name=f'outputs/linked-{index}.bin')
+      linked.type = tarfile.LNKTYPE
+      linked.linkname = 'outputs/original.bin'
+      tar.addfile(linked)
+
+  archive_bytes = tar_buffer.getvalue()
+  assert len(archive_bytes) < 16_384
+  container.get_archive.return_value = ([archive_bytes], mock.MagicMock())
+  context = mock.MagicMock(spec=InvocationContext)
+
+  with pytest.raises(RuntimeError, match='after resolving links'):
+    executor.execute_code(context, CodeExecutionInput(code='print("test")'))
+
+
+@mock.patch('google.adk.code_executors.container_code_executor.docker')
 def test_execute_code_reraises_non_404_archive_error(mock_docker):
   """Non-404 APIErrors from get_archive, even without a response, propagate."""
   client = _mock_docker_client()
