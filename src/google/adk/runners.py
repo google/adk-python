@@ -1177,6 +1177,13 @@ class Runner:
     if new_message and new_message.role != 'user':
       new_message = types.Content(role='user', parts=new_message.parts)
 
+    if not invocation_id and new_message is None:
+      raise ValueError(
+          'Running an agent requires either a new_message or an '
+          'invocation_id to resume a previous invocation. '
+          f'Session: {session_id}, User: {user_id}'
+      )
+
     from .agents.llm_agent import LlmAgent
     from .workflow._base_node import BaseNode
 

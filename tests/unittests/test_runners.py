@@ -7441,5 +7441,53 @@ async def test_run_async_post_invocation_compaction_aborts_inflight():
   assert not [e for e in session.events if e.actions.compaction]
 
 
+async def test_run_async_llm_agent_without_message_or_invocation_id_raises_value_error():
+  """Runner.run_async must raise ValueError when both new_message and invocation_id are None (#7934)."""
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name="test_app",
+      agent=MockLlmAgent("test_agent"),
+      session_service=session_service,
+      auto_create_session=True,
+  )
+  with pytest.raises(
+      ValueError,
+      match=r"Running an agent requires either a new_message or an invocation_id",
+  ):
+    agen = runner.run_async(
+        user_id="u",
+        session_id="s",
+        new_message=None,
+        invocation_id=None,
+    )
+    async for _ in agen:
+      pass
+
+
+async def test_run_async_base_node_without_message_or_invocation_id_raises_value_error():
+  """Runner.run_async with BaseNode root must raise ValueError when both new_message and invocation_id are None (#7934)."""
+  from google.adk.workflow._base_node import BaseNode
+
+  session_service = InMemorySessionService()
+  node = BaseNode(name="test_node")
+  runner = Runner(
+      app=App(name="test_app", root_agent=node),
+      session_service=session_service,
+      auto_create_session=True,
+  )
+  with pytest.raises(
+      ValueError,
+      match=r"Running an agent requires either a new_message or an invocation_id",
+  ):
+    agen = runner.run_async(
+        user_id="u",
+        session_id="s",
+        new_message=None,
+        invocation_id=None,
+    )
+    async for _ in agen:
+      pass
+
+
 if __name__ == "__main__":
   pytest.main([__file__])
