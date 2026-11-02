@@ -1388,7 +1388,7 @@ class TestConvertInteractionToLlmResponse:
     assert result.usage_metadata.total_token_count == 120
     assert result.model_version == 'gemini-2.5-flash'
 
-  def test_failed_response(self):
+  def test_failed_response(self) -> None:
     """Test converting a failed response."""
     interaction = Interaction(
         id='interaction_123',
@@ -1396,14 +1396,79 @@ class TestConvertInteractionToLlmResponse:
         created=datetime.now(timezone.utc).isoformat(),
         updated=datetime.now(timezone.utc).isoformat(),
         steps=[],
+        errors=[
+            interactions.Error(code='INVALID_REQUEST', message='Bad request')
+        ],
     )
-    interaction.error = MagicMock(code='INVALID_REQUEST', message='Bad request')
 
     result = interactions_utils.convert_interaction_to_llm_response(interaction)
 
     assert result.interaction_id == 'interaction_123'
     assert result.error_code == 'INVALID_REQUEST'
     assert result.error_message == 'Bad request'
+
+  @pytest.mark.parametrize(
+      ('errors', 'expected_code', 'expected_message'),
+      [
+          pytest.param(
+              [
+                  interactions.Error(
+                      code='RESOURCE_EXHAUSTED',
+                      message='Quota exceeded for model',
+                  ),
+                  interactions.Error(
+                      code='INVALID_ARGUMENT',
+                      message='Retry after quota reset',
+                  ),
+              ],
+              'RESOURCE_EXHAUSTED',
+              'Quota exceeded for model; Retry after quota reset',
+              id='multiple_errors_uses_first_code_and_joins_messages',
+          ),
+          pytest.param(
+              [
+                  interactions.Error(message='First detail'),
+                  interactions.Error(code='PERMISSION_DENIED'),
+              ],
+              'PERMISSION_DENIED',
+              'First detail',
+              id='partial_error_fields',
+          ),
+          pytest.param(
+              [interactions.Error()],
+              'UNKNOWN_ERROR',
+              'Unknown error',
+              id='empty_error_fields',
+          ),
+          pytest.param(
+              None,
+              'UNKNOWN_ERROR',
+              'Unknown error',
+              id='no_errors',
+          ),
+      ],
+  )
+  def test_failed_response_error_variants(
+      self,
+      errors: list[interactions.Error] | None,
+      expected_code: str,
+      expected_message: str,
+  ) -> None:
+    """Failed interactions surface SDK errors and fall back cleanly."""
+    interaction = Interaction(
+        id='interaction_err',
+        status='failed',
+        created=datetime.now(timezone.utc).isoformat(),
+        updated=datetime.now(timezone.utc).isoformat(),
+        steps=[],
+        errors=errors,
+    )
+
+    result = interactions_utils.convert_interaction_to_llm_response(interaction)
+
+    assert result.interaction_id == 'interaction_err'
+    assert result.error_code == expected_code
+    assert result.error_message == expected_message
 
   def test_requires_action_response(self):
     """Test converting a requires_action response (function call)."""
@@ -3959,6 +4024,47 @@ class TestBuildInteractionsResponseLog:
     log = interactions_utils.build_interactions_response_log(interaction)
 
     assert '  function_call: get_weather({"city": "London"})' in log
+
+  @pytest.mark.parametrize(
+      ('errors', 'expected_error_section'),
+      [
+          pytest.param(
+              [
+                  interactions.Error(
+                      code='RESOURCE_EXHAUSTED',
+                      message='Quota exceeded for model',
+                  )
+              ],
+              'Error:\nRESOURCE_EXHAUSTED: Quota exceeded for model\n',
+              id='single_error',
+          ),
+          pytest.param(
+              [
+                  interactions.Error(
+                      code='INVALID_ARGUMENT', message='Bad field'
+                  ),
+                  interactions.Error(),
+              ],
+              'Error:\nINVALID_ARGUMENT: Bad field\nunknown: unknown\n',
+              id='multiple_and_unset_error_fields',
+          ),
+      ],
+  )
+  def test_failed_interaction_logs_errors(
+      self,
+      errors: list[interactions.Error],
+      expected_error_section: str,
+  ) -> None:
+    """Recorded interaction errors are rendered in the Error log section."""
+    interaction = Interaction(
+        id='interaction_failed',
+        status='failed',
+        errors=errors,
+    )
+
+    log = interactions_utils.build_interactions_response_log(interaction)
+
+    assert expected_error_section in log
 
 
 class TestBuildInteractionsEventLog:
