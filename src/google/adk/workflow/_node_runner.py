@@ -45,7 +45,11 @@ logger = logging.getLogger("google_adk." + __name__)
 
 def _has_non_output_content(event: Event) -> bool:
   if event.actions:
-    if event.actions.state_delta or event.actions.artifact_delta:
+    if (
+        event.actions.state_delta
+        or event.actions.artifact_delta
+        or event.actions.route is not None
+    ):
       return True
   return False
 

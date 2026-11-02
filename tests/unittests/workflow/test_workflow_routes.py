@@ -22,6 +22,7 @@ from google.adk.apps.app import App
 from google.adk.events.event import Event
 from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
+from google.adk.workflow import FunctionNode
 from google.adk.workflow import node
 from google.adk.workflow import START
 from google.adk.workflow._graph import DEFAULT_ROUTE
@@ -779,11 +780,11 @@ async def test_fan_in_out_with_route(request: pytest.FixtureRequest):
     await runner.run_async(testing_utils.get_user_content('start'))
 
 
-@pytest.mark.parametrize('deferred_deltas', [False, True])
+@pytest.mark.parametrize('router_kind', ['event', 'deferred', 'delegated'])
 @pytest.mark.asyncio
 async def test_parent_retry_reruns_sub_workflow_along_recorded_route(
     request: pytest.FixtureRequest,
-    deferred_deltas: bool,
+    router_kind: str,
 ) -> None:
   """A parent's retry reruns a sub-workflow along its recorded route."""
   runs = {'router': 0, 'flaky_b': 0, 'node_c': 0}
@@ -813,11 +814,23 @@ async def test_parent_retry_reruns_sub_workflow_along_recorded_route(
       return
       yield
 
-  router = (
-      DeferredRouter(name='router')
-      if deferred_deltas
-      else TestingNode(name='router', output='routed', route=pick_route)
-  )
+  def output_source() -> str:
+    return 'routed'
+
+  child = FunctionNode(func=output_source)
+
+  async def delegated_router(ctx: Context) -> Event:
+    output = await ctx.run_node(child, use_as_output=True)
+    return Event(output=output, route=pick_route(ctx, None))
+
+  if router_kind == 'deferred':
+    router = DeferredRouter(name='router')
+  elif router_kind == 'delegated':
+    router = FunctionNode(
+        name='router', func=delegated_router, rerun_on_resume=True
+    )
+  else:
+    router = TestingNode(name='router', output='routed', route=pick_route)
   inner_wf = Workflow(
       name='inner_wf',
       edges=[(START, router), (router, {'go_b': flaky_b, 'go_c': node_c})],
@@ -838,5 +851,7 @@ async def test_parent_retry_reruns_sub_workflow_along_recorded_route(
 
   assert runs == {'router': 1, 'flaky_b': 2, 'node_c': 0}
   assert 'b_done' in [e.output for e in events if e.output is not None]
-  if deferred_deltas:
+  if router_kind == 'deferred':
     assert runner.session.state['route_visits'] == 1
+  if router_kind == 'delegated':
+    assert sum(event.output == 'routed' for event in events) == 1
