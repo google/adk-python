@@ -466,6 +466,17 @@ class TestSchemaToJsonSchema:
     ref = result["items"]["$ref"].rsplit("/", 1)[-1]
     assert result["$defs"][ref]["properties"]["name"]["type"] == "string"
 
+  def test_types_schema_is_converted_to_json_schema(self):
+    schema = types.Schema(
+        type="OBJECT",
+        properties={"answer": types.Schema(type="STRING")},
+    )
+    result = schema_to_json_schema(schema)
+    assert result == {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+    }
+
 
 class TestLowercaseSchemaTypes:
   """Tests for lowercase_schema_types function."""
