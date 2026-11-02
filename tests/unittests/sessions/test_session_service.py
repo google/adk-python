@@ -2390,6 +2390,94 @@ async def test_append_event_concurrent_stale_sessions_reject_stale_writer():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('state_prefix', ['app:', 'user:'])
+async def test_append_event_concurrent_shared_state_writes_all_land_on_sqlite_file(
+    tmp_path, state_prefix
+):
+  async with DatabaseSessionService(
+      f'sqlite+aiosqlite:///{tmp_path / "sessions.db"}'
+  ) as session_service:
+    sessions = [
+        await session_service.create_session(app_name='my_app', user_id='user')
+        for _ in range(5)
+    ]
+
+    await asyncio.gather(*(
+        session_service.append_event(
+            session,
+            Event(
+                invocation_id=f'inv{i}',
+                author='user',
+                actions=EventActions(state_delta={f'{state_prefix}k{i}': i}),
+            ),
+        )
+        for i, session in enumerate(sessions)
+    ))
+
+    session_final = await session_service.get_session(
+        app_name='my_app', user_id='user', session_id=sessions[0].id
+    )
+  assert {
+      key: value
+      for key, value in session_final.state.items()
+      if key.startswith(state_prefix)
+  } == {f'{state_prefix}k{i}': i for i in range(5)}
+
+
+@pytest.mark.asyncio
+async def test_append_event_rejects_stale_writer_from_another_service_on_sqlite_file(
+    tmp_path,
+):
+  db_url = f'sqlite+aiosqlite:///{tmp_path / "sessions.db"}'
+  async with (
+      DatabaseSessionService(db_url) as service_1,
+      DatabaseSessionService(db_url) as service_2,
+  ):
+    session = await service_1.create_session(app_name='my_app', user_id='user')
+    session_1 = await service_1.get_session(
+        app_name='my_app', user_id='user', session_id=session.id
+    )
+    session_2 = await service_2.get_session(
+        app_name='my_app', user_id='user', session_id=session.id
+    )
+
+    results = await asyncio.gather(
+        service_1.append_event(
+            session_1, Event(invocation_id='inv1', author='user')
+        ),
+        service_2.append_event(
+            session_2, Event(invocation_id='inv2', author='user')
+        ),
+        return_exceptions=True,
+    )
+  errors = [result for result in results if isinstance(result, Exception)]
+  assert len(errors) == 1
+  assert isinstance(errors[0], StaleSessionError)
+
+
+@pytest.mark.asyncio
+async def test_get_session_reads_while_another_connection_holds_write_lock_on_sqlite_file(
+    tmp_path,
+):
+  db_path = tmp_path / 'sessions.db'
+  async with DatabaseSessionService(
+      f'sqlite+aiosqlite:///{db_path}', connect_args={'timeout': 0.5}
+  ) as session_service:
+    session = await session_service.create_session(
+        app_name='my_app', user_id='user'
+    )
+    writer = sqlite3.connect(db_path, isolation_level=None)
+    try:
+      writer.execute('BEGIN IMMEDIATE')
+      session_read = await session_service.get_session(
+          app_name='my_app', user_id='user', session_id=session.id
+      )
+    finally:
+      writer.close()
+  assert session_read.id == session.id
+
+
+@pytest.mark.asyncio
 async def test_append_event_allows_timestamp_drift_for_current_session():
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
   try:
