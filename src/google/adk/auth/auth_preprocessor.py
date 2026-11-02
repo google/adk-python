@@ -25,6 +25,7 @@ from ..agents.readonly_context import ReadonlyContext
 from ..events.event import Event
 from ..flows.llm_flows._base_llm_processor import BaseLlmRequestProcessor
 from ..flows.llm_flows.tools._functions import handle_function_calls_async
+from ..flows.llm_flows.tools._toolset_auth import resolve_toolset_credentials
 from ..models.llm_request import LlmRequest
 from ..sessions.state import State
 from ..utils._function_call_names import REQUEST_EUC_FUNCTION_CALL_NAME
@@ -189,6 +190,9 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
         # (potentially differently-scoped) canonical_tools.
         if event.author != agent.name:
           continue
+        # This processor runs before `toolset_auth`, and an authenticated
+        # toolset lists its tools with the credential that resolves.
+        await resolve_toolset_credentials(invocation_context, agent)
         if function_response_event := await handle_function_calls_async(
             invocation_context,
             event,
