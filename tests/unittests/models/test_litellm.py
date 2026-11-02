@@ -19,6 +19,10 @@ import logging
 import os
 import sys
 import tempfile
+from typing import Annotated
+from typing import Callable
+from typing import ForwardRef
+from typing import Literal
 import unittest
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
@@ -62,6 +66,7 @@ from google.adk.models.lite_llm import _model_response_to_generate_content_respo
 from google.adk.models.lite_llm import _parse_deepseek_tool_calls_from_text
 from google.adk.models.lite_llm import _parse_tool_call_arguments
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
+from google.adk.models.lite_llm import _prepare_litellm_response_format
 from google.adk.models.lite_llm import _redact_file_uri_for_log
 from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
 from google.adk.models.lite_llm import _safe_json_serialize
@@ -14023,3 +14028,332 @@ class TestParseToolCallArguments:
     with caplog.at_level(logging.WARNING, logger="google_adk"):
       _parse_tool_call_arguments('{"a": 1}', function_name="test_fn")
     assert "Repaired" not in caplog.text
+
+
+@pytest.mark.parametrize("model", ["openai/gpt-4o", "gemini/gemini-2.5-flash"])
+@pytest.mark.parametrize(
+    "schema, expected",
+    [
+        (
+            list[_StructuredOutput],
+            {"type": "array", "items": {"$ref": "#/$defs/_StructuredOutput"}},
+        ),
+        (int, {"type": "integer"}),
+        (
+            dict[str, int],
+            {"type": "object", "additionalProperties": {"type": "integer"}},
+        ),
+        (Literal["yes", "no"], {"type": "string", "enum": ["yes", "no"]}),
+        (
+            {"type": "array", "items": {"type": "integer"}},
+            {"type": "array", "items": {"type": "integer"}},
+        ),
+    ],
+)
+def test_non_basemodel_output_schema_response_format(
+    schema, expected, model, caplog
+):
+  """All supported output types reach LiteLLM, with object roots for strict mode."""
+  formatted = _to_litellm_response_format(schema, model=model)
+
+  if schema == dict[str, int] and not model.startswith("gemini/"):
+    assert formatted is None
+    assert "Unsupported response_schema type" in caplog.text
+    return
+  if model.startswith("gemini/"):
+    assert formatted["type"] == "json_object"
+    actual = dict(formatted["response_schema"])
+  else:
+    assert formatted["type"] == "json_schema"
+    assert formatted["json_schema"]["strict"] is True
+    actual = dict(formatted["json_schema"]["schema"])
+  defs = actual.pop("$defs", None)
+  if schema == list[_StructuredOutput]:
+    assert "_StructuredOutput" in defs
+  if not model.startswith("gemini/") and expected["type"] != "object":
+    assert actual == {
+        "type": "object",
+        "properties": {"response": expected},
+        "required": ["response"],
+        "additionalProperties": False,
+    }
+  else:
+    assert actual == expected
+
+
+@pytest.mark.parametrize("model", ["openai/gpt-4o", "gemini/gemini-2.5-flash"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "schema, wire_text, expected",
+    [
+        (int, '{"response": 7}', "7"),
+        (int, '{"response": 0}', "0"),
+        (
+            list[_StructuredOutput],
+            '{"response": [{"value": 2}]}',
+            '[{"value": 2}]',
+        ),
+        (Literal["yes", "no"], '{"response": "yes"}', '"yes"'),
+        (
+            {"type": "array", "items": {"type": "integer"}},
+            '{"response": []}',
+            "[]",
+        ),
+        (_StructuredOutput, '{"value": 7}', '{"value": 7}'),
+        (
+            {"type": "object", "properties": {"response": {"type": "integer"}}},
+            '{"response": 7}',
+            '{"response": 7}',
+        ),
+        (dict[str, int], '{"response": 7}', '{"response": 7}'),
+        (int, '{"response":', '{"response":'),
+        (int, '{"other": 7}', '{"other": 7}'),
+    ],
+)
+async def test_non_basemodel_output_schema_reply(
+    model,
+    schema,
+    wire_text,
+    expected,
+    stream,
+    mock_acompletion,
+    mock_completion,
+    lite_llm_instance,
+):
+  """Only wrapped complete replies are unwrapped; partials stay on the wire format."""
+  request = LlmRequest(model=model)
+  request.set_output_schema(schema)
+  fragments = [wire_text[:5], wire_text[5:]]
+  if stream:
+    mock_completion.return_value = iter(_text_stream_chunks(fragments))
+  else:
+    mock_acompletion.return_value = ModelResponse(
+        choices=[
+            Choices(
+                message=ChatCompletionAssistantMessage(
+                    role="assistant", content=wire_text
+                )
+            )
+        ]
+    )
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          request, stream=stream
+      )
+  ]
+
+  if model.startswith("gemini/"):
+    expected = wire_text
+  assert responses[-1].content.parts[0].text == expected
+  if stream:
+    assert [
+        r.content.parts[0].text for r in responses if r.partial
+    ] == fragments
+
+
+@pytest.mark.parametrize("model", ["openai/gpt-4o", "gemini/gemini-2.5-flash"])
+def test_annotated_output_schema_response_format(model):
+  """Annotated model aliases convert without invoking model_dump."""
+  schema = Annotated[_StructuredOutput, Field(description="d")]
+
+  formatted = _to_litellm_response_format(schema, model)
+
+  actual = (
+      formatted["response_schema"]
+      if model.startswith("gemini/")
+      else formatted["json_schema"]["schema"]
+  )
+  assert "value" in actual["$defs"]["_StructuredOutput"]["properties"]
+  if model.startswith("gemini/"):
+    assert actual["description"] == "d"
+    assert actual["$ref"] == "#/$defs/_StructuredOutput"
+  else:
+    assert actual["type"] == "object"
+    assert (
+        actual["properties"]["response"]["$ref"] == "#/$defs/_StructuredOutput"
+    )
+    assert actual["required"] == ["response"]
+
+
+@pytest.mark.parametrize("model", ["openai/gpt-4o", "gemini/gemini-2.5-flash"])
+def test_map_json_schema_response_format(model, caplog):
+  """Strict targets skip map roots while Gemini retains the schema."""
+  schema = {"type": "object", "additionalProperties": {"type": "integer"}}
+
+  formatted = _to_litellm_response_format(schema, model)
+
+  if model.startswith("gemini/"):
+    assert formatted == {"type": "json_object", "response_schema": schema}
+  else:
+    assert formatted is None
+    assert "Unsupported response_schema type" in caplog.text
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("model", ["openai/gpt-4o", "gemini/gemini-2.5-flash"])
+@pytest.mark.parametrize("prefer_response_schema", [False, True])
+async def test_response_json_schema_fallback(
+    stream,
+    model,
+    prefer_response_schema,
+    mock_acompletion,
+    mock_completion,
+    lite_llm_instance,
+):
+  """JSON-schema-only requests use the provider format and unwrap when nested."""
+  schema = {"type": "string", "enum": ["yes", "no"]}
+  config = types.GenerateContentConfig(response_json_schema=schema)
+  if prefer_response_schema:
+    config.response_schema = _StructuredOutput
+  request = LlmRequest(model=model, config=config)
+  wire_text = (
+      '{"value": 7}'
+      if prefer_response_schema
+      else '"yes"'
+      if model.startswith("gemini/")
+      else '{"response": "yes"}'
+  )
+  if stream:
+    mock_completion.return_value = iter(_text_stream_chunks([wire_text]))
+  else:
+    mock_acompletion.return_value = ModelResponse(
+        choices=[
+            Choices(
+                message=ChatCompletionAssistantMessage(
+                    role="assistant", content=wire_text
+                )
+            )
+        ]
+    )
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          request, stream=stream
+      )
+  ]
+
+  call = mock_completion.call_args if stream else mock_acompletion.call_args
+  formatted = call.kwargs["response_format"]
+  expected_schema = _StructuredOutput if prefer_response_schema else schema
+  assert formatted == _to_litellm_response_format(expected_schema, model)
+  assert responses[-1].content.parts[0].text == (
+      '{"value": 7}' if prefer_response_schema else '"yes"'
+  )
+
+
+@pytest.mark.parametrize("model", ["openai/gpt-4o", "gemini/gemini-2.5-flash"])
+@pytest.mark.parametrize(
+    "schema",
+    [
+        object(),
+        Callable[[int], str],
+        ForwardRef("MissingSchema"),
+        Annotated[int, Field(discriminator="kind")],
+    ],
+)
+def test_unsupported_output_schema_warns_and_skips_format(
+    schema, model, caplog
+):
+  """Unsupported schema conversion errors preserve the unconstrained fallback."""
+  assert _to_litellm_response_format(schema, model) is None
+  assert _prepare_litellm_response_format(schema, model) == (None, False)
+  assert "Unsupported response_schema type" in caplog.text
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("guard", ["basemodel", "override"])
+async def test_structured_output_unwrap_guards(
+    stream, guard, mock_client, mock_acompletion, mock_completion
+):
+  """Only replies produced under the adapter's own wrapper are unwrapped."""
+
+  class ResponseModel(BaseModel):
+    response: int
+
+  wire_text = '{"response": 7}'
+  request = LlmRequest()
+  request.set_output_schema(ResponseModel if guard == "basemodel" else int)
+  caller_format = {"type": "json_object"}
+  model = LiteLlm(
+      model="openai/gpt-4o",
+      llm_client=mock_client,
+      **({"response_format": caller_format} if guard == "override" else {}),
+  )
+  if stream:
+    mock_completion.return_value = iter(_text_stream_chunks([wire_text]))
+  else:
+    mock_acompletion.return_value = ModelResponse(
+        choices=[
+            Choices(
+                message=ChatCompletionAssistantMessage(
+                    role="assistant", content=wire_text
+                )
+            )
+        ]
+    )
+
+  responses = [
+      r async for r in model.generate_content_async(request, stream=stream)
+  ]
+
+  assert responses[-1].content.parts[0].text == wire_text
+  if guard == "override":
+    call = mock_completion.call_args if stream else mock_acompletion.call_args
+    assert call.kwargs["response_format"] == caller_format
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "wire_text, expected",
+    [
+        ('{"response": "héllo"}', '"héllo"'),
+        ('{"response": "héllo', '{"response": "héllo'),
+    ],
+)
+async def test_wrapped_reply_preserves_thoughts_and_unicode(
+    stream,
+    wire_text,
+    expected,
+    mock_acompletion,
+    mock_completion,
+    lite_llm_instance,
+):
+  """Unwrapping preserves thought parts, Unicode, and malformed JSON text."""
+  request = LlmRequest()
+  request.set_output_schema(str)
+  if stream:
+    mock_completion.return_value = iter(
+        _reasoning_stream_chunks([
+            {"reasoning_content": "thinking..."},
+            {"content": wire_text},
+        ])
+    )
+  else:
+    mock_acompletion.return_value = ModelResponse(
+        choices=[
+            Choices(
+                message=ChatCompletionAssistantMessage(
+                    role="assistant",
+                    content=wire_text,
+                    reasoning_content="thinking...",
+                )
+            )
+        ]
+    )
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          request, stream=stream
+      )
+  ]
+
+  parts = responses[-1].content.parts
+  assert len(parts) == 2
+  assert parts[0].thought is True
+  assert parts[0].text == "thinking..."
+  assert not parts[1].thought
+  assert parts[1].text == expected

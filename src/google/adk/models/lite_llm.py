@@ -31,6 +31,7 @@ from typing import AsyncGenerator
 from typing import cast
 from typing import Dict
 from typing import Generator
+from typing import get_origin
 from typing import Iterable
 from typing import List
 from typing import Literal
@@ -55,6 +56,7 @@ if not TYPE_CHECKING and importlib.util.find_spec("litellm") is None:
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic import PrivateAttr
+from pydantic import PydanticUserError
 from typing_extensions import NotRequired
 from typing_extensions import override
 from typing_extensions import Required
@@ -63,6 +65,7 @@ from . import _prompt_cache
 from ..utils import streaming_utils
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils._schema_utils import lowercase_schema_types
+from ..utils._schema_utils import schema_to_json_schema
 from ..utils.model_name_utils import is_gemini_model
 from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
@@ -3814,21 +3817,13 @@ def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
     _enforce_strict_openai_schema(schema["items"])
 
 
-def _to_litellm_response_format(
+_OUTPUT_SCHEMA_VALUE_KEY = "response"
+
+
+def _get_litellm_output_schema(
     response_schema: types.SchemaUnion,
-    model: str,
-) -> dict[str, Any] | None:
-  """Converts ADK response schema objects into LiteLLM-compatible payloads.
-
-  Args:
-    response_schema: The response schema to convert.
-    model: The model string to determine the appropriate format. Gemini models
-      use 'response_schema' key, while OpenAI-compatible models use
-      'json_schema' key.
-
-  Returns:
-    A dictionary with the appropriate response format for LiteLLM.
-  """
+) -> tuple[dict[str, Any], str]:
+  """Returns the JSON schema and its name before provider-specific wrapping."""
   schema_name = "response"
 
   if isinstance(response_schema, dict):
@@ -3837,7 +3832,7 @@ def _to_litellm_response_format(
         isinstance(schema_type, str)
         and schema_type.lower() in _LITELLM_STRUCTURED_TYPES
     ):
-      return response_schema
+      return response_schema, schema_name
     schema_dict = copy.deepcopy(response_schema)
     if "title" in schema_dict:
       schema_name = str(schema_dict["title"])
@@ -3859,30 +3854,90 @@ def _to_litellm_response_format(
     else:
       schema_dict = response_schema.__class__.model_json_schema()
       schema_name = response_schema.__class__.__name__
+  elif get_origin(response_schema) is not None or isinstance(
+      response_schema, type
+  ):
+    schema_dict = schema_to_json_schema(response_schema)
   elif hasattr(response_schema, "model_dump"):
     schema_dict = copy.deepcopy(
         response_schema.model_dump(exclude_none=True, mode="json")
     )
     schema_name = response_schema.__class__.__name__
   else:
+    schema_dict = schema_to_json_schema(response_schema)
+
+  return schema_dict, schema_name
+
+
+def _to_litellm_response_format(
+    response_schema: types.SchemaUnion,
+    model: str,
+) -> dict[str, Any] | None:
+  """Converts ADK response schema objects into LiteLLM-compatible payloads.
+
+  Args:
+    response_schema: The response schema to convert.
+    model: The model string to determine the appropriate format. Gemini models
+      use 'response_schema' key, while OpenAI-compatible models use
+      'json_schema' key.
+
+  Returns:
+    A dictionary with the appropriate response format for LiteLLM.
+  """
+  return _prepare_litellm_response_format(response_schema, model)[0]
+
+
+def _prepare_litellm_response_format(
+    response_schema: types.SchemaUnion,
+    model: str,
+) -> tuple[dict[str, Any] | None, bool]:
+  """Builds the provider format and records whether its value was nested."""
+  try:
+    schema_dict, schema_name = _get_litellm_output_schema(response_schema)
+  except (PydanticUserError, TypeError):
     logger.warning(
         "Unsupported response_schema type %s for LiteLLM structured outputs.",
         type(response_schema),
     )
-    return None
+    return None, False
+  if (
+      isinstance(schema_dict.get("type"), str)
+      and schema_dict["type"].lower() in _LITELLM_STRUCTURED_TYPES
+  ):
+    return schema_dict, False
 
   # Gemini models use a special response format with 'response_schema' key
   if _is_litellm_gemini_model(model):
     return {
         "type": "json_object",
         "response_schema": schema_dict,
-    }
+    }, False
 
-  # OpenAI-compatible format (default) per LiteLLM docs:
-  # https://docs.litellm.ai/docs/completion/json_mode
-  if isinstance(schema_dict, dict):
-    lowercase_schema_types(schema_dict)
-    _enforce_strict_openai_schema(schema_dict)
+  # OpenAI strict output requires an object root. Keep references relative to
+  # the document root when nesting arrays, scalars, or root references.
+  lowercase_schema_types(schema_dict)
+  if (
+      schema_dict.get("type") == "object"
+      and "properties" not in schema_dict
+      and isinstance(schema_dict.get("additionalProperties"), dict)
+  ):
+    logger.warning(
+        "Unsupported response_schema type %s for LiteLLM structured outputs.",
+        type(response_schema),
+    )
+    return None, False
+  nests_output = schema_dict.get("type") != "object"
+  if nests_output:
+    defs = schema_dict.pop("$defs", None)
+    schema_dict = {
+        "type": "object",
+        "properties": {_OUTPUT_SCHEMA_VALUE_KEY: schema_dict},
+        "required": [_OUTPUT_SCHEMA_VALUE_KEY],
+        "additionalProperties": False,
+    }
+    if defs:
+      schema_dict["$defs"] = defs
+  _enforce_strict_openai_schema(schema_dict)
 
   return {
       "type": "json_schema",
@@ -3891,7 +3946,28 @@ def _to_litellm_response_format(
           "strict": True,
           "schema": schema_dict,
       },
-  }
+  }, nests_output
+
+
+def _unwrap_litellm_output(response: LlmResponse) -> None:
+  """Unwraps a complete structured reply, preserving malformed/error replies."""
+  if not response.content or not response.content.parts:
+    return
+  parts = [
+      part for part in response.content.parts if part.text and not part.thought
+  ]
+  if not parts:
+    return
+  try:
+    value = json.loads("".join(part.text or "" for part in parts))
+  except json.JSONDecodeError:
+    return
+  if isinstance(value, dict) and _OUTPUT_SCHEMA_VALUE_KEY in value:
+    parts[0].text = json.dumps(
+        value[_OUTPUT_SCHEMA_VALUE_KEY], ensure_ascii=False
+    )
+    for part in parts[1:]:
+      response.content.parts.remove(part)
 
 
 _ANTHROPIC_MIN_THINKING_BUDGET_TOKENS = 1024
@@ -4030,11 +4106,14 @@ async def _get_completion_inputs(
 
   # 3. Handle response format
   response_format: dict[str, Any] | None = None
-  if llm_request.config and llm_request.config.response_schema:
-    response_format = _to_litellm_response_format(
-        llm_request.config.response_schema,
-        model=model,
-    )
+  if llm_request.config:
+    response_schema = llm_request.config.response_schema
+    if response_schema is None:
+      response_schema = llm_request.config.response_json_schema
+    if response_schema is not None:
+      response_format = _to_litellm_response_format(
+          response_schema, model=model
+      )
 
   # 4. Extract generation parameters
   generation_params: dict[str, Any] | None = None
@@ -4708,6 +4787,15 @@ class LiteLlm(BaseLlm):
             ),
         )
     )
+    nests_output = False
+    if response_format and llm_request.config:
+      response_schema = llm_request.config.response_schema
+      if response_schema is None:
+        response_schema = llm_request.config.response_json_schema
+      if response_schema is not None:
+        _, nests_output = _prepare_litellm_response_format(
+            response_schema, effective_model
+        )
     normalized_messages = _normalize_ollama_chat_messages(
         messages,
         model=effective_model,
@@ -4727,6 +4815,9 @@ class LiteLlm(BaseLlm):
         "response_format": response_format,
     }
     completion_args.update(self._additional_args)
+    nests_output = (
+        nests_output and completion_args["response_format"] == response_format
+    )
 
     # A caller who named their own injection points at construction has said
     # more about their provider than the app-level config can, so leave those
@@ -5164,6 +5255,7 @@ class LiteLlm(BaseLlm):
           elif isinstance(chunk, TextChunk):
             if chunk.text:
               text_parts.append(chunk.text)
+            # Partial text is raw wrapped JSON; only the final aggregate is unwrapped.
             yield _message_to_generate_content_response(
                 ChatCompletionAssistantMessage(
                     role="assistant",
@@ -5311,6 +5403,8 @@ class LiteLlm(BaseLlm):
           usage_metadata = None
         if grounding_metadata:
           aggregated_llm_response.grounding_metadata = grounding_metadata
+        if nests_output:
+          _unwrap_litellm_output(aggregated_llm_response)
         yield aggregated_llm_response
 
       if aggregated_llm_response_with_tool_call:
@@ -5341,6 +5435,8 @@ class LiteLlm(BaseLlm):
             for p in llm_response.content.parts
             if not p.thought or (has_tool_calls and p.thought_signature)
         ]
+      if nests_output:
+        _unwrap_litellm_output(llm_response)
       yield llm_response
 
   @classmethod
