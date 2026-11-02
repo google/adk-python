@@ -33,7 +33,7 @@ from ..agents.run_config import RunConfig
 from ..events.event import Event
 from ..sessions.session import Session
 from ..telemetry import _instrumentation
-from ..utils._runner_utils import _notify_run_error
+from ..utils._runner_utils import _run_invocation_lifecycle
 from ._dynamic_node_scheduler import DynamicNodeScheduler
 from ._dynamic_node_scheduler import DynamicNodeState
 from ._errors import DynamicNodeFailError
@@ -62,7 +62,6 @@ async def run_node_async(
     abort_signal: Optional[asyncio.Event] = None,
 ) -> AsyncGenerator[Event, None]:
   """Runs a BaseNode or Workflow in async mode."""
-  from ..runners import _CALLER_CLOSED_EARLY_MSG
   from ..runners import _find_active_task_scope
 
   async def _run() -> AsyncGenerator[Event, None]:
@@ -148,223 +147,166 @@ async def run_node_async(
     # on_run_error_callback: they are part of runner execution even though
     # they run before the main event loop. Notification-only; the original
     # exception is always re-raised, and after_run stays success-only.
-    run_error: BaseException | None = None
-    closing_early = False
-    try:
-      try:
-        if new_message and (
-            resume_inputs or continues_paused_task or not existing_user_content
-        ):
-          modified_user_message = (
-              await ic.plugin_manager.run_on_user_message_callback(
-                  invocation_context=ic, user_message=new_message
-              )
-          )
-          if modified_user_message is not None:
-            new_message = modified_user_message
-            resume_inputs = runner._extract_resume_inputs(new_message)  # pylint: disable=protected-access
-            runner._validate_new_message(new_message, resume_inputs)  # pylint: disable=protected-access
-            if not invocation_id:
-              resolved_inv_id = runner._resolve_invocation_id_from_fr(  # pylint: disable=protected-access
-                  session, new_message
-              )
-              if resolved_inv_id:
-                ic.invocation_id = resolved_inv_id
-                continues_paused_task = False
-            if resume_inputs and not continues_paused_task:
-              recovered_content = runner._find_user_message_for_invocation(  # pylint: disable=protected-access
-                  ic.session.events, ic.invocation_id
-              )
-              if recovered_content is not None:
-                node_input = recovered_content
-                ic.user_content = recovered_content
-            else:
-              ic.user_content = new_message
-              node_input = new_message
-
-          user_event = await runner._append_user_event(  # pylint: disable=protected-access
-              ic, new_message, state_delta=state_delta
-          )
-          if (
-              modified_user_message is not None
-              and isinstance(runner.agent, BaseAgent)
-              and runner._uses_legacy_sub_agent_picker()  # pylint: disable=protected-access
-          ):
-            node = runner._find_agent_to_run(ic.session, runner.agent)  # pylint: disable=protected-access
-            ic.agent = node
-            ic.branch = None
-            if node is not runner.agent:
-              runner._restore_branch_from_history(  # pylint: disable=protected-access
-                  ic, node, root=runner.agent, invocation_id=ic.invocation_id
-              )
-          if yield_user_message and user_event:
-            yield user_event
-        elif state_delta:
-          # Resuming without a new message: there is no user message event to
-          # carry the delta, so append it as a content-less event instead of
-          # dropping it.
-          delta_event = await runner._append_state_delta_event(  # pylint: disable=protected-access
-              ic, state_delta
-          )
-          if yield_user_message and delta_event:
-            yield delta_event
-
-        # Run before_run callbacks. A returned Content halts execution and ends
-        # the run with that content (same contract as the non-workflow path).
-        early_exit_result = await ic.plugin_manager.run_before_run_callback(
-            invocation_context=ic
+    async with _run_invocation_lifecycle(
+        invocation_context=ic,
+        plugin_manager=ic.plugin_manager,
+        synthesize_abort_events=runner._synthesize_abort_events_if_needed,  # pylint: disable=protected-access
+        is_live_call=False,
+        post_run_compaction=(
+            lambda ctx: runner._run_post_invocation_compaction(  # pylint: disable=protected-access
+                invocation_context=ctx
+            )
+        ),
+    ):
+      if new_message and (
+          resume_inputs or continues_paused_task or not existing_user_content
+      ):
+        modified_user_message = (
+            await ic.plugin_manager.run_on_user_message_callback(
+                invocation_context=ic, user_message=new_message
+            )
         )
-        if isinstance(early_exit_result, types.Content):
-          early_exit_event = Event(
-              invocation_id=ic.invocation_id,
-              author="model",
-              content=early_exit_result,
-          )
-          yield await runner._process_and_append_event(  # pylint: disable=protected-access
-              event=early_exit_event,
-              invocation_context=ic,
-              is_live_call=False,
-          )
-        else:
-          # 3. Start root node in background
-          root_ctx = Context(ic)
-          # A root workflow runs inside the span the runner opened for it.
-          root_ctx._telemetry_context = dataclasses.replace(  # pylint: disable=protected-access
-              root_ctx.telemetry_context, _entrypoint_scope=entrypoint_scope
-          )
-          root_node = node or runner.agent
-          is_agent = isinstance(runner.agent, BaseAgent)
-          has_sub_agents = is_agent and bool(
-              getattr(runner.agent, "sub_agents", None)
-          )
-          use_scheduler = not is_agent or has_sub_agents
-
-          # The root chat coordinator's isolation_scope stays None: its own
-          # events (FCs, text, synthesized FRs from completed task
-          # delegations) are also unscoped, so the content-builder's
-          # isolation_scope filter lets the coordinator see all of them
-          # across user turns. Task sub-agents are scoped under their
-          # originating function-call id and so remain invisible to the
-          # coordinator's view.
-
-          done_sentinel = object()
-
-          async def _drive_root_node() -> None:
-            try:
-              if use_scheduler:
-                # Rehydration warning: DynamicNodeScheduler relies on
-                # session.events scanning. Stateful live EUC/LRO streams
-                # may rehydrate freshly if not yet persisted.
-                scheduler = DynamicNodeScheduler(state=DynamicNodeState())
-                root_ctx._workflow_scheduler = scheduler  # pylint: disable=protected-access
-
-              try:
-                await root_ctx._run_node_internal(  # pylint: disable=protected-access
-                    root_node,
-                    node_input=node_input,
-                    resume_inputs=resume_inputs,
-                )
-              except NodeInterruptedError:
-                # The node was interrupted (e.g. for HITL).
-                pass
-              except DynamicNodeFailError as e:
-                raise e.error
-            finally:
-              root_ctx._workflow_scheduler = None  # pylint: disable=protected-access
-              # Bound to a local because narrowing does not reach into this
-              # closure.
-              event_queue = ic._event_queue  # pylint: disable=protected-access
-              if event_queue is None:
-                raise WorkflowInvariantError(
-                    "Root node finished without an initialized event queue."
-                )
-              await event_queue.put((done_sentinel, None))
-
-          task = asyncio.create_task(_drive_root_node())
-
-          # 4. Main loop: consume events, persist, yield
-          try:
-            async with aclosing(
-                runner._consume_event_queue(ic, done_sentinel)  # pylint: disable=protected-access
-            ) as agen:
-              async for event in agen:
-                yield event
-          finally:
-            # _cleanup_root_task re-raises a root-node Exception (if any) after
-            # the event stream has drained.
-            await runner._cleanup_root_task(  # pylint: disable=protected-access
-                task, runner.agent.name
+        if modified_user_message is not None:
+          new_message = modified_user_message
+          resume_inputs = runner._extract_resume_inputs(new_message)  # pylint: disable=protected-access
+          runner._validate_new_message(new_message, resume_inputs)  # pylint: disable=protected-access
+          if not invocation_id:
+            resolved_inv_id = runner._resolve_invocation_id_from_fr(  # pylint: disable=protected-access
+                session, new_message
             )
-          if ic.is_aborted:
-            abort_events = await runner._synthesize_abort_events_if_needed(  # pylint: disable=protected-access
-                ic
+            if resolved_inv_id:
+              ic.invocation_id = resolved_inv_id
+              continues_paused_task = False
+          if resume_inputs and not continues_paused_task:
+            recovered_content = runner._find_user_message_for_invocation(  # pylint: disable=protected-access
+                ic.session.events, ic.invocation_id
             )
-            for abort_event in abort_events:
-              yield abort_event
-      except GeneratorExit:
-        # Caller cancelled or broke out of the generator early (e.g. via
-        # aclosing). GeneratorExit is a BaseException, but early generator
-        # close is considered a successful run completion, so do not treat it
-        # as run_error.
-        closing_early = True
-        raise
-      except Exception as e:
-        # An unhandled exception escaped runner execution. Notify plugins
-        # (notification-only) and re-raise. after_run stays success-only.
-        run_error = e
-        await _notify_run_error(ic.plugin_manager, ic, e)
-        raise
-      except asyncio.CancelledError as e:
-        if (e.args and e.args[0] == _CALLER_CLOSED_EARLY_MSG) or ic.is_aborted:
-          closing_early = True
-        else:
-          run_error = e
-        raise
-      except BaseException as e:
-        # Other BaseExceptions (such as KeyboardInterrupt) represent
-        # aborts/interrupts; mark run_error so after_run callbacks do not fire.
-        run_error = e
-        raise
-    finally:
-      # Success path (also caller early-stop via GeneratorExit,
-      # _CALLER_CLOSED_EARLY_MSG, or abort_signal): run after_run, and run
-      # compaction only when the invocation completed without early close.
-      # _cleanup_root_task has already run in the inner finally above when a
-      # root task was created. A failure in this success cleanup (e.g. an
-      # after_run plugin raising, which PluginManager surfaces as a
-      # RuntimeError) is itself an unhandled runner error, so notify
-      # on_run_error_callback once and re-raise (unless closing_early).
-      if ic.is_aborted:
-        # Best-effort: only reached on early close or error, where raising
-        # would mask the in-flight exception and skip after_run.
-        try:
-          await runner._synthesize_abort_events_if_needed(ic)  # pylint: disable=protected-access
-        except Exception:  # pylint: disable=broad-exception-caught
-          logger.error(
-              "Failed to seal aborted invocation %s.",
-              ic.invocation_id,
-              exc_info=True,
-          )
-      if run_error is None:
-        try:
-          await ic.plugin_manager.run_after_run_callback(invocation_context=ic)
-          # Compaction only runs after a fully drained invocation, matching
-          # Runner.run_async; a partially consumed stream is compacted by a
-          # later turn instead.
-          if not ic.is_aborted and not closing_early:
-            await runner._run_post_invocation_compaction(  # pylint: disable=protected-access
-                invocation_context=ic,
-            )
-        except Exception as e:
-          await _notify_run_error(ic.plugin_manager, ic, e)
-          if closing_early:
-            logger.error(
-                "after_run callback failed while closing invocation %s early.",
-                ic.invocation_id,
-                exc_info=True,
-            )
+            if recovered_content is not None:
+              node_input = recovered_content
+              ic.user_content = recovered_content
           else:
-            raise
+            ic.user_content = new_message
+            node_input = new_message
+
+        user_event = await runner._append_user_event(  # pylint: disable=protected-access
+            ic, new_message, state_delta=state_delta
+        )
+        if (
+            modified_user_message is not None
+            and isinstance(runner.agent, BaseAgent)
+            and runner._uses_legacy_sub_agent_picker()  # pylint: disable=protected-access
+        ):
+          node = runner._find_agent_to_run(ic.session, runner.agent)  # pylint: disable=protected-access
+          ic.agent = node
+          ic.branch = None
+          if node is not runner.agent:
+            runner._restore_branch_from_history(  # pylint: disable=protected-access
+                ic, node, root=runner.agent, invocation_id=ic.invocation_id
+            )
+        if yield_user_message and user_event:
+          yield user_event
+      elif state_delta:
+        # Resuming without a new message: there is no user message event to
+        # carry the delta, so append it as a content-less event instead of
+        # dropping it.
+        delta_event = await runner._append_state_delta_event(  # pylint: disable=protected-access
+            ic, state_delta
+        )
+        if yield_user_message and delta_event:
+          yield delta_event
+
+      # Run before_run callbacks. A returned Content halts execution and ends
+      # the run with that content (same contract as the non-workflow path).
+      early_exit_result = await ic.plugin_manager.run_before_run_callback(
+          invocation_context=ic
+      )
+      if isinstance(early_exit_result, types.Content):
+        early_exit_event = Event(
+            invocation_id=ic.invocation_id,
+            author="model",
+            content=early_exit_result,
+        )
+        yield await runner._process_and_append_event(  # pylint: disable=protected-access
+            event=early_exit_event,
+            invocation_context=ic,
+            is_live_call=False,
+        )
+      else:
+        # 3. Start root node in background
+        root_ctx = Context(ic)
+        # A root workflow runs inside the span the runner opened for it.
+        root_ctx._telemetry_context = dataclasses.replace(  # pylint: disable=protected-access
+            root_ctx.telemetry_context, _entrypoint_scope=entrypoint_scope
+        )
+        root_node = node or runner.agent
+        is_agent = isinstance(runner.agent, BaseAgent)
+        has_sub_agents = is_agent and bool(
+            getattr(runner.agent, "sub_agents", None)
+        )
+        use_scheduler = not is_agent or has_sub_agents
+
+        # The root chat coordinator's isolation_scope stays None: its own
+        # events (FCs, text, synthesized FRs from completed task
+        # delegations) are also unscoped, so the content-builder's
+        # isolation_scope filter lets the coordinator see all of them
+        # across user turns. Task sub-agents are scoped under their
+        # originating function-call id and so remain invisible to the
+        # coordinator's view.
+
+        done_sentinel = object()
+
+        async def _drive_root_node() -> None:
+          try:
+            if use_scheduler:
+              # Rehydration warning: DynamicNodeScheduler relies on
+              # session.events scanning. Stateful live EUC/LRO streams
+              # may rehydrate freshly if not yet persisted.
+              scheduler = DynamicNodeScheduler(state=DynamicNodeState())
+              root_ctx._workflow_scheduler = scheduler  # pylint: disable=protected-access
+
+            try:
+              await root_ctx._run_node_internal(  # pylint: disable=protected-access
+                  root_node,
+                  node_input=node_input,
+                  resume_inputs=resume_inputs,
+              )
+            except NodeInterruptedError:
+              # The node was interrupted (e.g. for HITL).
+              pass
+            except DynamicNodeFailError as e:
+              raise e.error
+          finally:
+            root_ctx._workflow_scheduler = None  # pylint: disable=protected-access
+            # Bound to a local because narrowing does not reach into this
+            # closure.
+            event_queue = ic._event_queue  # pylint: disable=protected-access
+            if event_queue is None:
+              raise WorkflowInvariantError(
+                  "Root node finished without an initialized event queue."
+              )
+            await event_queue.put((done_sentinel, None))
+
+        task = asyncio.create_task(_drive_root_node())
+
+        # 4. Main loop: consume events, persist, yield
+        try:
+          async with aclosing(
+              runner._consume_event_queue(ic, done_sentinel)  # pylint: disable=protected-access
+          ) as agen:
+            async for event in agen:
+              yield event
+        finally:
+          # _cleanup_root_task re-raises a root-node Exception (if any) after
+          # the event stream has drained.
+          await runner._cleanup_root_task(  # pylint: disable=protected-access
+              task, runner.agent.name
+          )
+        if ic.is_aborted:
+          abort_events = await runner._synthesize_abort_events_if_needed(  # pylint: disable=protected-access
+              ic
+          )
+          for abort_event in abort_events:
+            yield abort_event
 
   # Opened out here rather than inside `_run`: `stream_in_scope` attaches the
   # invocation's context only while `_run` is running, never across a yield

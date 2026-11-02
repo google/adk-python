@@ -41,7 +41,9 @@ from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
+from google.adk.apps.app import EventsCompactionConfig
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.apps.base_events_summarizer import BaseEventsSummarizer
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.errors.session_not_found_error import SessionNotFoundError
@@ -70,8 +72,8 @@ from google.genai import types
 from opentelemetry import trace
 import pytest
 
-from tests.unittests import testing_utils
-from tests.unittests._invariants import InvariantPlugin
+from . import _invariants
+from . import testing_utils
 
 TEST_APP_ID = "test_app"
 TEST_USER_ID = "test_user"
@@ -5708,11 +5710,12 @@ class _AbortableAgent(BaseAgent):
 
 
 def _abort_runner(
-    agent: BaseAgent,
+    agent: BaseAgent | Workflow,
     *,
     plugins: Optional[list[BasePlugin]] = None,
     session_service: Optional[BaseSessionService] = None,
     resumable: bool = False,
+    compaction: Optional[EventsCompactionConfig] = None,
 ) -> Runner:
   return Runner(
       app=App(
@@ -5720,6 +5723,7 @@ def _abort_runner(
           root_agent=agent,
           plugins=plugins or [],
           resumability_config=ResumabilityConfig(is_resumable=resumable),
+          events_compaction_config=compaction,
       ),
       session_service=session_service or InMemorySessionService(),
       artifact_service=InMemoryArtifactService(),
@@ -5995,58 +5999,109 @@ async def test_run_async_aborted_then_closed_seal_failure_is_logged(
   assert len(after_run_calls) == 1
 
 
+def _compaction_runner(agent, plugins=()) -> tuple[Runner, AsyncMock]:
+  summarizer = create_autospec(BaseEventsSummarizer, instance=True)
+  summarizer.maybe_summarize_events = AsyncMock(return_value=None)
+  cfg = EventsCompactionConfig(
+      compaction_interval=1, overlap_size=0, summarizer=summarizer
+  )
+  runner = _abort_runner(agent, plugins=list(plugins), compaction=cfg)
+  return runner, summarizer.maybe_summarize_events
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "make_agent", [_legacy_tool_agent, _llm_tool_agent], ids=["legacy", "llm"]
+    "make_agent",
+    [
+        _legacy_tool_agent,
+        _llm_tool_agent,
+        lambda: Workflow(name="wf", edges=[(START, _llm_tool_agent())]),
+    ],
+    ids=["legacy", "llm", "workflow"],
 )
-async def test_run_async_aborted_and_cancelled_executes_after_run_plugin(
-    make_agent,
+@pytest.mark.parametrize("pre_abort", [False, True], ids=["cancel", "aborted"])
+async def test_run_async_task_cancel_seals_calls_and_respects_prior_abort(
+    make_agent, pre_abort
 ):
-  """Cancelling an aborted run seals dangling calls and runs after_run."""
-  after_run_calls = []
+  """Task cancellation seals calls; after_run runs only if already aborted."""
+  contexts, after_runs = [], []
 
-  class _AfterRunPlugin(BasePlugin):
+  class _Plugin(BasePlugin):
+
+    async def before_run_callback(self, *, invocation_context):
+      contexts.append(invocation_context)
 
     async def after_run_callback(self, *, invocation_context):
-      after_run_calls.append(invocation_context.invocation_id)
+      after_runs.append(invocation_context.invocation_id)
 
-  runner = _abort_runner(
-      make_agent(),
-      plugins=[_AfterRunPlugin(name="after_run")],
-  )
+  runner, summarize = _compaction_runner(make_agent(), [_Plugin(name="p")])
   abort_signal = asyncio.Event()
-  tool_started = asyncio.Event()
+  started = asyncio.Event()
+  msg = types.Content(role="user", parts=[types.Part(text="Run")])
 
   async def _consume():
-    async with aclosing(
-        runner.run_async(
-            user_id=TEST_USER_ID,
-            session_id="s",
-            new_message=types.Content(
-                role="user", parts=[types.Part(text="Run")]
-            ),
-            abort_signal=abort_signal,
-        )
-    ) as agen:
-      async for event in agen:
+    agen = runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id="s",
+        new_message=msg,
+        abort_signal=abort_signal,
+    )
+    async with aclosing(agen) as s:
+      async for event in s:
         if _has_fc(event):
-          tool_started.set()
+          started.set()
 
   task = asyncio.create_task(_consume())
-  await tool_started.wait()
-  abort_signal.set()
+  await started.wait()
+  await asyncio.sleep(0.02)
+  if pre_abort:
+    abort_signal.set()
   task.cancel()
   with pytest.raises(asyncio.CancelledError):
     await task
 
-  session = await runner.session_service.get_session(
+  assert contexts[0].is_aborted
+  assert abort_signal.is_set() is pre_abort
+  assert len(after_runs) == (1 if pre_abort else 0)
+  summarize.assert_not_awaited()
+  sess = await runner.session_service.get_session(
       app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id="s"
   )
-  sealed = _abort_events(session.events)
-  assert [fr.name for e in sealed for fr in e.get_function_responses()] == [
+  sealed = _abort_events(sess.events)
+  assert len(sealed) == 1
+  assert [fr.name for fr in sealed[0].get_function_responses()] == [
       "_slow_tool"
   ]
-  assert len(after_run_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_early_break_base_agent_skips_compaction_leaves_lro():
+  """Early break on BaseAgent skips compaction and leaves LRO calls unsealed."""
+
+  class _LroAgent(BaseAgent):
+
+    async def _run_async_impl(self, ctx: InvocationContext):
+      ev = _model_event(
+          self.name, _fc_part("lro", "lro_1"), invocation_id=ctx.invocation_id
+      )
+      yield ev.model_copy(update={"long_running_tool_ids": {"lro_1"}})
+      await asyncio.sleep(5)
+
+  runner, summarize = _compaction_runner(_LroAgent(name="lro"))
+  msg = types.Content(role="user", parts=[types.Part(text="Start")])
+  async with aclosing(
+      runner.run_async(user_id=TEST_USER_ID, session_id="s", new_message=msg)
+  ) as agen:
+    async for event in agen:
+      if event.long_running_tool_ids:
+        break
+
+  summarize.assert_not_awaited()
+  sess = await runner.session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id="s"
+  )
+  assert not _abort_events(sess.events)
+  assert [fc.id for fc in sess.events[-1].get_function_calls()] == ["lro_1"]
 
 
 @pytest.mark.asyncio
@@ -6915,7 +6970,9 @@ async def test_run_async_tool_error_keeps_result_of_completed_parallel_call():
   recorder = BasePlugin(name="recorder")
   recorder.on_run_error_callback = AsyncMock(return_value=None)
   recorder.after_run_callback = AsyncMock(return_value=None)
-  runner = _abort_runner(agent, plugins=[InvariantPlugin(), recorder])
+  runner = _abort_runner(
+      agent, plugins=[_invariants.InvariantPlugin(), recorder]
+  )
 
   with pytest.raises(RuntimeError, match="downstream 500") as exc_info:
     await _run_turn(runner, "s", "Run")
