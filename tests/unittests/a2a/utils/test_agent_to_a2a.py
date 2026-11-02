@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from a2a.client.client_factory import ClientFactory
 from a2a.types import AgentCard
 from google.adk.a2a import _compat
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
@@ -39,6 +40,7 @@ from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
 from google.adk.a2a.utils.agent_to_a2a import to_a2a
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
@@ -47,8 +49,77 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.workflow import FunctionNode
 from google.adk.workflow import START
 from google.adk.workflow import Workflow
+from google.genai import types
+import httpx
 import pytest
 from starlette.applications import Starlette
+
+from tests.unittests import testing_utils
+
+
+@pytest.mark.parametrize("use_tool", [False, True])
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_legacy_client_receives_and_persists_answer_once(
+    use_tool, streaming
+):
+  """The client receives one answer, also after a remote tool call."""
+  tool_calls = []
+
+  def lookup() -> str:
+    tool_calls.append("lookup")
+    return "42"
+
+  answer = "The answer is 42."
+  responses = [[types.Part(text=answer)]]
+  if use_tool:
+    responses.insert(
+        0,
+        [
+            types.Part(text="Checking the value."),
+            types.Part.from_function_call(name="lookup", args={}),
+        ],
+    )
+  app = to_a2a(
+      LlmAgent(
+          name="remote",
+          model=testing_utils.MockModel.create(responses=responses),
+          tools=[lookup] if use_tool else [],
+      )
+  )
+
+  async with app.router.lifespan_context(app):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app)
+    ) as client:
+      remote = RemoteA2aAgent(
+          name="remote",
+          agent_card="http://localhost:8000/.well-known/agent-card.json",
+          httpx_client=client,
+          a2a_client_factory=ClientFactory(
+              config=_compat.make_client_config(
+                  httpx_client=client, streaming=streaming, polling=False
+              )
+          ),
+      )
+      runner = testing_utils.InMemoryRunner(root_agent=remote)
+      async with runner.runner:
+        events = await runner.run_async("What is the value?")
+        session_events = runner.session.events
+
+  for received in (events, session_events):
+    texts = [
+        part.text
+        for event in received
+        if event.author == "remote"
+        and event.content
+        and event.content.role == "model"
+        for part in event.content.parts or []
+        if part.text
+    ]
+    assert texts == (
+        ["Checking the value."] if use_tool and streaming else []
+    ) + [answer]
+  assert tool_calls == (["lookup"] if use_tool else [])
 
 
 def _route_paths(app: Starlette) -> set:
