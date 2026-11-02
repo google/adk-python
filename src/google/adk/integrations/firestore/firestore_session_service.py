@@ -206,7 +206,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       )
     if value in (".", ".."):
       raise ValueError(f"{name} must not be '.' or '..', got {value!r}.")
-    if value.startswith("__") and value.endswith("__"):
+    if len(value) >= 4 and value.startswith("__") and value.endswith("__"):
       raise ValueError(
           f"{name} must not match the Firestore-reserved __.*__ pattern, got"
           f" {value!r}."

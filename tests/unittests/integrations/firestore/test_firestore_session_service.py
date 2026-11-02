@@ -1339,6 +1339,8 @@ async def test_list_sessions_missing_states(mock_firestore_client):
         "..",
         "",
         "__reserved__",
+        "____",
+        "__x__",
     ],
 )
 @pytest.mark.asyncio
@@ -1495,3 +1497,27 @@ async def test_get_user_state_rejects_path_breaking_identity(
 
   with pytest.raises(ValueError):
     await service.get_user_state(app_name=app_name, user_id=user_id)
+
+
+@pytest.mark.parametrize(
+    "short_underscore_id",
+    [
+        "__",  # too short to match __.*__
+        "___",
+        "__alice",
+        "alice__",
+    ],
+)
+@pytest.mark.asyncio
+async def test_create_session_accepts_non_reserved_underscore_identity(
+    mock_firestore_client, short_underscore_id
+):
+  """Underscore ids that do not fully match __.*__ are accepted."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    session = await service.create_session(
+        app_name="test_app", user_id=short_underscore_id
+    )
+
+  assert session.user_id == short_underscore_id
